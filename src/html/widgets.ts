@@ -38,7 +38,7 @@ import type {} from 'react-x11/jsx-runtime';
 
 import { cancelLater, later } from '../internal/timers.js';
 import { hx } from './hx.js';
-import { attr, isElement, tagOf } from './dom.js';
+import { attr, isElement, isInputButton, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
@@ -580,7 +580,7 @@ export function useForms(options: FormsOptions): Forms {
         return true;
       }
       if (isDisabled(el)) return false;
-      if (tag === 'button') {
+      if (tag === 'button' || isInputButton(el)) {
         press(el);
         return true;
       }
@@ -631,7 +631,9 @@ function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
   ) {
     const tag = tagOf(node);
     if (tag === 'a' && attr(node, 'href') !== undefined) return null;
-    if (tag === 'button') {
+    // a `<button>`, and an input button the document draws, which a press
+    // on its palette widget would not reach here
+    if (tag === 'button' || isInputButton(node)) {
       return isDisabled(node) ? null : { kind: 'button', element: node };
     }
     if (tag === 'input' && inputType(node) === 'image') {

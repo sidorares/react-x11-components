@@ -10,6 +10,7 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
+import { isInputButton } from '../dom.js';
 import {
   AUTO,
   gapOf,
@@ -3415,7 +3416,9 @@ function blockWidth(
  * name.
  */
 function fitsContent(box: Box): boolean {
-  return box.el !== null && box.el.name.length === 6 && isButton(box);
+  if (box.el === null) return false;
+  const n = box.el.name.length;
+  return (n === 6 || n === 5) && isButton(box);
 }
 
 /**
@@ -5166,12 +5169,16 @@ export function moveContent(box: Box, dy: number): void {
 }
 
 /** Whether a box is a `<button>`'s own, laid out as a block container: the
- *  one HTML's button layout sets an anonymous button content box in. Not
- *  the text in it, whose element is the button too; not a button that is a
- *  flex box or a grid, which has no such box; nor an `<input type=button>`,
- *  which is a widget of its label's size. */
+ *  one HTML's button layout sets an anonymous button content box in, as it
+ *  does an input button's the page drew. Not the text in it, whose element
+ *  is the button too; not a button that is a flex box or a grid, which has
+ *  no such box. */
 function isButtonBlock(box: Box): boolean {
-  return box.kind === 'block' && box.el !== null && box.el.name === 'button';
+  return (
+    box.kind === 'block' &&
+    box.el !== null &&
+    (box.el.name === 'button' || isInputButton(box.el))
+  );
 }
 
 /** How tall a `<button>`'s content came to, and how far down its content

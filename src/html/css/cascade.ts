@@ -29,6 +29,7 @@ import {
   flatParentOf,
   isDefinedElement,
   isElement,
+  isInputButton,
   isModal,
   mutationGeneration,
   shadowRootAround,
@@ -4992,8 +4993,13 @@ export class Cascade {
     ) {
       style.styledControl = true;
     }
-    // a button is laid out as one, whatever `display` it was given
-    if (own && el.name.length === 6 && tagOf(el) === 'button') {
+    // a button is laid out as one, whatever `display` it was given, and
+    // so is an input button the page draws (`styledControl`)
+    if (
+      own &&
+      ((el.name.length === 6 && tagOf(el) === 'button') ||
+        (style.styledControl && isInputButton(el)))
+    ) {
       settleButton(style);
     }
     decorate(style);
