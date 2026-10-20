@@ -8,9 +8,9 @@
 // this is direct-only — the GLX protocol has no FBOs to encode.
 //
 // Two full-size colour targets ping-pong — read one, write the other,
-// swap — and the last pass writes framebuffer 0, the buffer that gets
-// presented. A pass never reads the target it is writing, which is
-// undefined behaviour in every GL there has ever been.
+// swap — and the last pass writes the surface's own framebuffer, the one
+// that gets presented. A pass never reads the target it is writing, which
+// is undefined behaviour in every GL there has ever been.
 /* The one file-wide `any`: the GL façade (camelCase ES 2). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GL = any;
@@ -190,6 +190,17 @@ const FBO_ENTRY_POINTS = [
 
 const half = (n: number) => Math.max(1, n >> 1);
 
+/**
+ * The surface's own framebuffer, spelt as WebGL spells it. On X11 that is
+ * GL's framebuffer zero, the window, and the addon reads `null` as 0; on
+ * the Cocoa and Wayland backends the surface is an FBO of core's, and
+ * core's `bindFramebuffer` maps `null` to it and passes any other name
+ * straight through. Bound as `0` on a Mac, the last pass drew into a
+ * framebuffer nobody presents, and the surface showed only its clear —
+ * black, with nothing failing to say why.
+ */
+const SURFACE = null;
+
 interface RenderTarget {
   framebuffer: unknown;
   texture: unknown;
@@ -250,7 +261,7 @@ export class PostProcessor {
 
   /**
    * Run the chain. Each pass reads the target the previous one wrote; the
-   * last writes framebuffer 0, which is what `SwapBuffers` presents.
+   * last writes the surface, which is what `SwapBuffers` presents.
    */
   end(gl: GL, info: FrameInfo): boolean {
     const passes = this.passes;
@@ -273,7 +284,7 @@ export class PostProcessor {
     }
 
     // hand the context back as the scene expects to find it
-    gl.bindFramebuffer(gl.FRAMEBUFFER, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, SURFACE);
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);
     return true;
@@ -378,13 +389,13 @@ export class PostProcessor {
     this.drawQuad(gl, program);
   }
 
-  /** `null` is the window's own framebuffer, the one that gets presented. */
+  /** `null` is the surface's own framebuffer, the one that gets presented. */
   private bindTarget(
     gl: GL,
     target: RenderTarget | null,
     info: FrameInfo,
   ): void {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.framebuffer : 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.framebuffer : SURFACE);
     gl.viewport(
       0,
       0,
@@ -609,7 +620,7 @@ export class PostProcessor {
       );
     }
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, SURFACE);
 
     const target: RenderTarget = {
       framebuffer,

@@ -103,6 +103,28 @@ through:
   session, so direct rendering is unavailable and `'auto'` degrades to
   indirect GLX.
 
+On react-x11's native macOS backend the context is OpenGL 4.1 **core
+profile**, which takes the GLSL ES 1.00 shaders as they are (the addon
+prepends `#version 100`, and binds the vertex array object a core profile
+needs) but differs from ES in two ways the renderer now answers itself:
+
+- **The surface is a framebuffer object, not framebuffer zero.** Frames
+  render into an IOSurface-backed FBO, and core's `bindFramebuffer` takes
+  `null` — WebGL's name for the default framebuffer — to mean it; `0` goes
+  straight to GL, where there is nothing to present. `<effectComposer>`
+  wrote its last pass to `0`, so a composed scene was a black surface with
+  no error anywhere; it binds `null` now, which on X11 is still the window.
+  Raw GL in `onDraw` that renders through an FBO of its own should unbind
+  the same way: `gl.bindFramebuffer(gl.FRAMEBUFFER, null)`, never `0`.
+- **`gl_PointSize` is read only when asked.** A desktop context sizes
+  points by `glPointSize` until `GL_PROGRAM_POINT_SIZE` (`0x8642`) is on,
+  so every `<points>` drew one pixel wide whatever its `size`. The direct
+  renderer turns it on at every frame wherever the context is desktop GL —
+  its `VERSION` string does not start "OpenGL ES" — which covers a
+  `<shaderMaterial>` on `<points>` and raw `onDraw` points too; an
+  `onCreated` that enables it by hand is no longer needed. ES has no such
+  switch and is not sent one.
+
 ## `<Canvas>`
 
 | prop              | meaning                                                                                   |
@@ -157,7 +179,7 @@ Cameras: the default one, adjusted through the `camera` prop, or
 
 Post-processing (direct only): `<effectComposer>` holding `<bloomPass>`,
 `<vignettePass>`, `<fxaaPass>`, `<shaderPass>` — the scene renders to a
-texture and the passes run in tree order, last one to the window. There is
+texture and the passes run in tree order, last one to the surface. There is
 no `<renderPass>`: the surface's own scene is always the input.
 `examples/three-effects.tsx` runs the whole stack with each pass's
 `enabled` on a switch.
