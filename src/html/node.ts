@@ -235,6 +235,7 @@ import {
   containingBlockOf,
   coverersAfter,
   drawnAtViewport,
+  drawnInkOf,
   drawsNothing,
   FIXED_BOXES,
   fixedToViewport,
@@ -1839,14 +1840,17 @@ export class HtmlViewNode extends Node {
     // page-load bar fixed across the top of every page at `opacity: 0`, and
     // with a contents list stuck at `top: 0` the two came to the viewport's
     // width and the list's height, and every frame repainted the window.
+    // Nor what draws nothing inside one: a menu's backdrop, hidden, over
+    // the whole viewport (`drawnInkOf`).
     for (const box of FIXED_BOXES.get(tree) ?? NO_BOXES) {
       if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
-      if (drawsNothing(box)) continue;
+      const ink = drawnInkOf(box);
+      if (!ink) continue;
       out.push({
-        x: viewport.x + box.boundsX,
-        y: viewport.y + box.boundsY,
-        width: box.boundsWidth,
-        height: box.boundsHeight,
+        x: viewport.x + ink.x,
+        y: viewport.y + ink.y,
+        width: ink.width,
+        height: ink.height,
       });
     }
     // A sticky box held to the viewport stays where it is on screen as the
@@ -1880,7 +1884,9 @@ export class HtmlViewNode extends Node {
     for (const box of boxes) {
       const stuck = STUCK.get(box);
       if (!stuck || !(stuck[0] || stuck[1])) continue;
-      const ink = this._inkOf(box);
+      // what of it draws: Docusaurus's navbar, stuck at the top, holds its
+      // menu's backdrop, hidden, over the whole viewport
+      const ink = this._inkOf(box, true);
       if (!ink || !(ink.width > 0 && ink.height > 0)) continue;
       (out ??= []).push({
         x: this.abs.x + ink.x,
@@ -5205,7 +5211,7 @@ export class HtmlViewNode extends Node {
    * `position: fixed`, repainted where it had been laid out, and showed
    * only as a scroll repainted the viewport's fixed boxes.
    */
-  private _inkOf(box: Box): Rect | null {
+  private _inkOf(box: Box, drawn = false): Rect | null {
     // a box whose shadows are on a layer draws nothing past its border box
     // (`shadowPartOf`), and that is where it is drawn
     const shadowless =
@@ -5217,7 +5223,9 @@ export class HtmlViewNode extends Node {
           { x: box.x, y: box.y, width: box.width, height: box.height },
           box,
         )
-      : inkOf(box);
+      : drawn
+        ? drawnInkOf(box)
+        : inkOf(box);
     const shift = ink && this._fixedShift();
     if (!ink || !shift || !drawnAtViewport(box)) return ink;
     return { ...ink, x: ink.x + shift.x, y: ink.y + shift.y };

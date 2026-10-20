@@ -3317,7 +3317,13 @@ now (`_scrolledOrigin`), the next pass's: **anything new that reads where
 a box is follows the viewport first**, as a paint, a hit test, a layout
 and `elementRect` do, and the pane's blit is told where each was drawn
 held and where it is held now (`viewportFixedRects`), or its copy drags a
-held box with the text. **The scroll keys are `<Html>`'s root's**, since clicking a
+held box with the text. **What is pinned is what draws** (`drawnInkOf`):
+a held or fixed box is told by its ink less every subtree in it that
+draws nothing, since a pinned rect is repainted at every frame and past
+three quarters of the viewport the scroll is a repaint. Docusaurus keeps
+its menu's backdrop, fixed over the viewport and hidden, in its sticky
+navbar, and every Docusaurus page repainted its whole pane at each notch
+of the wheel. **The scroll keys are `<Html>`'s root's**, since clicking a
 document focuses it and core runs `defaultKeyDown` on the focused node
 alone: `scrollForKey` chains from the focused link or the last press out
 to the pane. And **the bars are a pass of their own at the end of

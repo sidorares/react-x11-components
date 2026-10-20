@@ -923,6 +923,40 @@ test('a sticky box the viewport keeps holds to it as the pane scrolls the docume
   assert.strictEqual(el.elementAtPoint(50, 190)?.attribs.id, 'foot');
 });
 
+test('what draws nothing inside a sticky box or a fixed one is no part of what the pane repaints as it scrolls', async () => {
+  // Docusaurus: the navbar is stuck at the top, and holds its menu's
+  // backdrop, fixed over the whole viewport and hidden until the menu
+  // opens. The navbar's ink was the viewport, which the pane repainted at
+  // every frame of a scroll, where a blit would have done. A fixed box
+  // holding a hidden panel the size of the viewport is the same thing.
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}nav{position:sticky;top:0;height:30px;' +
+      'background:#00f}.backdrop{position:fixed;inset:0;opacity:0;' +
+      'visibility:hidden;background:#000}#tab{position:fixed;right:0;' +
+      'bottom:0;width:40px;height:20px;background:#f00}' +
+      '.panel{position:fixed;inset:0;visibility:hidden;background:#000}' +
+      '</style><nav><div class="backdrop"></div></nav>' +
+      '<div id="tab"><div class="panel"></div></div>' +
+      '<div style="height:2000px"></div>',
+    200,
+  );
+  await act(async () => paneOf(el).scrollTo(300));
+  const rects = (
+    el as unknown as { viewportFixedRects(): FixedRect[] | null }
+  ).viewportFixedRects();
+  assert.ok(rects?.length, 'something is pinned');
+  for (const rect of rects) {
+    assert.ok(
+      rect.height <= 30 && rect.width <= 400,
+      `the navbar and the tab, not the viewport: ${JSON.stringify(rects)}`,
+    );
+  }
+  assert.ok(
+    rects.some((rect) => rect.width === 40 && rect.height === 20),
+    `the tab is pinned: ${JSON.stringify(rects)}`,
+  );
+});
+
 test('a sticky box keeps inside its containing block by its own margins, not by those its children take through its edges', async () => {
   // github.blog's contents list ends on an item whose 64px bottom margin
   // collapses through the list's foot: held by that margin, it stopped
