@@ -7226,6 +7226,7 @@ function gradientTile(
   part: { x: number; y: number; w: number; h: number },
   options: PaintOptions,
 ): void {
+  gradient = unrolled(gradient, w, h, currentColor);
   if (gradientRuns(ctx, gradient, x, y, w, h, currentColor, part, options)) {
     return;
   }
@@ -7484,6 +7485,8 @@ const SMOOTH_MOST = 4;
  * for one that is drawn as it is — a hard stop, a radius of nothing.
  */
 function smoothScale(gradient: RadialGradient, w: number, h: number): number {
+  // a hard edge at every period, which its one period of stops leaves out
+  if (gradient.repeating) return 0;
   const { rx, ry } = radialShape(gradient, w, h);
   if (!(rx > 0 && ry > 0)) return 0;
   const at = stopOffsets(gradient.stops, rx);
@@ -7569,18 +7572,7 @@ function linearGradient(
   currentColor: string,
   visible: { x: number; y: number; w: number; h: number } | null = null,
 ): unknown {
-  let angle = gradient.angle;
-  if (gradient.corner) {
-    const turn = Math.atan2(h, w);
-    angle =
-      gradient.corner === 'top right'
-        ? turn
-        : gradient.corner === 'bottom right'
-          ? Math.PI - turn
-          : gradient.corner === 'bottom left'
-            ? Math.PI + turn
-            : 2 * Math.PI - turn;
-  }
+  const angle = lineAngle(gradient, w, h);
   const dx = Math.sin(angle);
   const dy = -Math.cos(angle);
   const length = Math.abs(w * dx) + Math.abs(h * dy);
@@ -7625,6 +7617,112 @@ function linearGradient(
     colors,
   );
   return g;
+}
+
+/** A linear gradient's angle across a box `w` by `h`: its own, or the
+ *  one a corner gives it there, whose perpendicular runs through the other
+ *  two corners. */
+function lineAngle(gradient: LinearGradient, w: number, h: number): number {
+  if (!gradient.corner) return gradient.angle;
+  const turn = Math.atan2(h, w);
+  return gradient.corner === 'top right'
+    ? turn
+    : gradient.corner === 'bottom right'
+      ? Math.PI - turn
+      : gradient.corner === 'bottom left'
+        ? Math.PI + turn
+        : 2 * Math.PI - turn;
+}
+
+/** How many times a repeating gradient's stops are laid down across a box
+ *  at most: past it, a period is a few pixels or none across a large box,
+ *  and the gradient is drawn as its average colour, as CSS lets one too
+ *  fine for the device be (CSS Images 3, 3.4). */
+const MAX_REPEATS = 512;
+
+/**
+ * A repeating gradient across a box `w` by `h` as the gradient that draws
+ * the same there: its stops, from the first to the last, laid down again
+ * and again along its line — a linear gradient's, as long as the box is
+ * across at its angle, or a radial one's ray, out to the box's farthest
+ * corner — at lengths, with the last colour of one period and the first of
+ * the next meeting at its edge (CSS Images 3, 3.4). Every path a gradient
+ * is painted along takes the one it comes to. A gradient that does not
+ * repeat is itself.
+ */
+function unrolled(
+  gradient: Gradient,
+  w: number,
+  h: number,
+  currentColor: string,
+): Gradient {
+  if (!gradient.repeating) return gradient;
+  let length: number;
+  let reach: number;
+  if (gradient.kind === 'linear') {
+    const angle = lineAngle(gradient, w, h);
+    length = Math.abs(w * Math.sin(angle)) + Math.abs(h * Math.cos(angle));
+    reach = length;
+  } else {
+    const { cx, cy, rx, ry } = radialShape(gradient, w, h);
+    if (!(rx > 0 && ry > 0)) return { ...gradient, repeating: undefined };
+    length = rx;
+    let far = 0;
+    for (const px of [0, w]) {
+      for (const py of [0, h]) {
+        far = Math.max(far, Math.hypot((px - cx) / rx, (py - cy) / ry));
+      }
+    }
+    reach = far * rx;
+  }
+  const at = stopOffsets(gradient.stops, length).map((t) => t * length);
+  const colors = gradient.stops.map((stop) => stop.color);
+  const first = at[0];
+  const period = at[at.length - 1] - first;
+  const stops: GradientStop[] = [];
+  if (!(period > 0) || reach / period > MAX_REPEATS) {
+    const average = averageColor(at, colors, currentColor);
+    stops.push({ color: average, at: 0 }, { color: average, at: reach });
+  } else {
+    const from = Math.floor(-first / period);
+    const to = Math.ceil((reach - first) / period);
+    for (let k = from; k < to; k += 1) {
+      for (let i = 0; i < at.length; i += 1) {
+        stops.push({ color: colors[i], at: at[i] + k * period });
+      }
+    }
+  }
+  return { ...gradient, repeating: undefined, stops };
+}
+
+/** The colour a gradient's stops come to over one period, premultiplied:
+ *  what a repeating one too fine to show is drawn as. */
+function averageColor(
+  at: readonly number[],
+  colors: readonly string[],
+  currentColor: string,
+): string {
+  const rgba = colors.map(
+    (c) => rgbaOf(inkColor(c, currentColor)) ?? [0, 0, 0, 0],
+  );
+  const sum = [0, 0, 0, 0];
+  let span = 0;
+  for (let i = 1; i < at.length; i += 1) {
+    const d = at[i] - at[i - 1];
+    if (!(d > 0)) continue;
+    span += d;
+    for (const c of [rgba[i - 1], rgba[i]]) {
+      sum[0] += (c[0] * c[3] * d) / 2;
+      sum[1] += (c[1] * c[3] * d) / 2;
+      sum[2] += (c[2] * c[3] * d) / 2;
+      sum[3] += (c[3] * d) / 2;
+    }
+  }
+  if (!(span > 0)) return colors[colors.length - 1];
+  const a = sum[3] / span;
+  if (!(a > 0)) return 'transparent';
+  const channel = (v: number) => Math.round((v / span / a) * 255);
+  return `rgba(${channel(sum[0])}, ${channel(sum[1])}, ${channel(sum[2])}, ${a})`;
 }
 
 /** What a run between two partly transparent colours of other alphas is
@@ -7731,6 +7829,7 @@ function gradientFill(
   currentColor: string,
   visible: { x: number; y: number; w: number; h: number } | null = null,
 ): GradientFill | null {
+  gradient = unrolled(gradient, w, h, currentColor);
   if (gradient.kind === 'radial') {
     return radialGradient(ctx, gradient, x, y, w, h, currentColor, visible);
   }

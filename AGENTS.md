@@ -2895,6 +2895,14 @@ premultiplied, where canvas — and CoreGraphics — mixes them straight, and
 a stop of no alpha faded a colour through grey. Anything new that adds
 colour stops to a context's gradient goes through it.
 
+**A repeating gradient is unrolled where its box is known** (`unrolled`):
+its stops laid down again along a linear one's line or out to a radial
+one's farthest corner, as the gradient that draws the same there, which
+every path a gradient is painted along — runs, a strip, a raster, a fill —
+then takes as it is. `gradientTile` and `gradientFill` unroll it, and
+**anything new that reads a gradient's stops reads them after
+`unrolled`**: one period of stops leaves out the hard edge at each period's
+end, which is why `smoothScale` declines a repeating one.
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the
