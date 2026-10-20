@@ -47,7 +47,20 @@ import type {
   FetchRequest,
   FetchResponse,
 } from '../../src/html/scripts/host.js';
-import { FONTS, findById, h, metric as fontMetric } from './harness.js';
+import {
+  FONTS,
+  findById,
+  h,
+  bytesApart,
+  metric as fontMetric,
+  pixelsIn,
+  rebuilt,
+  snapshot,
+} from './harness.js';
+import { animationClock } from '../../src/html/node.js';
+import type { ComputedStyle } from '../../src/html/css/style.js';
+import { holdClock } from '../held-clock.js';
+import type { HeldClock } from '../held-clock.js';
 
 afterEach(cleanup);
 
@@ -77,6 +90,10 @@ interface Hosted {
   scrolled(): void;
   /** The scroll pane around the page, where `pane` asked for one. */
   pane: ScrollPane | null;
+  /** The window the page is drawn in. */
+  result: Awaited<ReturnType<typeof renderX11>>;
+  /** Run a script in the page, as a task of its own. */
+  run(code: string): void;
 }
 
 /** A scroll pane of core's, as `hosted` puts a page in one. */
@@ -103,6 +120,7 @@ async function hosted(
     scheme?: 'light' | 'dark';
     pane?: number;
     scale?: number;
+    animate?: boolean;
   } = {},
 ): Promise<Hosted> {
   const scale = options.scale ?? 1;
@@ -151,11 +169,13 @@ async function hosted(
     out.handle = handle;
     const scripts = useScripts(true, handle, PAGE, seams);
     out.scrolled = () => scripts.scrolled?.();
+    out.run = (code) => scripts.runner?.()?.engine.exec(code, 'test', 0);
     return h(Html, {
       source,
       partial: false,
       ref: handle.ref,
       baseUrl: PAGE,
+      animate: options.animate,
       onLink: (href: string) => void out.links.push(href),
       // where the page sends it: a frame its target names, or the tab
       onSubmit: (s: FormSubmission) => {
@@ -193,7 +213,7 @@ async function hosted(
       ...scripts,
     });
   }
-  await renderX11(
+  out.result = await renderX11(
     h(
       ThemeProvider,
       { colorScheme: options.scheme ?? 'light' } as Record<string, unknown>,
@@ -3905,6 +3925,358 @@ test('a menu that hides the panel it leaves once its fade ends shows one panel',
   assert.ok(drawn.includes('Beta panel'), drawn);
   assert.ok(!drawn.includes('Alpha panel'), drawn);
   assert.ok(!drawn.includes('Gamma panel'), drawn);
+});
+
+/** The style `<Html>` draws an element in: its box's, as the last frame
+ *  left it, and not one worked out for the asking. */
+function drawnStyle(doc: Hosted, id: string): ComputedStyle {
+  const tree = (
+    doc.view as unknown as {
+      _tree: { styles: Map<DocElement, { style: ComputedStyle }> };
+    }
+  )._tree;
+  const style = tree.styles.get(doc.byId(id))?.style;
+  assert.ok(style, `#${id} is drawn`);
+  return style;
+}
+
+/** Until what `<Html>` draws an element in holds of `done`, the frames on
+ *  the wall clock, however long the machine takes; and that style. */
+async function drawnUntil(
+  doc: Hosted,
+  id: string,
+  done: (style: ComputedStyle) => boolean,
+  ms = 3000,
+): Promise<ComputedStyle> {
+  const end = Date.now() + ms;
+  while (!done(drawnStyle(doc, id)) && Date.now() < end) await settle(20);
+  return drawnStyle(doc, id);
+}
+
+/** `n` frames of a held animation clock, and the paint after them. */
+async function frames(clock: HeldClock, n: number): Promise<void> {
+  for (let i = 0; i < n; i += 1) await clock.frame();
+  await act();
+}
+
+/** An element's drawn colour at a point, `#rrggbb`. */
+async function colourAt(doc: Hosted, x: number, y: number): Promise<string> {
+  const [r, g, b] = await pixelsIn(doc.result.ctx, {
+    x,
+    y,
+    width: 1,
+    height: 1,
+  });
+  return `#${[r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+metric(
+  'a fade a script starts is drawn, and filling forwards it holds its last frame once it has finished',
+  async () => {
+    // a panel that is `opacity: 0` in its sheet and faded in from a script,
+    // left at its last frame: it was drawn in the style it had, which is
+    // nothing at all
+    const doc = await hosted(
+      '<style>body { margin: 0 } #p { width: 100px; height: 40px;' +
+        ' background: #0000ff; opacity: 0 }</style>' +
+        '<div id="p"></div><p id="out"></p><script>' +
+        'var p = document.getElementById("p");' +
+        'var a = p.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, fill: "forwards" });' +
+        'a.onfinish = function () {' +
+        '  document.getElementById("out").textContent =' +
+        '    a.playState + " " + getComputedStyle(p).opacity; };' +
+        '</script>',
+    );
+    const text = await settled(doc, 'out', (t) => t !== '');
+    assert.equal(text, 'finished 1', doc.logs.join('\n'));
+    assert.equal(
+      (await drawnUntil(doc, 'p', (s) => s.opacity === 1)).opacity,
+      1,
+      'drawn at its last frame',
+    );
+    await waitForPixel(doc.result.ctx, 50, 20, '#0000ff', {
+      message: 'the panel drawn at full strength',
+    });
+    // a frame drawn is no frame a page wrote down: its own style is as it was
+    assert.equal(doc.byId('p').attribs.style, undefined);
+  },
+);
+
+test('a slide a script starts is drawn moving, a frame at a time, where its timing has it', async (t) => {
+  const clock = holdClock(t, animationClock);
+  // a tenth of a pixel a millisecond, for longer than any test runs: the
+  // page's own clock never ends it while the held one moves it
+  const doc = await hosted(
+    '<style>body { margin: 0 } #s { width: 20px; height: 20px;' +
+      ' background: #0000ff }</style><div id="s"></div><script>' +
+      'document.getElementById("s").animate(' +
+      '  [{ transform: "translateX(0px)" }, { transform: "translateX(1000000px)" }],' +
+      '  10000000);' +
+      '</script>',
+  );
+  const x = () => doc.view.elementRect(doc.byId('s'))!.x;
+  await frames(clock, 1);
+  assert.ok(Math.abs(x() - 1.6) < 0.05, `a frame in: ${x()}`);
+  await frames(clock, 10);
+  assert.ok(Math.abs(x() - 17.6) < 0.05, `eleven frames in: ${x()}`);
+  assert.ok(clock.pending, 'and it asks for the next');
+  if (FONTS) {
+    await frames(clock, 19);
+    assert.equal(await colourAt(doc, 52, 10), '#0000ff', 'drawn where it is');
+    assert.equal(
+      await colourAt(doc, 10, 10),
+      '#ffffff',
+      'and gone from where it was',
+    );
+    // and a frame made in place draws what a build of the whole document
+    // draws at that time
+    const inPlace = await snapshot(doc.result, doc.view);
+    const whole = await rebuilt(doc.result, doc.view);
+    assert.ok(bytesApart(inPlace, whole) === 0, 'drawn as a build draws it');
+  }
+});
+
+test('a paused animation is drawn where its time is set, and runs on from there at its rate as it plays', async (t) => {
+  const clock = holdClock(t, animationClock);
+  const doc = await hosted(
+    '<div id="b">b</div><p id="out"></p><script>' +
+      'var a = document.getElementById("b").animate([{ opacity: 0 }, { opacity: 1 }], 1000);' +
+      'a.pause(); a.currentTime = 250;' +
+      // read at once, before a frame has drawn it
+      'document.getElementById("out").textContent =' +
+      '  a.playState + " " + a.currentTime + " " +' +
+      '  getComputedStyle(document.getElementById("b")).opacity;' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), 'paused 250 0.25');
+  await frames(clock, 1);
+  assert.equal(drawnStyle(doc, 'b').opacity, 0.25);
+  await frames(clock, 5);
+  assert.equal(drawnStyle(doc, 'b').opacity, 0.25, 'held while paused');
+  assert.equal(clock.pending, false, 'and asking for no frame');
+  // it plays on from where it was held — what the page set, as the page
+  // has it, and not a time read off another clock
+  doc.run('a.play();');
+  await frames(clock, 1);
+  const played = drawnStyle(doc, 'b').opacity;
+  assert.ok(Math.abs(played - 0.266) < 1e-3, `played ${played}`);
+  doc.run(
+    'a.pause(); a.playbackRate = 2; a.currentTime = 500; a.play();' +
+      'document.getElementById("out").textContent = a.playState;',
+  );
+  assert.equal(doc.text('out'), 'running');
+  await frames(clock, 1);
+  const faster = drawnStyle(doc, 'b').opacity;
+  assert.ok(Math.abs(faster - 0.532) < 1e-3, `twice as fast: ${faster}`);
+  // and seeking a running one moves it there
+  doc.run('a.currentTime = 900;');
+  await frames(clock, 1);
+  const sought = drawnStyle(doc, 'b').opacity;
+  assert.ok(Math.abs(sought - 0.932) < 1e-3, `sought ${sought}`);
+});
+
+test("an animation's delay, iterations, direction and easing are drawn as Web Animations times them, and a delay is waited out", async (t) => {
+  const clock = holdClock(t, animationClock);
+  const doc = await hosted(
+    '<div id="d">d</div><div id="w">w</div><script>' +
+      'var a = document.getElementById("d").animate({ opacity: [0, 1] }, {' +
+      '  duration: 1000, delay: 500, endDelay: 200, iterations: 2,' +
+      '  iterationStart: 0.25, direction: "alternate", fill: "both",' +
+      '  easing: "steps(4, end)" });' +
+      'a.pause();' +
+      // one that waits for longer than a frame before it starts
+      'document.getElementById("w").animate({ opacity: [0, 1] },' +
+      '  { duration: 10000000, delay: 40 });' +
+      '</script>',
+  );
+  // two frames in, 32ms, the other is in its delay and the element's own,
+  // and the frame its delay ends at is asked for; the third is past it
+  await frames(clock, 2);
+  assert.equal(drawnStyle(doc, 'w').opacity, 1);
+  assert.ok(clock.pending, 'its start asked for');
+  await frames(clock, 1);
+  assert.ok(drawnStyle(doc, 'w').opacity < 1e-5, 'under way');
+  const at = async (time: number) => {
+    doc.run(`a.currentTime = ${time};`);
+    await frames(clock, 1);
+    return drawnStyle(doc, 'd').opacity;
+  };
+  // its delay filled backwards from a quarter in, then the first iteration
+  // forwards, the second backwards, part of a third, and held there
+  assert.equal(await at(0), 0.25);
+  assert.equal(await at(750), 0.5);
+  assert.equal(await at(1500), 0.75);
+  assert.equal(await at(2400), 0);
+  assert.equal(await at(2600), 0.25);
+});
+
+test('a cancelled animation leaves the element its own style, and one finished with no fill leaves it too', async () => {
+  const doc = await hosted(
+    '<style>#c, #n { opacity: .2 }</style><div id="c">c</div><div id="n">n</div>' +
+      '<script>' +
+      'var a = document.getElementById("c").animate({ opacity: [0, 0.8] }, { duration: 0, fill: "forwards" });' +
+      'var n = document.getElementById("n").animate({ opacity: [0, 0.8] }, { duration: 0 });' +
+      '</script>',
+  );
+  assert.equal(
+    (await drawnUntil(doc, 'c', (s) => s.opacity === 0.8)).opacity,
+    0.8,
+    'held at its end',
+  );
+  assert.equal(drawnStyle(doc, 'n').opacity, 0.2, 'over, and filling nothing');
+  doc.run('a.cancel();');
+  assert.equal(
+    (await drawnUntil(doc, 'c', (s) => s.opacity === 0.2)).opacity,
+    0.2,
+    'cancelled',
+  );
+});
+
+test('an element a script animates is styled apart from its twin, through a build of the whole document', async () => {
+  // two items alike in every attribute share one style, and the one a
+  // script faded in took its twin's at the next build
+  const doc = await hosted(
+    '<style>li { opacity: .2 }</style><ul id="u"><li>x</li><li>x</li></ul><script>' +
+      'document.querySelectorAll("li")[1].animate({ opacity: [0, 0.8] },' +
+      '  { duration: 0, fill: "forwards" });' +
+      '</script>',
+  );
+  const [first, second] = doc
+    .byId('u')
+    .children.filter((c): c is DocElement => (c as DocElement).name === 'li');
+  const styles = () =>
+    (
+      doc.view as unknown as {
+        _tree: { styles: Map<DocElement, { style: ComputedStyle }> };
+      }
+    )._tree.styles;
+  const end = Date.now() + 3000;
+  while (styles().get(second)?.style.opacity !== 0.8 && Date.now() < end) {
+    await settle(20);
+  }
+  (doc.view as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  doc.view.elementRect(first);
+  assert.equal(styles().get(first)?.style.opacity, 0.2);
+  assert.equal(styles().get(second)?.style.opacity, 0.8);
+});
+
+test("an animation of a pseudo-element is drawn on the pseudo-element's box", async () => {
+  const doc = await hosted(
+    '<style>#q::before { content: "q"; opacity: .2 }</style><div id="q">x</div>' +
+      '<script>' +
+      'var a = document.getElementById("q").animate({ opacity: [0, 0.9] },' +
+      '  { duration: 0, fill: "forwards", pseudoElement: "::before" });' +
+      '</script>',
+  );
+  const view = doc.view as unknown as {
+    _tree: unknown;
+    _pseudoBoxOf(
+      tree: unknown,
+      el: DocElement,
+      which: string,
+    ): { style: ComputedStyle } | null;
+  };
+  const before = () =>
+    view._pseudoBoxOf(view._tree, doc.byId('q'), 'before')?.style.opacity;
+  const end = Date.now() + 3000;
+  while (before() !== 0.9 && Date.now() < end) await settle(20);
+  assert.equal(before(), 0.9);
+  assert.equal(drawnStyle(doc, 'q').opacity, 1, 'and not on the element');
+  doc.run('a.cancel();');
+  while (before() !== 0.2 && Date.now() < end + 3000) await settle(20);
+  assert.equal(before(), 0.2);
+});
+
+test('commitStyles writes what an animation comes to into the style attribute, under the animations made after it', async () => {
+  const doc = await hosted(
+    '<style>body { margin: 0 } #c { opacity: .2 } #h { display: none }</style>' +
+      '<div id="c">c</div><div id="h">h</div><p id="out"></p><script>' +
+      'var c = document.getElementById("c"), r = [];' +
+      'var a = c.animate([{ opacity: 0.1, transform: "translateX(0px)" },' +
+      '  { opacity: 0.5, transform: "translateX(40px)" }], { duration: 0, fill: "forwards" });' +
+      // one made after it, and over it, is not what it writes
+      'var over = c.animate({ opacity: [0.9, 0.9] }, 100000);' +
+      'a.finished.then(function () {' +
+      '  a.commitStyles(); a.cancel(); over.cancel();' +
+      '  r.push(c.style.opacity, c.style.transform);' +
+      '  try { document.getElementById("h").animate({ opacity: [0, 1] }, 10).commitStyles(); }' +
+      '  catch (e) { r.push(e.name); }' +
+      '  try { c.animate({ opacity: [0, 1] }, { duration: 10, pseudoElement: "::before" }).commitStyles(); }' +
+      '  catch (e) { r.push(e.name); }' +
+      '  document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    '0.5|translate(40px, 0px)|InvalidStateError|NoModificationAllowedError',
+    doc.logs.join('\n'),
+  );
+  // and with the animation gone, the element is drawn as it was written
+  const style = await drawnUntil(doc, 'c', (s) => s.opacity === 0.5);
+  assert.equal(style.opacity, 0.5);
+  assert.equal(doc.view.elementRect(doc.byId('c'))!.x, 40);
+});
+
+test('a finished animation that fills is removed once later ones cover what it sets, and told so', async () => {
+  const doc = await hosted(
+    '<div id="r">r</div><p id="out"></p><script>' +
+      'var el = document.getElementById("r"), r = [];' +
+      'var first = el.animate({ opacity: [0, 0.3] }, { duration: 0, fill: "forwards" });' +
+      'var kept = el.animate({ opacity: [0, 0.3], color: ["red", "blue"] }, { duration: 0, fill: "both" });' +
+      'kept.persist();' +
+      'var last = el.animate({ opacity: [0, 0.6] }, { duration: 0, fill: "forwards" });' +
+      'first.onremove = function (e) { r.push(e.type, first.replaceState, kept.replaceState); };' +
+      'last.finished.then(function () { setTimeout(function () {' +
+      '  r.push(el.getAnimations().length, last.replaceState);' +
+      '  document.getElementById("out").textContent = r.join("|"); }, 0); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'remove|removed|persisted|2|active', doc.logs.join('\n'));
+  assert.equal(
+    (await drawnUntil(doc, 'r', (s) => s.opacity === 0.6)).opacity,
+    0.6,
+  );
+});
+
+test('keyframes take their offsets as Web Animations computes them, and a list per property is spread on its own', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function offsets(k) { return new KeyframeEffect(null, k).getKeyframes()' +
+      '  .map(function (f) { return f.computedOffset; }).join(","); }' +
+      'r.push(offsets([{ opacity: 0 }, { opacity: .5 }, { opacity: .2, offset: .8 }, { opacity: 1 }]));' +
+      'r.push(offsets({ opacity: [0, 1], left: ["0px", "5px", "10px"] }));' +
+      'r.push(offsets({ opacity: 1 }));' +
+      'var mid = new KeyframeEffect(null, { opacity: [0, 1], left: ["0px", "5px", "10px"],' +
+      '  easing: ["ease-in", "linear"] }).getKeyframes()[1];' +
+      'r.push(mid.left, String(mid.opacity), mid.easing);' +
+      'try { new KeyframeEffect(null, [{ opacity: 0, offset: .6 }, { opacity: 1, offset: .2 }]); }' +
+      'catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '0,0.4,0.8,1|0,0.5,1|1|5px|undefined|linear|TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
+test('at rest, an animation a script made is drawn as it ends where it fills forwards, and not at all where not', async () => {
+  const doc = await hosted(
+    '<style>#f, #n { opacity: .2 }</style><div id="f">f</div><div id="n">n</div><script>' +
+      'document.getElementById("f").animate({ opacity: [0, 0.7] }, { duration: 100000, fill: "forwards" });' +
+      'document.getElementById("n").animate({ opacity: [0, 0.7] }, 100000);' +
+      '</script>',
+    { animate: false },
+  );
+  assert.equal(
+    (await drawnUntil(doc, 'f', (s) => s.opacity === 0.7)).opacity,
+    0.7,
+  );
+  assert.equal(drawnStyle(doc, 'n').opacity, 0.2);
 });
 
 test('aria attributes reflect as nullable strings, so a menu a script opens by its ariaHidden is shown', async () => {

@@ -2309,6 +2309,34 @@ export class DomHost {
         return null;
       }
 
+      // what a page's script says of one of its animations: its effect, as
+      // a JSON string the host reads (`css/scripted.ts`), and where its
+      // time is — or, with either null, that the element has it no longer
+      // — told to the `<Html>` that draws the element's document
+      case 'animation': {
+        const el = this._element(a);
+        this._drawing(el)?.setScriptAnimation(
+          el,
+          Number(b),
+          typeof c === 'string' ? c : null,
+          typeof d === 'string' ? d : null,
+        );
+        return null;
+      }
+      // what `commitStyles` writes: the values of the properties named,
+      // with the animation at the top of the element's effect stack, or
+      // null where the element is not rendered
+      case 'animationValues': {
+        const el = this._element(a);
+        const handle = this._drawing(el);
+        if (!handle) return null;
+        return handle.scriptAnimationValues(
+          el,
+          Number(b),
+          text(c).split('\u0000').filter(Boolean),
+        );
+      }
+
       // --- controls and the focus, which are `<Html>`'s
       case 'value':
         return this._seams.handle.controlValue(this._element(a));
@@ -2944,6 +2972,19 @@ export class DomHost {
    * this realm's, and one in a document a page made that nothing draws is
    * counted instead, for the styles a frame works out (`_frameStyle`).
    */
+  /** The `<Html>` that draws a node's document: this realm's, or the one
+   *  a frame's document is drawn by; null where nothing draws it. */
+  private _drawing(node: AnyNode): HtmlHandle | null {
+    let at: AnyNode = node;
+    for (;;) {
+      if (at.parent) at = at.parent;
+      else if (at instanceof ShadowRoot) at = at.host;
+      else break;
+    }
+    if (at === this.document) return this._seams.handle;
+    return this._s.drawn.get(at as Document) ?? null;
+  }
+
   private _tell(node: AnyNode, change: HtmlChange): void {
     let at: AnyNode = node;
     while (at.parent) at = at.parent;

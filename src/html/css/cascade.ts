@@ -71,6 +71,8 @@ import {
   fieldsAnimatedBy,
   noteAnimated,
 } from './timeline.js';
+import { sampleScripts } from './scripted.js';
+import type { ScriptAnimations } from './scripted.js';
 import {
   animatedFields,
   applyDeclaration,
@@ -2404,6 +2406,10 @@ export class Cascade {
    *  it the styles are computed at; null where none runs, and a document
    *  is drawn as it stands once each has run (`restingFrames`). */
   timeline: AnimationTimeline | null = null;
+  /** The animations the page's scripts made (`Element.animate()`), which
+   *  run on `timeline`'s clock where it is given and are drawn at rest
+   *  where it is not, as a CSS animation is. */
+  scripts: ScriptAnimations | null = null;
 
   /** A face's x-height, for `ex`, where the fonts can say. */
   private _xHeightOf: FaceMetric | null;
@@ -3937,6 +3943,15 @@ export class Cascade {
         return shared;
       }
     }
+    // one a script animates is as far through its animations as the page
+    // has it, and another element alike in every way is not: two `<li>`s
+    // with one faded in shared the fade
+    if (this.scripts?.has(el)) {
+      return {
+        style: this.styleFor(el, parentStyle, inFlexContainer),
+        key: this._nextShareKey++,
+      };
+    }
     let key = `${parentKey}\u0001${inFlexContainer ? 1 : 0}`;
     const tag = tagOf(el);
     key += `\u0001${tag.length}:${tag}`;
@@ -4016,6 +4031,8 @@ export class Cascade {
    *  as far through them as its own started, and no other element's, and
    *  one its transitions run in is where its own are. */
   private _running(style: ComputedStyle, el: Element): boolean {
+    // and one a script animates, at rest as much as on a clock
+    if (this.scripts?.has(el)) return true;
     const timeline = this.timeline;
     if (timeline === null) return false;
     return style.animations !== NO_ANIMATIONS || timeline.transiting(el);
@@ -4479,6 +4496,10 @@ export class Cascade {
     const timeline = target === null ? null : this.timeline;
     // the fields its animations set now, which no transition starts on
     let animated: ReadonlySet<string> | null = null;
+    // what they come to, a list of declarations each, at the animation
+    // origin; and what they make of the element as `will-change` would
+    let layers: Declaration[][] | null = null;
+    let willChange = 0;
     if (
       style.animations === NO_ANIMATIONS ||
       !this._anyKeyframes ||
@@ -4495,7 +4516,7 @@ export class Cascade {
       );
       animated = fieldsAnimatedBy(samples);
       if (samples) {
-        const animatedDeclarations = this._animatedDeclarations(
+        layers = this._animatedDeclarations(
           el,
           parentStyle,
           inFlexContainer,
@@ -4506,32 +4527,66 @@ export class Cascade {
         );
         // its next frame is when what they draw next changes
         timeline.pace(el, target!, timeline.now + this._unchangedFor);
-        style = this._cascadeStyle(
-          el,
-          parentStyle,
-          inFlexContainer,
-          withAnimations(candidates, animatedDeclarations),
-          own,
-        );
       }
       // what its animations set acts as named in `will-change`, in a delay
       // as much as under way (Web Animations 1, 5.6): a style made here is
       // the element's alone (`_alone`)
-      style.willChange |= timeline.willChange(el, target!);
+      willChange |= timeline.willChange(el, target!);
     } else {
-      const frames = restingFrames(style.animations, keyframesOf);
-      if (frames) {
-        style = this._cascadeStyle(
+      layers = restingFrames(style.animations, keyframesOf);
+      // and at rest, each that fills forwards is in effect
+      willChange |= restingWillChange(style.animations, keyframesOf);
+    }
+    // And the animations the page's scripts made for it, over its CSS
+    // animations, as they composite (Web Animations 1, 5.4.2): a frame they
+    // leave a property out of at either end is the element's value under
+    // the CSS ones. On the timeline's clock, which asks for their frames as
+    // it does a CSS animation's, or at rest.
+    const scripted =
+      target === null ? null : (this.scripts?.of(el, target) ?? null);
+    if (scripted) {
+      const sampling = sampleScripts(scripted, timeline ? timeline.now : null);
+      let unchanged = Infinity;
+      if (sampling.samples) {
+        const under = layers
+          ? this._cascadeStyle(
+              el,
+              parentStyle,
+              inFlexContainer,
+              withAnimations(candidates, layers),
+              own,
+            )
+          : style;
+        const declarations = this._animatedDeclarations(
           el,
           parentStyle,
           inFlexContainer,
-          withAnimations(candidates, frames),
+          candidates,
           own,
+          under,
+          sampling.samples,
         );
+        unchanged = this._unchangedFor;
+        layers = layers ? [...layers, ...declarations] : declarations;
+        const fields = fieldsAnimatedBy(sampling.samples)!;
+        animated = animated ? new Set([...animated, ...fields]) : fields;
       }
-      // and at rest, each that fills forwards is in effect
-      style.willChange |= restingWillChange(style.animations, keyframesOf);
+      timeline?.noteScripts(el, target!, sampling, timeline.now + unchanged);
+      willChange |= sampling.willChange;
+    } else if (timeline?.hasScripts(el, target!)) {
+      // a script's last animation of it is over
+      timeline.noteScripts(el, target!, null);
     }
+    if (layers) {
+      style = this._cascadeStyle(
+        el,
+        parentStyle,
+        inFlexContainer,
+        withAnimations(candidates, layers),
+        own,
+      );
+    }
+    style.willChange |= willChange;
     // and what its transitions make of it, from the style the document has
     // for it now (CSS Transitions 1, 3): none for one not displayed, and
     // none on what its animations set, now or in the style before

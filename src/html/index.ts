@@ -518,6 +518,29 @@ export interface HtmlHandle {
    */
   setMediaState(element: Element, state: MediaState): void;
   /**
+   * Draw an animation a page's script made (`Element.animate()`): its
+   * effect, as the JSON `<Html scripts>`' realm describes it, and where its
+   * time is (`css/scripted.ts`), by an id that is its composite order; or,
+   * with either null, take it off the element.
+   */
+  setScriptAnimation(
+    element: Element,
+    id: number,
+    effect: string | null,
+    play: string | null,
+  ): void;
+  /**
+   * What an animation's `commitStyles()` writes: the values `properties`
+   * come to on the element now, those animations made after `id` left out,
+   * as `prop\u0000value` pairs joined by `\u0001`; null where the element
+   * is not rendered.
+   */
+  scriptAnimationValues(
+    element: Element,
+    id: number,
+    properties: readonly string[],
+  ): string | null;
+  /**
    * Scroll a scroll container to an offset in CSS pixels, either axis left
    * where it is where it is left out, kept within how far it can be — as a
    * script sets `scrollTop` or calls `scrollTo`. Answers where it came to,
@@ -1030,6 +1053,18 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.canvasChanged(element),
       setMediaState: (element: Element, state: MediaState) =>
         nodeRef.current?.setMediaState(element, state),
+      setScriptAnimation: (
+        element: Element,
+        id: number,
+        effect: string | null,
+        play: string | null,
+      ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
+      scriptAnimationValues: (
+        element: Element,
+        id: number,
+        properties: readonly string[],
+      ) =>
+        nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
       scrollElementTo: (element: Element, to: { x?: number; y?: number }) =>
         nodeRef.current?.scrollElementTo(element, to) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>

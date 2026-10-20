@@ -20,6 +20,7 @@ import { ease, progressAt, timingAt, tracksOf } from './animation.js';
 import type { Animations, Easing, Transitions } from './animation.js';
 import { discrete, interpolateField, same } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
+import type { ScriptSampling } from './scripted.js';
 import {
   INHERITED,
   animatedFields,
@@ -90,12 +91,20 @@ export class AnimationTimeline {
   private _transitions = new Map<object, Map<string, Transiting>>();
   /** The transitions a pass that styles the whole document has styled. */
   private _seenTransits: Set<Transiting> | null = null;
+  /** Each element's animations a script made, or a pseudo-element's, as
+   *  the cascade last sampled them (`noteScripts`): when they next change.
+   *  The animations themselves are `ScriptAnimations`', the page's to make
+   *  and end, and outlive this: a target here is only their clock. */
+  private _scripts = new Map<object, Map<string, ScriptTarget>>();
+  /** The script targets a pass that styles the whole document has styled. */
+  private _seenScripts: Set<ScriptTarget> | null = null;
 
   /** A pass begins: where `whole`, it styles every element displayed, and
    *  ends every animation it does not reach (`endPass`). */
   beginPass(whole: boolean): void {
     this._seen = whole ? new Set() : null;
     this._seenTransits = whole ? new Set() : null;
+    this._seenScripts = whole ? new Set() : null;
   }
 
   endPass(): void {
@@ -103,6 +112,18 @@ export class AnimationTimeline {
     this._seen = null;
     const transits = this._seenTransits;
     this._seenTransits = null;
+    const scripts = this._seenScripts;
+    this._seenScripts = null;
+    if (scripts) {
+      // one not styled is not displayed, and draws no frame until it is
+      // styled again, when it is sampled again
+      for (const [el, targets] of this._scripts) {
+        for (const [pseudo, target] of targets) {
+          if (!scripts.has(target)) targets.delete(pseudo);
+        }
+        if (!targets.size) this._scripts.delete(el);
+      }
+    }
     if (transits) {
       // an element no longer styled is out of the document, or under
       // `display: none`: its transitions are over
@@ -227,6 +248,58 @@ export class AnimationTimeline {
     target.next = Math.min(target.timed, Math.max(this.now + FRAME_MS, at));
   }
 
+  /**
+   * What an element's script animations, or a pseudo-element's, came to as
+   * the cascade sampled them now (`sampleScripts`): when they next change —
+   * `at`, where what they draw changes by nothing anyone sees until then,
+   * as `pace` has it for a CSS animation. Null where it has none.
+   */
+  noteScripts(
+    el: object,
+    pseudo: string,
+    sampling: ScriptSampling | null,
+    at = 0,
+  ): void {
+    let targets = this._scripts.get(el);
+    if (!sampling) {
+      if (targets?.delete(pseudo) && !targets.size) this._scripts.delete(el);
+      return;
+    }
+    const next = Math.min(
+      sampling.timed,
+      sampling.active ? Math.max(this.now + FRAME_MS, at) : Infinity,
+    );
+    if (!targets) this._scripts.set(el, (targets = new Map()));
+    let target = targets.get(pseudo);
+    if (!target) targets.set(pseudo, (target = { next, inherits: false }));
+    target.next = next;
+    target.inherits = sampling.inherits;
+    this._seenScripts?.add(target);
+  }
+
+  /** Whether the timeline keeps a clock for an element's script
+   *  animations, or a pseudo-element's. */
+  hasScripts(el: object, pseudo: string): boolean {
+    return this._scripts.size > 0 && !!this._scripts.get(el)?.has(pseudo);
+  }
+
+  /** A script changed one of an element's animations, or a
+   *  pseudo-element's: it is restyled at the next frame, as one under way
+   *  is, and sampled again there. */
+  oweScripts(el: object, pseudo: string): void {
+    let targets = this._scripts.get(el);
+    if (!targets) this._scripts.set(el, (targets = new Map()));
+    const target = targets.get(pseudo);
+    if (target) target.next = 0;
+    else targets.set(pseudo, { next: 0, inherits: false });
+  }
+
+  /** An element is not displayed: its script animations draw nothing, and
+   *  ask for no frame, until it is styled again. */
+  dropScripts(el: object): void {
+    this._scripts.delete(el);
+  }
+
   /** What an element's animations make of it, or a pseudo-element's, as
    *  `will-change` naming what they set would (`animatedWillChange`), as
    *  of the last time it was sampled: each from the start of its delay to
@@ -295,7 +368,11 @@ export class AnimationTimeline {
    *  changes as time passes — of `pseudo`'s alone where it is given, ''
    *  for the element's own. */
   isLive(el: object, pseudo?: string): boolean {
-    for (const all of [this._targets.get(el), this._transitions.get(el)]) {
+    for (const all of [
+      this._targets.get(el),
+      this._transitions.get(el),
+      this._scripts.get(el),
+    ]) {
       if (!all) continue;
       if (pseudo !== undefined) {
         const one = all.get(pseudo);
@@ -328,7 +405,7 @@ export class AnimationTimeline {
       object,
       { el: object; inherits: boolean; generated: boolean; targets: string[] }
     >();
-    for (const all of [this._targets, this._transitions]) {
+    for (const all of [this._targets, this._transitions, this._scripts]) {
       for (const [el, targets] of all) {
         for (const [pseudo, target] of targets) {
           if (target.next === Infinity) continue;
@@ -355,7 +432,7 @@ export class AnimationTimeline {
     skip: ((el: object, pseudo: string) => boolean) | null = null,
   ): number | null {
     let next = Infinity;
-    for (const all of [this._targets, this._transitions]) {
+    for (const all of [this._targets, this._transitions, this._scripts]) {
       for (const [el, targets] of all) {
         for (const [pseudo, target] of targets) {
           if (target.next >= next || skip?.(el, pseudo)) continue;
@@ -571,7 +648,7 @@ export class AnimationTimeline {
 
 /** Whether a `@keyframes` sets a property that is inherited — a custom
  *  property is — so that what the element holds changes with it. */
-function animatesInherited(rule: KeyframesRule): boolean {
+export function animatesInherited(rule: KeyframesRule): boolean {
   let inherits = INHERITS.get(rule);
   if (inherits === undefined) {
     inherits = false;
@@ -625,6 +702,16 @@ interface Transiting {
 }
 
 const INHERITED_FIELDS = new Set<string>(INHERITED);
+
+/** The clock of an element's script animations, or a pseudo-element's. */
+interface ScriptTarget {
+  /** When they next change: a frame from now while one is under way, the
+   *  end of a delay before one starts, never where each holds — and 0,
+   *  the next frame, where a script changed one. */
+  next: number;
+  /** Whether one sets an inherited property. */
+  inherits: boolean;
+}
 
 /** A list's entry for a transition at `index`, the list repeated to the
  *  length of `transition-property` (CSS Transitions 1, 2). */

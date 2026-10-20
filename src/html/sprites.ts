@@ -220,6 +220,9 @@ export function liftOf(
   const box = pseudo ? host.pseudoBox(el, pseudo) : host.boxes.get(el);
   const style = pseudo ? box?.style : host.tree.styles.get(el)?.style;
   if (!style || !box || (!pseudo && box.el !== el)) return null;
+  // one a page's script animates is the document's: its frames are where
+  // the page's timing has them, which no cycle sampled ahead says
+  if (host.cascade.scripts?.has(el)) return null;
   const animations = style.animations;
   const runs = host.timeline.runsOf(el, pseudo);
   const plays = animations.playStates;
@@ -1121,8 +1124,10 @@ export function shadowLiftOf(host: SpriteHost, el: Element): ShadowLift | null {
   const box = host.boxes.get(el);
   const style = host.tree.styles.get(el)?.style;
   if (!style || !box || box.el !== el) return null;
-  // its own animations are the document's, or a layer's (`liftOf`)
+  // its own animations are the document's, or a layer's (`liftOf`), and so
+  // are a script's
   if (style.animations.names.some((name) => name !== null)) return null;
+  if (host.cascade.scripts?.has(el)) return null;
   const transits = host.timeline.transitsOf(el, '');
   if (!transits) return null;
   let shadows = false;

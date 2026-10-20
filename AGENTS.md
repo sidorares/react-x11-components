@@ -2021,8 +2021,23 @@ closes a way out a DOM binding opens by accident:
   finishes is worse than none: `animate()` handed back an object whose
   `onfinish` was never called, so a menu that hid a panel at the end of its
   fade drew every panel it had opened. An `Animation` keeps its timing and
-  its promises and tells `finish` when the timing ends (`liveAnimations`),
-  drawing nothing of its effect.
+  its promises and tells `finish` when the timing ends (`liveAnimations`).
+- **What an animation draws follows the timing the page reads, never
+  beside it.** The realm keeps the timing, and tells the host the effect
+  and where the animation's time is, as a JSON string and a time, a rate
+  and whether it runs, each time either changes (`Animation._report`, the
+  `animation` op); `<Html>` samples the frames on its own clock from there
+  (`css/scripted.ts`), above the CSS animations. A finished one is held
+  where the realm finished it, before `finished` resolves, so a page that
+  reads or commits the style in its `onfinish` finds the last frame. So
+  **anything new that moves an animation's time — a setter, a method, a
+  timer of its own — ends in `_schedule` or `_report`**, or what the page
+  reads and what is drawn come apart. An element a script animates styles
+  alone (`sharedStyleFor`): two items alike in every attribute share a
+  style, and the one faded in took its twin's at the next build. And it
+  is never lifted onto a layer (`liftOf`): a layer's frames are sampled
+  ahead, which a seek, a pause or a cancel from the page can take back at
+  any time.
 - **A page's geometry is in two places, and a read takes the one its
   attribute names.** `getBoundingClientRect` is `elementRect`, drawn
   through every transform and moved by every scroll, a box fixed to the
