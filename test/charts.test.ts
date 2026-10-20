@@ -59,11 +59,13 @@ import {
   timeTicks,
 } from '../src/charts/scale.js';
 import {
+  COLUMN_WALK_MAX,
   DENSE_PPX,
   renderBars,
   renderLineArea,
   renderScatter,
   makeScatterGrid,
+  walkedColumns,
 } from '../src/charts/render.js';
 import type {
   FrameStatsSink,
@@ -529,6 +531,279 @@ test('bars batch into one request, and rounded tops are capped', () => {
   renderBars(env2, { ...lineGeometry(many, { type: 'bar' }) });
   assert.ok(ctx2.rects.length <= 200);
   assert.strictEqual(env2.stats.series[0].mode, 'columns');
+});
+
+// A plot billions of pixels wide: what core's yoga hands a row of flex
+// items whose floors are fractions of a pixel, as it hands a column of them
+// billions of pixels tall (the scatter test "a scatter laid out billions of
+// pixels tall"). A rect for every column of one was a walk of ten billion
+// steps a paint.
+const SCREEN: PlotRect = { x: 0, y: 0, width: 3200, height: 2000 };
+
+/** A context with no paths, as the mock backend's is: a line takes the
+ *  column walk however few points per pixel it has, which is the one way
+ *  a line in a plot this wide reaches it. */
+function pathlessCtx(): FakeCtx {
+  const ctx = fakeCtx();
+  delete ctx.beginPath;
+  delete ctx.stroke;
+  return ctx;
+}
+
+/** The rects of each `fillRects` batch, in order. */
+function batchesOf(ctx: FakeCtx): number[][][] {
+  const out: number[][][] = [];
+  let at = 0;
+  for (const count of ctx.batches) {
+    out.push(ctx.rects.slice(at, at + count));
+    at += count;
+  }
+  return out;
+}
+
+/** The rects a window `view` shows any of. */
+function shownIn(rects: number[][], view: PlotRect): number[][] {
+  return rects.filter(
+    ([x, y, w, hgt]) =>
+      x < view.x + view.width &&
+      x + w > view.x &&
+      y < view.y + view.height &&
+      y + hgt > view.y,
+  );
+}
+
+test('a column walk covers a plot no screen holds where the window shows it', () => {
+  // a plot a screen holds is walked whole, window or none
+  assert.deepStrictEqual(
+    walkedColumns({ x: -50, y: 0, width: 900.4, height: 10 }, SCREEN),
+    [900, 0, 900],
+  );
+  assert.deepStrictEqual(
+    walkedColumns({ x: 5000, y: 0, width: COLUMN_WALK_MAX, height: 10 }, null),
+    [COLUMN_WALK_MAX, 0, COLUMN_WALK_MAX],
+  );
+  // a wider one, the columns the window shows any of — here a plot
+  // scrolled left a billion pixels and a half, so the window's edges cut
+  // two columns in half
+  const wide = { x: -1e9 - 0.5, y: 0, width: 2.4e10, height: 300 };
+  assert.deepStrictEqual(walkedColumns(wide, SCREEN), [
+    2.4e10,
+    1e9,
+    1e9 + 3201,
+  ]);
+  // and none where the window shows none of it, there is no window, or no
+  // number says where it is
+  assert.deepStrictEqual(
+    walkedColumns({ ...wide, x: 3200 }, SCREEN),
+    [2.4e10, 0, 0],
+  );
+  assert.deepStrictEqual(
+    walkedColumns({ ...wide, x: -2.4e10 }, SCREEN),
+    [2.4e10, 0, 0],
+  );
+  assert.deepStrictEqual(walkedColumns(wide, null), [2.4e10, 0, 0]);
+  assert.deepStrictEqual(
+    walkedColumns({ ...wide, width: Infinity }, SCREEN),
+    [1, 0, 0],
+  );
+  assert.deepStrictEqual(walkedColumns({ ...wide, x: NaN }, SCREEN), [1, 0, 0]);
+});
+
+test('a line billions of pixels wide draws the window as a plot a screen holds would', () => {
+  // x a pixel to a unit, the points crowded into the first few thousand of
+  // them and three more far out along the plot, as a time series would be
+  // whose axis yoga stretched; a gap across the middle of the screen
+  const n = 40_000;
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n - 3; i++) {
+    xs[i] = i * 0.09;
+    ys[i] = 50 + 40 * Math.sin(i / 37) + (i % 7);
+  }
+  for (let i = 20_000; i < 20_300; i++) ys[i] = NaN;
+  xs.set([1e9, 1e10, 2.3e10], n - 3);
+  ys.set([10, 90, 30], n - 3);
+  const geometry = (type: 'line' | 'area'): SeriesGeometry => {
+    const xCol = column(xs);
+    return {
+      ...lineGeometry(ys, { type }),
+      x: xCol,
+      xIdx: xIndexFor(xCol),
+    };
+  };
+
+  for (const type of ['line', 'area'] as const) {
+    const wide = pathlessCtx();
+    const env = {
+      ...makeEnv(wide, 2.4e10, 300, [0, 2.4e10], [0, 110]),
+      view: SCREEN,
+    };
+    renderLineArea(env, geometry(type));
+    assert.strictEqual(env.stats.series[0].mode, 'columns');
+    // the same x scale over a plot 4000 wide: its first 3200 columns hold
+    // the points the wide plot's do
+    const narrow = pathlessCtx();
+    renderLineArea(
+      makeEnv(narrow, 4000, 300, [0, 4000], [0, 110]),
+      geometry(type),
+    );
+
+    const got = batchesOf(wide);
+    const want = batchesOf(narrow);
+    assert.strictEqual(got.length, type === 'area' ? 2 : 1, type);
+    assert.strictEqual(got.length, want.length, type);
+    for (let b = 0; b < got.length; b++) {
+      assert.ok(
+        got[b].length <= SCREEN.width,
+        `${type}: ${got[b].length} rects, no more than the window's columns`,
+      );
+      assert.ok(got[b].length > 2500, `${type}: the window is drawn`);
+      for (const [x] of got[b]) {
+        assert.ok(x >= 0 && x < SCREEN.width, `${type}: ${x} is on screen`);
+      }
+      assert.ok(
+        want[b].some(([x]) => x >= SCREEN.width),
+        'narrow goes on',
+      );
+      assert.deepStrictEqual(
+        got[b],
+        shownIn(want[b], SCREEN),
+        `${type}: batch ${b} is the narrow plot's on screen`,
+      );
+    }
+  }
+});
+
+test('a walk that starts inside a wide plot draws what the whole walk draws there', () => {
+  // A plot past COLUMN_WALK_MAX is walked where the window shows it; one
+  // only twice that wide can still be walked whole, which is the answer.
+  // Each column's window is found as the whole walk finds it, and the line
+  // comes into the first from the closing value of the one before — a gap,
+  // a point, or the plot's last column.
+  const W = COLUMN_WALK_MAX * 2;
+  const n = 500_000;
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    ys[i] = (i >> 2) % 2 ? 80 + (i % 5) : 20 - (i % 3);
+  }
+  // a gap that fills the column before a walk starting at 60_000
+  const gapEnd = Math.floor((n * 60_000) / W);
+  for (let i = gapEnd - 40; i < gapEnd; i++) ys[i] = NaN;
+  const uniform = new Float64Array(n);
+  const sorted = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    uniform[i] = i * 0.5;
+    sorted[i] = i * 0.5 + (i % 3) * 0.1;
+  }
+  const withX = (xs: Float64Array, type: 'line' | 'area') => {
+    const xCol = column(xs);
+    return { ...lineGeometry(ys, { type }), x: xCol, xIdx: xIndexFor(xCol) };
+  };
+  const cases: [string, SeriesGeometry, [number, number]][] = [
+    ['index x', lineGeometry(ys), [0, n - 1]],
+    ['index x, area', lineGeometry(ys, { type: 'area' }), [0, n - 1]],
+    ['uniform x', withX(uniform, 'line'), [0, uniform[n - 1]]],
+    ['sorted x', withX(sorted, 'line'), [0, sorted[n - 1]]],
+    ['sorted x, area', withX(sorted, 'area'), [0, sorted[n - 1]]],
+  ];
+  // the window's left edge at a column, at a fraction of one, just past
+  // the gap, and at the plot's end
+  const scrolls = [-60_000, -60_000.5, -60_001, -61_234, 3200 - W];
+
+  const draw = (
+    ctx: FakeCtx,
+    x: number,
+    view: PlotRect,
+    domain: [number, number],
+    render: (env: SeriesEnv) => void,
+  ) => {
+    const plot = { x, y: 0, width: W, height: 300 };
+    const env = {
+      ...makeEnv(ctx, 1, 1, [0, 1], [0, 1]),
+      plot,
+      xScale: linearScale(domain[0], domain[1], x, x + W),
+      yScale: linearScale(0, 100, 300, 0),
+      view,
+    };
+    render(env);
+    return env.stats;
+  };
+  const compare = (
+    label: string,
+    domain: [number, number],
+    render: (env: SeriesEnv) => void,
+  ) => {
+    for (const x of scrolls) {
+      const part = pathlessCtx();
+      const stats = draw(part, x, SCREEN, domain, render);
+      assert.strictEqual(stats.series[0].mode, 'columns', label);
+      // the window the size of the plot: walked whole
+      const whole = pathlessCtx();
+      draw(whole, x, { x, y: 0, width: W, height: 300 }, domain, render);
+      const got = batchesOf(part);
+      const want = batchesOf(whole);
+      assert.strictEqual(got.length, want.length, `${label} at ${x}`);
+      for (let b = 0; b < got.length; b++) {
+        assert.ok(got[b].length <= SCREEN.width + 1, `${label} at ${x}`);
+        assert.ok(got[b].length > 0, `${label} at ${x}: drawn`);
+        assert.deepStrictEqual(
+          got[b],
+          shownIn(want[b], SCREEN),
+          `${label} at ${x}, batch ${b}`,
+        );
+      }
+    }
+  };
+
+  for (const [label, g, domain] of cases) {
+    compare(label, domain, (env) => renderLineArea(env, g));
+  }
+  // bars: more of them than twice the plot's columns is the envelope
+  const bars = n;
+  assert.ok(bars > W * 2);
+  compare('bars', [0, bars - 1], (env) => {
+    env.xScale = bandScale(bars, env.plot.x, env.plot.x + W);
+    renderBars(env, lineGeometry(ys, { type: 'bar' }));
+  });
+});
+
+test('a bar envelope billions of pixels wide walks the window', () => {
+  // No band over a plot this wide is narrower than a pixel, so no series
+  // reaches the envelope here today; one that did would walk the window,
+  // as a line does. The window shows the plot's last 3200 columns, which
+  // hold the last of a million bars and none of the rest.
+  const W = 2.4e10;
+  const n = 1_000_000;
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n; i++) ys[i] = 1 + (i % 97);
+  const plot = { x: SCREEN.width - W, y: 0, width: W, height: 300 };
+  const ctx = fakeCtx();
+  const env = {
+    ...makeEnv(ctx, 1, 1, [0, 1], [0, 1]),
+    plot,
+    xScale: { ...bandScale(n, plot.x, plot.x + W), bandwidth: 0.5 },
+    yScale: linearScale(0, 100, 300, 0),
+    view: SCREEN,
+  };
+  renderBars(env, lineGeometry(ys, { type: 'bar' }));
+  assert.strictEqual(env.stats.series[0].mode, 'columns');
+  assert.strictEqual(ctx.batches.length, 1);
+
+  // what the whole walk would draw in those columns: the tallest bar of
+  // each one's slice of the index, from the axis up
+  const want: number[][] = [];
+  const base = Math.round(env.yScale.scale(0));
+  for (let c = W - SCREEN.width; c < W; c++) {
+    const ia = Math.floor((n * c) / W);
+    const ib = c + 1 >= W ? n : Math.floor((n * (c + 1)) / W);
+    if (ib <= ia) continue;
+    let top = -Infinity;
+    for (let i = ia; i < ib; i++) top = Math.max(top, ys[i]);
+    const y = Math.round(env.yScale.scale(top));
+    want.push([plot.x + c, y, 1, base - y]);
+  }
+  assert.strictEqual(want.length, 1, 'the last column holds the last bar');
+  assert.deepStrictEqual(ctx.rects, want);
 });
 
 test('dense scatter reduces to alpha-bucketed cells, bounded by the grid', () => {

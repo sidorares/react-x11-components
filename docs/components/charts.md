@@ -190,7 +190,11 @@ The three guarantees, and where they come from
    out of whole lengths (a page 1190 tall at `scale={0.32}`). The grid then
    covers only what the window can show of the plot, where next to none of
    the points land, rather than ten billion rows of counts, which ran the
-   process out of memory.
+   process out of memory. A plot as wide is the same news along a row, and
+   a dense line's or a bar envelope's rect per pixel column was a walk of
+   ten billion columns a paint: past 2¹⁶ columns the walk covers the ones
+   the window shows, each with the slice of the data and the line coming
+   in from the left that the whole walk would have given it.
 
 `onFrameStats` reports what a frame actually cost — per-series mode
 (`'polyline' | 'minmax' | 'bars' | 'scatter' | 'density'`), drawing
