@@ -7002,6 +7002,22 @@ export function installDom(
     getSelection(): Any {
       return G.getSelection();
     }
+    /** The boundary point nearest a point of the viewport's (CSSOM View
+     *  6): in the text the document draws there. */
+    caretPositionFromPoint(x: Any, y: Any): Any {
+      const at = String(call('textAt', Number(x), Number(y)));
+      if (!at) return null;
+      const [id, offset] = at.split(',');
+      const node = wrap(Number(id));
+      return node ? new CaretPosition(node, Number(offset)) : null;
+    }
+    caretRangeFromPoint(x: Any, y: Any): Any {
+      const at = this.caretPositionFromPoint(x, y);
+      if (!at) return null;
+      const range = this.createRange();
+      range.setStart(at.offsetNode, at.offset);
+      return range;
+    }
     /** `document.write`: what a script the parser met writes goes in after
      *  it, as the parser would have read it there. Anywhere else — a script
      *  that runs once the parse has ended, which in a browser would replace
@@ -7069,6 +7085,18 @@ export function installDom(
     rangesHeld?.register(range, id);
     return range;
   };
+
+  class CaretPosition {
+    constructor(
+      readonly offsetNode: Any,
+      readonly offset: number,
+    ) {}
+    getClientRect(): Any {
+      const range = document.createRange();
+      range.setStart(this.offsetNode, this.offset);
+      return range.getBoundingClientRect();
+    }
+  }
 
   class AbstractRange {
     _id = 0;
@@ -7188,15 +7216,47 @@ export function installDom(
     override toString(): string {
       return String(call('rangeText', this._id));
     }
-    /** The box of the element the range is in: no layout here answers for
-     *  a run of text alone. */
+    /** Where the range's text is drawn, a rectangle a line, as the
+     *  document lays it out (CSSOM View 6.2); where it holds no text the
+     *  document draws, the box of the element it is in. */
+    getClientRects(): Any {
+      const flat = String(call('rangeRects', this._id));
+      if (!flat) return list([this._elementRect()]);
+      const n = flat.split(',').map(Number);
+      const v = viewport();
+      const out: Any[] = [];
+      for (let i = 0; i + 3 < n.length; i += 4) {
+        out.push(
+          new DOMRect(
+            n[i] - v.scrollX,
+            n[i + 1] - v.scrollY,
+            n[i + 2],
+            n[i + 3],
+          ),
+        );
+      }
+      return list(out);
+    }
     getBoundingClientRect(): Any {
+      const rects = Array.from(this.getClientRects() as Iterable<Any>);
+      if (rects.length === 1) return rects[0];
+      if (!rects.length) return new DOMRect();
+      let left = Infinity;
+      let top = Infinity;
+      let right = -Infinity;
+      let bottom = -Infinity;
+      for (const r of rects) {
+        left = Math.min(left, r.left);
+        top = Math.min(top, r.top);
+        right = Math.max(right, r.right);
+        bottom = Math.max(bottom, r.bottom);
+      }
+      return new DOMRect(left, top, right - left, bottom - top);
+    }
+    _elementRect(): Any {
       let at = this.commonAncestorContainer;
       while (at && !(at instanceof Element)) at = at.parentNode;
       return at ? at.getBoundingClientRect() : new DOMRect();
-    }
-    getClientRects(): Any {
-      return list([this.getBoundingClientRect()]);
     }
     createContextualFragment(html: Any): Any {
       let context = this.startContainer;
@@ -12616,6 +12676,440 @@ export function installDom(
     return internals;
   };
 
+  // --- the selection ---------------------------------------------------------------
+  //
+  // The page's selection (Selection API): none, or one range of the
+  // document's, which the host keeps live as the tree changes, and which way
+  // it was made. It is the page's alone: what a drag selects in a document
+  // is `<Html>`'s own, and the two are not one yet. It is what an editing
+  // host is typed at, and what CodeMirror reads its caret from and writes
+  // it to.
+
+  /** A boundary point's length check: an offset past a node's end is an
+   *  `IndexSizeError`, and a doctype is no place to be. */
+  const checkPoint = (node: Any, offset: number): void => {
+    if (node?.nodeType === 10) {
+      throw new DOMException(
+        'A doctype is no boundary.',
+        'InvalidNodeTypeError',
+      );
+    }
+    const length =
+      node.nodeType === 3 || node.nodeType === 4 || node.nodeType === 8
+        ? node.data.length
+        : node.childNodes.length;
+    if (offset > length) {
+      throw new DOMException(
+        `The offset ${offset} is larger than the node's length (${length}).`,
+        'IndexSizeError',
+      );
+    }
+  };
+  /** -1, 0 or 1 as one boundary point is before, at or after another. */
+  const comparePoints = (a: Any, ao: number, b: Any, bo: number): number => {
+    const range = document.createRange();
+    range.setStart(a, ao);
+    return -range.comparePoint(b, bo);
+  };
+
+  class Selection {
+    _range: Any = null;
+    _backward = false;
+    _told = false;
+    /** `selectionchange`, once a task however many changes it made
+     *  (Selection API 4.1). */
+    _changed(): void {
+      if (this._told) return;
+      this._told = true;
+      setTimer(
+        () => {
+          this._told = false;
+          dispatch(document, new Event('selectionchange'));
+        },
+        0,
+        [],
+        false,
+      );
+    }
+    _set(range: Any, backward: boolean): void {
+      this._range = range;
+      this._backward = backward;
+      this._changed();
+    }
+    get rangeCount(): number {
+      return this._range ? 1 : 0;
+    }
+    get anchorNode(): Any {
+      const r = this._range;
+      return r ? (this._backward ? r.endContainer : r.startContainer) : null;
+    }
+    get anchorOffset(): number {
+      const r = this._range;
+      return r ? (this._backward ? r.endOffset : r.startOffset) : 0;
+    }
+    get focusNode(): Any {
+      const r = this._range;
+      return r ? (this._backward ? r.startContainer : r.endContainer) : null;
+    }
+    get focusOffset(): number {
+      const r = this._range;
+      return r ? (this._backward ? r.startOffset : r.endOffset) : 0;
+    }
+    get isCollapsed(): boolean {
+      return !this._range || this._range.collapsed;
+    }
+    get type(): string {
+      return !this._range ? 'None' : this._range.collapsed ? 'Caret' : 'Range';
+    }
+    get direction(): string {
+      return !this._range || this._range.collapsed
+        ? 'none'
+        : this._backward
+          ? 'backward'
+          : 'forward';
+    }
+    getRangeAt(index: Any): Any {
+      if (Number(index) !== 0 || !this._range) {
+        throw new DOMException(
+          `${index} is not a valid index.`,
+          'IndexSizeError',
+        );
+      }
+      return this._range;
+    }
+    getComposedRanges(): Any[] {
+      const r = this._range;
+      if (!r) return [];
+      return [r.cloneRange()];
+    }
+    addRange(range: Any): void {
+      if (!(range instanceof Range) || this._range) return;
+      const root = range.startContainer?.getRootNode?.();
+      if (root !== document) return;
+      this._set(range, false);
+    }
+    removeRange(range: Any): void {
+      if (range !== this._range) {
+        throw new DOMException('The range is not selected.', 'NotFoundError');
+      }
+      this.removeAllRanges();
+    }
+    removeAllRanges(): void {
+      if (!this._range) return;
+      this._set(null, false);
+    }
+    empty(): void {
+      this.removeAllRanges();
+    }
+    collapse(node: Any, offset: Any = 0): void {
+      if (node == null) {
+        this.removeAllRanges();
+        return;
+      }
+      const at = Number(offset) >>> 0;
+      checkPoint(node, at);
+      if (node.getRootNode() !== document) return;
+      const range = document.createRange();
+      range.setStart(node, at);
+      this._set(range, false);
+    }
+    setPosition(node: Any, offset: Any = 0): void {
+      this.collapse(node, offset);
+    }
+    collapseToStart(): void {
+      const r = this._range;
+      if (!r)
+        throw new DOMException('There is no selection.', 'InvalidStateError');
+      this.collapse(r.startContainer, r.startOffset);
+    }
+    collapseToEnd(): void {
+      const r = this._range;
+      if (!r)
+        throw new DOMException('There is no selection.', 'InvalidStateError');
+      this.collapse(r.endContainer, r.endOffset);
+    }
+    extend(node: Any, offset: Any = 0): void {
+      if (!this._range) {
+        throw new DOMException('There is no selection.', 'InvalidStateError');
+      }
+      if (node.getRootNode() !== document) return;
+      this.setBaseAndExtent(this.anchorNode, this.anchorOffset, node, offset);
+    }
+    setBaseAndExtent(
+      anchor: Any,
+      anchorOffset: Any,
+      focus: Any,
+      focusOffset: Any,
+    ): void {
+      const ao = Number(anchorOffset) >>> 0;
+      const fo = Number(focusOffset) >>> 0;
+      checkPoint(anchor, ao);
+      checkPoint(focus, fo);
+      if (
+        anchor.getRootNode() !== document ||
+        focus.getRootNode() !== document
+      ) {
+        return;
+      }
+      const range = document.createRange();
+      const backward = comparePoints(anchor, ao, focus, fo) > 0;
+      if (backward) {
+        range.setStart(focus, fo);
+        range.setEnd(anchor, ao);
+      } else {
+        range.setStart(anchor, ao);
+        range.setEnd(focus, fo);
+      }
+      this._set(range, backward);
+    }
+    selectAllChildren(node: Any): void {
+      if (node?.nodeType === 10) {
+        throw new DOMException(
+          'A doctype is no boundary.',
+          'InvalidNodeTypeError',
+        );
+      }
+      if (node.getRootNode() !== document) return;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      this._set(range, false);
+    }
+    deleteFromDocument(): void {
+      this._range?.deleteContents();
+    }
+    containsNode(node: Any, partly: Any = false): boolean {
+      const r = this._range;
+      if (!r || node.getRootNode() !== document) return false;
+      if (partly) return r.intersectsNode(node);
+      const parent = node.parentNode;
+      if (!parent) return false;
+      const index = Array.prototype.indexOf.call(parent.childNodes, node);
+      return (
+        r.comparePoint(parent, index) === 0 &&
+        r.comparePoint(parent, index + 1) === 0
+      );
+    }
+    /** A move by a letter, as `modify` moves at its finest; a coarser one
+     *  moves nothing here. */
+    modify(alter: Any, direction: Any, granularity: Any): void {
+      const node = this.focusNode;
+      if (!node || node.nodeType !== 3 || String(granularity) !== 'character') {
+        return;
+      }
+      const back = direction === 'backward' || direction === 'left';
+      const to = Math.max(
+        0,
+        Math.min(node.data.length, this.focusOffset + (back ? -1 : 1)),
+      );
+      if (alter === 'extend') this.extend(node, to);
+      else this.collapse(node, to);
+    }
+    toString(): string {
+      return this._range ? this._range.toString() : '';
+    }
+  }
+  const selection = new Selection();
+
+  // --- editing --------------------------------------------------------------------
+  //
+  // What a browser does with a key typed, or a press, in an editing host
+  // (HTML 6.8, Input Events 2): a `beforeinput` the page may cancel, the
+  // change to the DOM at the selection, and an `input`. CodeMirror cancels
+  // the keys it has a command for and reads every other change back from
+  // the DOM it sees made, through its `MutationObserver`.
+
+  /** The editing host an element is in, or null. */
+  const editingHostOf = (node: Any): Any => {
+    for (let at = node; at; at = at.parentNode) {
+      if (at.nodeType !== 1) continue;
+      const v = at.getAttribute('contenteditable');
+      if (v === null) continue;
+      const value = v.trim().toLowerCase();
+      if (value === 'false') return null;
+      if (value !== '' && value !== 'true' && value !== 'plaintext-only') {
+        continue;
+      }
+      let host = at;
+      for (
+        let up = at.parentNode;
+        up && up.nodeType === 1;
+        up = up.parentNode
+      ) {
+        const u = up.getAttribute('contenteditable');
+        if (u === null) continue;
+        const w = u.trim().toLowerCase();
+        if (w === 'false') break;
+        if (w === '' || w === 'true' || w === 'plaintext-only') host = up;
+      }
+      return host;
+    }
+    return null;
+  };
+
+  /** The selection's range where it is in `host`, put at the host's start
+   *  where it is anywhere else, as focusing a host puts it. */
+  const editRange = (host: Any): Any => {
+    const r = selection._range;
+    if (r && host.contains(r.startContainer) && host.contains(r.endContainer)) {
+      return r;
+    }
+    selection.collapse(host, 0);
+    return selection._range;
+  };
+
+  /** The text node a collapsed boundary point is at the end of, or the
+   *  start of, made where there is none: where text typed there goes. */
+  const textAt = (node: Any, offset: number): [Any, number] => {
+    if (node.nodeType === 3) return [node, offset];
+    const before = node.childNodes[offset - 1];
+    if (before?.nodeType === 3) return [before, before.data.length];
+    const after = node.childNodes[offset];
+    if (after?.nodeType === 3) return [after, 0];
+    const text = document.createTextNode('');
+    node.insertBefore(text, after ?? null);
+    return [text, 0];
+  };
+
+  /** The text node next to `node` in tree order inside `host`, forwards or
+   *  back, that has text: where a delete at a node's edge goes on into. */
+  const textBeside = (host: Any, node: Any, back: boolean): Any => {
+    const walker = document.createTreeWalker(host, 4);
+    walker.currentNode = node;
+    for (;;) {
+      const next = back ? walker.previousNode() : walker.nextNode();
+      if (!next) return null;
+      if (next.data.length) return next;
+    }
+  };
+
+  /** Where a letter before or after an offset ends: a surrogate pair is
+   *  one letter. */
+  const letterEdge = (data: string, at: number, back: boolean): number => {
+    if (back) {
+      const low = data.charCodeAt(at - 1);
+      return at - (low >= 0xdc00 && low <= 0xdfff && at >= 2 ? 2 : 1);
+    }
+    const high = data.charCodeAt(at);
+    return (
+      at + (high >= 0xd800 && high <= 0xdbff && at + 1 < data.length ? 2 : 1)
+    );
+  };
+
+  /** Whether white space a host holds keeps its line feeds, so a line
+   *  break is a line feed and not a `<br>`. */
+  const keepsLines = (host: Any): boolean => {
+    if (/^plaintext-only$/i.test(host.getAttribute('contenteditable') ?? '')) {
+      return true;
+    }
+    const ws = getComputedStyle(host).getPropertyValue('white-space');
+    return /^(pre|pre-wrap|pre-line|break-spaces)$/.test(ws);
+  };
+
+  /**
+   * An edit of an editing host at the selection, as `inputType` names it
+   * (Input Events 2): told as a `beforeinput`, made where it was not
+   * cancelled, and told as an `input`. Whether anything was told: false
+   * where the selection is in no editing host.
+   */
+  const edit = (host: Any, inputType: string, data: string | null): void => {
+    const range = editRange(host);
+    if (!range) return;
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data,
+    };
+    if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
+    const back = inputType === 'deleteContentBackward';
+    if (inputType.startsWith('delete')) {
+      if (range.collapsed) {
+        let [node, offset] = textAt(range.startContainer, range.startOffset);
+        if (back ? offset === 0 : offset === node.data.length) {
+          const next = textBeside(host, node, back);
+          if (!next) return;
+          node = next;
+          offset = back ? next.data.length : 0;
+        }
+        const edge = letterEdge(node.data, offset, back);
+        const from = Math.min(offset, edge);
+        node.deleteData(from, Math.abs(offset - edge));
+        selection.collapse(node, from);
+      } else {
+        range.deleteContents();
+        selection.collapse(range.startContainer, range.startOffset);
+      }
+    } else {
+      if (!range.collapsed) range.deleteContents();
+      const insert =
+        inputType === 'insertText'
+          ? data
+          : inputType === 'insertParagraph' || inputType === 'insertLineBreak'
+            ? keepsLines(host)
+              ? '\n'
+              : null
+            : null;
+      if (insert !== null) {
+        const [node, offset] = textAt(range.startContainer, range.startOffset);
+        node.insertData(offset, insert);
+        selection.collapse(node, offset + insert.length);
+      } else {
+        const br = document.createElement('br');
+        range.insertNode(br);
+        const parent = br.parentNode;
+        const index = Array.prototype.indexOf.call(parent.childNodes, br);
+        selection.collapse(parent, index + 1);
+      }
+    }
+    dispatch(
+      host,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+  };
+
+  /** What a key not cancelled does in an editing host: the edit it is, if
+   *  any, and whether it was one — which keeps it from the host's own
+   *  defaults, as Space scrolling the pane. */
+  const editForKey = (target: Any, e: Any): boolean => {
+    if (e.ctrlKey || e.metaKey) return false;
+    const host = editingHostOf(target);
+    if (!host) return false;
+    const key = String(e.key ?? '');
+    if (key === 'Backspace') edit(host, 'deleteContentBackward', null);
+    else if (key === 'Delete') edit(host, 'deleteContentForward', null);
+    else if (key === 'Enter') {
+      edit(host, e.shiftKey ? 'insertLineBreak' : 'insertParagraph', null);
+    } else if (
+      [...key].length === 1 &&
+      key.codePointAt(0)! >= 0x20 &&
+      key !== '\u007f'
+    ) {
+      edit(host, 'insertText', key);
+    } else return false;
+    return true;
+  };
+
+  /** What a press not cancelled does in an editing host: it focuses it and
+   *  puts the caret at the letter nearest the press. */
+  const editForPress = (target: Any, x: number, y: number): boolean => {
+    const host = editingHostOf(target);
+    if (!host) return false;
+    host.focus();
+    const at = document.caretPositionFromPoint(x, y);
+    if (at && host.contains(at.offsetNode)) {
+      selection.collapse(at.offsetNode, at.offset);
+    } else editRange(host);
+    return true;
+  };
+
+  /** Events dispatched as the user agent's own. */
+  const trusted = (ev: Any): Any => {
+    ev.isTrusted = true;
+    return ev;
+  };
+
   // --- the global ------------------------------------------------------------------
 
   const define = (name: string, value: Any): void => {
@@ -13298,17 +13792,9 @@ export function installDom(
     value: 'Window',
     configurable: true,
   });
-  define('getSelection', () => ({
-    rangeCount: 0,
-    isCollapsed: true,
-    type: 'None',
-    toString: () => '',
-    removeAllRanges() {},
-    addRange() {},
-    getRangeAt() {
-      throw new DOMException('No range.', 'IndexSizeError');
-    },
-  }));
+  define('getSelection', () => selection);
+  define('Selection', Selection);
+  define('CaretPosition', CaretPosition);
   for (const name of ['addEventListener', 'removeEventListener']) {
     define(name, (...args: Any[]) => (windowTarget as Any)[name](...args));
   }
@@ -13548,6 +14034,17 @@ export function installDom(
           pointer.pending = null;
           takeCapture(at);
         }
+        // a press in an editing host focuses it and puts the caret there,
+        // which leaves nothing for the document's own selection to do
+        if (
+          type === 'pointerdown' &&
+          (e.button ?? 0) === 0 &&
+          pointerGo &&
+          mouseGo &&
+          editForPress(to, at.clientX, at.clientY)
+        ) {
+          return false;
+        }
         return pointerGo && mouseGo;
       }
       case 'mousemove': {
@@ -13690,6 +14187,8 @@ export function installDom(
         // Escape the page let be is a close request, at the top modal
         // dialog (HTML 7.7.2)
         if (go && e.type === 'keydown' && e.key === 'Escape') closeRequest();
+        // a key typed in an editing host is an edit of it, and its own
+        if (go && e.type === 'keydown' && editForKey(target, e)) return false;
         return go;
       }
       case 'input':

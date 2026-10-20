@@ -28,6 +28,7 @@ import {
   Text,
 } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
+import type { Rect } from 'react-x11';
 
 import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
@@ -211,6 +212,17 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** The DOM boundary point nearest a logical window point, as
+   *  `caretPositionFromPoint` answers (`HtmlViewNode.textPointAt`). */
+  textPointAt(x: number, y: number): { node: AnyNode; offset: number } | null;
+  /** Where the text between two DOM boundary points is drawn, in
+   *  `elementRect`'s coordinates (`HtmlViewNode.textRects`). */
+  textRects(
+    start: AnyNode,
+    startOffset: number,
+    end: AnyNode,
+    endOffset: number,
+  ): Rect[] | null;
 }
 
 /** What the page around the document gives the host: where it is shown,
@@ -1486,6 +1498,33 @@ export class DomHost {
       case 'rangeClone': {
         const r = this._ranges.get(Number(a));
         return this._ranges.add(new LiveRange(r.sc, r.so, r.ec, r.eo));
+      }
+      // where the text of a range is drawn: x, y, width and height in the
+      // document's CSS pixels a rectangle, flat, or '' where the document
+      // draws no text there (`Range.getClientRects`)
+      case 'rangeRects': {
+        this.flush();
+        const r = this._ranges.get(Number(a));
+        const rects = this._inDocument(r.sc)
+          ? this._seams.handle.textRects?.(r.sc, r.so, r.ec, r.eo)
+          : null;
+        return rects
+          ? rects.map((q) => `${q.x},${q.y},${q.width},${q.height}`).join(',')
+          : '';
+      }
+      // the boundary point nearest a point of the viewport's, in CSS
+      // pixels: a node's id and an offset, or '' (`caretPositionFromPoint`)
+      case 'textAt': {
+        this.flush();
+        const v = this._seams.viewport();
+        const x = Number(a);
+        const y = Number(b);
+        if (!(x >= 0 && y >= 0 && x < v.width && y < v.height)) return '';
+        const at = this._seams.handle.textPointAt?.(
+          v.left + x * v.zoom,
+          v.top + y * v.zoom,
+        );
+        return at ? `${this.idOf(at.node)},${at.offset}` : '';
       }
       case 'rangeGet': {
         const r = this._ranges.get(Number(a));

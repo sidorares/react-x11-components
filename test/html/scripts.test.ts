@@ -16,7 +16,12 @@ import {
   waitForPixel,
 } from 'react-x11/test';
 import { ThemeProvider, createVideoFrames, useApp } from 'react-x11';
-import { XK_ESCAPE } from 'react-x11/keysyms';
+import {
+  XK_BACKSPACE,
+  XK_DELETE,
+  XK_ESCAPE,
+  XK_RETURN,
+} from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
@@ -3741,6 +3746,119 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
   assert.equal(linkTarget(by('own'), document), 'side');
   assert.equal(linkTarget(by('based'), document), '_top');
 });
+
+test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {
+  // what CodeMirror stands on: it cancels the keys it has a command for,
+  // and reads every other edit back from the DOM a browser changed
+  const doc = await hosted(
+    '<div id="ed" contenteditable style="white-space: pre">ab</div>' +
+      '<p id="out"></p><script>' +
+      'var ed = document.getElementById("ed"), r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'ed.addEventListener("beforeinput", function (e) {' +
+      '  log("before:" + e.inputType + ":" + e.data);' +
+      '  if (e.data === "z") e.preventDefault();' +
+      '});' +
+      'ed.addEventListener("input", function (e) { log("input:" + e.inputType); });' +
+      'document.addEventListener("selectionchange", function () { log("sel"); });' +
+      '</script>',
+  );
+  doc.run(
+    'ed.focus(); getSelection().collapse(ed.firstChild, 1);' +
+      'log([document.activeElement.id, getSelection().type, getSelection().focusOffset].join(":"));',
+  );
+  await settle();
+  assert.equal(doc.text('out'), 'ed:Caret:1|sel', doc.logs.join('\n'));
+  const typed = async (fire: () => void) => {
+    await act(async () => fire());
+    await settle();
+  };
+  await typed(() => fireEvent.char('x'));
+  assert.equal(doc.text('ed'), 'axb');
+  await typed(() => fireEvent.char('z'));
+  assert.equal(doc.text('ed'), 'axb', 'a cancelled beforeinput edits nothing');
+  await typed(() => fireEvent.key(XK_BACKSPACE));
+  await typed(() => fireEvent.key(XK_DELETE));
+  assert.equal(doc.text('ed'), 'a');
+  await typed(() => fireEvent.key(XK_RETURN));
+  assert.equal(doc.text('ed'), 'a\n', 'pre keeps a line feed for Enter');
+  doc.run(
+    'var s = getSelection(); s.setBaseAndExtent(ed.firstChild, 2, ed.firstChild, 0);' +
+      'log([s.type, s.direction, s.anchorOffset, s.focusOffset, s.toString().length].join(":"));',
+  );
+  await typed(() => fireEvent.char('q'));
+  assert.equal(doc.text('ed'), 'q', 'what is selected is typed over');
+  assert.equal(
+    doc
+      .text('out')
+      .split('|')
+      .filter((x) => x !== 'sel')
+      .join('|'),
+    [
+      'ed:Caret:1',
+      'before:insertText:x',
+      'input:insertText',
+      'before:insertText:z',
+      'before:deleteContentBackward:null',
+      'input:deleteContentBackward',
+      'before:deleteContentForward:null',
+      'input:deleteContentForward',
+      'before:insertParagraph:null',
+      'input:insertParagraph',
+      'Range:backward:2:0:2',
+      'before:insertText:q',
+      'input:insertText',
+    ].join('|'),
+  );
+});
+
+metric(
+  'a range of the text of an editing host is measured where its letters are drawn, and a press there puts the caret at the letter',
+  async () => {
+    const doc = await hosted(
+      '<div id="ed" contenteditable style="font: 20px monospace; white-space: pre; margin: 0">' +
+        'abcdef</div><p id="out"></p><p id="m"></p><script>' +
+        'var ed = document.getElementById("ed");' +
+        'function rects(a, b) { var r = document.createRange(); r.setStart(ed.firstChild, a); r.setEnd(ed.firstChild, b);' +
+        '  return Array.from(r.getClientRects()).map(function (q) { return [q.left, q.top, q.width, q.height].map(Math.round).join(","); }).join(";"); }' +
+        'document.addEventListener("selectionchange", function () {' +
+        '  var s = getSelection(); document.getElementById("out").textContent =' +
+        '    [document.activeElement.id, s.focusNode && s.focusNode.data, s.focusOffset].join(":");' +
+        '});' +
+        '</script>',
+    );
+    const measure = (a: number, b: number) => {
+      doc.run(`document.getElementById("m").textContent = rects(${a}, ${b})`);
+      return doc.text('m').split(',').map(Number);
+    };
+    const box = doc.view.elementRect(doc.byId('ed'))!;
+    const first = measure(0, 1);
+    const third = measure(2, 3);
+    assert.equal(first.length, 4, 'one rectangle for one letter');
+    const width = first[2];
+    assert.ok(width > 5 && width < box.width / 3, `a letter's width, ${width}`);
+    assert.ok(Math.abs(third[0] - (first[0] + 2 * width)) <= 1, `${third}`);
+    // a press in the middle of the fourth letter's right half
+    const node = doc.view as unknown as DrawnNode;
+    const x = first[0] + 3.75 * width;
+    const y = first[1] + first[3] / 2;
+    await act(async () => {
+      fireEvent.mouseDown(node, {
+        dx: x - node.abs.width / 2,
+        dy: y - node.abs.height / 2,
+      });
+      fireEvent.mouseUp(node, {
+        dx: x - node.abs.width / 2,
+        dy: y - node.abs.height / 2,
+      });
+    });
+    await settle();
+    assert.equal(doc.text('out'), 'ed:abcdef:4', doc.logs.join('\n'));
+    await act(async () => fireEvent.char('X'));
+    await settle();
+    assert.equal(doc.text('ed'), 'abcdXef');
+  },
+);
 
 test('what the DOM lets a page assign, a strict script assigns without a throw', async () => {
   // CodeMirror sets `contentEditable` on every widget it draws, as strict
