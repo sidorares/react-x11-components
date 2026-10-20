@@ -1961,6 +1961,43 @@ metric(
   },
 );
 
+metric(
+  '-webkit-line-clamp ends its last line in an ellipsis inside a word, as every engine does',
+  async () => {
+    // `line-clamp` gives the words that do not fit beside the ellipsis to
+    // the lines it hides (above), and `-webkit-line-clamp` does not:
+    // Chrome, Firefox and WebKit all cut its last line a character short
+    // of the ellipsis where the ellipsis does not fit after it, as
+    // `text-overflow` does. A blog index Tailwind's `line-clamp-2` clamps
+    // ended its excerpts a word early.
+    const words =
+      'Boost your conversion rate with a layout that keeps ' +
+      'uncharacteristically long words.';
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:230px;line-height:20px;' +
+        'overflow:hidden}</style>' +
+        `<p id="a" style="display:-webkit-box;-webkit-box-orient:vertical;` +
+        `-webkit-line-clamp:2">${words}</p>` +
+        `<p id="b" style="line-clamp:2">${words}</p>`,
+    );
+    const el = view(node);
+    const [, legacy] = linesOf(el, 'a');
+    assert.strictEqual(lastRunText(legacy), '\u2026');
+    assert.ok(legacy.width <= 230, `within the box: ${legacy.width}`);
+    // what of the document the line shows: the ellipsis is none of it
+    const [, cut] = lineTextsOf(el, 'a');
+    const kept = cut.split(/\s+/).pop()!;
+    assert.ok(
+      kept && words.split(/\s+/).some((w) => w.startsWith(kept) && w !== kept),
+      `cut inside a word: ${cut}`,
+    );
+    // and more of the line than the spec's soft wrap keeps
+    const [, soft] = lineTextsOf(el, 'b');
+    assert.ok(cut.startsWith(soft.trimEnd()), `${cut} | ${soft}`);
+    assert.ok(cut.length > soft.trimEnd().length, `${cut} | ${soft}`);
+  },
+);
+
 metric('line-clamp: auto shows the lines its height holds', async () => {
   // as many lines as a `max-height` in `lh` holds, the last cut with an
   // ellipsis (CSS Overflow 4, 5.3.1)

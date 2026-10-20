@@ -1826,6 +1826,7 @@ function layoutInlineContent(
             lines: clamp.left,
             ellipsis: box.style.blockEllipsis,
             follows: followsInFlow(box, clamp.box),
+            legacy: clamp.box.style.clampContinue === 'legacy',
           }
         : undefined,
   };
