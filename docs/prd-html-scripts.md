@@ -821,6 +821,26 @@ standards moved from what Acid3 expected):
   mutation of the document, a whole layout a time, and ran without end.
   The window's `[Replaceable]` attributes take what a page assigns, so a
   classic script's top-level `var length` holds its own value.
+- **An editing host is typed in as a browser types in one.** A
+  `contenteditable` element is a focusable area with a stop of its own,
+  `getSelection()` is a real `Selection` over a live range the host keeps,
+  and a key or a press no listener cancelled does what a browser's does
+  (Input Events 2): a `beforeinput` the page may cancel, the text inserted
+  or deleted at the selection, the caret moved after it, and an `input`;
+  a press focuses the host and puts the caret at the letter under it. A
+  `Range`'s `getClientRects` is where its letters are drawn, a rectangle a
+  line, found through the text node each piece of the document's text came
+  from (`BoxTree.textNodes`, `dom-text.ts`), and `caretPositionFromPoint`
+  the other way. That is all CodeMirror 6 needs: it cancels the keys it
+  has a command for, reads every other edit back from the DOM through its
+  `MutationObserver`, and finds a position by measuring a letter's range
+  at a time. The react-x11 playground's editor was a picture of one: its
+  `getSelection()` had no range, and nothing a key did reached the DOM.
+  Not yet: a paste or a cut (no `ClipboardEvent`), composition, a
+  paragraph split into blocks (Enter is a line feed where white space keeps
+  them and a `<br>` elsewhere), a caret drawn for a host whose page draws
+  none, and the document's own drag selection, which is apart from the
+  page's.
 - **The pane's scroll is the page's `scroll`.** Once a frame, at the
   document, bubbling to the window. CodeMirror measures its lines when it
   comes into view, and an editor below the fold kept a 14px default line

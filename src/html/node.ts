@@ -52,6 +52,7 @@ import type {
 import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element } from 'domhandler';
+import { pointOfUnit, unitOfPoint } from './dom-text.js';
 import { compareDocumentPosition } from 'domutils';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
@@ -3766,11 +3767,23 @@ export class HtmlViewNode extends Node {
   override textIndexAt(x: number, y: number): number {
     this._followViewport();
     this._followLifted();
-    const tree = this._tree;
-    if (!tree) return 0;
     // Core's contract: a device-pixel point, the same space the two rect
     // accessors below answer in.
-    const local = { x: x - this.abs.x, y: y - this.abs.y };
+    const at = this._unitsAt(x - this.abs.x, y - this.abs.y);
+    if (at === null) return 0;
+    return this._toPoints(this._selectable(at));
+  }
+
+  /** The place in the text, in code units, a point of the document's
+   *  device pixels is nearest — `textIndexAt`'s. */
+  private _unitsAt(
+    x: number,
+    y: number,
+    origin: { x: number; y: number } = this.abs,
+  ): number | null {
+    const tree = this._tree;
+    if (!tree) return null;
+    const local = { x, y };
     // What a press starts a selection in is what the pointer is over —
     // what was painted there last (`deepestAt`), the target of the press
     // (Pointer Events' topmost event target) — as every engine has it,
@@ -3781,7 +3794,7 @@ export class HtmlViewNode extends Node {
     // Nearest across the whole document, a paragraph a page drew over a
     // large faint word gave its press and its drag to the word: Zen Garden
     // 220's "Est. 2003", a fixed `::before`, stands behind its preamble.
-    const shift = this._fixedShift();
+    const shift = this._fixedShift(origin);
     const hit = selectionHit(local);
     deepestAt(tree, local.x, local.y, undefined, shift, hit);
     let at: number | null;
@@ -3796,8 +3809,61 @@ export class HtmlViewNode extends Node {
         nearestText(frame, shift, boxes);
       if (at === null && box !== tree.root) at = textBefore(box);
     }
-    if (at === null) return 0;
-    return this._toPoints(this._selectable(at));
+    return at;
+  }
+
+  /**
+   * The DOM boundary point nearest a logical window point, in the document
+   * as it is now, laid out first as `elementAtPoint` is: a text node and an
+   * offset in its data, as `caretPositionFromPoint` answers (CSSOM View 6).
+   * Null where the document has no text there to be in.
+   */
+  textPointAt(x: number, y: number): { node: AnyNode; offset: number } | null {
+    this._prepare(this.abs.width || 1);
+    this._followViewport();
+    this._followLifted();
+    const tree = this._tree;
+    const origin = this._scrolledOrigin();
+    const local = this._toDocument(x, y, origin);
+    const at = tree && this._unitsAt(local.x, local.y, origin);
+    return tree && at !== null ? pointOfUnit(tree, at) : null;
+  }
+
+  /**
+   * Where the text between two DOM boundary points is drawn, in
+   * `elementRect`'s coordinates: a rectangle a line, across the letters,
+   * as `Range.getClientRects` has the text of a range (CSSOM View 6.2).
+   * Where the two are one point, the caret there, of no width. Null where
+   * the document has no text there.
+   */
+  textRects(
+    start: AnyNode,
+    startOffset: number,
+    end: AnyNode,
+    endOffset: number,
+  ): Rect[] | null {
+    this._prepare(this.abs.width || 1);
+    this._followViewport();
+    const tree = this._tree;
+    if (!tree?.textNodes?.length) return null;
+    const from = unitOfPoint(tree, start, startOffset);
+    const to = unitOfPoint(tree, end, endOffset);
+    const shift = this._fixedShift(this._scrolledOrigin());
+    const s = this._scale;
+    const out: Rect[] = [];
+    if (to <= from) {
+      const found = caretAt(tree.root, from, shift);
+      if (!found) return null;
+      out.push({ x: found.x, y: found.y, width: 0, height: found.height });
+    } else {
+      collectBands(tree.root, from, to, 0, 0, out, true, shift);
+    }
+    return out.map((r) => ({
+      x: r.x / s,
+      y: r.y / s,
+      width: r.width / s,
+      height: r.height / s,
+    }));
   }
 
   override textCaretRect(index: number): Rect | null {

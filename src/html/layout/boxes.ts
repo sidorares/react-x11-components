@@ -16,7 +16,7 @@
 // reason richtext's node gives for answering from what it draws: an index
 // built by a second traversal can disagree with the boxes, and a selection
 // that disagrees with the glyphs is worse than no selection.
-import type { ChildNode, Element } from 'domhandler';
+import type { ChildNode, Element, Text } from 'domhandler';
 
 import type { TextRun } from '../../richtext/index.js';
 import {
@@ -906,6 +906,14 @@ export function containerBoxes(root: Box): Map<Element, Box> {
   return out;
 }
 
+/** A text node of the document, and the code units of the document's text
+ *  it came to: `[start, end)`. */
+export interface TextSource {
+  node: Text;
+  start: number;
+  end: number;
+}
+
 export interface BoxTree {
   root: Box;
   /** The document's text as it will be drawn, which is what `textContent()`
@@ -913,6 +921,11 @@ export interface BoxTree {
   text: string;
   /** Text boxes in document order — the selection binary-searches this. */
   textBoxes: Box[];
+  /** Each of the document's text nodes that came to text, in document
+   *  order, with the code units of the document text it came to: what a
+   *  point in the DOM is found in the text by, and a place in the text in
+   *  the DOM (`dom-text.ts`) — a page's selection and its ranges' rects. */
+  textNodes?: TextSource[];
   /** The text no selection takes, where `user-select` is `none` — generated
    *  content's, unless a rule says otherwise: sorted, disjoint `[start,
    *  end)` pairs of code units, flat. Empty in most documents. */
@@ -1133,6 +1146,7 @@ class Builder {
   private _length = 0;
   private _unselectable: number[] = [];
   private _textBoxes: Box[] = [];
+  private _textNodes: TextSource[] = [];
   private _textStyles = new Set<ComputedStyle>();
   private _styles = new Map<
     Element,
@@ -1228,6 +1242,7 @@ class Builder {
       anonymous,
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
+      textNodes: this._textNodes,
       unselectable: this._unselectable,
       textStyles: this._textStyles,
       styles: this._styles,
@@ -1358,7 +1373,14 @@ class Builder {
         summarised = true;
       }
       if (isText(child)) {
-        if (!onlyColumns) this._textNode(child.data, into, parentStyle, owner);
+        if (onlyColumns) continue;
+        const start = this._length;
+        this._textNode(child.data, into, parentStyle, owner);
+        // where the line it ends takes back a space it ended on, `end`
+        // is a unit past the text, which a lookup clamps
+        if (this._length > start) {
+          this._textNodes.push({ node: child, start, end: this._length });
+        }
         continue;
       }
       if (!isElement(child)) continue;

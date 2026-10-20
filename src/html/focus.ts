@@ -67,9 +67,41 @@ export function focusableElement(
       if (isSummaryOf(el)) return true;
       break;
   }
+  // an editing host, which takes the keys it is typed in (HTML 6.8.1):
+  // CodeMirror's content, focused by a press and typed into
+  if (isEditingHost(el)) return true;
   // asked of every element a document builds a box for, so the attribute
   // is looked for before it is parsed
   return attr(el, 'tabindex') !== undefined && tabIndexOf(el) !== null;
+}
+
+/**
+ * Whether an element is an editing host (HTML 6.8.1): its `contenteditable`
+ * is true or `plaintext-only`, and its parent's is not, which makes the
+ * parent the host.
+ */
+export function isEditingHost(el: Element): boolean {
+  if (attr(el, 'contenteditable') === undefined || !isEditable(el)) {
+    return false;
+  }
+  const parent = el.parent;
+  return !isElement(parent) || !isEditable(parent);
+}
+
+/** Whether `contenteditable` makes an element editable, itself or by what
+ *  it inherits. */
+function isEditable(el: Element): boolean {
+  for (let at: Element | null = el; at;) {
+    const value = attr(at, 'contenteditable');
+    if (value !== undefined) {
+      const v = value.trim().toLowerCase();
+      if (v === '' || v === 'true' || v === 'plaintext-only') return true;
+      if (v === 'false') return false;
+    }
+    const up: ParentNode | null = at.parent;
+    at = isElement(up) ? up : null;
+  }
+  return false;
 }
 
 /**

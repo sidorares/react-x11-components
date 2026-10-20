@@ -295,7 +295,7 @@ export function useFocusStops(options: StopsOptions): Stops {
 /** Markup that can make a focusable area (`focusableElement`): a superset,
  *  read from a source before it is laid out. */
 const FOCUSABLE_MARKUP =
-  /<(?:a|area)\b[^>]*?\shref\b|<(?:button|summary|input|select|textarea)\b|\stabindex\s*=/i;
+  /<(?:a|area)\b[^>]*?\shref\b|<(?:button|summary|input|select|textarea)\b|\s(?:tabindex|contenteditable)\b/i;
 
 /**
  * Whether a source can have stops of its own, as it is handed over: what

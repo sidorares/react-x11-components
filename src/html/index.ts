@@ -46,6 +46,7 @@ import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
 import { flatParentOf, isElement, isModal, tagOf } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
+import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type {
   DocumentInteraction,
@@ -1047,6 +1048,15 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
+      textPointAt: (x: number, y: number) =>
+        nodeRef.current?.textPointAt(x, y) ?? null,
+      textRects: (
+        start: AnyNode,
+        startOffset: number,
+        end: AnyNode,
+        endOffset: number,
+      ) =>
+        nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>
