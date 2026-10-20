@@ -2895,6 +2895,14 @@ premultiplied, where canvas — and CoreGraphics — mixes them straight, and
 a stop of no alpha faded a colour through grey. Anything new that adds
 colour stops to a context's gradient goes through it.
 
+**Mask layers are composited one at a time** (`compositeMask`): a layer
+that is not `add` is painted on a surface of its own and drawn whole over
+the layers below with its operator, since an operator reaches only what a
+draw covers on every backend (react-x11's `globalCompositeOperation`), and
+a layer's shapes drawn straight on the mask left what an `intersect`
+empties as it was. A card outlined by a ring, its border box less its
+content box with `exclude`, was tinted all over.
+
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the

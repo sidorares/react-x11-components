@@ -2839,13 +2839,18 @@ shorthand, each under its `-webkit-` name too (CSS Masking 1). The element
 and everything in it are drawn as a group on a surface of their own and cut
 by the alpha of its mask layers, which are placed, sized and repeated as a
 background's layers are, in its border box unless they say otherwise, and
-added one over another; the group is then drawn in its place, cut to the
-mask painting area. That is how Wikipedia and every design system that
+each composited with the layers below it as its `mask-composite` says —
+`add`, `subtract`, `intersect` or `exclude`, in the shorthand or the
+longhand, or `-webkit-mask-composite`'s `source-over`, `source-out`,
+`source-in` and `xor` for them; the group is then drawn in its place, cut
+to the mask painting area. `exclude` is how a page draws a ring: a layer
+in its content box over one in its border box leaves the padding between. That is how Wikipedia and every design system that
 draws its icons with CSS writes an icon: a `background-color` masked by an
 SVG. A layer whose image has not arrived is transparent, so an icon is not
 drawn at all until its image is, rather than as a solid square. A mask is
-an image's alpha: `mask-mode: luminance`, and the compositing operators
-but `add`, are read and not honoured, and a `url(#id)` naming an SVG
+an image's alpha: `mask-mode: luminance` is read and not honoured, and a
+compositing operator the context has no blend for adds its layer, as all
+of them used to. A `url(#id)` naming an SVG
 `<mask>` element in the document draws the element unmasked. Where the
 backend has no offscreen surface, the element is drawn unmasked. A
 `@supports` test of a mask property answers that it is supported, so the

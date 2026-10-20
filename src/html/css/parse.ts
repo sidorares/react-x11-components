@@ -2789,6 +2789,7 @@ const ANSWERED = new Set(
     'mask-size',
     'mask-origin',
     'mask-clip',
+    'mask-composite',
   ].flatMap((name) => [name, `-webkit-${name}`]),
 );
 

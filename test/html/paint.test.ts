@@ -1253,6 +1253,45 @@ metric('a radial gradient is a mask, as a linear one is', async () => {
   });
 });
 
+metric('mask layers are composited as mask-composite says', async () => {
+  // Each layer is composited with the layers below it (CSS Masking 1,
+  // 7.8). A card outlined by a ring, `linear-gradient(#000 0 0) content-box
+  // exclude, linear-gradient(#000 0 0)` — the border box less the content
+  // box — was tinted all over, every layer added
+  const ring = 'linear-gradient(#000 0 0)';
+  const { result, node } = await render(
+    '<style>body{margin:0;background:#ffffff}div{width:40px;height:40px;' +
+      'padding:10px;margin-bottom:10px;background:#ff0000}' +
+      `#x{mask:${ring} content-box exclude,${ring}}` +
+      `#s{mask:${ring} subtract,${ring} content-box}` +
+      `#w{-webkit-mask:${ring} content-box,${ring};-webkit-mask-composite:xor}` +
+      `#n{mask:${ring} content-box intersect,${ring}}` +
+      '</style><div id="x"></div><div id="s"></div><div id="w"></div>' +
+      '<div id="n"></div>',
+  );
+  const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+  await waitFor(async () => {
+    for (const [i, edge, middle] of [
+      [0, true, false],
+      [1, true, false],
+      [2, true, false],
+      [3, false, true],
+    ] as [number, boolean, boolean][]) {
+      const top = i * 70;
+      for (const [x, y, shown] of [
+        [5, top + 5, edge],
+        [30, top + 30, middle],
+      ] as [number, number, boolean][]) {
+        const [r, g] = await pixelAt(result.ctx, at.x + x, at.y + y);
+        assert.ok(
+          shown ? r > 200 && g < 60 : g > 200,
+          `#${'xswn'[i]} ${shown ? 'shown' : 'masked'} at ${x},${y}: ${r},${g}`,
+        );
+      }
+    }
+  });
+});
+
 metric(
   'a mask is placed and sized in CSS pixels at a display scale of 2',
   async () => {

@@ -51,6 +51,7 @@ import type {
   GradientStop,
   ImageRepeat,
   LinearGradient,
+  MaskComposite,
   RadialGradient,
   RepeatMode,
 } from './css/style.js';
@@ -3575,10 +3576,11 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
 /**
  * A masked box (CSS Masking 1, 7): the box and what it holds drawn on a
  * surface of their own, which the alpha of its mask layers — painted as a
- * background's are, on a second surface, each added over the ones below
- * it — then cuts with `destination-in`, and the result drawn in its place,
- * as the group a mask makes. Only the mask painting area, the border box,
- * can show, and only its part in the damage is drawn.
+ * background's are, on a second surface, each composited with the ones
+ * below it as its `mask-composite` says (`compositeMask`) — then cuts with
+ * `destination-in`, and the result drawn in its place, as the group a mask
+ * makes. Only the mask painting area, the border box, can show, and only
+ * its part in the damage is drawn.
  *
  * A layer whose image has not arrived is transparent black (7.2), so a box
  * none of whose layers can be drawn yet draws nothing: an icon masked out
@@ -3620,8 +3622,23 @@ function paintMasked(
     const cctx = content.getContext('2d') as PaintContext;
     const mctx = mask.getContext('2d') as PaintContext;
     const on = onSurface(options, x0, y0, w, h);
+    const composites = box.style.mask.composites;
     for (let i = layers.length - 1; i >= 0; i -= 1) {
-      paintLayer(mctx, box, on, layers[i], frameImages(mctx, box, on));
+      const op = composites[i % composites.length];
+      // the bottom layer has nothing below it to composite with (7.8)
+      if (op === 'add' || i === layers.length - 1) {
+        paintLayer(mctx, box, on, layers[i], frameImages(mctx, box, on));
+        continue;
+      }
+      const one = options.surface(w, h);
+      if (!one) return false;
+      try {
+        const octx = one.getContext('2d') as PaintContext;
+        paintLayer(octx, box, on, layers[i], frameImages(octx, box, on));
+        compositeMask(mctx, one, op);
+      } finally {
+        one.destroy?.();
+      }
     }
     paintClipped(cctx, box, on);
     cctx.globalCompositeOperation = 'destination-in';
@@ -3634,6 +3651,36 @@ function paintMasked(
     content?.destroy?.();
     mask?.destroy?.();
   }
+}
+
+/** The canvas operator each `mask-composite` is, with the layer as the
+ *  source and what is below it as the destination (CSS Masking 1, 7.8). */
+const MASK_OPERATORS: Record<Exclude<MaskComposite, 'add'>, string> = {
+  subtract: 'source-out',
+  intersect: 'source-in',
+  exclude: 'xor',
+};
+
+/**
+ * A mask layer painted on a surface of its own composited over the layers
+ * below it on `mask`. The surface is drawn whole, so the operator reaches
+ * every pixel of the mask, as it has to: an `intersect` empties what the
+ * layer leaves empty, which a draw of the layer's shapes alone leaves as it
+ * was on either backend. Added where the context has no such operator, as
+ * every layer was: a card a page outlines with a box less its content box,
+ * `exclude`, was then tinted all over.
+ */
+function compositeMask(
+  mask: PaintContext,
+  layer: unknown,
+  op: Exclude<MaskComposite, 'add'>,
+): void {
+  const operator = MASK_OPERATORS[op];
+  mask.globalCompositeOperation = operator;
+  const took = mask.globalCompositeOperation === operator;
+  if (!took) mask.globalCompositeOperation = 'source-over';
+  mask.drawImage!(layer, 0, 0);
+  mask.globalCompositeOperation = 'source-over';
 }
 
 function paintContent(
