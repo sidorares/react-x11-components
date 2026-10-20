@@ -166,6 +166,10 @@ read-only document offers two: **Copy** and **Select all**. A verb left out
 is a row that is not there rather than a greyed one, so this menu simply
 never mentions Cut or Paste.
 
+A press something before it cancelled opens no menu: an ancestor that
+`preventDefault()`s in `onContextMenuCapture` puts its own in this one's
+place, as the example browser does with a link's **Open Link in New Tab**.
+
 Everything else about the menu — which rows are enabled, the arrow keys,
 Escape, the pointer grab that dismisses it, handing the keyboard back
 afterwards — is core's `openEditMenu` and shared with the field.
