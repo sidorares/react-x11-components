@@ -59,6 +59,10 @@ import { warn } from './globals.js';
  */
 const PRECISION = 'precision mediump float;\n';
 
+/** `GL_PROGRAM_POINT_SIZE`, desktop GL's switch for `gl_PointSize` (the
+ * addon's table names only ES 2's constants). See `desktop()`. */
+const PROGRAM_POINT_SIZE = 0x8642;
+
 // three.js's attribute and matrix names, so a shader written against r3f —
 // or copied out of a tutorial — compiles here unchanged
 const COMMON_VERTEX_UNIFORMS = `${PRECISION}
@@ -288,6 +292,7 @@ export class DirectRenderer {
   private failed = new Set<string>();
   private wireWarned = new WeakSet<BufferGeometry>();
   private _usable: boolean | undefined;
+  private _desktop: boolean | undefined;
 
   camera: FrameCamera | null = null;
   /** A shader that will not build is reported here, once per source. */
@@ -305,6 +310,10 @@ export class DirectRenderer {
 
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
+    // Every frame rather than once: the context is shared — on the Cocoa
+    // backend by every surface in the app — and anything else drawing
+    // through it may have turned the switch off again.
+    if (this.desktop(gl)) gl.enable(PROGRAM_POINT_SIZE);
 
     const projection = camera.projectionMatrix(size.width, size.height);
     const view = camera.viewMatrix();
@@ -348,6 +357,27 @@ export class DirectRenderer {
       );
     }
     return this._usable;
+  }
+
+  /**
+   * Is this desktop OpenGL rather than ES? The shaders are ES 2's either
+   * way — a core profile takes them through ARB_ES2_compatibility — but a
+   * desktop context sizes a point by `glPointSize` until it is told to
+   * read `gl_PointSize`, so on the Cocoa backend's core profile every
+   * `<points>` came out a pixel wide whatever its `size`. ES has no such
+   * switch, and enabling one it does not know is an `INVALID_ENUM`. ES's
+   * `VERSION` string starts "OpenGL ES" by specification; desktop GL's
+   * starts with the number.
+   */
+  private desktop(gl: GL): boolean {
+    if (this._desktop !== undefined) return this._desktop;
+    const version =
+      typeof gl.getString === 'function' && typeof gl.VERSION === 'number'
+        ? gl.getString(gl.VERSION)
+        : null;
+    this._desktop =
+      typeof version === 'string' && /^\d/.test(version.trimStart());
+    return this._desktop;
   }
 
   /**
