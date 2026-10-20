@@ -164,6 +164,9 @@ export interface LinearGradient {
   angle: number;
   corner: 'top left' | 'top right' | 'bottom left' | 'bottom right' | null;
   stops: GradientStop[];
+  /** A `repeating-linear-gradient()` (CSS Images 3, 3.4): its stops, from
+   *  the first to the last, again and again along the whole line. */
+  repeating?: true;
 }
 
 /** A `radial-gradient()` (CSS Images 3, 3.2): its ending shape, a circle or
@@ -178,6 +181,9 @@ export interface RadialGradient {
   radii: [Len, Len] | null;
   at: [Len, Len];
   stops: GradientStop[];
+  /** A `repeating-radial-gradient()`, its rings again and again out to
+   *  every corner of the box (CSS Images 3, 3.4). */
+  repeating?: true;
 }
 
 export type RadialExtent =
@@ -5226,15 +5232,16 @@ function parseLinearGradient(
   text: string,
   ctx: UnitContext,
 ): LinearGradient | null {
-  const m = /^linear-gradient\((.*)\)$/is.exec(text.trim());
+  const m = /^(repeating-)?linear-gradient\((.*)\)$/is.exec(text.trim());
   if (!m) return null;
-  const args = splitCommas(m[1]).map((a) => a.trim());
+  const args = splitCommas(m[2]).map((a) => a.trim());
   const out: LinearGradient = {
     kind: 'linear',
     angle: Math.PI,
     corner: null,
     stops: [],
   };
+  if (m[1]) out.repeating = true;
   const first = withoutInterpolation(args[0] ?? '');
   let from = 0;
   if (!first || first.startsWith('to ')) {
@@ -5292,9 +5299,9 @@ function parseRadialGradient(
   text: string,
   ctx: UnitContext,
 ): RadialGradient | null {
-  const m = /^radial-gradient\((.*)\)$/is.exec(text.trim());
+  const m = /^(repeating-)?radial-gradient\((.*)\)$/is.exec(text.trim());
   if (!m) return null;
-  const args = splitCommas(m[1]).map((a) => a.trim());
+  const args = splitCommas(m[2]).map((a) => a.trim());
   const out: RadialGradient = {
     kind: 'radial',
     circle: false,
@@ -5303,6 +5310,7 @@ function parseRadialGradient(
     at: [{ pct: 50 }, { pct: 50 }],
     stops: [],
   };
+  if (m[1]) out.repeating = true;
   const first = withoutInterpolation(args[0] ?? '');
   let from = 0;
   if (!first) from = 1;
@@ -5407,7 +5415,8 @@ function parseGradient(text: string, ctx: UnitContext): Gradient | null {
 }
 
 /** The images CSS3 has beyond `url()`, which a layer may name: a linear
- *  and a radial gradient are drawn, and the rest draw as nothing. */
+ *  and a radial gradient are drawn, repeating or not, and the rest draw as
+ *  nothing. */
 const IMAGE_FUNCTION =
   /^(?:-(?:webkit|moz|o|ms)-)?(?:(?:repeating-)?(?:linear|radial|conic)-gradient|gradient|image-set|cross-fade|element|paint)\(/;
 

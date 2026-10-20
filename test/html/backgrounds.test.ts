@@ -404,7 +404,65 @@ test('a linear gradient is drawn over the colour, across the box', async () => {
   assert.ok(fills.some((f) => f.style === parseColor('#ffffff')));
 });
 
-/** The gradients a paint filled with, and where. */
+metric(
+  'a repeating gradient lays its stops down again along its whole line',
+  async () => {
+    // CSS Images 3, 3.4: from the first stop to the last, again and again,
+    // both ways along a linear gradient's line and out to a radial one's
+    // farthest corner. Neither was drawn at all: a card's holographic sheen,
+    // a repeating gradient, was missing from every card a pointer was over
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#ffffff}div{width:100px}</style>' +
+        '<div style="height:20px;background:repeating-linear-gradient(90deg,' +
+        '#ff0000 -5px 5px,#0000ff 5px 15px)"></div>' +
+        '<div style="height:20px;background:repeating-radial-gradient(' +
+        'circle at 0 0,#ff0000 0 10px,#0000ff 10px 20px)"></div>' +
+        // a period no device can show is its average colour
+        '<div style="height:20px;background:repeating-linear-gradient(90deg,' +
+        '#ff0000 0 0.01px,#0000ff 0.01px 0.02px)"></div>',
+    );
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const check = async (
+      x: number,
+      y: number,
+      want: [number, number, number],
+    ) => {
+      const [r, g, b] = await pixelAt(result.ctx, at.x + x, at.y + y);
+      assert.ok(
+        Math.abs(r - want[0]) < 40 &&
+          Math.abs(g - want[1]) < 40 &&
+          Math.abs(b - want[2]) < 40,
+        `at ${x},${y}: ${r},${g},${b}`,
+      );
+    };
+    const red: [number, number, number] = [255, 0, 0];
+    const blue: [number, number, number] = [0, 0, 255];
+    await waitFor(async () => {
+      for (const [x, want] of [
+        [1, red],
+        [10, blue],
+        [20, red],
+        [30, blue],
+        [90, blue],
+        [99, red],
+      ] as [number, [number, number, number]][]) {
+        await check(x, 10, want);
+      }
+      for (const [x, want] of [
+        [5, red],
+        [15, blue],
+        [25, red],
+        [35, blue],
+        [85, red],
+      ] as [number, [number, number, number]][]) {
+        await check(x, 21, want);
+      }
+      await check(50, 50, [128, 0, 128]);
+    });
+  },
+);
+
+/** The gradients a paint filled with, and where. */ /** The gradients a paint filled with, and where. */
 function gradientFills(fills: Fill[]) {
   return fills
     .filter((f) => (f.style as { line?: number[] } | null)?.line)

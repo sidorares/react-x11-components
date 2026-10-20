@@ -361,9 +361,70 @@ test('the composer ping-pongs targets and never reads what it writes', () => {
       );
     }
   }
-  // two passes: first into the second target, last into the window (0)
+  // two passes: first into the second target, last into the surface —
+  // `null`, WebGL's name for it, which core maps to whatever it is
   const lastBind = (gl.calls as Call[])
     .filter((call) => call.name === 'bindFramebuffer')
     .at(-2);
-  assert.equal(lastBind!.args[1], 0, 'the last pass writes the window');
+  assert.equal(lastBind!.args[1], null, 'the last pass writes the surface');
+});
+
+test('the last pass lands on a surface that is an FBO, as on the Cocoa backend', () => {
+  // Core's Cocoa (and Wayland) context: the surface is an FBO of its own,
+  // `bindFramebuffer(target, null)` binds it, and any other name — 0
+  // included — goes straight to GL. Framebuffer zero there is no buffer
+  // at all, so a pass drawn into it is never presented.
+  const gl = fakeGL();
+  const SURFACE = { id: 'surface' };
+  const bind = gl.bindFramebuffer;
+  gl.bindFramebuffer = (target: unknown, fb: unknown) =>
+    bind(target, fb == null ? SURFACE : fb);
+
+  const renderer = new DirectRenderer();
+  const { scene, camera } = phongScene();
+  const composer = new EffectComposer();
+  composer.add(new VignettePass());
+  scene.add(composer);
+
+  const post = new PostProcessor(renderer);
+  assert.ok(post.begin(gl, SIZE, composer));
+  renderer.render(gl, scene, camera, SIZE);
+  assert.ok(post.end(gl, SIZE));
+
+  let bound: unknown = SURFACE;
+  const drawnInto: unknown[] = [];
+  for (const call of gl.calls as Call[]) {
+    if (call.name === 'bindFramebuffer') bound = call.args[1];
+    if (call.name === 'drawArrays') drawnInto.push(bound);
+  }
+  assert.equal(drawnInto.length, 1, 'one pass, one full-screen draw');
+  assert.ok(drawnInto[0] === SURFACE, 'the pass draws into the surface');
+  assert.ok(bound === SURFACE, 'and the surface is left bound');
+});
+
+test('desktop GL is told to read gl_PointSize; ES is not', () => {
+  const PROGRAM_POINT_SIZE = 0x8642;
+  const enables = (version: string | undefined) => {
+    const gl = fakeGL();
+    if (version !== undefined) {
+      gl.VERSION = 0x1f02;
+      gl.getString = (name: number) => (name === gl.VERSION ? version : '');
+    }
+    const renderer = new DirectRenderer();
+    const { scene, camera } = phongScene();
+    renderer.render(gl, scene, camera, SIZE);
+    renderer.render(gl, scene, camera, SIZE);
+    return (gl.calls as Call[]).filter(
+      (call) => call.name === 'enable' && call.args[0] === PROGRAM_POINT_SIZE,
+    ).length;
+  };
+  // the Cocoa backend's core profile, as CGL reports it
+  assert.equal(
+    enables('4.1 Metal - 89.4'),
+    2,
+    'every frame: the context is shared',
+  );
+  assert.equal(enables('2.1 ATI-4.14.1'), 2, 'a legacy profile needs it too');
+  assert.equal(enables('OpenGL ES 3.2 Mesa 24.0.5'), 0, 'ES has no such enum');
+  assert.equal(enables(undefined), 0, 'nothing to ask: leave it alone');
 });
