@@ -3081,7 +3081,15 @@ in shorthands and inside `calc()` and colour functions. One that names
 nothing and has no fallback leaves its property `unset`, and a cycle has
 no value. `:root` is the `<html>` element, the one a browser implies
 around a fragment too, so a fragment's `:root { --brand: … }` reaches all
-of it.
+of it. `@property` registers one (CSS Properties and Values 1): where
+nothing sets it, it is its `initial-value`, which `initial` gives it too;
+one with `inherits: false` starts again at its initial value on every
+element that sets it to nothing of its own; and one a `var()` makes invalid
+where it is computed is as though `unset`. A rule with no `syntax` or no
+`inherits`, or with no `initial-value` and a syntax other than `*`,
+registers nothing. The `syntax` is read and not checked: a value is the one
+written, not computed to its type, and a registered property does not
+animate between values. `CSS.registerProperty` is not there.
 
 **`if()`** (CSS Values 5): a value chosen by the first branch whose
 condition holds, `if(style(--size: big): 2rem; media(width < 40rem): 1rem;

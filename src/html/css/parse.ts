@@ -35,6 +35,20 @@ export interface Declaration {
   computed?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * A custom property an `@property` rule registers (CSS Properties and
+ * Values 1, 3): whether it inherits, and what it is where nothing sets it.
+ * Its syntax is kept and not checked: a value is the one written.
+ */
+export interface PropertyRule {
+  name: string;
+  syntax: string;
+  inherits: boolean;
+  /** Its `initial-value`, or null for none, which only the universal
+   *  syntax may have: the guaranteed-invalid value. */
+  initial: string | null;
+}
+
 export interface StyleRule {
   /** One selector — a `a, b` list becomes two rules, so specificity and the
    *  matcher are per-selector rather than per-rule. */
@@ -91,6 +105,8 @@ export interface Stylesheet {
   counterStyles?: { prelude: string; declarations: Declaration[] }[];
   /** `@keyframes` rules, in order (`KeyframesRule`). */
   keyframes?: KeyframesRule[];
+  /** The custom properties its `@property` rules register, in order. */
+  properties?: PropertyRule[];
 }
 
 /**
@@ -405,6 +421,9 @@ export function parseStylesheet(
         } else if (name === 'font-face' && at.block !== null) {
           const face = parseFontFace(at.block, base, media);
           if (face) sheet.fontFaces.push(face);
+        } else if (name === 'property' && at.block !== null) {
+          const registered = parseProperty(at.prelude, at.block);
+          if (registered) (sheet.properties ??= []).push(registered);
         } else if (name === 'counter-style' && at.block !== null) {
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,
@@ -711,6 +730,36 @@ export function parseDeclarations(text: string): Declaration[] {
     i = end + 1;
   }
   return out;
+}
+
+/**
+ * An `@property` rule (CSS Properties and Values 1, 3), or null where it
+ * is not a valid one and is ignored: its prelude a custom property's name,
+ * and a `syntax` and an `inherits` among its descriptors, with an
+ * `initial-value` unless the syntax is the universal one. An initial value
+ * has to stand for itself everywhere, so one with a `var()` is none.
+ */
+function parseProperty(prelude: string, block: string): PropertyRule | null {
+  const name = prelude.trim();
+  if (!/^--[^\s]/.test(name) || /[\s,;{}()]/.test(name)) return null;
+  let syntax: string | null = null;
+  let inherits: boolean | null = null;
+  let initial: string | null = null;
+  for (const d of parseDeclarations(block)) {
+    if (d.prop === 'syntax') {
+      const quoted = /^(["'])(.*)\1$/s.exec(d.value);
+      syntax = quoted ? quoted[2].trim() : null;
+    } else if (d.prop === 'inherits') {
+      const v = d.value.toLowerCase();
+      inherits = v === 'true' ? true : v === 'false' ? false : null;
+    } else if (d.prop === 'initial-value') {
+      initial = d.value;
+    }
+  }
+  if (syntax === null || !syntax || inherits === null) return null;
+  if (initial === null && syntax !== '*') return null;
+  if (initial !== null && hasVar(initial)) return null;
+  return { name, syntax, inherits, initial };
 }
 
 /** Split `a, b > c, d` on top-level commas. */
