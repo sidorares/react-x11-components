@@ -97,6 +97,9 @@ export const now = (): number => globals.performance?.now() ?? Date.now();
 
 const ZERO: XYPosition = { x: 0, y: 0 };
 
+/** GL's own name for "which VAO is bound", which the table may not carry. */
+const VERTEX_ARRAY_BINDING = 0x85b5;
+
 /** One layer: a packer, the three buffers its streams go into, and what it
  *  last packed. */
 class Layer {
@@ -184,6 +187,8 @@ export class FlowGlRenderer {
   private readonly tri: Program;
   private readonly grid: Program;
   private readonly vao: unknown;
+  /** The vertex array bound when a draw began, bound again when it ends. */
+  private previousVao: unknown = null;
   private readonly quad: unknown;
   private readonly world: Layer;
   private readonly lifted: Layer;
@@ -217,6 +222,14 @@ export class FlowGlRenderer {
     // A core profile draws nothing with no vertex array bound. One is enough:
     // every range re-points the attributes at its own offset anyway, because
     // GLSL ES 1.00 has no base instance to do it for us.
+    //
+    // Bound for the draws and the one bound before put back after them, as
+    // `<Map>`'s renderer does: on macOS every `<glarea>` in an app shares one
+    // context, so what a draw leaves bound is the next surface's. Left bound
+    // and then deleted when the pane went, ours left the context with no
+    // vertex array at all, and a `<Canvas>` drawn after it put every vertex
+    // at one point.
+    const previous = gl.getParameter(VERTEX_ARRAY_BINDING);
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     this.quad = gl.createBuffer();
@@ -229,6 +242,7 @@ export class FlowGlRenderer {
     this.world = new Layer(gl);
     this.lifted = new Layer(gl);
     this.overlay = new Layer(gl);
+    gl.bindVertexArray(previous ?? null);
   }
 
   /** A whole scene, in one layer, at no offset — what a test or a one-off
@@ -258,7 +272,7 @@ export class FlowGlRenderer {
       phase,
       target,
     );
-    this.gl.disable(this.gl.SCISSOR_TEST);
+    this.end();
     return this.stats(packStart, drawStart, bytes, calls, [packed], false);
   }
 
@@ -339,7 +353,7 @@ export class FlowGlRenderer {
       0,
       target,
     );
-    this.gl.disable(this.gl.SCISSOR_TEST);
+    this.end();
     const packs = [world, lifted, over].filter((p) => p != null);
     return this.stats(packStart, drawStart, bytes, calls, packs, rebuilt);
   }
@@ -462,6 +476,7 @@ export class FlowGlRenderer {
       gl.useProgram(this.box.program);
       gl.uniform1f(this.box.uniforms.u_spread, atlas.pad);
     }
+    this.previousVao = gl.getParameter(VERTEX_ARRAY_BINDING);
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, target.width, target.height);
     gl.disable(gl.DEPTH_TEST);
@@ -647,6 +662,14 @@ export class FlowGlRenderer {
       color[3],
     );
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  /** What `begin` changed that the next user of the context would trip on. */
+  private end(): void {
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindVertexArray(this.previousVao ?? null);
+    this.previousVao = null;
   }
 
   private scissor(rect: FlowRect | undefined, target: FlowGlTarget): void {
