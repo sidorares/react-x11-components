@@ -859,6 +859,18 @@ button, turns it off. A length is checked only once something has been
 typed, as HTML checks it, and `maxlength` is also the most a field takes as
 it is typed into.
 
+**A box the page draws over a control hides its widget where it covers
+it.** A widget is a node of its own over the document, so a menu opened
+over a form, or a card laid over it, would be drawn under the form's
+fields. Where a box the document paints after the control fills it with an
+opaque background, the widget is cut: a box across it from one side takes
+that band off it, and one that leaves no rectangle of it hides it, keeping
+its focus, as `clip: rect(0, 0, 0, 0)` does. It is asked again as a box is
+shown, hidden or faded in over it, and as a scroll moves a fixed or sticky
+box over it. A translucent veil leaves the widget whole, drawn over it
+rather than seen through it, and so does a box wholly inside the field — an
+icon the page sets in it, which is drawn under the widget.
+
 **Encoded in UTF-8, always.** A browser encodes a form in the document's
 own encoding, or its `accept-charset`, so a Shift_JIS page's form sends
 Shift_JIS; this has no encoder but UTF-8, and says so in `_charset_`. A

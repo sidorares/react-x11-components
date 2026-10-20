@@ -70,7 +70,12 @@ import {
   tagOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
-import { resolve as resolveLength } from './css/values.js';
+import {
+  alphaOf,
+  inkColor,
+  isTransparent,
+  resolve as resolveLength,
+} from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle } from './computed.js';
 import {
@@ -243,6 +248,7 @@ import {
   layerOf,
   onLine,
   opaqueCanvas,
+  opaqueWithin,
   ownBounds,
   paintDocument,
   paintLiftedBox,
@@ -265,7 +271,7 @@ import {
 } from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
-import type { BareField, ControlRect } from './controls.js';
+import type { BareField, ControlRect, CoverAnswer } from './controls.js';
 import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
 import type {
@@ -847,6 +853,13 @@ export class HtmlViewNode extends Node {
   private _restyleFollows = false;
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
+  /** Where the boxes fixed to the viewport were drawn from where they were
+   *  laid out when the controls were last reported: they cut a widget
+   *  where they come over it (`controlRectsOf`). */
+  private _controlsShift: { x: number; y: number } | null = null;
+  /** What was over each control when it was last asked, which a report for
+   *  a scroll keeps for the controls outside the viewport. */
+  private _covered = new Map<Element, CoverAnswer>();
   /** The players mounted over the document (`media.ts`): where layout put
    *  each, in device pixels, before the boxes fixed to the viewport cut
    *  them; what `onMedia` was last told; and the elements they are over,
@@ -2998,7 +3011,9 @@ export class HtmlViewNode extends Node {
     return shown && size ? atDensity(size, shown.density) : null;
   }
 
-  private _reportControls(): void {
+  /** `near`: only the controls within it are asked what is over them,
+   *  for a scroll, which moves boxes over the viewport alone. */
+  private _reportControls(near: Rect | null = null): void {
     const tree = this._tree;
     const report = this._props().onControls;
     if (!tree || !report) return;
@@ -3010,7 +3025,22 @@ export class HtmlViewNode extends Node {
       ? (el: Element, style: ComputedStyle) =>
           cascade.placeholderStyle(el, style)
       : undefined;
-    const rects = controlRectsOf(tree, s, placeholderOf).map((r) =>
+    const shift = this._fixedShift();
+    this._controlsShift = shift;
+    // a whole report follows a layout or a restyle, which can change what
+    // the fixed boxes fill (`fixedGround`)
+    if (!near) {
+      FIXED_GROUND.delete(tree);
+      this._covered.clear();
+    }
+    const rects = controlRectsOf(
+      tree,
+      s,
+      placeholderOf,
+      shift,
+      near,
+      this._covered,
+    ).map((r) =>
       s === 1
         ? r
         : {
@@ -4217,6 +4247,19 @@ export class HtmlViewNode extends Node {
     return { x: at.x, y: at.y };
   }
 
+  /** What of the document the pane around it shows, in the document's
+   *  pixels, or null where nothing scrolls it. */
+  private _viewportInDocument(): Rect | null {
+    const viewport = this._viewport();
+    if (!viewport) return null;
+    return {
+      x: viewport.x - this.abs.x,
+      y: viewport.y - this.abs.y,
+      width: viewport.width,
+      height: viewport.height,
+    };
+  }
+
   /** How far a box fixed to the viewport is drawn from where it was laid
    *  out, in the document's pixels: the scroll of the pane the element is
    *  in (`atViewport`), with the element's corner at `origin` — `abs`,
@@ -4573,6 +4616,10 @@ export class HtmlViewNode extends Node {
     const fading = new Set<Element>();
     /** Whether a control's box was restyled: its widget is told. */
     let widgets = false;
+    /** Whether a box was shown, hidden, made opaque or not, or moved among
+     *  its layers: it may have come over a widget, or gone from over one
+     *  (`controlRectsOf`). */
+    let covers = false;
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
       if (!kept) return null;
@@ -4762,6 +4809,7 @@ export class HtmlViewNode extends Node {
       if (!style) continue;
       next.set(box, style);
       restyled.push([box, style]);
+      if (!covers && coverChange(box.style, style)) covers = true;
       // a lifted box's pixels are its layer's: its hole needs no repaint
       if (ink && !(this._lifted.size && this._insideLifted(box))) {
         inked.add(box);
@@ -4902,7 +4950,9 @@ export class HtmlViewNode extends Node {
         relayout = true;
       }
     }
-    if (moved.length || widgets) this._reportControls();
+    if (moved.length || widgets || (covers && tree.controls.length)) {
+      this._reportControls();
+    }
     // a player over what moved, faded or came over it
     if (tree.media.length) this._reportMedia();
     if (tree.embedded.length) this._reportEmbedded();
@@ -6833,7 +6883,7 @@ export class HtmlViewNode extends Node {
     this._followViewport();
     if (this._stickyMoved) {
       this._stickyMoved = false;
-      this._reportControls();
+      this._reportControls(this._viewportInDocument());
       this._reportMedia();
       this._reportEmbedded();
       this._reportStops();
@@ -6847,6 +6897,17 @@ export class HtmlViewNode extends Node {
     if (this._mediaLaid.length && FIXED_BOXES.has(tree)) this._publishMedia();
     if (this._embeddedLaid.length && FIXED_BOXES.has(tree)) {
       this._publishEmbedded();
+    }
+    // and over the controls, whose widgets they cut where they come over
+    // them (`controlRectsOf`) — where one fills anything with an opaque
+    // ground, which a header does and a page's transparent wrappers and
+    // hidden overlays do not
+    if (tree.controls.length && fixedGround(tree)) {
+      const shift = this._fixedShift();
+      const was = this._controlsShift;
+      if (shift?.x !== was?.x || shift?.y !== was?.y) {
+        this._reportControls(this._viewportInDocument());
+      }
     }
     const range = this.selectionRange;
     // Culling against the damage is what makes an expose of a strip cost the
@@ -9330,6 +9391,56 @@ function spriteChange(was: ComputedStyle, now: ComputedStyle): SpriteChange {
   }
   SPRITE_CHANGES.set(now, { was, change });
   return change;
+}
+
+/** Whether a box fixed to the viewport fills anything with an opaque
+ *  ground (`opaqueWithin`), and so may come over a widget as the page
+ *  scrolls: once a tree. */
+const FIXED_GROUND = new WeakMap<BoxTree, boolean>();
+
+function fixedGround(tree: BoxTree): boolean {
+  let known = FIXED_GROUND.get(tree);
+  if (known === undefined) {
+    known = false;
+    for (const box of FIXED_BOXES.get(tree) ?? NO_BOXES) {
+      const all = {
+        x: box.boundsX,
+        y: box.boundsY,
+        width: box.boundsWidth,
+        height: box.boundsHeight,
+      };
+      if (opaqueWithin(box, all).length) {
+        known = true;
+        break;
+      }
+    }
+    FIXED_GROUND.set(tree, known);
+  }
+  return known;
+}
+
+/**
+ * Whether a restyle in place may have put a box over a control's widget,
+ * or taken one from over it, which only a box that fills it with an opaque
+ * background does (`controlRectsOf`): shown or hidden, faded or brought to
+ * full opacity, given an opaque background or a translucent one, or moved
+ * among its layers. A fade between two opacities below 1 is none of them,
+ * so an animation's frames ask nothing.
+ */
+function coverChange(was: ComputedStyle, now: ComputedStyle): boolean {
+  if (was === now) return false;
+  return (
+    was.visibility !== now.visibility ||
+    was.opacity >= 1 !== now.opacity >= 1 ||
+    was.zIndex !== now.zIndex ||
+    (was.backgroundColor !== now.backgroundColor &&
+      opaqueGround(was) !== opaqueGround(now))
+  );
+}
+
+function opaqueGround(style: ComputedStyle): boolean {
+  const bg = style.backgroundColor;
+  return !!bg && !isTransparent(bg) && alphaOf(inkColor(bg, style.color)) === 1;
 }
 
 /**

@@ -35,7 +35,13 @@ import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightOf } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
-import { clipAround, drawnAtViewport } from './paint.js';
+import {
+  clipAround,
+  drawnAtViewport,
+  fixedToViewport,
+  layersOver,
+  opaqueWithin,
+} from './paint.js';
 
 /**
  * The position the widget of a control drawn where the viewport is goes in
@@ -147,12 +153,21 @@ export interface BareField {
 }
 
 /** The rectangles every control in a laid-out document landed on. `scale`
- *  is the document's device pixels to a CSS one, and `placeholderOf` a
- *  text field's `::placeholder` style (`Cascade.placeholderStyle`). */
+ *  is the document's device pixels to a CSS one, `placeholderOf` a text
+ *  field's `::placeholder` style (`Cascade.placeholderStyle`), and
+ *  `fixedShift` how far the scroll of the pane around the document draws a
+ *  box fixed to the viewport from where it was laid out, where one does.
+ *  Where `near` is given, only a control within it is asked what is over
+ *  it (`uncovered`), since what a scroll moves over one is in the
+ *  viewport, and one outside it keeps what `covered` holds for it where it
+ *  has not moved; `covered` is told each answer. */
 export function controlRectsOf(
   tree: BoxTree,
   scale = 1,
   placeholderOf?: (el: Element, style: ComputedStyle) => ComputedStyle | null,
+  fixedShift: { x: number; y: number } | null = null,
+  near: Rect | null = null,
+  covered: Map<Element, CoverAnswer> | null = null,
 ): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
@@ -204,6 +219,18 @@ export function controlRectsOf(
     if (clipsItself(box)) {
       rect.clip = around ? between(around, shown) : shown;
     } else if (around && !covers(around, shown)) rect.clip = around;
+    // and by what the document paints after it over it, which a widget
+    // over the document would be drawn over
+    const shows = rect.clip ? between(rect.clip, shown) : shown;
+    if (!rect.atViewport) {
+      const kept = near && !meets(near, shows) && covered?.get(box.el);
+      const left =
+        kept && sameRect(kept.shows, shows)
+          ? kept.left
+          : uncovered(box, shows, scale, fixedShift);
+      covered?.set(box.el, { shows, left });
+      if (left) rect.clip = left;
+    }
     if (styledField(box.replaced, box.style)) {
       rect.bare = {
         x: box.contentX,
@@ -229,6 +256,130 @@ export function controlRectsOf(
     out.push(rect);
   }
   return out;
+}
+
+/** How far into a control a box may reach and not be over it: the control
+ *  is on whole pixels, and what is beside it in the flow starts at a
+ *  fraction of one. */
+const OVERLAP = 0.5;
+
+/**
+ * What of a control's widget shows past the boxes the document paints
+ * after the control over it (`layersOver`), where they fill it with an
+ * opaque background (`opaqueWithin`): a menu opened over a form, a
+ * dialog's card. The widget is a node of its own over the document, and
+ * drawn whole it came out over the menu, where the document draws the menu
+ * over the field. A box across it from one side takes that band off it,
+ * as a fixed header does a player's (`cutByFixed`); one that leaves no
+ * rectangle of it hides it, with a clip of no area, which leaves it the
+ * focus it has. A box wholly inside it — an icon a page puts in a field —
+ * is drawn under the widget, as before, rather than hide the field, and so
+ * is anything translucent, which the field would show through. Null where
+ * nothing is over it.
+ */
+function uncovered(
+  box: Box,
+  shows: Rect,
+  scale: number,
+  shift: { x: number; y: number } | null,
+): Rect | null {
+  const reach = {
+    x: shows.x + OVERLAP,
+    y: shows.y + OVERLAP,
+    width: shows.width - 2 * OVERLAP,
+    height: shows.height - 2 * OVERLAP,
+  };
+  if (!(reach.width > 0 && reach.height > 0)) return null;
+  // a box fixed to the viewport is asked where the scroll draws it
+  const fixedReach = shift && {
+    ...reach,
+    x: reach.x - shift.x,
+    y: reach.y - shift.y,
+  };
+  const layers = layersOver(box, reach, fixedReach);
+  if (!layers?.length) return null;
+  const filled: Rect[] = [];
+  for (const layer of layers) {
+    if (seenThrough(layer)) continue;
+    const fixed = !!fixedReach && fixedToViewport(layer);
+    const around = clipAround(layer, scale);
+    for (let r of opaqueWithin(layer, fixed ? fixedReach : reach)) {
+      if (around) r = between(around, r);
+      if (fixed) r = { ...r, x: r.x + shift!.x, y: r.y + shift!.y };
+      if (r.width > 0 && r.height > 0) filled.push(r);
+    }
+  }
+  if (!filled.length) return null;
+  let x0 = shows.x;
+  let y0 = shows.y;
+  let x1 = shows.x + shows.width;
+  let y1 = shows.y + shows.height;
+  // each is cut to the reach, so one that reaches past a side of the
+  // control ends at the reach's
+  for (const r of filled) {
+    const rx1 = r.x + r.width;
+    const ry1 = r.y + r.height;
+    if (rx1 <= x0 + OVERLAP || r.x >= x1 - OVERLAP) continue;
+    if (ry1 <= y0 + OVERLAP || r.y >= y1 - OVERLAP) continue;
+    const left = r.x <= x0 + OVERLAP;
+    const right = rx1 >= x1 - OVERLAP;
+    const top = r.y <= y0 + OVERLAP;
+    const bottom = ry1 >= y1 - OVERLAP;
+    if (left && right && top && bottom) {
+      return { x: shows.x, y: shows.y, width: 0, height: 0 };
+    }
+    if (left && right && top) y0 = ry1;
+    else if (left && right && bottom) y1 = r.y;
+    else if (top && bottom && left) x0 = rx1;
+    else if (top && bottom && right) x1 = r.x;
+    else if (!left && !right && !top && !bottom) continue;
+    else return { x: shows.x, y: shows.y, width: 0, height: 0 };
+  }
+  if (x1 <= x0 || y1 <= y0) {
+    return { x: shows.x, y: shows.y, width: 0, height: 0 };
+  }
+  if (
+    x0 === shows.x &&
+    y0 === shows.y &&
+    x1 === shows.x + shows.width &&
+    y1 === shows.y + shows.height
+  ) {
+    return null;
+  }
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** What was found over a control (`uncovered`), and what of it showed
+ *  when it was asked. */
+export interface CoverAnswer {
+  shows: Rect;
+  left: Rect | null;
+}
+
+function sameRect(a: Rect, b: Rect): boolean {
+  return (
+    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+  );
+}
+
+function meets(a: Rect, b: Rect): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
+/** Whether a layer is seen through what is around it: faded, or drawn
+ *  through a matrix or a filter, up to a box in the top layer. */
+function seenThrough(layer: Box): boolean {
+  if (layer.topLayer) return false;
+  for (let at = layer.parent; at; at = at.topLayer ? null : at.parent) {
+    if (at.style.opacity < 1 || at.style.filter !== null) return true;
+    if (placedMatrix(at)) return true;
+  }
+  return false;
 }
 
 /**
