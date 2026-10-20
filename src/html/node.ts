@@ -64,6 +64,7 @@ import {
   imageUrlOf,
   indicatedElement,
   isElement,
+  isInputButton,
   isText,
   ShadowRoot,
   shadowRootOf,
@@ -4908,6 +4909,11 @@ export class HtmlViewNode extends Node {
         // any.
         if (box.style !== kept) return false;
         if (box.marker) return false;
+        // an input button the page took to styling, or stopped, is drawn
+        // by the document or mounted as the palette's widget: another box
+        if (kept.styledControl !== style.styledControl && isInputButton(el)) {
+          return false;
+        }
         if (WIDGETS.has(box.replaced)) {
           const kind = box.replaced!;
           if (styledField(kind, kept) !== styledField(kind, style)) {

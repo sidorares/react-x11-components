@@ -1530,6 +1530,16 @@ and an element in it answers `elementRect` with null, as one under
 `display: none`, which a page's own `display` won: a mega menu that keeps
 its closed panels so drew every panel at once.
 
+**An input button the page styles is a `<button>`, not a widget.** One the
+page gives a border, a ground or `appearance: none` (`styledControl`) is
+built as a box with its label in it and drawn by the document, its press
+and its keyboard activation a `<button>`'s (`pressableAt`, `activate`); one
+it leaves alone is the palette's widget. **Anything that asks whether a box
+is a button asks `isButton` or `isButtonBlock`**, which answer for both,
+and a restyle that turns the styling on or off builds the box again
+(`isInputButton` in `_restyleInPlace`): a black pill was the palette's
+white framed button, half as wide again.
+
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
 button, and `centreButton` (`layout/block.ts`) moves it there when the

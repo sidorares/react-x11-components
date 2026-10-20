@@ -26,6 +26,7 @@ import {
   flatParentOf,
   imageUrlOf,
   isElement,
+  isInputButton,
   isText,
   inImpliedHead,
   NON_RENDERED,
@@ -1504,7 +1505,13 @@ class Builder {
     ) {
       this._awaitingKind.push(el);
     }
-    if (replaced !== 'none') {
+    // An input button the page styled is drawn as the page has it, as a
+    // `<button>` is: a box with its label in it, and not the palette's
+    // widget, whose look and size would be the window's — a black pill
+    // with white text was a framed white button half as wide again.
+    const drawnButton =
+      replaced === 'button' && style.styledControl && isInputButton(el);
+    if (replaced !== 'none' && !drawnButton) {
       this._replaced(el, tag, replaced, style, into);
       return;
     }
@@ -1643,7 +1650,12 @@ class Builder {
     const skips =
       style.contentVisibility === 'hidden' &&
       containmentApplies(box, CONTAIN_SIZE);
-    if (!skips) {
+    if (drawnButton) {
+      // its label, and none of what an element's content would be: an
+      // `<input>` has no `::before` or `::after` and no children. One
+      // with no label is a line tall all the same, as Chrome draws it.
+      this._textNode(inputButtonLabel(el) || '\u200b', box, style, el);
+    } else if (!skips) {
       if (insideImage) {
         // an inline image at the start of the first line, as a generated
         // image is, and the room after it Blink gives it rather than a
@@ -3489,6 +3501,15 @@ function anonymousOf(
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && isBlank(box.text);
+}
+
+/** The label an input button shows: its `value`, or what a submit or a
+ *  reset button says without one (HTML 4.10.5.1.18, 4.10.5.1.20). */
+function inputButtonLabel(el: Element): string {
+  const value = attr(el, 'value');
+  if (value !== undefined) return value;
+  const type = (attr(el, 'type') ?? '').trim().toLowerCase();
+  return type === 'submit' ? 'Submit' : type === 'reset' ? 'Reset' : '';
 }
 
 /** Whether the containments `bits` would apply to a box, were they set

@@ -309,8 +309,8 @@ input[type=hidden] { display: none; }
    above and below and 2px beside; a text area's 1px and solid round 2px; a
    select's 1px and solid, square, with none. Each is on the field's ground,
    and a colour well on a button's. The checkables, a range, a file and an
-   image have none, as in Blink's sheet, and neither has an input button,
-   which is the palette's button whatever the page does. A field the page
+   image have none, as in Blink's sheet, and an input button has a button's,
+   below, which it is drawn with once the page styles it. A field the page
    left alone is the palette's widget, framed by itself (\`chromeText\`).
    The colours are the system colours Blink's sheet names, the theme's in
    its own scheme and Chrome's in the other, so a field on a page that says
@@ -325,7 +325,7 @@ input {
   background-color: Field;
 }
 input[type=checkbox], input[type=radio], input[type=range], input[type=file],
-input[type=image], input[type=button], input[type=submit], input[type=reset] {
+input[type=image] {
   padding: initial;
   border: initial;
   background-color: initial;
@@ -352,8 +352,10 @@ select {
    buttons builds on: Codex gives Wikipedia's search button its side padding
    and a 32px min-height, and leaves the 1px above and below the label, and
    the border box the minimum holds, to the browser. One the page left alone
-   is the palette's control instead, below the rest of this sheet. */
-button {
+   is the palette's control instead, below the rest of this sheet. An input
+   button the page styles is drawn as one, its label in its box; one left
+   alone is the palette's button widget. */
+button, input[type=button], input[type=submit], input[type=reset] {
   vertical-align: baseline;
   box-sizing: border-box;
   padding: 1px 6px;
@@ -363,7 +365,10 @@ button {
   text-align: center;
   cursor: pointer;
 }
-button[disabled] { color: GrayText; cursor: default; }
+/* an input button's label is one line, which it does not wrap */
+input[type=button], input[type=submit], input[type=reset] { white-space: pre; }
+button[disabled], input[type=button][disabled], input[type=submit][disabled],
+input[type=reset][disabled] { color: GrayText; cursor: default; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
 legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }

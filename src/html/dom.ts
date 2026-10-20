@@ -169,6 +169,15 @@ export function attr(el: Element, name: string): string | undefined {
   return el.attribs?.[name];
 }
 
+/** Whether an element is an `<input>` that is a button with a label of its
+ *  own: a submit, a reset or a plain button — not an image button, which
+ *  is its picture. */
+export function isInputButton(el: Element): boolean {
+  if (el.name !== 'input' && tagOf(el) !== 'input') return false;
+  const type = (attr(el, 'type') ?? '').trim().toLowerCase();
+  return type === 'submit' || type === 'reset' || type === 'button';
+}
+
 /** Where an image element's image is: an `<img>`'s `src`, an `<object>`'s
  *  `data` — which is shown as an image when it is one (HTML's "the object
  *  element"), and as the element's fallback content otherwise — an

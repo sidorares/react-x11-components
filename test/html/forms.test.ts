@@ -5,6 +5,7 @@ import assert from 'node:assert';
 import {
   act,
   cleanup,
+  expectPixel,
   fireEvent,
   pixelAt,
   renderX11,
@@ -500,6 +501,73 @@ metric(
     };
     await press('b');
     assert.deepStrictEqual(pressed, [['b', 'go']]);
+    await press('off');
+    assert.strictEqual(pressed.length, 1, 'a disabled one is not pressed');
+  },
+);
+
+metric(
+  'an input button the page styled is drawn as the page has it, and pressed as a <button> is',
+  async () => {
+    // A submit button styled as a black pill, `<input type=submit>`, was
+    // the palette's widget whatever the page did: white, framed, and half
+    // as wide again as its label and padding. Styled, it is drawn as a
+    // `<button>` is, its label in its box; left alone it is the widget.
+    const pressed: [string | undefined, unknown][] = [];
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;background:#ffffff}.go{background:#000000;' +
+            'color:#ffffff;border:0;padding:6px 20px;border-radius:14px}' +
+            '</style><input id="go" class="go" type="submit" value="Go">' +
+            '<input id="off" class="go" type="submit" value="Off" disabled>' +
+            '<input id="plain" type="submit" value="Plain">',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void pressed.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (
+      el as unknown as {
+        _tree: { controls: { el: { attribs: Record<string, string> } }[] };
+      }
+    )._tree;
+    assert.deepStrictEqual(
+      tree.controls.map((b) => b.el.attribs.id),
+      ['plain'],
+      'a widget for the one the page left alone',
+    );
+    assert.ok(el.textContent().includes('Go'), "its label is the document's");
+    const go = boxOf(el, 'go');
+    assert.ok(go.width < 90, `its label and padding wide: ${go.width}`);
+    const target = el as unknown as DrawnNode;
+    await expectPixel(
+      result.ctx,
+      target.abs.x + go.x + 8,
+      target.abs.y + go.y + go.height / 2,
+      '#000000',
+      { message: "the page's ground" },
+    );
+    const press = async (id: string) => {
+      const box = boxOf(el, id);
+      const dx = box.x + box.width / 2 - target.abs.width / 2;
+      const dy = box.y + box.height / 2 - target.abs.height / 2;
+      await act(async () => {
+        fireEvent.mouseDown(target, { dx, dy });
+        fireEvent.mouseUp(target, { dx, dy });
+      });
+    };
+    await press('go');
+    assert.deepStrictEqual(pressed, [['go', 'Go']]);
     await press('off');
     assert.strictEqual(pressed.length, 1, 'a disabled one is not pressed');
   },

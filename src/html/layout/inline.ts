@@ -43,7 +43,7 @@ import {
   scrolls,
 } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
-import { tagOf } from '../dom.js';
+import { isInputButton, tagOf } from '../dom.js';
 import {
   BOX_RAISES,
   CONTROL_BASELINES,
@@ -3591,11 +3591,13 @@ function atomicBaseline(box: Box): number {
   return baseline === null ? bottom : box.marginTop + (baseline - box.y);
 }
 
-/** Whether a box is a `<button>` element's: one drawn as the document's,
- *  which a replaced control is not. */
+/** Whether a box is a `<button>` element's, or an input button's the page
+ *  styled: one drawn as the document's, which a replaced control is not. */
 export function isButton(box: Box): boolean {
   return (
-    box.el !== null && box.kind !== 'replaced' && tagOf(box.el) === 'button'
+    box.el !== null &&
+    box.kind !== 'replaced' &&
+    (tagOf(box.el) === 'button' || isInputButton(box.el))
   );
 }
 

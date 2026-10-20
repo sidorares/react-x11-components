@@ -3649,7 +3649,10 @@ A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
-page leaves it alone. A background or a border of the page's, a radius
+page leaves it alone. So is an `<input type=submit>`, `reset` or `button`
+the page styles, its label in its box on one line: one the page leaves
+alone is the palette's button widget, and one it styles was that widget all
+the same, the palette's look and size in place of the page's pill. A background or a border of the page's, a radius
 among them, or an `appearance` of `none` where that is the value that
 wins, takes that look off, as each takes a button's native look off in
 Blink, and what is left are Chrome's UA edges:
