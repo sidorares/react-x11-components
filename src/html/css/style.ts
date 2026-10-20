@@ -2851,6 +2851,12 @@ export function applyDeclaration(
       if (clips) style.mask = { ...style.mask, clips };
       return;
     }
+    case 'mask-composite':
+    case '-webkit-mask-composite': {
+      const composites = layerValues(value, maskCompositeOf);
+      if (composites) style.mask = { ...style.mask, composites };
+      return;
+    }
 
     // --- generated content --------------------------------------------------
     case 'content': {
@@ -4422,6 +4428,36 @@ export interface MaskLayers {
    *  border box unless a layer says (7.5, 7.6). */
   origins: readonly VisualBox[];
   clips: readonly VisualBox[];
+  /** How each layer is composited with the layers below it (7.8). */
+  composites: readonly MaskComposite[];
+}
+
+/** A `mask-composite` operator (CSS Masking 1, 7.8). */
+export type MaskComposite = 'add' | 'subtract' | 'intersect' | 'exclude';
+
+/**
+ * A `mask-composite` keyword, or one of `-webkit-mask-composite`'s, which
+ * are Porter-Duff names (Compatibility, 5): a page writes the two side by
+ * side, `-webkit-mask-composite: xor; mask-composite: exclude`, for the
+ * ring a box's border box less its content box makes. Null for none.
+ */
+function maskCompositeOf(text: string): MaskComposite | null {
+  switch (text.trim().toLowerCase()) {
+    case 'add':
+    case 'source-over':
+      return 'add';
+    case 'subtract':
+    case 'source-out':
+      return 'subtract';
+    case 'intersect':
+    case 'source-in':
+      return 'intersect';
+    case 'exclude':
+    case 'xor':
+      return 'exclude';
+    default:
+      return null;
+  }
 }
 
 /** Whether a style masks its element: a layer of its mask has an image. */
@@ -4462,10 +4498,10 @@ function maskBox(text: string): VisualBox | null {
  * The `mask` shorthand (CSS Masking 1, 7.10): a layer a comma group, each
  * an image, a position with a size after a `/`, a repeat, one box for the
  * origin and the clip or two, `no-clip`, a compositing operator and a
- * mode, each at most once, in any order. The operator and the mode are
- * read and not honoured: layers are added, and an image masks by its
- * alpha, which is what `match-source` makes of one. Null where a layer is
- * not one, which drops the declaration.
+ * mode, each at most once, in any order. The mode is read and not
+ * honoured: an image masks by its alpha, which is what `match-source`
+ * makes of one. Null where a layer is not one, which drops the
+ * declaration.
  */
 function readMask(value: string, ctx: UnitContext): MaskLayers | null {
   const out = {
@@ -4475,6 +4511,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     positions: [] as [Len, Len][],
     origins: [] as VisualBox[],
     clips: [] as VisualBox[],
+    composites: [] as MaskComposite[],
   };
   for (const text of splitCommas(value)) {
     const parts = splitValue(text).flatMap(splitSlash);
@@ -4482,6 +4519,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     let repeat = NO_MASK.repeats[0];
     let size: ComputedStyle['backgroundSize'] = 'auto';
     let position: [Len, Len] = [0, 0];
+    let composite: MaskComposite = 'add';
     const boxes: VisualBox[] = [];
     let seen = 0;
     const once = (bit: number): boolean => {
@@ -4511,6 +4549,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
         i += 1;
       } else if (/^(?:add|subtract|intersect|exclude)$/.test(v)) {
         if (!once(8)) return null;
+        composite = v as MaskComposite;
         i += 1;
       } else if (/^(?:alpha|luminance|match-source)$/.test(v)) {
         if (!once(16)) return null;
@@ -4553,6 +4592,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     out.positions.push(position);
     out.origins.push(boxes[0] ?? 'border-box');
     out.clips.push(boxes[1] ?? boxes[0] ?? 'border-box');
+    out.composites.push(composite);
   }
   return out.images.length ? out : null;
 }
@@ -4758,6 +4798,7 @@ export const NO_MASK: MaskLayers = {
   positions: [[0, 0]],
   origins: ['border-box'],
   clips: ['border-box'],
+  composites: ['add'],
 };
 
 function applyBorderShorthand(
@@ -6760,6 +6801,8 @@ const MASK_LISTS: Record<string, keyof MaskLayers> = {
   '-webkit-mask-origin': 'origins',
   'mask-clip': 'clips',
   '-webkit-mask-clip': 'clips',
+  'mask-composite': 'composites',
+  '-webkit-mask-composite': 'composites',
 };
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
