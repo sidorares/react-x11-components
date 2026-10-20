@@ -182,6 +182,15 @@ The three guarantees, and where they come from
    inside that damage and none of the rest, which the pass would have
    clipped away. A scatter plot in a panned `<Flow>` body drew every cell
    of its grid on each step before this.
+5. **A plot no screen holds costs what the window shows of it.** A scatter's
+   grid covers its whole plot, so a scroll keeps it, up to 2²⁴ cells (a 5K
+   screen of 1px dots). Past that the plot is not one anybody laid out on
+   purpose: yoga hands three or more flex items whose floors are fractions
+   of a device pixel billions of pixels each, which a `scale` prop makes
+   out of whole lengths (a page 1190 tall at `scale={0.32}`). The grid then
+   covers only what the window can show of the plot, where next to none of
+   the points land, rather than ten billion rows of counts, which ran the
+   process out of memory.
 
 `onFrameStats` reports what a frame actually cost — per-series mode
 (`'polyline' | 'minmax' | 'bars' | 'scatter' | 'density'`), drawing

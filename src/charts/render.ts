@@ -42,6 +42,9 @@ export const ROUND_JOIN_MAX = 256;
  * the grid takes over */
 export const CIRCLE_MAX = 96;
 export const DIRECT_SCATTER_MAX = 512;
+/** the most cells a scatter's density grid covers all of its plot with —
+ * 64 MB of counts, a 5K screen at 1px dots; see `scatterGridArea` */
+export const SCATTER_GRID_MAX_CELLS = 1 << 24;
 /** bars that may keep their rounded tops — past this they go square into
  * one batch */
 export const BAR_RADIUS_MAX = 256;
@@ -200,6 +203,9 @@ export interface SeriesEnv {
   /** The pass's damage, device pixels, or null for all of the plot: what
    *  lies outside it the pass clips away, so it is not drawn at all. */
   clip?: PlotRect | null;
+  /** The window, device pixels: as much of the plot as any pass can show.
+   *  Null where the node has no window to ask. */
+  view?: PlotRect | null;
 }
 
 /** A spec length on the device grid. */
@@ -858,6 +864,54 @@ export function makeScatterGrid(
   };
 }
 
+/**
+ * The part of the plot a scatter's density grid covers, or null for none.
+ *
+ * All of it, wherever that is a grid of a size a screen holds: the grid is
+ * plot-local, so a scroll that moves the plot keeps it. A plot larger than
+ * that is not one an application laid out on purpose — yoga can hand a
+ * column of flex items billions of pixels each (react-x11's floors.js,
+ * "issue #411"), and a count per cell of one such plot was an allocation
+ * that ran the process out of memory. So past `SCATTER_GRID_MAX_CELLS` the
+ * grid covers what the window can show of the plot, on the plot's own
+ * lattice of cells so a scroll does not move a point between two, and
+ * nothing where the window shows none of it.
+ */
+export function scatterGridArea(
+  plot: PlotRect,
+  cell: number,
+  view: PlotRect | null | undefined,
+): PlotRect | null {
+  const { x, y, width, height } = plot;
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height)
+  ) {
+    return null;
+  }
+  if (
+    Math.ceil(width / cell) * Math.ceil(height / cell) <=
+    SCATTER_GRID_MAX_CELLS
+  ) {
+    return plot;
+  }
+  if (!view) return null;
+  const x0 = x + Math.floor((Math.max(x, view.x) - x) / cell) * cell;
+  const y0 = y + Math.floor((Math.max(y, view.y) - y) / cell) * cell;
+  const x1 = Math.min(
+    x + width,
+    x + Math.ceil((view.x + view.width - x) / cell) * cell,
+  );
+  const y1 = Math.min(
+    y + height,
+    y + Math.ceil((view.y + view.height - y) / cell) * cell,
+  );
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
 const ALPHA_LEVELS = 8;
 
 /** The alpha bucket a cell's count falls in: square-root density, so a
@@ -927,10 +981,16 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
     return;
   }
 
-  // ---- dense: occupancy grid
+  // ---- dense: occupancy grid, over `area` — the plot, but for one no
+  // screen holds
   const cell = size;
-  const gw = Math.max(1, Math.ceil(plot.width / cell));
-  const gh = Math.max(1, Math.ceil(plot.height / cell));
+  const area = scatterGridArea(plot, cell, env.view);
+  if (!area) {
+    stats.series.push({ id: g.spec.id, mode: 'skipped', points: n });
+    return;
+  }
+  const gw = Math.max(1, Math.ceil(area.width / cell));
+  const gh = Math.max(1, Math.ceil(area.height / cell));
   const xScale = env.xScale;
   const domKey =
     xScale.kind === 'band' ? `b${xScale.count}` : `${xScale.d0},${xScale.d1}`;
@@ -939,17 +999,19 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   const cols = g.x
     ? `${columnVersion(g.y)}/${columnVersion(g.x)}`
     : columnVersion(g.y);
-  const key = `${cell}|${gw}|${gh}|${domKey}|${yScale.d0},${yScale.d1}|${cols}`;
+  // and where in the plot the grid starts, when it is not all of it
+  const at = area === plot ? '' : `|@${area.x - plot.x},${area.y - plot.y}`;
+  const key = `${cell}|${gw}|${gh}|${domKey}|${yScale.d0},${yScale.d1}|${cols}${at}`;
   const grid = env.host.scatterGrid(g.spec.id, key, n);
 
   if (grid.consumedN < n) {
-    const kx = gw / plot.width;
-    const ky = gh / plot.height;
+    const kx = gw / area.width;
+    const ky = gh / area.height;
     for (let i = grid.consumedN; i < n; i++) {
       const v = yv[i] as number;
       if (Number.isNaN(v)) continue;
-      const px = pxAt(env, g, i) - plot.x;
-      const py = yScale.scale(v) - plot.y;
+      const px = pxAt(env, g, i) - area.x;
+      const py = yScale.scale(v) - area.y;
       const cx = Math.floor(px * kx);
       const cy = Math.floor(py * ky);
       if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
@@ -964,7 +1026,7 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
 
   // rectangles vs pixels: the byte crossover, computed
   const rectBytes = grid.occupied * BYTES_PER_RECT;
-  const imageBytes = plot.width * plot.height * BYTES_PER_PIXEL;
+  const imageBytes = area.width * area.height * BYTES_PER_PIXEL;
   const rgb = parseHexColor(g.color);
   // The crossover is a question about one frame, and a grid painted again
   // unchanged — a pan or a drag carrying the plot, a crosshair over it —
@@ -981,8 +1043,8 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
     const kept = grid.imaged === contentKey;
     const drawn = env.host.blitImage(
       g.spec.id,
-      plot.x,
-      plot.y,
+      area.x,
+      area.y,
       gw * cell,
       gh * cell,
       (data) => {
@@ -1025,7 +1087,7 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   }
 
   if (!grid.buckets) {
-    // Plot-LOCAL coordinates, translated at draw time. Nothing that lives
+    // Grid-LOCAL coordinates, translated at draw time. Nothing that lives
     // across frames may bake in the plot's window position: every part of
     // the cache key stays equal while a scroll or a section reflow moves
     // the plot rect, and window-space buckets then redraw at the old
@@ -1055,8 +1117,8 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
     // single-FillRectangles fast path (it requires an identity transform)
     const rects = new Array<number>(local.length);
     for (let i = 0; i < local.length; i += 4) {
-      rects[i] = local[i] + plot.x;
-      rects[i + 1] = local[i + 1] + plot.y;
+      rects[i] = local[i] + area.x;
+      rects[i + 1] = local[i + 1] + area.y;
       rects[i + 2] = local[i + 2];
       rects[i + 3] = local[i + 3];
     }

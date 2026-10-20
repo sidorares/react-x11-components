@@ -68,6 +68,7 @@ import {
 import type {
   FrameStatsSink,
   PlotContext,
+  PlotRect,
   ScatterGrid,
   SeriesEnv,
   SeriesGeometry,
@@ -608,6 +609,96 @@ test('a pass that reaches a strip of the plot draws the marks in it, and no othe
     env.stats.estimatedWireBytes < all.stats.estimatedWireBytes / 10,
     'and the wire estimate counts what went out',
   );
+});
+
+test('a scatter laid out billions of pixels tall bins only what the window shows', () => {
+  // The plot a page of the stress demo came to under a `scale` box: core's
+  // yoga hands a column of flex items billions of pixels each where their
+  // floors are fractions of a pixel (the test after "scatter buckets follow
+  // the plot across a scroll"). A count for every cell of it was a typed
+  // array of 2e13 entries, and the process ran out of memory making it.
+  const plot = {
+    x: 1132.76,
+    y: -194203654.44,
+    width: 951.12,
+    height: 23758209020.16,
+  };
+  const xScale = linearScale(0, 100, plot.x, plot.x + plot.width);
+  const yScale = linearScale(0, 100, plot.y + plot.height, plot.y);
+  const n = 20_000;
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  let seed = 5;
+  const rand = () =>
+    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < n; i++) {
+    xs[i] = rand() * 100;
+    ys[i] = rand() * 100;
+  }
+  // the window shows a sliver of the y domain a millionth wide, so the
+  // cloud has nothing in it; plant a few marks there to see it is drawn
+  for (let k = 0; k < 600; k++) {
+    xs[k] = xScale.invert(plot.x + 10 + ((k * 7) % 900));
+    ys[k] = yScale.invert(100 + (k % 1500));
+  }
+  const geometry = (): SeriesGeometry => {
+    const xCol = column(xs);
+    return {
+      spec: seriesSpec({ type: 'scatter', size: 1 }),
+      y: column(ys),
+      base: 0,
+      x: xCol,
+      xIdx: xIndexFor(xCol),
+      group: { index: 0, count: 1 },
+      color: '#123456',
+    };
+  };
+  const grids: [number, number][] = [];
+  const draw = (ctx: FakeCtx, view: PlotRect | null) => {
+    const env = {
+      ...makeEnv(ctx, 1, 1, [0, 1], [0, 1]),
+      plot,
+      xScale,
+      yScale,
+      view,
+    };
+    const scatterGrid = env.host.scatterGrid;
+    env.host = {
+      ...env.host,
+      scatterGrid(id, key, count) {
+        const [, gw, gh] = key.split('|').map(Number);
+        grids.push([gw, gh]);
+        return scatterGrid(id, key, count);
+      },
+    };
+    renderScatter(env, geometry());
+    return env.stats;
+  };
+
+  const ctx = fakeCtx();
+  draw(ctx, { x: 0, y: 0, width: 3200, height: 2000 });
+  assert.strictEqual(grids.length, 1, 'one grid');
+  const [gw, gh] = grids[0];
+  assert.ok(
+    gw * gh <= 3200 * 2000,
+    `a grid of ${gw}x${gh} cells, no more than the window's pixels`,
+  );
+  assert.ok(ctx.rects.length > 0, 'the marks on screen are drawn');
+  for (const [x, y, w, hgt] of ctx.rects) {
+    assert.ok(
+      x >= plot.x && x + w <= plot.x + plot.width + 1,
+      `${x} is in the plot across`,
+    );
+    assert.ok(y >= 0 && y + hgt <= 2000, `${y} is on screen`);
+  }
+
+  // with no window to ask, such a plot draws nothing and makes no grid
+  grids.length = 0;
+  const none = fakeCtx();
+  const stats = draw(none, null);
+  assert.strictEqual(grids.length, 0, 'no grid');
+  assert.strictEqual(none.rects.length, 0);
+  assert.strictEqual(stats.series[0].mode, 'skipped');
 });
 
 test('a saturated 1px scatter flips to the density image when the host can', () => {
@@ -1397,6 +1488,129 @@ test('scatter buckets follow the plot across a scroll', async () => {
       `pre-scroll origin)`,
   );
 });
+
+// A report of pages in a scroll pane, zoomed into a tile by core's `scale`
+// prop, as the stress demo's finale shows its charts scene. A page 1190 long
+// under `scale={0.32}` is 380.8 device pixels, a fraction, and three or more
+// of them in the pane's column are what core's yoga lays out billions of
+// pixels tall each (react-x11's floors.js, "issue #411"): every chart on
+// them came out ~1e10 pixels high, and the scatter's density grid ran the
+// process out of memory. 1196 is 382.72, which happens to add up.
+function scaledReport(
+  pageHeight: number,
+  data: ReturnType<typeof scatterCloud>,
+) {
+  const page = (k: number) =>
+    h(
+      'box',
+      { key: k, style: { height: pageHeight, padding: 22, gap: 16 } },
+      h('text', null, `Page ${k + 1}`),
+      h(
+        'box',
+        { style: { flexGrow: 1, flexBasis: 0, minHeight: 0, padding: 14 } },
+        h(
+          ChartContainer,
+          {
+            config: { y: { label: 'Y', color: '#b388ff' } },
+            style: { flexGrow: 1, minHeight: 0 },
+          },
+          h(
+            ScatterChart,
+            { data },
+            h(XAxis, { dataKey: 'x', hide: true }),
+            h(YAxis, { width: 34 }),
+            h(ScatterSeries, { dataKey: 'y', size: 1.5 }),
+          ),
+        ),
+      ),
+    );
+  return h(
+    'box',
+    { style: { width: 512, height: 383, overflow: 'hidden' } },
+    h(
+      'box',
+      { scale: 0.32, style: { width: 1600, height: 1196 } } as never,
+      h(
+        'box',
+        { style: { width: 1600, height: pageHeight, overflow: 'scroll' } },
+        [0, 1, 2, 3, 4, 5].map(page),
+      ),
+    ),
+  );
+}
+
+function scatterCloud(n: number) {
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  let seed = 3;
+  const rand = () =>
+    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < n; i++) {
+    xs[i] = rand() * 100;
+    ys[i] = rand() * 100;
+  }
+  return { length: n, columns: { x: xs, y: ys } };
+}
+
+/** Mount the report, then take its pages to a height that does not add
+ *  up, as the demo's stage settling 3px shorter did. */
+async function mountScaledReport(over: RenderX11Options = {}) {
+  const data = scatterCloud(20_000);
+  const result = await renderX11(scaledReport(1196, data), {
+    width: 600,
+    height: 500,
+    ...over,
+  });
+  await act();
+  await result.rerender(scaledReport(1190, data));
+  await act();
+  const plots = screen
+    .all((n) => retained(n).kind === CHARTPLOT_ELEMENT)
+    .map((n) => retained(n));
+  return { result, plots };
+}
+
+for (const display of [1, 2]) {
+  test(`a scatter in a scroll pane under a scale box, at ${display}x, paints without allocating for what no window shows`, async () => {
+    const { plots } = await mountScaledReport(display === 2 ? atScale2() : {});
+    assert.strictEqual(plots.length, 6);
+    // every chart painted at the layout it has, whatever that is
+    for (const plot of plots) plot.invalidate(false, null, 'expose');
+    await act();
+    const cells = 600 * 500 * display * display;
+    for (const plot of plots) {
+      const grids = (
+        plot as unknown as { _scatterGrids: Map<string, ScatterGrid> }
+      )._scatterGrids;
+      for (const grid of grids.values()) {
+        assert.ok(
+          grid.counts.length <= cells,
+          `a grid of ${grid.gw}x${grid.gh} cells for a plot laid out ` +
+            `${Math.round(plot.abs.height)} tall, in a window of ${cells} pixels`,
+        );
+      }
+    }
+  });
+}
+
+test(
+  'a chart in a scroll pane under a scale box keeps the height it is laid out at',
+  {
+    todo:
+      "core's: three flex items whose floors are fractions of a device " +
+      'pixel come back ~1e10 tall from yoga (react-x11 floors.js, #411)',
+  },
+  async () => {
+    const { plots } = await mountScaledReport();
+    // a page is 1190 * 0.32 = 380.8 device pixels, the chart less than that
+    for (const plot of plots) {
+      assert.ok(
+        plot.abs.height < 381,
+        `a plot ${Math.round(plot.abs.height)} tall on a page 380.8 tall`,
+      );
+    }
+  },
+);
 
 test('a windowed stream stays bounded through compactions', async () => {
   // The field failure: after the maxLength window compacts, a frame
