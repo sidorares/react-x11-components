@@ -177,6 +177,44 @@ test('a closed details shows its summary, and an open one all of it', async () =
   assert.deepStrictEqual(margins('open'), [0, 0]);
 });
 
+test('hidden until found keeps its box and skips what it holds, whatever display the page gives it', async () => {
+  // HTML 15.3.1: `hidden="until-found"` is `content-visibility: hidden`,
+  // not `display: none`. A mega menu keeps the panels it has not opened so,
+  // under a `display: block` of its own, which won over `display: none`:
+  // every panel was drawn at once, one over the other.
+  const { node } = await render(
+    '<style>body{margin:0} .panel{display:block;height:30px}</style>' +
+      '<div class="panel" id="a" hidden="until-found"><p id="in-a">A</p></div>' +
+      '<div id="b" hidden="Until-Found"><p id="in-b">B</p></div>' +
+      '<div id="c" hidden><p id="in-c">C</p></div>' +
+      '<div id="d" hidden="hidden" class="panel"><p id="in-d">D</p></div>',
+  );
+  const el = view(node);
+  const has = (id: string) => {
+    try {
+      boxOf(el, id);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.deepStrictEqual(
+    [has('a'), has('in-a')],
+    [true, false],
+    'a box of the size the page gives it, with nothing in it',
+  );
+  assert.strictEqual(boxOf(el, 'a').height, 30);
+  assert.deepStrictEqual(
+    [has('b'), boxOf(el, 'b').height, has('in-b')],
+    [true, 0, false],
+    'whatever its case, and laid out as though it held nothing',
+  );
+  assert.ok(!has('c'), 'hidden is still no box');
+  // and a page's display still wins over the hidden state, as it does in
+  // every browser: only until-found keeps the box and drops what is in it
+  assert.ok(has('in-d'));
+});
+
 test('a closed dialog is not drawn, and an open one is a framed box centred across its containing block, out of the flow', async () => {
   // docs.github.com keeps its search dialog in the page, empty and closed,
   // styled as a card fixed under the header: with no rule for a dialog it

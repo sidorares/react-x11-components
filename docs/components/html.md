@@ -720,6 +720,17 @@ since this component navigates nowhere by itself:
 | `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                       |
 | `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                      |
 
+**A script's animations run for their time and draw nothing.**
+`animate()` and `new Animation` keep an animation's timing, its
+`playState`, `currentTime`, `playbackRate` and `finished`, and tell its
+`finish` and `cancel` as a browser does: the effect is not drawn, which
+`<Html>` does for CSS's animations and not for a script's, but it ends when
+its timing says. A page that hides a panel `onfinish`, or waits on
+`finished` to go on, goes on; one that leaves its last frame in place with
+`fill: forwards` is drawn in the style it had, since nothing of the
+effect's is computed. `getAnimations()` and `document.timeline` answer
+from them.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another
@@ -2548,7 +2559,13 @@ outside it is not counted on inside, and the quotes are as deep after it as
 before it. Any containment on `<html>` or `<body>` keeps the body's
 background and `overflow` its own rather than the canvas's and the
 viewport's. `content-visibility: auto` is layout, paint and style
-containment, and `hidden` all four and the box's content left unpainted.
+containment, and `hidden` all four, with nothing made of what the box
+holds — nothing drawn or laid out, no text to select, nothing to press or
+focus and no widget — where size containment applies to it, as it does not
+to an inline box (CSS Containment 2, 4.1). `hidden="until-found"` is
+`content-visibility: hidden`, as HTML's rendering section has it, and not
+`display: none`: a menu that keeps the panels it has not opened so, under a
+`display: block` of its own, draws the box each has and nothing in it.
 An image's `width` and `height` attributes give it the ratio they make as
 well, as HTML maps them.
 

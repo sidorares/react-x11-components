@@ -1521,6 +1521,15 @@ box over one, and keeps the others' last answers while they have not moved
 cards under a fixed header paid a millisecond more at every frame of a
 scroll.
 
+**What `content-visibility: hidden` holds has no boxes.** The builder makes
+none of it where size containment applies to the box (`containmentApplies`,
+which paint asks too), so it takes no press, no focus, no widget and no
+part in the text, as CSS Containment 2, 4.1 says skipped content must not,
+and an element in it answers `elementRect` with null, as one under
+`display: none` does. `hidden="until-found"` is it (HTML 15.3.1), not
+`display: none`, which a page's own `display` won: a mega menu that keeps
+its closed panels so drew every panel at once.
+
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
 button, and `centreButton` (`layout/block.ts`) moves it there when the
@@ -2008,6 +2017,12 @@ closes a way out a DOM binding opens by accident:
   nothing: github.blog's menus open by `ariaHidden`. Listing the
   getter-only accessors on the facade's interfaces, and checking each
   against the IDL, is a quick way to find the next one.
+- **What a page waits on settles.** A stand-in that answers and never
+  finishes is worse than none: `animate()` handed back an object whose
+  `onfinish` was never called, so a menu that hid a panel at the end of its
+  fade drew every panel it had opened. An `Animation` keeps its timing and
+  its promises and tells `finish` when the timing ends (`liveAnimations`),
+  drawing nothing of its effect.
 - **A page's geometry is in two places, and a read takes the one its
   attribute names.** `getBoundingClientRect` is `elementRect`, drawn
   through every transform and moved by every scroll, a box fixed to the

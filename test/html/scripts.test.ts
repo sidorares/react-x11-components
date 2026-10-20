@@ -3805,6 +3805,108 @@ test("an event's attributes are the prototype's, so a delegating library shadows
   );
 });
 
+test('hidden reflects until-found, and every falsy value takes the attribute off', async () => {
+  // HTML 6.1: the IDL attribute is `until-found` in that state, and its
+  // setter takes the string back to the state rather than to `hidden=""`
+  const doc = await hosted(
+    '<p id="out"></p><p id="p">x</p><script>' +
+      'var p = document.getElementById("p"), r = [];' +
+      'r.push(String(p.hidden));' +
+      'p.hidden = "UNTIL-FOUND"; r.push(p.getAttribute("hidden"), String(p.hidden));' +
+      'p.hidden = true; r.push(JSON.stringify(p.getAttribute("hidden")), String(p.hidden));' +
+      'p.hidden = 0; r.push(String(p.hasAttribute("hidden")));' +
+      'p.hidden = "false"; r.push(String(p.hidden));' +
+      'p.hidden = NaN; r.push(String(p.hasAttribute("hidden")));' +
+      'p.hidden = undefined; r.push(String(p.hasAttribute("hidden")));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'false|until-found|until-found|""|true|false|true|false|false',
+    doc.logs.join('\n'),
+  );
+});
+
+test('an animation runs for its timing, then its promise resolves and its finish is told; a cancelled one rejects', async () => {
+  // what it animates is not drawn, but a page that waits on it goes on:
+  // the stand-in finished nothing, so a menu that hid a panel `onfinish`
+  // kept every panel it had left on screen
+  const doc = await hosted(
+    '<p id="out"></p><div id="b">b</div><script>' +
+      'var el = document.getElementById("b"), r = [];' +
+      'var a = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 40 });' +
+      'r.push(a.playState, typeof a.currentTime, a instanceof Animation,' +
+      '  a.effect instanceof KeyframeEffect, a.effect.getComputedTiming().endTime,' +
+      '  el.getAnimations().length, document.getAnimations().length);' +
+      'a.finished.then(function (x) { r.push("finished:" + (x === a) + ":" + a.playState); });' +
+      'a.onfinish = function (e) {' +
+      '  r.push("finish:" + (e instanceof AnimationPlaybackEvent) + ":" + e.currentTime + ":" + el.getAnimations().length);' +
+      '  document.getElementById("out").textContent = r.join("|"); };' +
+      'var c = el.animate({ opacity: [0, 1] }, 1000);' +
+      'c.oncancel = function () { r.push("cancel:" + c.playState); };' +
+      'c.finished.catch(function (e) { r.push("rejected:" + e.name); });' +
+      'c.cancel();' +
+      // one with no duration finishes at once, and is told after the
+      // script that made it set its handler
+      'el.animate({ opacity: [0, 1] }).onfinish = function () { r.push("zero"); };' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.includes('finish:'));
+  assert.equal(
+    text,
+    [
+      'running',
+      'number',
+      'true',
+      'true',
+      '40',
+      '1',
+      '1',
+      'rejected:AbortError',
+      'cancel:idle',
+      'zero',
+      'finished:true:finished',
+      'finish:true:40:0',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a menu that hides the panel it leaves once its fade ends shows one panel', async () => {
+  // A mega menu's panels are `hidden="until-found"` under a `display:
+  // block` of its own, each faded out with `animate()` and hidden again in
+  // its `onfinish`. The attribute was `display: none`, which the page's
+  // display won, and the fade never finished, so every panel the menu had
+  // opened, and every one it had not, was drawn over the others.
+  const doc = await hosted(
+    '<style>.bar { position: relative; height: 30px; overflow: hidden }' +
+      '.panel { position: absolute; top: 30px; left: 0; display: block }</style>' +
+      '<div class="bar" id="bar">' +
+      '<div class="panel" id="a" hidden="until-found">Alpha panel</div>' +
+      '<div class="panel" id="b" hidden="until-found">Beta panel</div>' +
+      '<div class="panel" id="c" hidden="until-found">Gamma panel</div></div>' +
+      '<p id="out"></p><script>' +
+      'var open = null;' +
+      'function show(next) {' +
+      '  if (open) { var was = open;' +
+      '    was.animate({ opacity: [1, 0] }, 20).onfinish = function () {' +
+      '      was.setAttribute("hidden", "until-found");' +
+      '      document.getElementById("out").textContent = "done"; }; }' +
+      '  next.hidden = false; next.animate({ opacity: [0, 1] }, 20);' +
+      '  document.getElementById("bar").style.height = 30 + next.scrollHeight + "px";' +
+      '  open = next; }' +
+      'show(document.getElementById("a"));' +
+      'setTimeout(function () { show(document.getElementById("b")); }, 10);' +
+      '</script>',
+  );
+  await settled(doc, 'out', (t) => t === 'done');
+  const drawn = (doc.view as unknown as { _tree: { text: string } })._tree.text;
+  assert.ok(drawn.includes('Beta panel'), drawn);
+  assert.ok(!drawn.includes('Alpha panel'), drawn);
+  assert.ok(!drawn.includes('Gamma panel'), drawn);
+});
+
 test('aria attributes reflect as nullable strings, so a menu a script opens by its ariaHidden is shown', async () => {
   // github.blog's header menus: `toggle.ariaExpanded = "true"` and
   // `menu.ariaHidden = "false"` were expandos, and the menu, shown by its

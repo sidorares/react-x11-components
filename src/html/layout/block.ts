@@ -89,6 +89,7 @@ import {
   SHIFTED_LINES,
   TEXT_SHIFTS,
   columned,
+  containmentApplies,
   isBlank,
 } from './boxes.js';
 import type {
@@ -5087,6 +5088,8 @@ export function containsOutOfFlow(box: Box, fixed: boolean): boolean {
  *  `inline-size`. */
 const CONTAIN_WIDTH = CONTAIN_SIZE | CONTAIN_INLINE_SIZE;
 
+export { containmentApplies };
+
 /**
  * Whether a box has any of the containments `bits` names, as they apply
  * to it (CSS Containment 2, 3): none to an inline box that is no atomic
@@ -5096,22 +5099,6 @@ const CONTAIN_WIDTH = CONTAIN_SIZE | CONTAIN_INLINE_SIZE;
 export function contained(box: Box, bits: number): boolean {
   const set = box.style.contain & bits;
   return set !== 0 && containmentApplies(box, set);
-}
-
-/** Whether the containments `bits` would apply to a box, were they set
- *  (`contained`). */
-export function containmentApplies(box: Box, bits: number): boolean {
-  switch (box.kind) {
-    case 'block':
-    case 'flex':
-    case 'replaced':
-      return true;
-    case 'table':
-    case 'table-cell':
-      return !!(bits & ~CONTAIN_WIDTH);
-    default:
-      return false;
-  }
 }
 
 /**
