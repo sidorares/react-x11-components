@@ -207,10 +207,10 @@ export interface HtmlProps {
   /** Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true. */
   selectable?: boolean;
   /**
-   * Whether the document's CSS animations and animated GIFs run. Default
+   * Whether the document's CSS animations and animated images run. Default
    * true. False draws each animation as it stands once it has run one
    * iteration at no length — the frame it ends on where it fills forwards
-   * — and each animated GIF at its first frame, which is what a capture
+   * — and each animated GIF or WebP at its first frame, which is what a capture
    * that has to come out the same every time wants. It does not answer
    * `(prefers-reduced-motion: reduce)`: the page held at rest is the one
    * that animates, under `no-preference`, and `reducedMotion` says which

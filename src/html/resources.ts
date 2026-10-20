@@ -20,7 +20,9 @@ import type { DecodedStylesheet } from './css/decode.js';
 import { svgFromBytes } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
 import { GifCanvas, readGif } from './gif.js';
-import { AnimatedImage } from './animated.js';
+import { AnimatedImage, gifAnimation, webpAnimation } from './animated.js';
+import { readAnimatedWebP } from './webp.js';
+import type { DecodeStill } from './webp.js';
 import type { UrlResolver } from './url.js';
 import type { Element } from 'domhandler';
 
@@ -299,13 +301,31 @@ export class ResourceStore {
       if (!synchronous) this._changed('image', entry.layout !== false);
       return;
     }
-    const animation = animatedGif(result.bytes);
+    const animation = animatedImage(result.bytes);
     if (animation) {
-      entry.animation = animation;
-      entry.image = animation.image(0);
-      entry.size = rasterSize(animation.width, animation.height);
-      entry.state = 'ready';
-      if (!synchronous) this._changed('image', entry.layout !== false);
+      const take = (animation: AnimatedImage): void => {
+        entry.animation = animation;
+        entry.image = animation.image(0);
+        entry.size = rasterSize(animation.width, animation.height);
+        entry.state = 'ready';
+      };
+      if (!isPromise(animation)) {
+        take(animation);
+        if (!synchronous) this._changed('image', entry.layout !== false);
+        return;
+      }
+      animation.then(
+        (animation) => {
+          if (this._destroyed) return;
+          take(animation);
+          this._changed('image', entry.layout !== false);
+          this._done();
+        },
+        () => {
+          entry.state = 'failed';
+          this._done();
+        },
+      );
       return;
     }
     const decoded = decodeImage(result.bytes);
@@ -499,17 +519,57 @@ const makeImage = (rgba: {
 }): ImageLike =>
   new (ntk.Image as unknown as new (rgba: unknown) => ImageLike)(rgba);
 
-/** A GIF of more than one frame, played as `animated.ts` plays one; null
- *  for anything else, which `decodeImage` reads. */
-function animatedGif(bytes: Uint8Array): AnimatedImage | null {
+/**
+ * A GIF of more than one frame, or an animated WebP, played as
+ * `animated.ts` plays one; null for anything else, which `decodeImage`
+ * reads. A WebP is a promise, since its frames are decoded by
+ * image-in-browser, which is loaded the first time one arrives — as core
+ * loads it for a still WebP, and for the same reason: evaluating it takes
+ * some 140 ms that a document with none should not pay.
+ */
+function animatedImage(
+  bytes: Uint8Array,
+): AnimatedImage | Promise<AnimatedImage> | null {
   try {
-    const file = readGif(bytes);
-    return file && file.frames.length > 1
-      ? new AnimatedImage(file, makeImage)
-      : null;
+    const gif = readGif(bytes);
+    if (gif) {
+      return gif.frames.length > 1
+        ? new AnimatedImage(gifAnimation(gif), makeImage)
+        : null;
+    }
+    const webp = readAnimatedWebP(bytes);
+    if (!webp) return null;
+    return webpStills().then(
+      (decode) => new AnimatedImage(webpAnimation(webp, decode), makeImage),
+    );
   } catch {
     return null;
   }
+}
+
+let stills: Promise<DecodeStill> | null = null;
+
+/** image-in-browser's WebP decoder, for one frame at a time (`stillOf`):
+ *  straight RGBA, or null for a frame that does not decode. */
+function webpStills(): Promise<DecodeStill> {
+  stills ??= import('image-in-browser/lib/src/formats/webp-decoder.js').then(
+    ({ WebPDecoder }) =>
+      (bytes: Uint8Array) => {
+        try {
+          const decoded = new WebPDecoder().decode({ bytes, frameIndex: 0 });
+          if (!decoded) return null;
+          const { width, height } = decoded;
+          // order 0 is ChannelOrder.rgba
+          const data = decoded.getBytes({ order: 0 });
+          return data.length === width * height * 4
+            ? { width, height, data }
+            : null;
+        } catch {
+          return null;
+        }
+      },
+  );
+  return stills;
 }
 
 /**

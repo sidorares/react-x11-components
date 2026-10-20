@@ -1,4 +1,5 @@
-// An animated GIF, as `<Html>` draws it: which frame shows when.
+// An animated image — a GIF or a WebP — as `<Html>` draws it: which frame
+// shows when.
 //
 // A browser plays an animated image wherever it is drawn — an `<img>`, a
 // background, a list marker — and every place that draws one URL shows the
@@ -10,13 +11,16 @@
 // per document, not per image, and none once every animation drawn has
 // played its last loop or nothing that draws one is painted any more.
 //
-// The frames are made as they are first shown, on a `GifCanvas`, and kept
+// The frames are made as they are first shown, on the format's canvas
+// (`GifCanvas`, `WebPCanvas`), and kept
 // — the same `Image` for a frame every time it comes round, so what is
 // uploaded to the server or kept scaled for it is made once — where all of
 // them come to no more than `KEPT_PIXELS`. Past that only the frame showing
 // is, and the one it replaces is given up as it does.
 import { GifCanvas } from './gif.js';
 import type { GifFile } from './gif.js';
+import { WebPCanvas } from './webp.js';
+import type { DecodeStill, WebPFile } from './webp.js';
 
 /** What all of an animation's frames may come to, in pixels, and still be
  *  kept: 32 MB of RGBA, and as much again for each server it is drawn on. */
@@ -29,12 +33,37 @@ export type MakeImage = (rgba: {
   data: Uint8Array;
 }) => unknown;
 
+/** What an animation is played from: its canvas, its frames' delays, how
+ *  many times it plays, and the canvas once a frame is drawn. */
+export interface AnimationSource {
+  width: number;
+  height: number;
+  frames: readonly { delay: number }[];
+  plays: number;
+  at(index: number): Uint8Array;
+}
+
+/** A GIF's frames, drawn on a `GifCanvas`. */
+export function gifAnimation(file: GifFile): AnimationSource {
+  const canvas = new GifCanvas(file);
+  return { ...file, at: (index) => canvas.at(index) };
+}
+
+/** An animated WebP's frames, drawn on a `WebPCanvas`, each decoded by
+ *  `decode`. */
+export function webpAnimation(
+  file: WebPFile,
+  decode: DecodeStill,
+): AnimationSource {
+  const canvas = new WebPCanvas(file, decode);
+  return { ...file, at: (index) => canvas.at(index) };
+}
+
 export class AnimatedImage {
   readonly width: number;
   readonly height: number;
-  private readonly _file: GifFile;
+  private readonly _file: AnimationSource;
   private readonly _make: MakeImage;
-  private readonly _canvas: GifCanvas;
   /** When each frame starts within one play, and the play's length. */
   private readonly _starts: number[] = [];
   private readonly _duration: number;
@@ -43,10 +72,9 @@ export class AnimatedImage {
   /** The time of the first frame's first showing: null until a paint asks. */
   private _start: number | null = null;
 
-  constructor(file: GifFile, make: MakeImage) {
+  constructor(file: AnimationSource, make: MakeImage) {
     this._file = file;
     this._make = make;
-    this._canvas = new GifCanvas(file);
     this.width = file.width;
     this.height = file.height;
     let t = 0;
@@ -86,7 +114,7 @@ export class AnimatedImage {
   image(index: number): unknown {
     const kept = this._images[index];
     if (kept) return kept;
-    const data = this._canvas.at(index).slice();
+    const data = this._file.at(index).slice();
     const image = this._make({ width: this.width, height: this.height, data });
     if (!this._keepAll) this.destroy();
     this._images[index] = image;

@@ -256,6 +256,42 @@ metric(
 );
 
 metric(
+  'an animated WebP plays as a GIF does, once its decoder has loaded',
+  async (t) => {
+    const clock = holdClock(t, animationClock);
+    // red for 20 ms, then green for 20, for ever; made with libwebp's webpmux
+    const webp = new Uint8Array(
+      Buffer.from(
+        'UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAwAAAwAAQU5JTQYAAAD/////AABBTk1GKAAAAAAA' +
+          'AAAAAAMAAAMAABQAAAJWUDhMDwAAAC8DwAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAMA' +
+          'AAMAABQAAAJWUDhMDwAAAC8DwAAAB9D/iP4HIqL/AQA=',
+        'base64',
+      ),
+    );
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}img{display:block}</style>' +
+        '<img src="a.webp" width="8" height="8">',
+      { 'a.webp': webp },
+    );
+    const { ctx } = result;
+    const abs = (el as unknown as DrawnNode).abs;
+    await waitFor(() =>
+      assert.ok(clock.pending, 'decoded, and waiting for a frame'),
+    );
+    await act();
+    await expectPixel(ctx, abs.x + 4, abs.y + 4, '#ff0000', {
+      message: 'first',
+    });
+    await clock.frame();
+    await clock.frame();
+    await act();
+    await expectPixel(ctx, abs.x + 4, abs.y + 4, '#00ff00', {
+      message: 'second',
+    });
+  },
+);
+
+metric(
   'an animated GIF that has played its loops rests on its last frame, and waits for nothing',
   async (t) => {
     const clock = holdClock(t, animationClock);

@@ -400,7 +400,7 @@ export interface HtmlViewProps {
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
   domRevision?: number;
-  /** Whether the document's CSS animations and animated GIFs run.
+  /** Whether the document's CSS animations and animated images run.
    *  Default true. */
   animate?: boolean;
   /** Whether the desktop has asked for less motion: what
