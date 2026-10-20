@@ -3202,7 +3202,36 @@ inside a box at the element's corner (`atViewport` in `widgets.ts`): a
 position moves a box laid out in the flow, and a pane reaches as far as
 its content is laid out, not as far as it was moved, so in the flow after
 the element it sat at the document's foot and the page scrolled that much
-past its end to the widget.
+past its end to the widget. An embedded element in a box fixed to the
+viewport is mounted in the same box (`EmbeddedRect.atViewport`), and the
+fixed boxes the scroll moves the others under do not cut it.
+
+**A scale the same both ways is a rectangle a mount can stand for, and
+the mount is drawn at it** (`zoomBetween`, `evenScaleOf` in `paint.ts`). A
+slide deck fits its stage to the window with `scale()`, and an `<iframe>`
+on a slide was refused for being drawn through a matrix: its realm ran in
+a `FrameHolder` and nothing of it was drawn. Where every matrix around a
+box is a scale the same across as down and a move, `placementOf` maps the
+content box and the clips through them to where they are drawn
+(`clipFor`'s `zoomFrom`), and an embedded element's rect carries the
+factor (`EmbeddedRect.zoom`), which `embedded.ts` hands to core's `scale`
+prop on a box the element's own size before it — so the frame's document
+is laid out at its CSS size and its text shaped at the size it is drawn
+at, the zoom `<Flow>` gives a body. Three things are load-bearing. **What
+is under a matrix is laid out in the coordinates before it**: the walk
+for what is painted after the box is asked in the box's own coordinates
+and taken up through each context's matrices (`paintedAfter`'s `zoomed`),
+and `crowded` asks what each box on the path holds in that box's own
+(`extentIn`); asked in the window's, a page's text beside the frame on
+the slide reached a frame drawn somewhere else. **The scale box is always
+there**, at 1 where nothing scales the element, so a frame whose stage
+comes to fit the window exactly is the same node, and its document is
+not started again. And **a cover is never painted over a scaled player**
+(`coversOf` is not asked): it is painted where it is laid out, which
+under a scale it is not, so such a video keeps its poster. A turn, a
+skew, a flip, two factors and a projection still refuse; a widget is not
+held to any of this, since `controls.ts` mounts it where the box was laid
+out.
 
 **A box in the top layer is reached by nothing around it**
 (`Box.topLayer`, CSS Position 4): a dialog a page's scripts opened with

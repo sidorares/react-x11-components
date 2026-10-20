@@ -5651,15 +5651,37 @@ export function clipsOverflow(box: Box): boolean {
  * Undefined where nothing cuts `box`; null where something cuts it in a way
  * neither can. Up to `within` and no further, where it is given: the box
  * whose layer `box`'s goes in, which the clips above it cut already.
+ *
+ * Where `zoomFrom` is given, the boxes around `box` may be drawn through
+ * a scale the same both ways and a move (`media.ts`): it answers, for a
+ * box, the factor and the move that what the box draws is drawn through,
+ * its own matrix's and every one's above it, and each clip edge goes
+ * through them to where it is drawn, as `extent` already has.
  */
 export function clipFor(
   box: Box,
   extent: Rect,
   scale: number,
   within: Box | null = null,
+  zoomFrom: ((at: Box) => Zoom) | null = null,
 ): { rect: Rect; radius: number } | null | undefined {
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   let clip: Rect | undefined;
+  // a clip edge where it is drawn, and the factor its radii scale by
+  const drawn = (
+    r: { x: number; y: number; w: number; h: number },
+    at: Box,
+  ): { x: number; y: number; w: number; h: number; k: number } => {
+    const z = zoomFrom?.(at);
+    if (!z || (z.k === 1 && z.x === 0 && z.y === 0)) return { ...r, k: 1 };
+    return {
+      x: z.k * r.x + z.x,
+      y: z.k * r.y + z.y,
+      w: z.k * r.w,
+      h: z.k * r.h,
+      k: z.k,
+    };
+  };
   const cut = (r: { x: number; y: number; w: number; h: number }): void => {
     let x = Math.max(r.x, clip ? clip.x : -Infinity);
     let y = Math.max(r.y, clip ? clip.y : -Infinity);
@@ -5679,7 +5701,7 @@ export function clipFor(
       height: Math.max(0, bottom - y),
     };
   };
-  if (box.outOfFlow && box.style.clip) cut(clipOf(box, space));
+  if (box.outOfFlow && box.style.clip) cut(drawn(clipOf(box, space), box));
   // the one with round corners that reaches it, if any does
   let rounded: { x: number; y: number; w: number; h: number } | null = null;
   let radius = 0;
@@ -5693,11 +5715,14 @@ export function clipFor(
       escaping.every((o) => holds(at, containingBlockOf(o)));
     if (applies) {
       if (clipsOverflow(at)) {
-        const { rect, radii } = clipEdge(at, space);
+        const edge = clipEdge(at, space);
+        const rect = drawn(edge.rect, at);
+        const radii = edge.radii;
         if (radii) {
           let r = 0;
           for (const v of radii.x) r = Math.max(r, v);
           for (const v of radii.y) r = Math.max(r, v);
+          r *= rect.k;
           const clear =
             extent.x >= rect.x + r &&
             extent.y >= rect.y + r &&
@@ -5707,13 +5732,13 @@ export function clipFor(
             const circle = circleOf(radii);
             if (circle === null || rounded) return null;
             rounded = rect;
-            radius = circle;
+            radius = circle * rect.k;
           }
         } else {
           cut(rect);
         }
       }
-      if (at.outOfFlow && at.style.clip) cut(clipOf(at, space));
+      if (at.outOfFlow && at.style.clip) cut(drawn(clipOf(at, space), at));
     }
     if (at === within) break;
     if (at.outOfFlow) escaping.push(at);
@@ -5738,6 +5763,72 @@ export function clipFor(
     };
   }
   return clip && { rect: clip, radius: 0 };
+}
+
+/** A scale the same both ways and a move: a point `p` is drawn at
+ *  `k·p + (x, y)`. */
+export interface Zoom {
+  k: number;
+  x: number;
+  y: number;
+}
+
+/** No scale and no move. */
+export const NO_ZOOM: Zoom = { k: 1, x: 0, y: 0 };
+
+/**
+ * What `from` and the boxes around it are drawn through, from `from`'s own
+ * matrix up to `to`'s, which is left out — to the root, or to a box in the
+ * top layer, which nothing around it moves, where `to` is null — where
+ * each is a scale the same across as down and a move, or none
+ * (`evenScaleOf`). Null where one turns, skews, scales two ways, flips or
+ * projects: what a sibling over the document stands for then is no
+ * rectangle. A slide deck scales its stage to fit the window; an
+ * `<iframe>` on a slide is drawn through that.
+ */
+export function zoomBetween(from: Box, to: Box | null = null): Zoom | null {
+  let z = NO_ZOOM;
+  for (let at: Box | null = from; at && at !== to; at = at.parent) {
+    const m = placedMatrix(at);
+    if (m) {
+      const k = evenScaleOf(m);
+      if (k === null) return null;
+      z = { k: k * z.k, x: k * z.x + m[4], y: k * z.y + m[5] };
+    }
+    if (at.topLayer) break;
+  }
+  return z;
+}
+
+/** The factor a matrix scales by, where it scales the same across as
+ *  down, by more than nothing, and otherwise only moves: null for a turn,
+ *  a skew, a scale of two factors, a flip and a projection. */
+export function evenScaleOf(m: Placed): number | null {
+  if (m.length !== 6) return null;
+  const k = m[0];
+  if (!(k > 0) || !Number.isFinite(k)) return null;
+  const near = (v: number): boolean => Math.abs(v) <= 1e-9 * k;
+  return near(m[1]) && near(m[2]) && near(m[3] - k) ? k : null;
+}
+
+/** A rect where a zoom draws it. */
+export function zoomRect(z: Zoom, r: Rect): Rect {
+  return {
+    x: z.k * r.x + z.x,
+    y: z.k * r.y + z.y,
+    width: z.k * r.width,
+    height: z.k * r.height,
+  };
+}
+
+/** A rect drawn through a zoom, where it is before it. */
+export function unzoomRect(z: Zoom, r: Rect): Rect {
+  return {
+    x: (r.x - z.x) / z.k,
+    y: (r.y - z.y) / z.k,
+    width: r.width / z.k,
+    height: r.height / z.k,
+  };
 }
 
 /** The radius of corners that are all one circle's, or null where they
@@ -6521,8 +6612,17 @@ export function paintedAfter(
   extent: Rect,
   fixedExtent: Rect | null = null,
   above: ReadonlySet<Box> | null = null,
+  zoomed = false,
 ): boolean | null {
-  return walkPaintedAfter(box, extent, fixedExtent, above, () => true);
+  return walkPaintedAfter(
+    box,
+    extent,
+    fixedExtent,
+    above,
+    () => true,
+    false,
+    zoomed,
+  );
 }
 
 /**
@@ -6592,6 +6692,13 @@ function walkPaintedAfter(
   /** Whether a box in the flow is painted where its layer, or its
    *  context's flow, is (`layersOver`), rather than answered with null. */
   flow = false,
+  /**
+   * Whether the boxes around `box` may be drawn through a scale and a move
+   * (`zoomBetween`), and `extent` is in `box`'s own coordinates, before its
+   * matrix: it is taken through each on the way up, so that it is in the
+   * coordinates the layers of each context are laid out in.
+   */
+  zoomed = false,
 ): boolean | null {
   const over = (later: Box): boolean => {
     // a layer of its own over this one's, with all it holds (`above`)
@@ -6631,6 +6738,11 @@ function walkPaintedAfter(
     // them where it is one
     let context: Box | null = item.parent;
     while (context && !STACKED.has(context)) context = context.parent;
+    if (zoomed) {
+      const z = zoomBetween(item, context);
+      if (!z) return null;
+      extent = zoomRect(z, extent);
+    }
     // no box above paints layers: nothing is painted over it but its flow
     if (!context && flow) break;
     const list = context ? STACKED.get(context)! : null;

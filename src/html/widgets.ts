@@ -1047,7 +1047,7 @@ function renderControl(
  * scrolled that much past it to the widget. In a box at the element's
  * corner, the widget is laid out where it was.
  */
-function atViewport(
+export function atViewport(
   fixed: boolean,
   key: string,
   node: ReactElement,

@@ -9,7 +9,14 @@
 // or what the boxes that clip it and the boxes fixed over it leave of it,
 // faded as the document fades it — and the **frame**, the content box, its
 // corners rounded where the document rounds them, which what the host
-// returned fills. The host's node is keyed by its element, so a mount that
+// returned fills. Where the element is drawn through a scale
+// (`EmbeddedRect.zoom`), a third box inside the frame carries core's `scale`
+// prop and is the element's size before it: what the host returned is laid
+// out at that size and drawn at the scale, as a browser draws an
+// `<iframe>`'s document inside a scaled slide, its text shaped at the size
+// it is drawn at rather than stretched. An element in a box fixed to the
+// viewport (`EmbeddedRect.atViewport`) has all three in a box core keeps
+// where the viewport is, as a widget's (`atViewport` in `widgets.ts`). The host's node is keyed by its element, so a mount that
 // moves, is cut or fades is the same node in the same place in the tree: a
 // new one would be a new document in an `<iframe>`, its scripts started
 // again.
@@ -17,6 +24,7 @@ import React from 'react';
 import type { ReactNode } from 'react';
 
 import { hx } from './hx.js';
+import { atViewport } from './widgets.js';
 import type { Element } from './dom.js';
 import type { EmbeddedRect } from './media.js';
 
@@ -66,7 +74,11 @@ function mount(rect: EmbeddedRect, id: string, content: ReactNode): ReactNode {
   const { x: left, y: top, width, height } = rect;
   const port = rect.clip ?? { x: left, y: top, width, height };
   const opacity = rect.hidden ? 0 : rect.opacity;
-  return hx(
+  const zoom = rect.zoom ?? 1;
+  // in a box fixed to the viewport, kept where the viewport is, as a
+  // widget is (`atViewport`)
+  const fixed = rect.atViewport === true;
+  const node = hx(
     'box',
     {
       key: `embedded:${id}`,
@@ -104,7 +116,23 @@ function mount(rect: EmbeddedRect, id: string, content: ReactNode): ReactNode {
           pointerEvents: 'box-none',
         },
       },
-      content,
+      // always there, so a mount whose scale comes or goes is the same
+      // node, and an `<iframe>`'s document is not started again
+      hx(
+        'box',
+        {
+          selectable: false,
+          scale: zoom,
+          // sized in the unit it establishes, so it fills the frame
+          style: {
+            width: width / zoom,
+            height: height / zoom,
+            pointerEvents: 'box-none',
+          },
+        },
+        content,
+      ),
     ),
   );
+  return fixed ? atViewport(true, `embedded-fixed:${id}`, node) : node;
 }
