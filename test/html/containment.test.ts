@@ -9,6 +9,7 @@ import {
   boxOf,
   clipsAround,
   documentText,
+  drawnText as documentTextOf,
   fillsIn,
   fillsOf,
   findById,
@@ -394,6 +395,39 @@ test('contain: size lays a box out as though it held nothing', async () => {
   assert.strictEqual(boxOf(el, 'e').height, 0);
   assert.deepStrictEqual(size('f'), [80, 40]);
 });
+
+metric(
+  'content-visibility: hidden makes nothing of what a box holds, and draws the box',
+  async () => {
+    // what it holds is skipped (CSS Containment 2, 4.1): not drawn, and no
+    // press, focus or find reaches it — so no box, no text and no widget are
+    // made of it. Its own background is drawn, and a box no size
+    // containment applies to, an inline one, skips nothing.
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#fff}</style>' +
+        '<div id="a" style="content-visibility:hidden;height:20px;' +
+        'background:#0000ff"><a id="l" href="#x">link</a><input id="i">' +
+        '<p style="height:300px;background:#ff0000">tall</p></div>' +
+        '<div id="b" style="content-visibility:hidden"><p>held</p></div>' +
+        '<p>before <span style="content-visibility:hidden">inline</span></p>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'a').height, 20);
+    assert.strictEqual(boxOf(el, 'b').height, 0);
+    assert.strictEqual(el.elementRect(findById(el.document, 'l')!), null);
+    const text = documentTextOf(el);
+    assert.ok(!text.includes('link') && !text.includes('held'), text);
+    assert.ok(text.includes('inline'), text);
+    const controls = (el as unknown as { _controls: unknown[] })._controls;
+    assert.strictEqual(controls.length, 0, 'no widget for the field in it');
+    await expectPixel(result.ctx, 5, 5, '#0000ff', {
+      message: 'its own ground',
+    });
+    await expectPixel(result.ctx, 5, 25, '#ffffff', {
+      message: 'and nothing of what it holds below it',
+    });
+  },
+);
 
 test('layout and paint containment make a formatting context, a containing block and a clip', async () => {
   const { node } = await render(
