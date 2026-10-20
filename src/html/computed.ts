@@ -11,6 +11,7 @@
 // box, and the computed ones where it has none; and a colour is `rgb()` or
 // `rgba()`, as a browser serializes every one.
 import type { ComputedStyle } from './css/style.js';
+import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
 import { rgbaOf } from './css/color.js';
 
@@ -46,6 +47,64 @@ function len(value: Len | 'none', scale: number): string {
   if (!value.px) return pct;
   const sign = value.px < 0 ? '-' : '+';
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
+}
+
+/**
+ * A computed `transform` as a list of functions CSS reads back, in CSS
+ * pixels: what `commitStyles` writes into a `style` attribute. A function
+ * an animation interpolates is kept as the function it is, and a matrix
+ * that is no function's is `matrix()`, or `matrix3d()` out of the plane.
+ */
+export function cssomTransform(
+  list: readonly TransformFunction[] | null,
+  scale: number,
+): string {
+  if (!list?.length) return 'none';
+  const n = (v: number) => num(v);
+  return list
+    .map((fn) => {
+      if ('by' in fn) {
+        const [x, y] = fn.by;
+        return fn.z
+          ? `translate3d(${len(x, scale)}, ${len(y, scale)}, ${px(fn.z, scale)})`
+          : `translate(${len(x, scale)}, ${len(y, scale)})`;
+      }
+      if (fn.fn) return primitiveText(fn.fn, scale);
+      if ('matrix' in fn) {
+        const [a, b, c, d, e, f] = fn.matrix;
+        return `matrix(${[a, b, c, d, e / scale, f / scale].map(n).join(', ')})`;
+      }
+      // a 4×4's translation is a length, and the row a perspective
+      // divides by a length's reciprocal (`parseTransform`)
+      const m = fn.solid.map((v, i) =>
+        i === 12 || i === 13 || i === 14
+          ? v / scale
+          : i === 3 || i === 7 || i === 11
+            ? v * scale
+            : v,
+      );
+      return `matrix3d(${m.map(n).join(', ')})`;
+    })
+    .join(' ');
+}
+
+function primitiveText(fn: Primitive, scale: number): string {
+  switch (fn.kind) {
+    case 'scale':
+      return fn.z !== undefined && fn.z !== 1
+        ? `scale3d(${num(fn.x)}, ${num(fn.y)}, ${num(fn.z)})`
+        : `scale(${num(fn.x)}, ${num(fn.y)})`;
+    case 'rotate':
+      return `rotate(${num(fn.angle)}deg)`;
+    case 'rotate3d':
+      return `rotate3d(${num(fn.x)}, ${num(fn.y)}, ${num(fn.z)}, ${num(fn.angle)}deg)`;
+    case 'skew':
+      return `skew(${num(fn.x)}deg, ${num(fn.y)}deg)`;
+    case 'perspective':
+      return fn.depth === null
+        ? 'perspective(none)'
+        : `perspective(${px(fn.depth, scale)})`;
+  }
 }
 
 /** A colour as CSSOM serializes it: `rgb()` opaque, `rgba()` not. */

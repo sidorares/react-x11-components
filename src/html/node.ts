@@ -77,7 +77,7 @@ import {
   resolve as resolveLength,
 } from './css/values.js';
 import type { Len } from './css/values.js';
-import { cssomStyle } from './computed.js';
+import { cssomStyle, cssomTransform } from './computed.js';
 import {
   Cascade,
   CHANGES_BELOW,
@@ -104,6 +104,7 @@ import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
+import { ScriptAnimations } from './css/scripted.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
   CONTAIN_INLINE_SIZE,
@@ -836,6 +837,10 @@ export class HtmlViewNode extends Node {
   /** The document's timeline: when each element's animations started
    *  (`css/timeline.ts`). It outlives the cascades and the box trees. */
   private _timeline = new AnimationTimeline();
+  /** The animations the page's scripts made (`setScriptAnimation`), which
+   *  run on the timeline's clock as a CSS animation does. The page's to
+   *  make and end, so they outlive a timeline made again. */
+  private _scripts = new ScriptAnimations();
   /** The timer for the next frame of an animation, and when it is due. */
   private _frameTimer: unknown = null;
   private _frameAt = Infinity;
@@ -1441,6 +1446,7 @@ export class HtmlViewNode extends Node {
     ) {
       this._cascade = kept.cascade;
       this._cascade.previous = this._previousStyle;
+      this._cascade.scripts = this._scripts;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
       faces = kept.faces;
@@ -1540,6 +1546,7 @@ export class HtmlViewNode extends Node {
         shadows,
       );
       this._cascade.previous = this._previousStyle;
+      this._cascade.scripts = this._scripts;
       this._sheetsRead = {
         look,
         scale: this._scale,
@@ -3296,6 +3303,118 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * What a page's script says of one of its animations (`Element.animate()`,
+   * `scripts/dom.ts`): its effect and where its time is, as primitives
+   * (`ScriptAnimations.tell`), or, with either null, that the element has it
+   * no longer. The element, or its pseudo-element, is restyled at the next
+   * frame — in place where that can be, as a CSS animation's frame is — and
+   * then at each frame of it that changes what it draws. A document drawn
+   * at rest builds it again at once.
+   */
+  setScriptAnimation(
+    element: Element,
+    id: number,
+    effect: string | null,
+    play: string | null,
+  ): void {
+    const touched = this._scripts.tell(
+      element,
+      id,
+      effect,
+      play,
+      animationClock.now(),
+    );
+    if (!touched.length) return;
+    if (!this._animating()) {
+      this._invalidate(Stale.Boxes, new Set([element]), true);
+      return;
+    }
+    for (const pseudo of touched) this._timeline.oweScripts(element, pseudo);
+    this._scheduleFrame();
+  }
+
+  /**
+   * What `commitStyles` writes into an element's `style` attribute (Web
+   * Animations 1, 6.4): each of `properties`' values as its animations come
+   * to now, those made after animation `id` left out, as CSSOM serializes
+   * it — `\u0000` between a property and its value, `\u0001` between two.
+   * One it has no serialization for is left out. Null where the element is
+   * not rendered, which `commitStyles` throws for.
+   */
+  scriptAnimationValues(
+    element: Element,
+    id: number,
+    properties: readonly string[],
+  ): string | null {
+    this._prepare(this.abs.width || 1);
+    const scripts = this._scripts;
+    scripts.until = id;
+    let style: ComputedStyle | null;
+    try {
+      style = this._styledNow(element);
+    } finally {
+      scripts.until = Infinity;
+    }
+    if (!style || !this._tree?.styles.has(element)) return null;
+    if (style.display === 'none') return null;
+    const record = cssomStyle(style, this._scale, null);
+    const out: string[] = [];
+    for (const prop of properties) {
+      const value = prop.startsWith('--')
+        ? style.custom?.get(prop)
+        : prop === 'transform'
+          ? cssomTransform(style.transform, this._scale)
+          : record[prop];
+      if (value !== undefined) out.push(`${prop}\u0000${value}`);
+    }
+    return out.join('\u0001');
+  }
+
+  /**
+   * An element styled at this moment on the timeline, where a script
+   * animates it, rather than at the last frame: what `getComputedStyle`
+   * reads straight after `animate()`, and `commitStyles` writes. Styled on a
+   * fork of the timeline, so the frames it is drawn by are as they were.
+   * The element's style in the tree where nothing animates it from a
+   * script, and null where it has none.
+   */
+  private _styledNow(element: Element): ComputedStyle | null {
+    const kept = this._styleOf(element);
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!kept || !tree || !cascade || !this._scripts.has(element)) return kept;
+    const parent = flatParentOf(element);
+    const parentStyle = parent ? this._styleOf(parent) : tree.root.style;
+    if (!parentStyle) return kept;
+    return this._atNow(element, () =>
+      cascade.styleFor(
+        element,
+        parentStyle,
+        tree.styles.get(element)?.inFlex ?? false,
+      ),
+    );
+  }
+
+  /** What `style` works out with the cascade on a fork of the timeline at
+   *  this moment, where a script animates `element`: the timeline's clock
+   *  for the element's frames is left as it was. */
+  private _atNow<T>(element: Element, style: () => T): T {
+    const cascade = this._cascade;
+    if (!cascade || !this._scripts.has(element)) return style();
+    const was = cascade.timeline;
+    if (this._animating()) {
+      const fork = this._timeline.fork(element);
+      fork.now = animationClock.now();
+      cascade.timeline = fork;
+    } else cascade.timeline = null;
+    try {
+      return style();
+    } finally {
+      cascade.timeline = was;
+    }
+  }
+
+  /**
    * A player knows the size of what it plays (`onLoadedMetadata`), in CSS
    * pixels: the video's intrinsic size from now on, as HTML has it, so a
    * box that sets neither side takes the video's and one that sets a side
@@ -3818,10 +3937,12 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
-    const style = this._styleOf(element);
+    const style = this._styledNow(element);
     if (!style) return null;
     if (pseudo) {
-      const own = cascade.pseudoStyleFor(element, pseudo, style);
+      const own = this._atNow(element, () =>
+        cascade.pseudoStyleFor(element, pseudo, style),
+      );
       return own ? cssomStyle(own, this._scale, null) : null;
     }
     const box = boxFor(tree.root, element);
@@ -5220,6 +5341,7 @@ export class HtmlViewNode extends Node {
         this._timeline.drop(element, '');
         this._timeline.drop(element, 'before');
         this._timeline.drop(element, 'after');
+        this._timeline.dropScripts(element);
         continue;
       }
       generated ||= pseudo;

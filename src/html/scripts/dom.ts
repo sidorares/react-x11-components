@@ -855,35 +855,131 @@ export function installDom(
     return timing;
   };
 
-  /** Keyframes as `getKeyframes` lists them, from either form `animate`
-   *  takes: a list of frames, or one object of a list for each property. */
+  /**
+   * Keyframes as `getKeyframes` lists them, from either form `animate`
+   * takes (Web Animations 1, 6.6.3): a list of frames, whose offsets are in
+   * order between 0 and 1 where they are given; or one object of a list
+   * for each property, each list spread from 0 to 1 — one value alone at 1
+   * — and the frames that makes merged where two meet, `offset`, `easing`
+   * and `composite` handed to them in order, the easings again from the
+   * first where they run out. A frame with no offset is spread evenly
+   * between the two around it that have one, the first at 0 and the last
+   * at 1 (6.6.2, "compute missing keyframe offsets").
+   */
   const keyframesOf = (given: Any): Any[] => {
     if (given === null || given === undefined) return [];
+    if (typeof given !== 'object') {
+      throw new TypeError(
+        "Failed to execute 'animate' on 'Element': The provided value is not of type '(object or sequence<object>)'.",
+      );
+    }
     let frames: Any[];
     if (typeof given[Symbol.iterator] === 'function') {
-      frames = Array.from(given as Iterable<Any>, (frame) => ({ ...frame }));
+      frames = Array.from(given as Iterable<Any>, (frame) => ({
+        ...(frame ?? {}),
+        offset:
+          frame?.offset === null || frame?.offset === undefined
+            ? null
+            : Number(frame.offset),
+      }));
+      let last = -Infinity;
+      for (const { offset } of frames) {
+        if (offset === null) continue;
+        if (!(offset >= 0 && offset <= 1)) {
+          throw new TypeError(
+            "Failed to execute 'animate' on 'Element': Offsets must be null or in the range [0,1].",
+          );
+        }
+        if (offset < last) {
+          throw new TypeError(
+            "Failed to execute 'animate' on 'Element': Offsets must be monotonically non-decreasing.",
+          );
+        }
+        last = offset;
+      }
     } else {
-      frames = [];
+      const byOffset = new Map<number, Any>();
       for (const [name, values] of Object.entries(given)) {
         if (name === 'offset' || name === 'easing' || name === 'composite') {
           continue;
         }
         const list = Array.isArray(values) ? values : [values];
-        list.forEach((v, i) => ((frames[i] ??= {})[name] = v));
+        list.forEach((v, i) => {
+          const at = list.length === 1 ? 1 : i / (list.length - 1);
+          let frame = byOffset.get(at);
+          if (!frame) byOffset.set(at, (frame = { offset: null }));
+          frame[name] = v;
+        });
       }
+      frames = [...byOffset.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, frame]) => frame);
+      const listOf = (v: Any): Any[] =>
+        v === undefined ? [] : Array.isArray(v) ? v : [v];
+      listOf(given.offset).forEach((o, i) => {
+        if (frames[i]) frames[i].offset = o === null ? null : Number(o);
+      });
+      const easings = listOf(given.easing);
+      const composites = listOf(given.composite);
+      frames.forEach((frame, i) => {
+        if (easings.length) frame.easing = easings[i % easings.length];
+        if (i < composites.length) frame.composite = composites[i];
+      });
     }
-    const last = frames.length - 1;
+    const offsets: (number | null)[] = frames.map((f) => f.offset);
+    const n = frames.length;
+    if (n > 1 && offsets[0] === null) offsets[0] = 0;
+    if (n > 0 && offsets[n - 1] === null) offsets[n - 1] = 1;
+    for (let i = 1; i < n - 1; i += 1) {
+      if (offsets[i] !== null) continue;
+      let j = i + 1;
+      while (offsets[j] === null) j += 1;
+      const from = offsets[i - 1]!;
+      const to = offsets[j]!;
+      for (let k = i; k < j; k += 1) {
+        offsets[k] = from + ((to - from) * (k - i + 1)) / (j - i + 1);
+      }
+      i = j;
+    }
     return frames.map((frame, i) => ({
-      offset: frame.offset ?? null,
-      easing: frame.easing ?? 'linear',
-      composite: frame.composite ?? 'auto',
       ...frame,
-      computedOffset: frame.offset ?? (last > 0 ? i / last : 1),
+      offset: frame.offset,
+      easing: String(frame.easing ?? 'linear'),
+      composite: String(frame.composite ?? 'auto'),
+      computedOffset: offsets[i],
     }));
   };
 
+  /** A keyframe's property by the name a page gives it, as CSS names it
+   *  (Web Animations 1, 6.6.1, "IDL attribute name to animation property
+   *  name"): `cssFloat` and `cssOffset`, a capital letter a hyphen and the
+   *  letter, and a custom property as written. Null for one no CSS
+   *  property is named by — `offset`, `easing` and `composite` are the
+   *  frame's own, and a hyphenated name is ignored, as a browser does. */
+  const keyframeProperty = (name: string): string | null => {
+    if (name.startsWith('--')) return name.length > 2 ? name : null;
+    if (name === 'cssFloat') return 'float';
+    if (name === 'cssOffset') return 'offset';
+    if (
+      name === 'offset' ||
+      name === 'easing' ||
+      name === 'composite' ||
+      name === 'computedOffset' ||
+      name === 'float' ||
+      !/^[A-Za-z]+$/.test(name)
+    ) {
+      return null;
+    }
+    return name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  };
+
+  /** The order animations are made in, which is the order they composite
+   *  in (Web Animations 1, 5.4.2), and the id the host knows each by. */
+  let animationSeq = 0;
+
   /** What an animation animates: its target, its keyframes and its timing
-   *  (`KeyframeEffect`). The frames are kept, and nothing draws them. */
+   *  (`KeyframeEffect`). `<Html>` draws it, from what the host is told of
+   *  it (`Animation._report`). */
   class AnimationEffect {
     _timing: Any = timingOf(undefined);
     _animation: Any = null;
@@ -892,8 +988,12 @@ export function installDom(
     }
     updateTiming(timing: Any = {}): void {
       this._timing = timingOf({ ...this._timing, ...timing });
+      this._described = null;
       this._animation?._schedule();
     }
+    /** The effect as the host is told it (`_hostEffect`), made again where
+     *  its frames or its timing change. */
+    _described: string | null = null;
     /** How long one run of it lasts, and all of them, and when it ends. */
     getComputedTiming(): Any {
       const t = this._timing;
@@ -923,33 +1023,107 @@ export function installDom(
     }
   }
   class KeyframeEffect extends AnimationEffect {
-    target: Any;
-    pseudoElement: string | null;
+    _target: Any;
+    _pseudo: string | null;
     composite = 'replace';
     iterationComposite = 'replace';
     _frames: Any[];
     constructor(target: Any, keyframes: Any, options?: Any) {
       super();
       if (target instanceof KeyframeEffect) {
-        this.target = target.target;
-        this.pseudoElement = target.pseudoElement;
+        this._target = target.target;
+        this._pseudo = target.pseudoElement;
         this._frames = target._frames.map((f: Any) => ({ ...f }));
         this._timing = target.getTiming();
         return;
       }
-      this.target = target ?? null;
-      this.pseudoElement =
+      this._target = target ?? null;
+      this._pseudo =
         options && typeof options === 'object' && options.pseudoElement
           ? String(options.pseudoElement)
           : null;
       this._frames = keyframesOf(keyframes);
       this._timing = timingOf(options);
     }
+    get target(): Any {
+      return this._target;
+    }
+    set target(target: Any) {
+      this._target = target ?? null;
+      this._animation?._report();
+    }
+    get pseudoElement(): string | null {
+      return this._pseudo;
+    }
+    set pseudoElement(pseudo: Any) {
+      this._pseudo = pseudo === null ? null : String(pseudo);
+      this._described = null;
+      this._animation?._report();
+    }
     getKeyframes(): Any[] {
       return this._frames.map((f) => ({ ...f }));
     }
     setKeyframes(keyframes: Any): void {
       this._frames = keyframesOf(keyframes);
+      this._described = null;
+      this._animation?._report();
+    }
+    /** The CSS properties its frames set, by their CSS names. */
+    _properties(): string[] {
+      const out = new Set<string>();
+      for (const frame of this._frames) {
+        for (const name of Object.keys(frame)) {
+          const prop = keyframeProperty(name);
+          if (prop) out.add(prop);
+        }
+      }
+      return [...out];
+    }
+    /**
+     * The effect as the host is told it (`readEffect`, `css/scripted.ts`):
+     * a JSON string, the one thing of it that crosses — its pseudo-element,
+     * its frames, each its computed offset, its easing and its properties'
+     * values by their CSS names, and its timing, a duration of `auto` 0 and
+     * an infinite count null. Null for a pseudo-element that is neither
+     * `::before` nor `::after`, which `<Html>` draws no animation of.
+     */
+    _hostEffect(): string | null {
+      if (this._described !== null) return this._described || null;
+      const p = this._pseudo;
+      const pseudo =
+        p === null
+          ? ''
+          : p === '::before' || p === ':before'
+            ? 'before'
+            : p === '::after' || p === ':after'
+              ? 'after'
+              : null;
+      if (pseudo === null) {
+        this._described = '';
+        return null;
+      }
+      const frames = this._frames.map((frame) => {
+        const props: [string, string][] = [];
+        for (const [name, value] of Object.entries(frame)) {
+          const prop = keyframeProperty(name);
+          if (prop === null || value === null || value === undefined) continue;
+          props.push([prop, String(value)]);
+        }
+        return [frame.computedOffset, String(frame.easing), props];
+      });
+      const t = this._timing;
+      const timing = [
+        t.delay,
+        t.endDelay,
+        t.fill,
+        t.iterationStart,
+        t.iterations === Infinity ? null : t.iterations,
+        t.duration === 'auto' ? 0 : t.duration,
+        t.direction,
+        t.easing,
+      ];
+      this._described = JSON.stringify([pseudo, frames, timing]);
+      return this._described;
     }
   }
 
@@ -977,17 +1151,29 @@ export function installDom(
 
   /**
    * An animation a page started (`animate`, `new Animation`): when it
-   * started, how fast it runs, its promises and its events. What it
-   * animates is not drawn — `<Html>` draws CSS's animations and none of a
-   * script's — but it runs for as long as its timing says and then
-   * finishes, as one does in a browser: `finished` resolves and `finish`
-   * is told, so a page that hides a panel once it has faded, or waits for
-   * the fade to go on, goes on. One that never finished kept every panel a
-   * menu had faded out on screen.
+   * started, how fast it runs, its promises and its events. It runs for as
+   * long as its timing says and then finishes, as one does in a browser:
+   * `finished` resolves and `finish` is told, so a page that hides a panel
+   * once it has faded, or waits for the fade to go on, goes on. One that
+   * never finished kept every panel a menu had faded out on screen.
+   *
+   * What it animates is `<Html>`'s to draw, and the host is told, as
+   * primitives, whenever its effect or where its time is changes
+   * (`_report`, the `animation` op): `<Html>` samples its frames on its own
+   * clock from where it was told the time was, as it samples a CSS
+   * animation, so what is drawn is where the timing here says it is, and a
+   * finished one is held where it finished, its fill saying what it
+   * leaves.
    */
   class Animation extends EventTarget {
     id = '';
     replaceState = 'active';
+    /** Which it is to the host, and where it is in the composite order. */
+    _hostId = ++animationSeq;
+    /** The element the host was last told it animates, and what it was
+     *  told, which the same again is not told twice. */
+    _toldTo: Any = null;
+    _told = '';
     _effect: Any = null;
     _timeline: Any;
     /** The timeline's time it started at, where it is running. */
@@ -1151,13 +1337,83 @@ export function installDom(
       this._paused = false;
       this._done = false;
       liveAnimations.delete(this);
+      this._report();
       this._tell('cancel', null);
     }
     persist(): void {
       this.replaceState = 'persisted';
     }
-    /** Nothing to write: the effect's values are not computed here. */
-    commitStyles(): void {}
+    /**
+     * Its effect's values as they come to now, written into its target's
+     * `style` attribute (Web Animations 1, 4.4.13): what a page keeps once
+     * it cancels the animation, as `anim.commitStyles(); anim.cancel()`
+     * does. `<Html>` works them out, with this animation at the top of
+     * the element's effects.
+     */
+    commitStyles(): void {
+      const effect = this._effect;
+      const target = effect?.target;
+      if (!(target instanceof Element) || effect.pseudoElement !== null) {
+        throw new DOMException(
+          "Failed to execute 'commitStyles' on 'Animation': Animation effect target is not an element, or is a pseudo-element.",
+          'NoModificationAllowedError',
+        );
+      }
+      const values = call(
+        'animationValues',
+        target._id,
+        this._hostId,
+        effect._properties().join('\u0000'),
+      );
+      if (typeof values !== 'string') {
+        throw new DOMException(
+          "Failed to execute 'commitStyles' on 'Animation': Target element is not rendered.",
+          'InvalidStateError',
+        );
+      }
+      if (!values) return;
+      // an SVG element's as much as an HTML element's
+      const style = (target as Any).style;
+      for (const pair of values.split('\u0001')) {
+        const [prop, value] = pair.split('\u0000');
+        style.setProperty(prop, value);
+      }
+    }
+    /**
+     * Tell the host what it animates and where its time is: its effect
+     * (`KeyframeEffect._hostEffect`), and `1,<time>,<rate>` where it runs
+     * from that time, `0,<time>,<rate>` where it is held there — paused,
+     * finished; or, where it has no effect — idle, cancelled, replaced, of
+     * no element — that the element it was told of has it no longer.
+     */
+    _report(): void {
+      const effect = this._effect;
+      const target = effect?.target ?? null;
+      const time = this.currentTime;
+      const described =
+        target instanceof Element &&
+        time !== null &&
+        this.replaceState !== 'removed'
+          ? effect._hostEffect()
+          : null;
+      if (this._toldTo && (this._toldTo !== target || described === null)) {
+        call('animation', this._toldTo._id, this._hostId, null, null);
+        this._toldTo = null;
+        this._told = '';
+      }
+      if (described === null) return;
+      const running = this._start !== null && !this._paused;
+      // held, it is where it is; running, where it started says where it
+      // is from now on, which the same start does not change
+      const play = running
+        ? `1,${time},${this._rate}`
+        : `0,${time},${this._rate}`;
+      const told = `${described}\u0000${running ? `s${this._start}` : play}\u0000${this._rate}`;
+      if (told === this._told) return;
+      this._toldTo = target;
+      this._told = told;
+      call('animation', target._id, this._hostId, described, play);
+    }
     _newFinished(): void {
       this._finishedPromise = new Promise((resolve, reject) => {
         this._settle = { resolve, reject };
@@ -1167,8 +1423,13 @@ export function installDom(
       this._finishedPromise.catch(() => {});
     }
     /** Where it is now, and when it finishes from there: a timer at that
-     *  time, and the finish itself where that is now. */
+     *  time, and the finish itself where that is now; and the host told
+     *  where it is. */
     _schedule(): void {
+      this._reschedule();
+      this._report();
+    }
+    _reschedule(): void {
       clearTimer(this._timer);
       this._timer = 0;
       const time = this.currentTime;
@@ -1198,10 +1459,61 @@ export function installDom(
       const held = this._rate > 0 ? this._end() : 0;
       this._start = null;
       this._held = held;
+      // the host hears it is held before the page hears it finished
+      this._report();
       const settle = this._settle;
       this._settle = null;
       settle?.resolve(this);
       this._tell('finish', held);
+      this._replaceOlder();
+    }
+    /**
+     * The finished animations of its target that fill and that this one
+     * and the others finished after them cover every property of, removed
+     * (Web Animations 1, 5.5, "removing replaced animations"): a page that
+     * fades a panel in and out with `fill: forwards`, a new animation each
+     * time, would otherwise keep every one of them on the element, each
+     * sampled at every restyle.
+     */
+    _replaceOlder(): void {
+      const target = this._effect?.target;
+      if (!target || !this._replaceable()) return;
+      const pseudo = this._effect.pseudoElement;
+      const later: Any[] = [];
+      const mine = [...liveAnimations]
+        .filter(
+          (a) =>
+            a._effect?.target === target &&
+            a._effect.pseudoElement === pseudo &&
+            a._replaceable(),
+        )
+        .sort((a, b) => b._hostId - a._hostId);
+      for (const a of mine) {
+        const covered = new Set<string>();
+        for (const b of later) {
+          for (const p of b._effect._properties()) covered.add(p);
+        }
+        const props = a._effect._properties();
+        later.push(a);
+        if (a === mine[0] || !props.every((p: string) => covered.has(p))) {
+          continue;
+        }
+        a.replaceState = 'removed';
+        liveAnimations.delete(a);
+        a._report();
+        a._tell('remove', a.currentTime);
+      }
+    }
+    /** Whether it may be replaced by later ones: finished, filling, not
+     *  persisted, and of an element (Web Animations 1, 5.5). */
+    _replaceable(): boolean {
+      const fill = this._effect?.getTiming().fill;
+      return (
+        this.replaceState === 'active' &&
+        this.playState === 'finished' &&
+        (fill === 'forwards' || fill === 'both') &&
+        this._effect?.target instanceof Element
+      );
     }
     /** An event of its own, told in a task after the change, as the
      *  document's pending animation events are (Web Animations 1, 4.4.18). */

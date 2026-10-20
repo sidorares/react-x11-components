@@ -1997,6 +1997,26 @@ const GENERIC_FAMILIES = new Set([
  *  transition's (CSS Animations 1, 3). */
 const NOT_IN_KEYFRAMES = /^(?:-webkit-)?(?:animation|transition)(?:-|$)/;
 
+/**
+ * One property's value in a keyframe a page's script hands an animation
+ * (`Element.animate()`, Web Animations 1, 6.6.3), as the declaration a
+ * `@keyframes` frame would give it; null where it is no value of one — an
+ * `!important`, an animation's or a transition's own property, or a value
+ * that is more than one declaration.
+ */
+export function keyframeDeclaration(
+  prop: string,
+  value: string,
+): Declaration | null {
+  if (NOT_IN_KEYFRAMES.test(prop)) return null;
+  const read = parseDeclarations(`${prop}:${value}`);
+  if (read.length !== 1) return null;
+  const [d] = read;
+  return d.prop === (d.custom ? prop : prop.toLowerCase()) && !d.important
+    ? d
+    : null;
+}
+
 /** A `<number-token>` percentage, `+12.5%` or `1e2%`. */
 const KEYFRAME_PERCENT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i;
 

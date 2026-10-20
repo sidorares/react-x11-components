@@ -87,6 +87,8 @@ handle.refresh();
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                 |
 | `canvasChanged(element)`                                                                | A `<canvas>`'s picture (`canvasImage`) changed: repaint it where it is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `setMediaState(el, state)`                                                              | Tell a `<video>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; see [Video](#video).                                                                                                                                                                                                                                                                                                             |
+| `setScriptAnimation(el, id, effect, play)`                                              | Draw an animation a script made (`Element.animate()`): its effect, as the JSON the scripts' realm describes it — the pseudo-element, the frames at their computed offsets with their easings and values, and the timing — and where its time is, `1,<time>,<rate>` running from that time and `0,<time>,<rate>` held there, by an id that is its composite order. Either null takes it off the element. Sampled on the clock CSS's animations run on; see [Scripts](#scripts).                                                                                                                                    |
+| `scriptAnimationValues(el, id, properties)`                                             | What `commitStyles()` writes: each of `properties` as the element's animations come to now, those made after `id` left out, as `getComputedStyle` serializes it — `prop\u0000value` pairs joined by `\u0001` — or null where the element is not rendered.                                                                                                                                                                                                                                                                                                                                                         |
 | `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -720,16 +722,42 @@ since this component navigates nowhere by itself:
 | `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                       |
 | `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                      |
 
-**A script's animations run for their time and draw nothing.**
-`animate()` and `new Animation` keep an animation's timing, its
-`playState`, `currentTime`, `playbackRate` and `finished`, and tell its
-`finish` and `cancel` as a browser does: the effect is not drawn, which
-`<Html>` does for CSS's animations and not for a script's, but it ends when
-its timing says. A page that hides a panel `onfinish`, or waits on
-`finished` to go on, goes on; one that leaves its last frame in place with
-`fill: forwards` is drawn in the style it had, since nothing of the
-effect's is computed. `getAnimations()` and `document.timeline` answer
-from them.
+**A script's animations are drawn where the page's timing has them.**
+`animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's
+timing, its `playState`, `currentTime`, `playbackRate` and `finished`, and
+tell its `finish`, `cancel` and `remove` as a browser does, so a page that
+hides a panel `onfinish`, or waits on `finished` to go on, goes on. Each time
+its effect or where its time is changes — `play()`, `pause()`, a seek, a
+rate, `finish()`, `cancel()`, new keyframes or timing — the page's realm
+tells `<Html>` (the handle's `setScriptAnimation`), and `<Html>` samples its
+frames on the clock it runs CSS's animations on, from the time it was told,
+and applies them at the animation origin above every CSS animation, in the
+order the animations were made (Web Animations 1, 5.4.2). So a panel that is
+`opacity: 0` in its sheet and faded in with `fill: 'forwards'` ends drawn at
+1, a slide is drawn moving, a paused one is held where `currentTime` set it,
+and a cancelled one leaves the element its own style. The delay, the end
+delay, the iterations and where they start, the direction, the effect's
+easing and each frame's are Web Animations' (4.8 to 4.11), and a property a
+frame leaves out at either end is the element's value under the CSS
+animations. `commitStyles()` writes what the effect comes to now, under the
+animations made after it, into the `style` attribute
+(`scriptAnimationValues`), and throws as a browser does for an element that
+is not rendered and for a pseudo-element. A finished animation that fills
+is removed once later ones on its element cover every property it sets
+(5.5), which tells `remove`, so a page that fades a panel in and out with a
+new animation each time does not keep them all; `persist()` keeps one.
+`getComputedStyle` reads an element a script animates at that moment rather
+than at the last frame, and `getAnimations()` and `document.timeline`
+answer from the realm's animations. Under `animate={false}` one that fills
+forwards is drawn at its end and any other not at all, as a CSS animation
+at rest is.
+
+What is not drawn: `composite: 'add'` and `'accumulate'` are drawn as
+`replace`; a pseudo-element other than `::before` and `::after`; and on
+macOS an element a script animates stays on the document's clock rather
+than going on a layer of the render server's, since a layer's frames are
+sampled ahead from a cycle that a page's script may seek, pause or cancel
+at any time.
 
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
@@ -1272,7 +1300,8 @@ own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
 read as Chrome reads it, the schemes as written, or `normal` — and
 `customProperty` for its custom properties, `offsetRect` for the offset
-attributes, `setMediaState` for what a media element is asked to do, and
+attributes, `setMediaState` for what a media element is asked to do,
+`setScriptAnimation` and `scriptAnimationValues` for its animations, and
 `matchMedia` for `matchMedia`. `onParsed` is when the parse
 has ended, and `onLoaded` is `load`'s moment.
 
