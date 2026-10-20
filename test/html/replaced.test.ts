@@ -45,6 +45,9 @@ import {
   view,
 } from './harness.js';
 import type { LaidBox, PaintOp, ReplacedBox } from './harness.js';
+import { animationClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
+import { gifBytes } from '../gif-fixture.js';
 
 afterEach(cleanup);
 
@@ -175,6 +178,135 @@ test('a limit on one axis of an image carries to the other through its ratio (CS
   // a height set is kept: only the width follows the limit
   assert.deepStrictEqual(size('d'), [15, 30], 'height set');
 });
+
+/** A 4 by 4 GIF that is red for 20 ms, then green for 20 ms, `loops`. */
+const blinking = (loops?: number) =>
+  gifBytes({
+    width: 4,
+    height: 4,
+    palette: [
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 255],
+      [255, 255, 255],
+    ],
+    loops,
+    frames: [
+      { pixels: new Array(16).fill(0), delay: 2 },
+      { pixels: new Array(16).fill(1), delay: 2 },
+    ],
+  });
+
+metric(
+  'an animated GIF plays, in an <img> and in a background, repainting only where it is drawn',
+  async (t) => {
+    const clock = holdClock(t, animationClock);
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}img{display:block}</style>' +
+        '<img id="a" src="a.gif" width="8" height="8">' +
+        '<div id="b" style="width:8px;height:8px;background:url(a.gif)"></div>' +
+        '<p>text below, which no frame repaints</p>',
+      { 'a.gif': blinking(0) },
+    );
+    const { ctx } = result;
+    const abs = (el as unknown as DrawnNode).abs;
+    await act();
+    await expectPixel(ctx, abs.x + 4, abs.y + 4, '#ff0000', {
+      message: 'img, first',
+    });
+    await expectPixel(ctx, abs.x + 4, abs.y + 12, '#ff0000', {
+      message: 'bg, first',
+    });
+    const damage: { width: number; height: number }[] = [];
+    const invalidate = (el as unknown as { invalidate: Function }).invalidate;
+    t.mock.method(
+      el,
+      'invalidate',
+      function (this: unknown, ...args: unknown[]) {
+        const rect = args[1] as { width: number; height: number } | undefined;
+        if (rect && typeof rect === 'object') damage.push(rect);
+        return invalidate.apply(this, args);
+      },
+    );
+    assert.ok(clock.pending, 'a frame is waited for');
+    await clock.frame();
+    await clock.frame();
+    await act();
+    await expectPixel(ctx, abs.x + 4, abs.y + 4, '#00ff00', {
+      message: 'img, second',
+    });
+    await expectPixel(ctx, abs.x + 4, abs.y + 12, '#00ff00', {
+      message: 'bg, second',
+    });
+    assert.ok(damage.length > 0, 'the frame was repainted');
+    for (const rect of damage) {
+      assert.ok(
+        rect.width <= 10 && rect.height <= 18,
+        `damage ${rect.width}x${rect.height} is the boxes that drew it`,
+      );
+    }
+    await clock.frame();
+    await clock.frame();
+    await clock.frame();
+    await act();
+    await expectPixel(ctx, abs.x + 4, abs.y + 4, '#ff0000', {
+      message: 'img, again',
+    });
+  },
+);
+
+metric(
+  'an animated GIF that has played its loops rests on its last frame, and waits for nothing',
+  async (t) => {
+    const clock = holdClock(t, animationClock);
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}img{display:block}</style>' +
+        '<img src="a.gif" width="8" height="8">',
+      { 'a.gif': blinking() },
+    );
+    const abs = (el as unknown as DrawnNode).abs;
+    await act();
+    assert.ok((await clock.finish()) > 0, 'it played');
+    await act();
+    assert.strictEqual(clock.pending, false);
+    await expectPixel(result.ctx, abs.x + 4, abs.y + 4, '#00ff00');
+  },
+);
+
+metric(
+  'an animated GIF out of view asks for no frame until it is drawn',
+  async (t) => {
+    const clock = holdClock(t, animationClock);
+    const gif = blinking(0);
+    await renderX11(
+      h(
+        'box',
+        {
+          'data-testname': 'pane',
+          style: { width: 200, height: 50, overflow: 'scroll' },
+        },
+        h(Html, {
+          source:
+            '<style>body{margin:0}img{display:block}</style>' +
+            '<div style="height:400px"></div><img src="a.gif" width="8" height="8">',
+          partial: false,
+          'data-testname': 'doc',
+          onResource: (r: { kind: string }) =>
+            r.kind === 'image' ? { kind: 'image' as const, bytes: gif } : null,
+        }),
+      ),
+      { width: 240, height: 100, fonts: FONTS! },
+    );
+    await act();
+    assert.strictEqual(clock.pending, false, 'below the pane, nothing ticks');
+    const pane = screen.getByTestName('pane') as unknown as {
+      scrollTo(y: number): void;
+    };
+    await act(async () => pane.scrollTo(380));
+    await act();
+    assert.ok(clock.pending, 'scrolled into view, it plays');
+  },
+);
 
 test('an SVG image is sized by what its document says, and a PNG still decodes', async () => {
   const { el } = await renderWithBytes(

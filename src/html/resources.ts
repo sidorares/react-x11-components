@@ -19,7 +19,8 @@ import { decodeStylesheet } from './css/decode.js';
 import type { DecodedStylesheet } from './css/decode.js';
 import { svgFromBytes } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
-import { decodeGif } from './gif.js';
+import { GifCanvas, readGif } from './gif.js';
+import { AnimatedImage } from './animated.js';
 import type { UrlResolver } from './url.js';
 import type { Element } from 'domhandler';
 
@@ -117,6 +118,8 @@ interface Entry {
   decoded?: { fallbacks: string; sheet: DecodedStylesheet };
   /** An ntk `Image`, or an `SvgDrawing`. */
   image?: unknown;
+  /** A GIF of more than one frame: `image` is its first. */
+  animation?: AnimatedImage;
   size?: IntrinsicSize;
   /** Whether the host said what the URL holds is a document. */
   document?: boolean;
@@ -296,6 +299,15 @@ export class ResourceStore {
       if (!synchronous) this._changed('image', entry.layout !== false);
       return;
     }
+    const animation = animatedGif(result.bytes);
+    if (animation) {
+      entry.animation = animation;
+      entry.image = animation.image(0);
+      entry.size = rasterSize(animation.width, animation.height);
+      entry.state = 'ready';
+      if (!synchronous) this._changed('image', entry.layout !== false);
+      return;
+    }
     const decoded = decodeImage(result.bytes);
     if (isPromise(decoded)) {
       decoded.then(
@@ -367,6 +379,14 @@ export class ResourceStore {
     if (!url) return null;
     const entry = this._entries.get(this._key(url));
     return entry?.state === 'ready' ? (entry.image ?? null) : null;
+  }
+
+  /** A loaded GIF of more than one frame, which the paint pass asks for
+   *  the frame showing (`animated.ts`); null for any other image. */
+  animation(url: string): AnimatedImage | null {
+    if (!url) return null;
+    const entry = this._entries.get(this._key(url));
+    return entry?.state === 'ready' ? (entry.animation ?? null) : null;
   }
 
   /** Whether what a URL holds is a document, as the host said: an
@@ -445,6 +465,7 @@ export class ResourceStore {
 
   destroy(): void {
     this._destroyed = true;
+    for (const entry of this._entries.values()) entry.animation?.destroy();
     this._entries.clear();
     this._videos.clear();
   }
@@ -470,16 +491,41 @@ function isPromise<T>(value: unknown): value is Promise<T> {
   return typeof (value as Promise<T> | null)?.then === 'function';
 }
 
+/** ntk's `Image`, from straight RGBA. */
+const makeImage = (rgba: {
+  width: number;
+  height: number;
+  data: Uint8Array;
+}): ImageLike =>
+  new (ntk.Image as unknown as new (rgba: unknown) => ImageLike)(rgba);
+
+/** A GIF of more than one frame, played as `animated.ts` plays one; null
+ *  for anything else, which `decodeImage` reads. */
+function animatedGif(bytes: Uint8Array): AnimatedImage | null {
+  try {
+    const file = readGif(bytes);
+    return file && file.frames.length > 1
+      ? new AnimatedImage(file, makeImage)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Decode image bytes: a GIF here, its first frame (`gif.ts`) handed to
- * ntk's `Image` as the RGBA it takes; anything else through
- * `decodeImageBytes`, core's decoder ladder, the one `<image>` reads bytes
- * with. So an image shows in a document exactly when it would show in an
- * `<image>`: PNG and JPEG, WebP, and under Bun every format `Bun.Image`
- * reads, decoded off the JavaScript thread. A WebP, and under Bun
- * everything, lands a moment later as a promise, which `_settle` waits for
- * as it waits for a host's. Bytes no decoder here reads throw, or reject,
- * and the image is a failed one, framed as a declined image is.
+ * Decode image bytes: a GIF here, its one frame (`gif.ts`) handed to ntk's
+ * `Image` as the RGBA it takes; anything else through `decodeImageBytes`,
+ * core's decoder ladder, the one `<image>` reads bytes with. So an image
+ * shows in a document exactly when it would show in an `<image>`: PNG and
+ * JPEG, WebP, and under Bun every format `Bun.Image` reads, decoded off the
+ * JavaScript thread. A WebP, and under Bun everything, lands a moment
+ * later as a promise, which `_settle` waits for as it waits for a host's.
+ * Bytes no decoder here reads throw, or reject, and the image is a failed
+ * one, framed as a declined image is.
+ *
+ * A GIF is read here and not by the ladder because the ladder reads none
+ * under Node, and under Bun only its first frame (`animatedGif` plays the
+ * rest). An animated WebP is the ladder's, and shows its first frame.
  *
  * ntk's own `decodeImage`, which this used before core had the ladder, is
  * PNG and JPEG alone. A host that would rather decode images itself hands
@@ -487,10 +533,14 @@ function isPromise<T>(value: unknown): value is Promise<T> {
  */
 function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
   try {
-    const gif = decodeGif(bytes);
+    const gif = readGif(bytes);
     if (gif) {
-      const Image = ntk.Image as unknown as new (rgba: unknown) => ImageLike;
-      return new Image(gif);
+      const canvas = new GifCanvas(gif);
+      return makeImage({
+        width: gif.width,
+        height: gif.height,
+        data: canvas.at(0),
+      });
     }
     return ntk.decodeImageBytes(bytes);
   } catch {

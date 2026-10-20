@@ -2793,6 +2793,22 @@ drag — a hand going back over the widths it came through — was made into a
 raster that nothing copied. Zen Garden 214's photographs were 278 of them
 in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 
+**An animated GIF is the document's to play, and a frame is a repaint of
+the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
+here and not in core's `<image>` because `<Html>` draws its own images, so
+nothing core's element did would reach a document; and the decode is
+`gif.ts`'s and not core's decoder ladder's because the ladder reads no GIF
+under Node and only a first frame under Bun. Should core's `<image>` come to
+play animations, the frames belong on the ladder, and the rule in "Vendored
+from core" applies: delete the copy, import the export. Two things are
+load-bearing. **A paint that draws an image for a box names the box**
+(`painting` in `paint.ts`): `paintBox` does, and so do a block's background
+and marker, which its parent's flow pass paints; drawn under the wrong box,
+a frame repaints the parent's whole ink. And **nothing ticks for what no
+paint reached**: a frame is waited for only by a box a paint drew, so an
+image scrolled out of view stops until a paint draws it again, where it
+shows the frame its clock has come to.
+
 **On macOS a clip that is not a rectangle of whole pixels is a mask**, and
 CoreGraphics draws through one at some four times the cost of a
 rectangle, over everything the draw covers: a rounded box cut out of a

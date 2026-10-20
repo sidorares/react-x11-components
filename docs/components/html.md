@@ -33,7 +33,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `document`           | `Document`                                       | A tree to draw in place of parsing `source`, which is then not read: one the host holds and changes, a frame's — see [Embedded content](#embedded-content).                                                                                                                                         |
 | `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                                                                                        |
 | `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                                                                                            |
-| `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                                                                                          |
+| `animate`            | `boolean`                                        | Whether CSS animations and animated GIFs run. Default true. False draws each animation as it stands once it has run — see [Animations](#what-renders) — and each GIF at its first frame.                                                                                                            |
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
 | `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
@@ -125,9 +125,9 @@ onResource={async (request) => {
 }}
 ```
 
-Image bytes may be PNG, JPEG, WebP, GIF — its first frame — or SVG, and
-under Bun whatever else `Bun.Image` reads; nothing names the type, so each
-is told apart by its bytes. Everything but GIF and SVG is decoded by the
+Image bytes may be PNG, JPEG, WebP, GIF or SVG, and under Bun whatever
+else `Bun.Image` reads; nothing names the type, so each is told apart by
+its bytes. Everything but GIF and SVG is decoded by the
 decoder core's `<image>` uses (react-x11's `decodeImageBytes`), so an
 image shows in a document exactly where it would show in an `<image>`: a
 WebP lands a moment after the first frame under Node, where its decoder is
@@ -140,8 +140,21 @@ image: the object shows it as a frame does, an empty box here, and not its
 fallback content. A declined or absent resource is an ordinary state:
 images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
-fonts the system has. A resource may arrive whenever it arrives, with two
-things to know about when:
+fonts the system has.
+
+An animated GIF plays, wherever the document draws it — an `<img>`, a
+background, a border image, a list marker — as a browser plays one: every
+place one URL is drawn shows the same frame, its clock started by the
+first paint, each frame shown for its delay (10 ms or less is 100 ms, as in
+Chrome, Firefox and Safari), and its loop count obeyed, resting on the last
+frame once it has played. A frame is a repaint of the boxes that drew the
+one before, and nothing else; an image no paint reaches — scrolled out of
+view — asks for no frame until one does. `animate={false}` draws each at
+its first frame. An animated WebP shows its
+first frame: it is decoded by core's decoder, which reads no more of one.
+
+A resource may arrive whenever it arrives, with two things to know about
+when:
 
 - **A stylesheet the head links to holds the first rendering until it is
   in**, as a browser holds a page's first paint (HTML, "render-blocking"),
