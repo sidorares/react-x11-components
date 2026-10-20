@@ -432,7 +432,13 @@ export interface InlineOptions {
    * the block has and more of the container `follows` them, the clamp
    * point just after them (4.2).
    */
-  clamp?: { lines: number; ellipsis: boolean; follows: boolean };
+  clamp?: {
+    lines: number;
+    ellipsis: boolean;
+    follows: boolean;
+    /** `-webkit-line-clamp`'s, whose ellipsis cuts inside a word. */
+    legacy?: boolean;
+  };
   /**
    * The floats in the content, placed as the lines reach them: `size` lays
    * one out and answers its outer width, `place` puts it at a height in the
@@ -871,6 +877,7 @@ function linesOf(
           layout,
           options.width,
           style,
+          !!clamp.legacy,
         );
         layout = ended.layout;
         runs = ended.runs;
@@ -5515,7 +5522,11 @@ function hangLines(
  * not fit beside the ellipsis go to the lines the clamp hides, and inside
  * a word only where the line has no other — and the ellipsis after it, in
  * the block's own style. The engine's own ellipsis cuts inside the last
- * word, as `text-overflow` does.
+ * word, as `text-overflow` does, and so does `-webkit-line-clamp`'s
+ * (`legacy`): Chrome, Firefox and WebKit all cut its last line a character
+ * short of the ellipsis, where the soft wrap left "deliver…" for their
+ * "deliver cle…" under every card of a blog index Tailwind's `line-clamp-2`
+ * clamps.
  */
 function ellipsized(
   fonts: FontsLike,
@@ -5526,12 +5537,15 @@ function ellipsized(
   layout: TextLayoutLike,
   width: number,
   style: ComputedStyle,
+  legacy = false,
 ): { layout: TextLayoutLike; runs: TextRun[]; spans: SpanMap } {
   const mark = runFor('\u2026', style);
   const room = width - fonts.layout([mark], base, {}).width;
   const last = layout.lines[layout.lines.length - 1];
   let end = last.end;
-  if (last.width > room) {
+  if (last.width > room && legacy) {
+    end = last.start + fitted(fonts, runs, last.start, last.end, room, base);
+  } else if (last.width > room) {
     const probe = fonts.layout(sliceRuns(runs, last.start, last.end), base, {
       ...options,
       maxWidth: Math.max(0, room),
@@ -5567,6 +5581,41 @@ function ellipsized(
   spans.add(at, 1, null);
   kept.push(mark);
   return { layout: fonts.layout(kept, base, options), runs: kept, spans };
+}
+
+/** How much of the runs' text from `from` to `to`, in code units, fits in
+ *  `room` set on one line: the longest prefix that does, ending between
+ *  two code points. */
+function fitted(
+  fonts: FontsLike,
+  runs: readonly TextRun[],
+  from: number,
+  to: number,
+  room: number,
+  base: Record<string, unknown>,
+): number {
+  const text = runs
+    .map((run) => run.text)
+    .join('')
+    .slice(from, to);
+  const ends: number[] = [];
+  for (let i = 0; i < text.length;) {
+    i += (text.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
+    ends.push(i);
+  }
+  let lo = 0;
+  let hi = ends.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    const width = fonts.layout(
+      sliceRuns(runs, from, from + ends[mid - 1]),
+      base,
+      {},
+    ).width;
+    if (width <= room) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo ? ends[lo - 1] : 0;
 }
 
 /** The runs' text from one code-unit offset into their joined text to

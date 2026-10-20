@@ -2942,7 +2942,9 @@ they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
 that fit beside it. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
-clamps, as in a browser; `line-clamp: auto` shows as many lines as the
+clamps, as in a browser, and that form's ellipsis cuts inside a word where
+the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
+and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
 box's `height` or `max-height` holds, and `max-lines`, `continue` and
 `block-ellipsis` are read. A block laid out a line at a time, around an
 image or a float, is cut with no ellipsis),
