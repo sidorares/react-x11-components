@@ -289,6 +289,15 @@ export class ChartPlotNode extends Node {
     );
   }
 
+  /** The owning window's rect, device pixels: as much of the plot as any
+   *  paint can reach (`SeriesEnv.view`). */
+  private _viewRect(): PlotRect | null {
+    const root = this.root;
+    if (!root || root === this) return null;
+    const win = root.abs;
+    return win ? { x: 0, y: 0, width: win.width, height: win.height } : null;
+  }
+
   override destroySubtree(): void {
     this._unsubscribe?.();
     this._unsubscribe = null;
@@ -795,6 +804,7 @@ export class ChartPlotNode extends Node {
       scale: this._scale,
       // the pass's damage: a chart it merely touches draws what it reaches
       clip: this.paintDamage(),
+      view: this._viewRect(),
     };
     for (const geom of layout.geoms) renderSeries(env, geom);
     if (clipped) c.restore();
