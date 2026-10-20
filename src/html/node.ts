@@ -3174,7 +3174,9 @@ export class HtmlViewNode extends Node {
     fixed: readonly Box[] | undefined,
   ): R {
     let r = laid;
-    if (fixed) {
+    // one in a box fixed to the viewport goes where the viewport is, with
+    // the boxes fixed there, which the scroll moves no closer to it
+    if (fixed && !('atViewport' in laid && laid.atViewport)) {
       const shows = laid.clip ?? laid;
       const cut = cutByFixed(shows, fixed, this._fixedShift());
       if (cut === 'hidden') r = { ...laid, hidden: true };
@@ -7839,6 +7841,8 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
       p.clipRadius !== q.clipRadius ||
       p.opacity !== q.opacity ||
       p.hidden !== q.hidden ||
+      p.zoom !== q.zoom ||
+      p.atViewport !== q.atViewport ||
       !sameClip(p.clip, q.clip)
     ) {
       return false;

@@ -510,9 +510,17 @@ function unionRect(a: Rect, b: Rect): Rect {
  * draws an outline, which goes over what it holds: painted before the box
  * or after it, for a box whose place in the paint order `paintedAfter`
  * cannot tell. Each subtree beside the path down to it is asked what it
- * draws there (`inkMeets`), and not how far it reaches.
+ * draws there (`inkMeets`), and not how far it reaches. Where `extentIn`
+ * is given, the extent is asked of what a box on the path holds in that
+ * box's own coordinates, which a matrix around it may make others
+ * (`media.ts`, for a box drawn through a scale).
  */
-export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
+export function crowded(
+  tree: BoxTree,
+  box: Box,
+  extent: Rect,
+  extentIn: ((parent: Box) => Rect) | null = null,
+): boolean {
   const path = new Set<Box>();
   for (let at = box.parent; at; at = at.parent) path.add(at);
   const stack: Box[] = [tree.root];
@@ -525,7 +533,8 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
       for (const child of at.children) stack.push(child);
       continue;
     }
-    if (inkMeets(at, extent)) return true;
+    const within = extentIn && at.parent ? extentIn(at.parent) : extent;
+    if (inkMeets(at, within)) return true;
   }
   return false;
 }

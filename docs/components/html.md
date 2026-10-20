@@ -1130,8 +1130,33 @@ browser loads a page's frames again with the page.
 The rules a player is held to hold here too, for the same reason — what is
 mounted is over the whole document: an element the document paints
 something after, over its box, is given nothing, and so is one a transform
-turns or scales, a `clip-path` or a mask cuts, or that is fixed to the
-viewport. Answering null leaves the box the empty one the document laid out.
+turns, skews, flips or scales one way more than the other, or a
+`clip-path` or a mask cuts. Answering null leaves the box the empty one the
+document laid out.
+
+**A scale the same both ways is a rectangle still, and the mount is drawn
+at it.** Where every transform on the element and around it is a scale the
+same across as down and a move — a slide deck's stage, `translate(-50%,
+-50%) scale(0.6)`, fitting a 1920 by 1080 slide to the window — the rect is
+where the element is drawn, its clips where theirs are, and its `zoom` is
+the scale. What the host returned is mounted under core's `scale` prop at
+that factor, in a box the element's own size before it, so an `<iframe>`'s
+document is laid out at its CSS size, 1600 by 700, and drawn at 0.6, its
+text shaped at the size it is drawn at, as a browser draws a frame on a
+scaled slide; a press on it reaches the point of the document under it. A
+[video](#video) under such a scale plays where it is drawn, the picture
+fitted to that rect; one the document paints over keeps its poster there,
+since what is painted over a player again is painted where it is laid out.
+
+**An element in a box fixed to the viewport is mounted where the viewport
+is.** Its rect is where layout put it, at the document's top, with
+`atViewport` set, and what is mounted goes in a box core keeps at the
+viewport, as a [widget](#forms)'s does in a fixed header: a slide deck
+fixed over the window keeps its frame on the slide as the pane scrolls,
+and a scroll asks `renderEmbedded` nothing. A box fixed beside it does not
+cut it, since the scroll moves neither against the other; one fixed over
+it and painted after it keeps it from being mounted. A video fixed to the
+viewport still keeps its poster.
 
 **What a mount stands for decides where the pointer goes.** The boxes a
 mount is cut and placed by take no pointer of their own: a press lands on

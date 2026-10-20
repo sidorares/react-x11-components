@@ -513,6 +513,31 @@ test('a video turned, cut to a path or fixed to the viewport keeps its poster', 
   assert.strictEqual(videos().length, 1);
 });
 
+test('a video in a box scaled the same both ways plays where the box draws it, at 1x and 2x', async () => {
+  for (const scale of [1, 2]) {
+    await renderVideo(
+      '<style>body{margin:0}</style>' +
+        '<div style="height:10px"></div>' +
+        '<div style="transform-origin:0 0;transform:scale(0.5)">' +
+        '<video src="a.mp4" style="display:block;width:120px;height:60px">' +
+        '</video></div>',
+      (_, app) => ({
+        kind: 'video',
+        frames: createVideoFrames(app, { width: 16, height: 16 }),
+      }),
+      { scale },
+    );
+    const [video, ...rest] = videos();
+    assert.strictEqual(rest.length, 0, `${scale}x: one player`);
+    assert.deepStrictEqual(
+      [video.abs.x, video.abs.y, video.abs.width, video.abs.height],
+      [0, 10 * scale, 60 * scale, 30 * scale],
+      `${scale}x: at half its size`,
+    );
+    cleanup();
+  }
+});
+
 test('a video in a box that clips it is cut where the box cuts it, and rounded where it is', async () => {
   const { el } = await renderVideo(
     '<style>body{margin:0}</style>' +

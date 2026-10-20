@@ -38,10 +38,16 @@
 //    (`cutByFixed`): a header that comes over a playing video cuts the
 //    player where it reaches it, and one that reaches into its middle hides
 //    it, the poster drawn there in the meantime and the video playing on.
-//  - **What a rectangle cannot follow keeps the poster**: a transform, a
+//  - **What a rectangle cannot follow keeps the poster**: a transform that
+//    turns, skews, flips or scales one way more than the other, a
 //    `clip-path` or a mask on the video or around it, a video fixed to the
 //    viewport, and corners of its own, or of a box around it that cuts it,
-//    that are not all one circle.
+//    that are not all one circle. A scale the same both ways and a move is
+//    a rectangle still (`zoomBetween`): the box and its clips are placed
+//    where the matrices draw them, and an embedded element's mount is
+//    told the factor (`EmbeddedRect.zoom`) — a slide deck scales its stage
+//    to fit the window, and an `<iframe>` on a slide is drawn at the
+//    slide's scale.
 //
 // Nothing is fetched here either. Each source is the host's to answer
 // (`ResourceRequest.kind: 'video'`): with a `src` the platform's player
@@ -62,8 +68,14 @@ import {
   coverersAfter,
   drawnAtViewport,
   drawsNothing,
+  evenScaleOf,
+  NO_ZOOM,
   paintedAfter,
+  unzoomRect,
+  zoomBetween,
+  zoomRect,
 } from './paint.js';
+import type { Zoom } from './paint.js';
 import type { VideoSource } from './resources.js';
 import { crowded } from './sprites.js';
 
@@ -254,8 +266,11 @@ export function mediaRectsOf(
     if (!chosen) continue;
     const label = attr(el, 'aria-label') || attr(el, 'title');
     if (over.length) covers.set(el, over);
+    // a picture is fitted into whatever rect it is given: what a scale
+    // around it does is in the rect already
+    const { zoom: _zoom, ...at } = placed;
     out.push({
-      ...placed,
+      ...at,
       ...(over.length && { over: around(over.map((c) => c.rect)) }),
       source: chosen.source,
       url: chosen.url,
@@ -291,6 +306,22 @@ export interface EmbeddedRect {
   clipRadius?: number;
   opacity?: number;
   hidden?: boolean;
+  /**
+   * Set where the element is in a box fixed to the viewport: the rect is
+   * where layout put it, at the document's top, and what is mounted goes in
+   * a box core keeps where the viewport is (`AT_VIEWPORT`), as a widget's
+   * does. A slide deck is fixed over the window.
+   */
+  atViewport?: true;
+  /**
+   * The scale the element is drawn at, where the boxes around it, or the
+   * element itself, are drawn through one — the same across as down, with
+   * no turn or skew (`zoomBetween`). The rect is where it is drawn, so
+   * what is mounted there is laid out at the rect's size over this and
+   * drawn at this: core's `scale` on the box it is mounted in, which an
+   * `<iframe>`'s document is laid out at its CSS size under.
+   */
+  zoom?: number;
 }
 
 export type EmbeddedKind = 'iframe' | 'canvas' | 'embed';
@@ -300,7 +331,7 @@ export type EmbeddedKind = 'iframe' | 'canvas' | 'embed';
 export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
   const out: EmbeddedRect[] = [];
   for (const box of tree.embedded) {
-    const placed = placementOf(tree, box, scale);
+    const placed = placementOf(tree, box, scale, null, true);
     if (!placed) continue;
     out.push({ ...placed, kind: tagOf(placed.element) as EmbeddedKind });
   }
@@ -323,6 +354,9 @@ function placementOf(
    *  painted over it again where they can be (`coversOf`), and pushed
    *  here; where not, they keep it from being mounted. */
   drawnOver: Cover[] | null = null,
+  /** Whether one in a box fixed to the viewport is placed, at the viewport
+   *  (`atViewport`), rather than refused. */
+  fixed = false,
 ): {
   element: Element;
   x: number;
@@ -333,31 +367,59 @@ function placementOf(
   clip?: Rect;
   clipRadius?: number;
   opacity?: number;
+  zoom?: number;
+  atViewport?: true;
 } | null {
   const el = box.el;
   if (!el) return null;
   // set aside by a layout that stopped short of it (`heldBack`)
   if (heldBack(tree, box)) return null;
   if (box.style.visibility !== 'visible') return null;
+  const atViewport = drawnAtViewport(box);
+  if (atViewport && !fixed) return null;
   if (!mountable(box)) return null;
-  const picture = pixelsOf(box);
+  // what it is drawn through: a scale and a move, or nothing
+  const zoom = zoomBetween(box);
+  if (!zoom) return null;
+  const zoomed = zoom !== NO_ZOOM;
+  const picture = pixelsOf(box, zoom);
   if (!(picture.width > 0 && picture.height > 0)) return null;
-  const radius = radiusOf(box);
-  if (radius === null) return null;
+  const corner = radiusOf(box);
+  if (corner === null) return null;
+  const radius = corner * zoom.k;
   // the boxes around it that clip it: to a rectangle, or to one with
   // round corners where they are one circle's and nothing else cuts it
-  const cut = clipFor(box, picture, scale);
+  const cut = clipFor(
+    box,
+    picture,
+    scale,
+    null,
+    zoomed ? (at) => zoomBetween(at) ?? NO_ZOOM : null,
+  );
   if (cut === null) return null;
   const clip = cut?.rect;
   const round = cut ? cut.radius : 0;
   const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
   if (reach.width > 0 && reach.height > 0) {
-    const after = paintedAfter(box, reach);
+    // asked in the box's own coordinates where a scale is around it, which
+    // the walk takes up through each context's
+    // and, where it is fixed to the viewport, the boxes fixed there with it
+    // in the same terms, which no scroll moves it against
+    const fixedReach = atViewport ? reach : null;
+    const after = zoomed
+      ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, null, true)
+      : paintedAfter(box, reach, fixedReach);
     if (after === null) {
-      if (crowded(tree, box, reach)) return null;
+      const inside = zoomed
+        ? (parent: Box): Rect => unzoomRect(zoomBetween(parent)!, reach)
+        : null;
+      if (crowded(tree, box, reach, inside)) return null;
     } else if (after) {
-      const over = drawnOver && coversOf(tree, box, reach, shows, scale);
+      // what is painted over it again is painted where it is laid out,
+      // which under a scale it is not
+      const over =
+        drawnOver && !zoomed && coversOf(tree, box, reach, shows, scale);
       if (!over) return null;
       drawnOver!.push(...over);
     }
@@ -376,6 +438,8 @@ function placementOf(
       ? { clip: clip!, clipRadius: round }
       : clip && !covers(clip, picture) && { clip: shows }),
     ...(opacity < 1 && { opacity: Math.max(0, opacity) }),
+    ...(zoom.k !== 1 && { zoom: zoom.k }),
+    ...(atViewport && { atViewport: true as const }),
   };
 }
 
@@ -539,16 +603,19 @@ function inset(rect: Rect, by: number): Rect {
 
 /**
  * Whether a sibling over the document can stand for the video: no matrix
- * the document draws it through, on it or around it — its translation is
- * layout's and moves the box — no `clip-path` or mask, which cut it to
+ * the document draws it through, on it or around it, but a scale the same
+ * across as down — its translation is layout's and moves the box — no
+ * `clip-path` or mask, which cut it to
  * what a rectangle is not, no filter, which is run over the pixels the
- * document draws, and not fixed to the viewport, which a sibling the
- * document scrolls does not follow.
+ * document draws. (Not fixed to the viewport either, which a sibling the
+ * document scrolls does not follow, but for what `placementOf` mounts
+ * where the viewport is.)
  */
 function mountable(box: Box): boolean {
-  if (drawnAtViewport(box)) return false;
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
-    if (placedMatrix(at)) return false;
+    // but a scale the same both ways, which a rectangle still follows
+    const matrix = placedMatrix(at);
+    if (matrix && evenScaleOf(matrix) === null) return false;
     if (at.style.clipPath || masked(at.style)) return false;
     // a filter is run over the pixels the document draws, which a player
     // over them is not
@@ -557,15 +624,22 @@ function mountable(box: Box): boolean {
   return true;
 }
 
-/** A box's content box on the pixels the document draws its image on. */
-function pixelsOf(box: Box): Rect {
-  const x = Math.round(box.contentX);
-  const y = Math.round(box.contentY);
+/** A box's content box on the pixels the document draws its image on,
+ *  where `zoom` draws it. */
+function pixelsOf(box: Box, zoom: Zoom): Rect {
+  const r = zoomRect(zoom, {
+    x: box.contentX,
+    y: box.contentY,
+    width: box.contentWidth,
+    height: box.contentHeight,
+  });
+  const x = Math.round(r.x);
+  const y = Math.round(r.y);
   return {
     x,
     y,
-    width: Math.round(box.contentX + box.contentWidth) - x,
-    height: Math.round(box.contentY + box.contentHeight) - y,
+    width: Math.round(r.x + r.width) - x,
+    height: Math.round(r.y + r.height) - y,
   };
 }
 

@@ -3,7 +3,14 @@
 // content box, beside the document, held to the rules a video's player is.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, expectPixel, renderX11, screen } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  expectPixel,
+  fireEvent,
+  renderX11,
+  screen,
+} from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { parseDocument } from 'htmlparser2';
 import { Image } from 'react-x11/ntk';
@@ -18,7 +25,11 @@ afterEach(cleanup);
  *  own, named for the element's id, and keeps what it was asked about. */
 async function renderEmbedded(
   source: string,
-  { width = 300, height = 300 }: { width?: number; height?: number } = {},
+  {
+    width = 300,
+    height = 300,
+    scale,
+  }: { width?: number; height?: number; scale?: number } = {},
 ) {
   const asked: EmbeddedRect[] = [];
   const doc = (src: string) =>
@@ -46,6 +57,7 @@ async function renderEmbedded(
     width: width + 40,
     height: height + 40,
     ...(FONTS && { fonts: FONTS }),
+    ...(scale && { scale }),
   });
   await act();
   return {
@@ -66,6 +78,12 @@ function byId(node: Element, id: string): Element {
   assert.ok(found, `#${id}`);
   return found;
 }
+
+/** The box a mount shows through: the host's node is in the box that
+ *  carries its scale, which is in the frame, which is in the port. */
+const portOf = (node: DrawnNode): DrawnNode =>
+  (node as unknown as { parent: { parent: { parent: DrawnNode } } }).parent
+    .parent.parent;
 
 const mounted = (id: string): DrawnNode | null => {
   try {
@@ -114,12 +132,189 @@ test('a mount is cut where the document clips the element', async () => {
   );
   const rect = asked.at(-1)!;
   assert.deepStrictEqual(rect.clip, { x: 0, y: 10, width: 80, height: 50 });
-  const port = (mounted('f') as unknown as { parent: { parent: DrawnNode } })
-    .parent.parent;
+  // the host's node, in the box that scales it, in the frame, in the port
+  const port = portOf(mounted('f')!);
   assert.deepStrictEqual(
     [port.abs.x, port.abs.y, port.abs.width, port.abs.height],
     [0, 10, 80, 50],
   );
+});
+
+for (const scale of [1, 2]) {
+  test(`a frame in a scaled box is mounted where it is drawn, cut where it is drawn, and laid out at its own size, at ${scale}x`, async () => {
+    // a slide deck fits each slide to the window with a scale on its stage,
+    // and a frame on a slide was refused for being drawn through a matrix:
+    // its document ran, and nothing of it was drawn
+    const { asked } = await renderEmbedded(
+      '<style>body{margin:0}iframe{border:0;display:block}' +
+        '#stage{width:400px;height:200px;transform-origin:0 0;' +
+        'transform:scale(0.5) translate(20px, 10px)}' +
+        '#clip{overflow:hidden;width:300px;height:200px}</style>' +
+        '<div style="height:10px"></div>' +
+        '<div id="stage"><div id="clip">' +
+        '<iframe id="f" width="400" height="100"></iframe></div></div>',
+      { scale },
+    );
+    const rect = asked.at(-1);
+    assert.ok(rect, 'the frame was asked about');
+    // the stage moves by the translation, scaled: 10 across, 5 down from
+    // where it is laid out, and draws everything in it at half its size
+    assert.deepStrictEqual(
+      [rect.x, rect.y, rect.width, rect.height, rect.zoom],
+      [10, 15, 200, 50, 0.5],
+    );
+    // the box that clips it is 300 wide, 150 where it is drawn
+    assert.deepStrictEqual(rect.clip, { x: 10, y: 15, width: 150, height: 50 });
+    const node = mounted('f');
+    assert.ok(node, 'mounted');
+    // what the host returned is drawn at the rect, in device pixels...
+    assert.deepStrictEqual(
+      [node.abs.x, node.abs.y, node.abs.width, node.abs.height],
+      [10 * scale, 15 * scale, 200 * scale, 50 * scale],
+    );
+    // ...laid out at the frame's own size, under core's scale
+    assert.strictEqual(
+      (node as unknown as { scale: number }).scale,
+      0.5 * scale,
+    );
+    const port = portOf(node);
+    assert.deepStrictEqual(
+      [port.abs.x, port.abs.y, port.abs.width, port.abs.height],
+      [10 * scale, 15 * scale, 150 * scale, 50 * scale],
+    );
+  });
+}
+
+test('a frame in a box fixed to the viewport stays where the viewport is as the pane scrolls, scaled, at 1x and 2x', async () => {
+  // a slide deck: fixed over the window, its stage scaled to fit it, a
+  // frame on the slide. Mounted at its rect beside the document, the frame
+  // would scroll away from the slide; it is kept where the viewport is, as
+  // a widget in a fixed header is (`AT_VIEWPORT`)
+  const source =
+    '<style>body{margin:0}iframe{border:0;display:block}' +
+    '#deck{position:fixed;inset:0}' +
+    '#stage{transform-origin:0 0;transform:scale(0.5)}</style>' +
+    '<div id="deck"><div id="stage"><div style="height:40px"></div>' +
+    '<iframe id="f" width="400" height="100"></iframe></div></div>' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    const asked: EmbeddedRect[] = [];
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 400, height: 200, overflow: 'scroll' },
+        },
+        h(Html, {
+          source,
+          partial: false,
+          renderEmbedded: (rect: EmbeddedRect) => {
+            asked.push(rect);
+            return h('box', {
+              'data-testname': 'in-f',
+              style: { flexGrow: 1 },
+            });
+          },
+        }),
+      ),
+      { width: 440, height: 240, scale, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const rect = asked.at(-1);
+    assert.ok(rect, `asked, ${scale}x`);
+    assert.deepStrictEqual(
+      [rect.x, rect.y, rect.width, rect.height, rect.zoom, rect.atViewport],
+      [0, 20, 200, 50, 0.5, true],
+      `${scale}x`,
+    );
+    const node = mounted('f')!;
+    const onScreen = () => (node.abs.y - pane!.abs.y) / scale;
+    assert.strictEqual(onScreen(), 20, `where the slide draws it, ${scale}x`);
+    const reports = asked.length;
+    for (const y of [500, 120, 0]) {
+      await act(async () => pane!.scrollTo(y));
+      assert.strictEqual(onScreen(), 20, `scrolled to ${y}, ${scale}x`);
+    }
+    assert.strictEqual(asked.length, reports, 'a scroll asks nothing again');
+    cleanup();
+  }
+});
+
+test('a press on a scaled mount reaches the point of its document it is drawn over, at 1x and 2x', async () => {
+  // the frame's document is laid out at 400 by 100 and drawn at half that:
+  // a link 30px tall over one 70px tall meet 15px down where it is drawn,
+  // so a press 19px down is in the second, and in the first were the
+  // press read in the document's own pixels
+  for (const scale of [1, 2]) {
+    const clicks: string[] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 300, height: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+            '<div style="height:10px"></div>' +
+            '<div style="transform-origin:0 0;transform:scale(0.5)">' +
+            '<iframe width="400" height="100"></iframe></div>',
+          partial: false,
+          renderEmbedded: () =>
+            h(Html, {
+              'data-testname': 'inner',
+              partial: false,
+              source:
+                '<style>body{margin:0}a{display:block;height:30px}' +
+                '#two{height:70px}</style>' +
+                '<a href="#one">one</a><a id="two" href="#two">two</a>',
+              onLink: (href: string) => clicks.push(href),
+            }),
+        }),
+      ),
+      { width: 340, height: 340, scale, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const inner = screen.getByTestName('inner') as DrawnNode;
+    // from the middle of what is drawn, 25px down: 19px and 11px down
+    for (const dy of [-6, -14]) {
+      const at = { dx: 0, dy: dy * scale };
+      await act(async () => {
+        fireEvent.mouseDown(inner, at);
+        fireEvent.mouseUp(inner, at);
+      });
+    }
+    assert.deepStrictEqual(clicks, ['#two', '#one'], `${scale}x`);
+    cleanup();
+  }
+});
+
+test('a frame in a box that turns, skews, flips, scales one way more than the other or turns out of the plane is still refused', async () => {
+  const transforms = [
+    'rotate(10deg)',
+    'skewX(10deg)',
+    'scale(0.5, 0.6)',
+    'scale(-1)',
+    'perspective(400px) rotateY(20deg)',
+  ];
+  const { asked } = await renderEmbedded(
+    '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+      transforms
+        .map(
+          (t, i) =>
+            `<div style="transform:${t}"><iframe id="t${i}" width="40" height="20"></iframe></div>`,
+        )
+        .join('') +
+      '<div style="transform:scale(2)"><iframe id="ok" width="40" height="20"></iframe></div>',
+  );
+  assert.deepStrictEqual(
+    [...new Set(asked.map((r) => r.element.attribs.id))],
+    ['ok'],
+    'only the even scale',
+  );
+  assert.strictEqual(asked.at(-1)!.zoom, 2);
 });
 
 test('a mount and a focus stop a scroll container holds out of sight make the document no taller', async () => {
