@@ -25,7 +25,7 @@ import {
   initialStyle,
 } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
-import { isTransparent } from '../../src/html/css/values.js';
+import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import {
   boxOf,
   edgesOf,
@@ -124,6 +124,61 @@ metric(
     assert.strictEqual(p.style.marginLeft, 0);
   },
 );
+
+test('a property @property registers has its initial value where nothing sets it, and one that does not inherit starts again under what sets it', async () => {
+  // CSS Properties and Values 1, 2.4 and 3. A page draws the stops of a
+  // gradient from `--blob-core`, registered at `0%` and set only on some
+  // elements; unregistered, it was no value on the rest, and they drew no
+  // gradient. A rule with no `inherits` registers nothing, and the
+  // universal syntax may have no initial value.
+  const { node } = await render(
+    '<style>' +
+      '@property --c { syntax: "<color>"; inherits: false; initial-value: #ff0000 }' +
+      '@property --i { syntax: "<color>"; inherits: true; initial-value: #00ff00 }' +
+      '@property --bad { syntax: "<color>"; initial-value: #0000ff }' +
+      '@property --u { syntax: "*"; inherits: false }' +
+      '.c { color: var(--c) } .i { color: var(--i) }' +
+      '.bad { color: var(--bad, #123456) } .u { color: var(--u, #abcdef) }' +
+      '</style>' +
+      '<p id="plain" class="c">x</p><p id="plain-i" class="i">x</p>' +
+      '<p id="bad" class="bad">x</p><p id="u" class="u">x</p>' +
+      '<div style="--c: #0000ff; --i: #ffff00">' +
+      '<p id="under" class="c">x</p><p id="under-i" class="i">x</p>' +
+      '<p id="reset" class="c" style="--c: initial">x</p>' +
+      '<p id="bogus" class="c" style="--c: var(--nothing)">x</p>' +
+      '<p id="inherit" class="c" style="--c: inherit">x</p></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+  assert.deepStrictEqual(
+    [
+      'plain',
+      'plain-i',
+      'bad',
+      'u',
+      'under',
+      'under-i',
+      'reset',
+      'bogus',
+      'inherit',
+    ].map(color),
+    [
+      '#ff0000',
+      '#00ff00',
+      '#123456',
+      '#abcdef',
+      // not its parent's: it does not inherit
+      '#ff0000',
+      '#ffff00',
+      '#ff0000',
+      // invalid where it is computed, and so as though unset: its initial
+      // value, as it does not inherit
+      '#ff0000',
+      '#0000ff',
+    ].map((c) => parseColor(c)),
+  );
+});
 
 test("logical properties are the physical ones of the element's direction", async () => {
   // CSS Logical Properties 1 in the horizontal writing mode: Tailwind 4

@@ -101,8 +101,14 @@ import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
 import { FIXED_SIZE, keywordFontSize, parseLength } from './values.js';
-import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
-import type { CustomProps, IfEnvironment } from './vars.js';
+import {
+  CustomProps,
+  customProperties,
+  hasVar,
+  substituteIn,
+  validVars,
+} from './vars.js';
+import type { IfEnvironment, Registration } from './vars.js';
 import {
   ROOT_BOX_PROPS,
   SHAPE_TAGS,
@@ -2600,7 +2606,25 @@ export class Cascade {
         const style = counterStyleRule(prelude, declarations);
         if (style) counterStyles.set(style.name, style.rule);
       }
+      // and a registration, so: the last valid one for a name
+      for (const { name, inherits, initial } of sheet.properties ?? []) {
+        (this._registered ??= new Map()).set(name, { inherits, initial });
+      }
       this._addSheet(sheet, this._document, breakpoints);
+    }
+    if (this._registered) {
+      // A registered property has its initial value where nothing sets it
+      // (CSS Properties and Values 1, 2.4), which the root inherits from
+      // the start, and one that does not inherit is reset to it under
+      // anything that set it (`_customFor`). Unregistered, a `var()` of one
+      // nobody sets is no value: a page that draws a gradient's stops from
+      // `--blob-core`, registered at `0%` and set only on some elements,
+      // drew no gradient on the rest.
+      this._registeredBase = new CustomProps(null);
+      for (const [name, { inherits, initial }] of this._registered) {
+        if (initial !== null) this._registeredBase.own.set(name, initial);
+        if (!inherits) (this._nonInherited ??= new Map()).set(name, initial);
+      }
     }
     // A shadow tree's sheets go in the same indexes, each rule filed
     // under its tree (`IndexedRule.scope`) and asked of that tree's
@@ -3131,6 +3155,19 @@ export class Cascade {
   private _nextShareKey = 1;
   /** Custom property sets by what made them, for one build (`_customFor`). */
   private _customs = new Map<string, CustomProps>();
+  /** The custom properties the document's `@property` rules register, the
+   *  last rule for a name over any before it; null for none. */
+  private _registered: Map<string, Registration> | null = null;
+  /** What the root inherits: each registered property's initial value. */
+  private _registeredBase: CustomProps | null = null;
+  /** The registered properties that do not inherit, with their initial
+   *  values, and for each set an element inherits, those it holds at
+   *  another value, which the element's own are reset from. */
+  private _nonInherited: Map<string, string | null> | null = null;
+  private _resets = new WeakMap<
+    CustomProps,
+    ReadonlyMap<string, string | null> | null
+  >();
   private _ids = new WeakMap<object, number>();
   private _nextId = 1;
 
@@ -3856,18 +3893,43 @@ export class Cascade {
       if (!this._hasCustom(c)) continue;
       key += `${this._idOf(c.declarations)}:${c.only},`;
     }
-    const parent = parentStyle.custom;
-    if (!key) return parent;
+    const parent = parentStyle.custom ?? this._registeredBase;
+    // what a registered property that does not inherit holds above, it
+    // does not hold here: a function of the parent's set, so of the key
+    const resets =
+      parent && this._nonInherited ? this._resetsUnder(parent) : null;
+    if (!key && !resets) return parent;
     key = `${parent ? this._idOf(parent) : 0}|${key}`;
     const hit = this._customs.get(key);
     if (hit) return hit;
     const own = new Map<string, string>();
+    if (resets) {
+      for (const [name, initial] of resets) own.set(name, initial ?? 'initial');
+    }
     for (const c of candidates) {
       for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
     }
-    const made = customProperties(own, parent, this._ifEnv);
+    const made = customProperties(own, parent, this._ifEnv, this._registered);
     this._customs.set(key, made);
     return made;
+  }
+
+  /** The registered properties that do not inherit and that `parent`
+   *  holds at other than their initial values, with those values: what an
+   *  element under it is reset to. Null for none. */
+  private _resetsUnder(
+    parent: CustomProps,
+  ): ReadonlyMap<string, string | null> | null {
+    let known = this._resets.get(parent);
+    if (known !== undefined) return known;
+    let out: Map<string, string | null> | null = null;
+    for (const [name, initial] of this._nonInherited!) {
+      if (parent.get(name) !== (initial ?? undefined)) {
+        (out ??= new Map()).set(name, initial);
+      }
+    }
+    this._resets.set(parent, out);
+    return out;
   }
 
   /** Whether a candidate sets a custom property. */

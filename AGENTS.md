@@ -1404,6 +1404,18 @@ holds both paths to css-select, over generated documents and selectors
 and over a name first asked after the names above an element were worked
 out.
 
+**A registered custom property is the root's from the start.** What an
+`@property` rule registers (CSS Properties and Values 1) is kept by the
+cascade (`_registered`), and its initial values are a set of custom
+properties the root inherits (`_registeredBase`), so a `var()` finds one
+wherever nothing set it. One that does not inherit is set back to its
+initial value under any set that holds it at another
+(`_resetsUnder`, in `_customFor`). **Anything new that makes an element's
+custom properties goes through `_customFor`**, or a property that does not
+inherit leaks from the parent, and one that inherits loses its initial
+value at the root. A page drew a gradient's stops from `--blob-core`,
+registered at `0%` and set on few elements, and the rest drew none.
+
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
 until no limit stops an item, divides by a running sum (react/yoga#2006),

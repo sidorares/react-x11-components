@@ -59,30 +59,47 @@ export class CustomProps {
 
 const FOLD_DEPTH = 16;
 
+/** A custom property an `@property` rule registered, as the cascade
+ *  reads it: whether it inherits, and its initial value, null for none. */
+export interface Registration {
+  inherits: boolean;
+  initial: string | null;
+}
+
 /**
  * The custom properties an element has: `own`, its declarations in cascade
  * order, over `parent`'s. A `var()` in one of its own is resolved against
  * the rest, and one that names a property in a cycle with it, or none with
- * no fallback, leaves it no value at all (CSS Custom Properties 1 2.3, 3).
+ * no fallback, leaves it no value at all (CSS Custom Properties 1 2.3, 3) —
+ * but for a `registered` one, which is then as though `unset`: its
+ * parent's where it inherits, its initial value where it does not, which
+ * is also what `initial` gives it (CSS Properties and Values 1, 2.4).
  */
 export function customProperties(
   own: ReadonlyMap<string, string>,
   parent: CustomProps | null,
   env: IfEnvironment | null = null,
+  registered: ReadonlyMap<string, Registration> | null = null,
 ): CustomProps {
   const out = new CustomProps(parent);
+  const unset = (name: string): string | null => {
+    const reg = registered?.get(name);
+    return reg && !reg.inherits ? reg.initial : (parent?.get(name) ?? null);
+  };
   for (const [name, value] of own) {
     const keyword = value.trim().toLowerCase();
     if (keyword === 'initial') {
-      out.own.set(name, null);
+      out.own.set(name, registered?.get(name)?.initial ?? null);
+    } else if (keyword === 'inherit') {
+      out.own.set(name, parent?.get(name) ?? null);
     } else if (
-      keyword === 'inherit' ||
       keyword === 'unset' ||
       keyword === 'revert' ||
       keyword === 'revert-layer'
     ) {
-      // a custom property inherits, so each of these is its parent's
-      out.own.set(name, parent?.get(name) ?? null);
+      // an unregistered custom property inherits, so each of these is its
+      // parent's
+      out.own.set(name, unset(name));
     } else {
       out.own.set(name, value);
     }
@@ -108,7 +125,14 @@ export function customProperties(
     const raw = out.own.get(name);
     if (raw && hasVar(raw)) {
       const value = substitute(raw, visit, env);
-      out.own.set(name, value === null || cyclic.has(name) ? null : value);
+      out.own.set(
+        name,
+        value !== null && !cyclic.has(name)
+          ? value
+          : registered?.has(name)
+            ? unset(name)
+            : null,
+      );
     }
     stack.pop();
     state.set(name, true);
