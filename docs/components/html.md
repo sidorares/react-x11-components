@@ -2770,9 +2770,13 @@ as CSS has it, where a context interpolates them straight, as canvas
 specifies and CoreGraphics does: a stop with no alpha takes the colour of
 each stop beside it, and two partly transparent stops of other alphas are
 cut into steps — a colour fading to `transparent` fades out, not through
-grey. Conic and repeating
-gradients, and the prefixed spellings of all of them, are drawn as nothing
-everywhere. The root's background covers the whole canvas, as CSS 2.1
+grey. `repeating-linear-gradient()` and `repeating-radial-gradient()` lay
+their stops down again from the first to the last, both ways along a
+linear one's line and out to the farthest corner of the box from a radial
+one's centre (CSS Images 3, 3.4); one whose period is too fine to show
+across its box — more than 512 periods — is drawn as its average colour,
+as CSS lets one be. Conic gradients, and the prefixed spellings of all of
+them, are drawn as nothing everywhere. The root's background covers the whole canvas, as CSS 2.1
 has it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's
 margin and down the whole element when an application grows it past the
 document — so an email's `<body bgcolor>` colours the message rather than a
