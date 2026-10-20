@@ -52,6 +52,8 @@ import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
 import type { ShapeStyles } from '../css/shapes.js';
 import {
+  CONTAIN_INLINE_SIZE,
+  CONTAIN_SIZE,
   CONTAIN_STYLE,
   FIRST_LINE_INHERITED,
   NO_MASK,
@@ -1629,21 +1631,35 @@ class Builder {
     const ownLetter = ownRules ? { rules: ownRules, punctuation: [] } : null;
     if (ownLetter) this._firstLetter = ownLetter;
     this._depth += depth;
-    if (insideImage) {
-      // an inline image at the start of the first line, as a generated
-      // image is, and the room after it Blink gives it rather than a
-      // space: the content's own white space after it is kept, as it is
-      // after an image (`MARKER_IMAGE_GAP`)
-      const { url, gap } = insideImage;
-      const image = this._contentImage(url, box, style, el, insideImage);
-      if (style.direction === 'rtl') image.style.marginLeft = gap;
-      else image.style.marginRight = gap;
-    } else if (insideMarker) {
-      this._insideMarker(insideMarker, style, markerStyle, box, el);
+    // `content-visibility: hidden` skips what the element holds, where size
+    // containment applies to its box (CSS Containment 2, 4): its contents
+    // are not drawn, and take no press, no focus and no part in the text
+    // (4.1), so no box is made for any of them — no widget, no stop, no
+    // link. Its own background, border and outline are drawn
+    // (`paintContent`), and it is laid out as one that holds nothing, which
+    // size containment says anyway. `hidden="until-found"` asks for it
+    // (HTML 15.3.1), and a menu that keeps every panel it has not opened
+    // that way, under a `display: block` of its own, drew all of them.
+    const skips =
+      style.contentVisibility === 'hidden' &&
+      containmentApplies(box, CONTAIN_SIZE);
+    if (!skips) {
+      if (insideImage) {
+        // an inline image at the start of the first line, as a generated
+        // image is, and the room after it Blink gives it rather than a
+        // space: the content's own white space after it is kept, as it is
+        // after an image (`MARKER_IMAGE_GAP`)
+        const { url, gap } = insideImage;
+        const image = this._contentImage(url, box, style, el, insideImage);
+        if (style.direction === 'rtl') image.style.marginLeft = gap;
+        else image.style.marginRight = gap;
+      } else if (insideMarker) {
+        this._insideMarker(insideMarker, style, markerStyle, box, el);
+      }
+      this._pseudo(el, 'before', style, box);
+      this._children(el, box, style, childInFlex, el, key);
+      this._pseudo(el, 'after', style, box);
     }
-    this._pseudo(el, 'before', style, box);
-    this._children(el, box, style, childInFlex, el, key);
-    this._pseudo(el, 'after', style, box);
     this._depth -= depth;
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
@@ -3473,6 +3489,24 @@ function anonymousOf(
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && isBlank(box.text);
+}
+
+/** Whether the containments `bits` would apply to a box, were they set
+ *  (`contained`): none to an inline box that is no atomic one, and none to
+ *  a table's inner parts but a cell — nor size containment to a table or a
+ *  cell (CSS Containment 2, 3). */
+export function containmentApplies(box: Box, bits: number): boolean {
+  switch (box.kind) {
+    case 'block':
+    case 'flex':
+    case 'replaced':
+      return true;
+    case 'table':
+    case 'table-cell':
+      return !!(bits & ~(CONTAIN_SIZE | CONTAIN_INLINE_SIZE));
+    default:
+      return false;
+  }
 }
 
 /**

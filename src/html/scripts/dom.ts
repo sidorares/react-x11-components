@@ -808,6 +808,439 @@ export function installDom(
     return !event._canceled;
   };
 
+  // --- animations (Web Animations 1) -------------------------------------------
+
+  /** An animation's `finish`, `cancel` and `remove`. */
+  class AnimationPlaybackEvent extends Event {
+    readonly currentTime: number | null;
+    readonly timelineTime: number | null;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.currentTime = init.currentTime ?? null;
+      this.timelineTime = init.timelineTime ?? null;
+    }
+  }
+
+  /** The timing an effect is made with, checked as `EffectTiming` is: a
+   *  number alone is its duration. */
+  const timingOf = (options: Any): Any => {
+    const given =
+      typeof options === 'number' || options === undefined || options === null
+        ? { duration: options ?? 'auto' }
+        : options;
+    const timing = {
+      delay: Number(given.delay ?? 0),
+      endDelay: Number(given.endDelay ?? 0),
+      fill: String(given.fill ?? 'auto'),
+      iterationStart: Number(given.iterationStart ?? 0),
+      iterations: given.iterations === undefined ? 1 : Number(given.iterations),
+      duration: given.duration ?? 'auto',
+      direction: String(given.direction ?? 'normal'),
+      easing: String(given.easing ?? 'linear'),
+    };
+    const duration = timing.duration;
+    if (
+      duration !== 'auto' &&
+      !(typeof duration === 'number' && duration >= 0)
+    ) {
+      throw new TypeError(
+        `Failed to execute 'animate' on 'Element': duration must be non-negative or auto.`,
+      );
+    }
+    if (!(timing.iterations >= 0) || !(timing.iterationStart >= 0)) {
+      throw new TypeError(
+        `Failed to execute 'animate' on 'Element': iterations must be non-negative.`,
+      );
+    }
+    return timing;
+  };
+
+  /** Keyframes as `getKeyframes` lists them, from either form `animate`
+   *  takes: a list of frames, or one object of a list for each property. */
+  const keyframesOf = (given: Any): Any[] => {
+    if (given === null || given === undefined) return [];
+    let frames: Any[];
+    if (typeof given[Symbol.iterator] === 'function') {
+      frames = Array.from(given as Iterable<Any>, (frame) => ({ ...frame }));
+    } else {
+      frames = [];
+      for (const [name, values] of Object.entries(given)) {
+        if (name === 'offset' || name === 'easing' || name === 'composite') {
+          continue;
+        }
+        const list = Array.isArray(values) ? values : [values];
+        list.forEach((v, i) => ((frames[i] ??= {})[name] = v));
+      }
+    }
+    const last = frames.length - 1;
+    return frames.map((frame, i) => ({
+      offset: frame.offset ?? null,
+      easing: frame.easing ?? 'linear',
+      composite: frame.composite ?? 'auto',
+      ...frame,
+      computedOffset: frame.offset ?? (last > 0 ? i / last : 1),
+    }));
+  };
+
+  /** What an animation animates: its target, its keyframes and its timing
+   *  (`KeyframeEffect`). The frames are kept, and nothing draws them. */
+  class AnimationEffect {
+    _timing: Any = timingOf(undefined);
+    _animation: Any = null;
+    getTiming(): Any {
+      return { ...this._timing };
+    }
+    updateTiming(timing: Any = {}): void {
+      this._timing = timingOf({ ...this._timing, ...timing });
+      this._animation?._schedule();
+    }
+    /** How long one run of it lasts, and all of them, and when it ends. */
+    getComputedTiming(): Any {
+      const t = this._timing;
+      const duration = t.duration === 'auto' ? 0 : t.duration;
+      const activeDuration = duration * t.iterations || 0;
+      const endTime = Math.max(t.delay + activeDuration + t.endDelay, 0);
+      const localTime = this._animation?.currentTime ?? null;
+      let progress: number | null = null;
+      let currentIteration: number | null = null;
+      if (localTime !== null) {
+        const active = localTime - t.delay;
+        if (active >= 0 && active <= activeDuration) {
+          const iterations = duration > 0 ? active / duration : t.iterations;
+          currentIteration = Math.min(Math.floor(iterations), t.iterations - 1);
+          progress = duration > 0 ? iterations - currentIteration : 1;
+        }
+      }
+      return {
+        ...this.getTiming(),
+        duration,
+        activeDuration,
+        endTime,
+        localTime,
+        progress,
+        currentIteration,
+      };
+    }
+  }
+  class KeyframeEffect extends AnimationEffect {
+    target: Any;
+    pseudoElement: string | null;
+    composite = 'replace';
+    iterationComposite = 'replace';
+    _frames: Any[];
+    constructor(target: Any, keyframes: Any, options?: Any) {
+      super();
+      if (target instanceof KeyframeEffect) {
+        this.target = target.target;
+        this.pseudoElement = target.pseudoElement;
+        this._frames = target._frames.map((f: Any) => ({ ...f }));
+        this._timing = target.getTiming();
+        return;
+      }
+      this.target = target ?? null;
+      this.pseudoElement =
+        options && typeof options === 'object' && options.pseudoElement
+          ? String(options.pseudoElement)
+          : null;
+      this._frames = keyframesOf(keyframes);
+      this._timing = timingOf(options);
+    }
+    getKeyframes(): Any[] {
+      return this._frames.map((f) => ({ ...f }));
+    }
+    setKeyframes(keyframes: Any): void {
+      this._frames = keyframesOf(keyframes);
+    }
+  }
+
+  /** The document's timeline: its time is the page's clock. */
+  class AnimationTimeline {
+    get currentTime(): number | null {
+      return now();
+    }
+  }
+  class DocumentTimeline extends AnimationTimeline {
+    _origin: number;
+    constructor(options: Any = {}) {
+      super();
+      this._origin = Number(options?.originTime ?? 0);
+    }
+    override get currentTime(): number | null {
+      return now() - this._origin;
+    }
+  }
+  const documentTimeline = new DocumentTimeline();
+
+  /** The animations a page has made that are running or paused, or that
+   *  finished and fill forwards: what `getAnimations` lists. */
+  const liveAnimations = new Set<Any>();
+
+  /**
+   * An animation a page started (`animate`, `new Animation`): when it
+   * started, how fast it runs, its promises and its events. What it
+   * animates is not drawn — `<Html>` draws CSS's animations and none of a
+   * script's — but it runs for as long as its timing says and then
+   * finishes, as one does in a browser: `finished` resolves and `finish`
+   * is told, so a page that hides a panel once it has faded, or waits for
+   * the fade to go on, goes on. One that never finished kept every panel a
+   * menu had faded out on screen.
+   */
+  class Animation extends EventTarget {
+    id = '';
+    replaceState = 'active';
+    _effect: Any = null;
+    _timeline: Any;
+    /** The timeline's time it started at, where it is running. */
+    _start: number | null = null;
+    /** Its own time where it is paused, or finished, or has not started. */
+    _held: number | null = null;
+    _rate = 1;
+    _paused = false;
+    _timer = 0;
+    _finishedPromise: Any;
+    _settle: Any = null;
+    _done = false;
+    constructor(effect: Any = null, timeline: Any = documentTimeline) {
+      super();
+      this._timeline = timeline;
+      this.effect = effect;
+      this._newFinished();
+    }
+    get effect(): Any {
+      return this._effect;
+    }
+    set effect(effect: Any) {
+      if (this._effect) this._effect._animation = null;
+      this._effect = effect ?? null;
+      if (effect) effect._animation = this;
+      this._schedule();
+    }
+    get timeline(): Any {
+      return this._timeline;
+    }
+    get startTime(): number | null {
+      return this._start;
+    }
+    set startTime(v: Any) {
+      if (v === null) {
+        this._held = this.currentTime;
+        this._start = null;
+      } else {
+        this._start = Number(v);
+        this._held = null;
+        this._paused = false;
+      }
+      this._schedule();
+    }
+    get currentTime(): number | null {
+      if (this._held !== null) return this._held;
+      if (this._start === null) return null;
+      return (this._timeline.currentTime - this._start) * this._rate;
+    }
+    set currentTime(v: Any) {
+      if (v === null) {
+        throw new TypeError(
+          "Failed to set the 'currentTime' property on 'Animation': currentTime may not be changed from resolved to unresolved",
+        );
+      }
+      const time = Number(v);
+      if (this._paused || this._start === null) this._held = time;
+      else this._start = this._timeline.currentTime - time / (this._rate || 1);
+      this._done = false;
+      this._schedule();
+    }
+    get playbackRate(): number {
+      return this._rate;
+    }
+    set playbackRate(v: Any) {
+      const time = this.currentTime;
+      this._rate = Number(v);
+      if (time !== null) this.currentTime = time;
+    }
+    updatePlaybackRate(v: Any): void {
+      this.playbackRate = v;
+    }
+    get pending(): boolean {
+      return false;
+    }
+    get ready(): Any {
+      return Promise.resolve(this);
+    }
+    get finished(): Any {
+      return this._finishedPromise;
+    }
+    get playState(): string {
+      const time = this.currentTime;
+      if (time === null && !this._paused) return 'idle';
+      if (this._paused) return 'paused';
+      if (this._ended(time!)) return 'finished';
+      return 'running';
+    }
+    /** Where its effect ends, in its own time. */
+    _end(): number {
+      return this._effect ? this._effect.getComputedTiming().endTime : 0;
+    }
+    _ended(time: number): boolean {
+      return this._rate > 0
+        ? time >= this._end()
+        : this._rate < 0
+          ? time <= 0
+          : false;
+    }
+    play(): void {
+      const time = this.currentTime;
+      const end = this._end();
+      let from = time;
+      if (this._rate > 0 && (time === null || time < 0 || time >= end)) {
+        from = 0;
+      } else if (this._rate < 0 && (time === null || time <= 0 || time > end)) {
+        if (end === Infinity) {
+          throw new DOMException(
+            "Failed to execute 'play' on 'Animation': Cannot play reversed Animation with infinite target effect end.",
+            'InvalidStateError',
+          );
+        }
+        from = end;
+      } else if (time === null) from = 0;
+      if (this._settle === null) this._newFinished();
+      this._paused = false;
+      this._held = null;
+      this._done = false;
+      this._start =
+        this._timeline.currentTime - (from ?? 0) / (this._rate || 1);
+      this._schedule();
+    }
+    pause(): void {
+      if (this._paused) return;
+      const time = this.currentTime ?? (this._rate < 0 ? this._end() : 0);
+      this._held = time;
+      this._start = null;
+      this._paused = true;
+      this._schedule();
+    }
+    reverse(): void {
+      this._rate = -this._rate;
+      this.play();
+    }
+    finish(): void {
+      const end = this._end();
+      if (this._rate === 0 || (this._rate > 0 && end === Infinity)) {
+        throw new DOMException(
+          "Failed to execute 'finish' on 'Animation': Cannot finish Animation with a playbackRate of 0 or an infinite target effect end.",
+          'InvalidStateError',
+        );
+      }
+      this._paused = false;
+      this._held = null;
+      this._start =
+        this._timeline.currentTime - (this._rate > 0 ? end : 0) / this._rate;
+      this._schedule();
+    }
+    cancel(): void {
+      if (this.playState === 'idle') return;
+      clearTimer(this._timer);
+      this._timer = 0;
+      if (this._settle) {
+        const reject = this._settle.reject;
+        this._settle = null;
+        reject(new DOMException('The user aborted a request.', 'AbortError'));
+      }
+      this._newFinished();
+      this._start = null;
+      this._held = null;
+      this._paused = false;
+      this._done = false;
+      liveAnimations.delete(this);
+      this._tell('cancel', null);
+    }
+    persist(): void {
+      this.replaceState = 'persisted';
+    }
+    /** Nothing to write: the effect's values are not computed here. */
+    commitStyles(): void {}
+    _newFinished(): void {
+      this._finishedPromise = new Promise((resolve, reject) => {
+        this._settle = { resolve, reject };
+      });
+      // a cancelled animation's promise is handled (Web Animations 1,
+      // 4.4.15): no page has to listen for it
+      this._finishedPromise.catch(() => {});
+    }
+    /** Where it is now, and when it finishes from there: a timer at that
+     *  time, and the finish itself where that is now. */
+    _schedule(): void {
+      clearTimer(this._timer);
+      this._timer = 0;
+      const time = this.currentTime;
+      if (time === null) {
+        liveAnimations.delete(this);
+        return;
+      }
+      const fill = this._effect?.getTiming().fill;
+      if (this._paused) {
+        liveAnimations.add(this);
+        return;
+      }
+      if (this._ended(time)) {
+        if (fill === 'forwards' || fill === 'both') liveAnimations.add(this);
+        else liveAnimations.delete(this);
+        if (!this._done) this._finish();
+        return;
+      }
+      liveAnimations.add(this);
+      const left =
+        this._rate > 0 ? (this._end() - time) / this._rate : time / -this._rate;
+      if (!Number.isFinite(left)) return;
+      this._timer = setTimer(() => this._schedule(), left, [], false);
+    }
+    _finish(): void {
+      this._done = true;
+      const held = this._rate > 0 ? this._end() : 0;
+      this._start = null;
+      this._held = held;
+      const settle = this._settle;
+      this._settle = null;
+      settle?.resolve(this);
+      this._tell('finish', held);
+    }
+    /** An event of its own, told in a task after the change, as the
+     *  document's pending animation events are (Web Animations 1, 4.4.18). */
+    _tell(type: string, currentTime: number | null): void {
+      const timelineTime = this._timeline.currentTime;
+      setTimer(
+        () => {
+          const ev = new AnimationPlaybackEvent(type, {
+            currentTime,
+            timelineTime,
+          });
+          ev.isTrusted = true;
+          dispatch(this, ev);
+        },
+        0,
+        [],
+        false,
+      );
+    }
+  }
+  for (const type of ['finish', 'cancel', 'remove']) {
+    Object.defineProperty(Animation.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
+  }
+  /** The animations running on `target`, or on what it holds as well. */
+  const animationsOf = (target: Any, subtree: boolean): Any[] =>
+    [...liveAnimations].filter((a) => {
+      const on = a.effect?.target;
+      if (!on) return false;
+      return on === target || (subtree && target.contains?.(on));
+    });
+
   /** The mouse, the one pointer there is (Pointer Events 3): the buttons
    *  held, as the DOM's mask, kept from the presses and releases told
    *  rather than from a move's, which carry none on macOS; and its capture,
@@ -2134,18 +2567,17 @@ export function installDom(
     get shadowRoot(): Any {
       return wrap(Number(call('shadowRoot', this._id)));
     }
-    animate(): Any {
-      return {
-        finished: Promise.resolve(),
-        cancel() {},
-        finish() {},
-        play() {},
-        pause() {},
-        onfinish: null,
-      };
+    animate(keyframes: Any, options?: Any): Any {
+      const effect = new KeyframeEffect(this, keyframes, options);
+      const animation = new Animation(effect, documentTimeline);
+      if (options && typeof options === 'object' && options.id) {
+        animation.id = String(options.id);
+      }
+      animation.play();
+      return animation;
     }
-    getAnimations(): Any[] {
-      return [];
+    getAnimations(options?: Any): Any[] {
+      return animationsOf(this, !!options?.subtree);
     }
     get nextElementSibling(): Any {
       return wrap(Number(call('next', this._id, 'element')));
@@ -2257,11 +2689,25 @@ export function installDom(
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
     }
-    get hidden(): boolean {
-      return this.hasAttribute('hidden');
+    // HTML 6.1: `until-found` is a state of its own, and every falsy value
+    // but `false` itself takes the attribute off as well
+    get hidden(): boolean | string {
+      const value = this.getAttribute('hidden');
+      if (value === null) return false;
+      return value.toLowerCase() === 'until-found' ? 'until-found' : true;
     }
     set hidden(v: Any) {
-      this.toggleAttribute('hidden', !!v);
+      if (typeof v === 'string' && v.toLowerCase() === 'until-found') {
+        this.setAttribute('hidden', 'until-found');
+      } else if (
+        v === false ||
+        v === '' ||
+        v == null ||
+        v === 0 ||
+        Number.isNaN(v)
+      ) {
+        this.removeAttribute('hidden');
+      } else this.setAttribute('hidden', '');
     }
     get title(): string {
       return this.getAttribute('title') ?? '';
@@ -6051,6 +6497,12 @@ export function installDom(
     }
     get hidden(): boolean {
       return false;
+    }
+    get timeline(): Any {
+      return documentTimeline;
+    }
+    getAnimations(): Any[] {
+      return animationsOf(this, true);
     }
     get activeElement(): Any {
       return wrap(Number(call('active'))) ?? this.body;
@@ -11900,6 +12352,12 @@ export function installDom(
     HashChangeEvent,
     PopStateEvent,
     ToggleEvent,
+    AnimationPlaybackEvent,
+    AnimationEffect,
+    KeyframeEffect,
+    AnimationTimeline,
+    DocumentTimeline,
+    Animation,
     EventTarget,
     Node,
     CharacterData,

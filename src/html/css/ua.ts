@@ -408,8 +408,12 @@ dialog:modal {
 dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
 
 /* 'hidden' is an attribute, not a style, and a document that uses it expects
-   it to win over the display above. */
-[hidden] { display: none; }
+   it to win over the display above. Hidden until found keeps the box and
+   skips what it holds, so a page that lays its panels out with a display of
+   its own still hides them (HTML 15.3.1). */
+[hidden]:not([hidden=until-found i]):not(embed) { display: none; }
+[hidden=until-found i]:not(embed) { content-visibility: hidden; }
+embed[hidden] { display: inline; height: 0; width: 0; }
 `;
 }
 
