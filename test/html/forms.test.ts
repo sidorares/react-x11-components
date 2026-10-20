@@ -1508,6 +1508,157 @@ metric(
 );
 
 metric(
+  'a box the document paints over a control cuts its widget to what shows, or hides it',
+  async () => {
+    // A menu opened over a form is painted over its fields, and a widget is
+    // a node of its own over the document: drawn whole, the field and its
+    // button came out over the open menu. An opaque box across the field
+    // from a side takes that band off it, and one that leaves no rectangle
+    // of it hides it. What is translucent, or wholly inside the field — an
+    // icon a page sets in it — leaves it as it was.
+    const { node } = await render(
+      '<style>body{margin:0;background:#fff}' +
+        'input{display:block;margin:0 0 20px;width:200px;height:40px;' +
+        'box-sizing:border-box}' +
+        '.over{position:absolute;left:0;width:300px;background:#fff}</style>' +
+        '<input id="cut"><input id="under"><input id="tinted">' +
+        '<div style="position:relative"><input id="icon">' +
+        '<b style="position:absolute;top:10px;left:170px;width:20px;' +
+        'height:20px;background:#000"></b></div><input id="clear">' +
+        // a menu's panel over the top 30px of the first field, a card over
+        // all of the second, a translucent veil over the third
+        '<div class="over" style="top:0;height:30px"></div>' +
+        '<div class="over" style="top:55px;height:60px"></div>' +
+        '<div class="over" style="top:120px;height:40px;' +
+        'background:rgba(0,0,0,.1)"></div>',
+    );
+    await act();
+    const clips = clipsOf(node);
+    assert.deepStrictEqual(clips.cut, { x: 0, y: 30, width: 200, height: 10 });
+    assert.deepStrictEqual(clips.under, { x: 0, y: 60, width: 0, height: 0 });
+    assert.strictEqual(clips.tinted, null, 'seen through the veil');
+    assert.strictEqual(clips.icon, null, 'under its own icon');
+    assert.strictEqual(clips.clear, null);
+  },
+);
+
+metric(
+  'a box fixed to the viewport cuts a field’s widget where the scroll brings it over',
+  async () => {
+    // a scroll lays nothing out, so where the header is is asked as the
+    // document is painted, as it is for a player
+    const pane = { current: null as null | { scrollTo(y: number): void } };
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, height: 200, flexDirection: 'column' } },
+        h(
+          'box',
+          {
+            style: { flexGrow: 1, overflow: 'scroll' },
+            ref: (n: unknown) => {
+              pane.current = n as typeof pane.current;
+            },
+          },
+          h(Html, {
+            source:
+              '<style>body{margin:0;background:#fff}</style>' +
+              '<div style="position:fixed;top:0;left:0;right:0;height:30px;' +
+              'background:#00f"></div><div style="height:60px"></div>' +
+              '<input id="f" style="display:block;margin:0;width:200px;' +
+              'height:40px;box-sizing:border-box">' +
+              '<div style="height:600px"></div>',
+            partial: false,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+      { width: 440, height: 300, fonts: FONTS! },
+    );
+    await act();
+    const node = screen.getByTestName('doc') as DrawnNode;
+    assert.strictEqual(clipsOf(node).f, null, 'clear of the header');
+    // the header's 30px over the field's top 10
+    await act(async () => pane.current!.scrollTo(40));
+    await act();
+    await waitFor(() =>
+      assert.deepStrictEqual(clipsOf(node).f, {
+        x: 0,
+        y: 70,
+        width: 200,
+        height: 30,
+      }),
+    );
+  },
+);
+
+metric(
+  'a box over a control cuts its widget in logical pixels on a display of scale 2',
+  async () => {
+    // the boxes and the clip are device pixels until the widgets are told,
+    // in logical ones: the band the panel leaves is 10px of the field at
+    // either scale
+    const { node } = await render2x(
+      '<style>body{margin:0;background:#fff}' +
+        'input{display:block;margin:0;width:200px;height:40px;' +
+        'box-sizing:border-box}' +
+        '.over{position:absolute;left:0;top:0;width:300px;height:30px;' +
+        'background:#fff}</style><input id="cut"><div class="over"></div>',
+    );
+    await act();
+    assert.deepStrictEqual(clipsOf(node).cut, {
+      x: 0,
+      y: 30,
+      width: 200,
+      height: 10,
+    });
+  },
+);
+
+metric(
+  'a menu a restyle shows over a field hides its widget, and gives it back as it goes',
+  async () => {
+    // shown by a class, as a hover menu is: a restyle in place, which
+    // tells the widgets only where a box moved — and the menu moves nothing
+    const { node } = await render(
+      '<style>body{margin:0;background:#fff}' +
+        'input{display:block;margin:20px 0 0;width:200px;height:40px}' +
+        '.menu{position:absolute;top:0;left:0;width:300px;height:100px;' +
+        'background:#fff;visibility:hidden} .menu.open{visibility:visible}' +
+        '</style><div class="menu" id="m"></div><input id="f">',
+    );
+    await act();
+    const el = view(node);
+    assert.strictEqual(clipsOf(node).f, null);
+    const menu = findById(el.document, 'm')!;
+    const toggle = async (value: string) => {
+      const oldValue = menu.attribs.class;
+      menu.attribs.class = value;
+      await act(async () =>
+        el.touchDocument([
+          {
+            type: 'attributes',
+            target: menu,
+            attributeName: 'class',
+            oldValue,
+          },
+        ]),
+      );
+      await act();
+    };
+    await toggle('menu open');
+    assert.deepStrictEqual(clipsOf(node).f, {
+      x: 0,
+      y: 20,
+      width: 0,
+      height: 0,
+    });
+    await toggle('menu');
+    assert.strictEqual(clipsOf(node).f, null);
+  },
+);
+
+metric(
   'a control with a negative tabindex takes the focus and is no Tab stop',
   async () => {
     // HTML 6.6.3: a negative `tabindex` is focusable and not reached by

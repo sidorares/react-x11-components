@@ -1500,6 +1500,27 @@ widget draws in reads its colours from the theme in force, or from
 control rules name system colours rather than the look's values, so a
 control the page styles builds on its scheme's colours as well.
 
+**A widget is cut by what the document paints over its control.** A menu
+opened over a form is painted over its fields, and a widget drawn whole
+came out over the menu. `controlRectsOf` asks the layers painted after the
+control (`layersOver`, which places a box in the flow where its layer, or
+its context's own flow, is painted) what they fill with an opaque
+background (`opaqueWithin`), takes the band off the widget that a box
+across it from a side covers, and hides it with a clip of no area where
+what covers it leaves no rectangle. Two things are load-bearing. **What is
+translucent, or wholly inside the field, does not count**: a veil would
+take every field under a dimmed page away, and an icon a page sets in a
+field would take the field. And **anything new that can put a box over a
+control without a layout reports the controls again**, as a restyle in
+place that shows, hides, fades in or grounds a box does (`coverChange`),
+a scroll that moves a fixed box does at paint (`_controlsShift`), and one
+that moves a sticky box does through `_stickyMoved`. A report for a scroll
+asks only the controls in the viewport (`near`), where a scroll can move a
+box over one, and keeps the others' last answers while they have not moved
+(`_covered`): asked of all of them, a page of three hundred fields in
+cards under a fixed header paid a millisecond more at every frame of a
+scroll.
+
 **What `content-visibility: hidden` holds has no boxes.** The builder makes
 none of it where size containment applies to the box (`containmentApplies`,
 which paint asks too), so it takes no press, no focus, no widget and no

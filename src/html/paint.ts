@@ -5374,6 +5374,78 @@ export function inkMeets(root: Box, extent: Rect): boolean {
   return false;
 }
 
+/**
+ * Where a box, and what it holds, fills `extent` with an opaque
+ * background, in the document's coordinates: what nothing under it shows
+ * through — a menu's panel, a dialog's card — cut by the boxes in it that
+ * clip what they hold. Nothing under an opacity below 1 counts, nor what is
+ * drawn through a matrix, a filter, a clip path or a mask, whose rects are
+ * not where it draws, nor a picture or text, which may let what is under
+ * them show. Its corners are taken square.
+ */
+export function opaqueWithin(root: Box, extent: Rect): Rect[] {
+  const out: Rect[] = [];
+  const stack: [Box, Rect][] = [[root, extent]];
+  while (stack.length) {
+    const [at, within] = stack.pop()!;
+    if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) continue;
+    if (!meets(inkOf(at), within)) continue;
+    const style = at.style;
+    if (style.opacity < 1) continue;
+    if (
+      placedMatrix(at) ||
+      style.filter !== null ||
+      style.clipPath ||
+      masked(style)
+    ) {
+      continue;
+    }
+    if (
+      style.visibility === 'visible' &&
+      hasRect(at) &&
+      style.backgroundColor !== null &&
+      !isTransparent(style.backgroundColor) &&
+      alphaOf(inkColor(style.backgroundColor, style.color)) === 1
+    ) {
+      const filled = meet(
+        { x: at.x, y: at.y, width: at.width, height: at.height },
+        within,
+      );
+      if (filled) out.push(filled);
+    }
+    let inner = within;
+    if (
+      clipsOverflow(at) &&
+      style.overflowX !== 'visible' &&
+      style.overflowY !== 'visible'
+    ) {
+      const clip = meet(
+        {
+          x: at.x + at.borderLeft,
+          y: at.y + at.borderTop,
+          width: at.width - at.borderLeft - at.borderRight,
+          height: at.height - at.borderTop - at.borderBottom,
+        },
+        within,
+      );
+      if (!clip) continue;
+      inner = clip;
+    }
+    for (const child of at.children) stack.push([child, inner]);
+  }
+  return out;
+}
+
+/** Where two rects overlap, or null where they do not. */
+function meet(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (right <= x || bottom <= y) return null;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 /** A box's ink bounds, as a rect. */
 function inkOf(box: Box): Rect {
   return {
@@ -6289,6 +6361,21 @@ export function onLine(parent: Box, child: Box): boolean {
  */
 const STACKED = new WeakMap<Box, Box[]>();
 
+/** Where each box is in its context's list of layers (`STACKED`), made as
+ *  a list is first asked about: a walk from each of many controls in a page
+ *  of many layers looked each up in the list. */
+const LAYER_INDEX = new WeakMap<Box[], Map<Box, number>>();
+
+function layerIndex(list: Box[], box: Box): number {
+  let index = LAYER_INDEX.get(list);
+  if (!index) {
+    index = new Map();
+    for (let i = 0; i < list.length; i += 1) index.set(list[i], i);
+    LAYER_INDEX.set(list, index);
+  }
+  return index.get(box) ?? -1;
+}
+
 /** Between a positioned box and the stacking context that paints it, the
  *  boxes whose clips it is under (`clipsFor`), outermost first. */
 const CLIPS_BETWEEN = new WeakMap<Box, Box[]>();
@@ -6413,6 +6500,37 @@ export function coverersAfter(
   return stopped === false ? found : null;
 }
 
+/**
+ * The layers the document paints after `box` whose ink is within `extent`,
+ * as `coverersAfter` finds them, for a box wherever it is painted — in the
+ * flow too, which is where a control most often is: a box in the flow of a
+ * layer is painted with the layer, so what is after the nearest box around
+ * it that is one of its context's layers is after it, and a box in its
+ * context's own flow is under every layer the context paints (CSS 2.1
+ * Appendix E). In-flow boxes painted after it, which reach it only by a
+ * negative margin, are not asked about. Null where the outline of a context
+ * around it reaches the extent.
+ */
+export function layersOver(
+  box: Box,
+  extent: Rect,
+  fixedExtent: Rect | null = null,
+): Box[] | null {
+  const found: Box[] = [];
+  const stopped = walkPaintedAfter(
+    box,
+    extent,
+    fixedExtent,
+    null,
+    (later) => {
+      found.push(later);
+      return false;
+    },
+    true,
+  );
+  return stopped === false ? found : null;
+}
+
 /** The walk `paintedAfter` and `coverersAfter` share: each layer painted
  *  after `box` whose ink is within the extent is handed to `meet`, which
  *  stops the walk by answering true. True where it was stopped, or an
@@ -6424,6 +6542,9 @@ function walkPaintedAfter(
   fixedExtent: Rect | null,
   above: ReadonlySet<Box> | null,
   meet: (later: Box) => boolean,
+  /** Whether a box in the flow is painted where its layer, or its
+   *  context's flow, is (`layersOver`), rather than answered with null. */
+  flow = false,
 ): boolean | null {
   const over = (later: Box): boolean => {
     // a layer of its own over this one's, with all it holds (`above`)
@@ -6433,8 +6554,19 @@ function walkPaintedAfter(
     // which it keeps its place against
     const fixed = fixedToViewport(later);
     if (fixed && !fixedExtent) return false;
+    const within = fixed ? fixedExtent! : extent;
+    // passed over where all of it misses, before it is looked into
+    if (
+      !(later.boundsWidth > 0 && later.boundsHeight > 0) ||
+      later.boundsX >= within.x + within.width ||
+      later.boundsX + later.boundsWidth <= within.x ||
+      later.boundsY >= within.y + within.height ||
+      later.boundsY + later.boundsHeight <= within.y
+    ) {
+      return false;
+    }
     // what it and all it holds draw there, not how far all of it reaches
-    return inkMeets(later, fixed ? fixedExtent! : extent) && meet(later);
+    return inkMeets(later, within) && meet(later);
   };
   let item = box;
   while (item.parent) {
@@ -6452,16 +6584,28 @@ function walkPaintedAfter(
     // them where it is one
     let context: Box | null = item.parent;
     while (context && !STACKED.has(context)) context = context.parent;
+    // no box above paints layers: nothing is painted over it but its flow
+    if (!context && flow) break;
     const list = context ? STACKED.get(context)! : null;
-    const index = list ? list.indexOf(item) : -1;
-    if (!context || index < 0) return null;
+    let index = list ? layerIndex(list, item) : -1;
+    if (index < 0 && flow && context) {
+      // painted with the nearest box around it that is one of the
+      // context's layers, or in the context's own flow, before them all
+      let at: Box | null = item.parent;
+      while (at && at !== context && layerIndex(list!, at) < 0) at = at.parent;
+      if (at && at !== context) {
+        item = at;
+        index = layerIndex(list!, at);
+      }
+    } else if (!context || index < 0) return null;
     for (let k = index + 1; k < list!.length; k += 1) {
       if (over(list![k])) return true;
     }
-    if (outlineMeets(context, extent)) return true;
-    item = context;
+    if (outlineMeets(context!, extent)) return true;
+    item = context!;
   }
   // and the whole top layer over the root
+  while (item.parent) item = item.parent;
   for (const later of topLayerBoxes(item)) if (over(later)) return true;
   return false;
 }
