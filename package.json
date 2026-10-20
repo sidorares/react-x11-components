@@ -205,6 +205,7 @@
     "domhandler": "^6.0.0",
     "domutils": "^4.0.0",
     "htmlparser2": "^12.0.0",
+    "image-in-browser": "^3.6.0",
     "linebreak": "^1.1.0",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.0",

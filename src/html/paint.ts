@@ -370,8 +370,13 @@ export interface PaintOptions {
    *  there. */
   mounted?: ReadonlySet<Element>;
   /** A decoded `background-image`, with its size in CSS pixels, once it has
-   *  arrived. An SVG may lack either dimension. */
-  backgroundImageFor?(url: string): ({ image: unknown } & IntrinsicSize) | null;
+   *  arrived. An SVG may lack either dimension. `box` is the box being
+   *  painted, where one is (`painting`): what an animated image's next
+   *  frame repaints. */
+  backgroundImageFor?(
+    url: string,
+    box: Box | null,
+  ): ({ image: unknown } & IntrinsicSize) | null;
   /** The whole element in window coordinates: the canvas the root's
    *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
   canvas?: Rect;
@@ -1573,7 +1578,29 @@ function frameHeight(box: Frame): number {
   return box.height - box.captionTop - box.captionBottom;
 }
 
+/**
+ * The box being painted, innermost first: what a background, a border
+ * image, a mask or a marker is drawn for, which `backgroundImageFor` is
+ * told, since none of them is handed its box. An animated image's next
+ * frame repaints where the box that drew it is (`HtmlViewNode._gifFrame`).
+ * A block's background and marker are painted in its parent's flow pass,
+ * and name the block themselves (`paintOwnBackground`); what else is drawn
+ * for a box from outside its own paint — a table's column backgrounds, an
+ * inline box's fragments — is the box around it's, whose ink holds it.
+ */
+let painting: Box | null = null;
+
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  const was = painting;
+  painting = box;
+  try {
+    paintOwnBox(ctx, box, options);
+  } finally {
+    painting = was;
+  }
+}
+
+function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // a paint of what is behind a box with a backdrop filter ends at the box
   const until = options.backdrop?.until;
   if (until) {
@@ -3597,7 +3624,7 @@ function paintMasked(
   const drawable = layers.some((layer) => {
     if (layer.backgroundGradient) return true;
     const url = urlOf(layer.backgroundImage);
-    return url !== null && !!options.backgroundImageFor?.(url);
+    return url !== null && !!options.backgroundImageFor?.(url, painting);
   });
   if (!drawable) return true;
   if (!options.surface || !ctx.drawImage) return false;
@@ -3888,6 +3915,21 @@ function paintBarsOf(
 /** A box's own background, background image and borders, and a table's
  *  parts' backgrounds; a row or a row group paints none of its own. */
 function paintOwnBackground(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  // painted in its parent's flow pass, and the box's all the same
+  const was = painting;
+  painting = box;
+  try {
+    paintBackgroundOf(ctx, box, options);
+  } finally {
+    painting = was;
+  }
+}
+
+function paintBackgroundOf(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
@@ -4964,7 +5006,13 @@ function paintFlowLines(
       // its marker, an outside one under its clip with the rest, as all
       // three browsers cut it
       if (child.marker && child.style.visibility === 'visible') {
-        paintMarker(ctx, child.marker, options, child.style.colorScheme);
+        const was = painting;
+        painting = child;
+        try {
+          paintMarker(ctx, child.marker, options, child.style.colorScheme);
+        } finally {
+          painting = was;
+        }
       }
       if (child.lines) paintLines(ctx, child, options);
       paintFlowLines(
@@ -8572,7 +8620,8 @@ function paintBackgroundImage(
     at = options.viewport ?? options.canvas;
   }
   const url = urlOf(style.backgroundImage);
-  const loaded = url !== null ? options.backgroundImageFor?.(url) : null;
+  const loaded =
+    url !== null ? options.backgroundImageFor?.(url, painting) : null;
   if (!loaded) return;
   const svg = loaded.image instanceof SvgDrawing ? loaded.image : null;
   if (!svg && !ctx.drawImage) return;
@@ -9151,7 +9200,8 @@ function paintBorderImage(
   if (!source || !ctx.drawImage) return false;
   const url = urlOf(source);
   const gradient = gradientOf(source);
-  const loaded = url !== null ? options.backgroundImageFor?.(url) : null;
+  const loaded =
+    url !== null ? options.backgroundImageFor?.(url, painting) : null;
   if (url !== null && !loaded) return false;
   // an image an `image-set()` chose at another density is that many of its
   // pixels to the CSS pixel, its slices' unit too — as Chrome, Firefox and
@@ -10485,7 +10535,7 @@ function paintMarker(
   if (marker.image) {
     // `list-style-image`'s, at its own size
     const { url, width, height } = marker.image;
-    const loaded = options.backgroundImageFor?.(url);
+    const loaded = options.backgroundImageFor?.(url, painting);
     if (!loaded || !(width > 0 && height > 0)) return;
     if (loaded.image instanceof SvgDrawing) {
       drawSvg(ctx, loaded.image, x, y, width, height, scheme, options);

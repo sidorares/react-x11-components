@@ -1363,7 +1363,11 @@ them and they become this package's to justify alone. `bidi-js` is the
 UAX #9 ntk's own layout resolves with, which is why it is the one `<Html>`
 resolves a paragraph's levels with where a line is laid out a piece at a
 time: the two have to agree about every letter the engine orders.
-`linebreak` is the sixth, on the same footing: ntk breaks every line with
+`image-in-browser` is on the same footing as the five: a dependency of
+react-x11's, which decodes a still WebP with it, declared here because
+`webp.ts` decodes an animated one's frames with it, and loaded by a dynamic
+`import()` the first time one arrives, since evaluating it takes some
+140 ms. `linebreak` is the sixth, on the same footing: ntk breaks every line with
 it, and react-x11 depends on it directly to find a CoreText paragraph's
 least width. `text-wrap: pretty` reads the places a line may break from it
 (`layout/pretty.ts`), which is the engines' opinion and no third one. It
@@ -2792,6 +2796,27 @@ from it at a size of its own, and one drawn a second time later in the
 drag — a hand going back over the widths it came through — was made into a
 raster that nothing copied. Zen Garden 214's photographs were 278 of them
 in a drag of the bench's, and a frame's paint went from 17 ms to 10.
+
+**An animated image is the document's to play, and a frame is a repaint
+of the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
+here and not in core's `<image>` because `<Html>` draws its own images, so
+nothing core's element did would reach a document. The frames are read
+here too: `gif.ts` because core's decoder ladder reads no GIF under Node
+and only a first frame under Bun, and `webp.ts` because the ladder answers
+a WebP's first frame. A WebP frame's pixels are image-in-browser's,
+handed each frame as a still of its own (`stillOf`), and the compositing is
+`WebPCanvas`'s: image-in-browser's own blends every frame and clears the
+whole canvas before a frame whose dispose flag is set, where the flags say
+to replace and to clear the frame's rectangle after it shows. Should core's
+`<image>` come to play animations, the frames belong on the ladder, and the
+rule in "Vendored from core" applies: delete the copy, import the export.
+Two things are load-bearing. **A paint that draws an image for a box names
+the box** (`painting` in `paint.ts`): `paintBox` does, and so do a block's
+background and marker, which its parent's flow pass paints; drawn under the
+wrong box, a frame repaints the parent's whole ink. And **nothing ticks for
+what no paint reached**: a frame is waited for only by a box a paint drew,
+so an image scrolled out of view stops until a paint draws it again, where
+it shows the frame its clock has come to.
 
 **On macOS a clip that is not a rectangle of whole pixels is a mask**, and
 CoreGraphics draws through one at some four times the cost of a

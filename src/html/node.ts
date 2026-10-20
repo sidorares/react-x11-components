@@ -276,6 +276,7 @@ import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect, CoverAnswer } from './controls.js';
 import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
+import type { AnimatedImage } from './animated.js';
 import type {
   ResourceRequest,
   ResourceResult,
@@ -399,7 +400,8 @@ export interface HtmlViewProps {
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
   domRevision?: number;
-  /** Whether the document's CSS animations run. Default true. */
+  /** Whether the document's CSS animations and animated images run.
+   *  Default true. */
   animate?: boolean;
   /** Whether the desktop has asked for less motion: what
    *  `prefers-reduced-motion` is answered from. Default false. */
@@ -845,6 +847,21 @@ export class HtmlViewNode extends Node {
   /** The timer for the next frame of an animation, and when it is due. */
   private _frameTimer: unknown = null;
   private _frameAt = Infinity;
+  /**
+   * The animated images painted since their frame last moved on: the frame
+   * each was painted at, the tree it was painted in, and the boxes that drew
+   * it — or null, for one drawn outside any box's paint. What `_gifFrame`
+   * repaints when the frame moves on, and only that: a box no paint reached
+   * since, scrolled out of view or under something opaque, is not asked
+   * again until one does.
+   */
+  private _gifs = new Map<
+    AnimatedImage,
+    { index: number; tree: BoxTree | null; boxes: Set<Box | null> }
+  >();
+  /** The timer for the next frame of an animated image, and when it is due. */
+  private _gifTimer: unknown = null;
+  private _gifAt = Infinity;
   /**
    * The elements the build of the boxes that is due has to style again,
    * where every change asking for it said which (`_invalidate`), and null
@@ -3629,6 +3646,8 @@ export class HtmlViewNode extends Node {
 
   override destroySubtree(): void {
     this._dropHeldHover();
+    this._disarmGif();
+    this._gifs.clear();
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = null;
     this._disarmFrame();
@@ -5414,6 +5433,106 @@ export class HtmlViewNode extends Node {
     this._frameTimer = null;
     this._frameAt = Infinity;
   }
+
+  // --- animated images ------------------------------------------------------
+  //
+  // An animated GIF is an image whose pixels change as time passes, and
+  // nothing else: no box is another size or style for it. So a frame of one
+  // is a repaint of the boxes that drew it (`_gifFrame`), as a read of a
+  // filter's pixels arriving is (`_filterArrived`), and the frame drawn is
+  // the one showing at the paint (`_frameOf`). Nothing ticks for an image
+  // nothing paints: a frame is asked for only by a paint that drew the one
+  // before, so an image scrolled out of view stops until it is drawn again,
+  // where it shows the frame it has come to.
+
+  /**
+   * The frame of `animation` to draw now, for `box` — and a note that the
+   * box drew it, with a timer for when the frame moves on. At rest
+   * (`animate={false}`) the first frame, as `animate` holds a CSS
+   * animation at its start, and with no note.
+   */
+  private _frameOf(animation: AnimatedImage, box: Box | null): unknown {
+    if (!this._animating()) return animation.image(0);
+    const now = animationClock.now();
+    const index = animation.indexAt(now);
+    const next = animation.nextChange(now);
+    if (next !== null) {
+      let drawn = this._gifs.get(animation);
+      if (!drawn || drawn.index !== index || drawn.tree !== this._tree) {
+        drawn = { index, tree: this._tree, boxes: new Set() };
+        this._gifs.set(animation, drawn);
+      }
+      drawn.boxes.add(box);
+      this._armGif(next);
+    }
+    return animation.image(index);
+  }
+
+  /** A timer for `at`, where none is due sooner. None while a drag is drawn
+   *  cheaper (`_behind`): the paint at rest after it asks again. */
+  private _armGif(at: number): void {
+    if (this.destroyed || this._cheap) return;
+    if (this._gifTimer !== null && this._gifAt <= at) return;
+    this._disarmGif();
+    this._gifAt = at;
+    this._gifTimer = animationClock.arm(
+      this._gifFrame,
+      Math.max(1, at - animationClock.now()),
+    );
+  }
+
+  private _disarmGif(): void {
+    if (this._gifTimer === null) return;
+    animationClock.disarm(this._gifTimer);
+    this._gifTimer = null;
+    this._gifAt = Infinity;
+  }
+
+  /**
+   * The frame of some animated image moved on: the boxes that drew the one
+   * before are painted again where they are, and what holds a drawing of
+   * them goes — the surfaces kept around them, and the layer lifted around
+   * one, made again in a frame asked for, since a lifted box's hole claims
+   * no damage. A box from a tree since built again is passed over: the
+   * build painted everything, and noted what drew the image then.
+   */
+  private readonly _gifFrame = (): void => {
+    this._gifTimer = null;
+    this._gifAt = Infinity;
+    if (this.destroyed) return;
+    const now = animationClock.now();
+    const inks: Rect[] = [];
+    let whole = false;
+    let lifted = false;
+    for (const [animation, drawn] of this._gifs) {
+      if (animation.indexAt(now) === drawn.index) {
+        const next = animation.nextChange(now);
+        if (next !== null) this._armGif(next);
+        continue;
+      }
+      this._gifs.delete(animation);
+      if (drawn.tree !== this._tree) continue;
+      for (const box of drawn.boxes) {
+        if (!box) {
+          whole = true;
+          continue;
+        }
+        this._dropSprites(box, true);
+        if (this._lifted.size && this._insideLifted(box)) lifted = true;
+        const ink = this._inkOf(box);
+        if (ink) inks.push(ink);
+      }
+    }
+    if (whole) {
+      this._imagePainted();
+      return;
+    }
+    if (lifted) {
+      this._spriteGen += 1;
+      this.spritesChanged();
+    }
+    this._repaintInk(inks);
+  };
 
   // --- sprites --------------------------------------------------------------
   //
@@ -7250,11 +7369,18 @@ export class HtmlViewNode extends Node {
             : null;
         }
         const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
-        return url === undefined ? null : this._resources.image(url);
+        if (url === undefined) return null;
+        const animation = this._resources.animation(url);
+        return animation
+          ? this._frameOf(animation, box)
+          : this._resources.image(url);
       },
       mounted: this._mounted,
-      backgroundImageFor: (url) => {
-        const image = this._resources.image(url);
+      backgroundImageFor: (url, box) => {
+        const animation = this._resources.animation(url);
+        const image = animation
+          ? this._frameOf(animation, box)
+          : this._resources.image(url);
         const size = image ? this._resources.imageSize(url) : null;
         return image && size ? { image, ...size } : null;
       },

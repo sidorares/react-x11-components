@@ -25,7 +25,11 @@ import type {
 import { absoluteUrls, parseStylesheet } from '../src/html/css/parse.js';
 import type { FontFaceRule } from '../src/html/css/parse.js';
 import { bestFace, refusal } from '../src/html/fonts.js';
-import { decodeGif } from '../src/html/gif.js';
+import { GifCanvas, decodeGif, readGif } from '../src/html/gif.js';
+import { AnimatedImage, gifAnimation } from '../src/html/animated.js';
+import { WebPCanvas, readAnimatedWebP } from '../src/html/webp.js';
+import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
+import { gifBytes } from './gif-fixture.js';
 import { fontAxes } from '../src/html/layout/axes.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import { isWoff2, woff2ToSfnt } from '../src/html/woff2.js';
@@ -618,6 +622,264 @@ test('bytes that are not a GIF, or stop short, decode to nothing or less', () =>
   const cut = decodeGif(whole.subarray(0, whole.length - 40));
   assert.ok(cut, 'a frame cut short is still a frame');
   assert.strictEqual(cut.width, 16);
+});
+
+const RGB: [number, number, number][] = [
+  [255, 0, 0],
+  [0, 255, 0],
+  [0, 0, 255],
+  [255, 255, 255],
+];
+
+/** The screen's pixels as colour indices into `RGB`, or -1 where it is
+ *  transparent. */
+function indicesOf(data: Uint8Array): number[] {
+  const out: number[] = [];
+  for (let o = 0; o < data.length; o += 4) {
+    out.push(
+      data[o + 3] === 0
+        ? -1
+        : RGB.findIndex(
+            ([r, g, b]) =>
+              data[o] === r && data[o + 1] === g && data[o + 2] === b,
+          ),
+    );
+  }
+  return out;
+}
+
+test("a GIF's frames are found, each with its delay, and its loop count is its plays", () => {
+  const frames = [
+    { pixels: [0, 0, 0, 0], delay: 20 },
+    { pixels: [1, 1, 1, 1], delay: 0 },
+    { pixels: [2, 2, 2, 2], delay: 1 },
+    { pixels: [3, 3, 3, 3], delay: 2 },
+  ];
+  const file = readGif(gifBytes({ width: 2, height: 2, palette: RGB, frames }));
+  assert.ok(file);
+  assert.deepStrictEqual(
+    file.frames.map((f) => f.delay),
+    [200, 100, 100, 20],
+    'a delay of 10 ms or less is shown for 100, as browsers show it',
+  );
+  assert.strictEqual(file.plays, 1, 'with no loop extension, once');
+  const forever = gifBytes({
+    width: 2,
+    height: 2,
+    palette: RGB,
+    frames,
+    loops: 0,
+  });
+  assert.strictEqual(readGif(forever)?.plays, Infinity);
+  const twice = gifBytes({
+    width: 2,
+    height: 2,
+    palette: RGB,
+    frames,
+    loops: 2,
+  });
+  assert.strictEqual(readGif(twice)?.plays, 3, 'the count, and the first play');
+});
+
+test("a GIF's frames are drawn over each other, each leaving what its disposal says", () => {
+  const file = readGif(
+    gifBytes({
+      width: 2,
+      height: 2,
+      palette: RGB,
+      frames: [
+        { pixels: [0, 0, 0, 0] },
+        // the top row, kept
+        { pixels: [1, 1], height: 1, disposal: 1 },
+        // the left column, cleared after
+        { pixels: [2, 2], width: 1, disposal: 2 },
+        // the right column, put back after; its first pixel not drawn
+        { pixels: [3, 3], left: 1, width: 1, disposal: 3, transparent: 3 },
+        { pixels: [3], left: 1, top: 1, width: 1, height: 1 },
+      ],
+    }),
+  );
+  assert.ok(file);
+  const canvas = new GifCanvas(file);
+  const at = (i: number) => indicesOf(canvas.at(i));
+  assert.deepStrictEqual(at(0), [0, 0, 0, 0]);
+  assert.deepStrictEqual(at(1), [1, 1, 0, 0]);
+  assert.deepStrictEqual(at(2), [2, 1, 2, 0]);
+  assert.deepStrictEqual(at(3), [-1, 1, -1, 0], 'the column before cleared');
+  assert.deepStrictEqual(at(4), [-1, 1, -1, 3], 'and this one put back first');
+  assert.deepStrictEqual(at(1), [1, 1, 0, 0], 'going back starts again');
+  assert.deepStrictEqual(
+    indicesOf(
+      decodeGif(
+        gifBytes({
+          width: 2,
+          height: 2,
+          palette: RGB,
+          frames: [{ pixels: [3, 2, 1, 0] }, { pixels: [0, 0, 0, 0] }],
+        }),
+      )!.data,
+    ),
+    [3, 2, 1, 0],
+    'decodeGif is the first frame',
+  );
+});
+
+test('an animated GIF shows each frame for its delay, from its first showing, and rests on the last', () => {
+  const file = readGif(
+    gifBytes({
+      width: 1,
+      height: 1,
+      palette: RGB,
+      loops: 1,
+      frames: [
+        { pixels: [0], delay: 20 },
+        { pixels: [1], delay: 30 },
+      ],
+    }),
+  )!;
+  const made: number[] = [];
+  const animation = new AnimatedImage(gifAnimation(file), (rgba) => {
+    made.push(rgba.data[1]);
+    return { ...rgba };
+  });
+  assert.strictEqual(animation.indexAt(1000), 0, 'the clock starts here');
+  assert.strictEqual(animation.nextChange(1000), 1200);
+  assert.strictEqual(animation.indexAt(1199), 0);
+  assert.strictEqual(animation.indexAt(1200), 1);
+  assert.strictEqual(animation.nextChange(1250), 1500);
+  assert.strictEqual(animation.indexAt(1500), 0, 'the second play');
+  assert.strictEqual(animation.nextChange(1600), 1700);
+  assert.strictEqual(animation.indexAt(1999), 1);
+  assert.strictEqual(animation.nextChange(2000), null, 'two plays, then over');
+  assert.strictEqual(animation.indexAt(5000), 1, 'resting on the last frame');
+  const first = animation.image(0);
+  assert.strictEqual(animation.image(1), animation.image(1));
+  assert.strictEqual(animation.image(0), first, 'a frame is made once');
+  assert.deepStrictEqual(made, [0, 255]);
+});
+
+// --- WebP --------------------------------------------------------------------
+
+// Made with libwebp's cwebp and webpmux, 4 by 4. BLEND_WEBP: red for 200 ms;
+// a 2 by 2 green square at (2, 2) for 300, not blended and disposed of to
+// transparent after; a blue top row over transparency, blended, for 0 —
+// which is 100 — and a loop count of 2.
+const BLEND_WEBP =
+  'UklGRrYAAABXRUJQVlA4WAoAAAASAAAAAwAAAwAAQU5JTQYAAAD/////AgBBTk1GKAAAAAAAAAAA' +
+  'AAMAAAMAAMgAAAJWUDhMDwAAAC8DwAAABxD9j/4HIqL/AQBBTk1GKAAAAAEAAAEAAAEAAAEAACwB' +
+  'AANWUDhMDwAAAC8BQAAAB9D/iP4HIqL/AQBBTk1GKgAAAAAAAAAAAAMAAAMAAAAAAABWUDhMEQAA' +
+  'AC8DwAAQDxAx//MfjHmI6H8EAA==';
+// red, then the blue top row not blended: it replaces the red, transparency
+// and all; looping for ever
+const REPLACE_WEBP =
+  'UklGRoYAAABXRUJQVlA4WAoAAAASAAAAAwAAAwAAQU5JTQYAAAD/////AABBTk1GKAAAAAAAAAAA' +
+  'AAMAAAMAAMgAAAJWUDhMDwAAAC8DwAAABxD9j/4HIqL/AQBBTk1GKgAAAAAAAAAAAAMAAAMAACwB' +
+  'AAJWUDhMEQAAAC8DwAAQDxAx//MfjHmI6H8EAA==';
+// the same two frames lossy, the second with its alpha in an ALPH chunk
+const LOSSY_WEBP =
+  'UklGRvIAAABXRUJQVlA4WAoAAAASAAAAAwAAAwAAQU5JTQYAAAD/////AABBTk1GTAAAAAAAAAAA' +
+  'AAMAAAMAAGQAAAJWUDggNAAAADACAJ0BKgQABAAAwBIloAJ0ugH4AfgABGgAAP76IZf/d5qw03f1' +
+  'rf/1o5+uif60c/9ZWABBTk1GcgAAAAAAAAAAAAMAAAMAAGQAAAJBTFBIDAAAAAEPMP8REWIeIvof' +
+  'AVZQOCBGAAAAcAIAnQEqBAAEAADAEiWoAnRrgMEA9f8D0QCteAD+//4juuD6NmKf/+rb/5ovw8Z/' +
+  '0J//+cVf5ovw8Z/0Eps2ZwVi3nwAAA==';
+
+/** image-in-browser's decoder, as `resources.ts` hands it a frame. */
+const decodeStill = (bytes: Uint8Array) => {
+  const decoded = new WebPDecoder().decode({ bytes, frameIndex: 0 });
+  return decoded
+    ? {
+        width: decoded.width,
+        height: decoded.height,
+        data: decoded.getBytes({ order: 0 }),
+      }
+    : null;
+};
+
+test("an animated WebP's frames are found, with their delays, flags and plays", () => {
+  const file = readAnimatedWebP(bytesOf(BLEND_WEBP));
+  assert.ok(file);
+  assert.deepStrictEqual([file.width, file.height, file.plays], [4, 4, 2]);
+  assert.deepStrictEqual(
+    file.frames.map((f) => [f.left, f.top, f.width, f.height, f.delay]),
+    [
+      [0, 0, 4, 4, 200],
+      [2, 2, 2, 2, 300],
+      [0, 0, 4, 4, 100],
+    ],
+  );
+  assert.deepStrictEqual(
+    file.frames.map((f) => [f.blend, f.dispose]),
+    [
+      [false, false],
+      [false, true],
+      [true, false],
+    ],
+  );
+  assert.strictEqual(readAnimatedWebP(bytesOf(REPLACE_WEBP))?.plays, Infinity);
+  assert.strictEqual(readAnimatedWebP(bytesOf(PLAIN_GIF)), null);
+});
+
+test("an animated WebP's frames blend, replace and are disposed of as their flags say", () => {
+  const R = [255, 0, 0, 255];
+  const G = [0, 255, 0, 255];
+  const B = [0, 0, 255, 255];
+  const T = [0, 0, 0, 0];
+  const canvas = new WebPCanvas(
+    readAnimatedWebP(bytesOf(BLEND_WEBP))!,
+    decodeStill,
+  );
+  const at = (i: number) => {
+    const data = canvas.at(i);
+    const out: number[][] = [];
+    for (let o = 0; o < data.length; o += 4) {
+      // a transparent pixel's colour is anything
+      out.push(data[o + 3] ? [...data.subarray(o, o + 4)] : T);
+    }
+    return out;
+  };
+  assert.deepStrictEqual(at(0), new Array(16).fill(R));
+  assert.deepStrictEqual(at(1), [
+    R,
+    R,
+    R,
+    R,
+    R,
+    R,
+    R,
+    R,
+    R,
+    R,
+    G,
+    G,
+    R,
+    R,
+    G,
+    G,
+  ]);
+  assert.deepStrictEqual(
+    at(2),
+    [B, B, B, B, R, R, R, R, R, R, T, T, R, R, T, T],
+    'the square cleared after it showed, and the row blended over the rest',
+  );
+  const replaced = new WebPCanvas(
+    readAnimatedWebP(bytesOf(REPLACE_WEBP))!,
+    decodeStill,
+  ).at(1);
+  assert.deepStrictEqual(
+    [replaced[2], replaced[3], replaced[19], replaced[63]],
+    [255, 255, 0, 0],
+    'not blended, its transparency replaces the red',
+  );
+  const lossy = new WebPCanvas(
+    readAnimatedWebP(bytesOf(LOSSY_WEBP))!,
+    decodeStill,
+  ).at(1);
+  assert.deepStrictEqual(
+    [lossy[3], lossy[63]],
+    [255, 0],
+    "a lossy frame's alpha is its ALPH chunk's",
+  );
+  assert.ok(lossy[2] > 200 && lossy[0] < 60, 'and its colour its own');
 });
 
 test('a GIF handed over as bytes reaches the box as an image', async () => {
