@@ -5551,6 +5551,90 @@ function inkOf(box: Box): Rect {
   };
 }
 
+/**
+ * How far what a box and what it holds draw reaches: its ink bounds less
+ * every subtree in it that draws nothing (`drawsNothing`), or null where
+ * all of it draws nothing. What a scroll pane is told stays put as it
+ * scrolls (`HtmlViewNode.viewportFixedRects`) is repainted at every frame
+ * of the scroll, and a subtree's ink is the union of all it holds:
+ * Docusaurus keeps its menu's backdrop, fixed over the whole viewport and
+ * hidden, in its sticky navbar, and the navbar's ink was the viewport, so
+ * every frame of a scroll repainted the window. Exact where nothing in the
+ * box draws nothing, which is the bounds as they are; where something
+ * does, a box's own ink is its border box with its shadows and its
+ * outline, its lines with the glyphs and shadows past them, and its
+ * marker, and an inline box and one drawn through a matrix are taken at
+ * their bounds, as is what holds them.
+ */
+export function drawnInkOf(box: Box): Rect | null {
+  return drawnInk(box).ink;
+}
+
+function drawnInk(box: Box): { ink: Rect | null; whole: boolean } {
+  if (drawsNothing(box)) return { ink: null, whole: false };
+  let whole = true;
+  let parts: Rect[] | null = null;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (CLAMPED.has(child) || child.boundsY === Infinity) continue;
+    const drawn = drawnInk(child);
+    if (!drawn.whole) whole = false;
+    if (drawn.ink) (parts ??= []).push(drawn.ink);
+  }
+  if (whole || box.kind === 'inline' || placedMatrix(box)) {
+    return { ink: inkOf(box), whole };
+  }
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  const add = (x: number, y: number, width: number, height: number): void => {
+    x1 = Math.min(x1, x);
+    y1 = Math.min(y1, y);
+    x2 = Math.max(x2, x + width);
+    y2 = Math.max(y2, y + height);
+  };
+  if (hasRect(box)) {
+    const out = box.style.boxShadow ? shadowOutsets(box.style.boxShadow) : null;
+    const reach =
+      box.style.outlineStyle !== 'none'
+        ? Math.max(0, box.style.outlineOffset + box.style.outlineWidth)
+        : 0;
+    const left = Math.max(out?.left ?? 0, reach);
+    const top = Math.max(out?.top ?? 0, reach);
+    add(
+      box.x - left,
+      box.y - top,
+      box.width + left + Math.max(out?.right ?? 0, reach),
+      box.height + top + Math.max(out?.bottom ?? 0, reach),
+    );
+  }
+  const lines = box.lines;
+  if (lines?.length) {
+    const slack = LINE_INK.get(lines);
+    const cast = textShadowReach(box);
+    for (const line of lines) {
+      const above = (slack?.above ?? 0) + (cast?.top ?? 0);
+      const below = (slack?.below ?? 0) + (cast?.bottom ?? 0);
+      add(
+        line.x - (cast?.left ?? 0),
+        line.y - above,
+        line.width + (cast?.left ?? 0) + (cast?.right ?? 0),
+        line.height + above + below,
+      );
+    }
+  }
+  const marker = box.marker;
+  const mark = marker?.image ?? marker?.layout;
+  if (marker && mark) add(marker.x, marker.y, mark.width, mark.height);
+  for (const part of parts ?? []) add(part.x, part.y, part.width, part.height);
+  if (!(x2 > x1 && y2 > y1)) return { ink: null, whole: false };
+  return {
+    ink: { x: x1, y: y1, width: x2 - x1, height: y2 - y1 },
+    whole: false,
+  };
+}
+
 /** Whether a box is fixed to the viewport: `position: fixed` with no
  *  transformed or contained box around it, which would be its containing
  *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
