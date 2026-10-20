@@ -45,6 +45,9 @@ export const DIRECT_SCATTER_MAX = 512;
 /** the most cells a scatter's density grid covers all of its plot with —
  * 64 MB of counts, a 5K screen at 1px dots; see `scatterGridArea` */
 export const SCATTER_GRID_MAX_CELLS = 1 << 24;
+/** the widest plot a line's or a bar envelope's column walk covers all of,
+ * device pixels — eight 8K screens; see `walkedColumns` */
+export const COLUMN_WALK_MAX = 1 << 16;
 /** bars that may keep their rounded tops — past this they go square into
  * one batch */
 export const BAR_RADIUS_MAX = 256;
@@ -287,28 +290,66 @@ function lastFinite(values: ArrayLike<number>, i0: number, i1: number): number {
 }
 
 /**
+ * The pixel columns a column walk covers: of the plot's `cols`, the ones
+ * from `c0` up to `c1`.
+ *
+ * All of them for a plot of a width a screen holds, so an ordinary chart
+ * draws what it always drew. A plot wider than `COLUMN_WALK_MAX` is not one
+ * an application laid out on purpose — the flex items yoga hands billions
+ * of pixels (`scatterGridArea`) can lie along a row as well as down a
+ * column — and a rect per column of one was a walk of ten billion steps a
+ * paint. So past that the walk covers the columns the window shows, and
+ * none where it shows none of the plot or no number says where the plot
+ * is.
+ */
+export function walkedColumns(
+  plot: PlotRect,
+  view: PlotRect | null | undefined,
+): [cols: number, c0: number, c1: number] {
+  if (!Number.isFinite(plot.x) || !Number.isFinite(plot.width)) {
+    return [1, 0, 0];
+  }
+  const cols = Math.max(1, Math.round(plot.width));
+  if (cols <= COLUMN_WALK_MAX) return [cols, 0, cols];
+  if (!view) return [cols, 0, 0];
+  const c0 = Math.max(0, Math.floor(view.x - plot.x));
+  const c1 = Math.min(cols, Math.ceil(view.x + view.width - plot.x));
+  return c1 > c0 ? [cols, c0, c1] : [cols, 0, 0];
+}
+
+/**
  * Walk the pixel columns of the visible range, handing each column its
  * exact index window. Uniform x advances arithmetically; sorted x binary
  * searches each boundary (O(width · log n), bounded); the band case is
  * plain proportional slicing. `cb` returns nothing; gaps come through as
  * empty windows.
+ *
+ * A walk that starts past the plot's first column (`walkedColumns`) finds
+ * each window as the whole walk would have, and hands the column before
+ * its first to `lead`, undrawn, for a caller that carries something from
+ * one column into the next.
  */
 function walkColumns(
   env: SeriesEnv,
   g: SeriesGeometry,
   i0: number,
   i1: number,
+  lead: ((ia: number, ib: number) => void) | null,
   cb: (colPx: number, ia: number, ib: number) => void,
 ): void {
   const { plot } = env;
-  const cols = Math.max(1, Math.round(plot.width));
+  const [cols, c0, c1] = walkedColumns(plot, env.view);
   if (env.xScale.kind === 'band' || !g.x || !g.xIdx || !g.xIdx.sorted) {
     // proportional index slicing: exact for bands, and the honest bounded
     // fallback for unsorted x (index order is all there is to draw)
     const span = i1 - i0;
-    let prev = i0;
-    for (let c = 0; c < cols; c++) {
-      const ib = c + 1 >= cols ? i1 : i0 + Math.floor((span * (c + 1)) / cols);
+    // where column c starts, and so where c - 1 ends
+    const edge = (c: number): number =>
+      c >= cols ? i1 : i0 + Math.floor((span * c) / cols);
+    let prev = edge(c0);
+    if (c0 > 0) lead?.(edge(c0 - 1), prev);
+    for (let c = c0; c < c1; c++) {
+      const ib = edge(c + 1);
       cb(plot.x + c, prev, ib);
       prev = ib;
     }
@@ -319,16 +360,26 @@ function walkColumns(
   const idx = g.xIdx;
   const scale = env.xScale as LinearScale;
   const uniform = idx.uniform && idx.dx > 0;
-  let prev = i0;
-  for (let c = 0; c < cols; c++) {
+  // where column c ends, before the walk holds it inside [prev, i1]
+  const end = (c: number): number => {
+    const xRight = scale.invert(plot.x + c + 1);
+    return uniform
+      ? Math.ceil((xRight - idx.x0) / idx.dx)
+      : lowerBound(xs, n, xRight);
+  };
+  // where column c starts: each end is held at least at the one before, so
+  // it is the furthest end yet — and the ends run one way, so the furthest
+  // of the first and the last
+  const start = (c: number): number =>
+    c === 0 ? i0 : Math.min(i1, Math.max(i0, end(0), end(c - 1)));
+  let prev = start(c0);
+  if (c0 > 0) lead?.(start(c0 - 1), prev);
+  for (let c = c0; c < c1; c++) {
     let ib: number;
     if (c + 1 >= cols) {
       ib = i1;
     } else {
-      const xRight = scale.invert(plot.x + c + 1);
-      ib = uniform
-        ? Math.ceil((xRight - idx.x0) / idx.dx)
-        : lowerBound(xs, n, xRight);
+      ib = end(c);
       if (ib < prev) ib = prev;
       if (ib > i1) ib = i1;
     }
@@ -594,7 +645,15 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
   const basePyr =
     isArea && typeof g.base !== 'number' ? pyramidFor(g.base) : null;
   let prevLast = NaN;
-  walkColumns(env, g, i0, i1, (colPx, ia, ib) => {
+  // the column before a walk that starts inside the plot: nothing of it is
+  // drawn, but its closing value is where the first column's line comes in
+  // from
+  const comeIn = (ia: number, ib: number) => {
+    if (ib <= ia) return;
+    minMaxRange(pyr, yv, ia, ib, mm);
+    if (mm.min <= mm.max) prevLast = lastFinite(yv, ia, ib);
+  };
+  walkColumns(env, g, i0, i1, comeIn, (colPx, ia, ib) => {
     if (ib <= ia) {
       prevLast = NaN;
       return;
@@ -741,12 +800,13 @@ export function renderBars(env: SeriesEnv, g: SeriesGeometry): void {
     // envelope: per-column span from the base to the tallest bar
     const pyr = pyramidFor(g.y);
     const rects: number[] = [];
-    const cols = Math.max(1, Math.round(env.plot.width));
+    // the columns the window shows, of a plot no screen holds
+    const [cols, c0, c1] = walkedColumns(env.plot, env.view);
     const basePx = Math.round(
       yScale.scale(typeof g.base === 'number' ? g.base : 0),
     );
-    let prev = 0;
-    for (let c = 0; c < cols; c++) {
+    let prev = c0 === 0 ? 0 : Math.floor((n * c0) / cols);
+    for (let c = c0; c < c1; c++) {
       const ib = c + 1 >= cols ? n : Math.floor((n * (c + 1)) / cols);
       if (ib > prev) {
         minMaxRange(pyr, yv, prev, ib, mm);
