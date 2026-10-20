@@ -27,7 +27,9 @@ export function useSelectionMenu(enabled = true): SelectionMenuHandlers {
   const clipboard = useClipboard();
   return {
     onContextMenu: (ev) => {
-      if (!enabled) return;
+      // a handler before this one that cancelled the press asked for no
+      // menu, or put its own in this one's place
+      if (!enabled || ev.defaultPrevented) return;
       const surface = ev.currentTarget;
       if (!surface) return;
       openEditMenu(

@@ -38,14 +38,17 @@ import {
 import type { ReactElement } from 'react';
 import * as DomUtils from 'domutils';
 import {
+  ContextMenu,
   isFramed,
   matchesShortcut,
   useAccelerator,
+  useClipboard,
   useSupports,
 } from 'react-x11';
 import type {
   DrawnNode,
   KeyboardEvent as X11KeyboardEvent,
+  MenuItem,
   MouseEvent as X11MouseEvent,
   ScrollableNode,
   WheelEvent as X11WheelEvent,
@@ -112,6 +115,9 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
   XK_END,
   XK_SPACE,
 ]);
+
+/** The schemes a link may take this browser to. */
+const OPENS = /^(?:https?|file|data|about|view-source):/i;
 
 /** What this browser says it is, to servers and to a page's scripts. */
 const USER_AGENT =
@@ -205,6 +211,9 @@ export default function Page(props: PageProps): ReactElement {
   const scroller = useRef<ScrollableNode | null>(null);
   const [hoverLink, setHoverLink] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // the link a secondary press was on, which the context menu is about
+  const [menuLink, setMenuLink] = useState<string | null>(null);
+  const clipboard = useClipboard();
   const [pending, setPending] = useState(0);
   /** Where each history step was scrolled to, for Back and Forward. */
   const scrolls = useRef(new Map<number, number>());
@@ -391,19 +400,23 @@ export default function Page(props: PageProps): ReactElement {
       );
       return;
     }
-    if (!/^(?:https?|file|data|about|view-source):/i.test(href)) {
+    if (!OPENS.test(href)) {
       setNotice(
         `${schemeOf(href) || 'That'}: links are not something this browser opens.`,
       );
       return;
     }
-    const modifier = cocoa ? ev.metaKey : ev.ctrlKey;
+    // ⌘ or Ctrl opens it in a tab behind this one, and with Shift in a tab
+    // in front, as a browser has it. On X11 ⌘ is Super, which reaches here
+    // as `metaKey` — XQuartz, a Mac keyboard on Linux — so either is taken
+    // there; on macOS Ctrl+click is the secondary click, never this.
+    const modifier = cocoa ? ev.metaKey : ev.ctrlKey || ev.metaKey;
     let link = handle.elementAt(ev.x, ev.y);
     while (link && link.name !== 'a' && link.name !== 'area') {
       link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
     }
     if (modifier) {
-      live.current.onLink(href, 'background', null);
+      live.current.onLink(href, ev.shiftKey ? 'tab' : 'background', null);
       return;
     }
     // one whose target names a frame of the page's is loaded there by
@@ -464,6 +477,31 @@ export default function Page(props: PageProps): ReactElement {
         /^F[56]$/.test(event.key ?? '')),
   };
 
+  // A link's menu, where the press was on one, and nothing where it was
+  // not: `<ContextMenu>` opens no menu for no items, and the document's own
+  // Copy and Select all are what a press on its text gets.
+  const linkMenu = useMemo<MenuItem[]>(
+    () =>
+      menuLink
+        ? [
+            {
+              key: 'open-tab',
+              label: 'Open Link in New Tab',
+              enabled: OPENS.test(menuLink),
+              onSelect: () => live.current.onLink(menuLink, 'background', null),
+            },
+            {
+              key: 'copy-link',
+              label: 'Copy Link Address',
+              onSelect: () => {
+                clipboard.write(menuLink).catch(() => {});
+              },
+            },
+          ]
+        : [],
+    [menuLink, clipboard],
+  );
+
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(null), 3000);
@@ -492,101 +530,121 @@ export default function Page(props: PageProps): ReactElement {
         backgroundColor: '$background',
       }}
     >
-      <box
-        ref={scroller}
-        style={{ overflow: 'scroll', flexGrow: 1, flexShrink: 1, minHeight: 0 }}
-        // A document whose root or body is `overflow: hidden` gave that to
-        // the viewport, and the reader is not to scroll it: no bar, no wheel,
-        // no keys — though a link to a fragment, and Back and Forward, still
-        // scroll there, which is why the pane still scrolls.
-        scrollbar={!hidden}
-        onWheel={(ev: X11WheelEvent<DrawnNode>) => {
-          if (!hidden || !ev.deltaY) return;
-          // what scrolls inside the document, a text area's widget, scrolls
-          for (let n = ev.target as DrawnNode | null; n; n = n.parent) {
-            if (n === scroller.current) break;
-            const inner = n as {
-              canScroll?: (x: number, y: number) => boolean;
-            };
-            if (inner.canScroll?.(ev.deltaX, ev.deltaY)) return;
-          }
-          ev.preventDefault();
-        }}
-        onKeyDown={(ev: X11KeyboardEvent<DrawnNode>) => {
-          // the pane's own keys, where it has the focus; with a modifier
-          // they are the browser's chords
-          if (
-            hidden &&
-            ev.target === scroller.current &&
-            ev.keysym !== undefined &&
-            VERTICAL_SCROLL_KEYS.has(ev.keysym) &&
-            !ev.ctrlKey &&
-            !ev.metaKey &&
-            !ev.altKey
-          ) {
-            ev.preventDefault();
-          }
-        }}
-        onScroll={(ev) => {
-          if (entryId) scrolls.current.set(entryId, ev.scrollY);
-        }}
-        onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
+      <ContextMenu
+        items={linkMenu}
+        // the menu's wrapper takes the focus while a menu is open, for its
+        // keys, and is no stop of the Tab order between toolbar and page
+        tabIndex={-1}
+        style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+        onContextMenuCapture={(ev: X11MouseEvent<DrawnNode>) => {
           const href = handle.hrefAt(ev.x, ev.y);
-          if (href !== hoverLink) setHoverLink(href);
-        }}
-        onMouseLeave={() => setHoverLink(null)}
-        onMouseDown={(ev: X11MouseEvent<DrawnNode>) => {
-          // a middle click opens the link in a tab behind this one
-          if (ev.button !== 2) return;
-          const href = handle.hrefAt(ev.x, ev.y);
-          if (href) live.current.onLink(href, 'background', null);
+          setMenuLink(href);
+          // and on a link, the link's menu stands in for the document's
+          // edit menu, which a cancelled press does not open
+          if (href) ev.preventDefault();
         }}
       >
-        {page ? (
-          // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's scale
-          // is constant for its life by core's contract, and `<Html>` keeps
-          // its device-pixel work on that promise, so a new zoom is a new
-          // page — built from the source it already has and resources the
-          // network layer kept.
-          //
-          // Both grow: a page shorter than the window is still as tall as
-          // it, as a browser's canvas is, so its background reaches the
-          // bottom at any size rather than stopping where the text does.
-          <box scale={zoom} style={{ flexDirection: 'column', flexGrow: 1 }}>
-            <Html
-              key={`${doc}@${zoom}`}
-              ref={handle.ref}
-              // the web's `medium`: every page's `rem` is sixteen pixels in
-              // a browser, and a design system spaces a page in them, where
-              // the theme's own text size set it all an eighth too tight
-              fontSize={16}
-              // and a page that does not say which colour scheme it is
-              // drawn in is light, on white, as every browser draws it —
-              // the reader's own preference is still what its
-              // `prefers-color-scheme` rules are asked
-              defaultColorScheme="light"
-              source={page.source}
-              partial={page.partial}
-              charset={page.charset}
-              // with the fragment this step is at, which is `:target`
-              baseUrl={
-                page.baseUrl && fragment
-                  ? `${withoutHash(page.baseUrl)}#${fragment}`
-                  : page.baseUrl
-              }
-              onResource={onResource}
-              onLink={onLink}
-              onSubmit={onSubmit}
-              scripts={scripts}
-              onDocument={onDocument}
-              onViewportOverflow={(next) =>
-                setViewport({ doc, overflow: next })
-              }
-              style={{ flexGrow: 1 }}
-            />
-          </box>
-        ) : null}
-      </box>
+        <box
+          ref={scroller}
+          style={{
+            overflow: 'scroll',
+            flexGrow: 1,
+            flexShrink: 1,
+            minHeight: 0,
+          }}
+          // A document whose root or body is `overflow: hidden` gave that to
+          // the viewport, and the reader is not to scroll it: no bar, no wheel,
+          // no keys — though a link to a fragment, and Back and Forward, still
+          // scroll there, which is why the pane still scrolls.
+          scrollbar={!hidden}
+          onWheel={(ev: X11WheelEvent<DrawnNode>) => {
+            if (!hidden || !ev.deltaY) return;
+            // what scrolls inside the document, a text area's widget, scrolls
+            for (let n = ev.target as DrawnNode | null; n; n = n.parent) {
+              if (n === scroller.current) break;
+              const inner = n as {
+                canScroll?: (x: number, y: number) => boolean;
+              };
+              if (inner.canScroll?.(ev.deltaX, ev.deltaY)) return;
+            }
+            ev.preventDefault();
+          }}
+          onKeyDown={(ev: X11KeyboardEvent<DrawnNode>) => {
+            // the pane's own keys, where it has the focus; with a modifier
+            // they are the browser's chords
+            if (
+              hidden &&
+              ev.target === scroller.current &&
+              ev.keysym !== undefined &&
+              VERTICAL_SCROLL_KEYS.has(ev.keysym) &&
+              !ev.ctrlKey &&
+              !ev.metaKey &&
+              !ev.altKey
+            ) {
+              ev.preventDefault();
+            }
+          }}
+          onScroll={(ev) => {
+            if (entryId) scrolls.current.set(entryId, ev.scrollY);
+          }}
+          onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
+            const href = handle.hrefAt(ev.x, ev.y);
+            if (href !== hoverLink) setHoverLink(href);
+          }}
+          onMouseLeave={() => setHoverLink(null)}
+          onMouseDown={(ev: X11MouseEvent<DrawnNode>) => {
+            // a middle click opens the link in a tab behind this one
+            if (ev.button !== 2) return;
+            const href = handle.hrefAt(ev.x, ev.y);
+            if (href) live.current.onLink(href, 'background', null);
+          }}
+        >
+          {page ? (
+            // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's scale
+            // is constant for its life by core's contract, and `<Html>` keeps
+            // its device-pixel work on that promise, so a new zoom is a new
+            // page — built from the source it already has and resources the
+            // network layer kept.
+            //
+            // Both grow: a page shorter than the window is still as tall as
+            // it, as a browser's canvas is, so its background reaches the
+            // bottom at any size rather than stopping where the text does.
+            <box scale={zoom} style={{ flexDirection: 'column', flexGrow: 1 }}>
+              <Html
+                key={`${doc}@${zoom}`}
+                ref={handle.ref}
+                // the web's `medium`: every page's `rem` is sixteen pixels in
+                // a browser, and a design system spaces a page in them, where
+                // the theme's own text size set it all an eighth too tight
+                fontSize={16}
+                // and a page that does not say which colour scheme it is
+                // drawn in is light, on white, as every browser draws it —
+                // the reader's own preference is still what its
+                // `prefers-color-scheme` rules are asked
+                defaultColorScheme="light"
+                source={page.source}
+                partial={page.partial}
+                charset={page.charset}
+                // with the fragment this step is at, which is `:target`
+                baseUrl={
+                  page.baseUrl && fragment
+                    ? `${withoutHash(page.baseUrl)}#${fragment}`
+                    : page.baseUrl
+                }
+                onResource={onResource}
+                onLink={onLink}
+                onSubmit={onSubmit}
+                scripts={scripts}
+                onDocument={onDocument}
+                onViewportOverflow={(next) =>
+                  setViewport({ doc, overflow: next })
+                }
+                style={{ flexGrow: 1 }}
+              />
+            </box>
+          ) : null}
+        </box>
+      </ContextMenu>
       {status ? (
         <box
           style={{
