@@ -86,6 +86,9 @@ const COMPONENTS = [
   // `<Formula>` reaches katex only through a dynamic import, so the marker
   // is a face name only its own font table writes
   { exportName: 'Formula', dir: 'formula', marker: 'KaTeX_Size4' },
+  // `<Mermaid>` reaches ondine only through a dynamic import, so the marker
+  // is the theme property its palette mapping alone writes
+  { exportName: 'Mermaid', dir: 'mermaid', marker: '--ondine-muted' },
   // `<Html>` shares `src/richtext/`'s run decorations and `src/internal/`'s
   // code-point helpers with `<Markdown>` and `<Code>`, so its marker is a
   // string only its user-agent stylesheet writes.

@@ -375,6 +375,25 @@ export type {
   KatexNode,
 } from './formula/index.js';
 
+// Mermaid diagrams — ondine (an optional peer) compiles the source to SVG,
+// the `mermaid` element draws it themed from the palette, and the labels
+// answer the text accessors so a selectable document (a `<Markdown>`
+// mermaid fence) reads them.
+export {
+  Mermaid,
+  MERMAID_ELEMENT,
+  MermaidNode,
+  useOndine,
+} from './mermaid/index.js';
+export type {
+  MermaidProps,
+  MermaidElementProps,
+  MermaidScene,
+  OndineEngine,
+  OndineError,
+  OndineRenderOptions,
+} from './mermaid/index.js';
+
 // A static HTML + CSS document, selectable, with seams for resources and
 // scripts and real widgets for its form controls. Replaces ntk's deprecated
 // `HtmlView` and core's `<html>` element; see docs/prd-html.md. The DOM

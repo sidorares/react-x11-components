@@ -25,6 +25,7 @@ component.
 | [Map](components/maps.md)                              | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| [Mermaid](components/mermaid.md)                       | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | [RichTextEditor](components/rich-text-editor.md)       | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |

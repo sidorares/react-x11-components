@@ -176,6 +176,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| `Mermaid`        | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
 | `QmlView`        | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | `RichTextEditor` | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |
@@ -450,6 +451,24 @@ append to a formula a model is still writing. A ` ```math ` fence in a
 document becomes one through `<Markdown>`'s `fences` map, which is opt-in —
 that seam is how `<Markdown>` hosts a component without importing it.
 [The reference](docs/components/formula.md) has the rest.
+
+## Diagrams
+
+```jsx
+import { Mermaid } from '@react-x11/components/mermaid';
+
+<Mermaid
+  source={'flowchart LR\n  A[Start] --> B{Is it?}\n  B -->|Yes| C[OK]'}
+/>;
+```
+
+Mermaid's syntax, compiled by [ondine](https://ondine.sh) — a Rust compiler
+shipped as WebAssembly, an optional peer — and drawn natively, themed from
+the palette. The labels answer core's text accessors, so a diagram selects
+with the document around it, and `partial` holds the last diagram that
+compiled while a stream is still writing it. A ` ```mermaid ` fence becomes
+one through `<Markdown>`'s `fences` map, as a math fence does.
+[The reference](docs/components/mermaid.md) has the rest.
 
 ## A terminal session you already have: `<TerminalOutput>`
 

@@ -108,9 +108,11 @@ instead of as a code block:
 
 ```jsx
 import { Formula } from '@react-x11/components/formula';
+import { Mermaid } from '@react-x11/components/mermaid';
 
 const FENCES = {
   math: ({ text, partial }) => <Formula tex={text} display partial={partial} />,
+  mermaid: ({ text, partial }) => <Mermaid source={text} partial={partial} />,
 };
 
 <Markdown source={doc} partial={streaming} fences={FENCES} />;
@@ -123,8 +125,9 @@ it hosts (the no-lateral-imports rule); the returned element lands in a
 keyed slot, so it needs no `key` of its own. Whatever it returns joins the
 document's selection if it answers core's text accessors, which core's own
 elements and everything in this package already do — so **do not** also
-make the fence's component its own selection surface (`<Formula>` inside a
-document stays `selectable={false}`, the default).
+make the fence's component its own selection surface (`<Formula>` and
+[`<Mermaid>`](mermaid.md) inside a document stay `selectable={false}`, the
+default).
 
 Two things to hold: the map's identity is an epoch for the block cache, so
 define it at module scope (or memoize) rather than inline in JSX; and the
