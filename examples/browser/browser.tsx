@@ -38,6 +38,11 @@
 //
 // A middle click, or a click with the modifier held, opens a link in a new
 // tab behind this one; a middle click on a tab closes it.
+//
+// Full screen — the green button on a Mac, the window manager's on X11 —
+// gives the page the whole screen: the strip and the toolbar come back while
+// the pointer is at the top edge or over them, and while the address bar has
+// the focus.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import {
@@ -49,6 +54,7 @@ import {
   matchesShortcut,
   useSupports,
   useTheme,
+  useWindowState,
 } from 'react-x11';
 import type {
   DrawnNode,
@@ -58,6 +64,7 @@ import type {
   KeyboardEvent as X11KeyboardEvent,
   LayoutEvent,
   MouseEvent as X11MouseEvent,
+  NtkWindow,
   TextInputNode,
 } from 'react-x11';
 import { XK_ESCAPE } from 'react-x11/keysyms';
@@ -557,6 +564,8 @@ interface ToolbarProps {
   /** Whether the page's site runs its scripts, and a flip of that. */
   scripts: boolean;
   onScripts: (on: boolean) => void;
+  /** The address bar took the focus, or gave it up. */
+  onAddressFocus: (focused: boolean) => void;
 }
 
 function Toolbar({
@@ -566,6 +575,7 @@ function Toolbar({
   register,
   scripts,
   onScripts,
+  onAddressFocus,
 }: ToolbarProps): ReactElement {
   const entry = tab.entries[tab.index] ?? null;
   const input = useRef<TextInputNode | null>(null);
@@ -650,6 +660,8 @@ function Toolbar({
         placeholder="Search, or enter an address"
         onChange={(ev) => setDraft(ev.value)}
         onSubmit={(ev) => go(ev.value)}
+        onFocus={() => onAddressFocus(true)}
+        onBlur={() => onAddressFocus(false)}
         onKeyDown={(ev) => {
           // Escape puts back the address the page is at
           if (ev.keysym === XK_ESCAPE) setDraft(null);
@@ -936,6 +948,46 @@ export interface BrowserProps {
   scripts?: boolean;
 }
 
+/**
+ * Whether the strip and the toolbar show. Always, but in full screen, where
+ * they step aside for the page as a browser's do and come back while the
+ * pointer is at the window's top edge or over them, or while the address bar
+ * has the focus. Leaving them hides them a moment later, so a pointer that
+ * crosses a gap on its way between the two does not make them flicker.
+ *
+ * `fullscreen` turns as the transition begins, before the animation, so the
+ * chrome goes while the window grows rather than after it.
+ */
+function useChrome(fullscreen: boolean) {
+  const [hover, setHover] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  useEffect(() => cancel, []);
+  // out of full screen, a hover from before it does not hold them open
+  useEffect(() => {
+    if (!fullscreen) setHover(false);
+  }, [fullscreen]);
+  return {
+    shown: !fullscreen || hover || typing,
+    enter: () => {
+      cancel();
+      setHover(true);
+    },
+    leave: () => {
+      cancel();
+      timer.current = setTimeout(() => setHover(false), CHROME_LINGER_MS);
+    },
+    setTyping,
+  };
+}
+
+/** How long the chrome stays after the pointer leaves it in full screen. */
+const CHROME_LINGER_MS = 400;
+
 export function Browser({
   start = HOME,
   colorScheme = 'system',
@@ -959,6 +1011,19 @@ export function Browser({
   const active = state.tabs.find((t) => t.id === state.active) ?? state.tabs[0];
   const entry = active.entries[active.index];
   const [settled, onAreaLayout] = useSettledSize();
+
+  const windowRef = useRef<NtkWindow | null>(null);
+  const { fullscreen } = useWindowState(windowRef);
+  const chrome = useChrome(fullscreen);
+  // a tab that opens on its address bar shows the bar to type in
+  const chromeShown = chrome.shown || active.focusAddress;
+  // Ctrl+L in full screen: the field is focused once it is shown again
+  const [addressWanted, setAddressWanted] = useState(false);
+  useEffect(() => {
+    if (!addressWanted || !chromeShown) return;
+    setAddressWanted(false);
+    focusField(inputs.current.get(active.id));
+  }, [addressWanted, chromeShown]);
 
   // Which sites run their scripts: each site's switch, where someone
   // flipped it, and `scripts` for the rest. A site is an origin, as a
@@ -1012,7 +1077,9 @@ export function Browser({
       case 'closeTab':
         return close(active.id);
       case 'address':
-        return focusField(inputs.current.get(active.id));
+        if (chromeShown) return focusField(inputs.current.get(active.id));
+        chrome.setTyping(true);
+        return setAddressWanted(true);
       case 'reload':
         return reload(false);
       case 'reloadFresh':
@@ -1068,6 +1135,7 @@ export function Browser({
 
   return (
     <window
+      ref={windowRef}
       title={`${title} — react-x11 browser`}
       width={1180}
       height={820}
@@ -1077,65 +1145,82 @@ export function Browser({
         colorScheme={colorScheme}
         style={{ backgroundColor: '$background', flexGrow: 1 }}
       >
-        <Tabs
-          value={active.id}
-          onValueChange={(e) => dispatch({ type: 'select', id: e.value })}
-          variant="outline"
-          size="sm"
-          ground="$surface"
-          // the strip and the toolbar; the page below takes the rest
-          style={{ flexGrow: 0, flexShrink: 0 }}
+        {chromeShown ? null : (
+          // in full screen, the edge the pointer reaches for to get the
+          // chrome back
+          <box
+            style={{ height: 3, flexShrink: 0 }}
+            onMouseEnter={chrome.enter}
+          />
+        )}
+        {/* Hidden rather than unmounted, so an address half typed and the
+            field that holds it are there when the chrome comes back. */}
+        <box
+          style={{ flexShrink: 0, display: chromeShown ? 'flex' : 'none' }}
+          onMouseEnter={chrome.enter}
+          onMouseLeave={chrome.leave}
         >
-          <TabsList
-            style={{
-              paddingLeft: 6,
-              paddingRight: 6,
-              paddingTop: 6,
-              backgroundColor: '$surfaceHover',
-            }}
+          <Tabs
+            value={active.id}
+            onValueChange={(e) => dispatch({ type: 'select', id: e.value })}
+            variant="outline"
+            size="sm"
+            ground="$surface"
+            // the strip and the toolbar; the page below takes the rest
+            style={{ flexGrow: 0, flexShrink: 0 }}
           >
+            <TabsList
+              style={{
+                paddingLeft: 6,
+                paddingRight: 6,
+                paddingTop: 6,
+                backgroundColor: '$surfaceHover',
+              }}
+            >
+              {state.tabs.map((tab) => (
+                <TabsTrigger key={tab.id} value={tab.id}>
+                  <TabLabel tab={tab} onClose={() => close(tab.id)} />
+                </TabsTrigger>
+              ))}
+              <Button
+                variant="ghost"
+                size="small"
+                aria-label="New tab"
+                onPress={() => open(HOME, false)}
+              >
+                <Icon name="plus" size={10} />
+              </Button>
+            </TabsList>
             {state.tabs.map((tab) => (
-              <TabsTrigger key={tab.id} value={tab.id}>
-                <TabLabel tab={tab} onClose={() => close(tab.id)} />
-              </TabsTrigger>
+              <TabsContent
+                key={tab.id}
+                value={tab.id}
+                style={{ paddingTop: 0, flexGrow: 0 }}
+              >
+                <Toolbar
+                  tab={tab}
+                  active={tab.id === active.id}
+                  dispatch={dispatch}
+                  register={register}
+                  scripts={scriptsFor(tab.entries[tab.index]?.url ?? '')}
+                  onScripts={(on) => {
+                    const shown = tab.entries[tab.index];
+                    if (!shown) return;
+                    setSites((all) => new Map(all).set(siteOf(shown.url), on));
+                    // a document's scripts are run or not as it is made: the
+                    // switch takes on the page loaded again
+                    dispatch({
+                      type: 'navigate',
+                      id: tab.id,
+                      nav: navigation(shown.url, true, false, shown.post),
+                    });
+                  }}
+                  onAddressFocus={chrome.setTyping}
+                />
+              </TabsContent>
             ))}
-            <Button
-              variant="ghost"
-              size="small"
-              aria-label="New tab"
-              onPress={() => open(HOME, false)}
-            >
-              <Icon name="plus" size={10} />
-            </Button>
-          </TabsList>
-          {state.tabs.map((tab) => (
-            <TabsContent
-              key={tab.id}
-              value={tab.id}
-              style={{ paddingTop: 0, flexGrow: 0 }}
-            >
-              <Toolbar
-                tab={tab}
-                active={tab.id === active.id}
-                dispatch={dispatch}
-                register={register}
-                scripts={scriptsFor(tab.entries[tab.index]?.url ?? '')}
-                onScripts={(on) => {
-                  const shown = tab.entries[tab.index];
-                  if (!shown) return;
-                  setSites((all) => new Map(all).set(siteOf(shown.url), on));
-                  // a document's scripts are run or not as it is made: the
-                  // switch takes on the page loaded again
-                  dispatch({
-                    type: 'navigate',
-                    id: tab.id,
-                    nav: navigation(shown.url, true, false, shown.post),
-                  });
-                }}
-              />
-            </TabsContent>
-          ))}
-        </Tabs>
+          </Tabs>
+        </box>
         {/* Every box from here to the page's scroller shrinks, or a page
             taller than the window makes them all as tall as it is, and
             nothing scrolls: a flex item's floor is its content until it
