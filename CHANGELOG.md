@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.0](https://github.com/sidorares/react-x11-components/compare/v0.26.0...v0.27.0) (2026-10-21)
+
+
+### Features
+
+* **mermaid:** Mermaid diagrams compiled by ondine and drawn natively, with labels that select, and a ```mermaid fence in &lt;Markdown&gt; through its fences map ([#826](https://github.com/sidorares/react-x11-components/issues/826)) ([ff8f1d2](https://github.com/sidorares/react-x11-components/commit/ff8f1d2162df6c480bb6525552aeb48e4e90b24e))
+
+
+### Bug Fixes
+
+* **html:** a key typed in an iframe's document is that document's, so a page that takes the arrows for its own, as a slide deck does, no longer cancels the keys typed in a frame of it ([#824](https://github.com/sidorares/react-x11-components/issues/824)) ([9edb46f](https://github.com/sidorares/react-x11-components/commit/9edb46f44ce075a521119d5864ff7afa15907250))
+
 ## [0.26.0](https://github.com/sidorares/react-x11-components/compare/v0.25.0...v0.26.0) (2026-10-21)
 
 
