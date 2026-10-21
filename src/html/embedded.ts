@@ -22,6 +22,7 @@
 // again.
 import React from 'react';
 import type { ReactNode } from 'react';
+import type { DrawnNode } from 'react-x11';
 
 import { hx } from './hx.js';
 import { atViewport } from './widgets.js';
@@ -33,6 +34,10 @@ export interface Embedded {
   onEmbedded: (rects: EmbeddedRect[]) => void;
   /** The mounts, in the order the document has the elements. */
   render(): ReactNode[];
+  /** Whether a node is in what the host mounted: a key typed in an
+   *  `<iframe>`'s document is that document's, as a browser's is, and the
+   *  embedding document hears nothing of it. */
+  contains(node: DrawnNode | null): boolean;
 }
 
 /** What a host gives for an embedded element: the node to mount over it,
@@ -55,22 +60,53 @@ export function useEmbedded(
   const onEmbedded = React.useCallback((reported: EmbeddedRect[]) => {
     setRects(reported);
   }, []);
+  const ports = React.useRef(new Set<DrawnNode>()).current;
+  const refs = React.useRef(
+    new Map<string, (node: DrawnNode | null) => void>(),
+  ).current;
+  /** A port's ref, the same function for the same mount, so core is not
+   *  told it went and came back at every render. */
+  const refOf = (id: string) => {
+    let ref = refs.get(id);
+    if (!ref) {
+      let held: DrawnNode | null = null;
+      ref = (node: DrawnNode | null) => {
+        if (held) ports.delete(held);
+        held = node;
+        if (node) ports.add(node);
+      };
+      refs.set(id, ref);
+    }
+    return ref;
+  };
   return {
     onEmbedded,
+    contains: (node) => {
+      for (let at = node; at; at = at.parent as DrawnNode | null) {
+        if (ports.has(at)) return true;
+      }
+      return false;
+    },
     render: () => {
       if (!renderEmbedded) return [];
       const out: ReactNode[] = [];
       for (const rect of rects) {
         const content = renderEmbedded(rect);
         if (content === null || content === undefined) continue;
-        out.push(mount(rect, `${idOf(rect.element)}`, content));
+        const id = `${idOf(rect.element)}`;
+        out.push(mount(rect, id, content, refOf(id)));
       }
       return out;
     },
   };
 }
 
-function mount(rect: EmbeddedRect, id: string, content: ReactNode): ReactNode {
+function mount(
+  rect: EmbeddedRect,
+  id: string,
+  content: ReactNode,
+  ref: (node: DrawnNode | null) => void,
+): ReactNode {
   const { x: left, y: top, width, height } = rect;
   const port = rect.clip ?? { x: left, y: top, width, height };
   const opacity = rect.hidden ? 0 : rect.opacity;
@@ -82,6 +118,7 @@ function mount(rect: EmbeddedRect, id: string, content: ReactNode): ReactNode {
     'box',
     {
       key: `embedded:${id}`,
+      ref,
       selectable: false,
       style: {
         position: 'absolute',
