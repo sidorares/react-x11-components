@@ -447,7 +447,7 @@ export class RichTextNode extends Node {
       const base = { family: 'sans-serif', size: 14 * s };
       layout = fonts.layout(this._tabRuns(fonts, base, s), base, {
         maxWidth: Number.isFinite(maxWidth) ? maxWidth : undefined,
-        lineHeight: this.style.lineHeight,
+        lineHeight: lineHeightOf(this.style.lineHeight),
         align: this.style.textAlign,
       });
     }
@@ -715,3 +715,22 @@ export class RichTextNode extends Node {
    *  editor's subclass. Inside the same save/restore as the rest. */
   protected paintOverlay(_ctx: FillContext): void {}
 }
+
+/**
+ * A `lineHeight` a layout can multiply by, or undefined for the font's own:
+ * core's `lineHeightOf`, which its exports map does not carry. The style's
+ * type takes `'150%'`, `'24px'` and `'normal'` as well, and a layout handed
+ * one of those sets a paragraph NaN pixels tall, so anything but a number or
+ * a numeric string is the font's own here, as it is at core's call.
+ */
+function lineHeightOf(value: unknown): number | undefined {
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && NUMERIC.test(value)
+        ? Number(value)
+        : NaN;
+  return n >= 0 && n < Infinity ? n : undefined;
+}
+
+const NUMERIC = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?\s*$/i;

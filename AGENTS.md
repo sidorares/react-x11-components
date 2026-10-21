@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.48.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.48.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.51.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.51.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -774,6 +774,18 @@ it up. **The floor is a running one and moves often** — every move since
   macOS. On a worker every `dragData` thunk now resolves as the drag
   begins, which is why `<RichTextEditor>`'s slice payload reads the copy
   modifier at the drop rather than when its thunk runs.
+- `^2.51.0` — full screen on a Mac (react-x11#978, over windowkit/appkit#124).
+  `useWindowState().fullscreen` never moved on the Cocoa backend and
+  `<window fullscreen>` did nothing, since the bridge had no window-state
+  verbs or events; it follows the green button now, from the transition's
+  begin, before the animation, and the zoom and the Dock come back as
+  `maximized` and `minimized`. The browser example hides its strip and
+  toolbar in full screen and brings them back at the top edge. The same
+  range makes `background` a style shorthand, which `<flowgraph>`'s grid
+  prop of that name now declares in `semanticNames` — undeclared, every
+  `<Flow>` threw on mount in development — and widens `lineHeight`'s type to
+  the strings a style takes, so `<RichText>` narrows it before its layout as
+  core does.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

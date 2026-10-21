@@ -237,14 +237,16 @@ test('importing the component is what registers the element', () => {
   assert.ok(drawnKinds().includes(FLOW_ELEMENT));
 });
 
-test('no prop name of this element is also a style name', () => {
+test('a prop name of this element that is also a style name is declared', async () => {
   // The other trap. An element whose vocabulary overlaps the style
   // vocabulary must declare `semanticNames` or it throws on its own props in
   // development and works in production — the worst shape a bug can have.
-  // `<Flow>` declares none, and this is what keeps that honest as props are
-  // added: `background` is safe only because the style name is
-  // `backgroundColor`.
+  // This is what keeps that honest as props are added, and as core's style
+  // vocabulary grows: `background` became a style shorthand in react-x11
+  // 2.51, and the grid's prop of that name threw on every mount.
   assert.strictEqual(isStyleProp('backgroundColor'), true, 'precondition');
+  await mount();
+  const declared = pane().semanticNames;
   const props = [
     'nodes',
     'edges',
@@ -288,8 +290,8 @@ test('no prop name of this element is also a style name', () => {
     'controls',
     'palette',
   ];
-  const collisions = props.filter(isStyleProp);
-  assert.deepStrictEqual(collisions, [], 'these need `semanticNames`');
+  const undeclared = props.filter((p) => isStyleProp(p) && !declared.has(p));
+  assert.deepStrictEqual(undeclared, [], 'these need `semanticNames`');
 });
 
 test('it mounts, fills its parent and joins the paint order', async () => {

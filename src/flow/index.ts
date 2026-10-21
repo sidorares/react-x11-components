@@ -60,10 +60,11 @@ import type {
 if (!registeredElements().includes(ELEMENT)) {
   registerElement(ELEMENT, {
     create: (props, app) => new FlowGraphNode(props, app),
-    // No `semanticNames`: not one of this element's prop names is also a
-    // style name, and `test/flow.test.ts` is what keeps that true — the
-    // failure it guards against (throws in development, works in
-    // production) is the worst shape a bug can have.
+    // `background` is the grid's, and a style shorthand too since
+    // react-x11 2.51: undeclared, the element throws on its own prop in
+    // development and works in production, the worst shape a bug can
+    // have. `test/flow.test.ts` fails on any other prop that collides.
+    semanticNames: ['background'],
     childrenAllowed: false,
     // The commit claim: changes to these damage nothing by name — the
     // element's own `applyProps` diffs them into the box that actually
