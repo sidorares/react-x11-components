@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.26.0](https://github.com/sidorares/react-x11-components/compare/v0.25.0...v0.26.0) (2026-10-21)
+
+
+### Features
+
+* **examples:** the browser gives the page the whole screen in full screen, its strip and toolbar back at the top edge or while the address bar has the focus ([#823](https://github.com/sidorares/react-x11-components/issues/823)) ([ab32e62](https://github.com/sidorares/react-x11-components/commit/ab32e62a74536f0186cda84c278bde1ef7309678))
+* **examples:** the browser opens a link in a new tab on Cmd+click on X11 too, and a link's context menu offers Open Link in New Tab and Copy Link Address ([#819](https://github.com/sidorares/react-x11-components/issues/819)) ([f2cbc2a](https://github.com/sidorares/react-x11-components/commit/f2cbc2a45aaa0d2ff2ced3a905284f931a3dc8ab))
+* **html:** an animated GIF or WebP plays wherever a document draws it, its frames repainting only the boxes that drew them ([#820](https://github.com/sidorares/react-x11-components/issues/820)) ([1771af4](https://github.com/sidorares/react-x11-components/commit/1771af4b3cbce0de963f6a887cf49fb2241084cf))
+
+
+### Bug Fixes
+
+* **html:** a page's scripts can edit a contenteditable element as a browser's do, so CodeMirror on the react-x11 playground takes the keys typed in it ([#822](https://github.com/sidorares/react-x11-components/issues/822)) ([9996515](https://github.com/sidorares/react-x11-components/commit/9996515f37942108464d4c649dd0dfe994d8f166))
+* **html:** an iframe in a box scaled the same both ways, or fixed to the viewport, is mounted where it is drawn, laid out at its own size under core's scale, so a slide deck's frame shows its document ([#817](https://github.com/sidorares/react-x11-components/issues/817)) ([9c1ab64](https://github.com/sidorares/react-x11-components/commit/9c1ab64ba4cd685792ac46aabcc5653d225667f6))
+* **html:** what draws nothing inside a sticky or a fixed box is not pinned for the pane's scroll, so a Docusaurus page scrolls by a blit rather than repainting its whole pane at every notch ([#821](https://github.com/sidorares/react-x11-components/issues/821)) ([428de23](https://github.com/sidorares/react-x11-components/commit/428de23d9884dc0f61b657f844fc13a31e664381))
+
 ## [0.25.0](https://github.com/sidorares/react-x11-components/compare/v0.24.0...v0.25.0) (2026-10-20)
 
 
