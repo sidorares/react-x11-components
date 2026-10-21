@@ -79,7 +79,7 @@ import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
-import type { RenderEmbedded } from './embedded.js';
+import type { Embedded, RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
@@ -827,7 +827,13 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
-  const events = useDocumentEvents(onDomEvent, viewNode, forms, stops);
+  const events = useDocumentEvents(
+    onDomEvent,
+    viewNode,
+    forms,
+    stops,
+    embedded,
+  );
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)
@@ -1239,6 +1245,7 @@ function useDocumentEvents(
   view: React.RefObject<HtmlViewNode | null>,
   forms: ReturnType<typeof useForms>,
   stops: ReturnType<typeof useFocusStops>,
+  embedded: Embedded,
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
@@ -1282,6 +1289,9 @@ function useDocumentEvents(
     (type: 'keydown' | 'keyup') => (ev: X11KeyboardEvent<DrawnNode>) => {
       // a key a composition takes is the composition's, which types its text
       if (!onDomEvent || ev.composing) return;
+      // a key typed in an `<iframe>`'s document is that document's: the
+      // embedding page neither hears it nor can cancel it
+      if (embedded.contains(ev.target as DrawnNode)) return;
       const target = keyedAt(ev.target as DrawnNode);
       if (!target) return;
       const names = domKey(ev);
@@ -1330,6 +1340,7 @@ function useDocumentEvents(
       fire('mouseup', target, mouse(ev));
     },
     onKeyDownCapture: (ev: X11KeyboardEvent<DrawnNode>) => {
+      if (embedded.contains(ev.target as DrawnNode)) return;
       // a modifier alone, or a chord, is no move through the document:
       // Ctrl+C after a click leaves a script's focus without its ring
       if (!(ev.ctrlKey || ev.altKey || ev.metaKey || isModifierKey(ev))) {

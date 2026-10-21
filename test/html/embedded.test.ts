@@ -10,13 +10,15 @@ import {
   fireEvent,
   renderX11,
   screen,
+  userEvent,
 } from 'react-x11/test';
-import type { DrawnNode } from 'react-x11';
+import type { DrawnNode, KeyboardEvent } from 'react-x11';
+import { XK_BACKSPACE, XK_LEFT } from 'react-x11/keysyms';
 import { parseDocument } from 'htmlparser2';
 import { Image } from 'react-x11/ntk';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type { Element, HtmlViewNode } from '../../src/html/index.js';
-import type { EmbeddedRect } from '../../src/html/index.js';
+import type { EmbeddedRect, HtmlDomEvent } from '../../src/html/index.js';
 import { FONTS, h, metric } from './harness.js';
 
 afterEach(cleanup);
@@ -568,3 +570,53 @@ metric(
     });
   },
 );
+
+test("a key typed in an iframe's document is that document's: the embedding page neither hears it nor cancels it", async () => {
+  const told: string[] = [];
+  const heard: [number, boolean][] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+          '<input id="a"><iframe id="f" width="200" height="100"></iframe>',
+        partial: false,
+        // a page that takes every key for its own, as a slide deck's
+        // arrows are
+        onDomEvent: (e: HtmlDomEvent) => {
+          if (e.type !== 'keydown') return undefined;
+          told.push(`${e.key}:${e.target.attribs.id ?? e.target.name}`);
+          return false;
+        },
+        renderEmbedded: () =>
+          h('box', {
+            'data-testname': 'in-f',
+            tabIndex: 0,
+            style: { flexGrow: 1 },
+            onKeyDown: (ev: KeyboardEvent<DrawnNode>) =>
+              void heard.push([ev.keysym!, ev.defaultPrevented]),
+          }),
+      }),
+    ),
+    { width: 340, height: 240, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const inner = screen.getByTestName('in-f') as DrawnNode;
+  await act(() => inner.focus());
+  await userEvent.key(XK_LEFT, { target: inner });
+  await userEvent.key(XK_BACKSPACE, { target: inner });
+  assert.deepStrictEqual(
+    heard,
+    [
+      [XK_LEFT, false],
+      [XK_BACKSPACE, false],
+    ],
+    'the frame has each key, none cancelled',
+  );
+  assert.deepStrictEqual(told, [], 'the page is told of none');
+  // and the page's own keys are still the page's
+  await userEvent.type(screen.getByRole('textbox') as DrawnNode, 'x');
+  assert.deepStrictEqual(told, ['x:a']);
+});
