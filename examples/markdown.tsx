@@ -12,6 +12,7 @@ import { createRoot } from 'react-x11';
 
 import { Formula } from '../src/formula/index.js';
 import { Markdown } from '../src/markdown/index.js';
+import { Mermaid } from '../src/mermaid/index.js';
 import type { FenceInfo } from '../src/markdown/index.js';
 
 const DOCUMENT = `# Streaming markdown
@@ -45,6 +46,19 @@ of the document:
 x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}
 \`\`\`
 
+## A diagram
+
+A \`\`\`mermaid fence renders through \`<Mermaid>\` the same way — ondine
+compiles it (an optional peer: without it the fence stays code), and while
+it streams the last diagram that compiled holds the place:
+
+\`\`\`mermaid
+flowchart LR
+  A[chunk] --> B{parses?}
+  B -->|yes| C[render]
+  B -->|not yet| D[last good]
+\`\`\`
+
 ## And a table
 
 | feature | status | notes |
@@ -62,10 +76,13 @@ const TICK_MS = 16;
 
 // Module scope, so the map keeps one identity — a new object per render
 // would invalidate the block cache. While the fence is still streaming
-// (`partial`), the formula renders its last parseable state.
+// (`partial`), the formula and the diagram render their last good state.
 const FENCES = {
   math: ({ text, partial }: FenceInfo) => (
     <Formula tex={text} display partial={partial} />
+  ),
+  mermaid: ({ text, partial }: FenceInfo) => (
+    <Mermaid source={text} partial={partial} />
   ),
 };
 

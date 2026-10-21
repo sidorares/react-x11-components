@@ -92,6 +92,10 @@
       "types": "./dist/media-player/index.d.ts",
       "default": "./dist/media-player/index.js"
     },
+    "./mermaid": {
+      "types": "./dist/mermaid/index.d.ts",
+      "default": "./dist/mermaid/index.js"
+    },
     "./qml": {
       "types": "./dist/qml/index.d.ts",
       "default": "./dist/qml/index.js"
@@ -183,6 +187,7 @@
     "examples:markdown": "node --import tsx examples/markdown.tsx",
     "examples:mdx": "node --import tsx examples/mdx.tsx",
     "examples:media-player": "node --import tsx examples/media-player.tsx",
+    "examples:mermaid": "node --import tsx examples/mermaid.tsx",
     "examples:qml": "node --import tsx examples/qml/qml.tsx",
     "examples:reorder": "node --import tsx examples/reorder.tsx",
     "examples:rich-text-editor": "node --import tsx examples/rich-text-editor.tsx",
@@ -223,6 +228,7 @@
     "@lezer/highlight": "^1.0.0",
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
+    "ondine": ">=0.0.3 <0.1.0",
     "react": "^19.0.0",
     "react-x11": "^2.51.0"
   },
@@ -234,6 +240,9 @@
       "optional": true
     },
     "node-pty": {
+      "optional": true
+    },
+    "ondine": {
       "optional": true
     }
   },
@@ -248,6 +257,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^9.32.0",
     "globals": "^17.8.0",
+    "ondine": "^0.0.3",
     "pngjs": "^7.0.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
