@@ -5606,6 +5606,53 @@ test('a handle is one closed ring, stroked the same in any pass', async () => {
   }
 });
 
+test('the grid is drawn on a context that answers createPattern with null', async (t) => {
+  // The Wayland backend's 2d context has no patterns yet and answers null,
+  // as canvas does for a source it cannot use. The pane set that null as
+  // its fill and filled the whole region with it: a black pane, no grid.
+  const result = await renderX11(h('box', { style: { flexGrow: 1 } }), {
+    backend: 'xserver',
+    width: 160,
+    height: 120,
+  });
+  const proto = Object.getPrototypeOf(result.ctx) as {
+    createPattern(source: unknown, repetition: string): unknown;
+  };
+  t.mock.method(proto, 'createPattern', () => null);
+  await result.rerender(
+    h(FLOW_ELEMENT, {
+      nodes: [],
+      edges: [],
+      background: { variant: 'dots' },
+      defaultViewport: { x: 0, y: 0, zoom: 1.25 },
+      style: { flexGrow: 1 },
+    }),
+  );
+  await act();
+  const node = pane() as unknown as {
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const { data } = await (
+    result.ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(box.x, box.y, box.width, box.height);
+  let black = 0;
+  let inked = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] < 16 && data[i + 1] < 16 && data[i + 2] < 16) black++;
+    else if (data[i] < 250) inked++;
+  }
+  assert.ok(black < data.length / 4 / 2, `the pane is not black (${black})`);
+  assert.ok(inked > 0, 'and the grid is drawn');
+});
+
 test('the grid keeps the shape of its marks as the view pans', async () => {
   // The grid is one tile, re-drawn with its mark at the phase the viewport
   // puts it at, and a mark's edges were half pixels: a 3px dot at

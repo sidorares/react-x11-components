@@ -4993,12 +4993,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._dropGridTile();
       const surface = this._makeGridSurface(tileSize);
       if (!surface) return false;
-      tile = {
-        key: '',
-        size: tileSize,
-        surface,
-        pattern: raw.createPattern(surface, 'repeat'),
-      };
+      // Null is a context with no patterns — the Wayland backend's, today —
+      // as canvas answers for a source it cannot use. Set as the fill, it
+      // painted the whole pane black there, and threw on X11.
+      const pattern = raw.createPattern(surface, 'repeat');
+      if (!pattern) {
+        surface.destroy?.();
+        return false;
+      }
+      tile = { key: '', size: tileSize, surface, pattern };
       this._gridTile = tile;
     }
     if (tile.key !== key) {
