@@ -8026,6 +8026,271 @@ export function installDom(
       return fragment;
     }
   }
+
+  /** A range whose two boundary points never move (DOM 5.4). */
+  class StaticRange extends AbstractRange {
+    _static: [Any, number, Any, number];
+    constructor(init: Any) {
+      super();
+      if (!init || typeof init !== 'object') {
+        throw new TypeError(
+          "Failed to construct 'StaticRange': 1 argument required, but only 0 present.",
+        );
+      }
+      const { startContainer, startOffset, endContainer, endOffset } = init;
+      for (const node of [startContainer, endContainer]) {
+        if (!(node instanceof Node)) {
+          throw new TypeError(
+            "Failed to construct 'StaticRange': The provided value is not of type 'Node'.",
+          );
+        }
+        if (node.nodeType === 10 || node.nodeType === 2) {
+          throw new DOMException(
+            "Failed to construct 'StaticRange': The supplied node is a DocumentType or an Attr.",
+            'InvalidNodeTypeError',
+          );
+        }
+      }
+      this._static = [
+        startContainer,
+        Number(startOffset) >>> 0,
+        endContainer,
+        Number(endOffset) >>> 0,
+      ];
+    }
+    override _points(): [Any, number, Any, number] {
+      return this._static;
+    }
+    override get collapsed(): boolean {
+      const [a, b, c, d] = this._static;
+      return a === c && b === d;
+    }
+  }
+
+  // --- custom highlights (CSS Highlight API 1) ----------------------------------------
+  //
+  // A `Highlight` is a set of ranges, and `CSS.highlights` the registry of
+  // them by name, which `::highlight(name)` styles. The host is told what
+  // the registry holds after each change — a live range by its id, which it
+  // follows as the tree changes, a static one by its points — and draws the
+  // ranges as it draws the selection (`highlights`). Both are kept in a
+  // `Set` and a `Map` of their own, worked through the built-ins' methods as
+  // they were before any page code ran: a page that changes
+  // `Set.prototype` changes no highlight (WPT's tampered-prototype tests).
+
+  const setAdd = Set.prototype.add;
+  const setHas = Set.prototype.has;
+  const setDelete = Set.prototype.delete;
+  const setClear = Set.prototype.clear;
+  const setValues = Set.prototype.values;
+  const setEntries = Set.prototype.entries;
+  const setSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size')!.get!;
+  const mapSet = Map.prototype.set;
+  const mapGet = Map.prototype.get;
+  const mapHas = Map.prototype.has;
+  const mapDelete = Map.prototype.delete;
+  const mapClear = Map.prototype.clear;
+  const mapKeys = Map.prototype.keys;
+  const mapValues = Map.prototype.values;
+  const mapEntries = Map.prototype.entries;
+  const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size')!.get!;
+
+  const HIGHLIGHT_TYPES = ['highlight', 'spelling-error', 'grammar-error'];
+
+  class Highlight {
+    _ranges = new Set<Any>();
+    _priority = 0;
+    _type = 'highlight';
+    constructor(...ranges: Any[]) {
+      for (const range of ranges) this.add(range);
+    }
+    get priority(): number {
+      return this._priority;
+    }
+    set priority(v: Any) {
+      // a `long`
+      this._priority = Number(v) | 0;
+      highlightsChanged();
+    }
+    get type(): string {
+      return this._type;
+    }
+    set type(v: Any) {
+      // an enumeration's: a value it does not have is ignored
+      const type = str(v);
+      if (HIGHLIGHT_TYPES.includes(type)) this._type = type;
+    }
+    add(range: Any): Any {
+      if (!(range instanceof AbstractRange)) {
+        throw new TypeError(
+          "Failed to execute 'add' on 'Highlight': parameter 1 is not of type 'AbstractRange'.",
+        );
+      }
+      if (!setHas.call(this._ranges, range)) {
+        setAdd.call(this._ranges, range);
+        highlightsChanged();
+      }
+      return this;
+    }
+    delete(range: Any): boolean {
+      const had = setDelete.call(this._ranges, range);
+      if (had) highlightsChanged();
+      return had;
+    }
+    has(range: Any): boolean {
+      return setHas.call(this._ranges, range);
+    }
+    clear(): void {
+      if (!setSize.call(this._ranges)) return;
+      setClear.call(this._ranges);
+      highlightsChanged();
+    }
+    get size(): number {
+      return setSize.call(this._ranges);
+    }
+    forEach(fn: Any, thisArg?: Any): void {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'forEach' on 'Highlight': The callback provided as parameter 1 is not a function.",
+        );
+      }
+      for (const range of setValues.call(this._ranges)) {
+        fn.call(thisArg, range, range, this);
+      }
+    }
+    values(): Any {
+      return setValues.call(this._ranges);
+    }
+    keys(): Any {
+      return setValues.call(this._ranges);
+    }
+    entries(): Any {
+      return setEntries.call(this._ranges);
+    }
+    [Symbol.iterator](): Any {
+      return setValues.call(this._ranges);
+    }
+    get [Symbol.toStringTag](): string {
+      return 'Highlight';
+    }
+  }
+
+  /** Made once, as `CSS.highlights`: a page constructs none. */
+  let registryMade = false;
+  class HighlightRegistry {
+    _map = new Map<string, Any>();
+    constructor() {
+      if (registryMade) throw new TypeError('Illegal constructor');
+      registryMade = true;
+    }
+    set(name: Any, highlight: Any): Any {
+      if (!(highlight instanceof Highlight)) {
+        throw new TypeError(
+          "Failed to execute 'set' on 'HighlightRegistry': parameter 2 is not of type 'Highlight'.",
+        );
+      }
+      mapSet.call(this._map, str(name), highlight);
+      highlightsChanged();
+      return this;
+    }
+    get(name: Any): Any {
+      return mapGet.call(this._map, str(name));
+    }
+    has(name: Any): boolean {
+      return mapHas.call(this._map, str(name));
+    }
+    delete(name: Any): boolean {
+      const had = mapDelete.call(this._map, str(name));
+      if (had) highlightsChanged();
+      return had;
+    }
+    clear(): void {
+      if (!mapSize.call(this._map)) return;
+      mapClear.call(this._map);
+      highlightsChanged();
+    }
+    get size(): number {
+      return mapSize.call(this._map);
+    }
+    forEach(fn: Any, thisArg?: Any): void {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'forEach' on 'HighlightRegistry': The callback provided as parameter 1 is not a function.",
+        );
+      }
+      for (const [name, highlight] of mapEntries.call(this._map)) {
+        fn.call(thisArg, highlight, name, this);
+      }
+    }
+    keys(): Any {
+      return mapKeys.call(this._map);
+    }
+    values(): Any {
+      return mapValues.call(this._map);
+    }
+    entries(): Any {
+      return mapEntries.call(this._map);
+    }
+    [Symbol.iterator](): Any {
+      return mapEntries.call(this._map);
+    }
+    /** The highlights over a point of the viewport, the highest priority
+     *  first, each with its ranges there (CSS Highlight API 1, 5.2). */
+    highlightsFromPoint(x: Any, y: Any): Any[] {
+      const px = Number(x);
+      const py = Number(y);
+      const found: { highlight: Any; ranges: Any[] }[] = [];
+      for (const [, highlight] of mapEntries.call(this._map)) {
+        const ranges: Any[] = [];
+        for (const range of setValues.call(highlight._ranges)) {
+          let rects: Any[];
+          try {
+            rects = Array.from(liveRangeOf(range).getClientRects());
+          } catch {
+            continue;
+          }
+          if (
+            rects.some(
+              (r: Any) =>
+                px >= r.left && px < r.right && py >= r.top && py < r.bottom,
+            )
+          ) {
+            ranges.push(range);
+          }
+        }
+        if (ranges.length) found.push({ highlight, ranges });
+      }
+      return found.sort((a, b) => b.highlight.priority - a.highlight.priority);
+    }
+    get [Symbol.toStringTag](): string {
+      return 'HighlightRegistry';
+    }
+  }
+  /** A live range over a static one's points, or the range itself. */
+  const liveRangeOf = (range: Any): Any => {
+    if (!(range instanceof StaticRange)) return range;
+    const [sc, so, ec, eo] = range._points();
+    const live = document.createRange();
+    live.setStart(sc, so);
+    live.setEnd(ec, eo);
+    return live;
+  };
+  const highlightRegistry = new HighlightRegistry();
+  /** Tell the host what the registry holds now. */
+  const highlightsChanged = (): void => {
+    const out: Any[] = [];
+    for (const [name, highlight] of mapEntries.call(highlightRegistry._map)) {
+      const ranges: Any[] = [];
+      for (const range of setValues.call(highlight._ranges)) {
+        if (range instanceof StaticRange) {
+          const [sc, so, ec, eo] = range._points();
+          ranges.push([idOf(sc), so, idOf(ec), eo]);
+        } else if (range._id) ranges.push(range._id);
+      }
+      out.push({ name, priority: highlight._priority, ranges });
+    }
+    call('highlights', JSON.stringify(out));
+  };
   for (const name of Object.getOwnPropertyNames(Range)) {
     if (!/^[A-Z_]+$/.test(name)) continue;
     Object.defineProperty(Range.prototype, name, {
@@ -14058,6 +14323,9 @@ export function installDom(
     XMLDocument,
     AbstractRange,
     Range,
+    StaticRange,
+    Highlight,
+    HighlightRegistry,
     Element,
     HTMLElement,
     CustomElementRegistry,
@@ -14342,6 +14610,7 @@ export function installDom(
   define('atob', atob);
   define('CSS', {
     escape: (v: Any) => cssEscape(str(v)),
+    highlights: highlightRegistry,
     // what `<Html>` answers an `@supports` with: false only where it knows
     // a property it does not draw, and true for the rest, as the modern
     // engine a page tests for. vercel.com sent an engine that answered

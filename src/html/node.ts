@@ -53,6 +53,7 @@ import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
+import type { HighlightRanges } from './scripts/host.js';
 import { compareDocumentPosition } from 'domutils';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
@@ -3903,6 +3904,41 @@ export class HtmlViewNode extends Node {
    * Where the two are one point, the caret there, of no width. Null where
    * the document has no text there.
    */
+  /** The custom highlights a page's `CSS.highlights` holds (CSS
+   *  Highlight API 1), as its host last told them. */
+  private _highlights: readonly HighlightRanges[] = [];
+
+  /** A page's custom highlights changed: drawn again with the new ones. */
+  setHighlights(highlights: readonly HighlightRanges[]): void {
+    if (!this._highlights.length && !highlights.length) return;
+    this._highlights = highlights;
+    this.invalidate();
+  }
+
+  /** The custom highlights to paint, the lowest priority first and in the
+   *  order registered among equals, each range a document range in code
+   *  units with its name's styler; none where no rule styles any. */
+  private _litRanges(): PaintOptions['highlights'] {
+    const tree = this._tree;
+    const styler = tree?.highlightStyler;
+    if (!this._highlights.length || !styler || !tree.textNodes?.length) {
+      return undefined;
+    }
+    const out: NonNullable<PaintOptions['highlights']>[number][] = [];
+    const ordered = this._highlights
+      .map((h, i) => ({ h, i }))
+      .sort((a, b) => a.h.priority - b.h.priority || a.i - b.i);
+    for (const { h } of ordered) {
+      const lit = styler(h.name);
+      for (const r of h.ranges) {
+        const start = unitOfPoint(tree, r.sc, r.so);
+        const end = unitOfPoint(tree, r.ec, r.eo);
+        if (end > start) out.push({ selection: { start, end }, styler: lit });
+      }
+    }
+    return out.length ? out : undefined;
+  }
+
   textRects(
     start: AnyNode,
     startOffset: number,
@@ -7747,6 +7783,7 @@ export class HtmlViewNode extends Node {
           }
         : null,
       selectionColor: this.selectionColor,
+      highlights: this._litRanges(),
       scrollbarHidden: (box) =>
         box.el && this._cascade
           ? this._cascade.scrollbarHidden(box.el, box.style)

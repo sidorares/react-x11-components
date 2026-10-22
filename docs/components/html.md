@@ -3263,6 +3263,16 @@ band, and text no rule reaches is drawn in `selectionColor`. Selected text
 keeps its own decorations and shadows. A selection over glyphs taller than
 their line covers them, and one over a tall line fills it.
 
+**Custom highlights:** with scripts on, a page's `CSS.highlights` (CSS
+Highlight API 1) holds `Highlight`s, sets of `Range`s and `StaticRange`s by
+name, and `::highlight(name)` gives their text a band and a colour as
+`::selection` does, inherited the same way. Each highlight is drawn under the
+selection, a lower `priority` under a higher one, over the text's content
+area rather than its line, as Chrome draws one. A live range follows the
+tree as it changes; a highlight with no rule is not drawn, since a custom
+highlight has no look of its own. `highlightsFromPoint()` answers which are
+under a point. A highlight's decorations and shadows are not drawn yet.
+
 **Placeholders:** `::placeholder` (and `::-webkit-input-placeholder`) gives
 a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).

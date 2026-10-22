@@ -4452,6 +4452,76 @@ async function colourAt(doc: Hosted, x: number, y: number): Promise<string> {
 }
 
 metric(
+  "a custom highlight's ranges are drawn in its ::highlight() style, and drawn no more once it is taken out of the registry",
+  async () => {
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/40px sans-serif }' +
+        ' ::highlight(lit) { background-color: #ffff00 }' +
+        ' #ref { background: #ffff00; width: 10px; height: 10px }</style>' +
+        '<p id="t" style="margin:0"><span id="a">AAAA</span><span id="b">BBBB</span></p>' +
+        '<div id="ref"></div><p id="out"></p><script>' +
+        'var text = document.getElementById("a").firstChild;' +
+        'var r = new Range(); r.setStart(text, 0); r.setEnd(text, 4);' +
+        'CSS.highlights.set("lit", new Highlight(r));' +
+        'document.getElementById("out").textContent = "set";' +
+        '</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    const at = (id: string) => {
+      const rect = doc.view.elementRect(doc.byId(id))!;
+      // the line's top edge, over its band and above any glyph
+      return [Math.round(rect.x + rect.width / 2), Math.round(rect.y + 2)];
+    };
+    const ref = doc.view.elementRect(doc.byId('ref'))!;
+    const yellow = await colourAt(doc, ref.x + 5, ref.y + 5);
+    const [ax, ay] = at('a');
+    const [bx, by] = at('b');
+    assert.equal(await colourAt(doc, ax, ay), yellow, 'the range is lit');
+    assert.notEqual(await colourAt(doc, bx, by), yellow, 'past it is not');
+    await act(() => doc.run('CSS.highlights.delete("lit")'));
+    await settle(40);
+    assert.notEqual(
+      await colourAt(doc, ax, ay),
+      yellow,
+      'taken out, it is drawn no more',
+    );
+  },
+);
+
+test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
+  const doc = await hosted(
+    '<p id="t">text</p><p id="out"></p><script>' +
+      'var r = []; var text = document.getElementById("t").firstChild;' +
+      'var a = new Range(); a.setStart(text, 0); a.setEnd(text, 2);' +
+      'var b = new StaticRange({ startContainer: text, startOffset: 1, endContainer: text, endOffset: 3 });' +
+      'var out = document.getElementById("out");' +
+      // the highlights' own sets and maps are worked by the built-ins as
+      // they were; a page's DOM is no part of this
+      'var add = Set.prototype.add, set = Map.prototype.set;' +
+      'Set.prototype.add = function () { throw new Error("tampered"); };' +
+      'Map.prototype.set = function () { throw new Error("tampered"); };' +
+      'var h = new Highlight(a, b);' +
+      'r.push(h.size, h.has(b), h.priority, h.type, Object.prototype.toString.call(h));' +
+      'h.type = "nonsense"; h.type = "spelling-error"; h.priority = 3.7; r.push(h.type, h.priority);' +
+      'try { h.add({}); } catch (e) { r.push(e.name); }' +
+      'r.push(CSS.highlights.set("x", h) === CSS.highlights, CSS.highlights.size, CSS.highlights.get("x") === h);' +
+      'r.push(Array.from(CSS.highlights.keys()).join(), Array.from(h).length, b.collapsed, b.startOffset);' +
+      'try { new HighlightRegistry(); } catch (e) { r.push(e.name); }' +
+      'r.push(h.delete(a), h.delete(a), CSS.highlights.delete("x"), CSS.highlights.size);' +
+      'Set.prototype.add = add; Map.prototype.set = set;' +
+      'out.textContent = r.join(",");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '2,true,0,highlight,[object Highlight],spelling-error,3,TypeError,' +
+      'true,1,true,x,2,false,1,TypeError,true,false,true,0',
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
   'a fade a script starts is drawn, and filling forwards it holds its last frame once it has finished',
   async () => {
     // a panel that is `opacity: 0` in its sheet and faded in from a script,

@@ -394,8 +394,20 @@ export interface PaintOptions {
     start: number;
     end: number;
     skip?: readonly number[];
+    /** Lit over the text's content area alone, as an inline box's
+     *  background is, rather than over its line too: a custom highlight's,
+     *  which Blink does not grow to the line as it does the selection. */
+    contentArea?: boolean;
   } | null;
   selectionColor: string | null;
+  /** The custom highlights over the document's text (CSS Highlight API
+   *  1), the lowest priority first: each a document range in code units
+   *  and its name's `::highlight()` styler. Painted as a selection is,
+   *  under it, and only where a rule gives the text a look. */
+  highlights?: readonly {
+    selection: { start: number; end: number };
+    styler: SelectionStyler;
+  }[];
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
   /** Which of a scroll container's bars a page's `::-webkit-scrollbar`
@@ -12164,6 +12176,9 @@ function paintLinePart(
         );
       }
     }
+    for (const lit of highlightOptions(options)) {
+      paintSelection(ctx, line, lit, skip);
+    }
     paintSelection(ctx, line, options, skip);
   }
 
@@ -12181,10 +12196,13 @@ function paintLinePart(
   // drawing it once per line would be one X request per line for the same
   // batch.
   const drawn = new Set<unknown>();
-  // text a `::selection` colours is drawn in that colour where selected
-  const recolored = options.selectionStyler
-    ? recoloredBands(visible, options, skip)
-    : null;
+  // text a `::highlight()` or a `::selection` colours is drawn in that
+  // colour where it is lit, the selection's over the highlights'
+  const lit = highlightOptions(options);
+  const recolored =
+    options.selectionStyler || lit.length
+      ? recoloredWith(visible, [...lit, options], skip)
+      : null;
   for (const line of visible) {
     for (const text of line.texts) {
       if (skip?.has(text)) continue;
@@ -13648,9 +13666,18 @@ function selectedBands(
     const to = Math.min(range.end, text.textEnd);
     if (to <= from) continue;
     const offsets = layoutOffsets(text.layout);
-    const rows = selectionRows(line, text, natural);
-    const y = Math.round(rows.y + options.originY);
-    const height = Math.ceil(rows.height);
+    let y: number;
+    let height: number;
+    if (range.contentArea) {
+      // each edge snapped, as an inline box's background's are
+      const baseline = text.drawY + natural.baseline + options.originY;
+      y = Math.round(baseline - (natural.ascent ?? 0));
+      height = Math.round(baseline + (natural.descent ?? 0)) - y;
+    } else {
+      const rows = selectionRows(line, text, natural);
+      y = Math.round(rows.y + options.originY);
+      height = Math.ceil(rows.height);
+    }
     // less the text no selection takes: generated content, mostly
     const pieces = range.skip?.length
       ? selectedPieces(from, to, range.skip)
@@ -13810,6 +13837,49 @@ function selectionPieces(
  * own, each with the bands it is drawn in that colour (`drawRecolored`).
  * Null where none does, which is every document with no such rule.
  */
+/** Each custom highlight's paint options: the document's, with the
+ *  highlight's range for the selection's, its `::highlight()` for the
+ *  `::selection`, and no palette colour, so only what a rule styles is lit.
+ *  Made once for each options object. */
+const HIGHLIGHT_OPTIONS = new WeakMap<PaintOptions, PaintOptions[]>();
+const NO_HIGHLIGHTS: PaintOptions[] = [];
+function highlightOptions(options: PaintOptions): PaintOptions[] {
+  if (!options.highlights?.length) return NO_HIGHLIGHTS;
+  let made = HIGHLIGHT_OPTIONS.get(options);
+  if (!made) {
+    made = options.highlights.map((h) => ({
+      ...options,
+      selection: { ...h.selection, contentArea: true },
+      selectionStyler: h.styler,
+      selectionColor: null,
+    }));
+    HIGHLIGHT_OPTIONS.set(options, made);
+  }
+  return made;
+}
+
+/** The recoloured bands of several ranges, a layout's in the order the
+ *  ranges are given: the later drawn over the earlier. */
+function recoloredWith(
+  lines: LineBox[],
+  each: readonly PaintOptions[],
+  skip?: ReadonlySet<unknown>,
+): Map<unknown, SelectedBand[]> | null {
+  let out: Map<unknown, SelectedBand[]> | null = null;
+  for (const options of each) {
+    if (!options.selectionStyler) continue;
+    const bands = recoloredBands(lines, options, skip);
+    if (!bands) continue;
+    out ??= new Map();
+    for (const [layout, list] of bands) {
+      const had = out.get(layout);
+      if (had) had.push(...list);
+      else out.set(layout, list.slice());
+    }
+  }
+  return out;
+}
+
 function recoloredBands(
   lines: LineBox[],
   options: PaintOptions,

@@ -226,6 +226,25 @@ export interface HandleInternals {
     end: AnyNode,
     endOffset: number,
   ): Rect[] | null;
+  /** The custom highlights a page's `CSS.highlights` holds, to draw
+   *  (`HtmlViewNode.setHighlights`). */
+  setHighlights(highlights: readonly HighlightRanges[]): void;
+}
+
+/** A custom highlight as a page's `CSS.highlights` holds it: a live
+ *  range by its id, a static one by its two points' node ids and offsets. */
+interface HighlightSpec {
+  name: string;
+  priority: number;
+  ranges: (number | [number, number, number, number])[];
+}
+
+/** A custom highlight as the document draws it (CSS Highlight API 1): its
+ *  name, its priority, and its ranges' boundary points as they are now. */
+export interface HighlightRanges {
+  name: string;
+  priority: number;
+  ranges: { sc: AnyNode; so: number; ec: AnyNode; eo: number }[];
 }
 
 /** What the page around the document gives the host: where it is shown,
@@ -1024,6 +1043,7 @@ export class DomHost {
     // timeout, which is rare, so the walk costs nothing in the common case.
     if (this.entries?.timedOutSince?.()) this._repairTree();
     if (this._sheetsChanged.size) this._writeSheets();
+    this._syncHighlights();
     if (this._s.changes.size && !this._disposed) {
       // what this realm, or another, changed in another realm's document
       const pending = [...this._s.changes];
@@ -1616,6 +1636,12 @@ export class DomHost {
         );
         return at ? `${this.idOf(at.node)},${at.offset}` : '';
       }
+      // the page's custom highlights (`CSS.highlights`), as JSON: each one's
+      // name, priority and ranges — a live range by its id, a static one by
+      // its two points — drawn at the next flush
+      case 'highlights':
+        this._highlightSpec = JSON.parse(text(a)) as HighlightSpec[];
+        return null;
       case 'rangeGet': {
         const r = this._ranges.get(Number(a));
         return `${this.idOf(r.sc)},${r.so},${this.idOf(r.ec)},${r.eo}`;
@@ -3144,6 +3170,55 @@ export class DomHost {
     }
     if (at === this.document) return this._seams.handle;
     return this._s.drawn.get(at as Document) ?? null;
+  }
+
+  /** The page's custom highlights, as `highlights` was last told them. */
+  private _highlightSpec: HighlightSpec[] = [];
+  /** What the document was last told of them, as a key: their names,
+   *  priorities and ranges' boundary points. */
+  private _highlightsTold = '';
+
+  /** Tell the document its custom highlights where they changed: their
+   *  live ranges move with the tree, so they are read again at each flush,
+   *  and told only where a boundary, a name or a priority moved. */
+  private _syncHighlights(): void {
+    if (!this._highlightSpec.length && !this._highlightsTold) return;
+    const resolved: HighlightRanges[] = [];
+    const key: string[] = [];
+    for (const h of this._highlightSpec) {
+      const ranges: HighlightRanges['ranges'] = [];
+      for (const r of h.ranges) {
+        let point: { sc: AnyNode; so: number; ec: AnyNode; eo: number };
+        try {
+          if (typeof r === 'number') {
+            const live = this._ranges.get(r);
+            point = { sc: live.sc, so: live.so, ec: live.ec, eo: live.eo };
+          } else {
+            point = {
+              sc: this._node(r[0]),
+              so: r[1],
+              ec: this._node(r[2]),
+              eo: r[3],
+            };
+          }
+        } catch {
+          continue;
+        }
+        if (!this._inDocument(point.sc) || !this._inDocument(point.ec)) {
+          continue;
+        }
+        ranges.push(point);
+        key.push(
+          `${this.idOf(point.sc)},${point.so},${this.idOf(point.ec)},${point.eo}`,
+        );
+      }
+      resolved.push({ name: h.name, priority: h.priority, ranges });
+      key.push(`|${h.name}:${h.priority}`);
+    }
+    const told = key.join(';');
+    if (told === this._highlightsTold) return;
+    this._highlightsTold = told;
+    this._seams.handle.setHighlights?.(resolved);
   }
 
   /** Each document's names, with where `edits` and the parser were when
