@@ -1305,6 +1305,7 @@ const PSEUDO_CLASSES = new Set([
   'local-link',
   'matches',
   'modal',
+  'muted',
   'not',
   'nth-child',
   'nth-col',
@@ -1336,6 +1337,7 @@ const PSEUDO_CLASSES = new Set([
   'user-valid',
   'valid',
   'visited',
+  'volume-locked',
   'where',
 ]);
 

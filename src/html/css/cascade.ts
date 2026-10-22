@@ -32,6 +32,7 @@ import {
   isInputButton,
   isModal,
   isPopoverOpen,
+  isMuted,
   mutationGeneration,
   shadowRootAround,
   shadowRootOf,
@@ -1725,6 +1726,8 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   open: ['a:open'],
   closed: ['a:open'],
   'popover-open': ['a:popover', 'a:-rx-popover-open'],
+  muted: ['a:muted', 'a:-rx-muted'],
+  'volume-locked': [],
   'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   empty: ['s'],
@@ -6156,6 +6159,9 @@ const PSEUDOS = {
   modal: (el: Element) => isModal(el),
   // a popover a page's scripts showed (`isPopoverOpen`)
   'popover-open': (el: Element) => isPopoverOpen(el),
+  // a media element muted, by its attribute or a page's script (`isMuted`)
+  muted: (el: Element) => isMuted(el),
+  'volume-locked': (_el: Element) => false,
   // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
   // css-select has neither, and dropped every rule that named one
   open: (el: Element) => opens(el) && el.attribs.open !== undefined,

@@ -377,6 +377,9 @@ async function pump(ms: number): Promise<void> {
 /** Inject a WebDriver action sequence: each tick runs every source's
  *  action at that index, as WebDriver's dispatch does. */
 async function driver(what: string, body: string | null): Promise<string> {
+  // the first page of a run starts its scripts while the window it is in
+  // is still being made, before `show` has its harness
+  for (let i = 0; !harness && i < 200; i++) await wait(10);
   const server = harness?.server;
   if (!server) throw new Error('no server');
   if (what !== 'actions') throw new Error(`unsupported: ${what}`);

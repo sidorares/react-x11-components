@@ -619,6 +619,25 @@ export function isPopoverOpen(el: Element): boolean {
   return IN_TOP_LAYER.get(el)?.modal === false;
 }
 
+/** What a page's scripts set a media element's `muted` to, from the first
+ *  time they do; the `muted` attribute only starts it (HTML 4.8.11.12). */
+const MUTED = new WeakMap<Element, boolean>();
+
+/** A media element's `muted`, as a page's script set it: whether it
+ *  changed. */
+export function setMuted(el: Element, muted: boolean): boolean {
+  const was = isMuted(el);
+  MUTED.set(el, muted);
+  return was !== muted;
+}
+
+/** Whether an `<audio>` or a `<video>` is muted (`:muted`, Selectors 4,
+ *  12.3): what a script set, or its `muted` attribute. */
+export function isMuted(el: Element): boolean {
+  if (el.name !== 'video' && el.name !== 'audio') return false;
+  return MUTED.get(el) ?? el.attribs.muted !== undefined;
+}
+
 /** Whether an element is in its document's top layer, as either. */
 export function inTopLayer(el: Element): boolean {
   return IN_TOP_LAYER.has(el);
