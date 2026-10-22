@@ -197,9 +197,8 @@ export function readEffect(
   for (const frame of f as unknown[]) {
     if (!Array.isArray(frame) || frame.length !== 3) return null;
     const [offset, easing, props] = frame as unknown[];
-    if (typeof offset !== 'number' || !(offset >= 0 && offset <= 1)) {
-      return null;
-    }
+    // a frame at a timeline offset may be placed outside the iteration
+    if (typeof offset !== 'number' || !Number.isFinite(offset)) return null;
     if (typeof easing !== 'string' || !Array.isArray(props)) return null;
     const declarations: Declaration[] = [];
     for (const pair of props as unknown[]) {

@@ -6197,6 +6197,65 @@ test('CSS numeric values are made, added, converted and parsed as CSS Typed OM h
   );
 });
 
+test('a keyframe at a timeline offset is kept as given and placed by the view timeline, where there is one', async () => {
+  const doc = await hosted(
+    '<style>#s { overflow: auto; width: 100px; height: 100px } #c { height: 300px }' +
+      ' #t { margin-top: 300px; height: 50px }</style>' +
+      '<div id="s"><div id="c"><div id="t"></div></div></div><p id="out"></p><script>' +
+      'var r = [], t = document.getElementById("t");' +
+      'var frames = [{ offset: "contain 25%", opacity: 0 }, { offset: { rangeName: "cover", offset: CSS.percent(100) }, opacity: 1 }, { opacity: 0.5 }];' +
+      'var range = { rangeStart: "contain 0%", rangeEnd: "contain 100%", duration: "auto", fill: "both" };' +
+      'var a = t.animate(frames, Object.assign({ timeline: new ViewTimeline({ subject: t }) }, range));' +
+      'var k = a.effect.getKeyframes();' +
+      'var round = function (n) { return Math.round(n * 1000) / 1000; };' +
+      'r.push(k[0].offset.rangeName, String(k[0].offset.offset), round(k[0].computedOffset), round(k[1].computedOffset),' +
+      '  k[2].offset, k[2].computedOffset, typeof k[0].opacity);' +
+      // on the clock's timeline, there is nowhere to place it
+      'var b = t.animate(frames, { duration: 1000 });' +
+      'r.push(b.effect.getKeyframes()[0].computedOffset);' +
+      // a percentage as text is an offset; a name no range has, or a length, none
+      'r.push(t.animate([{ offset: "50%", opacity: 1 }], 1000).effect.getKeyframes()[0].offset);' +
+      'for (var bad of ["here 0%", "entry 3px", "2", "cover 50% x"]) {' +
+      '  try { t.animate([{ offset: bad }], 1000); r.push("kept " + bad); } catch (e) { r.push(e.name); }' +
+      '}' +
+      // and the timelines' attributes are Web IDL's
+      'try { ScrollTimeline.prototype.source; r.push("read"); } catch (e) { r.push(e.name); }' +
+      'r.push(Object.getOwnPropertyDescriptor(ViewTimeline.prototype, "startOffset").enumerable);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  // the scrollport is 100 tall and the subject 50 at 300: cover runs from
+  // 200 to 350, and contain from 250 to 300, which is the range
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'contain|25%|0.25|2||1|string||0.5|TypeError|TypeError|TypeError|TypeError|TypeError|true',
+    doc.logs.join('\n'),
+  );
+});
+
+test('getAnimations() styles what a script changed before it lists, and a range at its default reads back as normal', async () => {
+  const doc = await hosted(
+    '<style>@keyframes fade { from { opacity: 0 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' .on { animation: fade auto linear; animation-timeline: scroll(); animation-range-end: calc(100% - 20px) }' +
+      ' #t { transform: translateX(10%) rotate(90deg); width: 200px }</style>' +
+      '<div id="s"><div id="c"><div id="a"></div></div></div><div id="t"></div><p id="out"></p><script>' +
+      'var r = [], a = document.getElementById("a");' +
+      'a.classList.add("on");' +
+      'var x = a.getAnimations()[0];' +
+      'r.push(a.getAnimations().length, x.rangeStart, x.rangeEnd.offset.constructor.name);' +
+      // and a transform reads back as the matrix it comes to for the box
+      'r.push(getComputedStyle(document.getElementById("t")).transform);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '1|normal|CSSMathSum|matrix(0, 1, -1, 0, 20, 0)',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a CSS animation is a CSSAnimation in getAnimations(), on the timeline its style names, one object for its run', async () => {
   const doc = await hosted(
     '<style>@keyframes fade { from { opacity: 0 } }' +

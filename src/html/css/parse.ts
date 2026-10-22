@@ -161,6 +161,10 @@ export interface Keyframe {
   /** Where in an iteration the frame is, 0 to 1: one per selector in its
    *  list, `from` 0 and `to` 1. */
   offsets: number[];
+  /** The selectors in its list that are timeline offsets, a range's name
+   *  and a percentage of it (`cover 0%`), placed only on a view timeline
+   *  (Scroll-driven Animations 1, 4.4); none where it has none. */
+  ranges?: { name: string; pct: number }[];
   /** What the frame sets: no `!important` one, which a frame ignores, and
    *  none of the animation's or a transition's own properties. */
   declarations: Declaration[];
@@ -2294,8 +2298,9 @@ function parseKeyframes(
     const selector = block.slice(i, braceAt);
     const body = readBlock(block, braceAt);
     i = body.end;
-    const offsets = keyframeOffsets(selector);
-    if (!offsets) continue;
+    const selectors = keyframeOffsets(selector);
+    if (!selectors) continue;
+    const { offsets, ranges } = selectors;
     let easing: string | null = null;
     const declarations: Declaration[] = [];
     for (const d of parseDeclarations(body.body)) {
@@ -2309,7 +2314,11 @@ function parseKeyframes(
         declarations.push(d);
       }
     }
-    frames.push({ offsets, declarations, easing });
+    frames.push(
+      ranges.length
+        ? { offsets, ranges, declarations, easing }
+        : { offsets, declarations, easing },
+    );
   }
   return { name, frames };
 }
@@ -2339,24 +2348,36 @@ const KEYFRAMES_RESERVED = new Set([
   'default',
 ]);
 
-/** A keyframe selector's offsets, 0 to 1, or null where any of its list is
- *  not one. */
-function keyframeOffsets(selector: string): number[] | null {
-  const out: number[] = [];
+/** A keyframe selector's offsets, 0 to 1, and its timeline offsets — a
+ *  range's name and a percentage, any percentage (Scroll-driven Animations
+ *  1, 4.4) — or null where any of its list is neither. */
+function keyframeOffsets(
+  selector: string,
+): { offsets: number[]; ranges: { name: string; pct: number }[] } | null {
+  const offsets: number[] = [];
+  const ranges: { name: string; pct: number }[] = [];
   for (const part of selector.split(',')) {
     const v = part.trim().toLowerCase();
-    if (v === 'from') out.push(0);
-    else if (v === 'to') out.push(1);
-    else if (KEYFRAME_PERCENT.test(v)) {
+    const range = KEYFRAME_RANGE.exec(v);
+    if (v === 'from') offsets.push(0);
+    else if (v === 'to') offsets.push(1);
+    else if (range) {
+      const pct = Number(range[2]);
+      if (!Number.isFinite(pct)) return null;
+      ranges.push({ name: range[1], pct });
+    } else if (KEYFRAME_PERCENT.test(v)) {
       const pct = Number(v.slice(0, -1));
       if (!(pct >= 0 && pct <= 100)) return null;
-      out.push(pct / 100);
+      offsets.push(pct / 100);
     } else {
       return null;
     }
   }
-  return out;
+  return { offsets, ranges };
 }
+
+const KEYFRAME_RANGE =
+  /^(cover|contain|entry|exit|entry-crossing|exit-crossing)\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/;
 
 /**
  * A `@font-face` block, or null when it names no family or no source — a

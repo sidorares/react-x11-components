@@ -3666,6 +3666,43 @@ test('an animation on a scroll() timeline is where its scroller is scrolled, and
   assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
 });
 
+test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
+  const doc = await triggering(
+    t,
+    '@keyframes span{cover 0%{opacity:0} cover 100%{opacity:1}}' +
+      '#card{animation:span linear both;animation-timeline:view();' +
+      'animation-range:contain}' +
+      '#clock{animation:span 1s linear both}',
+    TRIGGER_CARD + '<div id="clock" style="height:10px"></div>',
+  );
+  const sheet = parseStylesheet(
+    '@keyframes k { entry 10%, 50% { opacity: 0 } exit -20% { opacity: 1 } }',
+  );
+  const rule = sheet.keyframes![0];
+  assert.deepStrictEqual(
+    rule.frames.map((f) => [f.offsets, f.ranges]),
+    [
+      [[0.5], [{ name: 'entry', pct: 10 }]],
+      [[], [{ name: 'exit', pct: -20 }]],
+    ],
+  );
+  // the card, 40 tall at 300 in a 100 tall scrollport, is covered from 200
+  // to 340 and contained from 240 to 300: cover 0% is at -2/3 of the
+  // range and cover 100% at 5/3, so at the range's start the opacity is
+  // 2/7 of the way
+  await doc.scroll(240);
+  await doc.frames(2);
+  assert.ok(
+    Math.abs(doc.opacity('card') - 2 / 7) < 1e-6,
+    `card ${doc.opacity('card')}`,
+  );
+  await doc.scroll(270);
+  await doc.frames(2);
+  assert.ok(Math.abs(doc.opacity('card') - 0.5) < 1e-6);
+  // on the clock's timeline its frames are placed nowhere
+  assert.strictEqual(doc.opacity('clock'), 1);
+});
+
 test('a named timeline is found through a timeline-scope, and from anywhere in the document where no scope stands between', async (t) => {
   const doc = await running(
     t,

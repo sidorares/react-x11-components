@@ -29,6 +29,7 @@ import type {
   AnimationAction,
   AnimationTrigger,
   RangeEdge,
+  RangeName,
 } from './triggers.js';
 import type { ScriptSampling } from './scripted.js';
 import {
@@ -104,6 +105,9 @@ export interface ScrollProgress {
   /** Where an edge of an attachment range is, on the same scale: `cover`'s
    *  for a view timeline, the scroll's for a scroll timeline. */
   edgeAt?: (edge: RangeEdge) => number;
+  /** Whether it is a view timeline, which alone places a keyframe at a
+   *  timeline offset (Scroll-driven Animations 1, 4.4). */
+  view?: boolean;
 }
 
 interface Target {
@@ -269,8 +273,24 @@ export class AnimationTimeline {
           scrolled.ranges.push([rangeStart, rangeEnd]);
           scrolled.at.push(p ? `${p.at},${from},${to}` : '');
         }
-        const rule = keyframesOf(name);
-        if (!rule || !p) continue;
+        const named = keyframesOf(name);
+        if (!named || !p) continue;
+        // a frame at a timeline offset is where that offset is in the
+        // range, on a view timeline, and nowhere on any other
+        const edgeAt = p.edgeAt;
+        const rule =
+          p.view && edgeAt && to - from > 0
+            ? placedRule(
+                named,
+                (range) =>
+                  (edgeAt({
+                    name: range.name as RangeName,
+                    offset: { pct: range.pct },
+                  }) -
+                    from) /
+                  (to - from),
+              )
+            : named;
         if (!inherits) inherits = animatesInherited(rule);
         const timing = proportional(
           timingAt(animations, i),
@@ -1050,6 +1070,39 @@ export class AnimationTimeline {
     if (!states.size) this._transitions.delete(el);
   }
 }
+
+/**
+ * A `@keyframes` with its frames at timeline offsets placed in the
+ * iteration, where `place` puts each — outside 0 to 1 where it is outside
+ * the animation's range — and the rule as it is where it has none. Kept by
+ * the rule and where its frames came to, so a timeline that has not moved
+ * finds the rule it made, and the tracks made of it.
+ */
+function placedRule(
+  rule: KeyframesRule,
+  place: (range: { name: string; pct: number }) => number,
+): KeyframesRule {
+  if (!rule.frames.some((f) => f.ranges)) return rule;
+  const placed = rule.frames.map((f) =>
+    f.ranges ? [...f.offsets, ...f.ranges.map(place)] : f.offsets,
+  );
+  const key = placed.map((o) => o.join(',')).join(';');
+  const kept = PLACED.get(rule);
+  if (kept?.key === key) return kept.rule;
+  const out: KeyframesRule = {
+    ...rule,
+    frames: rule.frames.map((f, i) =>
+      f.ranges ? { ...f, offsets: placed[i] } : f,
+    ),
+  };
+  PLACED.set(rule, { key, rule: out });
+  return out;
+}
+
+const PLACED = new WeakMap<
+  KeyframesRule,
+  { key: string; rule: KeyframesRule }
+>();
 
 /** Whether a `@keyframes` sets a property that is inherited — a custom
  *  property is — so that what the element holds changes with it. */
