@@ -122,14 +122,19 @@ function unitBefore(tree: BoxTree, from: AnyNode): number {
 export function pointOfUnit(
   tree: BoxTree,
   unit: number,
+  /** Where the place is a range's end: at the end of the text before it,
+   *  where it is one text's end and the next's start. */
+  end = false,
 ): { node: Text; offset: number } | null {
   const list = tree.textNodes ?? [];
-  // the last source that starts at or before the unit
+  // the last source that starts at or before the unit — before it, for an
+  // end past the start of the first
   let lo = 0;
   let hi = list.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (list[mid].start <= unit) lo = mid + 1;
+    const start = list[mid].start;
+    if (start < unit || (start === unit && !(end && mid > 0))) lo = mid + 1;
     else hi = mid;
   }
   const s = list[lo - 1];

@@ -16235,9 +16235,32 @@ export function installDom(
   };
 
   class Selection {
-    _range: Any = null;
+    /** The range, as this realm last had it; `_range` reads it current. */
+    _kept: Any = null;
     _backward = false;
     _told = false;
+    /** The range, with the reader's selection taken in first where they
+     *  selected something since this realm last heard of it or set it: a
+     *  press and a drag in the document select, and the page's selection
+     *  is that one (Selection API 2). */
+    get _range(): Any {
+      const told = call('documentSelection');
+      // none is no news: core lets its highlight go at a press or a key,
+      // where the page's selection, a caret an edit is made at, stands
+      if (!told) return this._kept;
+      const [sc, so, ec, eo] = JSON.parse(str(told));
+      const range = document.createRange();
+      try {
+        range.setStart(wrap(sc), so);
+        range.setEnd(wrap(ec), eo);
+      } catch {
+        return this._kept;
+      }
+      this._kept = range;
+      this._backward = false;
+      this._changed();
+      return range;
+    }
     /** `selectionchange`, once a task however many changes it made
      *  (Selection API 4.1). */
     _changed(): void {
@@ -16254,9 +16277,26 @@ export function installDom(
       );
     }
     _set(range: Any, backward: boolean): void {
-      this._range = range;
+      this._kept = range;
       this._backward = backward;
       this._changed();
+      // and drawn as the reader's is, where it is the document's; a caret
+      // draws nothing, and leaves the reader's selection none
+      const drawn =
+        range &&
+        !range.collapsed &&
+        range.startContainer.getRootNode() === document;
+      call(
+        'setDocumentSelection',
+        drawn
+          ? JSON.stringify([
+              range.startContainer._id,
+              range.startOffset,
+              range.endContainer._id,
+              range.endOffset,
+            ])
+          : '',
+      );
     }
     get rangeCount(): number {
       return this._range ? 1 : 0;

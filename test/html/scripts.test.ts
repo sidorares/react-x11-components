@@ -3055,6 +3055,31 @@ test(':muted matches a muted media element, by its attribute or a script’s say
   );
 });
 
+test('the page’s selection is the reader’s: getSelection() answers what the reader selected, and what the page selects is drawn and copied', async () => {
+  const doc = await hosted('<p id="out"></p><p id="t">hello world</p>');
+  // the reader selects, and the page reads it
+  // the surface is `<Html>`'s selectable box around the document
+  const surface = doc.view.parent as unknown as DrawnNode;
+  await act(async () => void surface.selectAll());
+  doc.run(
+    'var s = getSelection(); document.getElementById("out").textContent = [s.toString(), s.anchorNode.nodeType, s.type].join("|");',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'hello world|3|Range',
+  );
+  // the page selects, and the reader has it: drawn, and what a copy takes
+  doc.run(
+    'var t = document.getElementById("t").firstChild; getSelection().setBaseAndExtent(t, 6, t, 11);',
+  );
+  await settled(doc, 'out', () => surface.selectedText() === 'world');
+  assert.equal(surface.selectedText(), 'world');
+  // a caret draws nothing: the reader's selection is none
+  doc.run('getSelection().collapseToStart();');
+  await settled(doc, 'out', () => surface.selectedText() === '');
+  assert.equal(surface.selectedText(), '');
+});
+
 test('a text field’s selection is what a script set, kept to its value, and told as select; a type with none says null and refuses one', async () => {
   const doc = await hosted(
     '<p id="out"></p><input id="i" value="hello"><textarea id="t">abc</textarea><input id="n" type="number" value="5">' +
