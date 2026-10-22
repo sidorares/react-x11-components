@@ -11,6 +11,11 @@ import {
   shapeAtHalfCorner,
 } from '../../src/html/css/corner-shape.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
+import {
+  parseBasicShape,
+  pathPolygons,
+  shapePolygons,
+} from '../../src/html/css/basic-shape.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
@@ -402,14 +407,26 @@ async function inkAt(
   return (x, y) => {
     let shown: unknown = null;
     for (const f of fills) {
-      const winding = windingAt(f.outlines, x, y);
-      const inside = f.rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
-      if (inside && f.clips.every((clip) => windingAt(clip, x, y) !== 0)) {
+      if (
+        within(f.outlines, f.rule, x, y) &&
+        f.clips.every((clip, i) => within(clip, f.clipRules[i], x, y))
+      ) {
         shown = f.style;
       }
     }
     return shown;
   };
+}
+
+/** Whether outlines take in a point by a fill rule. */
+function within(
+  outlines: Parameters<typeof windingAt>[0],
+  rule: string,
+  x: number,
+  y: number,
+): boolean {
+  const winding = windingAt(outlines, x, y);
+  return rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
 }
 
 test('corner-shape and its longhands give each corner a superellipse', async () => {
@@ -529,6 +546,260 @@ test('a shaped border of two colours is cut between them where the round one is'
   assert.strictEqual(ink(40 + 215, 40 + 120), blue, 'the right');
   // and the box's corner, cut off by the bevel, has neither
   assert.strictEqual(ink(40 + 5, 40 + 5), null);
+});
+
+test('border-shape reads one or two basic shapes, each in a box of its own', async () => {
+  const { node } = await render(
+    '<style>div{width:10px;height:10px}' +
+      '#a{border-shape:circle()}' +
+      '#b{border-shape:polygon(50% 0, 100% 50%, 50% 100%, 0 50%) margin-box ' +
+      'inset(10px round 4px)}' +
+      '#c{border-shape:ellipse(20px 30% at left top) circle(closest-side) content-box}' +
+      "#d{border-shape:path(evenodd, 'M0 0 L10 0 L10 10 Z')}" +
+      // a value that is none leaves the shape as it was
+      '#e{border-shape:circle();border-shape:shape(from 0 0, line to 10px 10px)}' +
+      '#f{border-shape:circle();border-shape:border-box circle()}' +
+      '#g{border-shape:circle();border-shape:circle() circle() circle()}' +
+      '#h{border-shape:circle();border-shape:none}' +
+      '</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
+      '<div id="e"></div><div id="f"></div><div id="g"></div><div id="h"></div>',
+  );
+  const shape = (id: string) =>
+    (boxOf(view(node), id) as unknown as { style: ComputedStyle }).style
+      .borderShape;
+  // one shape is a stroke along the half-border box
+  const a = shape('a')!;
+  assert.strictEqual(a.outer.box, 'half-border-box');
+  assert.strictEqual(a.outer.shape.kind, 'circle');
+  assert.strictEqual(a.inner, null);
+  // two are the border box and the padding box, where they say neither
+  const b = shape('b')!;
+  assert.deepStrictEqual(
+    [b.outer.shape.kind, b.outer.box, b.inner?.shape.kind, b.inner?.box],
+    ['polygon', 'margin-box', 'inset', 'padding-box'],
+  );
+  const c = shape('c')!;
+  assert.deepStrictEqual(
+    [c.outer.box, c.inner?.box],
+    ['border-box', 'content-box'],
+  );
+  assert.deepStrictEqual(c.outer.shape, {
+    kind: 'ellipse',
+    rx: 20,
+    ry: { pct: 30 },
+    at: [0, 0],
+  });
+  const d = shape('d')!;
+  assert.ok(d.outer.shape.kind === 'path');
+  assert.strictEqual(d.outer.shape.rule, 'evenodd');
+  assert.deepStrictEqual(d.outer.shape.polys, [[0, 0, 10, 0, 10, 10]]);
+  for (const id of ['e', 'f', 'g']) {
+    assert.strictEqual(shape(id)?.outer.shape.kind, 'circle', id);
+  }
+  assert.strictEqual(shape('h'), null);
+});
+
+test('a basic shape is laid down in its box as polygons', () => {
+  const ctx = { em: 16, rem: 16, vw: 800, vh: 600, scale: 1 };
+  const lay = (text: string, w: number, h: number) =>
+    shapePolygons(
+      parseBasicShape(text, ctx, () => null)!,
+      w,
+      h,
+    );
+  const reach = (polys: number[][], cx: number, cy: number) => {
+    let near = Infinity;
+    let far = 0;
+    for (const p of polys) {
+      for (let i = 0; i < p.length; i += 2) {
+        const d = Math.hypot(p[i] - cx, p[i + 1] - cy);
+        near = Math.min(near, d);
+        far = Math.max(far, d);
+      }
+    }
+    return [near, far];
+  };
+  // a circle's percentage is of the diagonal over √2: 50% of a 60x80 box
+  // is 35.36 — within a quarter pixel, the chords' allowance
+  const [n, f] = reach(lay('circle(50%)', 60, 80).polys, 30, 40);
+  assert.ok(n > 35.1 && f <= 35.36, `${n} ${f}`);
+  // closest-side and farthest-side, from a centre at 10,20
+  const [cn] = reach(lay('circle(at 10px 20px)', 60, 80).polys, 10, 20);
+  assert.ok(Math.abs(cn - 10) < 0.3, `closest: ${cn}`);
+  const far = lay('ellipse(farthest-side farthest-side at 10px 20px)', 60, 80);
+  const xs = far.polys[0].filter((_, i) => i % 2 === 0);
+  assert.ok(Math.abs(Math.max(...xs) - 60) < 0.01, 'across to the far side');
+  // positions as keywords, in either order
+  const corner = lay('circle(10px at right bottom)', 60, 80);
+  const [, fc] = reach(corner.polys, 60, 80);
+  assert.ok(Math.abs(fc - 10) < 0.01);
+  assert.deepStrictEqual(
+    lay('circle(10px at bottom right)', 60, 80).polys,
+    corner.polys,
+  );
+  // a rectangle's sides, and a polygon's rule
+  assert.deepStrictEqual(lay('inset(10px 20%)', 60, 80).polys, [
+    [12, 10, 48, 10, 48, 70, 12, 70],
+  ]);
+  assert.deepStrictEqual(lay('xywh(5px 6px 10px 20px)', 60, 80).polys, [
+    [5, 6, 15, 6, 15, 26, 5, 26],
+  ]);
+  assert.strictEqual(
+    lay('polygon(evenodd, 0 0, 1px 0, 0 1px)', 9, 9).rule,
+    'evenodd',
+  );
+  // a path's arc ends where it says, its relative commands from the pen
+  const arc = pathPolygons('M0 0 a10 10 0 0 1 20 0 h-20 z', 1)!;
+  const p = arc[0];
+  assert.deepStrictEqual(p.slice(0, 2), [0, 0]);
+  const ys = p.filter((_, i) => i % 2 === 1);
+  assert.ok(Math.abs(Math.min(...ys) + 10) < 0.01, 'the arc bulges up 10');
+  // its numbers are CSS pixels, laid down as device ones
+  assert.deepStrictEqual(pathPolygons('M0 0 L10 0 L0 10 Z', 2), [
+    [0, 0, 20, 0, 0, 20],
+  ]);
+  assert.strictEqual(pathPolygons('L0 0', 1), null, 'no moveto first');
+  assert.strictEqual(pathPolygons('M0 0 L', 1), null, 'a number short');
+});
+
+/** A box 100px square at 40,40, its border drawn as `shape`, red inside
+ *  and its border blue unless `extra` says otherwise; the ink at a point. */
+async function shapedAt(
+  shape: string,
+  extra = '',
+  child = '',
+): Promise<(x: number, y: number) => unknown> {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="margin:40px;width:100px;height:100px;box-sizing:border-box;' +
+      'background:#ff0000;border:10px solid #0000ff;' +
+      `border-shape:${shape};${extra}">${child}</div>`,
+  );
+  return inkAt(view(node), { x: 0, y: 0, width: 220, height: 220 });
+}
+
+/** The point `r` from 90,90 — the middle of `shapedAt`'s box — at an
+ *  angle of `deg` down from across. */
+function around(r: number, deg = 45): [number, number] {
+  const a = (deg * Math.PI) / 180;
+  return [90 + r * Math.cos(a), 90 + r * Math.sin(a)];
+}
+
+test('one border shape is a stroke along it, as wide as the border, over a background it cuts', async () => {
+  const red = parseColor('#ff0000');
+  const blue = parseColor('#0000ff');
+  // a circle about the middle of the half-border box, 90x90 at 45,45:
+  // radius 45, stroked 10px wide, from 40 to 50
+  const ink = await shapedAt('circle()');
+  assert.strictEqual(ink(90, 90), red, 'the background in the middle');
+  assert.strictEqual(ink(...around(38)), red);
+  assert.strictEqual(ink(...around(42)), blue, 'the stroke, inside the path');
+  assert.strictEqual(ink(...around(48, 200)), blue, 'and outside it');
+  assert.strictEqual(ink(...around(52)), null, 'past the stroke');
+  // the box's corner, which its border and background would have filled
+  assert.strictEqual(ink(43, 43), null);
+  assert.strictEqual(ink(43, 90), blue, 'the stroke at the left');
+  // its radii draw nothing: square corners, cut by the shape
+  const square = await shapedAt('inset(0) border-box', 'border-radius:50px');
+  assert.strictEqual(square(42, 42), blue);
+  assert.strictEqual(square(55, 55), red);
+});
+
+test('two border shapes fill the area between them in the border colour', async () => {
+  const red = parseColor('#ff0000');
+  const blue = parseColor('#0000ff');
+  // a diamond on the border box, and one on the padding box, 80x80 at 50,50
+  const diamond = 'polygon(50% 0, 100% 50%, 50% 100%, 0 50%)';
+  const ink = await shapedAt(`${diamond} ${diamond}`);
+  assert.strictEqual(ink(90, 45), blue, 'between the outer and the inner');
+  assert.strictEqual(ink(90, 52), red, 'inside the inner');
+  assert.strictEqual(ink(127, 90), red);
+  assert.strictEqual(ink(136, 90), blue);
+  assert.strictEqual(ink(45, 45), null, 'outside the outer');
+  // a background clipped to the padding box stops at the inner shape
+  const clipped = await shapedAt(
+    `${diamond} ${diamond}`,
+    'background-clip:padding-box;border-color:transparent',
+  );
+  assert.strictEqual(clipped(90, 45), null);
+  assert.strictEqual(clipped(90, 52), red);
+});
+
+test("a border shape's width and colour are the first side's whose style is not none", async () => {
+  const red = parseColor('#ff0000');
+  const green = parseColor('#00ff00');
+  const sides =
+    'border:4px solid #ff0000;border-top-style:none;' +
+    'border-left:8px solid #00ff00;background:none';
+  // the half-border box is 94x98 at 44,40: a circle of radius 47 about
+  // 91,89, stroked 8px wide from the left side
+  const ink = await shapedAt('circle()', sides);
+  assert.strictEqual(ink(41, 89), green);
+  assert.strictEqual(ink(47, 89), green);
+  assert.strictEqual(ink(141, 89), green);
+  assert.strictEqual(ink(91, 89), null);
+  // right to left, the inline-start side is the right: 4px of red
+  const rtl = await shapedAt('circle()', `${sides};direction:rtl`);
+  assert.strictEqual(rtl(137, 89), red);
+  assert.strictEqual(rtl(41, 89), null, 'no wider than the right side');
+});
+
+test("a border shape's shadow is cast from its outer edge, and not inside it", async () => {
+  const red = parseColor('#ff0000');
+  const blue = parseColor('#0000ff');
+  const green = parseColor('#00ff00');
+  // the stroke reaches 50 from the middle, and the spread 6 past it
+  const ink = await shapedAt('circle()', 'box-shadow:0 0 0 6px #00ff00');
+  assert.strictEqual(ink(...around(53)), green);
+  assert.strictEqual(ink(...around(58)), null);
+  assert.strictEqual(ink(...around(45)), blue);
+  assert.strictEqual(ink(...around(20)), red);
+  // offset: cast down and to the right, and out of the shape alone
+  const moved = await shapedAt('circle()', 'box-shadow:20px 20px #00ff00');
+  assert.strictEqual(moved(...around(62)), green);
+  assert.strictEqual(moved(...around(62, 225)), null);
+  assert.strictEqual(moved(...around(30)), red);
+  // inset: inside the shape, as though all outside it were opaque
+  const inset = await shapedAt(
+    'circle()',
+    'box-shadow:inset 0 0 0 0 #00ff00, inset 30px 0 #00ff00',
+  );
+  assert.strictEqual(inset(...around(43, 180)), blue);
+  assert.strictEqual(inset(...around(30, 180)), green);
+  assert.strictEqual(inset(...around(30, 0)), red);
+});
+
+test('a box that clips its overflow clips it to the inner border shape', async () => {
+  const blue = parseColor('#0000ff');
+  const green = parseColor('#00ff00');
+  const child = '<div style="height:200px;background:#00ff00"></div>';
+  const ink = await shapedAt('circle()', 'overflow:hidden', child);
+  assert.strictEqual(ink(90, 90), green);
+  assert.strictEqual(ink(...around(35, 135)), green);
+  // past the shape, inside the padding box: not the child's
+  assert.strictEqual(ink(52, 52), null);
+  assert.strictEqual(ink(...around(48)), blue);
+  // and two shapes clip to the inner one
+  const diamond = 'polygon(50% 0, 100% 50%, 50% 100%, 0 50%)';
+  const two = await shapedAt(`${diamond} ${diamond}`, 'overflow:hidden', child);
+  assert.strictEqual(two(90, 55), green);
+  assert.strictEqual(two(60, 60), null);
+});
+
+test('a border shape that reaches past its box is ink there', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="margin:40px;width:100px;height:100px;' +
+      'border:4px solid #0000ff;' +
+      'border-shape:polygon(-30px -20px, 100% 0, 100% 100%, 0 100%) border-box"></div>',
+  );
+  const box = boxOf(view(node), 'a') as unknown as {
+    boundsX: number;
+    boundsY: number;
+  };
+  assert.ok(box.boundsX <= 40 - 32, `across: ${box.boundsX}`);
+  assert.ok(box.boundsY <= 40 - 22, `down: ${box.boundsY}`);
 });
 
 metric(

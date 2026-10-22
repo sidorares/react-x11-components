@@ -595,12 +595,13 @@ export function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
 export type Outline = [number, number][];
 
 /** A fill `pathsOf` saw: its outlines, by its rule, in the clips then in
- *  force, each by the non-zero rule. */
+ *  force, each by the rule beside it in `clipRules`. */
 export interface PathFill {
   style: unknown;
   rule: string;
   outlines: Outline[];
   clips: Outline[][];
+  clipRules: string[];
   shadow?: Fill['shadow'];
 }
 
@@ -628,9 +629,11 @@ export async function pathsOf(
   const fills: PathFill[] = [];
   const clips: Outline[][] = [];
   let outlines: Outline[] = [];
-  // the clips in force, and what a save keeps of them and of the shadow
+  // the clips in force and their rules, and what a save keeps of them and
+  // of the shadow
   let clipped: Outline[][] = [];
-  const saved: [Outline[][], string, number, number, number][] = [];
+  let clipRules: string[] = [];
+  const saved: [Outline[][], string[], string, number, number, number][] = [];
   let at: [number, number] = [0, 0];
   const last = (): Outline => outlines[outlines.length - 1];
   /** A quarter ellipse about its centre, from `from` a quarter turn on. */
@@ -653,6 +656,7 @@ export async function pathsOf(
       rule,
       outlines: filled,
       clips: clipped,
+      clipRules,
       ...(ctx.shadowBlur > 0
         ? {
             shadow: {
@@ -674,6 +678,7 @@ export async function pathsOf(
     save() {
       saved.push([
         clipped,
+        clipRules,
         ctx.shadowColor,
         ctx.shadowBlur,
         ctx.shadowOffsetX,
@@ -685,6 +690,7 @@ export async function pathsOf(
       if (state) {
         [
           clipped,
+          clipRules,
           ctx.shadowColor,
           ctx.shadowBlur,
           ctx.shadowOffsetX,
@@ -761,9 +767,10 @@ export async function pathsOf(
       fill(rule ?? 'nonzero', outlines);
       outlines = [];
     },
-    clip() {
+    clip(rule?: string) {
       clips.push(outlines);
       clipped = [...clipped, outlines];
+      clipRules = [...clipRules, rule ?? 'nonzero'];
       outlines = [];
     },
     drawImage() {},
