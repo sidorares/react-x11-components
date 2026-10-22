@@ -162,6 +162,21 @@ test('the body keeps its overflow where the root gives the viewport its own, or 
 });
 
 /** The same page with a `<body>` and no `<html>`, as most pages start. */
+/** The box of a document's `<html>`, written or implied. */
+const htmlOf = (el: unknown): LaidBox => {
+  const find = (box: LaidBox): LaidBox | null => {
+    if ((box.el as { name?: string } | null)?.name === 'html') return box;
+    for (const child of box.children) {
+      const hit = find(child);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const box = find((el as { _tree: { root: LaidBox } })._tree.root);
+  assert.ok(box, 'an html box');
+  return box;
+};
+
 const bare = (css: string, body: string): string =>
   `<!DOCTYPE html><title>t</title><style>${css}</style>` +
   `<body id="body">${body}</body>`;
@@ -391,7 +406,7 @@ test('the element the root box stands in for is drawn inside its margins', async
     `<!DOCTYPE html><html><head><style>${css}</style></head>` +
     `<body>${body}</body></html>`;
   const fragment = (css: string, body: string): string =>
-    `<!DOCTYPE html><style>${css}</style>${body}`;
+    `<style>${css}</style>${body}`;
   const cases: [string, string, number[]][] = [
     // Chrome: body 20, 20, 160 wide; the paragraph 25 across
     [
@@ -456,8 +471,10 @@ test('the element the root box stands in for is as wide as its width and margins
   const written = (css: string): string =>
     `<!DOCTYPE html><html><head><style>${css}</style></head>` +
     `<body id="body"><p id="p">hi</p></body></html>`;
+  // a fragment declares no doctype: one that does is a document, whose
+  // `<html>`, head and body are implied
   const fragment = (css: string): string =>
-    `<!DOCTYPE html><style>${css}</style><p id="p">hi</p>`;
+    `<style>${css}</style><p id="p">hi</p>`;
   const bodies: [string, number[] | null, number[] | null][] = [
     ['body{max-width:100px;margin:0 auto}', [50, 100], [50, 100]],
     ['body{max-width:50%;margin:0 auto}', [50, 100], [50, 100]],
@@ -509,8 +526,9 @@ test('the element the root box stands in for is as wide as its width and margins
     assert.deepStrictEqual([q.x, q.width], [r.x, r.width], css);
     assert.strictEqual(ours.el.abs.height, theirs.el.abs.height, css);
   }
-  // and the `<html>` implied around a `<body>`, a block in the initial
-  // containing block, whose direction is the root element's (CSS 2.1 10.1)
+  // and the `<html>` a document implies around a `<body>`, a block in the
+  // initial containing block, whose direction is the root element's (CSS
+  // 2.1 10.1)
   const htmls: [string, number[], number[]][] = [
     ['html{max-width:100px;margin:0 auto}body{margin:0}', [50, 100], [50, 100]],
     [
@@ -535,7 +553,7 @@ test('the element the root box stands in for is as wide as its width and margins
       120,
       200,
     );
-    const box = rootOf(el);
+    const box = htmlOf(el);
     assert.deepStrictEqual([box.x, box.width], html, css);
     const q = boxOf(el, 'p');
     assert.deepStrictEqual([q.x, q.width], p, `${css}: the paragraph`);
@@ -558,7 +576,7 @@ test('the element the root box stands in for is as tall as its min-height and ma
     `<!DOCTYPE html><html id="html"><head><title>t</title>` +
     `<style>${css}</style></head><body id="body">${body}</body></html>`;
   const fragment = (css: string, body: string): string =>
-    `<!DOCTYPE html><style>${css}</style>${body}`;
+    `<style>${css}</style>${body}`;
   const div = (style: string): string => `<div style="${style}"></div>`;
   const rect = (box: LaidBox): number[] => [
     box.x,
@@ -680,7 +698,7 @@ test('the element the root box stands in for is as tall as its min-height and ma
       `${css}: the body written in an <html>`,
     );
     if (html) {
-      assert.deepStrictEqual(rect(rootOf(ours.el)), html, `${css}: the html`);
+      assert.deepStrictEqual(rect(htmlOf(ours.el)), html, `${css}: the html`);
       assert.deepStrictEqual(
         rect(boxOf(theirs.el, 'html')),
         html,

@@ -286,6 +286,43 @@ test("a written <html> has the head HTML's parser implies, round the head conten
   );
 });
 
+test("a source with a doctype is a document, its <html>, head and body written or implied as HTML's parser has them", () => {
+  // WPT's tests start `<!doctype html><title>` and write none of the
+  // three: `document.head` was null, `document.body` the first element,
+  // and `:root` the `<title>` (HTML 13.2.6.4.1 to 13.2.6.4.6)
+  assert.strictEqual(
+    shapeOf('<!doctype html><title>t</title><script>s</script><div>d</div>'),
+    '!doctype() html(head(title(t) script(s)) body(div(d)))',
+  );
+  assert.strictEqual(
+    shapeOf('<!DOCTYPE html>text'),
+    '!doctype() html(head() body(text))',
+    'text opens the body too',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html>'),
+    '!doctype() html(head() body())',
+    'and an empty document has all three',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html><head><title>t</title></head><p>a</p>'),
+    '!doctype() html(head(title(t)) body(p(a)))',
+    'a written head is the head',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html><title>t</title><body class="x"><p>a</p></body>'),
+    '!doctype() html(head(title(t)) body(p(a)))',
+    'and a written body the body',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html><!-- c --><html lang="en"><p>a</p></html>'),
+    '!doctype() c html(head() body(p(a)))',
+    'and a written html the html, after a comment',
+  );
+  // a source with no doctype is a fragment, as it always was
+  assert.strictEqual(shapeOf('<title>t</title><p>a</p>'), 'title(t) p(a)');
+});
+
 test("a table's rows go in the row group and the row HTML's parser implies", () => {
   // htmlparser2 opens none, so a table's rows were its children, and
   // `table.tBodies`, `tbody > tr` and a walk of the tree found another

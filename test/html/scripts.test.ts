@@ -2254,6 +2254,22 @@ test('a definition is checked as a browser checks it, and an element whose const
   );
 });
 
+test('a page with a doctype has the head and the body HTML implies, and a sheet put in the head applies', async () => {
+  const doc = await hosted(
+    '<!doctype html><title>t</title><p id="out"></p><div id="d"></div><script>' +
+      'var r = [document.documentElement.localName, document.head.localName, document.body.localName,' +
+      '  document.querySelector("title").parentNode === document.head, document.getElementById("d").parentNode === document.body];' +
+      'var s = document.createElement("style"); s.textContent = "#d { width: 30px }"; document.head.append(s);' +
+      'r.push(getComputedStyle(document.getElementById("d")).width);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'html|head|body|true|true|30px',
+  );
+});
+
 test('a customized built-in is upgraded from its is, and attachInternals is a custom element’s once', async () => {
   const doc = await hosted(
     '<button is="x-press" id="b">b</button><p id="out"></p><script>' +
