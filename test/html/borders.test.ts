@@ -7,6 +7,12 @@ import { NO_BORDER_IMAGE } from '../../src/html/css/style.js';
 import type { BorderImage, ComputedStyle } from '../../src/html/css/style.js';
 import { SurfaceCache } from '../../src/html/surfaces.js';
 import {
+  halfCorner,
+  shapeAtHalfCorner,
+} from '../../src/html/css/corner-shape.js';
+import { interpolateField } from '../../src/html/css/interpolate.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
+import {
   boxOf,
   fillsIn,
   fillsOf,
@@ -384,6 +390,207 @@ test("a rounded box's border is a ring that follows its corners", async () => {
     top.h < 10 && top.x > 0 && top.x + top.w < 104,
     `the top alone, between its corners: ${top.x} ${top.w}x${top.h}`,
   );
+});
+
+/** The ink of the last fill a paint of `damage` puts on a point, in the
+ *  clips it was made in; null for none. */
+async function inkAt(
+  node: HtmlViewNode,
+  damage: { x: number; y: number; width: number; height: number },
+): Promise<(x: number, y: number) => unknown> {
+  const { fills } = await pathsOf(node, damage);
+  return (x, y) => {
+    let shown: unknown = null;
+    for (const f of fills) {
+      const winding = windingAt(f.outlines, x, y);
+      const inside = f.rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
+      if (inside && f.clips.every((clip) => windingAt(clip, x, y) !== 0)) {
+        shown = f.style;
+      }
+    }
+    return shown;
+  };
+}
+
+test('corner-shape and its longhands give each corner a superellipse', async () => {
+  const { node } = await render(
+    '<style>div{width:10px;height:10px}' +
+      '#a{corner-shape:bevel}' +
+      '#b{corner-shape:scoop squircle}' +
+      '#c{corner-shape:notch square superellipse(0.5)}' +
+      '#d{corner-shape:superellipse(-infinity) round round superellipse(infinity)}' +
+      '#e{corner-shape:bevel;corner-top-right-shape:scoop;corner-bottom-shape:notch}' +
+      '#f{corner-start-end-shape:squircle} #g{direction:rtl;corner-start-end-shape:squircle}' +
+      // a value that is none leaves the corners as they were
+      '#h{corner-shape:bevel;corner-shape:rounded;corner-top-shape:a b c}' +
+      '</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
+      '<div id="e"></div><div id="f"></div><div id="g"></div><div id="h"></div>',
+  );
+  const shape = (id: string) =>
+    (boxOf(view(node), id) as unknown as { style: ComputedStyle }).style
+      .cornerShape;
+  assert.deepStrictEqual(shape('a'), [0, 0, 0, 0]);
+  assert.deepStrictEqual(shape('b'), [-1, 2, -1, 2]);
+  assert.deepStrictEqual(shape('c'), [-Infinity, Infinity, 0.5, Infinity]);
+  assert.deepStrictEqual(shape('d'), [-Infinity, 1, 1, Infinity]);
+  assert.deepStrictEqual(shape('e'), [0, -1, -Infinity, -Infinity]);
+  assert.deepStrictEqual(shape('f'), [1, 2, 1, 1]);
+  assert.deepStrictEqual(shape('g'), [2, 1, 1, 1]);
+  assert.deepStrictEqual(shape('h'), [0, 0, 0, 0]);
+});
+
+test('a shaped corner draws its curve, and the border, shadow and outline follow it', async () => {
+  // a corner of 40px in a box at 40,40: each shape tested at points of
+  // its corner's square that one shape covers and another does not
+  const red = parseColor('#ff0000');
+  const blue = parseColor('#0000ff');
+  const green = parseColor('#00ff00');
+  const at = async (shape: string, extra = '') => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="margin:40px;width:200px;height:200px;background:#ff0000;' +
+        `border-radius:40px;corner-shape:${shape};${extra}"></div>`,
+    );
+    return inkAt(view(node), { x: 0, y: 0, width: 280, height: 280 });
+  };
+  // the corner's square is 40..80 down and across; (x, y) from its corner
+  const corner =
+    (ink: (x: number, y: number) => unknown) => (x: number, y: number) =>
+      ink(40 + x, 40 + y);
+  const round = corner(await at('round'));
+  assert.strictEqual(round(12, 12), red, 'a quarter circle covers 12,12');
+  assert.strictEqual(round(8, 8), null);
+  const bevel = corner(await at('bevel'));
+  // a line from 40,0 to 0,40 of the corner's square
+  assert.strictEqual(bevel(12, 12), null, 'a bevel cuts 12,12 off');
+  assert.strictEqual(bevel(21, 21), red);
+  assert.strictEqual(bevel(38, 4), red);
+  const squircle = corner(await at('squircle'));
+  assert.strictEqual(squircle(8, 8), red, 'a squircle reaches 8,8');
+  assert.strictEqual(squircle(3, 3), null);
+  const square = corner(await at('square'));
+  assert.strictEqual(square(1, 1), red);
+  // a scoop is a quarter circle about the corner cut out of it
+  const scoop = corner(await at('scoop'));
+  assert.strictEqual(scoop(20, 20), null);
+  assert.strictEqual(scoop(30, 30), red);
+  assert.strictEqual(scoop(38, 5), null);
+  // a notch is the corner's square cut out
+  const notch = corner(await at('notch'));
+  assert.strictEqual(notch(39, 39), null);
+  assert.strictEqual(notch(41, 5), red);
+  assert.strictEqual(notch(5, 41), red);
+  // superellipse() between them: past a bevel, short of round
+  const half = corner(await at('superellipse(0.5)'));
+  assert.strictEqual(half(10, 10), null);
+  assert.strictEqual(half(16, 16), red);
+  assert.strictEqual(round(16, 16), red);
+  assert.strictEqual(bevel(16, 16), null);
+
+  // a border as thick across a bevel as along a side: its inner edge is
+  // a bevel 10px in, which crosses the diagonal at 27 of the corner's
+  // square where the outer one crosses it at 20
+  const bordered = corner(await at('bevel', 'border:10px solid #0000ff'));
+  assert.strictEqual(bordered(22, 22), blue);
+  assert.strictEqual(bordered(26, 26), blue);
+  assert.strictEqual(bordered(29, 29), red);
+  assert.strictEqual(bordered(18, 18), null);
+  // a shadow spread 10px follows the bevel out by 10px
+  const shadowed = corner(await at('bevel', 'box-shadow:0 0 0 10px #00ff00'));
+  assert.strictEqual(shadowed(14, 14), green);
+  assert.strictEqual(shadowed(11, 11), null);
+  assert.strictEqual(shadowed(21, 21), red);
+  // and an outline, 6px out
+  const outlined = corner(
+    await at('bevel', 'outline:4px solid #00ff00;outline-offset:2px'),
+  );
+  // the outline's band from 2px to 6px out of the bevel, along the
+  // diagonal: from 18.6 back to 15.8 of the square
+  assert.strictEqual(outlined(17.2, 17.2), green);
+  assert.strictEqual(outlined(19.5, 19.5), null);
+  assert.strictEqual(outlined(14.5, 14.5), null);
+});
+
+test('a shaped border of two colours is cut between them where the round one is', async () => {
+  const red = parseColor('#ff0000');
+  const blue = parseColor('#0000ff');
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="margin:40px;width:200px;height:200px;border:10px solid #0000ff;' +
+      'border-top-color:#ff0000;border-radius:40px;corner-shape:bevel"></div>',
+  );
+  const ink = await inkAt(view(node), { x: 0, y: 0, width: 300, height: 300 });
+  // the top's half of each bevel, and the sides' below the cut
+  assert.strictEqual(ink(40 + 34, 40 + 9), red, 'the top, at its bevel');
+  assert.strictEqual(ink(40 + 9, 40 + 34), blue, 'the left, at its bevel');
+  assert.strictEqual(ink(40 + 120, 40 + 5), red, 'the top');
+  assert.strictEqual(ink(40 + 5, 40 + 120), blue, 'the left');
+  assert.strictEqual(ink(40 + 215, 40 + 120), blue, 'the right');
+  // and the box's corner, cut off by the bevel, has neither
+  assert.strictEqual(ink(40 + 5, 40 + 5), null);
+});
+
+metric(
+  'a shaped corner is drawn on a real server as its path says',
+  async () => {
+    // red on white: a bevel leaves the corner's tip white and a scoop the
+    // middle of its square, where a round corner is red at both
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{width:60px;height:60px;' +
+        'background:#ff0000;border-radius:30px;margin-bottom:10px}</style>' +
+        '<div style="corner-shape:bevel"></div>' +
+        '<div style="corner-shape:scoop"></div>' +
+        '<div></div>',
+    );
+    const data = await pixelsIn(result.ctx, {
+      x: 0,
+      y: 0,
+      width: 60,
+      height: 210,
+    });
+    const red = (x: number, y: number) => {
+      const at = (y * 60 + x) * 4;
+      return data[at] > 200 && data[at + 1] < 60 && data[at + 2] < 60;
+    };
+    // the top left corner of each: a point past a bevel's line, short of
+    // a round curve, and one a scoop takes away
+    assert.strictEqual(red(10, 10), false, 'a bevel cuts its tip off');
+    assert.strictEqual(red(18, 18), true, 'and keeps what is in from its line');
+    assert.strictEqual(
+      red(10, 70 + 10),
+      false,
+      'a scoop takes a quarter circle',
+    );
+    assert.strictEqual(red(26, 70 + 26), true);
+    assert.strictEqual(red(10, 140 + 10), true, 'a round corner covers both');
+  },
+);
+
+test('a corner shape runs between two by where its curve crosses the diagonal', () => {
+  for (const k of [-3, -1, -0.5, 0, 0.5, 1, 2, 5]) {
+    assert.ok(Math.abs(shapeAtHalfCorner(halfCorner(k)) - k) < 1e-9, `${k}`);
+  }
+  assert.strictEqual(halfCorner(0), 0.5);
+  assert.strictEqual(halfCorner(Infinity), 1);
+  assert.strictEqual(halfCorner(-Infinity), 0);
+  // half way from round to bevel is the curve whose crossing is half way
+  const mid = interpolateField(
+    'cornerShape',
+    [1, 1, 1, 1],
+    [0, 0, 0, 1],
+    0.5,
+  ) as number[];
+  const want = shapeAtHalfCorner((halfCorner(1) + halfCorner(0)) / 2);
+  assert.ok(Math.abs(mid[0] - want) < 1e-9 && mid[3] === 1, String(mid));
+  // and to a square corner, short of it
+  const near = interpolateField(
+    'cornerShape',
+    [1, 1, 1, 1],
+    [Infinity, 1, 1, 1],
+    0.9,
+  ) as number[];
+  assert.ok(near[0] > 2 && near[0] < Infinity, String(near));
 });
 
 test('a 3D border is shaded as Chromium shades one', async () => {

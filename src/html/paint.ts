@@ -47,6 +47,7 @@ import type {
   BoxShadow,
   ClipPath,
   ComputedStyle,
+  CornerShapes,
   Gradient,
   GradientStop,
   ImageRepeat,
@@ -63,6 +64,7 @@ import {
   densityOf,
   gradientOf,
   masked,
+  ROUND_CORNERS,
   scrolls,
   urlImageOf,
   urlOf,
@@ -72,6 +74,7 @@ import {
   WILL_STACK_Z,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
+import { cornerInset, cornerReach } from './css/corner-shape.js';
 import {
   drawnThrough,
   invert,
@@ -4135,6 +4138,15 @@ const NOWHERE: Rect = { x: 0, y: 0, width: 0, height: 0 };
 /** Corners shrunk by `by` — an inner shadow's spread — or grown where it
  *  is negative; a square corner stays square. */
 function grownCorners(c: Corners, by: number): Corners {
+  if (c.shape) {
+    const grow = (r: number, i: number) =>
+      r > 0 ? Math.max(0, r + by * shapedBy(c, i, by > 0)) : 0;
+    return {
+      x: c.x.map(grow) as Corners['x'],
+      y: c.y.map(grow) as Corners['y'],
+      shape: c.shape,
+    };
+  }
   const grow = (r: number) => (r > 0 ? Math.max(0, r + by) : 0);
   return {
     x: [grow(c.x[0]), grow(c.x[1]), grow(c.x[2]), grow(c.x[3])],
@@ -4590,6 +4602,11 @@ function shadowShape(
 ): void {
   if (c.x.every((r) => r === 0) || c.y.every((r) => r === 0)) {
     ctx.rect!(x, y, w, h);
+    return;
+  }
+  // a shaped corner is drawn as its curves, and its blur made afresh
+  if (c.shape && canCurve(ctx)) {
+    roundedRect(ctx, x, y, w, h, c, true);
     return;
   }
   // a circular corner as the number every context has always taken; only
@@ -5279,18 +5296,20 @@ export function spreadCorners(
   for (let i = 0; i < 4; i += 1) {
     if (!(c.x[i] > 0 && c.y[i] > 0)) continue;
     const coverage = 2 * Math.min(c.x[i] / width, c.y[i] / height);
-    const rx = spreadRadius(
-      c.x[i],
-      i === 0 || i === 3 ? left : right,
-      coverage,
-    );
-    const ry = spreadRadius(c.y[i], i < 2 ? top : bottom, coverage);
+    // a shaped corner moves by its own share of the distance (`shapedBy`)
+    const across = i === 0 || i === 3 ? left : right;
+    const down = i < 2 ? top : bottom;
+    const fx = c.shape ? shapedBy(c, i, across > 0) : 1;
+    const fy = c.shape ? shapedBy(c, i, down > 0) : 1;
+    const rx = spreadRadius(c.x[i], across * fx, coverage);
+    const ry = spreadRadius(c.y[i], down * fy, coverage);
     if (!(rx > 0 && ry > 0)) continue;
     x[i] = rx;
     y[i] = ry;
     rounded = true;
   }
-  return rounded ? { x, y } : null;
+  if (!rounded) return null;
+  return c.shape ? { x, y, shape: c.shape } : { x, y };
 }
 
 /** How far in from a box's border box the box a `<visual-box>` names is:
@@ -5993,6 +6012,7 @@ export function unzoomRect(z: Zoom, r: Rect): Rect {
 /** The radius of corners that are all one circle's, or null where they
  *  are not: ellipses, or of more than one size. */
 function circleOf(c: Corners): number | null {
+  if (c.shape) return null;
   const r = c.x[0];
   for (let i = 0; i < 4; i += 1) {
     if (Math.abs(c.x[i] - r) > 1e-3 || Math.abs(c.y[i] - r) > 1e-3) {
@@ -6384,10 +6404,22 @@ export function contentCorners(box: Box): Corners | null {
 }
 
 /** A box's corners in pixels: each one's horizontal and vertical radius,
- *  from the top left. */
+ *  from the top left, and the shape each is drawn in where one is not
+ *  round (`corner-shape`), which every edge made from them keeps. */
 export interface Corners {
   x: [number, number, number, number];
   y: [number, number, number, number];
+  shape?: CornerShapes;
+}
+
+/** How much of a distance in or out each of a shaped corner's radii moves
+ *  by (`cornerInset`): 1 for round. Out, no more than twice as far, since
+ *  a corner near square is the box's corner whatever its radius. */
+function shapedBy(c: Corners, i: number, outward: boolean): number {
+  const k = c.shape ? c.shape[i] : 1;
+  if (k === 1) return 1;
+  const f = cornerInset(k);
+  return outward ? Math.min(2, f) : f;
 }
 
 /**
@@ -6414,7 +6446,11 @@ export function cornersOf(
   ) {
     return null;
   }
-  return cornersFor(across, down, w, h, w, h);
+  const corners = cornersFor(across, down, w, h, w, h);
+  if (corners && style.cornerShape !== ROUND_CORNERS) {
+    corners.shape = style.cornerShape;
+  }
+  return corners;
 }
 
 /**
@@ -6464,7 +6500,9 @@ function cornersFor(
 
 /** The corners of an edge inside a box's outer one — its padding edge,
  *  inside its borders: each radius less the width of the border across it
- *  (CSS Backgrounds 3, 5.2), and square where that leaves none. */
+ *  (CSS Backgrounds 3, 5.2), and square where that leaves none. A shaped
+ *  corner loses its own share of the width (`shapedBy`), so a bevel's
+ *  border is as thick across the corner as along its sides. */
 function insetCorners(
   c: Corners,
   top: number,
@@ -6472,6 +6510,24 @@ function insetCorners(
   bottom: number,
   left: number,
 ): Corners {
+  if (c.shape) {
+    const f = [0, 1, 2, 3].map((i) => shapedBy(c, i, false));
+    return {
+      x: [
+        Math.max(0, c.x[0] - left * f[0]),
+        Math.max(0, c.x[1] - right * f[1]),
+        Math.max(0, c.x[2] - right * f[2]),
+        Math.max(0, c.x[3] - left * f[3]),
+      ],
+      y: [
+        Math.max(0, c.y[0] - top * f[0]),
+        Math.max(0, c.y[1] - top * f[1]),
+        Math.max(0, c.y[2] - bottom * f[2]),
+        Math.max(0, c.y[3] - bottom * f[3]),
+      ],
+      shape: c.shape,
+    };
+  }
   const x: Corners['x'] = [
     Math.max(0, c.x[0] - left),
     Math.max(0, c.x[1] - right),
@@ -6496,6 +6552,8 @@ const KAPPA = 0.5522847498307936;
  * clamps each corner to that on its own, where CSS reduces them together.
  */
 function circlesFit(c: Corners, w: number, h: number): boolean {
+  // a shaped corner is no circle's
+  if (c.shape) return false;
   const [a, b, d, e] = c.x;
   const [p, q, r, t] = c.y;
   return (
@@ -6547,6 +6605,42 @@ function roundedRect(
   const moveTo = ctx.moveTo!.bind(ctx);
   const lineTo = ctx.lineTo!.bind(ctx);
   const curveTo = ctx.bezierCurveTo!.bind(ctx);
+  const shape = c.shape;
+  if (shape) {
+    // each corner from where its radius meets the side the path is on to
+    // where it meets the next, round its outer point
+    const corner = (
+      i: number,
+      ox: number,
+      oy: number,
+      ax: number,
+      ay: number,
+      bx: number,
+      by: number,
+    ) => shapedCorner(ctx, shape[i], ox, oy, ax, ay, bx, by);
+    if (!reverse) {
+      moveTo(x + a, y);
+      lineTo(right - b, y);
+      corner(1, right, y, right - b, y, right, y + q);
+      lineTo(right, bottom - r);
+      corner(2, right, bottom, right, bottom - r, right - d, bottom);
+      lineTo(x + e, bottom);
+      corner(3, x, bottom, x + e, bottom, x, bottom - t);
+      lineTo(x, y + p);
+      corner(0, x, y, x, y + p, x + a, y);
+    } else {
+      moveTo(x + a, y);
+      corner(0, x, y, x + a, y, x, y + p);
+      lineTo(x, bottom - t);
+      corner(3, x, bottom, x, bottom - t, x + e, bottom);
+      lineTo(right - d, bottom);
+      corner(2, right, bottom, right - d, bottom, right, bottom - r);
+      lineTo(right, y + q);
+      corner(1, right, y, right, y + q, right - b, y);
+    }
+    ctx.closePath!();
+    return;
+  }
   if (!reverse) {
     moveTo(x + a, y);
     lineTo(right - b, y);
@@ -6568,6 +6662,82 @@ function roundedRect(
     curveTo(right, y + q * k, right - b * k, y, right - b, y);
   }
   ctx.closePath!();
+}
+
+/**
+ * A corner of shape `k` added to the path (CSS Borders 4, 3.9), from A,
+ * where the path is, to B, round its outer point O: a line for a bevel,
+ * two for the square corner and for the notch, which goes through the
+ * corner's inner point; one cubic where the superellipse is near enough
+ * one — through its ends, along its tangents there, and through the point
+ * it crosses the corner's diagonal at — and chords of the curve itself
+ * where it is not, close to square or to a notch.
+ */
+function shapedCorner(
+  ctx: PaintContext,
+  k: number,
+  ox: number,
+  oy: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): void {
+  const lineTo = ctx.lineTo!.bind(ctx);
+  // a corner with no radius one way is square, whatever its shape
+  const square = (ax === ox && ay === oy) || (bx === ox && by === oy);
+  if (square || k === Infinity) {
+    lineTo(ox, oy);
+    lineTo(bx, by);
+    return;
+  }
+  // the corner's inner point, the far corner of its square from O
+  const ix = ax + bx - ox;
+  const iy = ay + by - oy;
+  if (k === -Infinity) {
+    lineTo(ix, iy);
+    lineTo(bx, by);
+    return;
+  }
+  if (k === 0) {
+    lineTo(bx, by);
+    return;
+  }
+  const reach = cornerReach(k);
+  // the handles: towards the outer point on a convex curve, and on a
+  // concave one along the sides, towards the inner point
+  const c = k > 0 ? (4 - 8 * reach) / 3 : (8 * reach - 4) / 3;
+  if (c >= 0 && c <= 1) {
+    const [hx, hy] = k > 0 ? [ox, oy] : [ix, iy];
+    ctx.bezierCurveTo!(
+      ax + c * (hx - ax),
+      ay + c * (hy - ay),
+      bx + c * (hx - bx),
+      by + c * (hy - by),
+      bx,
+      by,
+    );
+    return;
+  }
+  // the curve in the corner's square, u along O to A and v along O to B:
+  // |1 − u|ⁿ + |1 − v|ⁿ = 1 convex, |u|ⁿ + |v|ⁿ = 1 concave
+  const n = 2 ** Math.abs(k);
+  const radius = Math.max(
+    Math.hypot(ax - ox, ay - oy),
+    Math.hypot(bx - ox, by - oy),
+  );
+  const steps = Math.max(8, Math.min(48, Math.ceil(radius / 2)));
+  for (let s = 1; s <= steps; s += 1) {
+    const turn = ((s / steps) * Math.PI) / 2;
+    const sin = Math.sin(turn) ** (2 / n);
+    const cos = Math.cos(turn) ** (2 / n);
+    const u = k > 0 ? 1 - sin : cos;
+    const v = k > 0 ? 1 - cos : sin;
+    lineTo(
+      ox + u * (ax - ox) + v * (bx - ox),
+      oy + u * (ay - oy) + v * (by - oy),
+    );
+  }
 }
 
 /** Whether a context can clip what follows; the mock backend's cannot. */
@@ -9063,7 +9233,12 @@ function paintOutline(
   if (!(w > 0 && h > 0)) return;
   const corners = cornersOf(s, box.width, height);
   const kind = s.outlineStyle === 'auto' ? 'solid' : s.outlineStyle;
-  const grown = (r: number): number => (r > 0 ? Math.max(0, r + grow) : 0);
+  // a shaped corner by its own share of the distance (`shapedBy`), the
+  // shapes going with the style the ring is painted in
+  const grown = (r: number, i: number): number =>
+    r > 0
+      ? Math.max(0, r + grow * (corners ? shapedBy(corners, i, grow > 0) : 1))
+      : 0;
   const ring = copyStyle(s);
   ring.borderTopStyle = kind;
   ring.borderRightStyle = kind;
@@ -9706,6 +9881,7 @@ function ringSides(
   options: PaintOptions,
 ): boolean {
   if (!ctx.moveTo || !ctx.lineTo) return false;
+  if (corners.shape) return shapedSides(ctx, box, x, y, w, h, corners, options);
   const area = clampRect(options, x, y, w, h);
   if (!area) return true;
   const s = box.style;
@@ -10003,6 +10179,158 @@ function ringSides(
   return true;
 }
 
+/**
+ * `ringSides` where a corner is shaped (`corner-shape`): the ring between
+ * the shaped border edge and the shaped padding edge, filled once for each
+ * run of sides of one colour through a clip to that run's wedge — from the
+ * box's middle out across its sides, cut at each end on the line from the
+ * border box's corner through the padding box's, as the round ring is. A
+ * run drawn before an opaque neighbour reaches `SEAM` past the cut under
+ * it, so nothing under the border shows between the two. False where the
+ * context cannot clip, and the sides are drawn straight.
+ */
+function shapedSides(
+  ctx: PaintContext,
+  box: Frame,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners,
+  options: PaintOptions,
+): boolean {
+  if (!canClip(ctx) || !canCurve(ctx)) return false;
+  const s = box.style;
+  const widths = [
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  ];
+  const colors = [
+    s.borderTopColor,
+    s.borderRightColor,
+    s.borderBottomColor,
+    s.borderLeftColor,
+  ];
+  const styles = [
+    s.borderTopStyle,
+    s.borderRightStyle,
+    s.borderBottomStyle,
+    s.borderLeftStyle,
+  ];
+  const inks = widths.map((width, i) => {
+    if (!(width > 0) || isTransparent(colors[i])) return null;
+    const ink = inkColor(colors[i], s.color);
+    const style = styles[i];
+    return style === 'inset' || style === 'outset'
+      ? sculptedInk(ink, i, style === 'inset')
+      : ink;
+  });
+  const [t, r, b, l] = widths;
+  // the ring, cut to what the paint reaches as a one-colour ring is
+  const ring = cutRing(options, x, y, w, h, corners, t, r, b, l);
+  if (!ring) return true;
+  const x1 = x + w;
+  const y1 = y + h;
+  const ix0 = x + l;
+  const iy0 = y + t;
+  const ix1 = Math.max(ix0, x1 - r);
+  const iy1 = Math.max(iy0, y1 - b);
+  // corner i ends side i - 1 and begins side i, as `ringSides` has them
+  const joined = [0, 1, 2, 3].map((i) => {
+    const before = (i + 3) % 4;
+    return widths[before] > 0 && widths[i] > 0 && inks[before] === inks[i];
+  });
+  const ox = [x, x1, x1, x];
+  const oy = [y, y, y1, y1];
+  const px = [ix0, ix1, ix1, ix0];
+  const py = [iy0, iy0, iy1, iy1];
+  const cx = (ix0 + ix1) / 2;
+  const cy = (iy0 + iy1) / 2;
+  const far = 2 * (w + h);
+  const reach = [0, 1, 2, 3].map(
+    (i) =>
+      Math.max(corners.x[i], corners.y[i]) + widths[i] + widths[(i + 3) % 4],
+  );
+  const runs: { from: number; to: number; ink: string | null }[] = [];
+  if (!joined.includes(false)) runs.push({ from: 0, to: 0, ink: inks[0] });
+  else {
+    for (let i = 0; i < 4; i += 1) {
+      if (joined[i]) continue;
+      let j = (i + 1) % 4;
+      while (joined[j]) j = (j + 1) % 4;
+      runs.push({ from: i, to: j, ink: inks[i] });
+    }
+  }
+  const opaque = (ink: string | null): boolean =>
+    ink !== null && alphaOf(ink) === 1;
+  runs.sort((a, b) => Number(opaque(a.ink)) - Number(opaque(b.ink)));
+  /** A corner's cut, from inside the ring — as far in as its corner's
+   *  curves reach, short of the middle — to far outside it, moved `shift`
+   *  across it the way the corner turns. */
+  const cut = (i: number, shift: number): [number, number, number, number] => {
+    let dx = px[i] - ox[i];
+    let dy = py[i] - oy[i];
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    const inward = Math.min(reach[i], Math.hypot(cx - ox[i], cy - oy[i]));
+    // across the cut, clockwise: the way the side that begins here runs
+    const [ax, ay] = ALONG[(i + 1) % 4];
+    const sx = ax * shift;
+    const sy = ay * shift;
+    return [
+      ox[i] + dx * inward + sx,
+      oy[i] + dy * inward + sy,
+      ox[i] - dx * far + sx,
+      oy[i] - dy * far + sy,
+    ];
+  };
+  for (let k = 0; k < runs.length; k += 1) {
+    const { from: i, to: j, ink } = runs[k];
+    if (ink === null) continue;
+    ctx.save();
+    if (runs.length > 1) {
+      // reach under a later, opaque neighbour on either side
+      const later = (corner: number) =>
+        runs
+          .slice(k + 1)
+          .some(
+            (run) =>
+              run !== runs[k] &&
+              (run.from === corner || run.to === corner) &&
+              opaque(run.ink),
+          );
+      const [iInX, iInY, iOutX, iOutY] = cut(i, later(i) ? -SEAM : 0);
+      const [jInX, jInY, jOutX, jOutY] = cut(j, later(j) ? SEAM : 0);
+      ctx.beginPath!();
+      ctx.moveTo!(cx, cy);
+      ctx.lineTo!(iInX, iInY);
+      ctx.lineTo!(iOutX, iOutY);
+      // round the outside of the sides between, clockwise
+      for (let c = (i + 1) % 4; c !== j; c = (c + 1) % 4) {
+        ctx.lineTo!(ox[c] + (ox[c] - cx) * 4, oy[c] + (oy[c] - cy) * 4);
+      }
+      ctx.lineTo!(jOutX, jOutY);
+      ctx.lineTo!(jInX, jInY);
+      ctx.closePath!();
+      ctx.clip!();
+    }
+    ctx.fillStyle = ink;
+    const { outer, inner } = ring;
+    fillRing(
+      ctx,
+      outer.rect,
+      outer.corners,
+      inner ? inner.rect : NOWHERE,
+      inner ? inner.corners : outer.corners,
+    );
+    ctx.restore();
+  }
+  return true;
+}
+
 /** A rectangle and the radii of its corners. */
 interface Rounded {
   rect: Rect;
@@ -10120,13 +10448,12 @@ function cutRounded(
     b === y + h && r === x + w,
     b === y + h && l === x,
   ];
-  return {
-    rect: { x: l, y: t, width: r - l, height: b - t },
-    corners: {
-      x: c.x.map((v, i) => (kept[i] ? v : 0)) as Corners['x'],
-      y: c.y.map((v, i) => (kept[i] ? v : 0)) as Corners['y'],
-    },
+  const corners: Corners = {
+    x: c.x.map((v, i) => (kept[i] ? v : 0)) as Corners['x'],
+    y: c.y.map((v, i) => (kept[i] ? v : 0)) as Corners['y'],
   };
+  if (c.shape) corners.shape = c.shape;
+  return { rect: { x: l, y: t, width: r - l, height: b - t }, corners };
 }
 
 /** A position moved out of any of `spans` it is inside, towards their

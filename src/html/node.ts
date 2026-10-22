@@ -9580,6 +9580,8 @@ const PAINT_ONLY = new Set([
   'borderBottomColor',
   'borderLeftColor',
   'outlineColor',
+  // the shape a corner's radii are drawn in, inside the border box
+  'cornerShape',
   'textDecorationLine',
   'textDecorationColor',
   'textDecorationStyle',

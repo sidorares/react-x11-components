@@ -428,6 +428,15 @@ function rectShape(
   };
 }
 
+/** Each corner's superellipse parameter (`ComputedStyle.cornerShape`). */
+export type CornerShapes = readonly [number, number, number, number];
+
+/** Every corner round, as nearly every box's are: one array, so a style
+ *  copies none and a test for it is one comparison. */
+export const ROUND_CORNERS: CornerShapes = Object.freeze([
+  1, 1, 1, 1,
+]) as CornerShapes;
+
 export type BorderStyle =
   | 'none'
   | 'hidden'
@@ -899,6 +908,12 @@ export interface ComputedStyle {
   /** Their vertical radii, percentages of its height, where `/` wrote
    *  them apart; null where they are the same values, as almost always. */
   borderRadiusY: [Len, Len, Len, Len] | null;
+  /** The shape each corner its radii make is drawn in (CSS Borders 4,
+   *  `corner-shape`), in `border-radius`'s order: a superellipse's
+   *  parameter, 1 for `round` — a quarter of an ellipse — 2 for
+   *  `squircle`, 0 for `bevel`, -1 for `scoop`, and the infinities for
+   *  `square` and `notch`. `ROUND_CORNERS` where all four are round. */
+  cornerShape: CornerShapes;
   /** Its shadows front to back, the ones that can be seen; null for none. */
   boxShadow: BoxShadow[] | null;
   /** Its outline (CSS 2.1 18.4, CSS UI 4): drawn around the border box,
@@ -1409,6 +1424,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderLeftColor: 'currentColor',
     borderRadius: [0, 0, 0, 0],
     borderRadiusY: null,
+    cornerShape: ROUND_CORNERS,
     boxShadow: null,
     outlineStyle: 'none',
     outlineWidth: medium,
@@ -2658,6 +2674,19 @@ export function applyDeclaration(
     case 'border-radius': {
       const radii = parseRadii(value, ctx);
       if (radii) [style.borderRadius, style.borderRadiusY] = radii;
+      return;
+    }
+    case 'corner-shape':
+    case 'corner-top-left-shape':
+    case 'corner-top-right-shape':
+    case 'corner-bottom-right-shape':
+    case 'corner-bottom-left-shape':
+    case 'corner-top-shape':
+    case 'corner-right-shape':
+    case 'corner-bottom-shape':
+    case 'corner-left-shape': {
+      const shapes = cornerShapesOf(name, value, style.cornerShape);
+      if (shapes) style.cornerShape = shapes;
       return;
     }
 
@@ -6340,6 +6369,73 @@ function sameRadii(a: readonly Len[], b: readonly Len[]): boolean {
   return true;
 }
 
+/** What each `corner-shape` keyword is as a superellipse's parameter (CSS
+ *  Borders 4, 3.9.1). */
+const CORNER_KEYWORDS: Record<string, number> = {
+  round: 1,
+  squircle: 2,
+  square: Infinity,
+  bevel: 0,
+  scoop: -1,
+  notch: -Infinity,
+};
+
+/** One corner's shape — a keyword, or `superellipse()` of a number or of
+ *  an infinity — as its parameter; null for none. */
+function cornerShapeOf(value: string): number | null {
+  const v = value.trim().toLowerCase();
+  const keyword = CORNER_KEYWORDS[v];
+  if (keyword !== undefined) return keyword;
+  const m = /^superellipse\(\s*([\s\S]+?)\s*\)$/.exec(v);
+  if (!m) return null;
+  if (m[1] === 'infinity') return Infinity;
+  if (m[1] === '-infinity') return -Infinity;
+  return parseNumber(m[1]);
+}
+
+/** Which corners each `corner-*-shape` property sets, in `border-radius`'s
+ *  order: a side's two, the first value the one at its left or its top. */
+const CORNER_SHAPE_TARGETS: Record<string, readonly number[]> = {
+  'corner-top-left-shape': [0],
+  'corner-top-right-shape': [1],
+  'corner-bottom-right-shape': [2],
+  'corner-bottom-left-shape': [3],
+  'corner-top-shape': [0, 1],
+  'corner-right-shape': [1, 2],
+  'corner-bottom-shape': [3, 2],
+  'corner-left-shape': [0, 3],
+};
+
+/**
+ * The corners' shapes after a `corner-shape` declaration, or null where its
+ * value is none. The shorthand takes one to four, filled in as
+ * `border-radius` fills its radii; a side's takes one or two; a corner's
+ * one.
+ */
+function cornerShapesOf(
+  name: string,
+  value: string,
+  was: CornerShapes,
+): CornerShapes | null {
+  const parts = splitValue(value).map(cornerShapeOf);
+  if (!parts.length || parts.includes(null)) return null;
+  const k = parts as number[];
+  let out: number[];
+  if (name === 'corner-shape') {
+    if (k.length > 4) return null;
+    const [a, b = a, c = a, d = b] = k;
+    out = [a, b, c, d];
+  } else {
+    const targets = CORNER_SHAPE_TARGETS[name];
+    if (k.length > Math.min(2, targets.length)) return null;
+    out = was.slice();
+    targets.forEach((corner, i) => (out[corner] = k[i] ?? k[0]));
+  }
+  return out.every((s) => s === 1)
+    ? ROUND_CORNERS
+    : (out as unknown as CornerShapes);
+}
+
 /** The four corners, in `border-radius`'s order. */
 const CORNERS = [
   'border-top-left-radius',
@@ -6364,7 +6460,13 @@ type Logical =
       valid: (part: string, ctx: UnitContext) => boolean;
     }
   | { kind: 'size'; physical: string }
-  | { kind: 'corner'; block: 'start' | 'end'; inline: 'start' | 'end' };
+  | {
+      kind: 'corner';
+      block: 'start' | 'end';
+      inline: 'start' | 'end';
+      /** The physical corner's property, from its name: `top-left`. */
+      physical: (corner: string) => string;
+    };
 
 /**
  * CSS Logical Properties 1, in the horizontal writing mode `<Html>` lays
@@ -6452,6 +6554,13 @@ const LOGICAL: Record<string, Logical> = (() => {
         kind: 'corner',
         block,
         inline,
+        physical: (corner) => `border-${corner}-radius`,
+      };
+      out[`corner-${block}-${inline}-shape`] = {
+        kind: 'corner',
+        block,
+        inline,
+        physical: (corner) => `corner-${corner}-shape`,
       };
     }
   }
@@ -6506,7 +6615,7 @@ function applyLogical(
       applyDeclaration(
         style,
         parent,
-        `border-${vertical}-${left ? 'left' : 'right'}-radius`,
+        logical.physical(`${vertical}-${left ? 'left' : 'right'}`),
         value,
         ctx,
       );
@@ -7032,6 +7141,15 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],
   'border-bottom-right-radius': ['borderRadius', 'borderRadiusY'],
   'border-bottom-left-radius': ['borderRadius', 'borderRadiusY'],
+  'corner-shape': ['cornerShape'],
+  'corner-top-left-shape': ['cornerShape'],
+  'corner-top-right-shape': ['cornerShape'],
+  'corner-bottom-right-shape': ['cornerShape'],
+  'corner-bottom-left-shape': ['cornerShape'],
+  'corner-top-shape': ['cornerShape'],
+  'corner-right-shape': ['cornerShape'],
+  'corner-bottom-shape': ['cornerShape'],
+  'corner-left-shape': ['cornerShape'],
   inset: ['top', 'right', 'bottom', 'left'],
   background: [
     'backgroundColor',
