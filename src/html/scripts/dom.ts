@@ -213,22 +213,32 @@ export function installDom(
     } catch {}
     return { message, text: stack || message };
   };
+  /** An error event's fields for what was thrown: its message, and where
+   *  it was thrown, as its stack's first frame says. */
+  const errorInit = (error: Any, prefix = ''): Any => {
+    const { message } = describe(error);
+    let stack = '';
+    try {
+      stack = typeof error?.stack === 'string' ? error.stack : '';
+    } catch {}
+    const at = /\n\s+at (?:[^\n]*?\()?([^\s()]+?):(\d+):(\d+)\)?/.exec(stack);
+    return {
+      message: `${prefix}${message}`,
+      error,
+      filename: at ? at[1] : '',
+      lineno: at ? Number(at[2]) : 0,
+      colno: at ? Number(at[3]) : 0,
+    };
+  };
   const report = (error: Any): void => {
-    const { message, text } = describe(error);
+    const { text } = describe(error);
     bridge('log', 'error', `Uncaught ${text}`);
     if (reporting) return;
     reporting = true;
     try {
-      // where it was thrown, as its stack's first frame says
-      const stack = typeof error?.stack === 'string' ? error.stack : '';
-      const at = /\n\s+at (?:[^\n]*?\()?([^\s()]+?):(\d+):(\d+)\)?/.exec(stack);
       const ev = new ErrorEvent('error', {
-        message: `Uncaught ${message}`,
-        error,
+        ...errorInit(error, 'Uncaught '),
         cancelable: true,
-        filename: at ? at[1] : '',
-        lineno: at ? Number(at[2]) : 0,
-        colno: at ? Number(at[3]) : 0,
       });
       dispatch(windowTarget, ev);
     } catch {
@@ -14730,14 +14740,10 @@ export function installDom(
     running.controller.abort(reason);
     // `navigateerror` while the transition is still the navigation's, then
     // its promises, then the method's (HTML 7.2.6.10)
+    // told as an uncaught error is, with where it was thrown
     dispatch(
       s.navigation,
-      asTrusted(
-        new ErrorEvent('navigateerror', {
-          message: reason?.message ?? '',
-          error: reason,
-        }),
-      ),
+      asTrusted(new ErrorEvent('navigateerror', errorInit(reason))),
     );
     if (running.transition && running.transition !== running.tracker) {
       running.transition.fail(reason);
@@ -14759,6 +14765,8 @@ export function installDom(
     userInitiated?: boolean;
     /** The link or the form that started it. */
     sourceElement?: Any;
+    /** `pushState` or `replaceState`'s, which no `hashChange` is. */
+    historyApi?: boolean;
   }
 
   /**
@@ -14776,6 +14784,10 @@ export function installDom(
     apply: (intercepted: boolean) => void,
   ): 'same' | 'canceled' | 'other' => {
     abortOngoing(s);
+    // a `navigateerror` listener may start a navigation of its own, which
+    // this one aborts in turn before it goes on; bounded, since each may
+    // start another
+    for (let i = 0; s.ongoing && i < 16; i += 1) abortOngoing(s);
     const from = currentOf(s);
     const fromApi = apiEntryOf(s, from);
     const controller = new AbortController();
@@ -14796,7 +14808,10 @@ export function installDom(
         navigationType: params.type,
         destination,
         canIntercept,
+        // a navigation to a fragment, not a URL the history API writes,
+        // whatever of it differs (HTML 7.2.6.10)
         hashChange:
+          !params.historyApi &&
           params.type !== 'traverse' &&
           params.sameDocument &&
           fragmentOf(from.url, params.url) &&
@@ -15192,7 +15207,13 @@ export function installDom(
     }
     navigateWith(
       s,
-      { url: to, type: mode, navState: from.navState, sameDocument: true },
+      {
+        url: to,
+        type: mode,
+        navState: from.navState,
+        sameDocument: true,
+        historyApi: true,
+      },
       () => commitEntry(s, to, mode, serialized, from.navState, mode),
     );
   };

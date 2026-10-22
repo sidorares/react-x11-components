@@ -2766,6 +2766,43 @@ test('navigation is the page’s entries, and navigate() fires navigate, which a
   );
 });
 
+test('navigateerror says where a handler threw, pushState is no hash change, and a navigation started from navigateerror is aborted in turn', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var err = new TypeError("no");' +
+      '  navigation.onnavigate = function (e) { e.intercept({ handler: function () { return Promise.reject(err); } }); };' +
+      '  navigation.onnavigateerror = function (e) {' +
+      '    r.push(e.error === err, e.message, e.filename === location.href.split("#")[0], e.lineno > 0);' +
+      // the order of three navigations, the second started as the first fails
+      '    navigation.onnavigate = function (e) { r.push("nav " + new URL(e.destination.url).hash + " " + e.hashChange); };' +
+      '    navigation.onnavigateerror = function () { r.push("error " + location.hash); if (location.hash === "#b") location.href = "#d"; };' +
+      '    navigation.onnavigatesuccess = function () { r.push("success " + location.hash); document.getElementById("out").textContent = r.join("|"); };' +
+      '    history.pushState(null, "", "#b"); location.href = "#c";' +
+      '  };' +
+      '  location.href = "#a";' +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'true',
+      'TypeError: no',
+      'true',
+      'true',
+      // pushState's navigate is no hash change, a fragment's is
+      'nav #b false',
+      'error #b',
+      'nav #d true',
+      'error #d',
+      'nav #c true',
+      'success #c',
+    ].join('|'),
+  );
+});
+
 test('an intercepted navigation scrolls where it ends, a traversal restores where its entry was scrolled to, and the transition lasts through navigatesuccess', async () => {
   const doc = await hosted(
     '<p id="out"></p><div style="height:3000px"></div><div id="frag">f</div><div style="height:3000px"></div><script>' +
