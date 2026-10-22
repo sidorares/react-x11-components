@@ -401,28 +401,62 @@ export class ScriptRunner {
 
   /** The pane the document is shown in scrolled. */
   scrolled(): void {
+    // a scroll again puts off the end of it
+    if (this._scrollEndOwed) {
+      clearTimeout(this._scrollEndOwed);
+      this._scrollEndOwed = null;
+    }
     if (this._disposed || this._scrollOwed) return;
     this._scrollOwed = setTimeout(() => {
       this._scrollOwed = null;
-      if (!this._disposed) this.engine.call('__scrolled', null);
+      if (this._disposed) return;
+      this.engine.call('__scrolled', null);
+      // and `scrollend` a frame on, where no scroll came since (CSSOM View
+      // 13.1, "scrollend")
+      this._scrollEndOwed = setTimeout(() => {
+        this._scrollEndOwed = null;
+        if (!this._disposed) this.engine.call('__scrollended', null);
+      }, FRAME_MS);
     }, FRAME_MS);
   }
+  private _scrollEndOwed: ReturnType<typeof setTimeout> | null = null;
+  /** Each scroll container's `scrollend`, owed a frame after its last
+   *  `scroll` (`elementScrolled`). */
+  private _elementScrollEnds = new Map<
+    Element,
+    ReturnType<typeof setTimeout>
+  >();
 
   /** A scroll container in the document scrolled (`onElementScroll`). */
   elementScrolled(element: Element): void {
     if (this._disposed) return;
     this._scrolledElements.add(element);
+    const owed = this._elementScrollEnds.get(element);
+    if (owed) clearTimeout(owed);
+    this._elementScrollEnds.delete(element);
     this._elementScrollOwed ??= setTimeout(() => {
       this._elementScrollOwed = null;
       const scrolled = [...this._scrolledElements];
       this._scrolledElements.clear();
-      if (!this._disposed) this.host.elementsScrolled(scrolled);
+      if (this._disposed) return;
+      this.host.elementsScrolled(scrolled);
+      for (const el of scrolled) {
+        this._elementScrollEnds.set(
+          el,
+          setTimeout(() => {
+            this._elementScrollEnds.delete(el);
+            if (!this._disposed) this.host.elementsScrolledEnd([el]);
+          }, FRAME_MS),
+        );
+      }
     }, FRAME_MS);
   }
 
   dispose(): void {
     if (this._disposed) return;
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
+    if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
+    for (const owed of this._elementScrollEnds.values()) clearTimeout(owed);
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();
     this._seatsWatched?.();

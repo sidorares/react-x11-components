@@ -8789,6 +8789,7 @@ export function installDom(
     'error',
     'toggle',
     'scroll',
+    'scrollend',
     'resize',
     'contextmenu',
     'wheel',
@@ -17554,6 +17555,7 @@ export function installDom(
     'error',
     'resize',
     'scroll',
+    'scrollend',
     'hashchange',
     'popstate',
     'unload',
@@ -18333,6 +18335,13 @@ export function installDom(
   // measures its lines again on once it has come into view
   entry('__scrolled', () => {
     const ev = new Event('scroll', { bubbles: true });
+    ev.isTrusted = true;
+    return dispatch(document, ev);
+  });
+  // and its scroll over: `scrollend` at the document, which bubbles to the
+  // window (CSSOM View 13.1)
+  entry('__scrollended', () => {
+    const ev = new Event('scrollend', { bubbles: true });
     ev.isTrusted = true;
     return dispatch(document, ev);
   });

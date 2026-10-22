@@ -249,6 +249,9 @@ export interface HandleInternals {
   /** The custom highlights a page's `CSS.highlights` holds, to draw
    *  (`HtmlViewNode.setHighlights`). */
   setHighlights(highlights: readonly HighlightRanges[]): void;
+  /** Where a script's scroll of the viewport comes to rest, where the
+   *  root makes it a snap container (`HtmlViewNode.snapViewport`). */
+  snapViewport(x: number, y: number): { x: number; y: number };
   /** What the page's `CSS.registerProperty` registered, as `@property`
    *  rules (`HtmlViewNode.setRegisteredProperties`). */
   setRegisteredProperties(rules: string): void;
@@ -1287,6 +1290,14 @@ export class DomHost {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
       this.entries.call('__fire', [this.idOf(el), 'scroll']);
+    }
+  }
+
+  /** And each one's `scrollend`, a frame after its last `scroll`. */
+  elementsScrolledEnd(elements: Iterable<Element>): void {
+    if (this._disposed || !this.entries) return;
+    for (const el of elements) {
+      this.entries.call('__fire', [this.idOf(el), 'scrollend']);
     }
   }
 
@@ -2617,12 +2628,15 @@ export class DomHost {
         });
         return to ? `${to.x},${to.y}` : '';
       }
-      case 'scrollTo':
-        this._seams.scrollTo(
-          Math.max(0, Number(a) || 0),
-          Math.max(0, Number(b) || 0),
-        );
+      case 'scrollTo': {
+        // where the root makes the viewport a snap container, where the
+        // scroll comes to rest (`HtmlViewNode.snapViewport`)
+        const x = Math.max(0, Number(a) || 0);
+        const y = Math.max(0, Number(b) || 0);
+        const to = this._seams.handle.snapViewport?.(x, y) ?? { x, y };
+        this._seams.scrollTo(to.x, to.y);
         return null;
+      }
       // as the document's own `@media` rules are matched: its width, its
       // scheme, its preference for motion
       case 'media':

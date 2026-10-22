@@ -1067,6 +1067,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
       setRegisteredProperties: (rules) =>
         nodeRef.current?.setRegisteredProperties(rules),
+      snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
       scrollState: (element: Element) =>

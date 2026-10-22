@@ -171,6 +171,45 @@ test('a scroll container keeps where it is scrolled to through a layout at anoth
   assert.equal(boxOf(node, 'r0').y, 20 - 100);
 });
 
+test('a snap container comes to rest where an area lines up, and follows it through a layout', async () => {
+  // CSS Scroll Snap 1, 5.2 and 5.4: `mandatory` snaps to the nearest place
+  // an area lines up at, and a layout that moves the area the container
+  // was snapped to scrolls the container with it; `proximity` snaps only
+  // within a third of the snapport
+  const { el: node } = await renderScrolled(
+    LIST.replace(
+      '#s{height:100px;overflow-y:auto;',
+      '#s{height:100px;overflow-y:auto;scroll-snap-type:y mandatory;',
+    ).replace('.row{height:40px}', '.row{height:40px;scroll-snap-align:start}'),
+    300,
+  );
+  const list = el(node, 's');
+  assert.deepEqual(node.scrollElementTo(list, { y: 50 }), { x: 0, y: 40 });
+  await act(async () => {
+    el(node, 'r0').attribs.style = 'height:60px';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.equal(node.scrollStateOf(list)?.y, 60, 'it follows r1');
+  const { el: near } = await renderScrolled(
+    LIST.replace(
+      '#s{height:100px;overflow-y:auto;',
+      '#s{height:100px;overflow-y:auto;scroll-snap-type:y;',
+    ).replace(
+      '.row{height:40px}',
+      '.row{height:200px;scroll-snap-align:start}',
+    ),
+    300,
+  );
+  const far = el(near, 's');
+  assert.equal(
+    near.scrollElementTo(far, { y: 100 })?.y,
+    100,
+    'too far to snap',
+  );
+  assert.equal(near.scrollElementTo(far, { y: 180 })?.y, 200, 'near enough');
+});
+
 test('a scroll container moves the boxes positioned against it and leaves the ones positioned against what is around it', async () => {
   const { el: node } = await renderScrolled(
     '<style>body{margin:0}#s{height:100px;overflow:auto}' +

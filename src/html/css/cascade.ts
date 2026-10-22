@@ -2550,6 +2550,10 @@ export class Cascade {
     return attribs[name] ?? attribs[name.toLowerCase()];
   };
   private _lh = false;
+  /** Whether a declaration anywhere sets `scroll-snap-type`: what makes a
+   *  layout ask whether a snap container is at rest where it should be
+   *  (`HtmlViewNode._resnap`). */
+  snaps = false;
   /** Whether a declaration anywhere sets `zoom`, which only then is looked
    *  for ahead of an element's other declarations (`_ownZoom`). */
   private _zoom = false;
@@ -2728,6 +2732,7 @@ export class Cascade {
     for (const rule of sheet.rules) {
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
+      if (!this.snaps && usesSnap(rule.declarations)) this.snaps = true;
       if (!this._zoom && usesZoom(rule.declarations)) this._zoom = true;
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
@@ -6092,6 +6097,7 @@ export class Cascade {
       if (!this._vars && usesVars(declarations)) this._vars = true;
       if (!this._lh && usesLh(declarations)) this._lh = true;
       if (!this._zoom && usesZoom(declarations)) this._zoom = true;
+      if (!this.snaps && usesSnap(declarations)) this.snaps = true;
       pushInline(out, declarations, tree.depth, tree.root);
     }
 
@@ -6463,6 +6469,11 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 /** Whether any of the declarations has a length in `lh` or `rlh`. */
 /** An `attr()` in a value (`IfEnvironment.attribute`). */
 const ATTR_IN = /(?:^|[^\w-])attr\(/i;
+
+function usesSnap(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (d.prop === 'scroll-snap-type') return true;
+  return false;
+}
 
 function usesLh(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (LH.test(d.value)) return true;
