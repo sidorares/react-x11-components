@@ -210,6 +210,39 @@ test('a snap container comes to rest where an area lines up, and follows it thro
   assert.equal(near.scrollElementTo(far, { y: 180 })?.y, 200, 'near enough');
 });
 
+test('a scroll with a direction snaps ahead of where it began: scrollBy, a scroll key, and the wheel once it rests', async () => {
+  // CSS Scroll Snap 1, 5.1: a relative scroll rests at a snap position
+  // ahead of it, the nearest one to where it would have gone, however
+  // near the one behind; and an area's text is no area of its own
+  const rows = Array.from(
+    { length: 10 },
+    (_, i) => `<div id="q${i}" class="row">${i}</div>`,
+  ).join('');
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#s{height:100px;overflow-y:auto;' +
+      'scroll-snap-type:y mandatory}.row{height:40px;scroll-snap-align:start}' +
+      `</style><div id="s">${rows}</div>`,
+    300,
+  );
+  const list = el(node, 's');
+  const y = () => node.scrollStateOf(list)?.y;
+  assert.equal(node.scrollElementTo(list, { y: 5 }, true)?.y, 40, 'by 5');
+  assert.equal(node.scrollElementTo(list, { y: 45 }, true)?.y, 80, 'by 5');
+  assert.equal(node.scrollElementTo(list, { y: 45 })?.y, 40, 'to 45');
+  // a line down from 40 is 80, which is a snap position
+  await act(async () => void node.scrollForKey('y', 'line', 1, list));
+  assert.equal(y(), 80);
+  await act(async () => void node.scrollForKey('y', 'line', -1, list));
+  assert.equal(y(), 40);
+  // the wheel moves it as it turns, and it snaps ahead once it rests
+  const rect = node.elementRect(list)!;
+  node.wheelAt({ x: rect.x + 10, y: rect.y + 10 });
+  await act(async () => node.scrollBy({ y: 12 }));
+  assert.equal(y(), 52, 'not snapped while it turns');
+  await act(() => new Promise((ok) => setTimeout(ok, 150)));
+  assert.equal(y(), 80, 'ahead, where it rested');
+});
+
 test('a scroll container moves the boxes positioned against it and leaves the ones positioned against what is around it', async () => {
   const { el: node } = await renderScrolled(
     '<style>body{margin:0}#s{height:100px;overflow:auto}' +

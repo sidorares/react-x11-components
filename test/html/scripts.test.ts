@@ -5661,6 +5661,25 @@ test('a computed style is a list of its property names, by index and in a for-of
   );
 });
 
+test('focus() brings the element into view through the scroll containers around it, at a snap position where one snaps, unless preventScroll', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><style>.s { height: 100px; overflow-y: scroll; width: 200px }' +
+      ' .snap { scroll-snap-type: y mandatory } .a { height: 60px; scroll-snap-align: start }</style>' +
+      '<div class="s" id="plain"><div style="height: 300px"></div><button id="b1">b1</button></div>' +
+      '<div class="s" id="kept"><div style="height: 300px"></div><button id="b2">b2</button></div>' +
+      '<div class="s snap" id="snapped"><div class="a"></div><div class="a"></div><div class="a"></div>' +
+      '<div class="a"></div><div class="a"></div><button id="b3">b3</button><div style="height: 200px"></div></div>' +
+      '<script>' +
+      'var r = [];' +
+      'document.getElementById("b1").focus(); r.push(document.getElementById("plain").scrollTop > 200);' +
+      'document.getElementById("b2").focus({ preventScroll: true }); r.push(document.getElementById("kept").scrollTop);' +
+      'document.getElementById("b3").focus(); r.push(document.getElementById("snapped").scrollTop % 60);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), 'true|0|0', doc.logs.join('\n'));
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

@@ -2814,7 +2814,11 @@ export function installDom(
     }
     /** Scroll this element, an axis left where it is where it is not a
      *  number: the viewport for the root. */
-    _scrollTo(x: number | undefined, y: number | undefined): void {
+    _scrollTo(
+      x: number | undefined,
+      y: number | undefined,
+      relative = false,
+    ): void {
       const ok = (v: number | undefined) =>
         v !== undefined && Number.isFinite(v);
       if (this._viewport()) {
@@ -2827,6 +2831,7 @@ export function installDom(
         this._id,
         ok(x) ? x : undefined,
         ok(y) ? y : undefined,
+        relative,
       );
     }
     scroll(a?: Any, b?: Any): void {
@@ -2848,6 +2853,7 @@ export function installDom(
       this._scrollTo(
         this.scrollLeft + (Number.isFinite(by.x) ? by.x : 0),
         this.scrollTop + (Number.isFinite(by.y) ? by.y : 0),
+        true,
       );
     }
     /** Brought into view through every scroll container around it whose
@@ -3173,8 +3179,15 @@ export function installDom(
       const r = offsetOf(this);
       return r ? wrap(r[0]) : null;
     }
-    focus(): void {
+    focus(options?: Any): void {
       call('focus', this._id);
+      // the focusing steps bring it into view, through the scroll
+      // containers around it, where something else had it before (HTML
+      // 6.6.3, unless `preventScroll`): as little as shows it, and where a
+      // container snaps, at a snap position
+      if (!options?.preventScroll && document.activeElement === this) {
+        this.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
     }
     blur(): void {
       if (document.activeElement === this) call('blur');

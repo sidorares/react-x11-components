@@ -125,16 +125,36 @@ function placeOf(
  * container's preferred one — the focused element, or the target of the
  * document's URL — then one that lines up on both axes, then one inside
  * another, then the first in tree order.
+ *
+ * A scroll that has a direction — `scrollBy()`, a key, the wheel — comes
+ * from where the container was (`from`), and on an axis it moved along
+ * rests only at a place ahead of it, the one nearest where it was asked to
+ * go (5.1, "intended direction and end position"): a step from one snap
+ * position goes on to the next, however near the last.
  */
-export function snapTo(c: SnapContainer, x: number, y: number): Snapped {
+export function snapTo(
+  c: SnapContainer,
+  x: number,
+  y: number,
+  from: { x: number; y: number } | null = null,
+): Snapped {
   const out: Snapped = { x, y, targetX: null, targetY: null };
   const ties: Partial<Record<'x' | 'y', { at: number; boxes: Box[] }>> = {};
   for (const axis of ['x', 'y'] as const) {
     if (!snapsOn(c.style, axis)) continue;
     const want = axis === 'x' ? x : y;
     const port = axis === 'x' ? c.width : c.height;
+    const start = from ? (axis === 'x' ? from.x : from.y) : want;
+    const dir = Math.abs(want - start) < 0.5 ? 0 : Math.sign(want - start);
+    // with a direction, only the places ahead of where it started, where
+    // there are any
+    const ahead = (area: SnapArea): boolean => {
+      const place = placeOf(c, area, axis);
+      return !!place && dir * (place.to - start) > 0.5;
+    };
+    const areas = dir && c.areas.some(ahead) ? c.areas.filter(ahead) : c.areas;
     let best: { at: number; boxes: Box[] } | null = null;
-    for (const area of c.areas) {
+    for (const area of areas) {
       const place = placeOf(c, area, axis);
       if (!place) continue;
       // where it was asked to be is a place an area larger than the
