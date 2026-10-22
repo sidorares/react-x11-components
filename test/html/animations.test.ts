@@ -3623,6 +3623,42 @@ const TRIGGER_CARD =
   '<div style="height:300px"></div><div id="card" style="height:40px"></div>' +
   '<div style="height:300px"></div>';
 
+test('an animation on a scroll() timeline is where its scroller is scrolled, and one on a view() timeline where its subject crosses the scrollport', async (t) => {
+  const doc = await triggering(
+    t,
+    '#bar{animation:fade linear;animation-timeline:scroll()}' +
+      '#card{animation:fade linear;animation-timeline:view()}' +
+      '#named{animation:fade linear;animation-timeline:--list}' +
+      '#list{scroll-timeline:--list}' +
+      '#none{animation:fade linear both;animation-timeline:none}',
+    '<div id="bar" style="height:10px"></div>' +
+      '<div style="height:290px"></div><div id="card" style="height:40px"></div>' +
+      '<div id="named" style="height:10px"></div><div id="none"></div>' +
+      '<div style="height:250px"></div>',
+  );
+  // the list scrolls 500: at 0, once it is laid out, the bar is at its
+  // start and the card, 300 down, has yet to come into view (its cover
+  // range is 200 to 340)
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('bar'), 0);
+  assert.strictEqual(doc.opacity('card'), 1, 'before its range: no effect');
+  assert.strictEqual(doc.opacity('none'), 1, 'no timeline, no effect');
+  await doc.scroll(250);
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('bar'), 0.5);
+  assert.strictEqual(doc.opacity('named'), 0.5, 'its scroller named');
+  // 250 is 50 into the card's 140 of cover
+  assert.ok(
+    Math.abs(doc.opacity('card') - 50 / 140) < 1e-6,
+    `card ${doc.opacity('card')}`,
+  );
+  // at the end of its scroll, the end of the active phase is in it
+  await doc.scroll(500);
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('bar'), 1);
+  assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
+});
+
 test('a triggered animation waits at its start, plays forwards as its subject comes into view and backwards as it leaves', async (t) => {
   const doc = await triggering(
     t,

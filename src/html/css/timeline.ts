@@ -35,7 +35,7 @@ import {
   transitionableFields,
   willChangeOf,
 } from './style.js';
-import type { ComputedStyle } from './style.js';
+import type { ComputedStyle, TimelineRef } from './style.js';
 
 /** How long a frame is: what an animation under way waits for its next. */
 export const FRAME_MS = 16;
@@ -85,10 +85,23 @@ export interface TriggerRun {
   seen: Map<string, boolean>;
 }
 
+/** Where a scroll-driven animation's timeline is (Scroll-driven
+ *  Animations 1): its progress, a percentage, and whether its scroller is
+ *  at either end of its scroll, which puts a time on the end of the
+ *  active phase in it (Web Animations 2, "at timeline boundary"). */
+export interface ScrollProgress {
+  at: number;
+  edge: boolean;
+}
+
 interface Target {
   /** By the element's `animation-name` list, null where an entry is
    *  `none`. */
   running: (Running | null)[];
+  /** The scroll-driven timelines its animations run on, and where each
+   *  was when it was last sampled: what a scroll or a layout compares
+   *  (`restyleScrolled`). */
+  scrolled?: { refs: TimelineRef[]; at: (number | null)[] };
   /** When it next changes: a frame from now while one is under way, the
    *  end of a delay before one starts, and never once each is over or
    *  paused. */
@@ -109,6 +122,13 @@ export class AnimationTimeline {
   /** The time the styles are computed at: the clock's, set before each
    *  pass that computes any. */
   now = 0;
+  /** Where a scroll-driven timeline is for an element, or null where it
+   *  is inactive: the element's to say, which knows the boxes and the
+   *  scroll (`HtmlViewNode._timelineProgress`). With none, every such
+   *  timeline is inactive. */
+  scrollProgress:
+    | ((el: object, pseudo: string, ref: TimelineRef) => ScrollProgress | null)
+    | null = null;
   private _targets = new Map<object, Map<string, Target>>();
   /** The targets a pass that styles the whole document has styled. */
   private _seen: Set<Target> | null = null;
@@ -181,6 +201,8 @@ export class AnimationTimeline {
     pseudo: string,
     animations: Animations,
     keyframesOf: (name: string) => KeyframesRule | null,
+    /** `animation-timeline`, by the same index: `auto` is the clock's. */
+    timelines: readonly TimelineRef[] = [],
   ): Sample[] | null {
     let targets = this._targets.get(el);
     const was = targets?.get(pseudo)?.running ?? [];
@@ -192,6 +214,7 @@ export class AnimationTimeline {
     let inherits = false;
     let willChange = 0;
     let out: Sample[] | null = null;
+    let scrolled: Target['scrolled'] = undefined;
     const { names, easings, playStates, triggers } = animations;
     for (let i = 0; i < names.length; i += 1) {
       const name = names[i];
@@ -203,6 +226,55 @@ export class AnimationTimeline {
       if (!run) run = { name, start: now, hold: null };
       taken.add(run);
       running.push(run);
+      // one on a scroll's timeline, or on none, is where the scroll has
+      // it, and its clock is no part of it
+      const ref = timelines.length ? timelines[i % timelines.length] : null;
+      if (ref && ref.kind !== 'auto') {
+        const p =
+          ref.kind === 'none'
+            ? null
+            : (this.scrollProgress?.(el, pseudo, ref) ?? null);
+        if (ref.kind !== 'none') {
+          scrolled ??= { refs: [], at: [] };
+          scrolled.refs.push(ref);
+          scrolled.at.push(p?.at ?? null);
+        }
+        const rule = keyframesOf(name);
+        if (!rule || !p) continue;
+        if (!inherits) inherits = animatesInherited(rule);
+        const timing = proportional(timingAt(animations, i));
+        const active =
+          timing.duration === 0 || timing.iterations === 0
+            ? 0
+            : timing.duration * timing.iterations;
+        const end = Math.max(timing.delay + active, 0);
+        const activeAfter = Math.max(Math.min(timing.delay + active, end), 0);
+        // at its scroller's end, the end of the active phase is in it:
+        // it holds its end there as one that fills forwards would
+        const boundary =
+          p.edge && activeAfter > 0 && Math.abs(p.at - activeAfter) < 1e-9;
+        const fill =
+          boundary && (timing.fill === 'none' || timing.fill === 'backwards')
+            ? timing.fill === 'none'
+              ? 'forwards'
+              : 'both'
+            : timing.fill;
+        const at = progressAt({ ...timing, fill }, p.at);
+        if (at.phase !== 'after' || at.progress !== null) {
+          willChange |= animatedWillChange(rule);
+        }
+        if (at.progress === null) continue;
+        (out ??= []).push({
+          rule,
+          progress: at.progress,
+          easing: easings[i % easings.length],
+          duration: timing.duration,
+          forwards: at.forwards,
+          // it moves as the scroll does, which asks for its frames
+          left: 0,
+        });
+        continue;
+      }
       const timing = timingAt(animations, i);
       // one that waits for a trigger is held at its start until one does
       // something to it, and plays as its triggers have it after that
@@ -298,10 +370,37 @@ export class AnimationTimeline {
       active,
       inherits,
       willChange,
+      scrolled,
     };
     targets.set(pseudo, target);
     this._seen?.add(target);
     return out;
+  }
+
+  /**
+   * A scroll or a layout moved: each element whose scroll-driven
+   * animations' timelines are somewhere else now is styled again at the
+   * next frame. Whether any is.
+   */
+  restyleScrolled(): boolean {
+    const progress = this.scrollProgress;
+    if (!progress) return false;
+    let any = false;
+    for (const [el, targets] of this._targets) {
+      for (const [pseudo, target] of targets) {
+        const scrolled = target.scrolled;
+        if (!scrolled || target.next === 0) continue;
+        const moved = scrolled.refs.some((ref, i) => {
+          const at = progress(el, pseudo, ref)?.at ?? null;
+          return at !== scrolled.at[i];
+        });
+        if (moved) {
+          target.next = 0;
+          any = true;
+        }
+      }
+    }
+    return any;
   }
 
   /** Whether an animation waits for a trigger, or did. */
@@ -1067,4 +1166,30 @@ export function noteAnimated(
   fields: ReadonlySet<string>,
 ): void {
   ANIMATED_FIELDS.set(style, fields);
+}
+
+/**
+ * A CSS animation's timing on a scroll's timeline (Web Animations 2, 4.2,
+ * "convert a time-based animation to a proportional animation"): every
+ * time a percentage of the timeline, an `auto` duration — 0 — and no delay
+ * filling it.
+ */
+function proportional(timing: ReturnType<typeof timingAt>) {
+  const { duration, delay, iterations } = timing;
+  if (duration === 0 && delay === 0) {
+    return {
+      ...timing,
+      duration:
+        iterations > 0 && iterations !== Infinity ? 100 / iterations : 0,
+    };
+  }
+  const total = Math.max(
+    delay + (duration === 0 || iterations === 0 ? 0 : duration * iterations),
+    0,
+  );
+  if (!(total > 0) || total === Infinity) {
+    return { ...timing, delay: 0, duration: 0 };
+  }
+  const k = 100 / total;
+  return { ...timing, delay: delay * k, duration: duration * k };
 }

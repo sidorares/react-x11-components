@@ -107,6 +107,7 @@ import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
+import type { ScrollProgress } from './css/timeline.js';
 import {
   scrollEdgeAt,
   timelineTriggersOf,
@@ -116,7 +117,7 @@ import {
 import type { TimelineTrigger } from './css/triggers.js';
 import { resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
-import type { ComputedStyle, RootLook } from './css/style.js';
+import type { ComputedStyle, RootLook, TimelineRef } from './css/style.js';
 import {
   CONTAIN_INLINE_SIZE,
   NO_SNAP_ALIGN,
@@ -1989,6 +1990,9 @@ export class HtmlViewNode extends Node {
     if (this._timeline.triggered) {
       void Promise.resolve().then(() => this._evaluateTriggers());
     }
+    // and an animation that runs on a scroll's timeline, which a layout
+    // moves as much as a scroll
+    void Promise.resolve().then(() => this._restyleScrolled());
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     if (!boxes) return;
     const viewport = this._viewport();
@@ -5935,8 +5939,124 @@ export class HtmlViewNode extends Node {
     }
     const timeline = this._timeline;
     timeline.now = animationClock.now();
+    timeline.scrollProgress = this._timelineProgress;
     cascade.timeline = timeline;
     return timeline;
+  }
+
+  /**
+   * Where a scroll-driven timeline is for an element (Scroll-driven
+   * Animations 1): a `scroll()` timeline how far its scroller — the
+   * nearest scroll container around the element, the root's pane, or the
+   * element — is scrolled along its axis; a `view()` one how far the
+   * element has crossed the scrollport of the nearest one, from `cover
+   * 0%` to `cover 100%`, the scrollport less its insets; a named one the
+   * nearest ancestor's, or the element's own, of that name. Null where it
+   * is inactive: its scroller scrolls nothing that way, or there is no
+   * box. Read from the last layout and the scroll now, as the triggers'
+   * timelines are (`_triggerActive`).
+   */
+  private _timelineProgress = (
+    el: object,
+    _pseudo: string,
+    ref: TimelineRef,
+  ): ScrollProgress | null => {
+    const tree = this._tree;
+    if (!tree) return null;
+    let subject = el as Element;
+    let view: boolean;
+    let axis: string;
+    let scrollerKind = 'nearest';
+    let inset: readonly [Len, Len] = ['auto', 'auto'];
+    if (ref.kind === 'scroll') {
+      view = false;
+      axis = ref.axis;
+      scrollerKind = ref.scroller;
+    } else if (ref.kind === 'view') {
+      view = true;
+      axis = ref.axis;
+      inset = ref.inset;
+    } else if (ref.kind === 'name') {
+      const named = namedTimeline(tree, subject, ref.name);
+      if (!named) return null;
+      subject = named.el;
+      view = named.view;
+      axis = named.axis;
+      inset = named.inset;
+      scrollerKind = view ? 'nearest' : 'self';
+    } else return null;
+    const box = this._firstBoxesOf(tree).get(subject);
+    if (!box) return null;
+    const down = axis === 'block' || axis === 'y';
+    const scroller =
+      scrollerKind === 'self'
+        ? isScroller(box)
+          ? box
+          : null
+        : scrollerKind === 'root'
+          ? null
+          : nearestScroller(box);
+    if (scrollerKind === 'self' && !scroller) return null;
+    const port = this._scrollportOf(scroller, down);
+    if (!(port.max > 0)) return null;
+    const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
+    if (!view) return { at: (port.offset / port.max) * 100, edge };
+    const start = (down ? box.y : box.x) - port.start;
+    const end = start + (down ? box.height : box.width);
+    const from = start - (port.size - resolveLen(inset[1], port.size));
+    const to = end - resolveLen(inset[0], port.size);
+    if (!(to - from > 0)) return null;
+    return { at: (-from / (to - from)) * 100, edge };
+  };
+
+  /** A scrollport, in document coordinates — a scroll container's or,
+   *  for null, the pane's — along one axis: where it starts, how long it
+   *  is, how far it is scrolled and how far it can be. */
+  private _scrollportOf(
+    scroller: Box | null,
+    down: boolean,
+  ): { start: number; size: number; offset: number; max: number } {
+    if (scroller) {
+      const st = scrollStateOf(scroller);
+      const size = down ? st.clientHeight : st.clientWidth;
+      return {
+        start: down
+          ? scroller.y + scroller.borderTop
+          : scroller.x + scroller.borderLeft,
+        size,
+        offset: down ? st.y : st.x,
+        max: down ? st.height - st.clientHeight : st.width - st.clientWidth,
+      };
+    }
+    const viewport = this._viewport();
+    const origin = this._scrolledOrigin();
+    const port = viewport
+      ? {
+          x: viewport.x - origin.x,
+          y: viewport.y - origin.y,
+          width: viewport.width,
+          height: viewport.height,
+        }
+      : { x: 0, y: 0, width: this.abs.width, height: this.abs.height };
+    const start = down ? port.y : port.x;
+    const size = down ? port.height : port.width;
+    return {
+      start,
+      size,
+      offset: start,
+      max: Math.max(
+        0,
+        (down ? this._documentHeight : this._documentWidth) - size,
+      ),
+    };
+  }
+
+  /** A scroll or a layout moved: the scroll-driven animations whose
+   *  timelines are somewhere else now are styled again at the next frame. */
+  private _restyleScrolled(): void {
+    if (!this._animating()) return;
+    this._timeline.scrollProgress = this._timelineProgress;
+    if (this._timeline.restyleScrolled()) this._scheduleFrame();
   }
 
   /**
@@ -7723,6 +7843,8 @@ export class HtmlViewNode extends Node {
     this._askScrollStates();
     // and what a trigger whose timeline it scrolls says now
     this._evaluateTriggers();
+    // and where an animation that runs on its scroll is
+    this._restyleScrolled();
     this._props().onElementScroll?.(el);
     return offset;
   }
@@ -8781,6 +8903,51 @@ function triggerFor(
     found = definer;
   }
   return found;
+}
+
+/** The timeline an element's `animation-timeline` names (Scroll-driven
+ *  Animations 1, 4.2): `scroll-timeline-name` or `view-timeline-name` on
+ *  the element or the nearest ancestor that declares it, its axis and
+ *  inset the ones at the name's place in their lists. */
+function namedTimeline(
+  tree: BoxTree,
+  el: Element,
+  name: string,
+): {
+  el: Element;
+  view: boolean;
+  axis: string;
+  inset: readonly [Len, Len];
+} | null {
+  for (let at: Element | null = el; at;) {
+    const style = tree.styles.get(at)?.style;
+    if (style) {
+      const scroll = style.scrollTimelineName.split(', ').indexOf(name);
+      if (scroll >= 0) {
+        const axes = style.scrollTimelineAxis.split(', ');
+        return {
+          el: at,
+          view: false,
+          axis: axes[scroll % axes.length],
+          inset: ['auto', 'auto'],
+        };
+      }
+      const view = style.viewTimelineName.split(', ').indexOf(name);
+      if (view >= 0) {
+        const axes = style.viewTimelineAxis.split(', ');
+        const insets = style.viewTimelineInset;
+        return {
+          el: at,
+          view: true,
+          axis: axes[view % axes.length],
+          inset: insets[view % insets.length],
+        };
+      }
+    }
+    const parent = flatParentOf(at);
+    at = parent && isElement(parent) ? parent : null;
+  }
+  return null;
 }
 
 /** The scroll container a box is scrolled by: the nearest one around it,
