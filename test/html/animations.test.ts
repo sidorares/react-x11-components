@@ -1013,6 +1013,56 @@ metric(
 );
 
 metric(
+  'a surface kept across the frames of an animation is drawn through one context, however many frames paint it again',
+  async (t) => {
+    // the panel and marquee above: each frame paints what moved on the kept
+    // surface again, and each used to make a context that stayed on the
+    // surface's pixmap — three listeners apiece, and node's
+    // MaxListenersExceededWarning by the eleventh
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes m { from { text-indent: 100% } to { text-indent: -100% } }' +
+        '#s { position: relative; width: 600px; height: 380px;' +
+        ' perspective: 800px }' +
+        '#w { position: absolute; left: 40px; top: 30px; width: 500px;' +
+        ' height: 300px; background: #224466; transform: rotateY(30deg) }' +
+        '#a { position: absolute; left: 20px; top: 40px; width: 300px;' +
+        ' height: 24px; overflow: hidden; white-space: nowrap;' +
+        ' color: #ffffff; background: #333333;' +
+        ' animation: m 160ms linear infinite }</style>' +
+        '<div id="s"><div id="w"><div id="a">a marquee name</div></div></div>',
+      640,
+    );
+    const carried = t.mock.method(SpriteStore.prototype, 'carry');
+    await framesAgainstBuilds(doc, [24, 48, 72, 96, 120, 144]);
+    assert.ok(carried.mock.callCount() > 0, 'its surface was carried');
+    const kept = (
+      doc.el as unknown as {
+        _sprites: {
+          kept: Map<
+            object,
+            {
+              surface: {
+                pixmap: { listenerCount(name: string): number };
+              };
+            }
+          >;
+        };
+      }
+    )._sprites.kept;
+    assert.ok(kept.size > 0, 'a surface is kept');
+    for (const { surface } of kept.values()) {
+      assert.strictEqual(
+        surface.pixmap.listenerCount('_backing'),
+        1,
+        'one context on the surface',
+      );
+    }
+  },
+);
+
+metric(
   'a faded box drawn through its matrix keeps its group across the frames of an animation inside it, painting it again where they changed it, to the pixels a build draws',
   async (t) => {
     // a bar a frame moves inside a turned panel: the group kept for the

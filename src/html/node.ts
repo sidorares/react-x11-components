@@ -652,6 +652,8 @@ export class HtmlViewNode extends Node {
     animates: (box) => !!box.el && !box.pseudo && this._timeline.isLive(box.el),
     animatesWithin: (box) => this._animatesWithin(box),
     stale: (box) => this._sprites?.takeStale(box) ?? null,
+    context: (surface) =>
+      this._sprites?.context(surface as SurfaceLike) ?? undefined,
     keep: (box, width, height, key, animated) =>
       (this._sprites ??= new SpriteStore(this.app)).make(
         box,

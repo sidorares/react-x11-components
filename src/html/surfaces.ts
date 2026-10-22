@@ -157,6 +157,15 @@ export class SpriteStore {
    */
   private readonly free = new Map<string, SurfaceLike[]>();
   private freePixels = 0;
+  /**
+   * The one 2d context each surface is drawn through (`context`), for as
+   * long as the surface lives. ntk makes a new context for every
+   * `getContext`, and each hangs three listeners on the pixmap that keep it
+   * alive until the pixmap goes: a sprite painted again at each frame of an
+   * animation inside it left one a frame on its surface, with a GC and a
+   * Picture made for each.
+   */
+  private readonly contexts = new Map<SurfaceLike, { destroy?(): void }>();
 
   constructor(
     private readonly app: unknown,
@@ -166,6 +175,24 @@ export class SpriteStore {
   /** How many surfaces are kept. */
   get size(): number {
     return this.kept.size;
+  }
+
+  /** The context `surface` is drawn through: one for its life, made on
+   *  the first ask and destroyed with it. */
+  context(surface: SurfaceLike): unknown {
+    let ctx = this.contexts.get(surface);
+    if (!ctx) {
+      ctx = surface.getContext('2d') as { destroy?(): void };
+      this.contexts.set(surface, ctx);
+    }
+    return ctx;
+  }
+
+  /** A surface and its context, destroyed. */
+  private discard(surface: SurfaceLike): void {
+    this.contexts.get(surface)?.destroy?.();
+    this.contexts.delete(surface);
+    surface.destroy?.();
   }
 
   /** Whether a surface is kept for `box`. */
@@ -296,7 +323,7 @@ export class SpriteStore {
   private release(surface: SurfaceLike, width: number, height: number): void {
     const pixels = width * height;
     if (!surface.clear || this.freePixels + pixels > this.budget) {
-      surface.destroy?.();
+      this.discard(surface);
       return;
     }
     const key = `${width}x${height}`;
@@ -317,7 +344,7 @@ export class SpriteStore {
     try {
       surface.clear!();
     } catch {
-      surface.destroy?.();
+      this.discard(surface);
       return null;
     }
     return surface;
@@ -327,7 +354,7 @@ export class SpriteStore {
    *  paint ends, so nothing outlives the frame that could have used it. */
   trim(): void {
     for (const list of this.free.values()) {
-      for (const surface of list) surface.destroy?.();
+      for (const surface of list) this.discard(surface);
     }
     this.free.clear();
     this.freePixels = 0;
