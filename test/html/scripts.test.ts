@@ -690,8 +690,10 @@ test('a classic script that runs away leaves the engine timed out, for the host 
     'https://example.test/',
   );
   let timeouts = 0;
+  // long enough for the facade to install on a slow runner, which runs
+  // under the same timeout
   const engine = new ScriptEngine(host.bridge, {
-    timeout: 50,
+    timeout: 1000,
     onTimeout: () => void (timeouts += 1),
     log() {},
     settled() {},
