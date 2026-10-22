@@ -106,6 +106,14 @@ import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
+import {
+  scrollEdgeAt,
+  timelineTriggersOf,
+  triggerActive,
+  viewEdgeAt,
+} from './css/triggers.js';
+import type { TimelineTrigger } from './css/triggers.js';
+import { resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
@@ -1949,6 +1957,10 @@ export class HtmlViewNode extends Node {
     if (this._cascade?.readsScrollState && this._noteRootScroll()) {
       void Promise.resolve().then(() => this._askScrollStates());
     }
+    // and a trigger whose timeline the pane scrolls
+    if (this._timeline.triggered) {
+      void Promise.resolve().then(() => this._evaluateTriggers());
+    }
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     if (!boxes) return;
     const viewport = this._viewport();
@@ -2627,6 +2639,8 @@ export class HtmlViewNode extends Node {
     ) {
       this.invalidateMeasure('content');
     }
+    // what the triggers say of where the layout put their subjects
+    this._evaluateTriggers();
     this._scheduleFrame();
   }
 
@@ -5334,6 +5348,142 @@ export class HtmlViewNode extends Node {
    *  states were asked. */
   private _viewportWas: { x: number; y: number } | null = null;
 
+  /** Whether each element's timeline triggers were active when last
+   *  asked, by name. */
+  private _triggerStates = new WeakMap<Element, Map<string, boolean>>();
+  /** The elements that define a timeline trigger, in the document's order,
+   *  with their boxes and triggers, for the tree they were found in. */
+  private _triggerDefiners: {
+    tree: BoxTree;
+    of: TriggerDefiner[];
+  } | null = null;
+
+  /**
+   * What the document's timeline triggers say now (CSS Animation Triggers
+   * 1): each trigger an element defines active or not by where its view or
+   * scroll timeline is — activated in its activation range, and active
+   * until its timeline leaves its active range — and each animation that
+   * waits for one told of a change (`AnimationTimeline.applyTriggers`),
+   * with a frame asked for it. After each layout and each scroll, an
+   * element's or the pane's; nothing where no animation waits for one, or
+   * where the document is drawn at rest.
+   */
+  private _evaluateTriggers(): void {
+    const tree = this._tree;
+    const timeline = this._timeline;
+    if (!tree || !this._animating() || !timeline.triggered) return;
+    timeline.now = animationClock.now();
+    let definers = this._triggerDefiners;
+    if (definers?.tree !== tree) {
+      definers = this._triggerDefiners = { tree, of: triggerDefiners(tree) };
+    }
+    const states = this._triggerStates;
+    for (const { el, box, triggers } of definers.of) {
+      let of = states.get(el);
+      if (!of) states.set(el, (of = new Map()));
+      for (const trigger of triggers) {
+        of.set(
+          trigger.name,
+          this._triggerActive(box, trigger, of.get(trigger.name) ?? false),
+        );
+      }
+    }
+    const changed = timeline.applyTriggers((el, name) => {
+      const definer = triggerFor(tree, definers.of, el as Element, name);
+      return definer && (states.get(definer.el)?.get(name) ?? false);
+    });
+    if (changed.length) this._scheduleFrame();
+  }
+
+  /**
+   * Whether a trigger an element's `box` defines is active now, from
+   * whether it was: where its view timeline has the box in the scrollport
+   * it is seen in — the nearest scroll container's, or the pane's for the
+   * root — or where its scroll timeline has its scroller scrolled, each
+   * along the timeline's axis. A trigger with no timeline this reads never
+   * activates.
+   */
+  private _triggerActive(
+    box: Box,
+    trigger: TimelineTrigger,
+    was: boolean,
+  ): boolean {
+    const source = trigger.source;
+    if (source.kind === 'none') return false;
+    // across or down the page; the block and inline axes are those of a
+    // horizontal writing mode
+    const down = source.axis === 'block' || source.axis === 'y';
+    const scroller =
+      source.kind === 'scroll' && source.scroller === 'self'
+        ? isScroller(box)
+          ? box
+          : null
+        : source.kind === 'scroll' && source.scroller === 'root'
+          ? null
+          : nearestScroller(box);
+    if (source.kind === 'scroll' && source.scroller === 'self' && !scroller) {
+      return false;
+    }
+    // the scrollport, in document coordinates, and how far it is scrolled
+    // and can scroll
+    let portStart: number;
+    let portSize: number;
+    let offset: number;
+    let max: number;
+    if (scroller) {
+      const st = scrollStateOf(scroller);
+      portStart = down
+        ? scroller.y + scroller.borderTop
+        : scroller.x + scroller.borderLeft;
+      portSize = down ? st.clientHeight : st.clientWidth;
+      offset = down ? st.y : st.x;
+      max = down ? st.height - st.clientHeight : st.width - st.clientWidth;
+    } else {
+      const viewport = this._viewport();
+      const origin = this._scrolledOrigin();
+      const port = viewport
+        ? {
+            x: viewport.x - origin.x,
+            y: viewport.y - origin.y,
+            width: viewport.width,
+            height: viewport.height,
+          }
+        : { x: 0, y: 0, width: this.abs.width, height: this.abs.height };
+      portStart = down ? port.y : port.x;
+      portSize = down ? port.height : port.width;
+      offset = portStart;
+      max = Math.max(
+        0,
+        (down ? this._documentHeight : this._documentWidth) - portSize,
+      );
+    }
+    if (source.kind === 'scroll') {
+      const edges = (range: TimelineTrigger['activation']) =>
+        [scrollEdgeAt(range[0], max), scrollEdgeAt(range[1], max)] as const;
+      return triggerActive(
+        was,
+        offset,
+        edges(trigger.activation),
+        edges(trigger.active),
+      );
+    }
+    const start = (down ? box.y : box.x) - portStart;
+    const place = {
+      start,
+      end: start + (down ? box.height : box.width),
+      portStart: resolveLen(source.inset[0], portSize),
+      portEnd: portSize - resolveLen(source.inset[1], portSize),
+    };
+    const edges = (range: TimelineTrigger['activation']) =>
+      [viewEdgeAt(range[0], place), viewEdgeAt(range[1], place)] as const;
+    return triggerActive(
+      was,
+      0,
+      edges(trigger.activation),
+      edges(trigger.active),
+    );
+  }
+
   /**
    * After a scroll, which moves no layout: where a container's scroll
    * states answer a query otherwise now — a header stuck, a list scrolled
@@ -7115,6 +7265,8 @@ export class HtmlViewNode extends Node {
     // what a `scroll-state()` query answers for it, or for a sticky box
     // in it
     this._askScrollStates();
+    // and what a trigger whose timeline it scrolls says now
+    this._evaluateTriggers();
     this._props().onElementScroll?.(el);
     return offset;
   }
@@ -8096,6 +8248,91 @@ function scrolledTowards(dx: number, dy: number): number {
     (dx < 0 ? LEFT_EDGE : 0) |
     (dx > 0 ? RIGHT_EDGE : 0)
   );
+}
+
+/** An element that defines timeline triggers: its first box, and each
+ *  trigger it defines. */
+interface TriggerDefiner {
+  el: Element;
+  box: Box;
+  triggers: TimelineTrigger[];
+}
+
+/** The elements of a tree that define timeline triggers, in the
+ *  document's order. */
+function triggerDefiners(tree: BoxTree): TriggerDefiner[] {
+  const out: TriggerDefiner[] = [];
+  const seen = new Set<Element>();
+  const stack: Box[] = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const el = box.el;
+    if (el && !box.pseudo && !seen.has(el)) {
+      seen.add(el);
+      if (box.style.timelineTriggers.names.length) {
+        out.push({
+          el,
+          box,
+          triggers: timelineTriggersOf(box.style.timelineTriggers),
+        });
+      }
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return out;
+}
+
+/**
+ * The element whose trigger of `name` an animation of `el`'s hears: the
+ * last in the document's order to define one that `el` can see — every
+ * one, but one defined inside an element whose `trigger-scope` names it
+ * (or is `all`), which only what that element holds sees (CSS Animation
+ * Triggers 1). Undefined for none.
+ */
+function triggerFor(
+  tree: BoxTree,
+  definers: readonly TriggerDefiner[],
+  el: Element,
+  name: string,
+): TriggerDefiner | undefined {
+  const scopes = (at: Element): boolean => {
+    const scope = tree.styles.get(at)?.style.triggerScope;
+    return scope === 'all' || (Array.isArray(scope) && scope.includes(name));
+  };
+  let found: TriggerDefiner | undefined;
+  for (const definer of definers) {
+    if (!definer.triggers.some((t) => t.name === name)) continue;
+    let scope: Element | null = null;
+    for (let at: Element | null = definer.el; at; at = flatParentOf(at)) {
+      if (scopes(at)) {
+        scope = at;
+        break;
+      }
+    }
+    if (scope) {
+      let inside = false;
+      for (let at: Element | null = el; at; at = flatParentOf(at)) {
+        if (at === scope) {
+          inside = true;
+          break;
+        }
+      }
+      if (!inside) continue;
+    }
+    found = definer;
+  }
+  return found;
+}
+
+/** The scroll container a box is scrolled by: the nearest one around it,
+ *  or null for the pane the document is in. */
+function nearestScroller(box: Box): Box | null {
+  for (let at = box.parent; at; at = at.parent) {
+    if (isScroller(at)) return at;
+  }
+  return null;
 }
 
 function sameRect(a: Rect | null, b: Rect | null): boolean {

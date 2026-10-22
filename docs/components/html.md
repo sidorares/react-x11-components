@@ -2536,6 +2536,37 @@ same on every machine sets both: the Zen Garden bench runs `<Html>` with
 `animate={false}` and `reducedMotion={false}`, and pins Chrome's
 preference to `no-preference`.
 
+**Scroll-triggered animations** (CSS Animation Triggers 1): an animation
+whose `animation-trigger` names a trigger waits at its start — showing its
+first frame where it fills backwards — until the trigger does something to
+it, and then plays, pauses, plays backwards or goes back to its start as
+the actions after the name say: `play`, `play-once`, `play-forwards`,
+`play-backwards`, `pause`, `reset`, `replay` and `none`, the first on
+activation and the second, where there is one, on deactivation. An entry
+may hear several triggers, `--a play --b pause`, and the list repeats as
+the other animation lists do; the `animation` shorthand sets it back to
+`none`. A trigger is defined by `timeline-trigger` — a name, a source,
+an activation range and after a `/` an active range — or its longhands
+(`timeline-trigger-name`, `-source`, `-activation-range` and its `-start`
+and `-end`, `-active-range` and its, and `timeline-trigger-range`). Its
+source is `view()`, the element's view progress timeline in the nearest
+scroll container, or in the pane for the root, with an axis and insets;
+`auto`, which is `view()`; or `scroll()`, a scroller's progress, `nearest`,
+`root` or `self`. A range is `normal`, a length or a percentage, or one of
+`cover`, `contain`, `entry`, `exit`, `entry-crossing` and `exit-crossing`
+with a length or a percentage into it. A trigger activates when its
+timeline is inside its activation range and deactivates when it leaves its
+active range, which is the activation range where none is given. It is
+asked after each layout and each scroll, an element's or the pane's. An
+animation hears the last element in the document's order to define the
+name, but one defined inside an element whose `trigger-scope` names it, or
+is `all`, is heard only inside that element. A triggered animation is not
+lifted onto a layer, since a trigger can turn it back at any time. Not
+done: a timeline named by `scroll-timeline-name` or `view-timeline-name`
+(neither is read, so such a trigger never activates), `animation-timeline`
+itself, event triggers, and a scroll that jumps over an activation range
+between two frames, which does not activate it.
+
 **Transitions:** `transition` and its five longhands, `-webkit-transition`
 and its longhands too. A style change — a hover, a focus, a width across a
 `@media` breakpoint — that moves a property a transition names starts one

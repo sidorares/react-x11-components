@@ -247,7 +247,11 @@ export function liftOf(
     opacity ||= sets;
     transform ||= moves;
     const run = runs?.[index];
-    if (!run || run.name !== name || run.hold !== null) return null;
+    // nor one a trigger plays, which may turn it back or hold it at any
+    // time, as a page's script may
+    if (!run || run.name !== name || run.hold !== null || run.trig) {
+      return null;
+    }
     const timing = timingAt(animations, index);
     if (!(timing.duration > 0) || !(timing.iterations > 0)) return null;
     if (progressAt(timing, host.now - run.start).phase !== 'active') {

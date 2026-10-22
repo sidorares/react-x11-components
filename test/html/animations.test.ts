@@ -37,6 +37,12 @@ import {
 } from '../../src/html/css/transform3d.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
+import {
+  timelineTriggersOf,
+  triggerActive,
+  viewEdgeAt,
+} from '../../src/html/css/triggers.js';
+import type { RangeName } from '../../src/html/css/triggers.js';
 import type { DocumentSprite } from '../../src/html/sprites.js';
 import { fixedToViewport, stacksLayers } from '../../src/html/paint.js';
 import type { Box } from '../../src/html/layout/boxes.js';
@@ -48,6 +54,7 @@ import {
   FONTS,
   boxOf,
   drawnCorners,
+  findById,
   h,
   layerCorners,
   metric,
@@ -3464,3 +3471,269 @@ function findElement(
   }
   throw new Error(`no #${id}`);
 }
+
+test('animation-trigger, timeline-trigger and trigger-scope are read', async () => {
+  const { node } = await render(
+    '<style>' +
+      '#a{animation:a 1s,b 1s;animation-trigger:--t play-forwards play-backwards,none}' +
+      '#b{animation-trigger:--t play --u pause}' +
+      // `animation` sets it back to none
+      '#c{animation-trigger:--t play;animation:a 1s}' +
+      // a value that is none leaves it as it was
+      '#d{animation-trigger:--t play;animation-trigger:--t jump}' +
+      '#e{timeline-trigger:--t view() contain / cover, view(x 10px 20%) --u}' +
+      '#f{timeline-trigger:--t scroll(root x) 10% 50%;trigger-scope:--t}' +
+      '#g{timeline-trigger-name:--t;timeline-trigger-source:view(inline);' +
+      'timeline-trigger-activation-range:entry 100% exit 0%;' +
+      'timeline-trigger-active-range-end:cover 90%;trigger-scope:all}' +
+      '</style>' +
+      '<p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+      '<p id="e">e</p><p id="f">f</p><p id="g">g</p>',
+  );
+  const style = (id: string) => styleOf(node, id);
+  assert.deepStrictEqual(style('a').animations.triggers, [
+    [{ name: '--t', actions: ['play-forwards', 'play-backwards'] }],
+    null,
+  ]);
+  assert.deepStrictEqual(style('b').animations.triggers, [
+    [
+      { name: '--t', actions: ['play'] },
+      { name: '--u', actions: ['pause'] },
+    ],
+  ]);
+  assert.deepStrictEqual(style('c').animations.triggers, [null]);
+  assert.deepStrictEqual(style('d').animations.triggers, [
+    [{ name: '--t', actions: ['play'] }],
+  ]);
+  const e = timelineTriggersOf(style('e').timelineTriggers);
+  assert.deepStrictEqual(
+    e.map((t) => [t.name, t.source.kind]),
+    [
+      ['--t', 'view'],
+      ['--u', 'view'],
+    ],
+  );
+  assert.deepStrictEqual(e[0].activation, [
+    { name: 'contain', offset: 0 },
+    { name: 'contain', offset: { pct: 100 } },
+  ]);
+  assert.deepStrictEqual(e[0].active, [
+    { name: 'cover', offset: 0 },
+    { name: 'cover', offset: { pct: 100 } },
+  ]);
+  // with no active range, the activation range
+  assert.deepStrictEqual(e[1].active, e[1].activation);
+  assert.deepStrictEqual(e[1].source, {
+    kind: 'view',
+    axis: 'x',
+    inset: [10, { pct: 20 }],
+  });
+  const [f] = timelineTriggersOf(style('f').timelineTriggers);
+  assert.deepStrictEqual(f.source, {
+    kind: 'scroll',
+    axis: 'x',
+    scroller: 'root',
+  });
+  assert.deepStrictEqual(f.activation, [
+    { name: null, offset: { pct: 10 } },
+    { name: null, offset: { pct: 50 } },
+  ]);
+  assert.deepStrictEqual(style('f').triggerScope, ['--t']);
+  const [g] = timelineTriggersOf(style('g').timelineTriggers);
+  assert.deepStrictEqual(g.source, {
+    kind: 'view',
+    axis: 'inline',
+    inset: [0, 0],
+  });
+  assert.deepStrictEqual(g.activation, [
+    { name: 'entry', offset: { pct: 100 } },
+    { name: 'exit', offset: { pct: 0 } },
+  ]);
+  assert.deepStrictEqual(g.active, [
+    { name: 'entry', offset: { pct: 100 } },
+    { name: 'cover', offset: { pct: 90 } },
+  ]);
+  assert.strictEqual(style('g').triggerScope, 'all');
+});
+
+test("a view timeline's ranges are where its subject crosses the scrollport", () => {
+  // a subject from 150 to 190 below a scrollport 100 tall, scrolled to 0
+  const place = { start: 150, end: 190, portStart: 0, portEnd: 100 };
+  const at = (name: RangeName | null, pct: number) =>
+    viewEdgeAt({ name, offset: { pct } }, place);
+  assert.deepStrictEqual([at('cover', 0), at('cover', 100)], [50, 190]);
+  assert.deepStrictEqual([at('contain', 0), at('contain', 100)], [90, 150]);
+  assert.deepStrictEqual([at('entry', 0), at('entry', 100)], [50, 90]);
+  assert.deepStrictEqual([at('exit', 0), at('exit', 100)], [150, 190]);
+  assert.deepStrictEqual(
+    [at('entry-crossing', 0), at('entry-crossing', 100)],
+    [50, 90],
+  );
+  assert.deepStrictEqual(
+    [at('exit-crossing', 0), at('exit-crossing', 100)],
+    [150, 190],
+  );
+  // `normal` and a length alone are into `cover`
+  assert.strictEqual(viewEdgeAt({ name: null, offset: 10 }, place), 60);
+  // a subject taller than the scrollport is contained while it covers it
+  const tall = { start: 150, end: 400, portStart: 0, portEnd: 100 };
+  assert.strictEqual(viewEdgeAt({ name: 'contain', offset: 0 }, tall), 150);
+  assert.strictEqual(
+    viewEdgeAt({ name: 'contain', offset: { pct: 100 } }, tall),
+    300,
+  );
+  // active from the activation range, and on until the active range ends
+  assert.strictEqual(triggerActive(false, 0, [-10, 10], [-50, 50]), true);
+  assert.strictEqual(triggerActive(false, 20, [-10, 10], [-50, 50]), false);
+  assert.strictEqual(triggerActive(true, 20, [-10, 10], [-50, 50]), true);
+  assert.strictEqual(triggerActive(true, 60, [-10, 10], [-50, 50]), false);
+});
+
+/**
+ * A document of `body` in a list 100px tall that scrolls, run on a held
+ * clock (`running`), with `fade`: an opacity from 0 to 1. A trigger acts
+ * at the time the clock has come to, which moves only while a frame is
+ * asked for, so its frames are counted from there (`frames`).
+ */
+async function triggering(t: TestContext, css: string, body: string) {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      `#list{height:100px;overflow:auto}${css}</style>` +
+      `<div id="list">${body}</div>`,
+  );
+  return {
+    opacity: (id: string) => doc.style(id).opacity,
+    pending: () => doc.clock.pending,
+    async scroll(y: number) {
+      doc.el.scrollElementTo(findById(doc.el.document, 'list')!, { y });
+      await act();
+    },
+    /** `n` frames of 16ms, or as many as are asked for. */
+    async frames(n: number) {
+      for (let i = 0; i < n; i += 1) if (!(await doc.clock.frame())) break;
+      await act();
+    },
+  };
+}
+
+/** A card 40px tall, 300px down the list and with 300px under it. */
+const TRIGGER_CARD =
+  '<div style="height:300px"></div><div id="card" style="height:40px"></div>' +
+  '<div style="height:300px"></div>';
+
+test('a triggered animation waits at its start, plays forwards as its subject comes into view and backwards as it leaves', async (t) => {
+  const doc = await triggering(
+    t,
+    '#card{timeline-trigger:--t view() contain;' +
+      'animation:fade 160ms linear both;' +
+      'animation-trigger:--t play-forwards play-backwards}',
+    TRIGGER_CARD,
+  );
+  assert.strictEqual(doc.opacity('card'), 0, 'held at its start');
+  assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
+  // the card from 50 to 90 of the list's 100: contained
+  await doc.scroll(250);
+  await doc.frames(5);
+  assert.strictEqual(doc.opacity('card'), 0.5, 'half way, forwards');
+  await doc.frames(20);
+  assert.strictEqual(doc.opacity('card'), 1, 'played to its end');
+  assert.strictEqual(doc.pending(), false, 'and held there');
+  // no longer contained, 80 to 120: backwards from its end — while it is
+  // in view, since a frame of what draws nothing waits for a paint
+  await doc.scroll(220);
+  await doc.frames(5);
+  assert.strictEqual(doc.opacity('card'), 0.5, 'half way back');
+  await doc.frames(20);
+  assert.strictEqual(doc.opacity('card'), 0, 'back at its start');
+  assert.strictEqual(doc.pending(), false, 'and finished');
+  // and in again, forwards again
+  await doc.scroll(250);
+  await doc.frames(5);
+  assert.strictEqual(doc.opacity('card'), 0.5);
+});
+
+test('a trigger pauses what it plays, and an animation hears the trigger its scope lets it see', async (t) => {
+  const doc = await triggering(
+    t,
+    '#card{timeline-trigger:--t view() contain}' +
+      '#spin{animation:fade 160ms linear both;animation-trigger:--t play pause}' +
+      // each section's own trigger, which only what the section holds sees
+      'section{trigger-scope:--s}section p{height:10px;margin:0}' +
+      '.trig{timeline-trigger:--s view()}' +
+      '.anim{animation:fade 160ms linear both;animation-trigger:--s play-once}',
+    '<section><p class="trig"></p><p class="anim" id="near"></p></section>' +
+      '<div style="height:280px"></div><div id="card" style="height:40px"></div>' +
+      '<div id="spin" style="height:10px"></div><div style="height:400px"></div>' +
+      '<section><p class="trig"></p><p class="anim" id="far"></p></section>',
+  );
+  await doc.frames(5);
+  // the first section is in the list's view and the last is not: each
+  // animation hears its own section's trigger, and not the last one
+  assert.strictEqual(doc.opacity('near'), 0.5);
+  assert.strictEqual(doc.opacity('far'), 0);
+  assert.strictEqual(doc.opacity('spin'), 0);
+  await doc.frames(20);
+  assert.strictEqual(doc.opacity('near'), 1);
+  // the card comes into view: play; and out again half way: pause
+  await doc.scroll(250);
+  await doc.frames(5);
+  assert.strictEqual(doc.opacity('spin'), 0.5);
+  await doc.scroll(220);
+  await doc.frames(20);
+  assert.strictEqual(doc.opacity('spin'), 0.5, 'paused where it was');
+  // and once played, `play-once` plays no more
+  await doc.scroll(0);
+  await doc.frames(20);
+  assert.strictEqual(doc.opacity('near'), 1);
+  assert.strictEqual(doc.pending(), false);
+});
+
+test('a scroll timeline trigger is active across its range of its scroller', async (t) => {
+  const doc = await triggering(
+    t,
+    '#card{timeline-trigger:--t scroll() 50% 100%;' +
+      'animation:fade 160ms linear both;animation-trigger:--t play reset}',
+    TRIGGER_CARD,
+  );
+  // the list scrolls 540: half way is 270
+  await doc.scroll(200);
+  await doc.frames(10);
+  assert.strictEqual(doc.opacity('card'), 0);
+  await doc.scroll(300);
+  await doc.frames(5);
+  assert.strictEqual(doc.opacity('card'), 0.5);
+  // back out of the range: reset, held at its start
+  await doc.scroll(100);
+  await doc.frames(1);
+  assert.strictEqual(doc.opacity('card'), 0);
+  assert.strictEqual(doc.pending(), false);
+});
+
+test('a trigger whose subject the pane scrolls into view plays its animation', async (t) => {
+  const clock = holdClock(t, animationClock);
+  const { node } = await inPane(
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#card{height:40px;timeline-trigger:--t view();' +
+      'animation:fade 160ms linear both;animation-trigger:--t play}</style>' +
+      '<div style="height:400px"></div><div id="card"></div>' +
+      '<div style="height:400px"></div>',
+  );
+  await act();
+  const opacity = () => styleOf(node, 'card').opacity;
+  assert.strictEqual(opacity(), 0, 'below the pane, held at its start');
+  assert.strictEqual(clock.pending, false);
+  const pane = screen.getByTestName('pane') as DrawnNode & {
+    scrollTo(y: number): void;
+  };
+  await act(async () => pane.scrollTo(300));
+  // the paint that follows the pane notes the scroll, and the trigger is
+  // asked after it
+  await act();
+  await act();
+  for (let i = 0; i < 5; i += 1) await clock.frame();
+  await act();
+  assert.strictEqual(opacity(), 0.5);
+});

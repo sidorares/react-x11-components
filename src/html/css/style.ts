@@ -71,6 +71,12 @@ import {
 } from './color.js';
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
+import {
+  NO_TIMELINE_TRIGGERS,
+  applyTimelineTrigger,
+  parseTriggerScope,
+} from './triggers.js';
+import type { TimelineTriggers, TriggerScope } from './triggers.js';
 import type { BasicShape } from './basic-shape.js';
 
 export type Display =
@@ -931,6 +937,14 @@ export interface ComputedStyle {
    *  `NO_ANIMATIONS`, shared, where nothing sets one. What they leave on
    *  the style is in its other fields already (`Cascade._computeStyle`). */
   animations: Animations;
+  /** `timeline-trigger` and its longhands (CSS Animation Triggers 1): the
+   *  triggers the element defines, each a range of its view or scroll
+   *  timeline an animation that names it waits for (`css/triggers.ts`).
+   *  `NO_TIMELINE_TRIGGERS`, shared, where it defines none. */
+  timelineTriggers: TimelineTriggers;
+  /** `trigger-scope`: the trigger names whose triggers defined in the
+   *  element are heard only inside it. */
+  triggerScope: TriggerScope;
   /** `transition` and its longhands, each a list (`css/animation.ts`):
    *  `NO_TRANSITIONS`, shared, where nothing sets one. What they make of
    *  the style as they run is in its other fields already
@@ -1512,6 +1526,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     perspectiveOrigin: [{ pct: 50 }, { pct: 50 }],
     backfaceVisibility: 'visible',
     animations: NO_ANIMATIONS,
+    timelineTriggers: NO_TIMELINE_TRIGGERS,
+    triggerScope: 'none',
     transitions: NO_TRANSITIONS,
     zIndex: AUTO,
     verticalAlign: 'baseline',
@@ -2467,13 +2483,38 @@ export function applyDeclaration(
     case 'animation-iteration-count':
     case 'animation-direction':
     case 'animation-fill-mode':
-    case 'animation-play-state': {
+    case 'animation-play-state':
+    case 'animation-trigger': {
       const animations = animationLonghand(
         style.animations,
         ANIMATION_LONGHANDS[name],
         value,
       );
       if (animations) style.animations = animations;
+      return;
+    }
+    case 'timeline-trigger':
+    case 'timeline-trigger-name':
+    case 'timeline-trigger-source':
+    case 'timeline-trigger-range':
+    case 'timeline-trigger-activation-range':
+    case 'timeline-trigger-activation-range-start':
+    case 'timeline-trigger-activation-range-end':
+    case 'timeline-trigger-active-range':
+    case 'timeline-trigger-active-range-start':
+    case 'timeline-trigger-active-range-end': {
+      const triggers = applyTimelineTrigger(
+        style.timelineTriggers,
+        name,
+        value,
+        ctx,
+      );
+      if (triggers) style.timelineTriggers = triggers;
+      return;
+    }
+    case 'trigger-scope': {
+      const scope = parseTriggerScope(value);
+      if (scope !== undefined) style.triggerScope = scope;
       return;
     }
     case 'transition': {
@@ -7330,6 +7371,17 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-webkit-mask': ['mask'],
   animation: ['animations'],
   '-webkit-animation': ['animations'],
+  'timeline-trigger': ['timelineTriggers'],
+  'timeline-trigger-name': ['timelineTriggers'],
+  'timeline-trigger-source': ['timelineTriggers'],
+  'timeline-trigger-range': ['timelineTriggers'],
+  'timeline-trigger-activation-range': ['timelineTriggers'],
+  'timeline-trigger-activation-range-start': ['timelineTriggers'],
+  'timeline-trigger-activation-range-end': ['timelineTriggers'],
+  'timeline-trigger-active-range': ['timelineTriggers'],
+  'timeline-trigger-active-range-start': ['timelineTriggers'],
+  'timeline-trigger-active-range-end': ['timelineTriggers'],
+  'trigger-scope': ['triggerScope'],
   transition: ['transitions'],
   '-webkit-transition': ['transitions'],
   'border-image-source': ['borderImage'],
