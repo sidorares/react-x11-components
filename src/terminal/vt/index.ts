@@ -128,7 +128,12 @@ export interface VtTerminalProps {
 export function VtTerminal(props: VtTerminalProps): ReactElement {
   const {
     enabled = true,
-    stopSignal = 'SIGTERM',
+    // A hangup, which is what closing a terminal is: the program under this
+    // pty is the shell itself, and an interactive bash or zsh ignores
+    // SIGTERM — it stayed alive, and its pty with it, after the pane went,
+    // and the app that held them could not exit. An emulator's child is the
+    // emulator, which does take SIGTERM and hangs its own shell up.
+    stopSignal = 'SIGHUP',
     scrollback = 1000,
     bell = 'none',
   } = props;

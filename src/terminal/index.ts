@@ -200,7 +200,10 @@ export interface TerminalProps {
   fallback?: ReactNode;
   /** False holds off spawning — a pane in a tab that is not open yet. */
   enabled?: boolean;
-  /** Sent on unmount and restart. Default `SIGTERM`. */
+  /** Sent on unmount and restart. Default `SIGTERM` to an emulator, and
+   *  `SIGHUP` to the program under a vt terminal's pty — the hangup a closing
+   *  terminal sends, which an interactive shell takes and SIGTERM it does
+   *  not. */
   stopSignal?: string;
   /**
    * Where the process runs. Defaults to this machine, through node. The seam

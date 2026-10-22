@@ -58,7 +58,7 @@ pane keeps its place, empty. Either way nothing is spawned.
 | `cwd`        | `string`                              |                                                                                                                                                                                           |
 | `env`        | `Record<string, string \| undefined>` | Added to the ambient environment, not a replacement for it.                                                                                                                               |
 | `enabled`    | `boolean`                             | False holds off spawning — a pane in a tab that is not open yet.                                                                                                                          |
-| `stopSignal` | `string`                              | Sent on unmount and restart. Default `SIGTERM`.                                                                                                                                           |
+| `stopSignal` | `string`                              | Sent on unmount and restart. Default `SIGTERM` to an emulator; `SIGHUP` to the program under a vt pty, the hangup a closing terminal sends (an interactive shell ignores `SIGTERM`).      |
 | `processes`  | `ProcessHost`                         | Where the process runs. See [embed](embed.md).                                                                                                                                            |
 
 ### Appearance
