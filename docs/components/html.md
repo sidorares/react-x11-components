@@ -823,6 +823,17 @@ than going on a layer of the render server's, since a layer's frames are
 sampled ahead from a cycle that a page's script may seek, pause or cancel
 at any time.
 
+**The page's selection is the reader's** (Selection API 2). What the
+reader selects in the document — a press and a drag, a double click, Ctrl+A
+— is what `getSelection()` answers the next time the page reads it, as a
+range between the text nodes it covers; and a range the page selects
+(`addRange`, `setBaseAndExtent`, `selectAllChildren`) is drawn and copied
+as the reader's is. A caret the page puts somewhere draws nothing, and
+leaves the reader's selection none; and the reader's going away — at a
+press, at a key — leaves the page's as it was, so an edit at a caret is
+made where the page has it. A selection's direction is not the reader's to
+tell: one read back is forward.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another

@@ -1067,6 +1067,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
       setRegisteredProperties: (rules) =>
         nodeRef.current?.setRegisteredProperties(rules),
+      selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
+      selectPoints: (points) => nodeRef.current?.selectPoints(points),
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>

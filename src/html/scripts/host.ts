@@ -252,6 +252,19 @@ export interface HandleInternals {
   /** What the page's `CSS.registerProperty` registered, as `@property`
    *  rules (`HtmlViewNode.setRegisteredProperties`). */
   setRegisteredProperties(rules: string): void;
+  /** The reader's selection in the document as DOM boundary points, and
+   *  a page's drawn as one (`HtmlViewNode.selectionPoints`,
+   *  `selectPoints`). */
+  selectionPoints(): {
+    sc: AnyNode;
+    so: number;
+    ec: AnyNode;
+    eo: number;
+    key: string;
+  } | null;
+  selectPoints(
+    points: { sc: AnyNode; so: number; ec: AnyNode; eo: number } | null,
+  ): void;
 }
 
 /** A custom highlight as a page's `CSS.highlights` holds it: a live
@@ -2320,6 +2333,42 @@ export class DomHost {
         }
         return '';
       }
+      // the reader's selection where it changed since the page last heard
+      // of it or set it: its two points as ids and offsets, '' for none,
+      // and null for no change
+      case 'documentSelection': {
+        const points = this._seams.handle.selectionPoints?.() ?? null;
+        const key = points?.key ?? '';
+        if (key === this._selectionTold) return null;
+        this._selectionTold = key;
+        return points
+          ? JSON.stringify([
+              this.idOf(points.sc),
+              points.so,
+              this.idOf(points.ec),
+              points.eo,
+            ])
+          : '';
+      }
+      // the page's selection, drawn as the reader's is
+      case 'setDocumentSelection': {
+        const points = text(a)
+          ? (JSON.parse(text(a)) as [number, number, number, number])
+          : null;
+        this._seams.handle.selectPoints?.(
+          points
+            ? {
+                sc: this._node(points[0]),
+                so: points[1],
+                ec: this._node(points[2]),
+                eo: points[3],
+              }
+            : null,
+        );
+        // what the page set is what it has heard of
+        this._selectionTold = this._seams.handle.selectionPoints?.()?.key ?? '';
+        return null;
+      }
       // what the page registered, as `@property` rules, told at once
       case 'registeredProperties':
         this._seams.handle.setRegisteredProperties?.(text(a));
@@ -3296,6 +3345,10 @@ export class DomHost {
     if (at === this.document) return this._seams.handle;
     return this._s.drawn.get(at as Document) ?? null;
   }
+
+  /** The reader's selection as the page last heard of it or set it, as
+   *  core's range (`documentSelection`). */
+  private _selectionTold = '';
 
   /** The page's custom highlights, as `highlights` was last told them. */
   private _highlightSpec: HighlightSpec[] = [];

@@ -49,7 +49,7 @@ import type {
   MeasureConstraints,
   MeasuredSize,
 } from 'react-x11/node';
-import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
+import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
@@ -3908,7 +3908,6 @@ export class HtmlViewNode extends Node {
    *  Highlight API 1), as its host last told them. */
   private _highlights: readonly HighlightRanges[] = [];
 
-  /** A page's custom highlights changed: drawn again with the new ones. */
   /** What a page's `CSS.registerProperty` registered, as the `@property`
    *  rules it amounts to, applied after every other sheet: told at once,
    *  where an adopted sheet waits for a render, since a page reads what it
@@ -3920,6 +3919,71 @@ export class HtmlViewNode extends Node {
     this._invalidate(Stale.Style);
   }
 
+  /**
+   * The document selection's part in this document as DOM boundary points
+   * (Selection API 2): what a page's `getSelection()` answers once the
+   * reader selected something. Null where nothing of it is selected.
+   */
+  selectionPoints(): {
+    sc: AnyNode;
+    so: number;
+    ec: AnyNode;
+    eo: number;
+    /** Core's range, which says whether it moved where the points, a
+     *  tree's nodes, cannot. */
+    key: string;
+  } | null {
+    const range = this.selectionRange;
+    const tree = this._tree;
+    if (!range || !tree || range.end <= range.start) return null;
+    // core's indices are code points of the text a selection can take
+    const start = pointOfUnit(
+      tree,
+      this._inDocument(this._toUnits(range.start), true),
+    );
+    const end = pointOfUnit(
+      tree,
+      this._inDocument(this._toUnits(range.end), false),
+      true,
+    );
+    if (!start || !end) return null;
+    return {
+      sc: start.node,
+      so: start.offset,
+      ec: end.node,
+      eo: end.offset,
+      key: `${range.start}:${range.end}`,
+    };
+  }
+
+  /** Select what a page selected, between two DOM boundary points, as the
+   *  reader's selection is drawn and copied; null drops the selection. */
+  selectPoints(
+    points: { sc: AnyNode; so: number; ec: AnyNode; eo: number } | null,
+  ): void {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    // the selection is the surface's around the document, `<Html>`'s
+    // selectable box, which this is a part of
+    let surface: DrawnNode | null = this.parent as DrawnNode | null;
+    while (surface && surface.textSelection === null) {
+      surface = surface.parent as DrawnNode | null;
+    }
+    if (!surface) return;
+    if (!points || !tree) {
+      if (this.selectionRange) surface.clearSelection();
+      return;
+    }
+    const index = (node: AnyNode, offset: number): number =>
+      this._toPoints(this._selectable(unitOfPoint(tree, node, offset)));
+    const self = this as unknown as DrawnNode;
+    surface.setSelection(
+      { node: self, index: index(points.sc, points.so) },
+      { node: self, index: index(points.ec, points.eo) },
+    );
+  }
+
+  /** A page's custom highlights changed: drawn again with the new ones. */
   setHighlights(highlights: readonly HighlightRanges[]): void {
     if (!this._highlights.length && !highlights.length) return;
     this._highlights = highlights;
