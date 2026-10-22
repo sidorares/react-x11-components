@@ -2959,7 +2959,14 @@ paint runs the matrices the box has now over the newest pixels read for
 it. A context whose `filter` does not stick for a list sends every box to
 the read from then on (`unfiltered`), and is asked with `in` first, since
 assigning an unknown property sticks on any object. Five things about the
-read are load-bearing.
+read are load-bearing, and one about what a filter reaches past the box.
+**A blur is ink, and the surface is as large**: `filterOutsets` grows a
+box's bounds by three deviations a `blur()`, before its clip path and its
+transform cut and move them, so the damage of the strip a glow falls in
+reaches the box and the group is painted on a surface that holds the
+glow; the blur is canvas's `filter` where a context runs one and
+`blurPixels` over the read elsewhere. **Anything new a filter draws past
+the box joins `filterOutsets`**, or it is cut at the box's ink.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame
 — ekazinich.com's — dropped the read at each build, and those frames drew

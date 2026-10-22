@@ -16,7 +16,8 @@ colour.
 | `grayscale()`, `sepia()`, `saturate()`, `hue-rotate()` | the spec's matrices (Filter Effects 1, 13)    |
 | `invert()`, `brightness()`, `contrast()`               | `feComponentTransfer`'s `linear`, as a matrix |
 | `opacity()`                                            | multiplied into the box's opacity             |
-| `blur()`, `drop-shadow()`                              | read and interpolated, not drawn yet          |
+| `blur()`                                               | a Gaussian, 3σ of ink past the box            |
+| `drop-shadow()`                                        | read and interpolated, not drawn yet          |
 | `url()`                                                | the whole list ignored (Filter Effects 1, 4)  |
 
 Every list, drawn or not, makes the box a stacking context and the
@@ -148,9 +149,12 @@ Two things ntk could do, recorded so they are not rediscovered:
 
 - The vImage verb, macOS's second rung, which takes the pixel pass off the
   JavaScript thread.
-- `blur()` and `drop-shadow()`, which need the seam more than the colour
-  functions did. A blur in JavaScript over a read back is a convolution
-  per frame on the main thread, and the ink a blur or a shadow adds past
-  the box has to reach `computePaintBounds` and the damage. ntk's
-  convolution, Core Image's or vImage's gaussian, two shader passes on
-  Wayland.
+- `drop-shadow()`, and a `blur()` on X11 and Wayland that does not run on
+  the JavaScript thread. A `blur()` is drawn: through canvas's `filter`
+  where the context runs one, and over a read back elsewhere, where it is
+  `feGaussianBlur`'s three box blurs in JavaScript, run again only as the
+  read or the filter changes — a transition of a blur's deviation is one a
+  frame. Its ink, three deviations past the box, reaches
+  `computePaintBounds` (`filterOutsets`), so the damage and the surface
+  take it in. ntk's convolution, Core Image's or vImage's gaussian, two
+  shader passes on Wayland, would take the pass off the thread.

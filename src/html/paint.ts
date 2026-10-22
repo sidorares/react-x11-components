@@ -166,7 +166,12 @@ import {
 } from './svg.js';
 import type { IntrinsicSize, SurfaceMaker } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
-import { backdropFilter, colourFilter } from './css/filter.js';
+import {
+  backdropFilter,
+  colourFilter,
+  filterOutsets,
+  runsOverPixels,
+} from './css/filter.js';
 import type { ColourFilter, FilterFunction } from './css/filter.js';
 import type { FilterStore } from './filters.js';
 
@@ -772,6 +777,20 @@ export function computePaintBounds(box: Box, moved = false): number {
   }
   if (lines && (above > 0 || below > 0)) LINE_INK.set(lines, { above, below });
   else if (lines) LINE_INK.delete(lines);
+  // a filter's blur draws the box and all it holds past where they are, and
+  // that is ink and no overflow: a repaint of the strip a glow falls in has
+  // to reach the box, as a shadow's does, and the surface the box is
+  // filtered on has to hold it (`filteredFor`). The filter comes before a
+  // clip path and a transform (Filter Effects 1, 2), so it is reached
+  // before they cut and move it.
+  const outsets =
+    own && x1 !== Infinity ? filterOutsets(box.style.filter) : null;
+  if (outsets) {
+    x1 -= outsets.left;
+    y1 -= outsets.top;
+    x2 += outsets.right;
+    y2 += outsets.bottom;
+  }
   // a `clip-path` cuts the box and all it holds: no ink past the path, and
   // none where it leaves nothing — though the scrollable overflow is what
   // it was, as a browser has it, which is why a page that hides a box with
@@ -1928,8 +1947,8 @@ function paintProjected(
       ctx.transform!(undo[0], undo[1], undo[2], undo[3], undo[4], undo[5]);
     }
     const colour = box.style.filter && colourOf(box.style.filter);
-    const filtered = colour?.matrices.length
-      ? filteredFor(ctx, box, options, total, colour)
+    const filtered = runsOverPixels(colour)
+      ? filteredFor(ctx, box, options, total, colour!)
       : null;
     // a filtered box with nothing read for it yet draws nothing
     if (filtered === undefined) return;
@@ -2582,10 +2601,12 @@ function repaintStale(
 }
 
 /**
- * A box a `filter`'s colour functions are run over (Filter Effects 1, 13):
- * painted whole, as the group the filter makes it, on a surface of its
- * own, and the surface's pixels run through the matrices before it is
- * drawn — at the box's opacity, and through `through` where it turns.
+ * A box a `filter`'s colour functions and blur are run over (Filter
+ * Effects 1, 13): painted whole, as the group the filter makes it, on a
+ * surface of its own as large as its ink — which takes in how far the
+ * blur reaches past it (`filterOutsets`) — and the surface's pixels run
+ * through the matrices and the blur before it is drawn, at the box's
+ * opacity, and through `through` where it turns.
  * Where the context runs a filter itself, canvas's `filter`, the surface is
  * drawn through it; elsewhere its pixels come back a round trip after they
  * are asked for, so they are read and kept (`src/html/filters.ts`), and
@@ -2603,8 +2624,8 @@ function paintFiltered(
   opacity: number,
 ): boolean {
   const colour = colourOf(box.style.filter!);
-  if (!colour?.matrices.length) return false;
-  const kept = filteredFor(ctx, box, options, through, colour);
+  if (!runsOverPixels(colour)) return false;
+  const kept = filteredFor(ctx, box, options, through, colour!);
   if (kept === null) return false;
   if (kept) drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity);
   return true;
@@ -2706,7 +2727,12 @@ function filteredFor(
   // turned and rose on ekazinich.com's hover jumped a pixel at each frame
   // drawn from a read and back at each drawn from the next
   if (!kept.raw) return undefined;
-  const surface = store.filtered(kept, colour.matrices, colour.key);
+  const surface = store.filtered(
+    kept,
+    colour.matrices,
+    colour.key,
+    colour.blur,
+  );
   if (!surface) return undefined;
   store.placed(kept, fx, fy);
   return {

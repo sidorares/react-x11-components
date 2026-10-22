@@ -2197,13 +2197,17 @@ in it, an inline box as well (Filter Effects 1, 2). Its colour functions
 are drawn: `grayscale()`, `sepia()`, `saturate()`, `hue-rotate()`,
 `invert()`, `brightness()` and `contrast()` as the matrices the spec gives
 them, run over the box and all it draws in the order written, and
-`opacity()` as more of the box's opacity. The box is painted unfiltered on
-a surface of its own, kept for the element. Where the context runs a
+`opacity()` as more of the box's opacity; and `blur()` as a Gaussian of
+the standard deviation it names, which draws the box and all it holds past
+where they are by three deviations, ink a repaint of the strip it falls in
+reaches, as a shadow's is, and no overflow. The box is painted unfiltered on
+a surface of its own as large as that ink, kept for the element. Where the context runs a
 filter itself — react-x11's native one on macOS and Windows takes the
 colour functions as canvas's `filter` — the surface is drawn through it in
 the paint, and drawn through again only as the box or the filter changes.
 Elsewhere — X11 and Wayland — the surface is read back and the matrices
-run over what was read; the read arrives a round trip after the paint that
+and the blur run over what was read, the blur as `feGaussianBlur`'s three
+box blurs, on the JavaScript thread; the read arrives a round trip after the paint that
 asked for it, which draws the box from the read before, or — the first
 time a box is drawn — not at all. What lags then is the box's content and
 never the filter: a transition of the filter, as a hover runs one, draws
@@ -2211,8 +2215,8 @@ each frame at the amount it has then, from what was read once. A box that
 moves a fraction of a pixel at a time — under a transform, a hover lifting
 a card — is drawn from what was read, moved with it and resampled, and
 read again where it is once it has been still for a moment.
-An inline box's filter is not drawn, nor are `blur()`, `drop-shadow()` and
-a `url()` to an SVG `<filter>`, which has the whole list ignored, as a
+An inline box's filter is not drawn, nor are `drop-shadow()` and a `url()`
+to an SVG `<filter>`, which has the whole list ignored, as a
 reference to a filter that is not there has (Filter Effects 1, 4). A
 filtered element is never lifted onto a layer of its own on macOS, nor is
 anything in it, and a `<video>` in one shows its poster, filtered, rather
