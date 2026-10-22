@@ -521,6 +521,28 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
   return true;
 }
 
+/**
+ * A `reftest-wait` document with what wptrunner runs in it once it has
+ * loaded (`test-wait.js`): two frames, then `TestRendered` at the root,
+ * which a test that waits for its first rendering listens for. Appended as
+ * a script that takes itself out as it runs, since the runner has no
+ * other way into the page.
+ */
+function withTestRendered(source: string): string {
+  if (!/\bclass\s*=\s*["']?[^"'>]*\breftest-wait\b/i.test(source))
+    return source;
+  const script =
+    '<script>(function(){var s=document.currentScript;if(s)s.remove();' +
+    'function go(){var r=document.documentElement;' +
+    'if(!/\\breftest-wait\\b/.test(r.className))return;' +
+    'requestAnimationFrame(function(){requestAnimationFrame(function(){' +
+    "r.dispatchEvent(new Event('TestRendered'));});});}" +
+    "if(document.readyState==='complete')setTimeout(go,0);" +
+    "else addEventListener('load',function(){setTimeout(go,0);},{once:true});" +
+    '})();</script>';
+  return source + script;
+}
+
 /** Whether the root still says `reftest-wait` or `test-wait`. */
 function stillWaiting(): boolean {
   const doc = handle?.document as {
@@ -563,7 +585,7 @@ async function render(
   await show(
     h(Page, {
       key: `${serial++}`,
-      source: doc.source,
+      source: withTestRendered(doc.source),
       baseUrl: doc.url,
       charset: doc.charset,
       network,

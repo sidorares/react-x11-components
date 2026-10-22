@@ -5363,7 +5363,11 @@ test('a menu that hides the panel it leaves once its fade ends shows one panel',
       '</script>',
   );
   await settled(doc, 'out', (t) => t === 'done');
-  const drawn = (doc.view as unknown as { _tree: { text: string } })._tree.text;
+  const text = () =>
+    (doc.view as unknown as { _tree: { text: string } })._tree.text;
+  // the boxes are built again after the task that hid it
+  await settled(doc, 'out', () => !text().includes('Alpha panel'), 1000);
+  const drawn = text();
   assert.ok(drawn.includes('Beta panel'), drawn);
   assert.ok(!drawn.includes('Alpha panel'), drawn);
   assert.ok(!drawn.includes('Gamma panel'), drawn);

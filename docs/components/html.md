@@ -2645,13 +2645,24 @@ box was laid out, as it is: a widget is a node of its own, which no matrix
 of the document's reaches. `background-attachment: fixed` in a transformed
 box is still fixed, where CSS has it scroll.
 
-**Scroll-driven timelines** are read and serialized and drive nothing
-yet: `animation-timeline` — `auto`, `none`, a name, `scroll()` and
-`view()` — `scroll-timeline-name` and `-axis`, `view-timeline-name`,
-`-axis` and `-inset`, the `scroll-timeline` and `view-timeline`
-shorthands, and `timeline-scope` answer `getComputedStyle` as
-Scroll-driven Animations 1 computes them, and every animation runs on the
-document's timeline. A script's `el.style` takes each of them only as its
+**Scroll-driven timelines** drive an animation that names one in
+`animation-timeline` (Scroll-driven Animations 1): `scroll()` is how far
+its scroller — the nearest scroll container around the element, the
+root's pane, or the element itself — is scrolled along its axis;
+`view()` how far the element has crossed that scrollport, less its
+insets, from `cover 0%` to `cover 100%`; a name, the timeline the element
+or its nearest ancestor declares with `scroll-timeline-name` or
+`view-timeline-name`; and `none`, no timeline and no effect. Its timing
+is a proportion of the timeline, an `auto` duration filling it, and at
+the end of its scroller's scroll its end is held, as Web Animations 2's
+timeline boundary has it. It is styled again when a scroll or a layout
+moves its timeline, and asks for no frame of the clock's. Not yet:
+`animation-range`, `timeline-scope` and a vertical writing mode's axes.
+`animation-timeline`, `scroll-timeline-name` and `-axis`,
+`view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
+`view-timeline` shorthands, and `timeline-scope` answer
+`getComputedStyle` as Scroll-driven Animations 1 computes them. A
+script's `el.style` takes each of them only as its
 grammar has it, keeps it with its defaults left out, and keeps either
 shorthand as its longhands, which it reads back as the shorthand where
 their lists are as long as each other.
