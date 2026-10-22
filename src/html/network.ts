@@ -519,8 +519,6 @@ export class HtmlNetwork {
     headers['user-agent'] = this._userAgent;
     headers['accept-language'] ??= this._language;
     headers.accept ??= '*/*';
-    // a range of bytes is a range of the bytes as stored (Fetch 4.6)
-    if ('range' in headers) headers['accept-encoding'] = 'identity';
     headers.origin = originOf(page);
     const referrer = referrerFor(page, request.url);
     if (referrer) headers.referer = referrer;

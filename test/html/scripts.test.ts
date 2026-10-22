@@ -2611,6 +2611,40 @@ test('a body is extracted as Fetch has it: bytes sent as they are, a stream read
   assert.equal(doc.fetched.length, 2);
 });
 
+test('an abort cancels a stream body with its reason, and a stream body answered 401 is a network error', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var show = function () { document.getElementById("out").textContent = r.join("|"); };' +
+      'var cancelled = new Promise(function (res) {' +
+      '  var stream = new ReadableStream({ cancel: function (reason) { res(reason); } });' +
+      '  var c = new AbortController();' +
+      '  fetch("up", { method: "POST", body: stream, duplex: "half", signal: c.signal }).then(null, function (e) { r.push("rejected " + e); });' +
+      '  c.abort("foo abort");' +
+      '});' +
+      'cancelled.then(function (reason) { r.push("cancelled " + reason);' +
+      '  var body = new ReadableStream({ start: function (c) { c.close(); } });' +
+      '  return fetch("auth", { method: "POST", body: body, duplex: "half" }); })' +
+      '.then(function () { r.push("401 resolved"); }, function (e) { r.push(e.name); })' +
+      '.then(function () { return fetch("auth", { method: "POST", body: "x" }); })' +
+      '.then(function (res) { r.push(res.status); show(); });' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: request.url.endsWith('auth') ? 401 : 200,
+        statusText: '',
+        redirected: false,
+        headers: [],
+        body: '',
+      }),
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'rejected foo abort|cancelled foo abort|TypeError|401',
+  );
+});
+
 test('headers keep to their guard, a response is made as Fetch makes one, and a data: URL is answered in the page', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

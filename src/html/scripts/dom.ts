@@ -9070,8 +9070,12 @@ export function installDom(
   };
   /** A stream read to its end: the bytes of each chunk, which has to be a
    *  view of them (Fetch, "extract a body"). */
-  const drainStream = async (stream: Any): Promise<Uint8Array> => {
+  const drainStream = async (
+    stream: Any,
+    onReader?: (reader: Any) => void,
+  ): Promise<Uint8Array> => {
     const reader = stream.getReader();
+    onReader?.(reader);
     const chunks: Uint8Array[] = [];
     for (;;) {
       const { done, value } = await reader.read();
@@ -9355,7 +9359,10 @@ export function installDom(
   // `fetch`: the request is the host's, which keeps the browser's network
   // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
-  const fetches = new Map<number, { resolve: Any; reject: Any }>();
+  const fetches = new Map<
+    number,
+    { resolve: Any; reject: Any; streamed?: boolean }
+  >();
   /**
    * A `Range` header's one range of bytes (Fetch, "parse a single range
    * header value", white space allowed): its start and its end, either
@@ -9562,11 +9569,17 @@ export function installDom(
         reject(aborted());
         return;
       }
-      fetches.set(id, { resolve, reject });
+      // a stream body is read through a reader of fetch's own, which is
+      // what an abort cancels it through (Fetch 4.1, "abort fetch")
+      let bodyReader: Any = null;
+      // a stream's body cannot be sent again for credentials, so a 401 is
+      // a network error (Fetch 4.6)
+      fetches.set(id, { resolve, reject, streamed: !!extracted?.stream });
       signal?.addEventListener?.('abort', () => {
         if (!fetches.delete(id)) return;
         call('abortFetch', id);
-        if (extracted?.stream) extracted.stream.cancel?.(aborted());
+        if (bodyReader) bodyReader.cancel(aborted()).catch(() => {});
+        else if (extracted?.stream) extracted.stream.cancel?.(aborted());
         reject(aborted());
       });
       // what crosses: text where the bytes are UTF-8, which is every
@@ -9606,7 +9619,9 @@ export function installDom(
       // a stream is read to its end and sent whole: a request with a body
       // that is still coming is no request this network makes
       if (extracted?.stream) {
-        drainStream(extracted.stream).then(send, (error: Any) => {
+        drainStream(extracted.stream, (reader) => {
+          bodyReader = reader;
+        }).then(send, (error: Any) => {
           if (!fetches.delete(id)) return;
           reject(
             error instanceof TypeError
@@ -16244,7 +16259,9 @@ export function installDom(
     if (!pending) return false;
     fetches.delete(id);
     if (typeof answer === 'string') pending.reject(new TypeError(answer));
-    else {
+    else if (pending.streamed && answer.status === 401) {
+      pending.reject(new TypeError('Failed to fetch'));
+    } else {
       // the network's bytes, which cross as base64: a string is all that
       // crosses, and one of raw bytes is mostly escapes once it is JSON
       const response = new Response(
