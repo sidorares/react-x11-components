@@ -750,6 +750,9 @@ export interface GridTracks {
     cols: [number, number][];
     rows: [number, number][];
     areas: [number, number, number, number][];
+    /** The item each area is, which `grid-rows` and `grid-columns` read in
+     *  the order their areas are (`inReadingOrder`). */
+    items: Box[];
   };
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
@@ -1015,6 +1018,9 @@ export interface BoxTree {
    *  is, no layer is offered for one (`HtmlViewNode.sprites`), and nothing
    *  looks. A restyle in place that turns one sets it too. */
   tilted: boolean;
+  /** Whether any box has a `reading-flow`: where none has, Tab goes in the
+   *  document's order and nothing asks the boxes (`inReadingOrder`). */
+  readingFlow: boolean;
   /** Whether any positioned box has a negative `z-index`: where none has,
    *  paint has no layer below the flow to find. */
   negative: boolean;
@@ -1198,6 +1204,7 @@ class Builder {
   private _awaitingKind: Element[] = [];
   private _relative = false;
   private _tilted = false;
+  private _readingFlow = false;
   private _negative = false;
   private _firstLine = false;
   private _nestedOutOfLine = false;
@@ -1285,6 +1292,7 @@ class Builder {
       awaitingKind: this._awaitingKind,
       relative: this._relative || isRelative(rootStyle),
       tilted: this._tilted || outOfPlane(rootStyle),
+      readingFlow: this._readingFlow || rootStyle.readingFlow !== 'normal',
       negative: this._negative,
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
@@ -1553,6 +1561,7 @@ class Builder {
     // a translation is moved by the same pass
     if (style.translate || style.transform) this._relative = true;
     if (outOfPlane(style)) this._tilted = true;
+    if (style.readingFlow !== 'normal') this._readingFlow = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

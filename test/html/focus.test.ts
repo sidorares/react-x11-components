@@ -237,6 +237,56 @@ metric(
   },
 );
 
+metric(
+  "reading-flow is the order Tab reaches a container's items in, reading-order first",
+  async () => {
+    const { focused } = await renderBetween(
+      // a row reversed, read as it is seen: c, b, a, and the field the
+      // markup has first
+      '<div style="display:flex;flex-direction:row-reverse;gap:8px;' +
+        'reading-flow:flex-visual"><input placeholder="w" size="4">' +
+        '<a id="a" href="#">a</a>' +
+        '<a id="b" href="#">b</a><a id="c" href="#">c</a></div>' +
+        // a grid placed out of the markup's order, read by its rows
+        '<div style="display:grid;grid-template-columns:50px 50px;' +
+        'reading-flow:grid-rows">' +
+        '<a id="f" href="#" style="grid-row:2;grid-column:1">f</a>' +
+        '<a id="e" href="#" style="grid-row:1;grid-column:2">e</a>' +
+        '<a id="d" href="#" style="grid-row:1;grid-column:1">d</a></div>' +
+        // and by its columns
+        '<div style="display:grid;grid-template-columns:50px 50px;' +
+        'reading-flow:grid-columns">' +
+        '<a id="h" href="#">h</a><a id="i" href="#">i</a>' +
+        '<a id="g2" href="#" style="grid-row:2;grid-column:1">g2</a></div>' +
+        // a block's, in the markup's order but for reading-order; what an
+        // item holds goes as the markup has it, inside where the item goes
+        '<div style="reading-flow:source-order">' +
+        '<p><a id="k" href="#">k</a><a id="l" href="#">l</a></p>' +
+        '<p style="reading-order:-1"><a id="j" href="#">j</a></p></div>' +
+        // a flex flow's, by `order`
+        '<div style="display:flex;reading-flow:flex-flow">' +
+        '<a id="n" href="#" style="order:2">n</a>' +
+        '<a id="m" href="#" style="order:1">m</a></div>' +
+        // and `normal`, the markup's whatever is seen
+        '<div style="display:flex;flex-direction:row-reverse">' +
+        '<a id="o" href="#">o</a><a id="p" href="#">p</a></div>',
+    );
+    const order = ['c', 'b', 'a', 'w', 'd', 'e', 'f', 'h', 'g2', 'i'];
+    order.push('j', 'k', 'l', 'm', 'n', 'o', 'p');
+    assert.deepStrictEqual(await tabs(order.length + 3, focused), [
+      'before',
+      ...order,
+      'after',
+      'before',
+    ]);
+    assert.deepStrictEqual(
+      await tabs(order.length + 2, focused, true),
+      ['after', ...order.slice().reverse(), 'before'],
+      'and Shift+Tab back the other way',
+    );
+  },
+);
+
 /** A laid-out box's outline, as the cascade left it. */
 type Outlined = LaidBox & {
   style: {
