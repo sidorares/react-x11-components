@@ -736,8 +736,30 @@ export interface GridTracks {
   colLines: GridLines;
   rowLines: GridLines;
   first: Box | null;
+  /** The tracks that stay — `cols` and `rows` without those an `auto-fit`
+   *  collapsed — and each item's area in them, as its first column, how
+   *  many, its first row and how many: what a gap's rules are drawn along
+   *  and broken by (CSS Gap Decorations 1). */
+  lanes: {
+    cols: [number, number][];
+    rows: [number, number][];
+    areas: [number, number, number, number][];
+  };
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
+
+/** A multicol container's rows of column boxes as its layout left them
+ *  (CSS Multi-column 1, 3): one row, or one between each two boxes that
+ *  span the columns, each its top and height from the content box's top
+ *  and the left of each column that holds something from its left, with
+ *  their width — where the rules between them are drawn. */
+export interface ColumnRow {
+  top: number;
+  height: number;
+  lefts: number[];
+  width: number;
+}
+export const COLUMN_BOXES = new WeakMap<Box, ColumnRow[]>();
 
 /** A flex or grid box's children in the order it lays them out and paints
  *  them, `order` first and the document's after it (CSS Flexbox 5.4, CSS

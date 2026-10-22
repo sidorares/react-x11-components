@@ -1916,6 +1916,34 @@ with its images, not text first and the image after it. An element that
 reordering splits apart on a line is drawn as a box around each of its
 parts, as CSS 2.1 9.10 has it.
 
+**Gap decorations** (CSS Gap Decorations 1): rules drawn in a container's
+gaps, `column-rule` down its column gaps and `row-rule` across its row
+gaps, each a width, a border style and a colour as `outline` takes them,
+with its `-width`, `-style` and `-color` longhands, and `rule` and its
+longhands setting both. They are painted just above the container's border
+and under what it holds, each on its gap's middle as wide as it says
+whatever the gap's width, and drawn as a border side of its style is —
+dashed, dotted and double included. A multicol container has them between
+the columns that hold something, broken at a box that spans its columns. A
+grid has them along the gaps between its tracks, the grid's length, broken
+as `column-rule-break`, `row-rule-break` or `rule-break` says: `normal` at
+an item that spans the gap, and where a gap the other way goes on to one
+side of it and not the other — a T — and through a gap that crosses it;
+`intersection` at every gap it meets but one items span on both sides of;
+`none` not at all, running behind the items. A piece broken at a gap stops
+where that gap starts and the next starts where it ends, and
+`column-rule-inset`, `row-rule-inset` and `rule-inset` — one length or
+two, the first for a piece's start and the second for its end — take each
+end in further, a percentage of the gap it stops at, none at the
+container's edge. A flex container has them between the items of each
+line, as tall as the line — as the container where it has one line — and
+between its lines, as long as the container: in a row the first are its
+column rules and the second its row rules, and in a column the other way
+round. `rule-overlap: column-over-row` draws the row rules under the column
+rules, where they are over them. Not read: a list of rules, a comma or
+`repeat()`, which leaves the declaration none; the separate cap and
+junction insets; and `rule-visibility-items`.
+
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius; a width is whole device pixels,
@@ -3408,7 +3436,7 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, `transform-style:
-preserve-3d`, a multicol container's `column-rule`,
+preserve-3d`,
 `column-span` on a box further in than its children, forced breaks, and
 a table in one broken
 between its rows — it goes to the next column whole, and a box a break

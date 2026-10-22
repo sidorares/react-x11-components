@@ -79,6 +79,7 @@ import {
   BOX_RAISES,
   Box,
   CLAMPED,
+  COLUMN_BOXES,
   CLEARED_FROM,
   COLUMN_PIECES,
   CUT_BLOCKS,
@@ -2487,6 +2488,9 @@ function layoutBox(
   // A multicol container's content is laid out as one column, all of it,
   // and then set in the columns there are (`layoutColumns`)
   const columns = columnsOf(box, contentWidth);
+  // the rows of columns the last layout set its content in, which this
+  // one sets again (`layoutColumns`)
+  if (box.style.columns) COLUMN_BOXES.delete(box);
   const flowWidth = columns ? columns.width : contentWidth;
   const ownFloats = establishesBFC(box) || !outerFloats;
   const floats = ownFloats

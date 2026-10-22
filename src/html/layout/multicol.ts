@@ -39,6 +39,7 @@ import { gapOf } from '../css/values.js';
 import { contained, establishesBFC, moveTo, transformed } from './block.js';
 import {
   CLEARED_FROM,
+  COLUMN_BOXES,
   COLUMN_LINES,
   COLUMN_PIECES,
   COLUMN_ROWS,
@@ -665,6 +666,21 @@ export function layoutColumns(
       filled = fill(groups, top, height, height >= limit);
     }
   }
+  // the row of columns this is, for the rules between them: each column
+  // that holds something, from the start of the line
+  const rtl = box.style.direction === 'rtl';
+  const step = columns.width + columns.gap;
+  const across = (c: number): number => (rtl ? -c * step : c * step);
+  const origin = rtl ? box.contentWidth - columns.width : 0;
+  const used = groups.length ? filled.starts.length : 0;
+  let rows = COLUMN_BOXES.get(box);
+  if (!rows) COLUMN_BOXES.set(box, (rows = []));
+  rows.push({
+    top: top - box.contentY,
+    height,
+    lefts: Array.from({ length: used }, (_, c) => origin + across(c)),
+    width: columns.width,
+  });
   // all in one column where it started, and nothing to move — but a float
   // that is cut where the column ends, which may reach past it
   if (!gathered.loose.size && (!groups.length || filled.starts.length === 1)) {
@@ -686,11 +702,7 @@ export function layoutColumns(
     while (c + 1 < starts.length && starts[c + 1] === i && cut[c + 1]) c += 1;
     groups[i].last = c;
   }
-  const step = columns.width + columns.gap;
   // the first column at the start of the line: the right, right to left
-  const rtl = box.style.direction === 'rtl';
-  const across = (c: number): number => (rtl ? -c * step : c * step);
-  const origin = rtl ? box.contentWidth - columns.width : 0;
   place(box, null, {
     gathered,
     tops,

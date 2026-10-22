@@ -9582,6 +9582,10 @@ const PAINT_ONLY = new Set([
   'outlineColor',
   // the shape a corner's radii are drawn in, inside the border box
   'cornerShape',
+  // and the rules in a container's gaps, drawn under what it holds
+  'columnRule',
+  'rowRule',
+  'ruleOverlap',
   'textDecorationLine',
   'textDecorationColor',
   'textDecorationStyle',

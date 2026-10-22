@@ -1159,6 +1159,19 @@ export function pixelsIn(
   );
 }
 
+/** What a document 700px wide fills in one colour, each as its `[x, y,
+ *  width, height]`, in the order drawn: a container's gap rules. */
+export async function rulesIn(
+  source: string,
+  color: string,
+): Promise<[number, number, number, number][]> {
+  const { node } = await render('<style>body{margin:0}</style>' + source, 700);
+  const ink = parseColor(color);
+  return (await fillsOf(view(node)))
+    .filter((f) => f.style === ink)
+    .map((f) => [f.x, f.y, f.w, f.h]);
+}
+
 /** The fills a document's boxes paint, of one colour. */
 export async function fillsIn(source: string, color: string): Promise<Fill[]> {
   const { node } = await render('<style>body{margin:0}</style>' + source);
