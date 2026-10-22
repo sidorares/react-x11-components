@@ -169,6 +169,13 @@ export function scrollContent(
     for (const child of box.children) {
       if (!stays(child)) move(child, -dx, -dy, stays);
     }
+    // and a box anchored to something it scrolls, outside it, with its
+    // anchor (CSS Anchor Positioning 1, 6.2, the default scroll shift)
+    for (const { box: anchored, x, y } of anchoredAcross(box)) {
+      if ((x && dx) || (y && dy)) {
+        move(anchored, x ? -dx : 0, y ? -dy : 0, () => false);
+      }
+    }
   }
   if (to.x || to.y) APPLIED.set(box, to);
   else APPLIED.delete(box);
@@ -514,4 +521,53 @@ export function scrollBarHit(
   return along >= bar.thumbStart && along <= bar.thumbStart + bar.thumbLength
     ? 'thumb'
     : 'track';
+}
+
+/** Each anchor-positioned box and the box of its default anchor, by the
+ *  root of the tree they were laid out in (`noteDefaultAnchor`). */
+const DEFAULT_ANCHORS = new WeakMap<
+  Box,
+  Map<Box, { anchor: Box; x: boolean; y: boolean }>
+>();
+
+/** A layout begins resolving anchors in the tree under `root`: what the
+ *  last one noted is of boxes it may have replaced. */
+export function clearDefaultAnchors(root: Box): void {
+  DEFAULT_ANCHORS.delete(root);
+}
+
+/** Layout placed `box` against `anchor`, its default anchor, across
+ *  where `x` and down where `y`: the axes its scroll moves it on. */
+export function noteDefaultAnchor(
+  root: Box,
+  box: Box,
+  anchor: Box,
+  x: boolean,
+  y: boolean,
+): void {
+  let map = DEFAULT_ANCHORS.get(root);
+  if (!map) DEFAULT_ANCHORS.set(root, (map = new Map()));
+  map.set(box, { anchor, x, y });
+}
+
+/** The boxes anchored to something inside `scroller`, that are outside it
+ *  themselves: what its scroll moves with their anchors. */
+function anchoredAcross(scroller: Box): { box: Box; x: boolean; y: boolean }[] {
+  let root = scroller;
+  while (root.parent) root = root.parent;
+  const map = DEFAULT_ANCHORS.get(root);
+  if (!map?.size) return [];
+  const within = (b: Box) => {
+    for (let at: Box | null = b; at; at = at.parent) {
+      if (at === scroller) return true;
+    }
+    return false;
+  };
+  const out: { box: Box; x: boolean; y: boolean }[] = [];
+  for (const [anchored, { anchor, x, y }] of map) {
+    if (anchor !== scroller && within(anchor) && !within(anchored)) {
+      out.push({ box: anchored, x, y });
+    }
+  }
+  return out;
 }

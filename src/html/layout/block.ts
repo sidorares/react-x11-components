@@ -65,8 +65,10 @@ import {
 import {
   STUCK,
   applyScrollOffsets,
+  clearDefaultAnchors,
   escapes as positionedOutside,
   isScroller,
+  noteDefaultAnchor,
   scrollStateOf,
 } from './scroll.js';
 import type { Placed } from '../css/transform.js';
@@ -137,6 +139,7 @@ import { collapseEdges } from './collapse.js';
 import {
   clipsFor,
   computePaintBounds,
+  containingBlockOf,
   DOCUMENT_FLOW,
   FIXED_BOXES,
   fixedToViewport,
@@ -175,6 +178,9 @@ export interface LayoutContext {
   anchors?: Map<string, Box[]> | null;
   /** The root the anchors are found under. */
   anchorRoot?: Box | null;
+  /** Each box's place in the tree's order, found with the anchors: what
+   *  says whether an anchor precedes the box it anchors. */
+  anchorOrder?: Map<Box, number>;
   /**
    * Lay a box and everything under it out at a width, at the origin.
    *
@@ -4558,6 +4564,28 @@ function anchoredStyle(
         style.boxSizing === 'border-box' ? size : Math.max(0, size - extra);
     }
   }
+  // its default anchor, which a scroll moves it with (6.2) on each axis
+  // it is placed against an anchor scrolled with it on: an inset's
+  // `anchor()` of an anchor in the default one's scroll container, or a
+  // `position-area`
+  const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  if (defaultAnchor && ctx.anchorRoot) {
+    const scroller = nearestScrollerOf(defaultAnchor);
+    const ofDefault = (side: InsetSide) => {
+      const ref = insets?.[side];
+      if (!ref) return false;
+      const anchor = anchorBoxFor(box, ref.name ?? style.positionAnchor, ctx);
+      return !!anchor && nearestScrollerOf(anchor) === scroller;
+    };
+    const area = !!style.positionArea;
+    noteDefaultAnchor(
+      ctx.anchorRoot,
+      box,
+      defaultAnchor,
+      area || ofDefault('left') || ofDefault('right'),
+      area || ofDefault('top') || ofDefault('bottom'),
+    );
+  }
   let placed: PlacedArea | null = null;
   const area = style.positionArea;
   const anchor = area && anchorFor(box, style.positionAnchor, ctx);
@@ -4605,16 +4633,39 @@ function anchorFor(
   name: string | null,
   ctx: LayoutContext,
 ): CbRect | null {
+  const anchor = anchorBoxFor(box, name, ctx);
+  if (!anchor) return null;
+  if (anchor.kind === 'inline') {
+    return inlineContainingBlock(anchor, box, ctx);
+  }
+  return {
+    x: anchor.x,
+    y: anchor.y,
+    width: anchor.width,
+    height: anchor.height,
+  };
+}
+
+/** The box an anchor name finds for `box` (`anchorFor`), or null. */
+function anchorBoxFor(
+  box: Box,
+  name: string | null,
+  ctx: LayoutContext,
+): Box | null {
   if (name === null || !ctx.anchorRoot) return null;
   if (ctx.anchors === undefined) {
+    // what the last layout noted of default anchors is of its boxes
+    clearDefaultAnchors(ctx.anchorRoot);
     const found = new Map<string, Box[]>();
     // an element's first box, which is its own: the boxes inside it that
     // carry its style — a button's label, an anonymous block — are not
     // the anchor
     const seen = new Set<object>();
+    const order = new Map<Box, number>();
     const stack: Box[] = [ctx.anchorRoot];
     while (stack.length) {
       const at = stack.pop()!;
+      order.set(at, order.size);
       const names = at.style.anchorNames;
       if (names && at.pseudo === null && at.el && !seen.has(at.el)) {
         seen.add(at.el);
@@ -4629,6 +4680,7 @@ function anchorFor(
       }
     }
     ctx.anchors = found;
+    ctx.anchorOrder = order;
   }
   const list = ctx.anchors?.get(name);
   if (!list) return null;
@@ -4642,17 +4694,56 @@ function anchorFor(
       }
     }
     if (inside) continue;
-    if (anchor.kind === 'inline') {
-      return inlineContainingBlock(anchor, box, ctx);
-    }
-    return {
-      x: anchor.x,
-      y: anchor.y,
-      width: anchor.width,
-      height: anchor.height,
-    };
+    if (!acceptableAnchor(anchor, box, ctx.anchorOrder!)) continue;
+    return anchor;
   }
   return null;
+}
+
+/** The scroll container a box is scrolled in: the nearest around it, or
+ *  null for the viewport. */
+function nearestScrollerOf(box: Box): Box | null {
+  for (let at = box.parent; at; at = at.parent) {
+    if (isScroller(at)) return at;
+  }
+  return null;
+}
+
+/**
+ * Whether an anchor is laid out before the box it would anchor, as CSS
+ * Anchor Positioning 1, 2.3 has an acceptable anchor element: inside the
+ * box's containing block, or the box's containing block is the initial
+ * one; and where the two share a containing block, the anchor not
+ * absolutely positioned or before the box in the tree, and otherwise the
+ * last containing block on the anchor's chain before the box's the same.
+ */
+function acceptableAnchor(
+  anchor: Box,
+  box: Box,
+  order: Map<Box, number>,
+): boolean {
+  const positioned = (b: Box) =>
+    b.style.position === 'absolute' || b.style.position === 'fixed';
+  const cbOf = (b: Box): Box | null =>
+    positioned(b) ? containingBlockOf(b) : b.parent;
+  const cb = cbOf(box);
+  const initial = cb === null || cb.parent === null;
+  if (!initial) {
+    let within = false;
+    for (let at = anchor.parent; at; at = at.parent) {
+      if (at === cb) {
+        within = true;
+        break;
+      }
+    }
+    if (!within) return false;
+  }
+  // the last box on the anchor's chain of containing blocks before the
+  // box's own
+  let last = anchor;
+  for (let at = cbOf(anchor); at && at !== cb; at = cbOf(at)) last = at;
+  if (!positioned(last)) return true;
+  return (order.get(last) ?? 0) < (order.get(box) ?? 0);
 }
 
 /**

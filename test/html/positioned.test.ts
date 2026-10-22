@@ -16,6 +16,7 @@ import {
   boxOf,
   clipsAround,
   fillsOf,
+  findById,
   linesOf,
   metric,
   pathsOf,
@@ -1520,6 +1521,39 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('mid'), [130, 50, 20, 10]);
   assert.deepStrictEqual(at('sized'), [0, 0, 60, 30]);
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
+});
+
+test('a box anchored to something a scroller scrolls moves with it, on the axes its anchors share that scroller, and only an anchor laid out before it is one', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '#s{width:100px;height:100px;overflow:scroll;position:relative}' +
+      '#space{width:300px;height:300px}' +
+      '.a{position:absolute;width:20px;height:20px}' +
+      '#a1{anchor-name:--a1;left:10px;top:50px}' +
+      '.t{position:absolute;width:10px;height:10px}' +
+      // both axes against the default anchor
+      '#t1{position-anchor:--a1;left:anchor(right);top:anchor(top)}' +
+      // across against it, down against the scroller itself
+      '#t2{position-anchor:--a1;left:anchor(right);top:anchor(--s bottom)}' +
+      '#s{anchor-name:--s}' +
+      // a later absolute box of the same name is laid out after it
+      '#late{anchor-name:--a1;position:absolute;left:300px;top:300px;width:5px;height:5px}' +
+      '</style><div id="cb"><div id="s"><div id="space"></div>' +
+      '<div class="a" id="a1"></div></div>' +
+      '<div class="t" id="t1"></div><div class="t" id="t2"></div>' +
+      '<div id="late"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  assert.deepStrictEqual(at('t1'), [30, 50], 'against #a1, not #late');
+  assert.deepStrictEqual(at('t2'), [30, 100]);
+  el.scrollElementTo(findById(el.document, 's')!, { x: 5, y: 20 });
+  assert.deepStrictEqual(at('a1'), [5, 30]);
+  assert.deepStrictEqual(at('t1'), [25, 30], 'with its anchor');
+  assert.deepStrictEqual(at('t2'), [25, 100], 'across only');
 });
 
 test("an anchor is its element's own box, not the label inside it", async () => {
