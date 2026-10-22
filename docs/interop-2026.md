@@ -64,32 +64,33 @@ jobs.
 | 4     | popovers, JSPI, custom highlights, fetch bodies                                                                         | 29.9%     |
 | 5     | streams, `clip-path` shapes, `:muted`, implied documents, scoped registries, the Navigation API, `zoom`, typed `attr()` | 47.9%     |
 | 6     | `SharedWorker`, the page's selection, scroll snapping, highlight painting, navigation fixes                             | 56.3%     |
-| 7     | highlight decorations, view transitions, timeline properties, style queries, typed `attr()`, form navigations           | **59.4%** |
+| 7     | highlight decorations, view transitions, timeline properties, style queries, typed `attr()`, form navigations           | 59.4%     |
+| 8     | scroll and view timelines over Web Animations' model, anchor scroll and grammars, user scroll snapping, `:playing`      | **64.2%** |
 
-By focus area, from the first run to the seventh:
+By focus area, from the first run to the eighth:
 
-| focus area                       | tests | first | now   | what moved it                                                                                                                      |
-| -------------------------------- | ----- | ----- | ----- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| anchor-positioning               | 234   | 16.7% | 36.6% | WPT's helper scripts running at all (#850)                                                                                         |
-| attr                             | 19    | 8.8%  | 88.1% | `attr()` in any property, typed or not, and `CSS.registerProperty` (#866), in `style()` (#883)                                     |
-| contrast-color                   | 5     | 0.0%  | 96.4% | `contrast-color()` (#851, #871)                                                                                                    |
-| container-style-queries          | 19    | 0.0%  | 86.2% | `CSSContainerRule` (#852), the helpers running (#850), `var()` in `style()` (#872), dynamic changes and `display: contents` (#882) |
-| custom-highlights                | 104   | 8.9%  | 86.1% | `CSS.highlights` and `::highlight()` (#856), their painting (#877, #878)                                                           |
-| dialogs-and-popovers             | 18    | 27.7% | 84.4% | the Popover API, light dismiss, `closedby` (#854), the open dialogs (#873), `will-change` read back (#881)                         |
-| fetch                            | 23    | 16.9% | 79.3% | bodies as Fetch extracts them (#857), responses that stream (#859), `SharedWorker` (#869)                                          |
-| indexeddb                        | 24    | 0.0%  | 72.1% | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869)                                         |
-| jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                                                        |
-| media-pseudo-classes             | 5     | 0.0%  | 16.0% | `:muted` and `:volume-locked` (#861)                                                                                               |
-| navigation                       | 439   | 0.0%  | 47.9% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886)                                           |
-| scoped-custom-element-registries | 29    | 0.2%  | 65.2% | scoped registries, `setHTMLUnsafe` (#863)                                                                                          |
-| scroll-driven-animations         | 146   | 4.9%  | 16.9% | the helpers running (#850), the timeline properties (#885)                                                                         |
-| scroll-snap                      | 39    | 7.6%  | 39.7% | scroll snapping (#876)                                                                                                             |
-| shape                            | 24    | 41.6% | 87.5% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860)                                                         |
-| view-transitions                 | 389   | 3.4%  | 19.2% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884)                                           |
-| webcompat                        | 9     | 22.2% | 77.7% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880)                         |
-| webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                  |
-| webtransport                     | 58    | 0.0%  | 0.0%  | —                                                                                                                                  |
-| zoom                             | 33    | 21.2% | 90.9% | CSS `zoom` (#865)                                                                                                                  |
+| focus area                       | tests | first | now   | what moved it                                                                                                                                                   |
+| -------------------------------- | ----- | ----- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| anchor-positioning               | 234   | 16.7% | 53.9% | WPT's helper scripts running at all (#850), the properties' grammars and computed values (#895), the default scroll shift and `position-visibility` (#896)      |
+| attr                             | 19    | 8.8%  | 88.1% | `attr()` in any property, typed or not, and `CSS.registerProperty` (#866), in `style()` (#883)                                                                  |
+| contrast-color                   | 5     | 0.0%  | 96.4% | `contrast-color()` (#851, #871)                                                                                                                                 |
+| container-style-queries          | 19    | 0.0%  | 86.2% | `CSSContainerRule` (#852), the helpers running (#850), `var()` in `style()` (#872), dynamic changes and `display: contents` (#882)                              |
+| custom-highlights                | 104   | 8.9%  | 86.1% | `CSS.highlights` and `::highlight()` (#856), their painting (#877, #878)                                                                                        |
+| dialogs-and-popovers             | 18    | 27.7% | 87.5% | the Popover API, light dismiss, `closedby` (#854), the open dialogs (#873), `will-change` read back (#881), slotted popovers (#888)                             |
+| fetch                            | 23    | 16.9% | 79.3% | bodies as Fetch extracts them (#857), responses that stream (#859), `SharedWorker` (#869)                                                                       |
+| indexeddb                        | 24    | 0.0%  | 72.1% | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869)                                                                      |
+| jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                                                                                     |
+| media-pseudo-classes             | 5     | 0.0%  | 37.3% | `:muted` and `:volume-locked` (#861), `:playing` and `:paused` (#891)                                                                                           |
+| navigation                       | 439   | 0.0%  | 47.9% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886)                                                                        |
+| scoped-custom-element-registries | 29    | 0.2%  | 75.7% | scoped registries, `setHTMLUnsafe` (#863), clonable shadow roots (#887)                                                                                         |
+| scroll-driven-animations         | 146   | 4.9%  | 51.9% | the timeline properties (#885), `ScrollTimeline` and `ViewTimeline` over Web Animations' model (#892), their grammars (#893), CSS's `animation-timeline` (#894) |
+| scroll-snap                      | 39    | 7.6%  | 49.9% | scroll snapping (#876), after the wheel, a key and `focus()` (#890)                                                                                             |
+| shape                            | 24    | 41.6% | 87.5% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860)                                                                                      |
+| view-transitions                 | 389   | 3.4%  | 19.2% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884)                                                                        |
+| webcompat                        | 9     | 22.2% | 77.7% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880)                                                      |
+| webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                                               |
+| webtransport                     | 58    | 0.0%  | 0.0%  | —                                                                                                                                                               |
+| zoom                             | 33    | 21.2% | 87.8% | CSS `zoom` (#865)                                                                                                                                               |
 
 The second run's jump is the runner's as much as the engine's: WPT's
 helpers — `computed-testcommon.js`, `parsing-testcommon.js` and their kin —
@@ -99,22 +100,20 @@ areas went from a handful of subtests to thousands with that one change.
 
 ## What is not implemented, by area
 
-What each area's remaining failures come down to, from the seventh run's
-messages, the heaviest first. Two PRs that landed after it are measured
-by area alone: scoped custom element registries at 75.7% (#887) and
-dialogs and popovers at 87.1% (#888). Zoom read 87.8% in the seventh run
-for one test the runner lost to a fault of its own — React's update-depth
-limit, under five parallel jobs — which passes on its own and in its
-sequence; it is counted at 90.9% above. "Out of reach" means it needs something this
-architecture does not have, rather than more of what it has.
+What each area's remaining failures come down to, from the eighth run's
+messages, the heaviest first. Zoom reads 87.8% for one test the runner
+loses to a fault of its own — React's update-depth limit, under five
+parallel jobs — which passes on its own and in its sequence. "Out of
+reach" means it needs something this architecture does not have, rather
+than more of what it has.
 
-**anchor-positioning (36.5%).** Vertical writing modes, which `<Html>` does
+**anchor-positioning (53.9%).** Vertical writing modes, which `<Html>` does
 not lay out (`anchor-position-writing-modes-001.html` alone is 864
-subtests); `position-area` read back from `getComputedStyle` (632);
-`anchor-size()` kept canonical in `el.style` (some 700); the `CSSOM` of
-`@position-try` — `CSSPositionTryRule` and `CSSPositionTryDescriptors`
-(about 340); and the used offsets of a number of layouts the reftests
-check.
+subtests); the `CSSOM` of `@position-try` — `CSSPositionTryRule` and
+`CSSPositionTryDescriptors` (about 340); a fixed box following an anchor
+the pane scrolls, and fallbacks tried again after a scroll; anchors in a
+multi-column or a top-layer box; `anchor-center`; and `calc()` simplified
+around an `anchor()` (`calc((a + b) / 2)` as `calc(0.5 * (a + b))`).
 
 **attr (88.1%).** Attr-tainting, which keeps an attribute's value out of a
 URL, and `background-image` serialized in full — `image-set()`, `src()`,
@@ -136,9 +135,8 @@ registers in a frame's `CSS.highlights`, a highlight over a replaced
 element, `highlightsFromPoint()`'s details, `getComputedStyle()` for a
 highlight pseudo-element, and a few IDL details.
 
-**dialogs-and-popovers (84.4%; 87.1% with #888).** A popover in a shadow
-tree's slot, whose ancestors are the flat tree's (#888);
-`requestFullscreen()` on a top-layer element, `select.showPicker()` and
+**dialogs-and-popovers (87.5%).** `requestFullscreen()` on a top-layer
+element, `select.showPicker()` and
 `select:open`, which need a `<select>` widget's picker state in the
 cascade, and light dismiss by a click on a dialog's padding.
 
@@ -150,10 +148,12 @@ exist here; the rest pass.
 
 **jspi-for-wasm (100%).**
 
-**media-pseudo-classes (16.0%).** `:playing`, `:paused`, `:seeking`,
-`:buffering` and `:stalled`, and what they read: a media element's state as
-its player has it. A page's `play()` and `pause()` reach core's `<video>`,
-but nothing comes back from the player to the page yet.
+**media-pseudo-classes (37.3%).** `:playing` and `:paused` follow
+`play()`, `pause()` and `load()` (#891); what is left loads a source and
+waits for `canplay`, `playing` and `seeking` from its player, and
+`:seeking`, `:buffering` and `:stalled` read the player's state. A page's
+`play()` and `pause()` reach core's `<video>`, but nothing comes back from
+the player to the page yet.
 
 **navigation (47.9%).** The `navigate` event in another window — a link or
 a form aimed at a frame, a `window.open` — where a frame without scripts
@@ -162,24 +162,23 @@ host's history is not the page's); `beforeunload`, `pagehide` and detached
 documents in the methods' return values. Most of what is left times out
 waiting for a cross-document navigation.
 
-**scoped-custom-element-registries (65.2%; 75.7% with #887).** Which
-registry a clone and `importNode()` give what they copy, and `getHTML()`.
-#887 clones a clonable shadow host's tree and reads `initialize()` as it
-now stands.
+**scoped-custom-element-registries (75.7%).** Which registry a clone and
+`importNode()` give what they copy, and `getHTML()`.
 
-**scroll-driven-animations (16.9%).** The timeline properties are read and
-serialized (#885) but drive nothing: `ScrollTimeline` and `ViewTimeline`,
-an animation run on one, `animation-range`, and the CSS Typed OM values
-(`CSS.percent()`) the scripted tests build them with are not there yet, nor
-the `scroll-timeline` and `view-timeline` shorthands in `el.style`. Also
-in the area, and out of reach: 59 `html/dom/render-blocking/` tests that
-need rendering held while the parser is still in the document, where
-`<Html>` parses a document whole before its scripts run.
+**scroll-driven-animations (51.9%).** CSS animations exposed to script —
+`getAnimations()` answers a page's own `Animation`s, not a `CSSAnimation`
+for each that `animation-name` runs — which most of the `css/` tests read;
+`animation-range`, `timeline-scope`, vertical writing modes, sticky
+subjects, and a scroll timeline's time held until the next frame. Also in
+the area, and out of reach: 59 `html/dom/render-blocking/` tests that need
+rendering held while the parser is still in the document, where `<Html>`
+parses a document whole before its scripts run.
 
-**scroll-snap (39.7%).** Snapping after a user's scroll — the wheel, a
-key, a drag — where a script's scroll snaps; `scroll-snap-stop`; and the
-choice between several targets that line up, by focus and by the URL's
-fragment, after a layout.
+**scroll-snap (49.9%).** The choice between several targets that line up,
+after a layout — by focus, by the URL's fragment, the innermost first —
+and snapping again when a target's alignment or the container's
+`scroll-snap-type` changes; `scroll-target-align`; a snap position past
+what can be scrolled to; and paged scrolling.
 
 **shape (87.5%).** Two animation reftests that time out and one
 `clip-path` reftest.
