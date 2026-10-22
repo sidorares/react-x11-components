@@ -3188,6 +3188,31 @@ test('the page’s selection is the reader’s: getSelection() answers what the 
   assert.equal(surface.selectedText(), '');
 });
 
+test('Selection.modify moves through the text the document draws, from one node into the next, by a letter or a word', async () => {
+  // past white space the document collapses and on into an element's
+  // text, as a caret moved by the arrow keys goes
+  const doc = await hosted(
+    '<p id="out"></p><div id="d">\n  abc<span id="s">XYZ</span>def ghi\n</div><script>' +
+      'var s = getSelection(), d = document.getElementById("d"), r = [];' +
+      'function at() { var n = s.focusNode; return (n.nodeType === 3 ? n.data.trim() : n.id) + ":" + s.focusOffset; }' +
+      's.collapse(d, 1);' +
+      's.modify("move", "forward", "character"); r.push(at());' +
+      's.modify("move", "forward", "character"); r.push(at());' +
+      's.modify("extend", "forward", "word"); r.push(at(), s.toString());' +
+      's.modify("move", "backward", "word"); r.push(at());' +
+      's.modify("move", "forward", "character"); r.push(at());' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    // `abc`, `XYZ` and `def` are one word: nothing in the text parts them;
+    // and after the `a` is 4 into `\n  abc`
+    'XYZ:1|XYZ:2|def ghi:3|Zdef|abc:0|abc:4',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a text field’s selection is what a script set, kept to its value, and told as select; a type with none says null and refuses one', async () => {
   const doc = await hosted(
     '<p id="out"></p><input id="i" value="hello"><textarea id="t">abc</textarea><input id="n" type="number" value="5">' +

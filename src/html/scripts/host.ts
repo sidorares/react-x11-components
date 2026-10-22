@@ -268,6 +268,14 @@ export interface HandleInternals {
   selectPoints(
     points: { sc: AnyNode; so: number; ec: AnyNode; eo: number } | null,
   ): void;
+  /** A boundary point moved by a character or a word through the text
+   *  the document draws (`HtmlViewNode.movedPoint`). */
+  movedPoint(
+    node: AnyNode,
+    offset: number,
+    granularity: 'character' | 'word',
+    back: boolean,
+  ): { node: AnyNode; offset: number } | null;
 }
 
 /** A custom highlight as a page's `CSS.highlights` holds it: a live
@@ -2379,6 +2387,19 @@ export class DomHost {
         // what the page set is what it has heard of
         this._selectionTold = this._seams.handle.selectionPoints?.()?.key ?? '';
         return null;
+      }
+      // a boundary point moved through the drawn text, as `modify` moves
+      // the selection's focus
+      case 'movePoint': {
+        const moved = this._seams.handle.movedPoint?.(
+          this._node(a),
+          Number(b) || 0,
+          text(c) === 'word' ? 'word' : 'character',
+          !!d,
+        );
+        return moved
+          ? JSON.stringify([this.idOf(moved.node), moved.offset])
+          : null;
       }
       // what the page registered, as `@property` rules, told at once
       case 'registeredProperties':

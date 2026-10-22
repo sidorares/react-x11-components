@@ -16673,19 +16673,30 @@ export function installDom(
         r.comparePoint(parent, index + 1) === 0
       );
     }
-    /** A move by a letter, as `modify` moves at its finest; a coarser one
+    /** A move of the focus by a letter or a word through the text the
+     *  document draws, from one text node on into the next; a coarser one
      *  moves nothing here. */
     modify(alter: Any, direction: Any, granularity: Any): void {
       const node = this.focusNode;
-      if (!node || node.nodeType !== 3 || String(granularity) !== 'character') {
+      const unit = String(granularity).toLowerCase();
+      if (!node || (unit !== 'character' && unit !== 'word')) return;
+      const back = direction === 'backward' || direction === 'left';
+      const extend = String(alter).toLowerCase() === 'extend';
+      const moved = call('movePoint', idOf(node), this.focusOffset, unit, back);
+      if (moved) {
+        const [id, offset] = JSON.parse(str(moved));
+        const to = wrap(id);
+        if (extend) this.extend(to, offset);
+        else this.collapse(to, offset);
         return;
       }
-      const back = direction === 'backward' || direction === 'left';
+      // a document drawn nowhere: a letter within the focus's text
+      if (node.nodeType !== 3 || unit !== 'character') return;
       const to = Math.max(
         0,
         Math.min(node.data.length, this.focusOffset + (back ? -1 : 1)),
       );
-      if (alter === 'extend') this.extend(node, to);
+      if (extend) this.extend(node, to);
       else this.collapse(node, to);
     }
     toString(): string {

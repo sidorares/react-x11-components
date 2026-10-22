@@ -1070,6 +1070,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
+      movedPoint: (node, offset, granularity, back) =>
+        nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>
