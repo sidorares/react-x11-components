@@ -21,19 +21,33 @@
 //  - **fill** — `x:int16, y:int16, ax:int16, ay:int16`. Every ring is closed
 //    explicitly and each record carries its ring's first point as `a`, so
 //    segment `i` with `a` is a triangle of the ring's fan. Drawn into the
-//    stencil buffer, a fan per ring is a polygon with its holes — no
-//    triangulator, the same non-zero rule the retained renderer fills with.
-//    The same records drawn as segments are the polygon's outline.
+//    stencil buffer, a fan per ring is a polygon with its holes — the same
+//    non-zero rule the retained renderer fills with — and the same records
+//    drawn as segments are the polygon's outline.
 //
 // Between two polylines (or rings) sits one {@link BREAK} record. The two
 // segments that touch it collapse in the vertex shader, which is cheaper
 // than the index buffer that would otherwise say where every part ends.
+//
+// And one index buffer, the polygons' **triangles**: each polygon — an
+// exterior ring and the holes after it — cut by earstrip, its indices naming
+// fill records, so the triangles cost four bytes an index and no vertex of
+// their own (`docs/components/maps.md` has what it costs and saves). The fan
+// is exact for any ring and pays for it twice on the GPU: a fan covers a
+// concave ring's hull, a pixel once for every time the ring winds past it,
+// and a cover pass over the whole layer then reads the count back. The
+// triangles cover each pixel of the polygon once and nothing else, so an
+// opaque fill is one draw with no stencil at all. The fan stays: it is what
+// the renderer falls back to on a table without `drawElements`, and an
+// overlay, built each time the view moves, is not worth cutting.
 //
 // Coordinates are normalised to {@link TILE_EXTENT} because `extent` is a
 // per-*layer* field that real tiles vary (Shortbread cuts `streets`, `land`,
 // `ocean` and `water_polygons` at 2048 and everything else at 4096), and a
 // per-draw extent would be one more uniform on the hottest loop in the
 // renderer for no benefit.
+import { batch as triangulate } from '#earstrip';
+
 import { GeomType, GeometryBuffer } from '../mvt.js';
 import type { FeatureCursor, VectorTile } from '../mvt.js';
 import type { PreparedLayer, PreparedStyle } from '../paint.js';
@@ -68,6 +82,12 @@ export interface LayerDraw {
    * whatever follows it is a degenerate one.
    */
   ranges: number[];
+  /**
+   * A fill layer's `[firstIndex, indexCount]` pairs into the tile's
+   * triangle indices, three to a triangle. Absent for a line or a circle
+   * layer, and for an overlay's fills, which only have the fan.
+   */
+  triangles?: number[];
 }
 
 /** What building a tile's buckets cost and produced. */
@@ -78,6 +98,10 @@ export interface BucketStats {
   /** Records written to the fill stream, closing points and sentinels
    *  included. */
   fillRecords: number;
+  /** Triangles the polygons were cut into. */
+  triangles: number;
+  /** Of {@link ms}, what cutting them took. */
+  triangulateMs: number;
   /** Membership groups — distinct sets of style layers a feature belongs
    *  to. What decides how many draw ranges a layer needs. */
   groups: number;
@@ -93,6 +117,10 @@ export interface GlTileData {
   /** The fill stream: `fillRecords` records. */
   fill: ArrayBuffer;
   fillRecords: number;
+  /** The polygons' triangles: `triangleIndices` uint32 indices of fill
+   *  records, three to a triangle. */
+  triangles: ArrayBuffer;
+  triangleIndices: number;
   /** Indexed by style layer; a hole where this tile has nothing to draw. */
   draws: (LayerDraw | undefined)[];
   /** Where the tile's labels could go — see `../anchors.ts`. */
@@ -114,9 +142,19 @@ export function rasterTileData(
     lineRecords: 0,
     fill: new ArrayBuffer(0),
     fillRecords: 0,
+    triangles: new ArrayBuffer(0),
+    triangleIndices: 0,
     draws: [],
     raster: { width, height, pixels },
-    stats: { features: 0, lineRecords: 0, fillRecords: 0, groups: 0, ms: 0 },
+    stats: {
+      features: 0,
+      lineRecords: 0,
+      fillRecords: 0,
+      triangles: 0,
+      triangulateMs: 0,
+      groups: 0,
+      ms: 0,
+    },
   };
 }
 
@@ -270,16 +308,18 @@ function emitLine(
 }
 
 /** One ring as a fan: its points, closed, each carrying the ring's first
- *  point as the fan's apex, then a sentinel. */
+ *  point as the fan's apex, then a sentinel. Answers the record its first
+ *  point went to, or -1 for a ring too short to fill. */
 function emitRing(
   fill: Stream,
   coords: Int32Array,
   from: number,
   to: number,
   k: number,
-): void {
+): number {
   const count = to - from;
-  if (count < 3) return;
+  if (count < 3) return -1;
+  const first = fill.count;
   fill.reserve(count + 2);
   const i16 = fill.i16;
   const ax = coord(coords[from * 2], k);
@@ -298,6 +338,108 @@ function emitRing(
   i16[at + 3] = ay;
   fill.count += count + 1;
   pushFillBreak(fill);
+  return first;
+}
+
+/**
+ * A tile's polygons, gathered as their rings go into the fill stream and cut
+ * into triangles in one earstrip call at the end: one crossing into
+ * WebAssembly a tile, where a call a polygon would be twenty thousand on a
+ * city tile. The coordinates are the records' own, normalised and rounded,
+ * so a triangle's corners are exactly the points the fan and the edge draw.
+ */
+class Polygons {
+  coords = new Float64Array(2048);
+  /** The fill record each vertex is. */
+  records = new Uint32Array(1024);
+  vertices = 0;
+  /** Polygon `p`'s first vertex. */
+  starts: number[] = [];
+  /** Each hole's first vertex, counted from its polygon's. */
+  holes: number[] = [];
+  /** Polygon `p`'s first entry in {@link holes}. */
+  holeStarts: number[] = [];
+  private _open = false;
+
+  get count(): number {
+    return this.starts.length;
+  }
+
+  /**
+   * A ring written at fill record `record`. An exterior ring — positive
+   * area, MVT 4.3.4.4 — opens a polygon and an interior one is a hole in the
+   * open one; an interior ring with no polygon open is filled as one, which
+   * is what the non-zero fan does with it too.
+   */
+  ring(
+    record: number,
+    coords: Int32Array,
+    from: number,
+    to: number,
+    k: number,
+    area: number,
+  ): void {
+    // No area is nothing to fill, and a hole of none would cut nothing.
+    if (record < 0 || area === 0) return;
+    if (area > 0 || !this._open) {
+      this.starts.push(this.vertices);
+      this.holeStarts.push(this.holes.length);
+      this._open = true;
+    } else {
+      this.holes.push(this.vertices - this.starts[this.starts.length - 1]);
+    }
+    const count = to - from;
+    this._reserve(this.vertices + count);
+    const xy = this.coords;
+    const records = this.records;
+    let v = this.vertices;
+    for (let i = from; i < to; i++) {
+      xy[v * 2] = coord(coords[i * 2], k);
+      xy[v * 2 + 1] = coord(coords[i * 2 + 1], k);
+      records[v] = record + (i - from);
+      v++;
+    }
+    this.vertices = v;
+  }
+
+  /** The feature is over: its next ring, whatever it is, opens a polygon. */
+  close(): void {
+    this._open = false;
+  }
+
+  /** Every polygon's triangles, as fill-record indices, and where polygon
+   *  `p`'s start in them: `offsets[p]`. */
+  cut(): {
+    indices: Uint32Array<ArrayBuffer>;
+    offsets: Uint32Array<ArrayBuffer>;
+  } {
+    const count = this.count;
+    this.starts.push(this.vertices);
+    this.holeStarts.push(this.holes.length);
+    const { indices, offsets } = triangulate(
+      this.coords.subarray(0, this.vertices * 2),
+      this.starts,
+      this.holes,
+      this.holeStarts,
+    );
+    this.starts.length = count;
+    this.holeStarts.length = count;
+    const records = this.records;
+    for (let i = 0; i < indices.length; i++) indices[i] = records[indices[i]];
+    return { indices, offsets };
+  }
+
+  private _reserve(vertices: number): void {
+    if (this.records.length >= vertices) return;
+    let size = this.records.length;
+    while (size < vertices) size *= 2;
+    const coords = new Float64Array(size * 2);
+    coords.set(this.coords.subarray(0, this.vertices * 2));
+    this.coords = coords;
+    const records = new Uint32Array(size);
+    records.set(this.records.subarray(0, this.vertices));
+    this.records = records;
+  }
 }
 
 interface Group {
@@ -305,6 +447,8 @@ interface Group {
   features: number[];
   fill: [number, number];
   line: [number, number];
+  /** `[firstPolygon, polygonCount]` in the tile's {@link Polygons}. */
+  polygons: [number, number];
 }
 
 /**
@@ -332,6 +476,10 @@ export function buildTileBuckets(
   const started = now();
   const line = new Stream(1024);
   const fill = new Stream(1024);
+  const polygons = new Polygons();
+  /** Each fill layer's draw, with its `[firstPolygon, polygonCount]` pairs
+   *  — its triangles once the tile's polygons are cut. */
+  const fills: { draw: LayerDraw; polygons: number[] }[] = [];
   const buffer = new GeometryBuffer();
   const draws: (LayerDraw | undefined)[] = new Array(prepared.layers.length);
   let features = 0;
@@ -374,7 +522,13 @@ export function buildTileBuckets(
       if (mask === 0) continue;
       let group = byMask.get(mask);
       if (!group) {
-        group = { mask, features: [], fill: [0, 0], line: [0, 0] };
+        group = {
+          mask,
+          features: [],
+          fill: [0, 0],
+          line: [0, 0],
+          polygons: [0, 0],
+        };
         byMask.set(mask, group);
         order.push(group);
       }
@@ -393,6 +547,7 @@ export function buildTileBuckets(
       }
       const fillFrom = fill.count;
       const lineFrom = line.count;
+      const polygonsFrom = polygons.count;
       for (const f of group.features) {
         source.seek(f, cursor);
         cursor.readGeometry(buffer);
@@ -407,9 +562,20 @@ export function buildTileBuckets(
             if (needPoints) emitPoints(line, buffer.coords, from, to, k);
             continue;
           }
-          if (needFill && polygon) emitRing(fill, buffer.coords, from, to, k);
+          if (needFill && polygon) {
+            const record = emitRing(fill, buffer.coords, from, to, k);
+            polygons.ring(
+              record,
+              buffer.coords,
+              from,
+              to,
+              k,
+              buffer.areas[part],
+            );
+          }
           if (needLine) emitLine(line, buffer.coords, from, to, k, polygon);
         }
+        polygons.close();
       }
       // A group's points end in a sentinel like a polyline does, so the
       // instance count of their range is the number of points.
@@ -419,43 +585,78 @@ export function buildTileBuckets(
       }
       group.fill = [fillFrom, fill.count - fillFrom];
       group.line = [lineFrom, line.count - lineFrom];
+      group.polygons = [polygonsFrom, polygons.count - polygonsFrom];
     }
     groupCount += order.length;
 
     for (let j = 0; j < active.length; j++) {
       const { index, type } = active[j];
       const ranges: number[] = [];
+      const cut: number[] = [];
       for (const group of order) {
         if (!(group.mask & (1 << j))) continue;
         const [first, count] = type === 'fill' ? group.fill : group.line;
         if (count < 2) continue;
-        const last = ranges.length - 2;
-        // Adjacent groups coalesce into one range, so a layer is one draw
-        // whenever the groups it spans were written next to each other.
-        if (last >= 0 && ranges[last] + ranges[last + 1] === first) {
-          ranges[last + 1] += count;
-        } else {
-          ranges.push(first, count);
+        coalesce(ranges, first, count);
+        if (type === 'fill' && group.polygons[1] > 0) {
+          coalesce(cut, group.polygons[0], group.polygons[1]);
         }
       }
-      if (ranges.length > 0)
-        draws[index] = { layer: index, kind: type, ranges };
+      if (ranges.length === 0) continue;
+      const draw: LayerDraw = { layer: index, kind: type, ranges };
+      draws[index] = draw;
+      if (type === 'fill') fills.push({ draw, polygons: cut });
     }
   }
+
+  let triangles = new Uint32Array(0);
+  const cutStarted = now();
+  if (polygons.count > 0) {
+    const { indices, offsets } = polygons.cut();
+    triangles = indices;
+    for (const { draw, polygons: cut } of fills) {
+      const ranges: number[] = [];
+      for (let r = 0; r < cut.length; r += 2) {
+        const first = offsets[cut[r]];
+        const count = offsets[cut[r] + cut[r + 1]] - first;
+        if (count > 0) coalesce(ranges, first, count);
+      }
+      draw.triangles = ranges;
+    }
+  } else {
+    for (const { draw } of fills) draw.triangles = [];
+  }
+  const triangulateMs = now() - cutStarted;
 
   return {
     line: line.take(),
     lineRecords: line.count,
     fill: fill.take(),
     fillRecords: fill.count,
+    triangles: triangles.buffer,
+    triangleIndices: triangles.length,
     draws,
     labels: buildTileLabels(tile, prepared, TILE_EXTENT, id),
     stats: {
       features,
       lineRecords: line.count,
       fillRecords: fill.count,
+      triangles: triangles.length / 3,
+      triangulateMs,
       groups: groupCount,
       ms: now() - started,
     },
   };
+}
+
+/** `[first, count]` onto a list of pairs. Adjacent groups coalesce into one
+ *  range, so a layer is one draw whenever the groups it spans were written
+ *  next to each other. */
+function coalesce(ranges: number[], first: number, count: number): void {
+  const last = ranges.length - 2;
+  if (last >= 0 && ranges[last] + ranges[last + 1] === first) {
+    ranges[last + 1] += count;
+  } else {
+    ranges.push(first, count);
+  }
 }

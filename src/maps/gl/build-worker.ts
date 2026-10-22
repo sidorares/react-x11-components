@@ -57,7 +57,7 @@ parentPort?.on('message', (message) => {
       prepared,
       request.tile,
     );
-    const transfer = [data.line, data.fill];
+    const transfer = [data.line, data.fill, data.triangles];
     if (data.labels) transfer.push(data.labels.anchors.buffer as ArrayBuffer);
     parentPort.postMessage({ job: request.job, data }, transfer);
   } catch (error) {

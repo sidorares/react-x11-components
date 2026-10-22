@@ -3580,6 +3580,35 @@ would visibly move. Three rules came with it:
   harness's own "no GLX" failure never lands. `test/maps.test.ts` is the
   retained renderer's, and stays exactly as it is.
 
+**A GL fill is triangles, and the fan is the fallback.** The bucket builder
+cuts every polygon with [earstrip](https://github.com/GLMap/earstrip) — one
+WebAssembly call a tile, indices into the fill stream's own records — and
+the renderer draws an opaque fill as those triangles with no stencil, where
+it drew a stencil fan and a cover pass over the layer's squares. That trade
+is a one-time cost per tile (build +48%, GPU bytes +66% on the bench corpus)
+for every frame after it (20–30% off the dense views), and both halves were
+measured: `scripts/bench/maps-gl.ts --fills=stencil|triangles` runs either
+path, on macOS or, through x11-dri's GBM/EGL, on Linux. Three things to
+keep:
+
+- **A path that cannot cut keeps the fan**: a table without `drawElements`,
+  an overlay (built again as the view moves), and a layer any of whose tiles
+  has no triangles. Anything new that builds fill records without cutting
+  them leaves `LayerDraw.triangles` undefined, which is what sends the layer
+  to the fan.
+- **earstrip is a regular dependency.** 160 KB, no dependencies of its own,
+  no native code, and reached only from the lazy GL chunk — the `ical.js`
+  judgement, not the `@xterm/headless` one.
+- **Its types are ours, through the `#earstrip` import.** earstrip 0.2.0's
+  `earstrip.d.ts` has an extensionless relative `import()`, which fails
+  `nodenext` with `skipLibCheck` off. `package.json`'s `imports` maps
+  `#earstrip` to the package, with a `types` condition pointing at
+  `src/maps/gl/earstrip.d.ts`: TypeScript reads that, and Node, tsx and
+  esbuild, which never read `types`, load the package. `paths` was tried
+  first and is wrong — tsx honours it at run time and loaded the `.d.ts`.
+  When earstrip's declaration compiles, delete the copy and import
+  `earstrip` directly.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from

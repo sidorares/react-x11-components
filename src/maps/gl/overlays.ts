@@ -248,11 +248,17 @@ export function buildOverlayBucket(
       lineRecords: line.count,
       fill: fill.take(),
       fillRecords: fill.count,
+      // An overlay is built again whenever the view leaves its region, so
+      // its fills keep the fan rather than pay for a cut each time.
+      triangles: new ArrayBuffer(0),
+      triangleIndices: 0,
       draws,
       stats: {
         features: overlays.length,
         lineRecords: line.count,
         fillRecords: fill.count,
+        triangles: 0,
+        triangulateMs: 0,
         groups: 0,
         ms: now() - started,
       },

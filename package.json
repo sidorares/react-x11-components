@@ -26,6 +26,12 @@
     "src"
   ],
   "sideEffects": false,
+  "imports": {
+    "#earstrip": {
+      "types": "./src/maps/gl/earstrip.d.ts",
+      "default": "earstrip"
+    }
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -209,6 +215,7 @@
     "css-select": "^7.0.0",
     "domhandler": "^6.0.0",
     "domutils": "^4.0.0",
+    "earstrip": "^0.2.0",
     "htmlparser2": "^12.0.0",
     "image-in-browser": "^3.6.0",
     "linebreak": "^1.1.0",

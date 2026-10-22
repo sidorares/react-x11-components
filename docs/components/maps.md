@@ -291,7 +291,7 @@ looking for the missing prop:
 | `adaptive`          | GL renderer. `true` or `{ budgetMs }` (12 by default): draw moving frames with less detail when the full one would not fit the budget — the fill edge pass first, then the style's newest detail layers, then a coarser level.                                                            |
 | `buildWorkers`      | GL renderer. Worker threads that build tiles' geometry. `0` (the default) builds on this thread, a few milliseconds of each frame.                                                                                                                                                        |
 | `antialias`         | GL renderer. The half-pixel edge pass that antialiases fills; `true` by default.                                                                                                                                                                                                          |
-| `fillRule`          | GL renderer. `'nonzero'` (the default — the retained renderer's rule) or `'evenodd'`, a stencil pass cheaper on a table without `stencilOpSeparate`, and wrong wherever two features of a layer overlap.                                                                                  |
+| `fillRule`          | GL renderer, for a stencil fan: overlays, or every fill without `drawElements`. `'nonzero'` (the default, the retained renderer's rule) or `'evenodd'`, a pass cheaper without `stencilOpSeparate` and wrong where two features of a layer overlap.                                       |
 | `labelsWhileMoving` | GL renderer. Place labels in every frame while the camera moves and set a new name's text in the frame that places it, so names match the zoom at every step. Off by default: new names wait until the zoom has been still for 120 ms.                                                    |
 | `onAfterDraw`       | GL renderer. `(gl, { width, height })` at the end of each frame, inside it: a readback, or drawing of your own over the map.                                                                                                                                                              |
 | `attribution`       | Overrides what the sources say. `''` removes it.                                                                                                                                                                                                                                          |
@@ -495,6 +495,7 @@ behaves the same on both, with these exceptions:
 | `dash`                          | any pattern                                                                      | four dashes at most; a longer pattern is cut                                                         |
 | label placement                 | in world pixels: a pan never moves a label                                       | in screen space: names fade in and out as the view changes                                           |
 | a translucent stroke            | composited as one path                                                           | each pixel once, under the stencil                                                                   |
+| a ring that crosses itself      | filled by the non-zero rule                                                      | filled by earstrip's: inside the outer ring by non-zero, outside every hole                          |
 | window capture                  | sees the map                                                                     | sees nothing where the surface is                                                                    |
 | props read                      | `progressive`, `rasterBudgetMs`, `rasterScale`, `surfaceBudget`, `batchVertices` | `levelFade`, `adaptive`, `buildWorkers`, `antialias`, `fillRule`, `labelsWhileMoving`, `onAfterDraw` |
 
@@ -625,6 +626,25 @@ tiles and kept, a tile or two a level (a view is a speck at those zooms),
 and any level a zoom out lands on has one within two levels above it:
 blurred, never blank. Measured over hard trackpad flicks, frames with
 nothing to draw went from 28 to 1.
+
+**On the GL renderer a fill is triangles, cut when the tile is built.** Each
+polygon — an exterior ring and its holes — is cut by
+[earstrip](https://github.com/GLMap/earstrip) as the tile's buckets are
+built, one call for the whole tile, and the triangles index the points the
+fill's edge is drawn from, so they cost four bytes an index and no vertex of
+their own. A frame then draws an opaque fill in one indexed draw a tile, with
+no stencil at all. What it replaced is the stencil fan: a fan a ring into the
+stencil buffer, which covers a concave ring's whole hull, then a cover pass
+over every square the layer is in to read the winding back — two passes over
+far more pixels than the polygons have, for every fill layer of every frame.
+A translucent fill is still drawn each pixel once, marking the stencil as it
+goes, so two features that overlap are coloured once. On the bench's dense
+views (`scripts/bench/maps-gl.ts`, 2400×1600) a frame is 20–30% quicker, and
+on valid rings the two draw the same pixels exactly. The price is paid once a
+tile: building it takes about half as long again, almost all of it the cut,
+and its geometry takes some two thirds more GPU memory. The fan is kept for
+overlays, which are built again as the view moves, and for a GL table with
+no `drawElements`, where `fillRule` governs it.
 
 **A frame that only continues a redraw claims one pixel.** There is no "call
 me next frame" on the element seam — damage is what schedules a paint — so a

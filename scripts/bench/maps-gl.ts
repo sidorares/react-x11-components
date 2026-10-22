@@ -5,6 +5,7 @@
 //   npx tsx scripts/bench/maps-gl.ts --stage=view --view=tokyo-z10 --frames=240
 //   npx tsx scripts/bench/maps-gl.ts --cpu=cocoa,x11        # the CPU side on both
 //   npx tsx scripts/bench/maps-gl.ts --aa=off --fill=evenodd --offscreen=on
+//   npx tsx scripts/bench/maps-gl.ts --fills=stencil      # the fan, not triangles
 //   npx tsx scripts/bench/maps-gl.ts --json=out.json        # raw numbers too
 //
 // Three stages, and what each one answers:
@@ -25,8 +26,9 @@
 //    surface, which is what "every state drawn at 50 Hz" would ask of it.
 //    A sample of the frames, because each is a few hundred milliseconds.
 //
-// The GL context is x11-dri's CGL one with an IOSurface render target, so
-// this needs macOS and nothing else — no window, no X server. The corpus is
+// The GL context is x11-dri's: on macOS its CGL one with an IOSurface render
+// target, on Linux its EGL one over a GBM surface on the first render node —
+// no window and no X server either way. The corpus is
 // `scripts/bench/tiles.ts`'s.
 import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -162,8 +164,21 @@ function glOf(dri: Dri): Dri['gl'] {
 }
 
 function headlessGl(dri: Dri, width: number, height: number): HeadlessGl {
+  if (process.platform === 'linux') {
+    const gpu = new dri.Gpu({ stencilSize: 8, depthSize: 24, glVersion: 3 });
+    const surface = gpu.createSurface(width, height);
+    gpu.makeCurrent(surface);
+    return {
+      gl: gpu.gl,
+      bind: () => gpu.makeCurrent(surface),
+      destroy: () => {
+        surface.destroy();
+        gpu.destroy();
+      },
+    };
+  }
   if (process.platform !== 'darwin') {
-    throw new Error('the GL stages use a CGL context and need macOS');
+    throw new Error('the GL stages need macOS (CGL) or Linux (GBM/EGL)');
   }
   const ctx = new dri.apple.Context({
     alphaSize: 8,
@@ -452,11 +467,13 @@ interface PhaseResult {
 function options(): {
   antialias: boolean;
   fillRule: 'nonzero' | 'evenodd';
+  triangles: boolean;
   offscreen: 'auto' | boolean;
 } {
   return {
     antialias: arg('aa', 'on') !== 'off',
     fillRule: arg('fill', 'nonzero') === 'evenodd' ? 'evenodd' : 'nonzero',
+    triangles: arg('fills', 'triangles') !== 'stencil',
     offscreen: arg('offscreen', 'auto') === 'on' ? true : 'auto',
   };
 }

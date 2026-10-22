@@ -378,6 +378,89 @@ test('a ring is closed explicitly, carries its fan apex, and ends in a sentinel'
   assert.deepStrictEqual(rec(11), [BREAK, BREAK, BREAK, BREAK]);
 });
 
+test("a polygon's triangles name its own fill records and cover the ring less its courtyard, once", () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const fill = records(data.fill);
+  const draw = data.draws[0]!;
+  const [first, count] = draw.ranges;
+  // One polygon, one range: eight points and a hole are eight triangles.
+  assert.deepStrictEqual(draw.triangles, [0, 24]);
+  assert.strictEqual(data.triangleIndices, 24);
+  assert.strictEqual(data.stats.triangles, 8);
+  const indices = new Uint32Array(data.triangles);
+  const point = (r: number) => {
+    // A ring's own points only: never its closing copy or a sentinel.
+    assert.ok(r >= first && r < first + count, `record ${r} is the layer's`);
+    assert.notStrictEqual(r, first + 4);
+    assert.notStrictEqual(fill.i16[r * 4], BREAK);
+    return [fill.i16[r * 4], fill.i16[r * 4 + 1]];
+  };
+  let area = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const [a, b, c] = [indices[t], indices[t + 1], indices[t + 2]].map(point);
+    const twice = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    area += Math.abs(twice) / 2;
+    // Nothing of it is in the courtyard.
+    const cx = (a[0] + b[0] + c[0]) / 3;
+    const cy = (a[1] + b[1] + c[1]) / 3;
+    assert.ok(!(cx > 300 && cx < 700 && cy > 300 && cy < 700));
+  }
+  // 800² less 400², with no triangle over another.
+  assert.strictEqual(area, 800 * 800 - 400 * 400);
+  // A line layer has none; the polygons are cut whatever reads them.
+  assert.strictEqual(data.draws[1]!.triangles, undefined);
+});
+
+test('features of one fill layer are cut in one batch, each polygon apart', () => {
+  const square = (x: number, y: number, size: number): number[] =>
+    part(
+      [
+        [x, y],
+        [x + size, y],
+        [x + size, y + size],
+        [x, y + size],
+      ],
+      true,
+      { x: 0, y: 0 },
+    );
+  // Two separate exterior rings in one feature, then a feature of its own:
+  // three polygons, a ring each, none of them a hole of another.
+  const bytes = new Uint8Array(
+    layer(
+      'buildings',
+      4096,
+      [],
+      [],
+      [
+        {
+          type: GeomType.Polygon,
+          tags: [],
+          geometry: [
+            ...square(0, 0, 100),
+            ...part(
+              [
+                [200, 0],
+                [300, 0],
+                [300, 100],
+                [200, 100],
+              ],
+              true,
+              { x: 0, y: 100 },
+            ),
+          ],
+        },
+        { type: GeomType.Polygon, tags: [], geometry: square(500, 500, 50) },
+      ],
+    ),
+  );
+  const data = buildTileBuckets(
+    parseTile(bytes),
+    prepareStyle({ layers: STYLE.slice(0, 1) }),
+  );
+  assert.strictEqual(data.stats.triangles, 6);
+  assert.deepStrictEqual(data.draws[0]!.triangles, [0, 18]);
+});
+
 // --- the cover ------------------------------------------------------------------
 
 const pyramid = { minZoom: 0, maxZoom: 14, tileSize: 512 };
@@ -814,6 +897,136 @@ test('on a table with stencilOpSeparate, a non-zero fill is one pass: front face
     renderer.estimate(frameOver(data, only)) <
       twoPass.estimate(frameOver(data, only)),
   );
+});
+
+/** A recording table that has `drawElements`, which the plain one is not
+ *  asked for: it answers every name, so it is told which it has. */
+function elementsGl(stencil = true) {
+  const recording = recordingGl(stencil);
+  return {
+    ...recording,
+    gl: new Proxy(recording.gl as object, {
+      has: (target, name) => name === 'drawElements' || name in target,
+    }),
+  };
+}
+
+test('on a table with drawElements, an opaque fill is its triangles in one draw, with no stencil and no cover', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const only = STYLE.slice(0, 1);
+  const { gl, log } = elementsGl();
+  const renderer = new GlMapRenderer(gl, { antialias: false });
+  const stats = renderer.render(frameOver(data, only));
+  const elements = log.filter((c) => c.name === 'drawElements');
+  assert.strictEqual(elements.length, 1);
+  // Twenty-four indices from the first, uint32.
+  assert.deepStrictEqual(elements[0].args.slice(1), [
+    24,
+    (gl as Record<string, number>).UNSIGNED_INT,
+    0,
+  ]);
+  // The index buffer went in with the tile, bound inside a vertex array
+  // made for it — not into whichever one was bound.
+  const k = gl as Record<string, number>;
+  const bound = log.findIndex(
+    (c) => c.name === 'bindBuffer' && c.args[0] === k.ELEMENT_ARRAY_BUFFER,
+  );
+  assert.ok(bound > 0);
+  const made = log.map((c) => c.name).lastIndexOf('createVertexArray', bound);
+  assert.strictEqual(log[made + 1].name, 'bindVertexArray');
+  assert.ok(
+    log.slice(made + 2, bound).every((c) => c.name !== 'bindVertexArray'),
+  );
+  assert.strictEqual(stats.instances, 8);
+  // No fan, no cover over the layer, and nothing of the stencil: the next
+  // frame, past the first one's probe, draws the triangles and nothing else.
+  log.length = 0;
+  renderer.render(frameOver(data, only));
+  const names = log.map((c) => c.name);
+  assert.ok(!names.includes('drawArraysInstanced'));
+  assert.ok(!names.includes('drawArrays'));
+  assert.ok(!names.some((name) => name.startsWith('stencilOp')));
+  assert.ok(
+    !log.some((c) => c.name === 'enable' && c.args[0] === k.STENCIL_TEST),
+  );
+  assert.strictEqual(names.filter((name) => name === 'drawElements').length, 1);
+  // And it is priced at its triangles, not its fan's two passes.
+  const fan = new GlMapRenderer(recordingGl(true).gl, { antialias: false });
+  assert.strictEqual(renderer.estimate(frameOver(data, only)), 8);
+  assert.ok(fan.estimate(frameOver(data, only)) > 8);
+});
+
+test('a translucent fill is its triangles each pixel once, under the stencil, its edge outside them, then the stencil cleared', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const veil: MapStyleLayer[] = [
+    {
+      id: 'buildings',
+      type: 'fill',
+      sourceLayer: 'buildings',
+      color: '#ccbbaa',
+      opacity: 0.5,
+    },
+  ];
+  const { gl, log } = elementsGl();
+  new GlMapRenderer(gl).render(frameOver(data, veil));
+  const k = gl as Record<string, number>;
+  const from = log.findIndex((c) => c.name === 'drawElements');
+  assert.ok(from > 0);
+  // Set up just before the triangles: only where nothing has been yet, and
+  // marking what it covered.
+  const before = log.slice(0, from);
+  const func = before.filter((c) => c.name === 'stencilFunc').at(-1)!;
+  const op = before.filter((c) => c.name === 'stencilOp').at(-1)!;
+  assert.deepStrictEqual(func.args, [k.EQUAL, 0, 0xff]);
+  assert.deepStrictEqual(op.args, [k.KEEP, k.KEEP, k.INCR]);
+  // Then the edge as capsules, and the clear — a cover drawn with the
+  // colour masked off.
+  const after = log.slice(from + 1).map((c) => c.name);
+  assert.ok(after.indexOf('drawArraysInstanced') >= 0);
+  assert.ok(after.indexOf('drawArrays') > after.indexOf('drawArraysInstanced'));
+});
+
+test('the fan stays: for a table without drawElements, for `triangles: false`, and for an overlay', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const only = STYLE.slice(0, 1);
+  const off = elementsGl();
+  new GlMapRenderer(off.gl, { antialias: false, triangles: false }).render(
+    frameOver(data, only),
+  );
+  assert.ok(!off.calls.includes('drawElements'));
+  assert.ok(off.calls.includes('drawArraysInstanced'));
+  const without = recordingGl(true);
+  new GlMapRenderer(without.gl, { antialias: false }).render(
+    frameOver(data, only),
+  );
+  assert.ok(!without.calls.includes('drawElements'));
+  // An overlay's bucket is the fan alone, and a table that could draw
+  // triangles draws its fan.
+  const region = overlayRegion(
+    { center: { lon: 0, lat: 0 }, zoom: 12 },
+    { width: 256, height: 256 },
+    1,
+  );
+  const bucket = buildOverlayBucket(
+    [
+      {
+        kind: 'polygon',
+        id: 'area',
+        rings: [
+          [
+            { lon: -0.01, lat: -0.01 },
+            { lon: 0.01, lat: -0.01 },
+            { lon: 0.01, lat: 0.01 },
+          ],
+        ],
+      },
+    ],
+    region,
+    { accent: '#ff0000', background: '#ffffff', text: '#000000' },
+  );
+  assert.strictEqual(bucket.data.triangleIndices, 0);
+  const fill = bucket.data.draws.find((d) => d?.kind === 'fill');
+  assert.ok(fill && fill.triangles === undefined);
 });
 
 test('a map that names no renderer is auto — the retained one on a connection with no direct GL, which it says', async () => {
