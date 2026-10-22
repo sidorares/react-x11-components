@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.28.0](https://github.com/sidorares/react-x11-components/compare/v0.27.0...v0.28.0) (2026-10-22)
+
+
+### Features
+
+* **html:** anchor positioning, with position-try-fallbacks and [@container](https://github.com/container) anchored(fallback) ([#845](https://github.com/sidorares/react-x11-components/issues/845)) ([13758a7](https://github.com/sidorares/react-x11-components/commit/13758a7aa0cf8a41fda8e371fcceda2e3c8d3d04))
+* **html:** animation-trigger and timeline-trigger play an animation as its subject scrolls into view ([#843](https://github.com/sidorares/react-x11-components/issues/843)) ([0cbb650](https://github.com/sidorares/react-x11-components/commit/0cbb650cd35a1d6f855c9cae7cf6ffd3fc3f8577))
+* **html:** border-shape draws the border as a stroke along a shape, or the area between two ([#842](https://github.com/sidorares/react-x11-components/issues/842)) ([205394d](https://github.com/sidorares/react-x11-components/commit/205394d4008b39bbda811728ee9e8ae9b928a261))
+* **html:** corner-shape draws a corner's radii as a superellipse, and the border, shadows and outline follow it ([#837](https://github.com/sidorares/react-x11-components/issues/837)) ([5c08b4a](https://github.com/sidorares/react-x11-components/commit/5c08b4ac6ea95e2eb933938fffba70bd52ed205e))
+* **html:** gap decorations draw column-rule and row-rule in multicol, flex and grid gaps ([#838](https://github.com/sidorares/react-x11-components/issues/838)) ([68737f2](https://github.com/sidorares/react-x11-components/commit/68737f225f99efef1242697a37fd37dd3c52f9d6))
+* **html:** inherit() is the parent's value, of a custom property, a property, or the one declared ([#836](https://github.com/sidorares/react-x11-components/issues/836)) ([0b8d963](https://github.com/sidorares/react-x11-components/commit/0b8d963e1bb60b0fb273875f4edefde0f2964896))
+* **html:** interpolate-size and calc-size() run a height between 0 and auto, and ::details-content holds a details' content ([#839](https://github.com/sidorares/react-x11-components/issues/839)) ([b581729](https://github.com/sidorares/react-x11-components/commit/b581729147782f4b884fcbb8c0c10081b586dc66))
+* **html:** reading-flow and reading-order set the order Tab reaches a container's items in ([#840](https://github.com/sidorares/react-x11-components/issues/840)) ([84158d5](https://github.com/sidorares/react-x11-components/commit/84158d52b797a09053d8a5f63224509ed0736531))
+* **html:** scroll-state() container queries answer stuck, scrollable and scrolled ([#841](https://github.com/sidorares/react-x11-components/issues/841)) ([20c1fe1](https://github.com/sidorares/react-x11-components/commit/20c1fe144b84969adc99f095d76ef200e27e1b24))
+
+
+### Bug Fixes
+
+* **examples:** the charts window closes for good, with the streaming feed's timer unref'd ([#831](https://github.com/sidorares/react-x11-components/issues/831)) ([56c4390](https://github.com/sidorares/react-x11-components/commit/56c439019bc0c256e4f6016f9c2458cc140b7b60))
+* **flow:** the grid is drawn on a context with no patterns, where the pane was black ([#832](https://github.com/sidorares/react-x11-components/issues/832)) ([126a836](https://github.com/sidorares/react-x11-components/commit/126a8367e9d07ce5c2cce3bba947bc0cb5c1422f))
+* **html:** a repeated background image is tiled on a context with no patterns, where it was filled black ([#833](https://github.com/sidorares/react-x11-components/issues/833)) ([99392b9](https://github.com/sidorares/react-x11-components/commit/99392b97a21b2a04264ef9366a198f6f84c555f6))
+* **html:** a surface kept for an animated box is drawn through one context for its life, so a frame no longer leaks one onto its pixmap ([#829](https://github.com/sidorares/react-x11-components/issues/829)) ([63ed886](https://github.com/sidorares/react-x11-components/commit/63ed8869b17128a908a1ca83f8c187bb525afee7))
+* **maps:** a GL map lets go of its buffers before core destroys its surface, so unmounting one no longer throws "no current GL context" ([#827](https://github.com/sidorares/react-x11-components/issues/827)) ([281b7d4](https://github.com/sidorares/react-x11-components/commit/281b7d4510c03dd3501f37318762f558ad3091bd))
+* **terminal:** a vt terminal hangs up its program on unmount, so the shell under it no longer outlives the pane and keeps the app alive ([#830](https://github.com/sidorares/react-x11-components/issues/830)) ([189d3d5](https://github.com/sidorares/react-x11-components/commit/189d3d5bd87630c31f8218df8664b3b94d23e8a6))
+
 ## [0.27.0](https://github.com/sidorares/react-x11-components/compare/v0.26.0...v0.27.0) (2026-10-21)
 
 
