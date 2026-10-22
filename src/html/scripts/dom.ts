@@ -6285,9 +6285,127 @@ export function installDom(
       return conditionOf(this._text).replace(/^["']|["']$/g, '');
     }
   }
+  /** A container condition's parts at its top level: a group in
+   *  parentheses, a function, or a word, each as written. */
+  const conditionParts = (
+    text: string,
+  ): { kind: 'group' | 'fn' | 'word'; name: string; inner: string }[] => {
+    const out: {
+      kind: 'group' | 'fn' | 'word';
+      name: string;
+      inner: string;
+    }[] = [];
+    /** The end of the group that opens at `at`, past its `)`. */
+    const closing = (at: number): number => {
+      let depth = 0;
+      for (let i = at; i < text.length; i += 1) {
+        if (text[i] === '\\') i += 1;
+        else if (text[i] === '(') depth += 1;
+        else if (text[i] === ')' && (depth -= 1) === 0) return i + 1;
+      }
+      return text.length;
+    };
+    let i = 0;
+    while (i < text.length) {
+      if (/\s/.test(text[i])) {
+        i += 1;
+        continue;
+      }
+      if (text[i] === '(') {
+        const end = closing(i);
+        out.push({
+          kind: 'group',
+          name: '',
+          inner: text.slice(i + 1, end - 1),
+        });
+        i = end;
+        continue;
+      }
+      let end = i;
+      while (end < text.length && !/[\s()]/.test(text[end])) {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      const name = text.slice(i, Math.max(end, i + 1));
+      if (text[end] === '(') {
+        const close = closing(end);
+        out.push({ kind: 'fn', name, inner: text.slice(end + 1, close - 1) });
+        i = close;
+      } else {
+        out.push({ kind: 'word', name, inner: '' });
+        i = Math.max(end, i + 1);
+      }
+    }
+    return out;
+  };
+  /** A container condition as CSSOM serializes it (CSS Conditional 5, 3.3,
+   *  and CSSOM's "serialize a CSS rule"): the keywords and `style()` in
+   *  lower case, white space between the parts one space and none inside a
+   *  group's own parentheses, a custom property's `--name: value` with the
+   *  value as written, and what is no query of this engine's
+   *  (`<general-enclosed>`) as written. */
+  const serializeCondition = (text: string, inStyle = false): string =>
+    conditionParts(text)
+      .map((part) => {
+        if (part.kind === 'word') {
+          return /^(?:and|or|not)$/i.test(part.name)
+            ? part.name.toLowerCase()
+            : part.name;
+        }
+        if (part.kind === 'fn') {
+          return part.name.toLowerCase() === 'style'
+            ? `style(${serializeQueryIn(part.inner, true)})`
+            : `${part.name}(${part.inner})`;
+        }
+        return `(${serializeQueryIn(part.inner, inStyle)})`;
+      })
+      .join(' ');
+  /** What one pair of parentheses, or a `style()`, holds. */
+  const serializeQueryIn = (inner: string, inStyle: boolean): string => {
+    const text = inner.trim();
+    if (/^(?:\(|not\b)/i.test(text) || /\s(?:and|or)\s/i.test(text)) {
+      return serializeCondition(text, inStyle);
+    }
+    const colon = text.indexOf(':');
+    const name = (colon < 0 ? text : text.slice(0, colon)).trim();
+    if (inStyle && !name.startsWith('--')) {
+      // a range over a custom property, or anything else as written
+      return /[<>=]/.test(text) && text.includes('--')
+        ? text
+            .split(/\s*([<>]=?|=)\s*/)
+            .filter((t) => t !== '')
+            .join(' ')
+        : inner;
+    }
+    if (colon < 0) return text.replace(/\s+/g, ' ');
+    return `${name}: ${text.slice(colon + 1).trim()}`;
+  };
+  /** An `@container` rule: its container's name, if it gives one, and its
+   *  query (CSS Conditional 5, 3.3). */
+  class CSSContainerRule extends CSSGroupingRule {
+    get conditionText(): string {
+      const name = this.containerName;
+      return name ? `${name} ${this.containerQuery}` : this.containerQuery;
+    }
+    get containerName(): string {
+      const first = conditionParts(conditionOf(this._text))[0];
+      return first?.kind === 'word' &&
+        !/^(?:and|or|not|none)$/i.test(first.name) &&
+        conditionParts(conditionOf(this._text)).length > 1
+        ? first.name
+        : '';
+    }
+    get containerQuery(): string {
+      const condition = conditionOf(this._text).trim();
+      const name = this.containerName;
+      return serializeCondition(
+        name ? condition.slice(name.length) : condition,
+      );
+    }
+  }
   const RULE_CLASSES: Record<string, Any> = {
     media: CSSMediaRule,
     supports: CSSSupportsRule,
+    container: CSSContainerRule,
     import: CSSImportRule,
     'font-face': CSSFontFaceRule,
     keyframes: CSSKeyframesRule,
@@ -13380,6 +13498,7 @@ export function installDom(
     CSSGroupingRule,
     CSSMediaRule,
     CSSSupportsRule,
+    CSSContainerRule,
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
