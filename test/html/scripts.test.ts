@@ -41,6 +41,7 @@ import type { ScriptRunner } from '../../src/html/scripts/runner.js';
 import {
   SCRIPTS_CONTAINED,
   ScriptEngine,
+  namedAccessWorks,
 } from '../../src/html/scripts/engine.js';
 import { DomHost } from '../../src/html/scripts/host.js';
 import { HtmlSource } from '../../src/html/dom.js';
@@ -589,6 +590,53 @@ test("a page's scripts run in order once it is parsed, and what they change is d
   assert.ok(doc.view.textContent().includes('item 2'), 'drawn');
 });
 
+test("a classic script's declarations are the window's, a strict one's and its let, const and class too, and one that does not parse is the page's SyntaxError", async () => {
+  const doc = await hosted(
+    '<p id="out">-</p>' +
+      '<script src="strict.js"></script>' +
+      "<script>let early = 'let'; const fixed = 'const'; class Shape {}</script>" +
+      "<script>window.addEventListener('error', function (e) { window.caught = e.error instanceof SyntaxError ? 'SyntaxError' : String(e.error); });</script>" +
+      '<script>this is not javascript</script>' +
+      "<script>document.getElementById('out').textContent = [typeof helper, helper(), counted, early, fixed, typeof Shape, caught, document.currentScript.tagName].join(' ');</script>",
+    {
+      // as WPT's computed-testcommon.js is: strict, and its functions what
+      // the test's own script calls
+      scripts: {
+        'https://example.test/dir/strict.js':
+          "'use strict'; function helper() { return 'helper'; } var counted = 'var';",
+      },
+    },
+  );
+  assert.equal(
+    doc.text('out'),
+    'function helper var let const function SyntaxError SCRIPT',
+  );
+});
+
+// a runtime that refuses a proxy in the global's chain, Bun's, has none
+const named = SCRIPTS_CONTAINED && namedAccessWorks() ? test : nodeTest.skip;
+
+named(
+  'an element is a global by its id, and a form by its name, under every global and declaration of the window',
+  async () => {
+    const doc = await hosted(
+      '<p id="out">-</p><div id="target"></div><form name="login"></form>' +
+        '<span id="twice"></span><b id="twice"></b>' +
+        '<div id="close"></div><div id="shadowed"></div>' +
+        "<script>var shadowed = 'var';" +
+        'var before = typeof added;' +
+        "var el = document.createElement('i'); el.id = 'added'; document.body.appendChild(el);" +
+        'var after = typeof added; el.remove();' +
+        "var strict = (function () { 'use strict'; try { nothingNamedThis; return 'found'; } catch (e) { return e.name; } })();" +
+        "document.getElementById('out').textContent = [target.id, window.target === document.getElementById('target'), 'target' in window, login.tagName, twice.length, typeof close, shadowed, before, after, typeof added, strict].join(' ');</script>",
+    );
+    assert.equal(
+      doc.text('out'),
+      'target true true FORM 2 function var undefined object undefined ReferenceError',
+    );
+  },
+);
+
 test('a script innerHTML puts in never runs, and one a script appends does', async () => {
   const doc = await hosted(
     '<html><body><p id="out">-</p><div id="box"></div><script>' +
@@ -607,6 +655,55 @@ test('a script that runs away is stopped, and the page goes on', async () => {
   );
   assert.equal(doc.timeouts, 1);
   assert.equal(doc.text('out'), 'after');
+});
+
+test('a classic script that runs away leaves the engine timed out, for the host to repair its tree', () => {
+  // Node makes the timeout's error in the context's realm, so a script the
+  // host runs is told it timed out only by the page (`__fault`), and the
+  // tree a bridge op was moving when V8 stopped it still wants repairing
+  const source = new HtmlSource();
+  source.setSource('<html><body></body></html>', true);
+  const host = new DomHost(
+    source.document,
+    {
+      handle: { refresh() {}, base: null } as unknown as HtmlHandle,
+      userAgent: 'test',
+      language: 'en-US',
+      viewport: () => ({
+        width: 1,
+        height: 1,
+        scrollX: 0,
+        scrollY: 0,
+        zoom: 1,
+        dpr: 1,
+        left: 0,
+        top: 0,
+      }),
+      scrollTo() {},
+      navigate() {},
+      reload() {},
+      go() {},
+      log() {},
+      title() {},
+      fetch: () => Promise.reject(new Error('none')),
+    },
+    'https://example.test/',
+  );
+  let timeouts = 0;
+  // long enough for the facade to install on a slow runner, which runs
+  // under the same timeout
+  const engine = new ScriptEngine(host.bridge, {
+    timeout: 1000,
+    onTimeout: () => void (timeouts += 1),
+    log() {},
+    settled() {},
+  });
+  host.entries = engine;
+  assert.equal(engine.exec('for (;;) {}', 'a', 0), false);
+  assert.equal(timeouts, 1);
+  assert.equal(engine.timedOutSince(), true);
+  assert.equal(engine.timedOutSince(), false);
+  assert.equal(engine.exec('var after = 1;', 'b', 0), true);
 });
 
 test('a worker runs in a thread of its own, started from a blob URL as Parcel starts one, and messages go both ways as structured clones', async () => {

@@ -154,6 +154,42 @@ function importStaysInPage(): boolean {
  */
 export const SCRIPTS_CONTAINED = !!SourceTextModule && importStaysInPage();
 
+/**
+ * Whether a proxy may stand in a context's global prototype chain, which is
+ * where the facade puts the window's named properties (HTML 7.2.2.3, in
+ * `installDom`). JavaScriptCore refuses one there, and Bun 1.4 says so only
+ * as the next script runs — "Proxy is not allowed in the global prototype
+ * chain" — so a window that had one ran no script of the page's at all.
+ * Asked once, of a throwaway context of each kind the engine makes; where
+ * it is false the window has no named properties.
+ */
+let namedAccess: boolean | null = null;
+export function namedAccessWorks(): boolean {
+  if (namedAccess !== null) return namedAccess;
+  const constant = vm.constants?.DONT_CONTEXTIFY;
+  const globals: object[] = [Object.create(null)];
+  if (constant !== undefined) globals.push(constant as unknown as object);
+  try {
+    namedAccess = globals.every((global) => {
+      const context = vm.createContext(global as never);
+      new vm.Script(
+        'Object.setPrototypeOf(globalThis, new Proxy(' +
+          'Object.create(Object.getPrototypeOf(globalThis)), {' +
+          " has: (t, k) => k === '__named' || Reflect.has(t, k)," +
+          " get: (t, k, r) => (k === '__named' ? 1 : Reflect.get(t, k, r)) }))",
+      ).runInContext(context);
+      return (
+        new vm.Script(
+          "var __declared = 1; typeof __named === 'number' && __declared === 1",
+        ).runInContext(context) === true
+      );
+    });
+  } catch {
+    namedAccess = false;
+  }
+  return namedAccess;
+}
+
 /** The facade's source, made once, with the one name a transpiler may call
  *  that the facade does not define: tsx keeps a function's name with a
  *  `__name` helper at the module's top, which the context has to have. */
@@ -167,8 +203,10 @@ const INSTALL = `(function () {
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
   const bridge = globalThis.__bridge;
+  const named = globalThis.__named === true;
   delete globalThis.__bridge;
-  install(bridge, webgl, raster);
+  delete globalThis.__named;
+  install(bridge, webgl, raster, named);
 })()`;
 
 /**
@@ -444,6 +482,8 @@ export class ScriptEngine {
    *  failed `import()` rejects with is the page's, never a host error, whose
    *  `constructor.constructor` is the host's `Function`. */
   private readonly _TypeError: new (message: string) => object;
+  /** And its `SyntaxError`, for a classic script that does not parse. */
+  private readonly _SyntaxError: new (message: string) => object;
   /** The context's global, the page's window (`global`). */
   private readonly _global: object;
 
@@ -475,12 +515,15 @@ export class ScriptEngine {
         `{ value: undefined, writable: false, configurable: false });`,
     );
     // the one host object that ever goes in, taken out of the global by
-    // the facade before any page code runs
+    // the facade before any page code runs, with whether the window can
+    // have its named properties
     (this._context as Record<string, unknown>).__bridge = bridge;
+    (this._context as Record<string, unknown>).__named = namedAccessWorks();
     run(INSTALL);
     this._promises = run('Promise.prototype') as object;
     this._global = run('globalThis') as object;
     this._TypeError = run('TypeError') as new (message: string) => object;
+    this._SyntaxError = run('SyntaxError') as new (message: string) => object;
     ENGINES.set(this._promises, this);
     watchRejections();
   }
@@ -658,12 +701,18 @@ export class ScriptEngine {
     return linked;
   }
 
-  /** A `TypeError` of the page's own, with nothing of the host's in its
-   *  `stack`: made by the host, it would name the host's frames and files. */
-  private _pageError(message: string): object {
-    const error = new this._TypeError(message);
+  /** A `TypeError` of the page's own, or a `SyntaxError`, with nothing of
+   *  the host's in its `stack`: made by the host, it would name the host's
+   *  frames and files. */
+  private _pageError(
+    message: string,
+    kind: 'TypeError' | 'SyntaxError' = 'TypeError',
+  ): object {
+    const error = new (
+      kind === 'TypeError' ? this._TypeError : this._SyntaxError
+    )(message);
     Object.defineProperty(error, 'stack', {
-      value: `TypeError: ${message}`,
+      value: `${kind}: ${message}`,
       writable: true,
       configurable: true,
     });
@@ -740,7 +789,12 @@ export class ScriptEngine {
     } catch {
       return;
     }
-    if (this.call('__fault', null) === 'timeout') this._options.onTimeout();
+    // Node makes the timeout's error in the context's realm, so it is told
+    // apart only in the page, and its tree wants the same repair
+    if (this.call('__fault', null) === 'timeout') {
+      this._timedOut = true;
+      this._options.onTimeout();
+    }
   }
 
   /**
@@ -781,12 +835,54 @@ export class ScriptEngine {
     was.scopes.sort((a, b) => b[0].length - a[0].length);
   }
 
-  /** A page's classic script, run in the global scope, as `currentScript`
-   *  the element with `script`'s id (0 for none). Whether it ran to its
-   *  end; what it threw is reported in the page. */
+  /**
+   * A page's classic script, run as HTML runs one (8.1.4.5): a script of
+   * its own, compiled into the context, so its top-level declarations are
+   * the global's — a `'use strict'` script's functions and `var`s, and any
+   * script's `let`, `const` and `class`, which the next script reads. Run
+   * through the facade's indirect `eval`, every one of those stayed in the
+   * `eval`, and WPT's `computed-testcommon.js`, strict, defined nothing.
+   * `currentScript` is the element with `script`'s id (0 for none) through
+   * the microtasks it queued, which run as it ends. Whether it ran to its
+   * end; what it threw, or why it did not parse, is reported in the page.
+   */
   exec(code: string, url: string, script: number): boolean {
-    const ran = this.call('__exec', [code, url, script]) === true;
-    // after the microtasks it queued, which ran as the entry ended
+    if (this._broken || this._disposed) return false;
+    this.call('__exec', [script]);
+    let compiled: VmScript | null = null;
+    try {
+      compiled = new vm.Script(code, {
+        // as the facade's stack reader finds a frame's file
+        filename: String(url).replace(/\s/g, '%20'),
+        importModuleDynamically: this._importer as never,
+      });
+    } catch (error) {
+      // the runtime's `SyntaxError`, the host's, made the page's own
+      this._fault(
+        !isHostError(error)
+          ? error
+          : error.name === 'SyntaxError'
+            ? this._pageError(error.message, 'SyntaxError')
+            : this._pageError(messageOf(error)),
+      );
+    }
+    let ran = false;
+    if (compiled) {
+      this._depth += 1;
+      try {
+        // what it completes with is the page's, and never read
+        compiled.runInContext(this._context, {
+          timeout: this._options.timeout,
+        });
+        ran = true;
+      } catch (error) {
+        // the page's own exception, or the timeout: told apart and reported
+        // without reading the page's object (`_fault`)
+        this._fault(error);
+      } finally {
+        this._depth -= 1;
+      }
+    }
     this.call('__ran', null);
     return ran;
   }

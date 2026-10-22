@@ -952,6 +952,36 @@ standards moved from what Acid3 expected):
   frame of `sandpack-bundler-4bw.pages.dev`, compiles in its Babel worker
   and draws the example's preview.
 
+**And what web-platform-tests' own tests take for granted**, found running
+the Interop 2026 focus areas through `<Html scripts>`
+(`scripts/conformance/interop.ts`):
+
+- **A classic script is a script of its own.** The facade ran each through
+  an indirect `eval`, whose declarations are the global's only where it is
+  sloppy and they are `var`s and functions: a `'use strict'` script's
+  stayed in the `eval`, and so did any script's top-level `let`, `const`
+  and `class`, which the next script could not read. WPT's
+  `computed-testcommon.js`, strict, defined nothing for the test that
+  loaded it. The host compiles the script into the context as a
+  `vm.Script` (`ScriptEngine.exec`), so it is evaluated as HTML evaluates
+  one, its declarations the global environment's; what it throws, the
+  timeout among them, goes to the page through `__thrown` as a module's
+  does, and a script that does not parse is the page's `SyntaxError`.
+  What it throws is reported once the microtasks it queued have run,
+  since the runtime runs them as the script returns
+  (`microtaskMode: 'afterEvaluate'`); HTML reports it first. Two places
+  still `eval`: a string timer and a worker's `importScripts`,
+  both run from inside the page's own call, where a nested `vm.Script`
+  would run the page's microtasks before the caller goes on.
+- **An element is a global by its `id`** (HTML 7.2.2.3), and an `embed`,
+  a `form`, an `img`, an `object` or a frame by its `name`: `target`, as
+  WPT's tests that have a `#target` read it. A proxy is the next link of the
+  global's chain, so every global, `var` and function shadows it, and is
+  asked only for a name nothing above it has — which is every
+  `typeof require` a bundle tests — so the host answers from an index of
+  the document's names, walked again only once a tree has changed since
+  (`DomHost._namesOf`).
+
 ## What core would be asked
 
 1. **Options for a pane's process.** `<Frame>` forks its child with the
