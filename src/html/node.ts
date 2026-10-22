@@ -679,7 +679,13 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree || this._styledWith !== this._cascade) return null;
     if (pseudo === '') return tree.styles.get(el)?.style ?? null;
-    if (pseudo !== 'before' && pseudo !== 'after') return null;
+    if (
+      pseudo !== 'before' &&
+      pseudo !== 'after' &&
+      pseudo !== 'details-content'
+    ) {
+      return null;
+    }
     return this._pseudoBoxOf(tree, el, pseudo)?.style ?? null;
   };
   /** What a presenter has on layers of their own, by sprite key, as it
@@ -4983,6 +4989,27 @@ export class HtmlViewNode extends Node {
         if (diff.move) movingBoxes.add(box);
         style = made;
         ink = diff.ink;
+      } else if (box.pseudo === 'details-content') {
+        // a `::details-content`, styled from its element by its own rules
+        // as a `::before` is, and as one's restyled: where its element was
+        // reached, and its transitions run — an accordion's height
+        const from = GENERATED_FROM.get(box);
+        if (!from || !reach.has(from)) continue;
+        const inherits = fresh.get(from);
+        const kept = tree.styles.get(from)?.style;
+        if (!inherits || !kept) return false;
+        if (!parent || parent.style !== kept) return false;
+        const made = cascade.detailsContentStyleFor(from, inherits);
+        const diff = hoverChange(box.style, made);
+        if (diff === false) return false;
+        if (!diff) continue;
+        if (diff.move && !movable(box, box.style, made)) return false;
+        if (diff.fade && brokenAround(box)) return false;
+        if (diff.reach) reaches = true;
+        if (diff.order) reorders = true;
+        if (diff.move) movingBoxes.add(box);
+        style = made;
+        ink = diff.ink;
       } else if (box.pseudo === 'backdrop') {
         // a `::backdrop`, which inherits from its element and not from the
         // box around it: built again where its element was restyled
@@ -6077,7 +6104,7 @@ export class HtmlViewNode extends Node {
   private _pseudoBoxOf(
     tree: BoxTree,
     el: Element,
-    which: 'before' | 'after',
+    which: 'before' | 'after' | 'details-content',
   ): Box | null {
     return generatedIn(this._firstBoxesOf(tree).get(el), el, which);
   }
@@ -10087,7 +10114,7 @@ function brokenAround(box: Box): boolean {
 function generatedIn(
   box: Box | undefined,
   el: Element,
-  which: 'before' | 'after',
+  which: 'before' | 'after' | 'details-content',
 ): Box | null {
   if (!box || box.el !== el) return null;
   const stack = [...box.children];

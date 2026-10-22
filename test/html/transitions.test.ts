@@ -129,6 +129,71 @@ test('a hover that changes a property a transition names runs it, from the value
   assert.strictEqual(doc.clock.pending, false, 'over');
 });
 
+test('under interpolate-size: allow-keywords a height runs between 0 and auto, and back', async (t) => {
+  const sheet = (size: string) =>
+    `<style>:root{interpolate-size:${size}}` +
+    '#w{padding:10px}#a{height:0;overflow:hidden;transition:height 160ms linear}' +
+    '#w:hover #a{height:auto}.c{height:100px}</style>' +
+    '<div id="w"><div id="a"><div class="c"></div></div></div>';
+  const doc = await holding(t, sheet('allow-keywords'));
+  const height = () => boxOf(doc.el, 'a').height;
+  assert.strictEqual(height(), 0);
+  doc.hover('w');
+  await doc.at(80);
+  // half of its content's height, as a calc-size() of auto
+  assert.ok(Math.abs(height() - 50) <= 1, `half way: ${height()}`);
+  await doc.at(176);
+  assert.strictEqual(height(), 100, 'its content');
+  assert.strictEqual(doc.style('a').height, 'auto', 'and auto once over');
+  assert.strictEqual(doc.style('a').heightSize, null);
+  // back to 0 the same way
+  doc.hover(null);
+  await doc.at(176 + 48);
+  assert.ok(height() > 50 && height() < 100, `on the way back: ${height()}`);
+  await doc.at(176 + 176);
+  assert.strictEqual(height(), 0);
+  // numeric-only, the initial value: no keyword runs, and it goes at once
+  const plain = await holding(t, sheet('numeric-only'));
+  plain.hover('w');
+  await plain.at(80);
+  assert.strictEqual(boxOf(plain.el, 'a').height, 100);
+});
+
+test('allow-discrete runs a value that does not interpolate, content-visibility shown all the while', async (t) => {
+  const doc = await holding(
+    t,
+    '<style>#w{padding:10px}#a{content-visibility:hidden;' +
+      'transition:content-visibility 160ms allow-discrete, opacity 160ms}' +
+      '#w:hover #a{content-visibility:visible;opacity:.5}' +
+      '#b{content-visibility:hidden;transition:content-visibility 160ms}' +
+      '#w:hover #b{content-visibility:visible}</style>' +
+      '<div id="w"><div id="a">a</div><div id="b">b</div></div>',
+  );
+  // times from where the held clock is, which stops when nothing runs
+  const after = async (ms: number) => doc.at(animationClock.now() + ms);
+  doc.hover('w');
+  await after(32);
+  assert.strictEqual(
+    doc.style('a').contentVisibility,
+    'visible',
+    'from the first',
+  );
+  await after(200);
+  doc.hover(null);
+  await after(96);
+  // shutting, it stays visible to the end of the run
+  assert.strictEqual(doc.style('a').contentVisibility, 'visible');
+  await after(96);
+  assert.strictEqual(doc.style('a').contentVisibility, 'hidden');
+  // where the transition does not allow it, it goes over at once
+  doc.hover('w');
+  await after(32);
+  assert.strictEqual(doc.style('b').contentVisibility, 'visible');
+  doc.hover(null);
+  await after(32);
+  assert.strictEqual(doc.style('b').contentVisibility, 'hidden');
+});
+
 metric(
   'a panel a hover straightens out of a perspective is drawn at every frame as the document built at that frame draws it',
   async (t) => {

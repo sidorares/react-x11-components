@@ -1,16 +1,23 @@
 // <Html> — what HTML's own elements and attributes look like.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, screen } from 'react-x11/test';
+import { act, cleanup, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import { Html, useHtmlHandle } from '../../src/index.js';
+import { animationClock } from '../../src/html/node.js';
+import type { Box } from '../../src/html/layout/boxes.js';
+import { holdClock } from '../held-clock.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { setModal } from '../../src/html/dom.js';
 import { isInert } from '../../src/html/focus.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
+  FONTS,
   boxOf,
   clipsAround,
   fillsOf,
   findById,
+  h,
   render,
   view,
 } from './harness.js';
@@ -131,6 +138,102 @@ test("a pre and its code are HTML's: no padding, no scroll, no size of their own
   assert.strictEqual(box('i').style.fontSize, 13);
   assert.strictEqual(box('k').style.fontSize, 13);
   assert.strictEqual(box('r').style.fontSize, 15, 'under a length, the length');
+});
+
+/** A `<details>`'s `::details-content` box, by the details' id. */
+function contentBoxOf(el: HtmlViewNode, id: string): Box {
+  const details = boxOf(el, id) as unknown as Box;
+  const box = details.children.find((c) => c.pseudo === 'details-content');
+  assert.ok(box, `${id} has a ::details-content`);
+  return box;
+}
+
+test('a details holds all but its summary in its ::details-content, and :open tells open from shut', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}details::details-content{padding:5px;background:#00ff00}' +
+      'details:open > summary{color:#ff0000}details:closed > summary{color:#0000ff}' +
+      'details p{margin:0;height:20px}</style>' +
+      '<details id="shut"><p id="a1">A</p><summary id="s1">Q</summary></details>' +
+      '<details id="open" open><summary id="s2">Q</summary><p id="a2">A</p></details>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+  assert.strictEqual(color('s1'), parseColor('#0000ff'), ':closed');
+  assert.strictEqual(color('s2'), parseColor('#ff0000'), ':open');
+  // open: the summary first, then the content box, the paragraph in it
+  const open = contentBoxOf(el, 'open');
+  const details = boxOf(el, 'open') as unknown as Box;
+  assert.strictEqual(
+    details.children.indexOf(open),
+    details.children.length - 1,
+  );
+  assert.strictEqual(open.padTop, 5, 'its own rules');
+  assert.strictEqual(open.style.backgroundColor, parseColor('#00ff00'));
+  assert.ok(
+    open.children.some((c) => c.el === findById(el.document, 'a2')),
+    'what it holds',
+  );
+  assert.strictEqual(open.height, 30);
+  // shut: the box is there, with nothing in it and no size, after the
+  // summary wherever it was written
+  const shut = contentBoxOf(el, 'shut');
+  assert.strictEqual(shut.children.length, 0);
+  assert.strictEqual(shut.height - shut.padTop - shut.padBottom, 0);
+  const shutDetails = boxOf(el, 'shut') as unknown as Box;
+  assert.strictEqual(shutDetails.children[0].el, findById(el.document, 's1'));
+});
+
+test("an accordion opens and shuts its ::details-content's height to and from auto", async (t) => {
+  const clock = holdClock(t, animationClock);
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Accordion() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source:
+        '<style>:root{interpolate-size:allow-keywords}body{margin:0}' +
+        'details::details-content{height:0;overflow:clip;' +
+        'transition:height 160ms linear,content-visibility 160ms allow-discrete}' +
+        'details:open::details-content{height:auto}' +
+        '.c{height:100px}</style>' +
+        '<details id="d"><summary>Q</summary><div class="c"></div></details>',
+      partial: false,
+      ref: handle.ref,
+      'data-testname': 'doc',
+    });
+  }
+  await renderX11(
+    h('box', { style: { width: 300, flexDirection: 'column' } }, h(Accordion)),
+    { width: 300, height: 300, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const node = view(screen.getByTestName('doc') as DrawnNode);
+  const details = findById(handle!.document, 'd')!;
+  const height = () => contentBoxOf(node, 'd').height;
+  assert.strictEqual(height(), 0, 'shut');
+  const frames = async (ms: number) => {
+    const until = animationClock.now() + ms;
+    await act();
+    while (animationClock.now() + 16 <= until) {
+      if (!(await clock.frame())) break;
+    }
+    await act();
+  };
+  details.attribs.open = '';
+  await act(() => handle!.refresh());
+  await frames(80);
+  assert.ok(height() > 20 && height() < 80, `opening: ${height()}`);
+  await frames(160);
+  assert.strictEqual(height(), 100, 'open');
+  delete details.attribs.open;
+  await act(() => handle!.refresh());
+  await frames(80);
+  // its content still drawn as it shuts, content-visibility being
+  // visible for as long as the transition runs
+  assert.ok(height() > 20 && height() < 80, `shutting: ${height()}`);
+  assert.ok(contentBoxOf(node, 'd').children.length > 0, 'its content');
+  await frames(160);
+  assert.strictEqual(height(), 0, 'shut again');
 });
 
 test('a closed details shows its summary, and an open one all of it', async () => {

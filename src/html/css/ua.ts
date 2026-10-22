@@ -378,6 +378,11 @@ label { cursor: pointer; }
    accordions in GitHub's pricing cards were 16px taller than a browser's */
 summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; cursor: pointer; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
+/* what a details holds but its summary is in a box of its own (HTML 15.3.4,
+   CSS Pseudo 4), which a closed one keeps and hides, so that a page can
+   animate it open */
+details::details-content { display: block; }
+details:not([open])::details-content { content-visibility: hidden; }
 
 /* HTML's rendering section (15.3.3): a dialog is a framed box out of the
    flow, centred across its containing block, and one that is not open is

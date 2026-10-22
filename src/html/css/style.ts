@@ -445,6 +445,14 @@ export interface GapRule {
   inset: readonly [Len, Len];
 }
 
+/** A size as a share of the one its keyword gives a box, and a length or
+ *  a percentage added (`ComputedStyle.widthSize`): `size` × the keyword's
+ *  size + `plus`. */
+export interface SizeOf {
+  size: number;
+  plus: Len;
+}
+
 /** Each corner's superellipse parameter (`ComputedStyle.cornerShape`). */
 export type CornerShapes = readonly [number, number, number, number];
 
@@ -669,6 +677,10 @@ export interface ComputedStyle {
   contain: number;
   /** `content-visibility`: `hidden` skips painting what the box holds. */
   contentVisibility: 'visible' | 'auto' | 'hidden';
+  /** The bits of `contain` that `content-visibility` added and nothing
+   *  else set (`settleContentVisibility`): what a transition of it, which
+   *  runs after the cascade has settled them, takes back. */
+  containFromVisibility: number;
   /** `container-type` (CSS Conditional 5, 3.1): whether the element is a
    *  query container for size queries, and in which axes — which applies
    *  the size containment of those axes and style containment to it, and
@@ -896,6 +908,16 @@ export interface ComputedStyle {
    *  `auto`, and what stretches an item of `auto` height does not stretch
    *  it (CSS Grid 1, 10.3). */
   heightKeyword: ContentSize | null;
+  /** `width` and `height` as a `calc-size()` of a keyword (CSS Values 5,
+   *  9): the size `auto` or the keyword beside it would give the box, as
+   *  much of it as `size` says and `plus` added — which is also what a
+   *  size runs through between a length and a keyword under
+   *  `interpolate-size: allow-keywords`. Null for any other size. */
+  widthSize: SizeOf | null;
+  heightSize: SizeOf | null;
+  /** Whether a size may run between a length and a keyword (CSS Values 5,
+   *  12.1): `allow-keywords` lets `height: 0` grow to `auto`. Inherited. */
+  interpolateSize: 'numeric-only' | 'allow-keywords';
 
   marginTop: Len;
   marginRight: Len;
@@ -1127,6 +1149,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'interpolateSize',
   'scrollbarThumbColor',
   'colorScheme',
   'colorSchemeKeywords',
@@ -1343,6 +1366,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flowRoot: false,
     contain: 0,
     contentVisibility: 'visible',
+    containFromVisibility: 0,
     containerType: 'normal',
     containerName: '',
     overflowClipBox: 'padding-box',
@@ -1420,6 +1444,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     maxWidthKeyword: null,
     maxHeightKeyword: null,
     heightKeyword: null,
+    widthSize: null,
+    heightSize: null,
+    interpolateSize: 'numeric-only',
 
     marginTop: 0,
     marginRight: 0,
@@ -1582,6 +1609,7 @@ export function inherit(
   // quarters of the cost of every element's style, a store through a
   // computed name costing thirty times one through a written one
   out.color = parent.color;
+  out.interpolateSize = parent.interpolateSize;
   out.scrollbarThumbColor = parent.scrollbarThumbColor;
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
@@ -2487,7 +2515,25 @@ export function applyDeclaration(
     case 'height':
     case 'min-width':
     case 'min-height': {
-      const keyword = contentSizeOf(value, ctx, name.endsWith('width'));
+      const across = name.endsWith('width');
+      // `calc-size()` (CSS Values 5, 9), of a width or a height alone: a
+      // keyword's size scaled and added to, or a length's, which is one
+      let calc: ReturnType<typeof calcSizeOf> = null;
+      if (CALC_SIZE.test(value)) {
+        if (name !== 'width' && name !== 'height') return;
+        calc = calcSizeOf(value, ctx, across);
+        if (!calc) return;
+        if ('size' in calc) {
+          style[camel(name) as 'width' | 'height'] = AUTO;
+          if (name === 'width') style.widthKeyword = calc.keyword;
+          else style.heightKeyword = calc.keyword;
+          style[across ? 'widthSize' : 'heightSize'] = calc.size;
+          return;
+        }
+      }
+      if (name === 'width') style.widthSize = null;
+      else if (name === 'height') style.heightSize = null;
+      const keyword = calc ? null : contentSizeOf(value, ctx, across);
       if (keyword) {
         // `auto` beside it, which is a height's content height already
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
@@ -2499,13 +2545,20 @@ export function applyDeclaration(
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
       // 10.2, 10.4, 10.5, 10.7)
-      const len = parseLength(value, ctx);
+      const len = calc ? calc.len : parseLength(value, ctx);
       if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
         if (name === 'width') style.widthKeyword = null;
         else if (name === 'min-width') style.minWidthKeyword = null;
         else if (name === 'min-height') style.minHeightKeyword = null;
         else style.heightKeyword = null;
+      }
+      return;
+    }
+    case 'interpolate-size': {
+      const v = value.trim().toLowerCase();
+      if (v === 'numeric-only' || v === 'allow-keywords') {
+        style.interpolateSize = v;
       }
       return;
     }
@@ -4198,13 +4251,19 @@ function parseWillChange(value: string): number | null {
  * tells — and `hidden` all four.
  */
 export function settleContentVisibility(style: ComputedStyle): void {
+  // what an earlier settling added is taken back first: a transition of
+  // `content-visibility` settles it again (`Cascade._computeStyle`)
+  style.contain &= ~style.containFromVisibility;
+  let bits = 0;
   if (style.contentVisibility === 'auto') {
-    style.contain |= CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
+    bits = CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
   } else if (style.contentVisibility === 'hidden') {
-    style.contain |=
-      CONTAIN_SIZE | CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
-    style.contain &= ~CONTAIN_INLINE_SIZE;
+    bits = CONTAIN_SIZE | CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
   }
+  style.containFromVisibility = bits & ~style.contain;
+  style.contain |= bits;
+  if (style.contentVisibility === 'hidden')
+    style.contain &= ~CONTAIN_INLINE_SIZE;
 }
 
 /**
@@ -5546,6 +5605,64 @@ function whiteSpaceOf(collapse: Collapse, wrap: boolean): WhiteSpace {
  *  `fit-content()` of a length or a percentage (CSS Sizing 3, 3.1) — a
  *  width's, where a height's is its content height as the keyword is;
  *  null for anything else. */
+const CALC_SIZE = /^\s*calc-size\(/i;
+
+/** `size` in a `calc-size()`'s calculation, standing for its basis. */
+const SIZE_WORD = /(?<![\w-])size(?![\w-])/gi;
+
+/**
+ * A `calc-size()` (CSS Values 5, 9): its basis — `auto`, a content
+ * keyword, or a length or a percentage — and a calculation that may name
+ * it as `size`, which is all of it where there is none. With a length for
+ * a basis it is the length the calculation comes to; with a keyword, that
+ * keyword's size scaled and added to, worked out from the calculation at
+ * two sizes, so one that is not a sum of `size` and lengths is none. Null
+ * for no `calc-size()`.
+ */
+function calcSizeOf(
+  value: string,
+  ctx: UnitContext,
+  inline: boolean,
+): { len: Len | null } | { keyword: ContentSize | null; size: SizeOf } | null {
+  const v = value.trim();
+  const close = closingParen(v, v.indexOf('(') + 1);
+  if (close !== v.length - 1) return null;
+  const inner = v.slice(v.indexOf('(') + 1, close);
+  const [basisText, ...rest] = splitCommas(inner);
+  if (rest.length > 1) return null;
+  const expr = rest.length ? rest[0] : 'size';
+  if (!basisText || !expr) return null;
+  const basis = basisText.trim().toLowerCase();
+  const keyword =
+    basis === 'auto' || basis === 'any'
+      ? null
+      : contentSizeOf(basisText, ctx, inline);
+  if (keyword === null && basis !== 'auto' && basis !== 'any') {
+    // a length: the calculation of it
+    const len = parseLength(
+      `calc(${expr.replace(SIZE_WORD, `(${basisText})`)})`,
+      ctx,
+    );
+    return { len: len === AUTO ? null : len };
+  }
+  if (keyword !== null && typeof keyword === 'object') return null;
+  const at = (size: number) =>
+    parseLength(`calc(${expr.replace(SIZE_WORD, `(${size}px)`)})`, ctx);
+  const none = at(0);
+  const some = at(1000);
+  if (none === null || some === null || none === AUTO || some === AUTO) {
+    return null;
+  }
+  const px = (len: number | Pct) =>
+    typeof len === 'number' ? len : (len.px ?? 0);
+  const pct = (len: number | Pct) => (typeof len === 'number' ? 0 : len.pct);
+  if (pct(none) !== pct(some) || (isPct(none) && none.of)) return null;
+  return {
+    keyword,
+    size: { size: (px(some) - px(none)) / (1000 * ctx.scale), plus: none },
+  };
+}
+
 function contentSizeOf(
   value: string,
   ctx: UnitContext,
@@ -6798,6 +6915,7 @@ function camel(name: string): string {
 
 const INHERITED_NAMES = new Set<string>([
   'color',
+  'interpolate-size',
   'scrollbar-color',
   'color-scheme',
   '-webkit-text-fill-color',
@@ -7168,8 +7286,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display', 'flowRoot', 'webkitBox', 'grid'],
-  width: ['width', 'widthKeyword'],
-  height: ['height', 'heightKeyword'],
+  width: ['width', 'widthKeyword', 'widthSize'],
+  height: ['height', 'heightKeyword', 'heightSize'],
+  'interpolate-size': ['interpolateSize'],
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight', 'minHeightKeyword'],

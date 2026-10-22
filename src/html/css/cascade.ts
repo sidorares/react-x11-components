@@ -68,7 +68,12 @@ import {
 } from './animation.js';
 import type { Animations } from './animation.js';
 import type { Keyframe } from './parse.js';
-import { discrete, interpolateField, visibleSpan } from './interpolate.js';
+import {
+  discrete,
+  interpolateField,
+  keywordSizes,
+  visibleSpan,
+} from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
 import {
   animatedWillChange,
@@ -521,7 +526,8 @@ type PseudoElement =
   | 'selection'
   | 'placeholder'
   | 'scrollbar'
-  | 'backdrop';
+  | 'backdrop'
+  | 'details-content';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
  *  `::first-line`, `::marker`, `::selection`, `::placeholder` or
@@ -531,7 +537,7 @@ type PseudoElement =
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|-webkit-input-placeholder|-webkit-scrollbar)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|-webkit-input-placeholder|-webkit-scrollbar)$/i;
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -2314,6 +2320,7 @@ export class Cascade {
     placeholder: new RuleIndex(true),
     scrollbar: new RuleIndex(true),
     backdrop: new RuleIndex(true),
+    'details-content': new RuleIndex(true),
   };
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
@@ -3199,6 +3206,13 @@ export class Cascade {
       found = rule;
     }
     return found;
+  }
+
+  /** A sharing key no element has: for what a box no element makes holds,
+   *  a `::details-content`'s children, whose parent style is the box's and
+   *  not their element's parent's (`sharedStyleFor`). */
+  freshShareKey(): number {
+    return this._nextShareKey++;
   }
 
   /** Computed styles by sharing key, for one build (`sharedStyleFor`): one
@@ -4304,6 +4318,37 @@ export class Cascade {
    * backdrop's `currentColor`. Drawn at rest: a backdrop's animations, a
    * fade in as the dialog opens, run on no clock here.
    */
+  /**
+   * The style of a `<details>`'s `::details-content` (CSS Pseudo 4, 3.4):
+   * the box all it holds but its summary is in, which inherits from it —
+   * the UA sheet's `display: block`, and `content-visibility: hidden` while
+   * it is shut, which leaves it a box of no size with nothing in it. Its
+   * animations and transitions run on the element's clock as a `::before`'s
+   * do, so an accordion can open a height to `auto` (`interpolate-size`).
+   */
+  detailsContentStyleFor(
+    el: Element,
+    elementStyle: ComputedStyle,
+  ): ComputedStyle {
+    const index = this._pseudo['details-content'];
+    const candidates: Candidate[] = [];
+    if (index.size > 0 && index.reaches(el)) {
+      this._matchInto(index, el, candidates);
+    }
+    if (this._scoped && this._scopedPseudos.has('details-content')) {
+      this._scopedInto(el, 'details-content', candidates);
+    }
+    candidates.sort(byCascade);
+    return this._computeStyle(
+      el,
+      elementStyle,
+      elementStyle.display === 'flex' || elementStyle.display === 'inline-flex',
+      candidates,
+      false,
+      'details-content',
+    );
+  }
+
   backdropStyleFor(el: Element, elementStyle: ComputedStyle): ComputedStyle {
     const index = this._pseudo.backdrop;
     const candidates: Candidate[] = [];
@@ -4720,6 +4765,7 @@ export class Cascade {
       const pseudo = target!;
       if (style.display === 'none') timeline.dropTransitions(el, pseudo);
       else {
+        const settled = style;
         style = timeline.transition(
           el,
           pseudo,
@@ -4728,6 +4774,11 @@ export class Cascade {
           animated,
         );
         if (animated) noteAnimated(style, animated);
+        // a `content-visibility` a transition runs brings its own
+        // containment, which the cascade settled for the value after
+        if (style.contentVisibility !== settled.contentVisibility) {
+          settleContentVisibility(style);
+        }
       }
     }
     // which faces of the document's own families this family, weight and
@@ -4798,14 +4849,29 @@ export class Cascade {
           unchanged = 0;
           continue;
         }
-        const a = styleAt(from?.frame ?? null) as unknown as Record<
+        let a = styleAt(from?.frame ?? null) as unknown as Record<
           string,
           unknown
         >;
-        const b = styleAt(to?.frame ?? null) as unknown as Record<
+        let b = styleAt(to?.frame ?? null) as unknown as Record<
           string,
           unknown
         >;
+        // a size between a length and a keyword, as a `calc-size()` of the
+        // keyword, where `interpolate-size` lets it run (`keywordSizes`)
+        if (
+          (prop === 'height' || prop === 'width') &&
+          base.interpolateSize === 'allow-keywords'
+        ) {
+          const pair = keywordSizes(
+            a as unknown as ComputedStyle,
+            b as unknown as ComputedStyle,
+          );
+          if (pair) {
+            a = { ...a, ...pair.was };
+            b = { ...b, ...pair.now };
+          }
+        }
         const computed: Record<string, unknown> = {};
         let flips = false;
         for (const key of fields) {
@@ -5947,6 +6013,10 @@ const PSEUDOS = {
   // a dialog in its document's top layer, which only a page's scripts put
   // one in (`isModal`)
   modal: (el: Element) => isModal(el),
+  // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
+  // css-select has neither, and dropped every rule that named one
+  open: (el: Element) => opens(el) && el.attribs.open !== undefined,
+  closed: (el: Element) => opens(el) && el.attribs.open === undefined,
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,
@@ -5969,6 +6039,12 @@ const PSEUDOS = {
     return ranges.some((range) => langRangeMatches(tag, range));
   },
 };
+
+/** Whether an element opens and shuts by its `open` attribute: a
+ *  `<details>` or a `<dialog>`. */
+function opens(el: Element): boolean {
+  return el.name === 'details' || el.name === 'dialog';
+}
 
 /**
  * An element's language: the `lang` or `xml:lang` of the nearest element
