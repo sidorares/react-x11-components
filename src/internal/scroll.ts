@@ -41,15 +41,11 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { DrawnNode, ScrollableNode } from 'react-x11';
 
-import type { RowHeights, RowKey } from './heights.js';
+import { indexOfKey, keysOf } from './heights.js';
+import type { KeyedRows, RowHeights, RowKey } from './heights.js';
 import { afterLayout, cancelAfterLayout } from './timers.js';
 import type { LayoutTick } from './timers.js';
 import { scaleOf } from './units.js';
-
-/** All a reveal needs of a row: `<TreeRow>` and `<TableRow>` are both this. */
-interface Keyed {
-  id: RowKey;
-}
 
 /** A row on screen, and the index it was drawn at — the shape both
  *  components already keep their mounted rows in. */
@@ -63,8 +59,8 @@ interface Drawn {
 export interface RevealSources {
   /** The scroll pane. `<Table>`'s body; `<Tree>`'s own root. */
   box: { readonly current: ScrollableNode | null };
-  /** The rows in display order. */
-  rows: { readonly current: readonly Keyed[] };
+  /** The rows in display order: `<TreeRow>`s, or `<Table>`'s order. */
+  rows: { readonly current: KeyedRows };
   /** The rows on screen, by id. */
   nodes: { readonly current: ReadonlyMap<RowKey, Drawn> };
   /** Where the rows that are *not* on screen are — and how tall a row that
@@ -207,8 +203,8 @@ export function useReveal(sources: RevealSources): Reveal {
       if (provisional && owed.current === null) owed.current = settled.current;
       const id = owed.current;
       if (!box || id === null) return;
-      const rows = rowsRef.current;
-      const at = rows.findIndex((r) => r.id === id);
+      const rows = keysOf(rowsRef.current);
+      const at = indexOfKey(rows, id);
       if (at < 0) {
         // the row left the list
         owed.current = null;
@@ -228,7 +224,7 @@ export function useReveal(sources: RevealSources): Reveal {
       // row is not mounted, which while virtualizing is the normal case.
       const drawn = nodes.current.get(id);
       const mounted =
-        drawn && drawn.node.abs.height > 0 && rows[drawn.at]?.id === id
+        drawn && drawn.node.abs.height > 0 && rows.keyAt(drawn.at) === id
           ? drawn.node
           : null;
       const placed = mounted

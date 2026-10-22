@@ -86,7 +86,7 @@ import type { VirtualViewport } from '../internal/window.js';
 import {
   MIN_COLUMN,
   columnValue,
-  orderRows,
+  orderedRows,
   resolveGetId,
   resolveWidths,
 } from './rows.js';
@@ -230,20 +230,38 @@ const s = createStyles({
     alignSelf: 'center',
     flexShrink: 0,
   },
-  /** The lane the fast-scroll pill floats in: absolute against the table's
-   *  root so the body pane scrolls under it, full-width so the pill centres
-   *  itself, and transparent to the pointer so the rows beneath stay
-   *  clickable. */
+  /** Where the fast-scroll pill hangs from: a point in the body pane — its
+   *  last child — held by `position: 'sticky'` at the middle of the bottom
+   *  edge of the pane's scrollport, however far it is scrolled along either
+   *  axis. See where it is rendered for why it is inside the pane. A point,
+   *  so that it adds nothing to the scroll extent and what core repaints
+   *  for it is the pill and not a band across the pane; the pill hangs up
+   *  out of it, centred by the lane's alignment. Transparent to the
+   *  pointer, so the rows beneath stay clickable. */
   scrollHintLane: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
+    position: 'sticky',
     bottom: 12,
+    start: '50%',
+    width: 0,
+    height: 0,
+    flexShrink: 0,
+    alignSelf: 'center',
     flexDirection: 'row',
     justifyContent: 'center',
+    alignItems: 'flex-end',
     pointerEvents: 'none',
   },
+  /** The lane between catch-ups: mounted, and out of the layout. */
+  scrollHintHidden: { display: 'none' },
+  /** The pill. Absolute, because that is what measures it at the width its
+   *  content wants: an item of a lane no wider than a point is laid out in
+   *  no room, and its text broke at every space it had. And an absolute box
+   *  its content sizes, hung from a row, is one core's content floors lay
+   *  out alone when what it holds changes (react-x11#969): a new count is a
+   *  measure of the pill, where it was one of the whole table, 7-8 ms of a
+   *  frame at a million rows. Keep the lane a row. */
   scrollHint: {
+    position: 'absolute',
     paddingStart: 10,
     paddingEnd: 10,
     paddingTop: 5,
@@ -817,9 +835,27 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const readId = useMemo(() => resolveGetId<Row>(getId), [getId]);
   const activeSort = sort === undefined ? ownSort : sort;
 
+  // Keyed on what orders the rows and nothing else: the sort's column and
+  // direction, and the columns only when the table sorts by one of them.
+  // Keyed on the objects, a table handed its columns or its sort inline — a
+  // new object every render, and `presorted` changes nothing about that —
+  // ordered every row again on every render, and rebuilt the height index
+  // behind it.
+  const sortColumn = presorted ? undefined : activeSort?.column;
+  const sortDirection = presorted ? undefined : activeSort?.direction;
+  const sortColumns = sortColumn === undefined ? null : columns;
   const ordered = useMemo(
-    () => orderRows(rows, columns, readId, activeSort, presorted),
-    [rows, columns, readId, activeSort, presorted],
+    () =>
+      orderedRows(
+        rows,
+        sortColumns ?? [],
+        readId,
+        sortColumn === undefined || sortDirection === undefined
+          ? null
+          : { column: sortColumn, direction: sortDirection },
+        false,
+      ),
+    [rows, sortColumns, readId, sortColumn, sortDirection],
   );
 
   const selectedIds: ReadonlySet<TableRowId> = useMemo(() => {
@@ -1029,7 +1065,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     let shift = 0;
     let changed = false;
     for (const [id, { node, at }] of rowNodes.current) {
-      if (rows[at]?.id !== id) continue; // drawn against a list that moved
+      if (rows.keyAt(at) !== id) continue; // drawn against a list that moved
       // `abs` is device; the resolved widths and the height index are
       // logical. Within a pixel rather than exact: a fractional scale
       // rounds the device width to the pixel grid, and the stale-width
@@ -1091,7 +1127,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     if (uniform) return false;
     const rows = orderedRef.current;
     for (const [id, { node, at }] of rowNodes.current) {
-      if (rows[at]?.id === id && !(node.abs.height > 0)) return true;
+      if (rows.keyAt(at) === id && !(node.abs.height > 0)) return true;
     }
     return false;
   }, [uniform]);
@@ -1128,8 +1164,8 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   /** Put a row in view, by the index its call site already has. */
   const revealAt = useCallback(
     (at: number): void => {
-      const row = orderedRef.current[at];
-      if (row) reveal.to(row.id);
+      const id = orderedRef.current.keyAt(at);
+      if (id !== undefined) reveal.to(id);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- `reveal` is a
       // stable handle
     },
@@ -1174,14 +1210,15 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       const anchor = anchorRef.current;
       if (mods.shift && anchor !== null) {
         const all = orderedRef.current;
-        let a = all.findIndex((r) => r.id === anchor);
+        let a = all.indexOf(anchor);
         let b = row.index;
         if (a < 0) a = b;
         const [lo, hi] = a <= b ? [a, b] : [b, a];
-        commitMulti(
-          all.slice(lo, hi + 1).map((r) => r.id),
-          { type: 'range', id: row.id, row: row.row },
-        );
+        commitMulti(all.idsBetween(lo, hi + 1), {
+          type: 'range',
+          id: row.id,
+          row: row.row,
+        });
       } else if (mods.ctrl) {
         const next = new Set(selectedRef.current);
         if (next.has(row.id)) next.delete(row.id);
@@ -1255,11 +1292,11 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     (ev: KeyboardEvent): boolean => {
       const rows = orderedRef.current;
       if (!rows.length || selectionMode === 'none') return false;
-      const at = rows.findIndex((r) => r.id === cursorRef.current);
+      const at = rows.indexOf(cursorRef.current);
       const clamp = (i: number): number =>
         Math.max(0, Math.min(rows.length - 1, i));
       const move = (to: number): void => {
-        const row = rows[clamp(to)];
+        const row = rows.at(clamp(to));
         if (row) {
           tap(row, {
             ctrl: false,
@@ -1303,7 +1340,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           move(rows.length - 1);
           return true;
         case XK_RETURN: {
-          const row = rows[at];
+          const row = rows.at(at);
           if (row) activate(row);
           return true;
         }
@@ -1311,7 +1348,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           break;
       }
       if (ev.codepoint === 32) {
-        const row = rows[at];
+        const row = rows.at(at);
         if (!row) return false;
         if (selectionMode === 'multiple')
           tap(row, { ctrl: true, shift: false });
@@ -1323,10 +1360,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         ev.ctrlKey &&
         (ev.key === 'a' || ev.key === 'A')
       ) {
-        commitMulti(
-          rows.map((r) => r.id),
-          { type: 'all' },
-        );
+        commitMulti(rows.idsBetween(), { type: 'all' });
         return true;
       }
       return false;
@@ -1352,17 +1386,18 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           else setOwnSingle(null);
           return;
         }
-        const row = orderedRef.current.find((r) => r.id === id);
+        const all = orderedRef.current;
+        const row = all.at(all.indexOf(id));
         if (row) tap(row, { ctrl: false, shift: false });
       },
       scrollToRow: (id) => {
-        const row = orderedRef.current.find((r) => r.id === id);
-        if (!row) return false;
-        revealAt(row.index);
+        const at = orderedRef.current.indexOf(id);
+        if (at < 0) return false;
+        revealAt(at);
         return true;
       },
       handleKey,
-      rows: () => orderedRef.current,
+      rows: () => orderedRef.current.toArray(),
     }),
     [tap, handleKey, revealAt, selectionMode, selected],
   );
@@ -1637,7 +1672,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       );
     }
     for (let i = first; i < last; i++) {
-      const entry = ordered[i];
+      const entry = ordered.at(i)!;
       bodyChildren.push(
         win.skeletons.has(entry.id)
           ? renderSkeletonRow(entry)
@@ -1667,7 +1702,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
    * frame will absorb is not worth announcing. Once up it stays until the
    * view is whole again, so it does not flicker through the catch-up.
    */
-  let scrollHint: ReactNode = null;
+  let pill: ReactNode = null;
   if (virtualizing && ordered.length > 0 && view.height > 0) {
     const vFirst = heights.indexAt(view.top);
     const vLast = Math.min(
@@ -1696,7 +1731,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     hintShown.current = show;
     if (show) {
       const hintState: TableScrollHintState<Row> = {
-        row: ordered[vFirst],
+        row: ordered.at(vFirst)!,
         from: vFirst + 1,
         to: vLast + 1,
         count: ordered.length,
@@ -1711,29 +1746,40 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
             `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
           );
       if (content !== null && content !== undefined && content !== false) {
-        scrollHint = hx(
+        pill = hx(
           'box',
           {
-            key: 'scroll-hint',
             // The pill duplicates what the scrollbar already tells an
             // assistive technology, and it comes and goes with the catch-up
             // — chatter, not content.
             'aria-hidden': true,
-            style: s.scrollHintLane,
+            style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
           },
-          hx(
-            'box',
-            {
-              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
-            },
-            content,
-          ),
+          content,
         );
       }
     }
   } else {
     hintShown.current = false;
   }
+  // The pill's lane stays mounted for as long as the table virtualizes, and
+  // between catch-ups it is out of the layout rather than out of the tree.
+  // It lives in the scroll pane (see below), and a child the pane gains or
+  // loses is a change to everything the pane holds as far as the repaint
+  // can tell: unmounted, the pill's going repainted the whole table on the
+  // frame a fling came to rest. Hidden, it is a change to the lane, which
+  // is the pill. Hidden rather than mounted empty, too: an empty lane would
+  // still be held against the scroll, and claim its point on every frame.
+  const scrollHint = virtualizing
+    ? hx(
+        'box',
+        {
+          key: 'scroll-hint',
+          style: [s.scrollHintLane, pill === null && s.scrollHintHidden],
+        },
+        pill,
+      )
+    : null;
 
   return hx(
     'box',
@@ -1827,7 +1873,23 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         },
       },
       hx('box', { style: [s.rowsBox, { width: total }] }, bodyChildren),
+      // The pill is *in* the pane, held to its viewport by `position:
+      // 'sticky'`, and not laid over it — because a pane scrolls by copying
+      // what stays in view only when everything over its viewport is its
+      // own content. Laid over it from outside, the pill would be dragged
+      // along by the copy, so core refused the copy for as long as the pill
+      // was up — and the pill stays up through any scroll that follows a
+      // fast one, so after a fling every slow frame repainted the whole
+      // pane: 9-14 ms and 5 Mpx a frame at 2x on a Mac, where the copy, its
+      // strip and the pill are 3.5-4 ms and 0.06 Mpx. A sticky node is what
+      // core keeps that path for: a held one repaints where it was and where
+      // it is, two pill-sized rects in the copy's ledger, the way a held
+      // section header does. Core's other seams fit worse —
+      // `viewportFixedRects()` is asked of an element that draws its own
+      // furniture, and this pill is whatever `renderScrollHint` returns, and
+      // pinned rects belong to an element blit (`scrollContents`), not to a
+      // scroll pane's.
+      scrollHint,
     ),
-    scrollHint,
   );
 }

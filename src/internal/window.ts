@@ -46,15 +46,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ScrollableNode } from 'react-x11';
 
-import type { RowHeights, RowKey } from './heights.js';
+import { keysOf } from './heights.js';
+import type { KeyedRows, RowHeights, RowKey } from './heights.js';
 import { cancelLater, later } from './timers.js';
 import type { DelayTick } from './timers.js';
 import { scaleOf } from './units.js';
-
-/** All this needs of a row — `TreeRow` and `TableRow` are both this. */
-interface Keyed {
-  id: RowKey;
-}
 
 const EMPTY_KEYS: ReadonlySet<RowKey> = new Set();
 
@@ -166,8 +162,9 @@ export interface VirtualWindowInputs {
   box: { readonly current: ScrollableNode | null };
   /** The height index, already `sync`ed to the rows this render draws. */
   heights: RowHeights;
-  /** The rows in display order — the same list the component draws from. */
-  rows: readonly Keyed[];
+  /** The rows in display order — the same list the component draws from:
+   *  an array of keyed rows, or anything else that answers `RowKeys`. */
+  rows: KeyedRows;
   /**
    * Every height in the index is exact — the table's declared-uniform model.
    * What it buys here: the idle band may grow *upward* freely. A measured
@@ -403,7 +400,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
 
   const {
     heights,
-    rows,
+    rows: list,
     exact,
     virtualizing,
     overscan,
@@ -413,6 +410,9 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     settleBudget,
     measure,
   } = inputs;
+  const rows = keysOf(list);
+  /** The key at `i`, which the loops below only ask for inside the list. */
+  const key = (i: number): RowKey => rows.keyAt(i) as RowKey;
   const count = rows.length;
 
   let first = 0;
@@ -511,8 +511,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
         const known = (i: number): boolean =>
           exact ||
           heights.isMeasured(i) ||
-          !real.current.has(rows[i].id) ||
-          measure?.(rows[i].id, i, viewRef.current) === true;
+          !real.current.has(key(i)) ||
+          measure?.(key(i), i, viewRef.current) === true;
         const cutAbove = (want: number): number => {
           let k = 0;
           while (k < want && known(first + k)) k++;
@@ -548,7 +548,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     const next = new Set<RowKey>();
     let entering = 0;
     for (let i = first; i < last; i++) {
-      if (prev.has(rows[i].id)) next.add(rows[i].id);
+      if (prev.has(key(i))) next.add(key(i));
       else entering++;
     }
     // A window with nothing carried over and no scroll in flight is a mount
@@ -556,7 +556,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     // first paint would be skeletons.
     const flood = entering > threshold && (active.current || next.size > 0);
     if (!flood) {
-      for (let i = first; i < last; i++) next.add(rows[i].id);
+      for (let i = first; i < last; i++) next.add(key(i));
     } else {
       // Viewport rows first — they are the ones being looked at — then
       // outward, up to the budget; the rest are skeletons until the ticks
@@ -567,8 +567,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
         view.height > 0 ? heights.indexAt(view.top + view.height) : vFirst;
       const take = (i: number): void => {
         if (i < first || i >= last || budget <= 0) return;
-        if (!next.has(rows[i].id)) {
-          next.add(rows[i].id);
+        if (!next.has(key(i))) {
+          next.add(key(i));
           budget--;
         }
       };
@@ -583,8 +583,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       }
       const skel = new Set<RowKey>();
       for (let i = first; i < last; i++) {
-        if (!next.has(rows[i].id)) {
-          skel.add(rows[i].id);
+        if (!next.has(key(i))) {
+          skel.add(key(i));
           if (i >= vFirst && i <= vLast) pending++;
         }
       }

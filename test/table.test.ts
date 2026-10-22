@@ -346,6 +346,65 @@ test('the default sort reads a row once, and orders as localeCompare did', () =>
   }
 });
 
+test('the rows are ordered when what orders them changes, and nothing else', async () => {
+  // A new array of rows is read once a row, for its id, and drawn a
+  // screenful at a time: no entry is made for a row nobody draws, which at
+  // a million rows was most of a 60-80 ms render. And a re-render that
+  // hands over the same rows with its columns and its sort written inline —
+  // new objects every time — orders nothing: keyed on the objects, every
+  // render ordered every row again, `presorted` or not.
+  let reads = 0;
+  const getId = (f: File): number => {
+    reads += 1;
+    return f.id;
+  };
+  const rows = many(5000);
+  const table = React.createRef<TableHandle<File>>();
+  const hooks: { set?: (next: File[]) => void; bump?: () => void } = {};
+  function Inline(): ReturnType<typeof h> {
+    const [list, setList] = React.useState(rows);
+    const [, setTick] = React.useState(0);
+    hooks.set = setList;
+    hooks.bump = () => setTick((n) => n + 1);
+    return h(
+      'box',
+      { style: { width: 400, height: 220, minHeight: 0 } },
+      h(Table<File>, {
+        ref: table,
+        rows: list,
+        columns: [
+          { id: 'name', label: 'Name' },
+          { id: 'bytes', label: 'Size' },
+        ],
+        sort: { column: 'bytes', direction: 'desc' },
+        presorted: true,
+        getId,
+        rowHeight: 24,
+      }),
+    );
+  }
+  await renderX11(h(Inline));
+  await settle();
+  assert.ok(reads >= rows.length, `the mount read ${reads} ids`);
+
+  const mounted = reads;
+  await act(() => hooks.bump?.());
+  await settle();
+  assert.strictEqual(reads, mounted, 'a re-render ordered the rows again');
+
+  // the same rows in a new array: read again, and drawn as they were
+  await act(() => hooks.set?.([...rows]));
+  await settle();
+  assert.ok(
+    reads > mounted && reads - mounted <= 2 * rows.length,
+    `a new array read ${reads - mounted} ids`,
+  );
+  assert.deepStrictEqual(firstCells().slice(0, 3), ['row 0', 'row 1', 'row 2']);
+  const all = table.current?.rows() ?? [];
+  assert.strictEqual(all.length, rows.length);
+  assert.deepStrictEqual(all[4321], { id: 4321, row: rows[4321], index: 4321 });
+});
+
 // --- selection: single -----------------------------------------------------
 
 test('click selects, double-click activates, and the keyboard walks', async () => {
@@ -1142,6 +1201,147 @@ test('renderScrollHint replaces the pill, and returning null disables it', async
   await settle();
   assert.ok(asked.length > 0, 'the catch-up never asked for a hint');
   assert.strictEqual(texts(/ \/ 400$/), 0, 'null should disable the overlay');
+  await clock.finish();
+});
+
+test('a scroll under the pill still moves the pane’s pixels', async (t) => {
+  // The pill stays up for as long as a scroll that outran the rows goes on,
+  // and it was laid over the pane: a pane scrolls by copying only when
+  // nothing outside it draws over its viewport, so every step of a slow
+  // scroll after a fast one repainted the whole pane. The pill is the
+  // pane's own now, held at its foot by `position: 'sticky'`, which core
+  // repaints beside the copy. The window's clock is held so the scroll
+  // stays in flight, and the pill up, for as long as the test looks.
+  const clock = holdClock(t, windowClock);
+  await mount({ rows: many(400), rowHeight: 24, scrollHintDelay: 0 }, 400, 640);
+  await settle();
+  await clock.finish();
+  const pill = (): RetainedNode | undefined =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    )[0] as RetainedNode | undefined;
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  assert.ok(pill(), 'the pill never showed for the jump');
+  // the first step lands the rows the jump left as placeholders, which is
+  // a repaint of what changed and not a scroll
+  bodyPane().scrollTo({ y: 6008 });
+  await settle();
+
+  const wnd = (retained(bodyPane()).root as unknown as { window: unknown })
+    .window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dy);
+    return own(rect, dx, dy);
+  };
+  for (let step = 1; step <= 4; step++) {
+    bodyPane().scrollTo({ y: 6008 + step * 8 });
+    await act();
+    assert.ok(pill(), `the pill went at step ${step}`);
+  }
+  assert.deepStrictEqual(moved, [-8, -8, -8, -8], 'every step moved pixels');
+
+  // …and the pill is where it was laid over the pane: centred, 12px off
+  // the foot of the viewport, whatever the rows scrolled under it
+  const pane = bodyPane().abs;
+  const at = (retained(pill()).parent as RetainedNode).abs;
+  assert.ok(
+    Math.abs(at.x + at.width / 2 - (pane.x + pane.width / 2)) <= 1,
+    `the pill is centred at ${at.x + at.width / 2}, the pane at ${pane.x + pane.width / 2}`,
+  );
+  assert.strictEqual(at.y + at.height, pane.y + pane.height - 12);
+  assert.strictEqual(
+    bodyPane().contentHeight,
+    400 * 24,
+    'the pill added to the scroll extent',
+  );
+
+  // Going, it repaints where it was. A child the pane loses is a change to
+  // everything the pane holds, as far as the repaint can tell, so the pill
+  // is hidden rather than unmounted; unmounted, the frame a fling came to
+  // rest in repainted the whole table.
+  const root = retained(bodyPane()).root as unknown as {
+    flush(): void;
+    _lastDamageRects: Array<{ width: number; height: number }> | null;
+  };
+  const painted: number[] = [];
+  const flush = root.flush.bind(root);
+  root.flush = () => {
+    flush();
+    const rects = root._lastDamageRects;
+    painted.push(
+      rects === null
+        ? Infinity
+        : rects.reduce((sum, r) => sum + r.width * r.height, 0),
+    );
+  };
+  await clock.finish();
+  await settle();
+  assert.strictEqual(pill(), undefined, 'the pill outlived the catch-up');
+  assert.ok(
+    painted.every((area) => area < (pane.width * pane.height) / 4),
+    `the pill's going repainted ${painted} px of a ${pane.width}×${pane.height} pane`,
+  );
+});
+
+test('a new count in the pill measures the pill, not the table', async (t) => {
+  // The pill's count moves every few steps of a slow scroll, and core's
+  // content floors measured a change with no box around it that sizes
+  // itself with the whole tree: on a Mac at 2x, a million rows, 7-8 ms of
+  // every frame the count moved. The pill is absolute and hangs from a row,
+  // so its size is its content's in every pass, which core takes as such a
+  // box (react-x11#969): the pill is measured alone, and the window laid
+  // out once. Its content is whatever `renderScrollHint` returns, so the
+  // size is not the table's to name.
+  const clock = holdClock(t, windowClock);
+  await mount({ rows: many(400), rowHeight: 24, scrollHintDelay: 0 }, 400, 640);
+  await settle();
+  await clock.finish();
+  const count = (): string | undefined => {
+    const text = screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    )[0];
+    return text && String(retained(text).props.children);
+  };
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  bodyPane().scrollTo({ y: 6008 });
+  await settle();
+  assert.ok(count(), 'the pill never showed for the jump');
+
+  const root = retained(bodyPane()).root as unknown as {
+    _layoutPasses: number;
+    _scopedFloorPasses: number;
+  };
+  let moved = 0;
+  for (let step = 1; step <= 9; step++) {
+    const was = count();
+    const passes = root._layoutPasses;
+    const scoped = root._scopedFloorPasses;
+    bodyPane().scrollTo({ y: 6008 + step * 8 });
+    await act();
+    assert.ok(count(), `the pill went at step ${step}`);
+    if (count() === was) continue;
+    moved++;
+    assert.strictEqual(
+      root._layoutPasses - passes,
+      1,
+      `step ${step}, ${was} → ${count()}: the tree's floors were measured`,
+    );
+    assert.ok(
+      root._scopedFloorPasses > scoped,
+      `step ${step}: the pill was not measured`,
+    );
+  }
+  assert.ok(moved >= 2, `the count moved ${moved} times in 9 steps`);
   await clock.finish();
 });
 

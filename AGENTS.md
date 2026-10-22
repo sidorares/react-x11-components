@@ -785,7 +785,12 @@ it up. **The floor is a running one and moves often** — every move since
   prop of that name now declares in `semanticNames` — undeclared, every
   `<Flow>` threw on mount in development — and widens `lineHeight`'s type to
   the strings a style takes, so `<RichText>` narrows it before its layout as
-  core does.
+  core does. It also carries react-x11#969, from 2.50.0: an absolute box its
+  content sizes, hung from a row, holds a change inside it in for the content
+  floors. `<Table>`'s fast-scroll pill is one, so a new count in it lays out
+  the pill alone, where it measured the whole table — 0.6 ms of a frame on a
+  Mac at a million rows, where it was 8. `test/table.test.ts` counts the
+  passes.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

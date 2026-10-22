@@ -117,6 +117,17 @@ the type as the controlled "cleared" state. Uncontrolled sorting is one
 `Array.prototype.sort` per toggle — fine into the hundreds of thousands, and
 `presorted` is the documented path beyond that.
 
+The rows are ordered again only when what orders them changes: the `rows`
+array, the sort's column and direction, and the `columns` only while the
+table sorts by one of them. A table handed its `columns` or its `sort`
+inline — a new object every render — orders nothing on a re-render. A new
+`rows` array is read once a row, for its id, and nothing more: the
+`{ id, row, index }` a seam is handed is made for a row when it is drawn or
+asked for — the handle's `rows()` asks for all of them, once for each order.
+So a million rows handed over already in order, with `presorted`, cost a
+million id reads rather than a million objects, which had made that
+hand-over a render of 60-80 ms.
+
 ## Selection
 
 Three modes, and the props are a discriminated union on `selectionMode` —
@@ -207,6 +218,20 @@ virtualization window works toward exactly that:
   indexed height with `styles.row` applied and none of its content, so what
   blits in reads as rows arriving rather than a void. They are
   `aria-hidden`, and they fill in viewport-first over the next few ticks.
+- **The position pill.** Once a catch-up has lasted `scrollHintDelay`, a
+  pill reading "2,345 / 100,000" — or whatever `renderScrollHint` returns
+  for the top row in view — sits centred 12px above the foot of the
+  viewport, and stays until the view is whole and the scroll has stopped.
+  It is laid out _inside_ the scroll pane, held there by
+  `position: 'sticky'`, rather than laid over it: a pane scrolls by copying
+  only while nothing outside it draws over its viewport, and the pill stays
+  up through any scroll that follows a fast one. Laid over the pane, every
+  frame of a slow scroll after a fling repainted the whole table — 9-14 ms
+  at 2x on a Mac, where the copy and its strip are 3.5. Inside it, a frame
+  copies and repaints the strip and the pill, and a new count in the pill is
+  laid out alone rather than with the whole table. What `renderScrollHint`
+  returns is laid out at the width its content asks for; it takes no pointer
+  events and is `aria-hidden`.
 
 None of this needs configuring; `prefetch={0}` turns the band off and
 returns the slice to exactly viewport-plus-overscan.
