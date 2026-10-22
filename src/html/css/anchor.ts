@@ -150,6 +150,9 @@ export interface PositionArea {
   cols: readonly [number, number];
   rows: readonly [number, number];
   logicalCols: boolean;
+  /** Its keywords in canonical order (`positionAreaText`), which is its
+   *  computed value. */
+  text?: string;
 }
 
 type Track = {
@@ -216,6 +219,8 @@ function trackOf(word: string): Track | null {
 export function parsePositionArea(
   value: string,
 ): PositionArea | null | undefined {
+  const text = positionAreaText(value);
+  if (text === null) return undefined;
   const words = splitValue(value.trim().toLowerCase());
   if (words.length === 1 && words[0] === 'none') return null;
   if (!words.length || words.length > 2) return undefined;
@@ -243,7 +248,135 @@ export function parsePositionArea(
   const all: Track = { axis: 'any', tracks: [0, 2], logical: false };
   x ??= all;
   y ??= all;
-  return { cols: x.tracks, rows: y.tracks, logicalCols: x.logical };
+  return { cols: x.tracks, rows: y.tracks, logicalCols: x.logical, text };
+}
+
+const AREA_GROUPS: [string, readonly string[]][] = [
+  [
+    'x',
+    [
+      'left',
+      'right',
+      'span-left',
+      'span-right',
+      'x-start',
+      'x-end',
+      'span-x-start',
+      'span-x-end',
+      'self-x-start',
+      'self-x-end',
+      'span-self-x-start',
+      'span-self-x-end',
+    ],
+  ],
+  [
+    'y',
+    [
+      'top',
+      'bottom',
+      'span-top',
+      'span-bottom',
+      'y-start',
+      'y-end',
+      'span-y-start',
+      'span-y-end',
+      'self-y-start',
+      'self-y-end',
+      'span-self-y-start',
+      'span-self-y-end',
+    ],
+  ],
+  ['block', ['block-start', 'block-end', 'span-block-start', 'span-block-end']],
+  [
+    'inline',
+    ['inline-start', 'inline-end', 'span-inline-start', 'span-inline-end'],
+  ],
+  [
+    'self-block',
+    [
+      'self-block-start',
+      'self-block-end',
+      'span-self-block-start',
+      'span-self-block-end',
+    ],
+  ],
+  [
+    'self-inline',
+    [
+      'self-inline-start',
+      'self-inline-end',
+      'span-self-inline-start',
+      'span-self-inline-end',
+    ],
+  ],
+  ['start-end', ['start', 'end', 'span-start', 'span-end']],
+  [
+    'self-start-end',
+    ['self-start', 'self-end', 'span-self-start', 'span-self-end'],
+  ],
+];
+const AREA_GROUP = new Map<string, string>();
+for (const [group, words] of AREA_GROUPS) {
+  for (const w of words) AREA_GROUP.set(w, group);
+}
+/** The groups of an axis that come first and second in a pair. */
+const FIRST_AXIS = new Set(['x', 'block', 'self-block']);
+const PAIRED: Record<string, string> = {
+  x: 'y',
+  y: 'x',
+  block: 'inline',
+  inline: 'block',
+  'self-block': 'self-inline',
+  'self-inline': 'self-block',
+};
+
+/**
+ * A `position-area` value in canonical form (CSS Anchor Positioning 1,
+ * 3.1), or null where it is none: one keyword, or two of axes that pair —
+ * the horizontal or block one first — `center` and `span-all` taking
+ * either axis, a repeated keyword once, and `span-all` beside one of an
+ * axis left out, since one keyword alone spans the other.
+ */
+export function positionAreaText(value: string): string | null {
+  const words = splitValue(value.trim().toLowerCase());
+  if (words.length === 1) {
+    const [w] = words;
+    return w === 'none' ||
+      w === 'center' ||
+      w === 'span-all' ||
+      AREA_GROUP.has(w)
+      ? w
+      : null;
+  }
+  if (words.length !== 2) return null;
+  const [a, b] = words;
+  const generic = (w: string) => w === 'center' || w === 'span-all';
+  const ga = AREA_GROUP.get(a);
+  const gb = AREA_GROUP.get(b);
+  if ((!ga && !generic(a)) || (!gb && !generic(b))) return null;
+  if (a === b) {
+    return generic(a) || ga === 'start-end' || ga === 'self-start-end'
+      ? a
+      : null;
+  }
+  if (generic(a) && generic(b)) return `${a} ${b}`;
+  // `start` and `end` say no axis: the first is the block one
+  const either = (g: string | undefined) =>
+    g === 'start-end' || g === 'self-start-end';
+  if (either(ga) || either(gb)) {
+    if (generic(a) || generic(b) || ga === gb) return `${a} ${b}`;
+    return null;
+  }
+  if (generic(a) || generic(b)) {
+    const word = generic(a) ? b : a;
+    const other = generic(a) ? a : b;
+    if (other === 'span-all') return word;
+    return FIRST_AXIS.has(AREA_GROUP.get(word)!)
+      ? `${word} center`
+      : `center ${word}`;
+  }
+  if (PAIRED[ga!] !== gb) return null;
+  return FIRST_AXIS.has(ga!) ? `${a} ${b}` : `${b} ${a}`;
 }
 
 /** A `position-area`'s tracks across as the physical ones, for a box
@@ -336,8 +469,11 @@ export function anchorInset(
 }
 
 /** A way a position is tried again (`<try-tactic>`): mirrored down, across,
- *  or about the diagonal from its start. */
-export type TryTactic = 'flip-block' | 'flip-inline' | 'flip-start';
+ *  or about the diagonal from its start; `flip-y` and `flip-x` are the
+ *  physical names of the first two, which in the one horizontal writing
+ *  mode here are the same. */
+export type TryTactic =
+  'flip-block' | 'flip-inline' | 'flip-start' | 'flip-x' | 'flip-y';
 
 /**
  * One option of `position-try-fallbacks`: a `@position-try` rule's name,
@@ -352,7 +488,13 @@ export interface TryOption {
   text: string;
 }
 
-const TACTICS = new Set<string>(['flip-block', 'flip-inline', 'flip-start']);
+const TACTICS = new Set<string>([
+  'flip-block',
+  'flip-inline',
+  'flip-start',
+  'flip-x',
+  'flip-y',
+]);
 
 /** One option, or null where it is none. */
 function parseTryOption(item: string): TryOption | null {
@@ -428,4 +570,40 @@ export function fallbackMatches(
     );
   }
   return v === applied;
+}
+
+/**
+ * A `position-area` as it computes, from its canonical text: a pair of a
+ * block and an inline keyword — `self-` ones too — said with `start` and
+ * `end`, which name the block axis first, and once where the two are the
+ * same (CSS Anchor Positioning 1, 3.1).
+ */
+export function positionAreaComputed(text: string): string {
+  const words = text.split(' ');
+  if (words.length !== 2) return text;
+  // `start` or `end` with `span-all` is one axis's keyword alone: the
+  // first place is the block axis's
+  const either = /^(span-)?(self-)?(start|end)$/;
+  if (words.includes('span-all')) {
+    const other = words[0] === 'span-all' ? words[1] : words[0];
+    const m = either.exec(other);
+    if (m && other !== 'span-all') {
+      const axis = words[0] === 'span-all' ? 'inline' : 'block';
+      return `${m[1] ?? ''}${m[2] ?? ''}${axis}-${m[3]}`;
+    }
+  }
+  const logical = /^(span-)?(self-)?(block|inline)-(start|end)$/;
+  if (!words.some((w) => logical.test(w))) return text;
+  if (
+    !words.every((w) => logical.test(w) || w === 'center' || w === 'span-all')
+  ) {
+    return text;
+  }
+  const mapped = words.map((w) =>
+    w.replace(
+      logical,
+      (_m, span, self, _axis, edge) => `${span ?? ''}${self ?? ''}${edge}`,
+    ),
+  );
+  return mapped[0] === mapped[1] ? mapped[0] : mapped.join(' ');
 }

@@ -4673,7 +4673,7 @@ function triedWith(
   if (area) out.positionArea = area;
   for (const tactic of tactics) {
     if (tactic === 'flip-start') flipStart(out);
-    else flipAxis(out, tactic === 'flip-block');
+    else flipAxis(out, tactic === 'flip-block' || tactic === 'flip-y');
   }
   return out;
 }

@@ -1647,12 +1647,15 @@ test('position-area, position-try-fallbacks and anchored() are read', () => {
     cols: [0, 2],
     rows: [0, 0],
     logicalCols: false,
+    text: 'top',
   });
-  // either order, and a logical keyword across reads right to left
-  assert.deepStrictEqual(parsePositionArea('span-right bottom'), {
+  // either order, and a logical keyword across reads right to left; its
+  // text the canonical one
+  assert.deepStrictEqual(parsePositionArea('bottom span-right'), {
     cols: [1, 2],
     rows: [2, 2],
     logicalCols: false,
+    text: 'span-right bottom',
   });
   const start = parsePositionArea('block-end inline-start')!;
   assert.deepStrictEqual(start.rows, [2, 2]);

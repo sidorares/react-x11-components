@@ -5,6 +5,7 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import { positionAreaText } from './anchor.js';
 import { parseShapeFunction } from './shape-function.js';
 import { parseZoom, splitValue } from './values.js';
 import type { UnitContext } from './values.js';
@@ -48,6 +49,18 @@ export function specifiedValue(
         ? viewTransitionName(word)
         : viewTransitionClass(word);
     return out;
+  }
+  // what anchor positioning names and takes (CSS Anchor Positioning 1)
+  const anchor = ANCHOR_GRAMMARS[name];
+  if (anchor) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return anchor(word);
+  }
+  // `anchor()` and `anchor-size()`, where each may be, their arguments
+  // in canonical order
+  if (/(?<![\w-])anchor(?:-size)?\(/i.test(value)) {
+    return rewriteAnchors(value.trim(), name);
   }
   // what scroll-driven animations name and take (Scroll Animations 1)
   const timeline = TIMELINE_GRAMMARS[name];
@@ -393,6 +406,16 @@ export function expandShorthand(
   value: string,
 ): [string, string][] | null {
   const name = prop.toLowerCase();
+  if (name === 'position-try') {
+    const order =
+      /^(most-width|most-height|most-block-size|most-inline-size)\s+/.exec(
+        value,
+      );
+    return [
+      ['position-try-order', order ? order[1] : 'normal'],
+      ['position-try-fallbacks', order ? value.slice(order[0].length) : value],
+    ];
+  }
   if (name !== 'scroll-timeline' && name !== 'view-timeline') return null;
   const view = name === 'view-timeline';
   const names: string[] = [];
@@ -424,6 +447,12 @@ export function composeShorthand(
   longhand: (name: string) => string | null,
 ): string | null {
   const name = prop.toLowerCase();
+  if (name === 'position-try') {
+    const order = longhand('position-try-order');
+    const fallbacks = longhand('position-try-fallbacks');
+    if (order === null || fallbacks === null) return '';
+    return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
+  }
   if (name !== 'scroll-timeline' && name !== 'view-timeline') return null;
   const view = name === 'view-timeline';
   const names = longhand(`${name}-name`);
@@ -443,3 +472,172 @@ export function composeShorthand(
     })
     .join(', ');
 }
+
+// --- anchor positioning (CSS Anchor Positioning 1) ---------------------------
+
+const INSET_PROPERTY =
+  /^(?:top|left|right|bottom|inset|inset-(?:block|inline)(?:-start|-end)?)$/;
+const SIZE_PROPERTY = /^(?:min-|max-)?(?:width|height|inline-size|block-size)$/;
+const MARGIN_PROPERTY =
+  /^margin(?:-(?:top|left|right|bottom|block|inline)(?:-start|-end)?)?$/;
+const ANCHOR_SIDE =
+  /^(?:inside|outside|top|left|right|bottom|start|end|self-start|self-end|center)$/i;
+const ANCHOR_SIZE = /^(?:width|height|block|inline|self-block|self-inline)$/i;
+const MATH = /^(?:calc|min|max|clamp)\(/i;
+
+/**
+ * A value with `anchor()` or `anchor-size()` in it, each call's name put
+ * before its side or size (CSS Anchor Positioning 1, 4.1 and 5.1) and a
+ * zero fallback given its unit; null where one is no call of its grammar,
+ * or where the property takes none — `anchor()` an inset alone, and
+ * `anchor-size()` an inset, a size or a margin.
+ */
+function rewriteAnchors(value: string, prop: string): string | null {
+  const re = /(?<![\w-])(anchor-size|anchor)\(/gi;
+  let out = '';
+  let from = 0;
+  for (let m = re.exec(value); m; m = re.exec(value)) {
+    if (m.index < from) continue;
+    const open = m.index + m[0].length;
+    let depth = 1;
+    let end = open;
+    for (; end < value.length && depth > 0; end += 1) {
+      if (value[end] === '(') depth += 1;
+      else if (value[end] === ')') depth -= 1;
+    }
+    if (depth !== 0) return null;
+    const call = anchorCall(
+      m[1].toLowerCase(),
+      value.slice(open, end - 1),
+      prop,
+    );
+    if (call === null) return null;
+    out += value.slice(from, m.index) + call;
+    from = end;
+    re.lastIndex = end;
+  }
+  return out + value.slice(from);
+}
+
+function anchorCall(fn: string, inner: string, prop: string): string | null {
+  const size = fn === 'anchor-size';
+  if (
+    size
+      ? !INSET_PROPERTY.test(prop) &&
+        !SIZE_PROPERTY.test(prop) &&
+        !MARGIN_PROPERTY.test(prop)
+      : !INSET_PROPERTY.test(prop)
+  ) {
+    return null;
+  }
+  const parts = splitTopLevel(inner);
+  if (parts.length > 2) return null;
+  const head = parts[0].trim();
+  const given = parts.length === 2 ? parts[1].trim() : null;
+  if (given === '' || (given !== null && !head)) return null;
+  // `anchor-size()` with a fallback alone writes no comma
+  if (
+    size &&
+    given === null &&
+    head &&
+    splitValue(head).filter(Boolean).length === 1 &&
+    (lengthPercentage(head) || MATH.test(head))
+  ) {
+    return `${fn}(${/^[+-]?0*\.?0*$/.test(head) ? '0px' : head})`;
+  }
+  let name: string | null = null;
+  let word: string | null = null;
+  for (const w of head ? splitValue(head).filter(Boolean) : []) {
+    if (w.startsWith('--')) {
+      if (name !== null || !DASHED_IDENT.test(w)) return null;
+      name = w;
+    } else if (
+      word === null &&
+      (size
+        ? ANCHOR_SIZE.test(w)
+        : ANCHOR_SIDE.test(w) || /^[+-]?[\d.]+%$/.test(w) || MATH.test(w))
+    ) {
+      word = MATH.test(w) || /%$/.test(w) ? w : w.toLowerCase();
+    } else return null;
+  }
+  if (!size && word === null) return null;
+  let fallback = '';
+  if (given !== null) {
+    const read = rewriteAnchors(given, prop);
+    if (read === null || splitValue(read).length !== 1) return null;
+    if (
+      !lengthPercentage(read) &&
+      !MATH.test(read) &&
+      !/^anchor(?:-size)?\(/i.test(read)
+    ) {
+      return null;
+    }
+    fallback = `, ${/^[+-]?0*\.?0*$/.test(read) ? '0px' : read}`;
+  }
+  return `${fn}(${[name, word].filter(Boolean).join(' ')}${fallback})`;
+}
+
+const TRY_ORDER =
+  /^(?:normal|most-width|most-height|most-block-size|most-inline-size)$/i;
+const TRY_TACTIC = /^(?:flip-block|flip-inline|flip-start|flip-x|flip-y)$/i;
+
+/** One `position-try-fallbacks` option: a `position-area`, or a name and
+ *  tactics, the name first, none of them twice. */
+function tryOption(item: string): string | null {
+  const words = splitValue(item).filter(Boolean);
+  if (!words.length) return null;
+  const kinds = words
+    .map((w) => (w.startsWith('--') ? 'n' : TRY_TACTIC.test(w) ? 't' : 'x'))
+    .join('');
+  if (!/[nt]/.test(kinds)) {
+    const text = positionAreaText(item);
+    return text === 'none' ? null : text;
+  }
+  // a name, and tactics run together before it or after it
+  if (!/^(?:n?t*|t+n)$/.test(kinds)) return null;
+  const name = words.find((w) => w.startsWith('--')) ?? null;
+  if (name !== null && !DASHED_IDENT.test(name)) return null;
+  const tactics = words
+    .filter((w) => TRY_TACTIC.test(w))
+    .map((w) => w.toLowerCase());
+  if (new Set(tactics).size !== tactics.length) return null;
+  return [name, ...tactics].filter(Boolean).join(' ');
+}
+
+function tryFallbacks(value: string): string | null {
+  if (/^none$/i.test(value)) return 'none';
+  return listOf(value, tryOption);
+}
+
+const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
+  'anchor-name': (value) =>
+    /^none$/i.test(value)
+      ? 'none'
+      : listOf(value, (item) => (DASHED_IDENT.test(item) ? item : null)),
+  'anchor-scope': (value) => {
+    if (/^(?:none|all)$/i.test(value)) return value.toLowerCase();
+    return listOf(value, (item) => (DASHED_IDENT.test(item) ? item : null));
+  },
+  'position-anchor': (value) =>
+    /^(?:normal|none|auto)$/i.test(value)
+      ? value.toLowerCase()
+      : DASHED_IDENT.test(value)
+        ? value
+        : null,
+  'position-area': (value) => positionAreaText(value),
+  'position-try-order': (value) =>
+    TRY_ORDER.test(value) ? value.toLowerCase() : null,
+  'position-try-fallbacks': tryFallbacks,
+  'position-try': (value) => {
+    const words = splitValue(value).filter(Boolean);
+    let order = 'normal';
+    if (words.length && TRY_ORDER.test(words[0])) {
+      order = words[0].toLowerCase();
+      value = value.trim().slice(words[0].length).trim();
+      if (!value) return null;
+    }
+    const fallbacks = tryFallbacks(value);
+    if (fallbacks === null) return null;
+    return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
+  },
+};

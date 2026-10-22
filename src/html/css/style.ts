@@ -831,6 +831,13 @@ export interface ComputedStyle {
   /** `position-anchor`: the anchor an `anchor()` that names none, and a
    *  `position-area`, are of; null for `auto` and `none`. */
   positionAnchor: string | null;
+  /** `position-anchor` as it computes: `normal`, `none`, `auto` or the
+   *  name. */
+  positionAnchorText: string;
+  /** `anchor-scope`: `none`, `all`, or the names it scopes, joined. */
+  anchorScope: string;
+  /** `position-try-order`. */
+  positionTryOrder: string;
   /** The insets written as an `anchor()`, by side: what each comes to is
    *  layout's, and the inset itself holds the function's fallback, or
    *  `auto`. Null where none is. */
@@ -1613,6 +1620,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     anchoredContainer: false,
     anchorNames: null,
     positionAnchor: null,
+    positionAnchorText: 'normal',
+    anchorScope: 'none',
+    positionTryOrder: 'normal',
     anchorInsets: null,
     anchorSizes: null,
     positionArea: null,
@@ -2612,8 +2622,27 @@ export function applyDeclaration(
     }
     case 'position-anchor': {
       const v = value.trim();
-      if (/^(?:auto|none)$/i.test(v)) style.positionAnchor = null;
-      else if (/^--\S+$/.test(v)) style.positionAnchor = v;
+      if (/^(?:normal|auto|none)$/i.test(v)) {
+        style.positionAnchor = null;
+        style.positionAnchorText = v.toLowerCase();
+      } else if (/^--\S+$/.test(v)) {
+        style.positionAnchor = v;
+        style.positionAnchorText = v;
+      }
+      return;
+    }
+    case 'anchor-scope': {
+      const v = value.trim();
+      if (/^(?:none|all)$/i.test(v)) style.anchorScope = v.toLowerCase();
+      else {
+        const names = dashedList(v, false);
+        if (names) style.anchorScope = names;
+      }
+      return;
+    }
+    case 'position-try-order': {
+      const v = value.trim().toLowerCase();
+      if (TRY_ORDERS.test(v)) style.positionTryOrder = v;
       return;
     }
     case 'position-area': {
@@ -2625,17 +2654,20 @@ export function applyDeclaration(
     case 'position-try-fallbacks': {
       // the shorthand's order, which comes first, is not read: the options
       // are tried in the order they are written
-      const list =
+      const order =
         name === 'position-try'
-          ? value.replace(
-              /^\s*(?:normal|most-width|most-height|most-block-size|most-inline-size)\b\s*/i,
-              '',
+          ? /^\s*(normal|most-width|most-height|most-block-size|most-inline-size)\b\s*/i.exec(
+              value,
             )
-          : value;
+          : null;
+      const list = order ? value.slice(order[0].length) : value;
       const fallbacks = parseTryFallbacks(list || 'none');
       if (fallbacks !== undefined) {
         style.positionTryFallbacks = fallbacks;
         style.positionTryStyles = null;
+        if (name === 'position-try') {
+          style.positionTryOrder = order ? order[1].toLowerCase() : 'normal';
+        }
       }
       return;
     }
@@ -8218,10 +8250,16 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'anchoredContainer',
   ],
   'anchor-name': ['anchorNames'],
-  'position-anchor': ['positionAnchor'],
+  'position-anchor': ['positionAnchor', 'positionAnchorText'],
+  'anchor-scope': ['anchorScope'],
+  'position-try-order': ['positionTryOrder'],
   'position-area': ['positionArea'],
   'position-try-fallbacks': ['positionTryFallbacks', 'positionTryStyles'],
-  'position-try': ['positionTryFallbacks', 'positionTryStyles'],
+  'position-try': [
+    'positionTryFallbacks',
+    'positionTryStyles',
+    'positionTryOrder',
+  ],
   'container-name': ['containerName'],
   container: [
     'containerName',
@@ -8712,6 +8750,8 @@ type Axis = 'block' | 'inline' | 'x' | 'y';
 const AUTO_TIMELINES: readonly TimelineRef[] = [{ kind: 'auto' }];
 const AUTO_INSETS: readonly (readonly [Len, Len])[] = [['auto', 'auto']];
 const AXES = /^(?:block|inline|x|y)$/i;
+const TRY_ORDERS =
+  /^(?:normal|most-width|most-height|most-block-size|most-inline-size)$/;
 const DASHED = /^--(?:[\w\u0080-\uffff-]|\\.)+$/;
 
 /** A list of `animation-timeline` values, or null for none. */
