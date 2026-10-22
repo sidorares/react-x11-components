@@ -107,6 +107,7 @@ import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
+import { easingText, timingAt } from './css/animation.js';
 import type { ScrollProgress } from './css/timeline.js';
 import {
   scrollEdgeAt,
@@ -7551,6 +7552,140 @@ export class HtmlViewNode extends Node {
    * comes to rest where the root makes it a snap container — noted as the
    * viewport's snap — and where it was asked to be where not.
    */
+  /**
+   * The CSS animations under way on an element, or on what it holds as
+   * well — or every one in the document for null — as a page's
+   * `getAnimations()` lists them (CSS Animations 2, 4): each its element and
+   * pseudo-element, its name and place in its `animation-name` list, its
+   * timing and play state, its timeline — the clock's, a scroll's, a
+   * subject's view, or none — and range, and where its time is on the
+   * clock's. Keyed by its run, which a page's `CSSAnimation` is kept by.
+   */
+  cssAnimationsOf(
+    element: Element | null,
+    subtree: boolean,
+  ): CssAnimationInfo[] {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree || !this._animating()) return [];
+    const s = this._scale;
+    const within = (el: Element): boolean => {
+      if (!element || el === element) return true;
+      if (!subtree) return false;
+      for (let at: Element | null = el; at;) {
+        if (at === element) return true;
+        const parent = flatParentOf(at);
+        at = parent && isElement(parent) ? parent : null;
+      }
+      return false;
+    };
+    const lenText = (len: Len): string =>
+      typeof len === 'number'
+        ? `${len / s}px`
+        : len && typeof len === 'object' && 'pct' in len
+          ? `${(len as { pct: number }).pct}%`
+          : '0%';
+    const edgeText = (
+      edge: { name: string | null; offset: Len } | undefined,
+      end: boolean,
+    ): string => {
+      if (!edge) return 'normal';
+      const offset = lenText(edge.offset);
+      if (edge.name === null) {
+        return offset === (end ? '100%' : '0%') ? 'normal' : offset;
+      }
+      return `${edge.name} ${offset}`;
+    };
+    const out: CssAnimationInfo[] = [];
+    const boxes = this._firstBoxesOf(tree);
+    // in their composite order: their elements' tree order, an element
+    // before its `::marker`, `::before` and `::after`, and then their
+    // place in `animation-name` (CSS Animations 2, 4.1)
+    const order = new Map<object, number>();
+    for (const el of tree.styles.keys()) order.set(el, order.size);
+    const PSEUDO_ORDER = ['', 'marker', 'before', 'after'];
+    const listed = this._timeline
+      .cssAnimations()
+      .sort(
+        (x, y) =>
+          (order.get(x.el) ?? 0) - (order.get(y.el) ?? 0) ||
+          PSEUDO_ORDER.indexOf(x.pseudo) - PSEUDO_ORDER.indexOf(y.pseudo) ||
+          x.index - y.index,
+      );
+    for (const a of listed) {
+      const el = a.el as Element;
+      if (!within(el)) continue;
+      const style = tree.styles.get(el)?.style;
+      if (!style) continue;
+      const lists = style.animations;
+      const i = a.index;
+      const at = <T>(list: readonly T[]): T => list[i % list.length];
+      const timing = timingAt(lists, i);
+      const ref = style.animationTimeline.length
+        ? at(style.animationTimeline)
+        : ({ kind: 'auto' } as TimelineRef);
+      let timeline: CssAnimationInfo['timeline'] = { kind: 'document' };
+      if (ref.kind === 'none') timeline = { kind: 'none' };
+      else if (ref.kind === 'scroll') {
+        const box = boxes.get(el);
+        const scroller =
+          ref.scroller === 'self'
+            ? el
+            : ref.scroller === 'root' || !box
+              ? null
+              : (nearestScroller(box)?.el ?? null);
+        timeline = { kind: 'scroll', source: scroller, axis: ref.axis };
+      } else if (ref.kind === 'view') {
+        timeline = {
+          kind: 'view',
+          subject: el,
+          axis: ref.axis,
+          inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
+        };
+      } else if (ref.kind === 'name') {
+        const named = namedTimeline(tree, el, ref.name);
+        timeline = !named
+          ? { kind: 'none' }
+          : named.view
+            ? {
+                kind: 'view',
+                subject: named.el,
+                axis: named.axis,
+                inset: named.inset.map((v) =>
+                  v === 'auto' ? 'auto' : lenText(v),
+                ),
+              }
+            : { kind: 'scroll', source: named.el, axis: named.axis };
+      }
+      const now = this._timeline.now;
+      out.push({
+        key: a.key,
+        element: el,
+        pseudo: a.pseudo ? `::${a.pseudo}` : '',
+        name: a.name,
+        index: i,
+        duration: timing.auto ? 'auto' : timing.duration,
+        delay: timing.delay,
+        iterations: timing.iterations,
+        direction: timing.direction,
+        fill: timing.fill,
+        easing: easingText(at(lists.easings)),
+        paused: at(lists.playStates) === 'paused',
+        currentTime: a.run.hold ?? now - a.run.start,
+        timeline,
+        rangeStart: edgeText(
+          style.animationRangeStart[i % style.animationRangeStart.length],
+          false,
+        ),
+        rangeEnd: edgeText(
+          style.animationRangeEnd[i % style.animationRangeEnd.length],
+          true,
+        ),
+      });
+    }
+    return out;
+  }
+
   snapViewport(x: number, y: number): { x: number; y: number } {
     this._prepare(this.abs.width || 1);
     const snap = this._viewportSnap();
@@ -8961,6 +9096,30 @@ function triggerFor(
     found = definer;
   }
   return found;
+}
+
+/** A CSS animation as a page's `getAnimations()` is told of it
+ *  (`HtmlViewNode.cssAnimationsOf`). */
+export interface CssAnimationInfo {
+  key: number;
+  element: Element;
+  pseudo: string;
+  name: string;
+  index: number;
+  duration: number | 'auto';
+  delay: number;
+  iterations: number;
+  direction: string;
+  fill: string;
+  easing: string;
+  paused: boolean;
+  currentTime: number;
+  timeline:
+    | { kind: 'document' | 'none' }
+    | { kind: 'scroll'; source: Element | null; axis: string }
+    | { kind: 'view'; subject: Element; axis: string; inset: string[] };
+  rangeStart: string;
+  rangeEnd: string;
 }
 
 /** The timeline an element's `animation-timeline` names (Scroll-driven

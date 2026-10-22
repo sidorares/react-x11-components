@@ -31,6 +31,7 @@ import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
 import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
+import type { CssAnimationInfo } from '../node.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import {
   HtmlSource,
@@ -236,6 +237,10 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** The CSS animations under way on an element, or on what it holds as
+   *  well, or in the whole document for null, as a page's
+   *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
+  cssAnimations(element: Element | null, subtree: boolean): CssAnimationInfo[];
   /** Whether an element is drawn where the viewport is — fixed to it, or
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
@@ -2816,6 +2821,25 @@ export class DomHost {
           return false;
         }
 
+      // the CSS animations under way on an element, or on what it holds,
+      // or in the whole document for 0: each with its element by its id
+      case 'cssAnimations': {
+        const el = a ? this._element(a) : null;
+        const list = this._seams.handle.cssAnimations?.(el, b === true) ?? [];
+        const id = (e: Element | null) => (e ? this.idOf(e) : 0);
+        return JSON.stringify(
+          list.map((x) => ({
+            ...x,
+            element: id(x.element),
+            timeline:
+              x.timeline.kind === 'scroll'
+                ? { ...x.timeline, source: id(x.timeline.source) }
+                : x.timeline.kind === 'view'
+                  ? { ...x.timeline, subject: id(x.timeline.subject) }
+                  : x.timeline,
+          })),
+        );
+      }
       // what a page asked of a media element's player — `paused`, `muted`,
       // `volume`, `playbackRate`, or `currentTime` for a seek — kept by
       // `<Html>` for the player it mounts over the element

@@ -827,6 +827,22 @@ answer from the realm's animations. Under `animate={false}` one that fills
 forwards is drawn at its end and any other not at all, as a CSS animation
 at rest is.
 
+**A CSS animation is a `CSSAnimation` in `getAnimations()`** (CSS
+Animations 2, 4.1), listed before a script's, in its element's tree order
+and then its place in `animation-name`. Its state is the cascade's, which
+draws it: each time a page lists it, it is read again — its
+`animationName`, its effect's timing from the longhands, its play state,
+where its time is, its `rangeStart` and `rangeEnd`, and its timeline, the
+document's, a `ScrollTimeline` or a `ViewTimeline` as `animation-timeline`
+names it, one object for one timeline — and it is the same object for as
+long as its run lasts. What a page does to it changes that object and not
+what is drawn. `getComputedStyle` answers the `animation-*` longhands and
+the `animation` shorthand, which is `''` where a timeline or a range is not
+the initial one, and an `auto` duration as `0s` on the document's timeline
+and `auto` where it may be a scroll's. `el.style.animation` is kept as its
+longhands, the timeline and the range set back with them, and read back
+from them.
+
 **An animation is the spec's model, procedure by procedure.** Its start
 time, hold time, playback rate and pending playback rate, its pending play
 and pause tasks and its `ready` and `finished` promises change as Web

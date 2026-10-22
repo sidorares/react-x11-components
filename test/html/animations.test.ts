@@ -148,6 +148,13 @@ test('the animation shorthand reads its longhands in any order', () => {
   assert.deepStrictEqual(named.fillModes, ['forwards']);
   assert.deepStrictEqual(parseAnimation('1s forwards slide')!.names, ['slide']);
 
+  // `auto` is the duration, and a time after it the delay; a duration left
+  // out is `auto` too (CSS Animations 2, 3.2)
+  const auto = parseAnimation('anim auto linear, b 1s, c auto 2s')!;
+  assert.deepStrictEqual(auto.durations, ['auto', 1000, 'auto']);
+  assert.deepStrictEqual(auto.delays, [0, 0, 2000]);
+  assert.deepStrictEqual(parseAnimation('c')!.durations, ['auto']);
+
   // what is none: three times, a negative duration, two names, `inherit`
   // inside a list, an empty item
   for (const bad of [
@@ -356,7 +363,7 @@ test('each longhand of the animation inherits and resets on its own', async () =
   // not inherited: the outer's opacity is its own, and the inner's comes
   // of its own animation, its fill mode taken from the outer
   assert.strictEqual(styleOf(node, 'inner').opacity, 0.5);
-  assert.deepStrictEqual(styleOf(node, 'inner').animations.durations, [0]);
+  assert.deepStrictEqual(styleOf(node, 'inner').animations.durations, ['auto']);
   assert.strictEqual(styleOf(node, 'reset').opacity, 1);
 });
 

@@ -13,6 +13,10 @@
 import type { BasicShape } from './css/basic-shape.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
+import { animationItemText, easingText, secondsText } from './css/animation.js';
+import type { Animations } from './css/animation.js';
+import { RANGE_END, RANGE_START } from './css/triggers.js';
+import type { RangeEdge } from './css/triggers.js';
 import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
@@ -140,6 +144,98 @@ function timelineText(t: TimelineRef, scale: number): string {
   const inset = insetText(view.inset, scale);
   if (inset) parts.push(inset);
   return `view(${parts.join(' ')})`;
+}
+
+/** One end of an `animation-range`: `normal`, an offset, or a range's name
+ *  with its offset where it is not the one the name alone means. */
+function rangeEdgeText(edge: RangeEdge, end: boolean, scale: number): string {
+  if (edge === (end ? RANGE_END : RANGE_START)) return 'normal';
+  const offset = len(edge.offset, scale);
+  if (edge.name === null) return offset;
+  return offset === (end ? '100%' : '0%') || (!end && edge.offset === 0)
+    ? edge.name
+    : `${edge.name} ${offset}`;
+}
+
+/** `animation-range` from its ends, the end left out where leaving it out
+ *  means it: `normal` after an offset, and the end of the start's range
+ *  after a name. */
+function animationRangeText(
+  start: RangeEdge,
+  end: RangeEdge,
+  scale: number,
+): string {
+  const a = rangeEdgeText(start, false, scale);
+  const b = rangeEdgeText(end, true, scale);
+  if (start.name === null ? b === 'normal' : b === start.name) return a;
+  return `${a} ${b}`;
+}
+
+/** Each `animation-*` longhand as it is resolved, and the `animation`
+ *  shorthand, '' where it cannot say what its longhands do — a timeline or
+ *  a range that is not the initial one, or lists of other lengths (CSS
+ *  Animations 2, 4). An `auto` duration reads `0s` where the timeline is
+ *  the clock's, and `auto` where it may not be. */
+function animationProperties(
+  style: ComputedStyle,
+  scale: number,
+): Record<string, string> {
+  const a: Animations = style.animations;
+  const timelines = style.animationTimeline;
+  const onClock = timelines.length === 1 && timelines[0].kind === 'auto';
+  const durations = a.durations.map((d) =>
+    d === 'auto' ? (onClock ? '0s' : 'auto') : secondsText(d),
+  );
+  const easings = a.easings.map(easingText);
+  const delays = a.delays.map(secondsText);
+  const iterations = a.iterations.map((n) =>
+    n === Infinity ? 'infinite' : num(n),
+  );
+  const names = a.names.map((n) => n ?? 'none');
+  const starts = style.animationRangeStart;
+  const ends = style.animationRangeEnd;
+  const lists = [
+    durations,
+    easings,
+    delays,
+    iterations,
+    a.directions,
+    a.fillModes,
+    a.playStates,
+    names,
+  ];
+  const shorthand =
+    onClock &&
+    starts.length === 1 &&
+    starts[0] === RANGE_START &&
+    ends.length === 1 &&
+    ends[0] === RANGE_END &&
+    lists.every((l) => l.length === names.length)
+      ? names
+          .map((_, i) => animationItemText(lists.map((l) => l[i])))
+          .join(', ')
+      : '';
+  return {
+    animation: shorthand,
+    'animation-name': names.join(', '),
+    'animation-duration': durations.join(', '),
+    'animation-timing-function': easings.join(', '),
+    'animation-delay': delays.join(', '),
+    'animation-iteration-count': iterations.join(', '),
+    'animation-direction': a.directions.join(', '),
+    'animation-fill-mode': a.fillModes.join(', '),
+    'animation-play-state': a.playStates.join(', '),
+    'animation-range-start': starts
+      .map((e) => rangeEdgeText(e, false, scale))
+      .join(', '),
+    'animation-range-end': ends
+      .map((e) => rangeEdgeText(e, true, scale))
+      .join(', '),
+    'animation-range':
+      starts.length === ends.length
+        ? starts.map((e, i) => animationRangeText(e, ends[i], scale)).join(', ')
+        : '',
+  };
 }
 
 /**
@@ -435,6 +531,7 @@ function cssomAt(
     'user-select': style.userSelect,
     isolation: style.isolation,
     'will-change': style.willChangeNames,
+    ...animationProperties(style, scale),
     'animation-timeline': style.animationTimeline
       .map((t) => timelineText(t, scale))
       .join(', '),

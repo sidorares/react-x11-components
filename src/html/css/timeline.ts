@@ -41,6 +41,11 @@ import {
 } from './style.js';
 import type { ComputedStyle, TimelineRef } from './style.js';
 
+/** A key for each CSS animation's run, as a page's `CSSAnimation` is
+ *  kept by it (`cssAnimations`). */
+const RUN_KEYS = new WeakMap<Running, number>();
+let runKeys = 0;
+
 /** How long a frame is: what an animation under way waits for its next. */
 export const FRAME_MS = 16;
 
@@ -433,6 +438,41 @@ export class AnimationTimeline {
       }
     }
     return any;
+  }
+
+  /**
+   * The CSS animations under way, each its element, its pseudo-element (''
+   * for the element's own), its place in its `animation-name` list, its
+   * name, its run and a key that is its run's for as long as the run lasts:
+   * what a page's `getAnimations()` lists as a `CSSAnimation` each.
+   */
+  cssAnimations(): {
+    el: object;
+    pseudo: string;
+    index: number;
+    name: string;
+    run: Running;
+    key: number;
+  }[] {
+    const out: {
+      el: object;
+      pseudo: string;
+      index: number;
+      name: string;
+      run: Running;
+      key: number;
+    }[] = [];
+    for (const [el, targets] of this._targets) {
+      for (const [pseudo, target] of targets) {
+        target.running.forEach((run, index) => {
+          if (!run) return;
+          let key = RUN_KEYS.get(run);
+          if (key === undefined) RUN_KEYS.set(run, (key = ++runKeys));
+          out.push({ el, pseudo, index, name: run.name, run, key });
+        });
+      }
+    }
+    return out;
   }
 
   /** Whether an animation waits for a trigger, or did. */

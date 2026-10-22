@@ -165,10 +165,9 @@ waiting for a cross-document navigation.
 **scoped-custom-element-registries (75.7%).** Which registry a clone and
 `importNode()` give what they copy, and `getHTML()`.
 
-**scroll-driven-animations (51.9%).** CSS animations exposed to script —
-`getAnimations()` answers a page's own `Animation`s, not a `CSSAnimation`
-for each that `animation-name` runs — which most of the `css/` tests read;
-`animation-range`, `timeline-scope`, vertical writing modes, sticky
+**scroll-driven-animations (51.9%).** A `CSSAnimation`'s events and
+its `ready` on a scroll timeline, and what a page does to one reaching what
+is drawn; `timeline-scope`, vertical writing modes, sticky
 subjects, and a scroll timeline's time held until the next frame. Also in
 the area, and out of reach: 59 `html/dom/render-blocking/` tests that need
 rendering held while the parser is still in the document, where `<Html>`

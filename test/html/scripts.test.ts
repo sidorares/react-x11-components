@@ -6176,6 +6176,42 @@ test('CSS numeric values are made, added, converted and parsed as CSS Typed OM h
   );
 });
 
+test('a CSS animation is a CSSAnimation in getAnimations(), on the timeline its style names, one object for its run', async () => {
+  const doc = await hosted(
+    '<style>@keyframes fade { from { opacity: 0 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #a { animation: fade 2s linear 3 }' +
+      ' #b { animation: fade auto linear; animation-timeline: scroll(); animation-range-start: 10px }</style>' +
+      '<div id="s"><div id="c"><div id="b"></div></div></div><div id="a"></div><p id="out"></p><script>' +
+      'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      'var all = document.getAnimations();' +
+      'r.push(all.length, all[0].effect.target === b, all.every(function (x) { return x instanceof CSSAnimation; }));' +
+      'var x = a.getAnimations()[0];' +
+      'r.push(x.animationName, x.effect.getComputedTiming().duration, x.effect.getTiming().iterations, x.timeline === document.timeline, x.playState);' +
+      'var y = b.getAnimations()[0];' +
+      'r.push(y.timeline instanceof ScrollTimeline, y.timeline.source === document.getElementById("s"),' +
+      '  y.rangeStart.offset.value + y.rangeStart.offset.unit, y.rangeEnd, y === b.getAnimations()[0]);' +
+      // what the style says of it, resolved
+      'var cs = getComputedStyle(b);' +
+      'r.push(cs.animationName, cs.animationDuration, getComputedStyle(a).animationDuration,' +
+      '  cs.animationRangeStart, JSON.stringify(cs.animation), getComputedStyle(a).animation);' +
+      // and the shorthand kept as its longhands, and read back from them
+      'a.style.animation = "1s linear 1s 2 reverse forwards paused spin";' +
+      'r.push(a.style.animationName, a.style.animationTimeline, a.style.animation);' +
+      'a.style.animation = "1s linear spin initial"; r.push(a.style.animationDuration);' +
+      'a.style.animationTimeline = "--t"; r.push(JSON.stringify(a.style.animation));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '2|true|true|fade|2000|3|true|running|true|true|10px|normal|true|' +
+      'fade|auto|2s|10px|""|2s linear 3 fade|' +
+      'spin|auto|1s linear 1s 2 reverse forwards paused spin|1s|""',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a scroll timeline is how far its source is scrolled, and an animation on it is drawn where the scroll has it', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
