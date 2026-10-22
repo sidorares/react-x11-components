@@ -364,14 +364,29 @@ export class ScriptRunner {
     // frame's document comes over a network slower than the parser
     if (this._options.drawsFrames) this.host.loadFrames();
     this._advance('interactive');
-    if (this._loaded) this._advance('complete');
+    if (this._loaded) this._complete();
   }
 
   /** Everything the document asked for is in: `load`, once the scripts the
    *  parse met have all run. */
   loaded(): void {
     this._loaded = true;
-    if (this._ready === 'interactive') this._advance('complete');
+    if (this._ready === 'interactive') this._complete();
+  }
+
+  /** `load`, once the frames the document is loading are in, which hold it
+   *  (HTML 7.4.5, "delay the load event"): a test that waits for the
+   *  page's `load` finds its iframe's document there. */
+  private _complete(): void {
+    if (this._ready === 'complete' || this._disposed) return;
+    if (this.host.framesLoading) {
+      this.host.onFramesLoaded = () => {
+        this.host.onFramesLoaded = null;
+        this._complete();
+      };
+      return;
+    }
+    this._advance('complete');
   }
 
   /** What `<Html>` told of, dispatched in the page: whether its default
