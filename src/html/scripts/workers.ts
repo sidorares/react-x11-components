@@ -82,7 +82,15 @@ export type FromWorker =
 /** What this side tells the thread. */
 export type ToWorker =
   | { kind: 'message'; data: string }
-  | { kind: 'fetched'; id: number; response?: FetchResponse; error?: string };
+  | {
+      kind: 'fetched';
+      id: number;
+      /** Its headers; with `streaming`, its body follows as `chunk`s. */
+      response?: FetchResponse & { streaming?: boolean };
+      error?: string;
+    }
+  | { kind: 'chunk'; id: number; bytes: Uint8Array }
+  | { kind: 'fetchEnd'; id: number; error: string | null };
 
 /** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
  *  run from the source, as the suite runs it — the TypeScript beside it. */
@@ -235,6 +243,34 @@ export class PageWorkers implements PageWorkersLike {
     }
   }
 
+  /** A body handed to the thread a chunk at a time, until it ends or the
+   *  thread lets it go. */
+  private async _relay(
+    running: Running,
+    id: number,
+    chunks: AsyncIterable<Uint8Array>,
+    live: () => boolean,
+  ): Promise<void> {
+    const iterator = chunks[Symbol.asyncIterator]();
+    let error: string | null = null;
+    try {
+      for (;;) {
+        const { done, value } = await iterator.next();
+        if (done) break;
+        if (!live()) {
+          void iterator.return?.();
+          return;
+        }
+        running.thread.postMessage({ kind: 'chunk', id, bytes: value });
+      }
+    } catch {
+      error = 'network error';
+    }
+    if (!live()) return;
+    running.fetches.delete(id);
+    running.thread.postMessage({ kind: 'fetchEnd', id, error });
+  }
+
   private _heard(id: number, running: Running, m: FromWorker): void {
     switch (m.kind) {
       case 'message':
@@ -256,14 +292,33 @@ export class PageWorkers implements PageWorkersLike {
       case 'fetch': {
         const controller = new AbortController();
         running.fetches.set(m.id, controller);
+        const live = (): boolean =>
+          running.fetches.has(m.id) && this._running.get(id) === running;
         const answer = (message: ToWorker): void => {
-          if (!running.fetches.delete(m.id)) return;
-          if (this._running.get(id) === running) {
-            running.thread.postMessage(message);
-          }
+          if (!live()) return;
+          running.fetches.delete(m.id);
+          running.thread.postMessage(message);
         };
         this._seams.fetch(m.request, controller.signal).then(
-          (response) => answer({ kind: 'fetched', id: m.id, response }),
+          (response) => {
+            const { chunks, ...rest } = response;
+            if (!chunks) {
+              answer({ kind: 'fetched', id: m.id, response: rest });
+              return;
+            }
+            // a body that arrives a chunk at a time crosses so, as the
+            // page's own does
+            if (!live()) {
+              void chunks[Symbol.asyncIterator]().return?.();
+              return;
+            }
+            running.thread.postMessage({
+              kind: 'fetched',
+              id: m.id,
+              response: { ...rest, streaming: true },
+            });
+            void this._relay(running, m.id, chunks, live);
+          },
           (error: unknown) =>
             answer({
               kind: 'fetched',

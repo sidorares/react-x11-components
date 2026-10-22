@@ -41,11 +41,13 @@ import { nodeModule } from './scripts/platform.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
+  ClearTimeout,
   SetTimeout,
   UrlClass,
 } from './scripts/platform.js';
 
 declare const setTimeout: SetTimeout;
+declare const clearTimeout: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const AbortSignal: {
@@ -57,6 +59,7 @@ declare const TextDecoder: new (label?: string) => {
   decode(bytes: Uint8Array): string;
 };
 declare const atob: (data: string) => string;
+declare const DOMException: new (message: string, name: string) => Error;
 
 /** The slice of a `fetch` response read here. */
 interface ResponseLike {
@@ -485,6 +488,7 @@ export class HtmlNetwork {
       headers: [string, string][];
       body: string | null;
       bytes?: Uint8Array;
+      stream?: boolean;
     },
     page: string,
     signal: AbortSignalLike,
@@ -496,6 +500,9 @@ export class HtmlNetwork {
     headers: [string, string][];
     charset: string | null;
     bytes: Uint8Array;
+    /** The body as it arrives, where the request asked for it so; `bytes`
+     *  is then empty. */
+    chunks?: AsyncIterable<Uint8Array>;
   }> {
     const scheme = schemeOf(request.url);
     if (scheme !== 'http' && scheme !== 'https') {
@@ -523,33 +530,57 @@ export class HtmlNetwork {
     const referrer = referrerFor(page, request.url);
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
-    const timer = AbortSignal.timeout(TIMEOUT);
-    this._log('fetch', method, request.url);
-    const response = await this._paced(request.url, signal, () =>
-      this._send(request.url, {
-        method,
-        headers,
-        body:
-          method === 'GET' || method === 'HEAD'
-            ? undefined
-            : (request.bytes ?? request.body ?? undefined),
-        signal: AbortSignal.any([signal, timer]),
-        redirect: 'follow',
-      }),
+    // the wait for an answer is bounded, and its body is not: a page reads
+    // a stream of events, or a model's reply, for as long as it goes on
+    const timer = new AbortController();
+    const timeout = setTimeout(
+      () =>
+        timer.abort(
+          new DOMException(
+            'The operation was aborted due to timeout',
+            'TimeoutError',
+          ),
+        ),
+      TIMEOUT,
     );
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of bodyOf(response, MAX_RESOURCE))
-      chunks.push(chunk);
+    this._log('fetch', method, request.url);
+    let response: ResponseLike;
+    try {
+      response = await this._paced(request.url, signal, () =>
+        this._send(request.url, {
+          method,
+          headers,
+          body:
+            method === 'GET' || method === 'HEAD'
+              ? undefined
+              : (request.bytes ?? request.body ?? undefined),
+          signal: AbortSignal.any([signal, timer.signal]),
+          redirect: 'follow',
+        }),
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
     const { charset } = contentType(response.headers.get('content-type'));
-    return {
+    const answer = {
       url: response.url || request.url,
       status: response.status,
       statusText: response.statusText,
       redirected: response.redirected,
       headers: [...response.headers.entries()],
       charset,
-      bytes: concat(chunks),
     };
+    if (request.stream) {
+      return {
+        ...answer,
+        bytes: new Uint8Array(0),
+        chunks: bodyChunks(response, MAX_RESOURCE),
+      };
+    }
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of bodyOf(response, MAX_RESOURCE))
+      chunks.push(chunk);
+    return { ...answer, bytes: concat(chunks) };
   }
 
   /**
@@ -593,6 +624,10 @@ export class HtmlNetwork {
   ) => Promise<FetchResponse> {
     return async (request, signal) => {
       const { charset, ...answer } = await this.request(request, page, signal);
+      if (answer.chunks) {
+        const { bytes: _none, ...streamed } = answer;
+        return { ...streamed, body: '' };
+      }
       return { ...answer, body: decodeText(answer.bytes, charset) };
     };
   }
@@ -1024,6 +1059,56 @@ async function* bodyOf(
   } finally {
     reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * A response's body as it arrives, for a caller that hands it on a chunk at
+ * a time: `bodyOf`, but with its reader taken at once, so `return()` lets
+ * the connection go whether or not a chunk was ever asked for — a no-cors
+ * answer and one CORS refuses are dropped unread.
+ */
+function bodyChunks(
+  response: ResponseLike,
+  limit: number,
+): AsyncIterable<Uint8Array> {
+  const reader = response.body?.getReader() ?? null;
+  let total = 0;
+  let done = !reader;
+  const finish = (): void => {
+    if (done) return;
+    done = true;
+    reader?.cancel().catch(() => {});
+  };
+  const iterator: AsyncIterator<Uint8Array> = {
+    async next() {
+      if (done || !reader) return { done: true, value: undefined };
+      let read: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        read = await reader.read();
+      } catch (error) {
+        finish();
+        throw error;
+      }
+      if (read.done || !read.value) {
+        done = true;
+        return { done: true, value: undefined };
+      }
+      total += read.value.length;
+      if (total > limit) {
+        finish();
+        return {
+          done: false,
+          value: read.value.subarray(0, read.value.length - (total - limit)),
+        };
+      }
+      return { done: false, value: read.value };
+    },
+    async return() {
+      finish();
+      return { done: true, value: undefined };
+    },
+  };
+  return { [Symbol.asyncIterator]: () => iterator };
 }
 
 function concat(chunks: Uint8Array[]): Uint8Array {

@@ -9462,6 +9462,9 @@ export function installDom(
     number,
     { resolve: Any; reject: Any; streamed?: boolean }
   >();
+  /** The bodies still arriving, by request: the controller of the stream
+   *  each response reads (`__fetchChunk`, `__fetchEnd`). */
+  const fetchBodies = new Map<number, Any>();
   /**
    * A `Range` header's one range of bytes (Fetch, "parse a single range
    * header value", white space allowed): its start and its end, either
@@ -9675,6 +9678,14 @@ export function installDom(
       // a network error (Fetch 4.6)
       fetches.set(id, { resolve, reject, streamed: !!extracted?.stream });
       signal?.addEventListener?.('abort', () => {
+        // after the headers, an abort errors the body that is arriving
+        const body = fetchBodies.get(id);
+        if (body) {
+          fetchBodies.delete(id);
+          call('abortFetch', id);
+          body.error(aborted());
+          return;
+        }
         if (!fetches.delete(id)) return;
         call('abortFetch', id);
         if (bodyReader) bodyReader.cancel(aborted()).catch(() => {});
@@ -9707,6 +9718,8 @@ export function installDom(
               : textOf(bytes) !== null
                 ? { body: textOf(bytes) }
                 : { body: '', base64: base64OfBytes(bytes) }),
+            // the body is taken as it arrives
+            stream: true,
             // what the host checks another origin's answer against
             mode,
             credentials: str(
@@ -16365,26 +16378,56 @@ export function installDom(
     fetches.delete(id);
     if (typeof answer === 'string') pending.reject(new TypeError(answer));
     else if (pending.streamed && answer.status === 401) {
+      // and a body on its way is let go
+      if (answer.streaming) call('abortFetch', id);
       pending.reject(new TypeError('Failed to fetch'));
     } else {
-      // the network's bytes, which cross as base64: a string is all that
-      // crosses, and one of raw bytes is mostly escapes once it is JSON
-      const response = new Response(
-        typeof answer.base64 === 'string' ? '' : answer.body,
-        {
-          status: answer.status,
-          statusText: answer.statusText,
-          headers: answer.headers,
-          url: answer.url,
-          redirected: answer.redirected,
-          type: answer.type ?? 'basic',
-        },
-      );
+      // a body that is still arriving is a stream the host feeds; the
+      // network's bytes otherwise, which cross as base64: a string is all
+      // that crosses, and one of raw bytes is mostly escapes once it is JSON
+      const body = answer.streaming
+        ? new ReadableStream({
+            start(controller: Any) {
+              fetchBodies.set(id, controller);
+            },
+            cancel() {
+              if (fetchBodies.delete(id)) call('abortFetch', id);
+            },
+          })
+        : typeof answer.base64 === 'string'
+          ? ''
+          : answer.body;
+      const response = new Response(body, {
+        status: answer.status,
+        statusText: answer.statusText,
+        headers: answer.headers,
+        url: answer.url,
+        redirected: answer.redirected,
+        type: answer.type ?? 'basic',
+      });
       if (typeof answer.base64 === 'string') {
         response._raw = bytesOfBase64(answer.base64);
       }
       pending.resolve(response);
     }
+    return true;
+  });
+
+  // a body's chunk, and its end, as they arrive
+  entry('__fetchChunk', () => {
+    const [id, base64] = input();
+    const body = fetchBodies.get(id);
+    if (!body) return false;
+    body.enqueue(bytesOfBase64(base64));
+    return true;
+  });
+  entry('__fetchEnd', () => {
+    const [id, failed] = input();
+    const body = fetchBodies.get(id);
+    if (!body) return false;
+    fetchBodies.delete(id);
+    if (failed) body.error(new TypeError(failed));
+    else body.close();
     return true;
   });
 

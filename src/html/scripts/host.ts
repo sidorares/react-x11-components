@@ -126,6 +126,10 @@ export interface FetchRequest {
   /** The body's bytes, where it is not text — a stream read to its end, a
    *  `Blob`, an `ArrayBuffer`, a multipart form — sent as they are. */
   bytes?: Uint8Array;
+  /** Whether the caller takes the response's body as it arrives
+   *  (`FetchResponse.chunks`), as a page's `fetch` does. A host may answer
+   *  it whole all the same. */
+  stream?: boolean;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -183,6 +187,11 @@ export interface FetchResponse {
    *  handed, so a binary body — a `.wasm`, an image, a font — reaches it as
    *  it came, and `text()` decodes it as Fetch says, as UTF-8. */
   bytes?: Uint8Array;
+  /** The body as it arrives, where the request asked for it so and the
+   *  host has it so: `body` and `bytes` are then empty. A page's `fetch`
+   *  resolves at the headers and reads its body from these, as a browser's
+   *  does — a model's reply, a stream of events, a download that trickles. */
+  chunks?: AsyncIterable<Uint8Array>;
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
    *  origin's, `cors` another's that let it, `opaque` none of it. */
   type?: 'basic' | 'cors' | 'opaque';
@@ -500,6 +509,19 @@ const escapeAttribute = (text: string): string =>
 /** A request CORS refused, which the page sees as a failed fetch and the
  *  console tells why. */
 class CorsError extends Error {}
+
+/** A response's body, where it arrives a chunk at a time, let go unread: a
+ *  `no-cors` answer's, one CORS refused, one the page no longer wants. */
+function release(response: FetchResponse): void {
+  void response.chunks?.[Symbol.asyncIterator]().return?.();
+}
+
+/** Bytes as base64, which is how they cross to the page. */
+function base64Of(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
+    'base64',
+  );
+}
 
 /** The methods a request may have and be a simple one (Fetch 2.2.1). */
 const SIMPLE_METHODS = new Set(['GET', 'HEAD', 'POST']);
@@ -870,6 +892,8 @@ export class DomHost {
   private _next = 2;
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
+  /** The bodies being handed to the page a chunk at a time (`_pump`). */
+  private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
   private _contents = new Map<number, number>();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
@@ -1236,6 +1260,8 @@ export class DomHost {
     this._timers.clear();
     for (const fetch of this._fetches.values()) fetch.abort();
     this._fetches.clear();
+    for (const body of this._bodies.values()) void body.return?.();
+    this._bodies.clear();
     this._observers.clear();
     this.entries = null;
   }
@@ -2775,6 +2801,8 @@ export class DomHost {
       case 'abortFetch':
         this._fetches.get(Number(a))?.abort();
         this._fetches.delete(Number(a));
+        void this._bodies.get(Number(a))?.return?.();
+        this._bodies.delete(Number(a));
         return null;
       default:
         throw new DomError('NotSupportedError', `No op '${op}'.`);
@@ -3922,22 +3950,32 @@ export class DomHost {
    *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
     const answer = (value: FetchResponse | string) => {
-      if (!this._fetches.delete(id) || this._disposed) return;
+      if (!this._fetches.has(id) || this._disposed) {
+        if (typeof value !== 'string') release(value);
+        return;
+      }
+      // a body that arrives a chunk at a time is handed on so, after the
+      // headers: the page's promise is settled by them, as a browser's is
+      if (typeof value !== 'string' && value.chunks) {
+        const { bytes: _none, chunks, ...rest } = value;
+        // kept before the page hears of it, which may abort it at once
+        const iterator = chunks[Symbol.asyncIterator]();
+        this._bodies.set(id, iterator);
+        this.entries?.call('__fetched', [
+          id,
+          { ...rest, body: '', streaming: true },
+        ]);
+        void this._pump(id, iterator);
+        return;
+      }
+      this._fetches.delete(id);
       // what crosses is primitives: the bytes as base64, where there are
       // bytes, and the decoded text where there are none
       let crossing: unknown = value;
       if (typeof value !== 'string') {
         const { bytes, ...rest } = value;
         crossing = bytes
-          ? {
-              ...rest,
-              body: '',
-              base64: Buffer.from(
-                bytes.buffer,
-                bytes.byteOffset,
-                bytes.byteLength,
-              ).toString('base64'),
-            }
+          ? { ...rest, body: '', base64: base64Of(bytes) }
           : rest;
       }
       this.entries?.call('__fetched', [id, crossing]);
@@ -3955,6 +3993,7 @@ export class DomHost {
               .filter(([k]) => !forbiddenRequestHeader(k))
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
+        ...(raw.stream === true ? { stream: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
               bytes: new Uint8Array(
@@ -3991,6 +4030,32 @@ export class DomHost {
     });
   }
 
+  /** A body handed on a chunk at a time (`__fetchChunk`) until it ends
+   *  (`__fetchEnd`), or until the page lets it go (`abortFetch`). */
+  private async _pump(
+    id: number,
+    iterator: AsyncIterator<Uint8Array>,
+  ): Promise<void> {
+    if (!this._fetches.has(id) || this._disposed) return;
+    let failed: string | null = null;
+    try {
+      for (;;) {
+        const { done, value } = await iterator.next();
+        if (done) break;
+        if (!this._fetches.has(id) || this._disposed) return;
+        if (value.length) {
+          this.entries?.call('__fetchChunk', [id, base64Of(value)]);
+        }
+      }
+    } catch {
+      failed = 'network error';
+    } finally {
+      if (this._bodies.get(id) === iterator) this._bodies.delete(id);
+    }
+    if (!this._fetches.delete(id) || this._disposed) return;
+    this.entries?.call('__fetchEnd', [id, failed]);
+  }
+
   /** What CORS remembers of the preflights this page made. */
   private _preflights = new Map<string, PreflightEntry>();
 
@@ -4023,6 +4088,7 @@ export class DomHost {
       headers: request.headers,
       body: request.body,
       ...(request.bytes ? { bytes: request.bytes } : {}),
+      ...(request.stream ? { stream: true } : {}),
     };
     if (own) {
       const response = await this._seams.fetch(plain, signal);
@@ -4035,6 +4101,7 @@ export class DomHost {
         };
       }
       if (request.mode === 'same-origin') {
+        release(response);
         throw new CorsError('The request was redirected to another origin.');
       }
       return this._shared(response, request, page);
@@ -4053,7 +4120,7 @@ export class DomHost {
           `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
         );
       }
-      await this._seams.fetch(plain, signal);
+      release(await this._seams.fetch(plain, signal));
       return {
         url: '',
         status: 0,
@@ -4078,7 +4145,12 @@ export class DomHost {
     request: PageRequest,
     page: string,
   ): FetchResponse {
-    corsCheck(response.headers, request.credentials, page);
+    try {
+      corsCheck(response.headers, request.credentials, page);
+    } catch (error) {
+      release(response);
+      throw error;
+    }
     const include = request.credentials === 'include';
     const exposed = listOf(
       headerOf(response.headers, 'access-control-expose-headers'),

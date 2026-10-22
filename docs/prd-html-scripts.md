@@ -1007,6 +1007,16 @@ the Interop 2026 focus areas through `<Html scripts>`
   object has the guard its owner gives it (Fetch 5.1): a request's drops
   what a page may not set, a `no-cors` one's all but the safelisted few,
   a network response's refuses every change.
+- **A response is the page's at its headers.** The facade's `fetch` held
+  its promise until the whole body was in, so a page reading a body that
+  trickles — WPT's `long-wav.py`, two and a half megabytes at eight
+  kilobytes a half second, and every chat UI that streams a model's reply
+  — saw nothing until the end, and `HtmlNetwork`'s 30-second timeout ended
+  it there. A request asks for its body as it arrives
+  (`FetchRequest.stream`); the host settles the page's promise with the
+  headers and hands each chunk to the body's stream (`__fetchChunk`,
+  `__fetchEnd`, `_pump`), and a worker's crosses its port the same way.
+  The timeout bounds the wait for the headers only.
 
 ## What core would be asked
 

@@ -245,3 +245,71 @@ test('a sheet served as anything but CSS is no sheet, and a page where an image 
     'an image a server mislabels is still read as one',
   );
 });
+
+test("a page's request hands its body on as it arrives where it asks to, and sends bytes as bytes", async () => {
+  const page = 'https://site.example/app';
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let cancelled = 0;
+  const sent: {
+    url: string;
+    body: unknown;
+    headers: Record<string, string>;
+  }[] = [];
+  const network = new HtmlNetwork({
+    fetch: async (url, init) => {
+      sent.push({ url, body: init.body, headers: init.headers });
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          controller.enqueue(new TextEncoder().encode('one '));
+          await held;
+          controller.enqueue(new TextEncoder().encode('two'));
+          controller.close();
+        },
+        cancel() {
+          cancelled += 1;
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const fetch = network.fetcher(page);
+  const signal = new AbortController().signal;
+  const streamed = await fetch(
+    {
+      url: `${page}/s`,
+      method: 'POST',
+      headers: [['range', 'bytes=0-1']],
+      body: '',
+      bytes: new Uint8Array([0, 255]),
+      stream: true,
+    },
+    signal,
+  );
+  assert.ok(streamed.chunks, 'a body to read as it arrives');
+  assert.equal(streamed.body, '');
+  assert.deepEqual([...(sent[0].body as Uint8Array)], [0, 255]);
+  const it = streamed.chunks[Symbol.asyncIterator]();
+  const first = await it.next();
+  assert.equal(new TextDecoder().decode(first.value), 'one ');
+  release();
+  const second = await it.next();
+  assert.equal(new TextDecoder().decode(second.value), 'two');
+  assert.equal((await it.next()).done, true);
+
+  // one let go unread lets its connection go
+  const dropped = await fetch(
+    { url: `${page}/d`, method: 'GET', headers: [], body: null, stream: true },
+    signal,
+  );
+  await dropped.chunks![Symbol.asyncIterator]().return!();
+  assert.equal(cancelled, 1);
+
+  // and one that does not ask is answered whole, as before
+  const whole = await fetch(
+    { url: `${page}/w`, method: 'GET', headers: [], body: null },
+    signal,
+  );
+  assert.equal(whole.chunks, undefined);
+  assert.equal(whole.body, 'one two');
+});
