@@ -37,6 +37,14 @@ function num(n: number): string {
   return Object.is(r, -0) ? '0' : String(r);
 }
 
+/** A `<number>` as Chrome serializes a float it keeps: six significant
+ *  digits, where an opacity an animation is part way through needs more
+ *  than `num`'s three places. */
+function float6(n: number): string {
+  const r = Number(n.toPrecision(6));
+  return Object.is(r, -0) ? '0' : String(r);
+}
+
 /** CSS pixels from device ones. */
 function px(device: number, scale: number): string {
   return `${num(device / scale)}px`;
@@ -355,7 +363,7 @@ function cssomAt(
     float: style.float,
     clear: style.clear,
     visibility: style.visibility,
-    opacity: num(style.opacity),
+    opacity: float6(style.opacity),
     zoom: num(style.zoom),
     'z-index': String(style.zIndex),
     'clip-path': clipPathText(style.clipPath, scale),

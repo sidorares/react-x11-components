@@ -6005,6 +6005,118 @@ test('a finished animation that fills is removed once later ones cover what it s
   );
 });
 
+test('an animation plays and pauses through pending tasks and its ready promise, and finish() tells at once, as Web Animations has them', async () => {
+  const doc = await hosted(
+    '<div id="b">b</div><p id="out"></p><script>' +
+      'var el = document.getElementById("b"), r = [];' +
+      'var a = el.animate({ opacity: [0, 1] }, { duration: 1000, easing: "step-start" });' +
+      // pending until the task that plays it, its start time with it
+      'r.push(a.pending, a.startTime, a.playState, a.effect.getTiming().easing);' +
+      'a.ready.then(function () {' +
+      '  r.push(a.pending, typeof a.startTime);' +
+      '  a.pause(); r.push(a.pending, a.playState);' +
+      '  return a.ready;' +
+      '}).then(function () {' +
+      '  r.push(a.pending, a.playState, a.startTime);' +
+      '  a.onfinish = function () { r.push("told"); };' +
+      '  a.finish(); r.push(a.playState, a.currentTime);' +
+      '  a.finished.then(function () { r.push("finished");' +
+      '    document.getElementById("out").textContent = r.join("|"); });' +
+      '});' +
+      // an easing is serialized as CSS has it, and one that is none throws
+      'try { el.animate({}, { easing: "test" }); } catch (e) { r.push(e.name); }' +
+      'var s = el.animate({ opacity: [0, 1] }, { duration: 1000, easing: "steps(2)" });' +
+      's.pause(); s.currentTime = 600; r.push(s.effect.getComputedTiming().progress);' +
+      // and the document timeline reads one time within a task
+      'r.push(document.timeline.currentTime === document.timeline.currentTime);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.includes('finished'));
+  assert.equal(
+    text,
+    'true||running|steps(1, start)|TypeError|0.5|true|false|number|true|paused|false|paused||finished|1000|finished',
+    doc.logs.join('\n'),
+  );
+});
+
+test('CSS numeric values are made, added, converted and parsed as CSS Typed OM has them', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'r.push(String(CSS.percent(10)), String(CSS.px(1).add(CSS.px(2))), CSS.s(1).to("ms").value);' +
+      'var sum = CSSNumericValue.parse("calc(30% + 40px)");' +
+      'r.push(sum.constructor.name, String(sum), sum.values.length);' +
+      'r.push(CSSNumericValue.parse("calc(60% + 40%)") instanceof CSSUnitValue, String(CSSNumericValue.parse("calc(60% + 40%)")));' +
+      'r.push(CSS.number(2).mul(CSS.px(3)).toString(), CSS.px(5).equals(CSS.px(5)), CSS.px(5).equals(CSS.em(5)));' +
+      'try { CSSNumericValue.parse("10 px"); } catch (e) { r.push(e.name); }' +
+      'try { CSS.px(1).add(CSS.s(1)); } catch (e) { r.push(e.name); }' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '10%|3px|1000|CSSMathSum|calc(30% + 40px)|2|true|100%|6px|true|false|SyntaxError|TypeError',
+  );
+});
+
+test('a scroll timeline is how far its source is scrolled, and an animation on it is drawn where the scroll has it', async () => {
+  const doc = await hosted(
+    '<style>#s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #t { width: 10px; height: 10px }</style>' +
+      '<div id="s"><div id="c"></div></div><div id="t"></div><div id="n"></div><p id="out"></p><script>' +
+      'var s = document.getElementById("s"), t = document.getElementById("t"), r = [];' +
+      'var tl = new ScrollTimeline({ source: s });' +
+      'r.push(String(tl.currentTime), String(tl.duration), tl.axis,' +
+      '  new ScrollTimeline({ source: document.getElementById("n") }).currentTime);' +
+      'var a = t.animate({ opacity: [0, 1] }, { timeline: tl });' +
+      'r.push(a.startTime, a.pending);' +
+      'a.ready.then(function () {' +
+      '  r.push(String(a.startTime), String(a.effect.getComputedTiming().duration));' +
+      '  s.scrollTop = 200;' +
+      '  requestAnimationFrame(function () {' +
+      '    r.push(String(tl.currentTime), String(a.currentTime), getComputedStyle(t).opacity);' +
+      '    try { a.currentTime = 10; } catch (e) { r.push(e.name); }' +
+      '    a.currentTime = CSS.percent(25); r.push(String(a.currentTime));' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  });' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0%|100%|block|||true|0%|100%|50%|50%|0.5|TypeError|25%',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
+  const doc = await hosted(
+    '<style>#s { overflow: auto; width: 100px; height: 200px }' +
+      ' .gap { height: 400px } #v { height: 100px }</style>' +
+      '<div id="s"><div class="gap"></div><div id="v"></div><div class="gap"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), v = document.getElementById("v"), r = [];' +
+      'var tl = new ViewTimeline({ subject: v });' +
+      // cover 0% where its top meets the scrollport's bottom, 100% where
+      // its bottom leaves the top: before either, a time before 0%
+      'r.push(tl.source === s, String(tl.startOffset), String(tl.endOffset), String(tl.currentTime));' +
+      's.scrollTop = 350; r.push(String(tl.currentTime));' +
+      'var a = v.animate({ opacity: [0, 1] }, { timeline: tl, rangeStart: "contain 0%", rangeEnd: "contain 100%" });' +
+      'r.push(JSON.stringify([a.rangeStart.rangeName, String(a.rangeStart.offset)]));' +
+      'a.ready.then(function () {' +
+      // contain runs from 300 to 400: 350 is its middle
+      '  r.push(String(a.startTime), getComputedStyle(v).opacity);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|200px|500px|-66.66666666666666%|50%|["contain","0%"]|33.33333333333333%|0.5',
+    doc.logs.join('\n'),
+  );
+});
+
 test('keyframes take their offsets as Web Animations computes them, and a list per property is spread on its own', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

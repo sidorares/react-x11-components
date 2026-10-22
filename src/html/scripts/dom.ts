@@ -827,12 +827,759 @@ export function installDom(
     return !event._canceled;
   };
 
-  // --- animations (Web Animations 1) -------------------------------------------
+  // --- CSS Typed OM: numeric values (CSS Typed OM 1, 4.3) ----------------------
+  //
+  // What a scroll-driven animation's times are: a `CSSUnitValue` in
+  // percent, and what a page hands back, `CSS.percent(10)` or
+  // `CSSNumericValue.parse("10%")`. Numbers and their arithmetic only; no
+  // property's value is reified.
 
-  /** An animation's `finish`, `cancel` and `remove`. */
+  /** Each unit's kind of quantity and, for one that converts, how many of
+   *  the kind's canonical unit it is. */
+  const UNITS: Record<string, [string, number | null]> = {
+    number: ['number', 1],
+    percent: ['percent', 1],
+    px: ['length', 1],
+    cm: ['length', 96 / 2.54],
+    mm: ['length', 96 / 25.4],
+    q: ['length', 96 / 101.6],
+    in: ['length', 96],
+    pt: ['length', 96 / 72],
+    pc: ['length', 16],
+    deg: ['angle', 1],
+    grad: ['angle', 0.9],
+    rad: ['angle', 180 / Math.PI],
+    turn: ['angle', 360],
+    s: ['time', 1000],
+    ms: ['time', 1],
+    hz: ['frequency', 1],
+    khz: ['frequency', 1000],
+    dppx: ['resolution', 1],
+    x: ['resolution', 1],
+    dpi: ['resolution', 1 / 96],
+    dpcm: ['resolution', 2.54 / 96],
+    fr: ['flex', 1],
+  };
+  for (const unit of [
+    'em',
+    'ex',
+    'ch',
+    'ic',
+    'rem',
+    'lh',
+    'rlh',
+    'cap',
+    'rcap',
+    'rex',
+    'rch',
+    'ric',
+    ...['', 's', 'l', 'd', 'cq'].flatMap((p) =>
+      p === 'cq'
+        ? ['cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax']
+        : ['vw', 'vh', 'vi', 'vb', 'vmin', 'vmax'].map((v) => p + v),
+    ),
+  ]) {
+    UNITS[unit] = ['length', null];
+  }
+  /** A unit as CSS writes it after a number. */
+  const unitText = (unit: string): string =>
+    unit === 'number'
+      ? ''
+      : unit === 'percent'
+        ? '%'
+        : unit === 'q'
+          ? 'Q'
+          : unit === 'hz'
+            ? 'Hz'
+            : unit === 'khz'
+              ? 'kHz'
+              : unit;
+  /** A number as CSS serializes one. */
+  const numberText = (v: number): string =>
+    Number.isFinite(v)
+      ? String(Object.is(v, -0) ? 0 : v)
+      : v > 0
+        ? 'calc(infinity)'
+        : v < 0
+          ? 'calc(-infinity)'
+          : 'calc(NaN)';
+  /** A number, or a numeric value, as the arithmetic takes it. */
+  const numeric = (v: Any): Any => {
+    if (v instanceof CSSNumericValue) return v;
+    if (typeof v === 'number') return new CSSUnitValue(v, 'number');
+    throw new TypeError(
+      "Failed to execute on 'CSSNumericValue': Argument is not a CSSNumericValue or number.",
+    );
+  };
+  /** The kind of quantity a value is, where it is one. */
+  const quantityOf = (v: Any): string | null => {
+    if (v instanceof CSSUnitValue) return UNITS[v.unit][0];
+    if (v instanceof CSSMathSum) {
+      const kinds = new Set<string | null>(
+        v.values._items.map(quantityOf).filter((k: Any) => k !== 'percent'),
+      );
+      return kinds.size === 1 ? [...kinds][0] : kinds.size ? null : 'percent';
+    }
+    if (v instanceof CSSMathNegate) return quantityOf(v.value);
+    return null;
+  };
+
+  class CSSStyleValue {
+    toString(): string {
+      return '';
+    }
+  }
+  class CSSNumericValue extends CSSStyleValue {
+    add(...values: Any[]): Any {
+      const all = [this, ...values.map(numeric)];
+      const units = new Set(all.map((v) => v.unit));
+      if (all.every((v) => v instanceof CSSUnitValue) && units.size === 1) {
+        return new CSSUnitValue(
+          all.reduce((sum, v) => sum + v.value, 0),
+          all[0].unit,
+        );
+      }
+      const kinds = new Set(
+        all.map(quantityOf).filter((k) => k !== 'percent' && k !== null),
+      );
+      if (kinds.size > 1) {
+        throw new TypeError(
+          "Failed to execute 'add' on 'CSSNumericValue': Incompatible types",
+        );
+      }
+      return new CSSMathSum(
+        ...all.flatMap((v) => (v instanceof CSSMathSum ? v.values._items : v)),
+      );
+    }
+    sub(...values: Any[]): Any {
+      return this.add(...values.map((v) => numeric(v).negate()));
+    }
+    mul(...values: Any[]): Any {
+      const all = [this, ...values.map(numeric)];
+      if (all.every((v) => v instanceof CSSUnitValue)) {
+        const units = all.filter((v) => v.unit !== 'number');
+        if (units.length <= 1) {
+          return new CSSUnitValue(
+            all.reduce((p, v) => p * v.value, 1),
+            units[0]?.unit ?? 'number',
+          );
+        }
+      }
+      return new CSSMathProduct(
+        ...all.flatMap((v) =>
+          v instanceof CSSMathProduct ? v.values._items : v,
+        ),
+      );
+    }
+    div(...values: Any[]): Any {
+      return this.mul(...values.map((v) => numeric(v).invert()));
+    }
+    min(...values: Any[]): Any {
+      const all = [this, ...values.map(numeric)];
+      if (
+        all.every((v) => v instanceof CSSUnitValue && v.unit === this._unit())
+      ) {
+        return new CSSUnitValue(
+          Math.min(...all.map((v) => v.value)),
+          all[0].unit,
+        );
+      }
+      return new CSSMathMin(...all);
+    }
+    max(...values: Any[]): Any {
+      const all = [this, ...values.map(numeric)];
+      if (
+        all.every((v) => v instanceof CSSUnitValue && v.unit === this._unit())
+      ) {
+        return new CSSUnitValue(
+          Math.max(...all.map((v) => v.value)),
+          all[0].unit,
+        );
+      }
+      return new CSSMathMax(...all);
+    }
+    equals(...values: Any[]): boolean {
+      return values.map(numeric).every((v) => v._same(this));
+    }
+    /** This value in another unit of its kind (CSS Typed OM 1, 4.3.1). */
+    to(unit: Any): Any {
+      const given = String(unit).toLowerCase();
+      const to = given === '%' ? 'percent' : given;
+      if (!UNITS[to]) {
+        throw new DOMException(
+          "Failed to execute 'to' on 'CSSNumericValue': Invalid unit for conversion",
+          'SyntaxError',
+        );
+      }
+      if (this instanceof CSSMathSum) {
+        return (this as Any).values._items
+          .map((v: Any) => v.to(to))
+          .reduce((sum: Any, v: Any) => sum.add(v));
+      }
+      if (this instanceof CSSUnitValue) {
+        if (this.unit === to) return new CSSUnitValue(this.value, to);
+        const [kind, factor] = UNITS[this.unit];
+        const [toKind, toFactor] = UNITS[to];
+        if (
+          kind === toKind &&
+          factor !== null &&
+          toFactor !== null &&
+          kind !== 'number' &&
+          kind !== 'percent'
+        ) {
+          return new CSSUnitValue((this.value * factor) / toFactor, to);
+        }
+      }
+      throw new TypeError(
+        "Failed to execute 'to' on 'CSSNumericValue': Cannot convert to the given unit",
+      );
+    }
+    toSum(...units: Any[]): Any {
+      const parts =
+        this instanceof CSSMathSum ? (this as Any).values._items : [this];
+      if (!parts.every((v: Any) => v instanceof CSSUnitValue)) {
+        throw new TypeError(
+          "Failed to execute 'toSum' on 'CSSNumericValue': Not a sum of values",
+        );
+      }
+      if (!units.length) {
+        return new CSSMathSum(...parts);
+      }
+      return new CSSMathSum(...units.map((u) => this.to(u)));
+    }
+    type(): Any {
+      const kind = quantityOf(this);
+      const out: Any = {};
+      if (kind && kind !== 'number') out[kind] = 1;
+      if (this instanceof CSSMathSum && quantityOf(this) !== 'percent') {
+        if (
+          (this as Any).values._items.some((v: Any) => v.unit === 'percent')
+        ) {
+          out.percentHint = kind;
+        }
+      }
+      return out;
+    }
+    negate(): Any {
+      return new CSSMathNegate(this);
+    }
+    invert(): Any {
+      return new CSSMathInvert(this);
+    }
+    _unit(): string | null {
+      return null;
+    }
+    _same(other: Any): boolean {
+      return (
+        this.constructor === other.constructor && String(this) === String(other)
+      );
+    }
+    /**
+     * A `<number>`, `<percentage>` or `<dimension>`, or a `calc()` of
+     * them added, taken away, multiplied and divided, simplified as CSS
+     * Values simplifies one (CSS Typed OM 1, 4.3.1, `parse`).
+     */
+    static parse(text: Any): Any {
+      const source = String(text).trim();
+      const tokens =
+        source.match(
+          /[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|[a-z]+)?|calc\(|min\(|max\(|[()+\-*/,]|\s+|./gi,
+        ) ?? [];
+      let at = 0;
+      const peek = () => {
+        while (at < tokens.length && /^\s+$/.test(tokens[at])) at += 1;
+        return tokens[at];
+      };
+      const fail = (): never => {
+        throw new DOMException(
+          "Failed to execute 'parse' on 'CSSNumericValue': Invalid math expression",
+          'SyntaxError',
+        );
+      };
+      const unitValue = (t: string): Any => {
+        const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%|[a-z]+)?$/i.exec(
+          t,
+        );
+        if (!m) return fail();
+        const unit =
+          m[2] === '%' ? 'percent' : (m[2] ?? 'number').toLowerCase();
+        if (!UNITS[unit]) return fail();
+        return new CSSUnitValue(Number(m[1]), unit);
+      };
+      const sum = (): Any => {
+        let left = product();
+        for (;;) {
+          const t = peek();
+          if (t !== '+' && t !== '-') return left;
+          // `+` and `-` need white space either side inside a calc()
+          at += 1;
+          const right = product();
+          left = t === '+' ? left.add(right) : left.sub(right);
+        }
+      };
+      const product = (): Any => {
+        let left = term();
+        for (;;) {
+          const t = peek();
+          if (t !== '*' && t !== '/') return left;
+          at += 1;
+          const right = term();
+          left = t === '*' ? left.mul(right) : left.div(right);
+        }
+      };
+      const term = (): Any => {
+        const t = peek();
+        if (t === undefined) return fail();
+        at += 1;
+        if (t === '(' || /^calc\($/i.test(t)) {
+          const inner = sum();
+          if (peek() !== ')') return fail();
+          at += 1;
+          return inner;
+        }
+        if (/^(min|max)\($/i.test(t)) {
+          const args = [sum()];
+          while (peek() === ',') {
+            at += 1;
+            args.push(sum());
+          }
+          if (peek() !== ')') return fail();
+          at += 1;
+          return /^min/i.test(t)
+            ? args[0].min(...args.slice(1))
+            : args[0].max(...args.slice(1));
+        }
+        return unitValue(t);
+      };
+      const first = peek();
+      if (first === undefined) return fail();
+      if (!/^(calc|min|max)\($/i.test(first)) {
+        at += 1;
+        const value = unitValue(first);
+        if (peek() !== undefined) return fail();
+        return value;
+      }
+      const value = term();
+      if (peek() !== undefined) return fail();
+      return value;
+    }
+  }
+  class CSSUnitValue extends CSSNumericValue {
+    _value: number;
+    _unitName: string;
+    constructor(value: Any, unit: Any) {
+      super();
+      const v = Number(value);
+      if (typeof value !== 'number' && !(value instanceof Number)) {
+        if (!Number.isFinite(v)) {
+          throw new TypeError(
+            "Failed to construct 'CSSUnitValue': The provided double value is non-finite.",
+          );
+        }
+      }
+      const u = String(unit).toLowerCase();
+      const name = u === '%' ? 'percent' : u;
+      if (!UNITS[name]) {
+        throw new TypeError(
+          `Failed to construct 'CSSUnitValue': Invalid unit: ${String(unit)}`,
+        );
+      }
+      this._value = v;
+      this._unitName = name;
+    }
+    get value(): number {
+      return this._value;
+    }
+    set value(v: Any) {
+      this._value = Number(v);
+    }
+    get unit(): string {
+      return this._unitName;
+    }
+    override _unit(): string {
+      return this._unitName;
+    }
+    override negate(): Any {
+      return new CSSUnitValue(-this._value, this._unitName);
+    }
+    override invert(): Any {
+      if (this._unitName === 'number') {
+        if (this._value === 0) {
+          throw new RangeError(
+            "Failed to execute 'div' on 'CSSNumericValue': Can't divide-by-zero",
+          );
+        }
+        return new CSSUnitValue(1 / this._value, 'number');
+      }
+      return new CSSMathInvert(this);
+    }
+    override _same(other: Any): boolean {
+      return (
+        other instanceof CSSUnitValue &&
+        other.unit === this.unit &&
+        other.value === this.value
+      );
+    }
+    override toString(): string {
+      return `${numberText(this._value)}${unitText(this._unitName)}`;
+    }
+  }
+  /** A list of numeric values, as a math value holds them. */
+  class CSSNumericArray {
+    _items: Any[];
+    constructor(items: Any[]) {
+      this._items = items;
+      items.forEach((v, i) => {
+        (this as Any)[i] = v;
+      });
+    }
+    get length(): number {
+      return this._items.length;
+    }
+    [Symbol.iterator](): Any {
+      return this._items[Symbol.iterator]();
+    }
+    forEach(fn: Any, self?: Any): void {
+      this._items.forEach((v, i) => fn.call(self, v, i, this));
+    }
+  }
+  class CSSMathValue extends CSSNumericValue {
+    get operator(): string {
+      return '';
+    }
+  }
+  /** A math value of a list, the operator between its members. */
+  const mathOf = (name: string, join: string, minimum: number): Any =>
+    class extends CSSMathValue {
+      values: Any;
+      constructor(...args: Any[]) {
+        super();
+        if (args.length < minimum) {
+          throw new DOMException(
+            `Failed to construct '${name}': Must specify at least one argument.`,
+            'SyntaxError',
+          );
+        }
+        this.values = new CSSNumericArray(args.map(numeric));
+      }
+      override get operator(): string {
+        return name.slice(7).toLowerCase();
+      }
+      override toString(): string {
+        const items = (this as Any).values._items;
+        if (join === 'calc+') {
+          const text = items
+            .map((v: Any, i: number) =>
+              i === 0
+                ? inner(v)
+                : v instanceof CSSMathNegate
+                  ? ` - ${inner(v.value)}`
+                  : ` + ${inner(v)}`,
+            )
+            .join('');
+          return `calc(${text})`;
+        }
+        if (join === 'calc*') {
+          const text = items
+            .map((v: Any, i: number) =>
+              i === 0
+                ? inner(v)
+                : v instanceof CSSMathInvert
+                  ? ` / ${inner(v.value)}`
+                  : ` * ${inner(v)}`,
+            )
+            .join('');
+          return `calc(${text})`;
+        }
+        return `${join}(${items.map((v: Any) => String(v)).join(', ')})`;
+      }
+    };
+  /** A member of a calc() as it is written inside one. */
+  const inner = (v: Any): string => {
+    const text = String(v);
+    return v instanceof CSSMathSum || v instanceof CSSMathProduct
+      ? `(${text.slice(5, -1)})`
+      : text;
+  };
+  const CSSMathSum = mathOf('CSSMathSum', 'calc+', 1);
+  const CSSMathProduct = mathOf('CSSMathProduct', 'calc*', 1);
+  const CSSMathMin = mathOf('CSSMathMin', 'min', 1);
+  const CSSMathMax = mathOf('CSSMathMax', 'max', 1);
+  for (const [cls, name] of [
+    [CSSMathSum, 'CSSMathSum'],
+    [CSSMathProduct, 'CSSMathProduct'],
+    [CSSMathMin, 'CSSMathMin'],
+    [CSSMathMax, 'CSSMathMax'],
+  ]) {
+    Object.defineProperty(cls, 'name', { value: name });
+  }
+  class CSSMathNegate extends CSSMathValue {
+    value: Any;
+    constructor(value: Any) {
+      super();
+      this.value = numeric(value);
+    }
+    override get operator(): string {
+      return 'negate';
+    }
+    override toString(): string {
+      return `calc(-1 * ${inner(this.value)})`;
+    }
+  }
+  class CSSMathInvert extends CSSMathValue {
+    value: Any;
+    constructor(value: Any) {
+      super();
+      this.value = numeric(value);
+    }
+    override get operator(): string {
+      return 'invert';
+    }
+    override toString(): string {
+      return `calc(1 / ${inner(this.value)})`;
+    }
+  }
+  class CSSKeywordValue extends CSSStyleValue {
+    _value: string;
+    constructor(value: Any) {
+      super();
+      const v = String(value);
+      if (!v) {
+        throw new TypeError(
+          "Failed to construct 'CSSKeywordValue': CSSKeywordValue does not support empty strings",
+        );
+      }
+      this._value = v;
+    }
+    get value(): string {
+      return this._value;
+    }
+    set value(v: Any) {
+      this._value = String(v);
+    }
+    override toString(): string {
+      return this._value;
+    }
+  }
+  /** `CSS.px(10)` and its kin, a factory a unit (CSS Typed OM 1, 5.3). */
+  const unitFactories: Record<string, (v: Any) => Any> = {};
+  for (const unit of Object.keys(UNITS)) {
+    if (unit === 'x') continue;
+    const name =
+      unit === 'q' ? 'Q' : unit === 'hz' ? 'Hz' : unit === 'khz' ? 'kHz' : unit;
+    unitFactories[name] = (v: Any) => new CSSUnitValue(Number(v), unit);
+  }
+  const percentOf = (v: number): Any => new CSSUnitValue(v, 'percent');
+
+  // --- easing functions (CSS Easing 2) ------------------------------------------
+
+  /** An easing as a function of the input progress and the before flag. */
+  type EasingFn = (p: number, before: boolean) => number;
+  const LINEAR_EASING: EasingFn = (p) => p;
+  /** A cubic Bézier through (0, 0) and (1, 1) with the two control points
+   *  given, past the ends along the tangent there (CSS Easing 2, 3.2). */
+  const bezierEasing =
+    (x1: number, y1: number, x2: number, y2: number): EasingFn =>
+    (p) => {
+      if (p < 0) {
+        const slope = x1 > 0 ? y1 / x1 : !y1 && x2 > 0 ? y2 / x2 : 0;
+        return slope * p;
+      }
+      if (p > 1) {
+        const slope =
+          x2 < 1
+            ? (y2 - 1) / (x2 - 1)
+            : x2 === 1 && x1 < 1
+              ? (y1 - 1) / (x1 - 1)
+              : 0;
+        return 1 + slope * (p - 1);
+      }
+      const cx = 3 * x1;
+      const bx = 3 * (x2 - x1) - cx;
+      const ax = 1 - cx - bx;
+      const cy = 3 * y1;
+      const by = 3 * (y2 - y1) - cy;
+      const ay = 1 - cy - by;
+      const x = (t: number) => ((ax * t + bx) * t + cx) * t;
+      let t = p;
+      for (let i = 0; i < 8; i += 1) {
+        const err = x(t) - p;
+        if (Math.abs(err) < 1e-7) break;
+        const d = (3 * ax * t + 2 * bx) * t + cx;
+        if (Math.abs(d) < 1e-6) break;
+        t -= err / d;
+      }
+      if (!(Math.abs(x(t) - p) < 1e-7)) {
+        let lo = 0;
+        let hi = 1;
+        t = p;
+        while (lo < hi && hi - lo > 1e-9) {
+          const v = x(t);
+          if (Math.abs(v - p) < 1e-9) break;
+          if (p > v) lo = t;
+          else hi = t;
+          t = (lo + hi) / 2;
+        }
+      }
+      return ((ay * t + by) * t + cy) * t;
+    };
+  /** `steps()` (CSS Easing 2, 4.1). */
+  const stepsEasing =
+    (steps: number, position: string): EasingFn =>
+    (p, before) => {
+      const jumps =
+        position === 'jump-both'
+          ? steps + 1
+          : position === 'jump-none'
+            ? steps - 1
+            : steps;
+      let step = Math.floor(p * steps);
+      if (position === 'jump-start' || position === 'jump-both') step += 1;
+      if (before && Math.floor(p * steps) === p * steps) step -= 1;
+      if (p >= 0 && step < 0) step = 0;
+      if (p <= 1 && step > jumps) step = jumps;
+      return step / jumps;
+    };
+  /** `linear()` of its control points, each its output and input
+   *  (CSS Easing 2, 2.2), past the ends along the first and last two. */
+  const pointsEasing =
+    (points: [number, number][]): EasingFn =>
+    (p) => {
+      if (points.length === 1) return points[0][0];
+      let i = 1;
+      if (p >= points[0][1]) {
+        while (i < points.length - 1 && points[i][1] < p) i += 1;
+        if (p > points[i][1]) i = points.length - 1;
+      }
+      // an input that two points share takes the later one's output
+      while (
+        i < points.length - 1 &&
+        points[i][1] === p &&
+        points[i + 1][1] === p
+      ) {
+        i += 1;
+      }
+      const [o0, i0] = points[i - 1];
+      const [o1, i1] = points[i];
+      if (i1 === i0) return p < i0 ? o0 : o1;
+      return o0 + ((o1 - o0) * (p - i0)) / (i1 - i0);
+    };
+  const EASING_KEYWORDS: Record<string, [number, number, number, number]> = {
+    ease: [0.25, 0.1, 0.25, 1],
+    'ease-in': [0.42, 0, 1, 1],
+    'ease-out': [0, 0, 0.58, 1],
+    'ease-in-out': [0.42, 0, 0.58, 1],
+  };
+  /**
+   * An easing a page gives `animate()` or `updateTiming()`, its comments
+   * and escapes read as CSS reads them, as it serializes and as a function
+   * — or a TypeError where it is none (Web Animations 1, 6.5).
+   */
+  const easingOf = (given: Any): { css: string; fn: EasingFn } => {
+    const fail = (): never => {
+      throw new TypeError(`'${String(given)}' is not a valid value for easing`);
+    };
+    const text = String(given)
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex) =>
+        String.fromCodePoint(parseInt(hex, 16)),
+      )
+      .replace(/\\(.)/g, '$1')
+      .trim();
+    const lower = text.toLowerCase();
+    if (lower === 'linear') return { css: 'linear', fn: LINEAR_EASING };
+    if (EASING_KEYWORDS[lower]) {
+      return { css: lower, fn: bezierEasing(...EASING_KEYWORDS[lower]) };
+    }
+    if (lower === 'step-start') {
+      return { css: 'steps(1, start)', fn: stepsEasing(1, 'jump-start') };
+    }
+    if (lower === 'step-end') {
+      return { css: 'steps(1)', fn: stepsEasing(1, 'jump-end') };
+    }
+    const fn = /^([a-z-]+)\(([^()]*)\)$/.exec(lower);
+    if (!fn) return fail();
+    const args = fn[2].split(',').map((a) => a.trim());
+    const num = (a: string): number => {
+      if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(a)) return fail();
+      return Number(a);
+    };
+    if (fn[1] === 'cubic-bezier') {
+      if (args.length !== 4) return fail();
+      const [x1, y1, x2, y2] = args.map(num);
+      if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) return fail();
+      return {
+        css: `cubic-bezier(${[x1, y1, x2, y2].map(numberText).join(', ')})`,
+        fn: bezierEasing(x1, y1, x2, y2),
+      };
+    }
+    if (fn[1] === 'steps') {
+      if (args.length < 1 || args.length > 2) return fail();
+      if (!/^\+?\d+$/.test(args[0])) return fail();
+      const n = Number(args[0]);
+      const pos = args[1] ?? 'end';
+      const position =
+        pos === 'start' ? 'jump-start' : pos === 'end' ? 'jump-end' : pos;
+      if (
+        !['jump-start', 'jump-end', 'jump-none', 'jump-both'].includes(position)
+      ) {
+        return fail();
+      }
+      if (n < 1 || (position === 'jump-none' && n < 2)) return fail();
+      const css =
+        position === 'jump-end'
+          ? `steps(${n})`
+          : `steps(${n}, ${pos === 'start' ? 'start' : position})`;
+      return { css, fn: stepsEasing(n, position) };
+    }
+    if (fn[1] === 'linear') {
+      const stops: [number, number | null][] = [];
+      for (const arg of args) {
+        const parts = arg.split(/\s+/);
+        if (!parts.length || parts.length > 3) return fail();
+        const out = num(parts[0]);
+        const ins = parts.slice(1).map((p) => {
+          const m = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/.exec(p);
+          return m ? Number(m[1]) / 100 : fail();
+        });
+        if (!ins.length) stops.push([out, null]);
+        for (const at of ins) stops.push([out, at]);
+      }
+      if (stops.length < 2) return fail();
+      if (stops[0][1] === null) stops[0][1] = 0;
+      if (stops[stops.length - 1][1] === null) stops[stops.length - 1][1] = 1;
+      // each input at least the one before it, and the ones with none
+      // spread evenly between the two around them that have one
+      let max = -Infinity;
+      for (const stop of stops) {
+        if (stop[1] !== null) stop[1] = max = Math.max(stop[1], max);
+      }
+      for (let i = 1; i < stops.length; i += 1) {
+        if (stops[i][1] !== null) continue;
+        let j = i;
+        while (stops[j][1] === null) j += 1;
+        const from = stops[i - 1][1]!;
+        const to = stops[j][1]!;
+        for (let k = i; k < j; k += 1) {
+          stops[k][1] = from + ((to - from) * (k - i + 1)) / (j - i + 1);
+        }
+      }
+      const points = stops as [number, number][];
+      return {
+        css: `linear(${points.map(([o, i]) => `${numberText(o)} ${numberText(i * 100)}%`).join(', ')})`,
+        fn: pointsEasing(points),
+      };
+    }
+    return fail();
+  };
+
+  // --- animations (Web Animations 1 and 2) --------------------------------------
+
+  /** An animation's `finish`, `cancel` and `remove`: times as its timeline
+   *  gives them, a percentage for a scroll-driven one. */
   class AnimationPlaybackEvent extends Event {
-    readonly currentTime: number | null;
-    readonly timelineTime: number | null;
+    readonly currentTime: Any;
+    readonly timelineTime: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.currentTime = init.currentTime ?? null;
@@ -840,38 +1587,97 @@ export function installDom(
     }
   }
 
-  /** The timing an effect is made with, checked as `EffectTiming` is: a
-   *  number alone is its duration. */
-  const timingOf = (options: Any): Any => {
-    const given =
-      typeof options === 'number' || options === undefined || options === null
-        ? { duration: options ?? 'auto' }
-        : options;
-    const timing = {
-      delay: Number(given.delay ?? 0),
-      endDelay: Number(given.endDelay ?? 0),
-      fill: String(given.fill ?? 'auto'),
-      iterationStart: Number(given.iterationStart ?? 0),
-      iterations: given.iterations === undefined ? 1 : Number(given.iterations),
-      duration: given.duration ?? 'auto',
-      direction: String(given.direction ?? 'normal'),
-      easing: String(given.easing ?? 'linear'),
+  const FILL_MODES = ['auto', 'none', 'forwards', 'backwards', 'both'];
+  const PLAYBACK_DIRECTIONS = [
+    'normal',
+    'reverse',
+    'alternate',
+    'alternate-reverse',
+  ];
+
+  /**
+   * An effect's timing, from what a page hands `animate()`, a
+   * `KeyframeEffect` or `updateTiming()` laid over what it was: a number
+   * alone is its duration, a member left out or `undefined` keeps its
+   * value, and one out of range is a TypeError (Web Animations 1, 6.5.4,
+   * "update the timing properties").
+   */
+  const timingOf = (given: Any, base: Any = null): Any => {
+    const t = base
+      ? { ...base }
+      : {
+          delay: 0,
+          endDelay: 0,
+          fill: 'auto',
+          iterationStart: 0,
+          iterations: 1,
+          duration: 'auto',
+          direction: 'normal',
+          easing: 'linear',
+        };
+    let easing = base?._easing ?? LINEAR_EASING;
+    const options =
+      given === undefined || given === null
+        ? {}
+        : typeof given === 'object'
+          ? given
+          : { duration: given };
+    const bad = (what: string): never => {
+      throw new TypeError(`Failed to execute 'updateTiming': ${what}`);
     };
-    const duration = timing.duration;
-    if (
-      duration !== 'auto' &&
-      !(typeof duration === 'number' && duration >= 0)
-    ) {
-      throw new TypeError(
-        `Failed to execute 'animate' on 'Element': duration must be non-negative or auto.`,
-      );
+    if (options.delay !== undefined) {
+      const v = Number(options.delay);
+      if (!Number.isFinite(v)) bad('delay must be finite');
+      t.delay = v;
     }
-    if (!(timing.iterations >= 0) || !(timing.iterationStart >= 0)) {
-      throw new TypeError(
-        `Failed to execute 'animate' on 'Element': iterations must be non-negative.`,
-      );
+    if (options.endDelay !== undefined) {
+      const v = Number(options.endDelay);
+      if (!Number.isFinite(v)) bad('endDelay must be finite');
+      t.endDelay = v;
     }
-    return timing;
+    if (options.fill !== undefined) {
+      const v = String(options.fill);
+      if (!FILL_MODES.includes(v)) bad(`'${v}' is not a valid fill`);
+      t.fill = v;
+    }
+    if (options.iterationStart !== undefined) {
+      const v = Number(options.iterationStart);
+      if (!Number.isFinite(v) || v < 0) bad('iterationStart must be finite');
+      t.iterationStart = v;
+    }
+    if (options.iterations !== undefined) {
+      const v = Number(options.iterations);
+      if (Number.isNaN(v) || v < 0) bad('iterations must be non-negative');
+      t.iterations = v;
+    }
+    if (options.duration !== undefined) {
+      const d = options.duration;
+      if (typeof d === 'string' || d instanceof String) {
+        if (String(d) !== 'auto') bad('duration must be a number or auto');
+        t.duration = 'auto';
+      } else {
+        const v = Number(d);
+        if (Number.isNaN(v) || v < 0) bad('duration must be non-negative');
+        t.duration = v;
+      }
+    }
+    if (options.direction !== undefined) {
+      const v = String(options.direction);
+      if (!PLAYBACK_DIRECTIONS.includes(v))
+        bad(`'${v}' is not a valid direction`);
+      t.direction = v;
+    }
+    if (options.easing !== undefined) {
+      const e = easingOf(options.easing);
+      t.easing = e.css;
+      easing = e.fn;
+    }
+    Object.defineProperty(t, '_easing', {
+      value: easing,
+      enumerable: false,
+      writable: true,
+    });
+    return t;
   };
 
   /**
@@ -996,6 +1802,19 @@ export function installDom(
    *  in (Web Animations 1, 5.4.2), and the id the host knows each by. */
   let animationSeq = 0;
 
+  /** Where an effect's timing puts it at its animation's current time
+   *  (Web Animations 1, 4.8 to 4.11, with 2's timeline boundary). */
+  interface EffectState {
+    local: number | null;
+    phase: 'before' | 'active' | 'after' | null;
+    active: number | null;
+    progress: number | null;
+    iteration: number | null;
+    /** Whether the timeline's boundary put a time on the active phase's
+     *  edge in it, where it would otherwise be after or before it. */
+    boundary: boolean;
+  }
+
   /** What an animation animates: its target, its keyframes and its timing
    *  (`KeyframeEffect`). `<Html>` draws it, from what the host is told of
    *  it (`Animation._report`). */
@@ -1003,57 +1822,237 @@ export function installDom(
     _timing: Any = timingOf(undefined);
     _animation: Any = null;
     getTiming(): Any {
-      return { ...this._timing };
+      const t = this._timing;
+      return {
+        delay: t.delay,
+        endDelay: t.endDelay,
+        fill: t.fill,
+        iterationStart: t.iterationStart,
+        iterations: t.iterations,
+        duration: t.duration,
+        direction: t.direction,
+        easing: t.easing,
+      };
     }
-    updateTiming(timing: Any = {}): void {
-      this._timing = timingOf({ ...this._timing, ...timing });
-      this._described = null;
-      this._animation?._schedule();
+    updateTiming(timing?: Any): void {
+      if (
+        timing !== undefined &&
+        timing !== null &&
+        typeof timing !== 'object'
+      ) {
+        throw new TypeError(
+          "Failed to execute 'updateTiming' on 'AnimationEffect': The provided value is not of type 'OptionalEffectTiming'.",
+        );
+      }
+      const next = timingOf(timing ?? {}, this._timing);
+      // a progress-based timeline is finite, and so is what runs on it
+      // (Web Animations 2, 6.5.4)
+      if (next.iterations === Infinity && this._animation?._finite()) {
+        throw new TypeError(
+          "Failed to execute 'updateTiming' on 'AnimationEffect': Effect iterations cannot be Infinity when used with a ScrollTimeline",
+        );
+      }
+      this._timing = next;
+      this._animation?._effectChanged();
     }
-    /** The effect as the host is told it (`_hostEffect`), made again where
-     *  its frames or its timing change. */
-    _described: string | null = null;
-    /** How long one run of it lasts, and all of them, and when it ends. */
+    /**
+     * The timing as it runs: on a progress-based timeline, every time a
+     * proportion of the timeline's span, an `auto` duration filling it
+     * (Web Animations 2, 4.2, "normalize specified timing"); elsewhere as
+     * given, an `auto` duration 0.
+     */
+    _norm(): Any {
+      const t = this._timing;
+      const base = {
+        delay: t.delay,
+        endDelay: t.endDelay,
+        fill: t.fill,
+        iterationStart: t.iterationStart,
+        iterations: t.iterations,
+        duration: t.duration === 'auto' ? 0 : t.duration,
+        direction: t.direction,
+        easing: t.easing,
+        ease: t._easing,
+        progressBased: false,
+      };
+      const span = this._animation?._span() ?? null;
+      if (span === null) return base;
+      base.progressBased = true;
+      // an infinite duration fills the span as `auto` does
+      if (t.duration === 'auto' || t.duration === Infinity) {
+        base.delay = 0;
+        base.endDelay = 0;
+        base.duration =
+          t.iterations > 0 && t.iterations !== Infinity
+            ? span / t.iterations
+            : 0;
+        return base;
+      }
+      const total = Math.max(
+        t.delay + repeated(t.duration, t.iterations) + t.endDelay,
+        0,
+      );
+      if (!(total > 0) || total === Infinity) {
+        base.delay = 0;
+        base.endDelay = 0;
+        base.duration = 0;
+        return base;
+      }
+      const k = span / total;
+      base.delay = t.delay * k;
+      base.endDelay = t.endDelay * k;
+      base.duration = t.duration * k;
+      return base;
+    }
+    /** Where the effect ends, in its animation's time. */
+    _end(): number {
+      const n = this._norm();
+      return Math.max(
+        n.delay + repeated(n.duration, n.iterations) + n.endDelay,
+        0,
+      );
+    }
+    /** Where it is at its animation's current time. */
+    _state(): EffectState {
+      const n = this._norm();
+      const animation = this._animation;
+      const local: number | null = animation ? animation._cur() : null;
+      const none: EffectState = {
+        local,
+        phase: null,
+        active: null,
+        progress: null,
+        iteration: null,
+        boundary: false,
+      };
+      if (local === null) return none;
+      const activeDuration = repeated(n.duration, n.iterations);
+      const end = Math.max(n.delay + activeDuration + n.endDelay, 0);
+      const beforeActive = Math.max(Math.min(n.delay, end), 0);
+      const activeAfter = Math.max(Math.min(n.delay + activeDuration, end), 0);
+      const backwards = animation._rate < 0;
+      const atBoundary = animation._atBoundary();
+      let phase: 'before' | 'active' | 'after';
+      let boundary = false;
+      if (local < beforeActive || (backwards && local === beforeActive)) {
+        phase = 'before';
+        if (local === beforeActive && atBoundary) {
+          phase = 'active';
+          boundary = true;
+        }
+      } else if (local > activeAfter || (!backwards && local === activeAfter)) {
+        phase = 'after';
+        if (local === activeAfter && atBoundary) {
+          phase = 'active';
+          boundary = true;
+        }
+      } else phase = 'active';
+      const fill = n.fill === 'auto' ? 'none' : n.fill;
+      let active: number | null;
+      if (phase === 'before') {
+        active =
+          fill === 'backwards' || fill === 'both'
+            ? Math.max(local - n.delay, 0)
+            : null;
+      } else if (phase === 'active') {
+        active = local - n.delay;
+      } else {
+        active =
+          fill === 'forwards' || fill === 'both'
+            ? Math.max(Math.min(local - n.delay, activeDuration), 0)
+            : null;
+      }
+      if (active === null) return { ...none, phase, boundary };
+      let overall =
+        n.duration === 0
+          ? phase === 'before'
+            ? 0
+            : n.iterations
+          : active / n.duration;
+      overall += n.iterationStart;
+      let simple = overall === Infinity ? n.iterationStart % 1 : overall % 1;
+      if (
+        simple === 0 &&
+        (phase === 'active' || phase === 'after') &&
+        active === activeDuration &&
+        n.iterations !== 0
+      ) {
+        simple = 1;
+      }
+      const iteration =
+        phase === 'after' && n.iterations === Infinity
+          ? Infinity
+          : simple === 1
+            ? Math.floor(overall) - 1
+            : Math.floor(overall);
+      let forwards = n.direction === 'normal';
+      if (n.direction === 'alternate' || n.direction === 'alternate-reverse') {
+        const d =
+          n.direction === 'alternate-reverse' ? iteration + 1 : iteration;
+        forwards = d === Infinity || d % 2 === 0;
+      }
+      const directed = forwards ? simple : 1 - simple;
+      const before =
+        (phase === 'before' && forwards) || (phase === 'after' && !forwards);
+      return {
+        local,
+        phase,
+        active,
+        progress: n.ease(directed, before),
+        iteration,
+        boundary,
+      };
+    }
+    /** Its computed timing (Web Animations 1, 6.6), its times percentages
+     *  where its timeline is progress-based (Web Animations 2, 6.6). */
     getComputedTiming(): Any {
       const t = this._timing;
-      const duration = t.duration === 'auto' ? 0 : t.duration;
-      const activeDuration = duration * t.iterations || 0;
-      const endTime = Math.max(t.delay + activeDuration + t.endDelay, 0);
-      const localTime = this._animation?.currentTime ?? null;
-      let progress: number | null = null;
-      let currentIteration: number | null = null;
-      if (localTime !== null) {
-        const active = localTime - t.delay;
-        if (active >= 0 && active <= activeDuration) {
-          const iterations = duration > 0 ? active / duration : t.iterations;
-          currentIteration = Math.min(Math.floor(iterations), t.iterations - 1);
-          progress = duration > 0 ? iterations - currentIteration : 1;
-        }
-      }
+      const n = this._norm();
+      const s = this._state();
+      const time = (v: number | null): Any =>
+        v === null ? null : n.progressBased ? percentOf(v) : v;
+      const activeDuration = repeated(n.duration, n.iterations);
       return {
-        ...this.getTiming(),
-        duration,
-        activeDuration,
-        endTime,
-        localTime,
-        progress,
-        currentIteration,
+        // a top-level effect starts at its animation's 0 (Web Animations
+        // 2, 6.6, `startTime`)
+        startTime: time(0),
+        delay: t.delay,
+        endDelay: t.endDelay,
+        fill: t.fill === 'auto' ? 'none' : t.fill,
+        iterationStart: t.iterationStart,
+        iterations: t.iterations,
+        duration: time(n.duration),
+        direction: t.direction,
+        easing: t.easing,
+        activeDuration: time(activeDuration),
+        endTime: time(Math.max(n.delay + activeDuration + n.endDelay, 0)),
+        localTime: time(s.local),
+        progress: s.progress,
+        currentIteration: s.iteration,
       };
     }
   }
+  /** An iteration's duration repeated, 0 where either is 0 (Web
+   *  Animations 2, 4.6.2), which `0 * Infinity` is not. */
+  const repeated = (duration: number, iterations: number): number =>
+    duration === 0 || iterations === 0 ? 0 : duration * iterations;
+
   class KeyframeEffect extends AnimationEffect {
     _target: Any;
     _pseudo: string | null;
     composite = 'replace';
     iterationComposite = 'replace';
     _frames: Any[];
-    constructor(target: Any, keyframes: Any, options?: Any) {
+    /** Its pseudo-element and frames as the host is told them, made
+     *  again where they change; '' where `<Html>` draws none of it. */
+    _framesJson: string | null = null;
+    constructor(target: Any, keyframes?: Any, options?: Any) {
       super();
       if (target instanceof KeyframeEffect) {
         this._target = target.target;
         this._pseudo = target.pseudoElement;
         this._frames = target._frames.map((f: Any) => ({ ...f }));
-        this._timing = target.getTiming();
+        this._timing = timingOf({}, target._timing);
         return;
       }
       this._target = target ?? null;
@@ -1069,23 +2068,23 @@ export function installDom(
     }
     set target(target: Any) {
       this._target = target ?? null;
-      this._animation?._report();
+      this._animation?._changed();
     }
     get pseudoElement(): string | null {
       return this._pseudo;
     }
     set pseudoElement(pseudo: Any) {
       this._pseudo = pseudo === null ? null : String(pseudo);
-      this._described = null;
-      this._animation?._report();
+      this._framesJson = null;
+      this._animation?._changed();
     }
     getKeyframes(): Any[] {
       return this._frames.map((f) => ({ ...f }));
     }
     setKeyframes(keyframes: Any): void {
       this._frames = keyframesOf(keyframes);
-      this._described = null;
-      this._animation?._report();
+      this._framesJson = null;
+      this._animation?._changed();
     }
     /** The CSS properties its frames set, by their CSS names. */
     _properties(): string[] {
@@ -1102,54 +2101,256 @@ export function installDom(
      * The effect as the host is told it (`readEffect`, `css/scripted.ts`):
      * a JSON string, the one thing of it that crosses — its pseudo-element,
      * its frames, each its computed offset, its easing and its properties'
-     * values by their CSS names, and its timing, a duration of `auto` 0 and
-     * an infinite count null. Null for a pseudo-element that is neither
-     * `::before` nor `::after`, which `<Html>` draws no animation of.
+     * values by their CSS names, and its timing as it runs (`_norm`), a
+     * percentage where its timeline is progress-based, and an infinite
+     * count null. Null for a pseudo-element that is neither `::before` nor
+     * `::after`, which `<Html>` draws no animation of. `fill` is the one
+     * the host is to draw it with, which a timeline's boundary may make
+     * `both` (`EffectState.boundary`).
      */
-    _hostEffect(): string | null {
-      if (this._described !== null) return this._described || null;
-      const p = this._pseudo;
-      const pseudo =
-        p === null
-          ? ''
-          : p === '::before' || p === ':before'
-            ? 'before'
-            : p === '::after' || p === ':after'
-              ? 'after'
-              : null;
-      if (pseudo === null) {
-        this._described = '';
-        return null;
-      }
-      const frames = this._frames.map((frame) => {
-        const props: [string, string][] = [];
-        for (const [name, value] of Object.entries(frame)) {
-          const prop = keyframeProperty(name);
-          if (prop === null || value === null || value === undefined) continue;
-          props.push([prop, String(value)]);
+    _hostEffect(n: Any, fill: string): string | null {
+      if (this._framesJson === null) {
+        const p = this._pseudo;
+        const pseudo =
+          p === null
+            ? ''
+            : p === '::before' || p === ':before'
+              ? 'before'
+              : p === '::after' || p === ':after'
+                ? 'after'
+                : null;
+        if (pseudo === null) this._framesJson = '';
+        else {
+          const frames = this._frames.map((frame) => {
+            const props: [string, string][] = [];
+            for (const [name, value] of Object.entries(frame)) {
+              const prop = keyframeProperty(name);
+              if (prop === null || value === null || value === undefined) {
+                continue;
+              }
+              props.push([prop, String(value)]);
+            }
+            return [frame.computedOffset, String(frame.easing), props];
+          });
+          this._framesJson = `${JSON.stringify(pseudo)},${JSON.stringify(frames)}`;
         }
-        return [frame.computedOffset, String(frame.easing), props];
-      });
-      const t = this._timing;
+      }
+      if (!this._framesJson) return null;
       const timing = [
-        t.delay,
-        t.endDelay,
-        t.fill,
-        t.iterationStart,
-        t.iterations === Infinity ? null : t.iterations,
-        t.duration === 'auto' ? 0 : t.duration,
-        t.direction,
-        t.easing,
+        n.delay,
+        n.endDelay,
+        fill,
+        n.iterationStart,
+        n.iterations === Infinity ? null : n.iterations,
+        n.duration,
+        n.direction,
+        n.easing,
       ];
-      this._described = JSON.stringify([pseudo, frames, timing]);
-      return this._described;
+      return `[${this._framesJson},${JSON.stringify(timing)}]`;
     }
   }
 
-  /** The document's timeline: its time is the page's clock. */
+  // --- timelines ---------------------------------------------------------------
+
+  /** A scroll container's offsets, how far it scrolls and its scrollport,
+   *  and where its content's origin is in the document, in CSS pixels; the
+   *  viewport's for the root. Null for an element that scrolls nothing or
+   *  has no box. */
+  interface ScrollGeometry {
+    x: number;
+    y: number;
+    maxX: number;
+    maxY: number;
+    width: number;
+    height: number;
+    originX: number;
+    originY: number;
+  }
+  const scrollGeometry = (el: Any): ScrollGeometry | null => {
+    if (!el || !el.isConnected) return null;
+    if (el === document.scrollingElement || el === document.documentElement) {
+      const v = viewport();
+      const width = el.scrollWidth;
+      const height = el.scrollHeight;
+      return {
+        x: v.scrollX,
+        y: v.scrollY,
+        maxX: Math.max(0, width - v.width),
+        maxY: Math.max(0, height - v.height),
+        width: v.width,
+        height: v.height,
+        originX: 0,
+        originY: 0,
+      };
+    }
+    const s = scrollStateOf(el);
+    const r = s && docRect(el);
+    if (!s || !r) return null;
+    const [
+      x,
+      y,
+      width,
+      height,
+      clientWidth,
+      clientHeight,
+      clientTop,
+      clientLeft,
+    ] = s;
+    return {
+      x,
+      y,
+      maxX: Math.max(0, width - clientWidth),
+      maxY: Math.max(0, height - clientHeight),
+      width: clientWidth,
+      height: clientHeight,
+      originX: r[0] + clientLeft - x,
+      originY: r[1] + clientTop - y,
+    };
+  };
+
+  const RANGE_NAMES = [
+    'cover',
+    'contain',
+    'entry',
+    'exit',
+    'entry-crossing',
+    'exit-crossing',
+    'scroll',
+  ];
+  /** An attachment range's end: `normal`, or a named range — or the whole
+   *  timeline where it names none — and an offset into it. */
+  type RangeEdge = 'normal' | { name: string | null; offset: Any };
+  /** A range's offset, which only percentages and absolute lengths can be
+   *  from script (Scroll Animations 1, 5.4): a font's size or a viewport's
+   *  is a TypeError. */
+  const rangeOffset = (v: Any): Any => {
+    if (!(v instanceof CSSNumericValue)) {
+      throw new TypeError("The offset is not a 'CSSNumericValue'.");
+    }
+    // an absolute length is kept in pixels, as a range reads it back
+    if (
+      v instanceof CSSUnitValue &&
+      v.unit !== 'percent' &&
+      v.unit !== 'px' &&
+      UNITS[v.unit][0] === 'length' &&
+      UNITS[v.unit][1] !== null
+    ) {
+      return v.to('px');
+    }
+    const ok = (x: Any): boolean =>
+      x instanceof CSSUnitValue
+        ? x.unit === 'percent' ||
+          (UNITS[x.unit][0] === 'length' && UNITS[x.unit][1] !== null)
+        : x instanceof CSSMathSum
+          ? x.values._items.every(ok)
+          : x instanceof CSSMathNegate
+            ? ok(x.value)
+            : false;
+    if (!ok(v)) {
+      throw new TypeError(
+        'A timeline range offset must be a percentage or an absolute length.',
+      );
+    }
+    return v;
+  };
+  /** What a page sets `rangeStart` or `rangeEnd` to, or hands `animate()`
+   *  as one: a string, a `TimelineRangeOffset` or a `CSSNumericValue`. */
+  const rangeEdgeOf = (given: Any, end: boolean): RangeEdge => {
+    const fallback = percentOf(end ? 100 : 0);
+    if (given instanceof CSSNumericValue) {
+      return { name: null, offset: rangeOffset(given) };
+    }
+    if (given && typeof given === 'object') {
+      const name =
+        given.rangeName === undefined || given.rangeName === null
+          ? null
+          : String(given.rangeName);
+      if (name !== null && name !== 'none' && !RANGE_NAMES.includes(name)) {
+        throw new TypeError(`'${name}' is not a timeline range name.`);
+      }
+      return {
+        name: name === 'none' ? null : name,
+        offset:
+          given.offset === undefined ? fallback : rangeOffset(given.offset),
+      };
+    }
+    const text = String(given).trim();
+    if (text === 'normal') return 'normal';
+    const m = /^([a-z-]+)(?:\s+([\s\S]*))?$/i.exec(text);
+    const name = m && RANGE_NAMES.includes(m[1].toLowerCase()) ? m[1] : null;
+    const rest = name ? (m![2] ?? '').trim() : text;
+    let offset = fallback;
+    if (rest) {
+      try {
+        offset = CSSNumericValue.parse(rest);
+      } catch {
+        throw new TypeError(`'${text}' is not a timeline range.`);
+      }
+      offset = rangeOffset(offset);
+    }
+    return { name: name ? name.toLowerCase() : null, offset };
+  };
+  /** An offset in pixels, its percentages of `basis`. */
+  const offsetPx = (v: Any, basis: number): number => {
+    if (v instanceof CSSUnitValue) {
+      return v.unit === 'percent' ? (v.value / 100) * basis : v.to('px').value;
+    }
+    if (v instanceof CSSMathSum) {
+      return v.values._items.reduce(
+        (sum: number, x: Any) => sum + offsetPx(x, basis),
+        0,
+      );
+    }
+    if (v instanceof CSSMathNegate) return -offsetPx(v.value, basis);
+    return 0;
+  };
+
+  /** Which task the page is in: each call the host makes into it is one
+   *  (`entry`), and the microtasks it queued run inside it. */
+  let taskEpoch = 0;
+  let taskTime = 0;
+  let taskTimeEpoch = -1;
+  /** The clock as the document's timeline reads it: once a task, as a
+   *  browser updates it once a frame, so a page that reads it twice in a
+   *  task reads one time — WPT's `waitForNextFrame` asks for frames until
+   *  it moves. */
+  const taskNow = (): number => {
+    if (taskTimeEpoch !== taskEpoch) {
+      taskTime = now();
+      taskTimeEpoch = taskEpoch;
+    }
+    return taskTime;
+  };
+
+  /** A timeline (Web Animations 1, 4.1): its time, which the document's is
+   *  the page's clock and a scroll timeline's a proportion of a scroll. */
   class AnimationTimeline {
-    get currentTime(): number | null {
-      return now();
+    _monotonic = true;
+    constructor() {
+      if (new.target === AnimationTimeline) {
+        throw new TypeError(
+          "Failed to construct 'AnimationTimeline': Illegal constructor",
+        );
+      }
+    }
+    get currentTime(): Any {
+      return this._time();
+    }
+    get duration(): Any {
+      return null;
+    }
+    /** Its time as the model computes with it, null while inactive. */
+    _time(): number | null {
+      return taskNow();
+    }
+    /** Where an attachment range's end is, in its time. */
+    _rangeAt(_edge: RangeEdge, end: boolean): number {
+      return end ? 100 : 0;
+    }
+    /** Whether its time is the least or the most it can be (Web
+     *  Animations 2, "at timeline boundary"): a scroll at either end. */
+    _atEdge(): boolean {
+      return false;
     }
   }
   class DocumentTimeline extends AnimationTimeline {
@@ -1158,31 +2359,354 @@ export function installDom(
       super();
       this._origin = Number(options?.originTime ?? 0);
     }
-    override get currentTime(): number | null {
-      return now() - this._origin;
+    override _time(): number | null {
+      return taskNow() - this._origin;
     }
   }
   const documentTimeline = new DocumentTimeline();
 
-  /** The animations a page has made that are running or paused, or that
-   *  finished and fill forwards: what `getAnimations` lists. */
-  const liveAnimations = new Set<Any>();
+  const SCROLL_AXES = ['block', 'inline', 'x', 'y'];
+  /**
+   * A scroll progress timeline (Scroll Animations 1, 2.3): its time is how
+   * far its source is scrolled along its axis, a percentage, and it is
+   * inactive where the source scrolls nothing that way. Read as it is
+   * asked, so a page that scrolls and then asks has the new time.
+   */
+  class ScrollTimeline extends AnimationTimeline {
+    _source: Any;
+    _axis: string;
+    constructor(options: Any = {}) {
+      super();
+      this._monotonic = false;
+      const o = options ?? {};
+      const axis = o.axis === undefined ? 'block' : String(o.axis);
+      if (!SCROLL_AXES.includes(axis)) {
+        throw new TypeError(
+          `Failed to construct 'ScrollTimeline': The provided value '${axis}' is not a valid enum value of type ScrollAxis.`,
+        );
+      }
+      this._axis = axis;
+      if (o.source !== undefined && o.source !== null) {
+        if (!(o.source instanceof Element)) {
+          throw new TypeError(
+            "Failed to construct 'ScrollTimeline': Failed to read the 'source' property from 'ScrollTimelineOptions': Failed to convert value to 'Element'.",
+          );
+        }
+      }
+      this._source =
+        o.source === undefined ? document.scrollingElement : o.source;
+    }
+    get source(): Any {
+      return this._source;
+    }
+    get axis(): string {
+      return this._axis;
+    }
+    override get currentTime(): Any {
+      const t = this._time();
+      return t === null ? null : percentOf(t);
+    }
+    override get duration(): Any {
+      return percentOf(100);
+    }
+    /** Whether its axis is the vertical one. */
+    _vertical(): boolean {
+      return this._axis === 'y' || this._axis === 'block';
+    }
+    override _time(): number | null {
+      const g = scrollGeometry(this.source);
+      if (!g) return null;
+      const max = this._vertical() ? g.maxY : g.maxX;
+      if (!(max > 0)) return null;
+      const at = Math.abs(this._vertical() ? g.y : g.x);
+      return (at / max) * 100;
+    }
+    override _atEdge(): boolean {
+      const g = scrollGeometry(this.source);
+      if (!g) return false;
+      const at = Math.abs(this._vertical() ? g.y : g.x);
+      const max = this._vertical() ? g.maxY : g.maxX;
+      return at <= 0 || at >= max;
+    }
+    override _rangeAt(edge: RangeEdge, end: boolean): number {
+      if (edge === 'normal') return end ? 100 : 0;
+      const g = scrollGeometry(this.source);
+      const max = g ? (this._vertical() ? g.maxY : g.maxX) : 0;
+      if (!(max > 0)) return end ? 100 : 0;
+      return (offsetPx(edge.offset, max) / max) * 100;
+    }
+  }
 
   /**
-   * An animation a page started (`animate`, `new Animation`): when it
-   * started, how fast it runs, its promises and its events. It runs for as
-   * long as its timing says and then finishes, as one does in a browser:
-   * `finished` resolves and `finish` is told, so a page that hides a panel
-   * once it has faded, or waits for the fade to go on, goes on. One that
-   * never finished kept every panel a menu had faded out on screen.
+   * A view progress timeline (Scroll Animations 1, 3.3): how far its
+   * subject has crossed the scrollport of the scroll container nearest
+   * it, from the scroll at which its start edge meets the scrollport's
+   * end, 0%, to the one at which its end edge meets the start, 100% — the
+   * `cover` range — the scrollport less its insets.
+   */
+  class ViewTimeline extends ScrollTimeline {
+    _subject: Any;
+    _inset: [Any, Any];
+    constructor(options: Any) {
+      if (!options || typeof options !== 'object') {
+        throw new TypeError(
+          "Failed to construct 'ViewTimeline': 1 argument required.",
+        );
+      }
+      if (!(options.subject instanceof Element)) {
+        throw new TypeError(
+          "Failed to construct 'ViewTimeline': Failed to read the 'subject' property from 'ViewTimelineOptions': Required member is undefined.",
+        );
+      }
+      super({ source: null, axis: options.axis });
+      this._subject = options.subject;
+      this._inset = insetOf(options.inset);
+    }
+    get subject(): Any {
+      return this._subject;
+    }
+    /** The nearest scroll container around the subject, or the viewport's
+     *  scrolling element. */
+    override get source(): Any {
+      let el = this._subject?.parentElement ?? null;
+      while (el) {
+        if (el === document.documentElement) return document.scrollingElement;
+        if (scrollStateOf(el)) return el;
+        el = el.parentElement;
+      }
+      return this._subject?.isConnected ? document.scrollingElement : null;
+    }
+    get startOffset(): Any {
+      const v = this._view();
+      return unitFactories.px(v ? v.cover[0] : 0);
+    }
+    get endOffset(): Any {
+      const v = this._view();
+      return unitFactories.px(v ? v.cover[1] : 0);
+    }
+    /** The scroll offsets of each of its named ranges, and where the
+     *  source is scrolled to. */
+    _view(): {
+      at: number;
+      max: number;
+      cover: [number, number];
+      ranges: (name: string) => [number, number];
+    } | null {
+      const source = this.source;
+      const g = scrollGeometry(source);
+      const r = docRect(this._subject);
+      if (!g || !r) return null;
+      const vertical = this._vertical();
+      const port = vertical ? g.height : g.width;
+      const start = (vertical ? r[1] - g.originY : r[0] - g.originX) + 0;
+      const size = vertical ? r[3] : r[2];
+      const insetStart = offsetPx(this._inset[0], port);
+      const insetEnd = offsetPx(this._inset[1], port);
+      const viewStart = insetStart;
+      const viewEnd = port - insetEnd;
+      const s0 = start;
+      const s1 = start + size;
+      const cover: [number, number] = [s0 - viewEnd, s1 - viewStart];
+      const a = s1 - viewEnd;
+      const b = s0 - viewStart;
+      const contain: [number, number] = [Math.min(a, b), Math.max(a, b)];
+      const max = vertical ? g.maxY : g.maxX;
+      return {
+        at: Math.abs(vertical ? g.y : g.x),
+        max,
+        cover,
+        ranges: (name) =>
+          name === 'contain'
+            ? contain
+            : name === 'entry'
+              ? [cover[0], contain[0]]
+              : name === 'exit'
+                ? [contain[1], cover[1]]
+                : name === 'entry-crossing'
+                  ? [s0 - viewEnd, s1 - viewEnd]
+                  : name === 'exit-crossing'
+                    ? [s0 - viewStart, s1 - viewStart]
+                    : name === 'scroll'
+                      ? [0, max]
+                      : cover,
+      };
+    }
+    override _time(): number | null {
+      const v = this._view();
+      if (!v || !(v.max > 0)) return null;
+      const [from, to] = v.cover;
+      if (!(to - from > 0)) return null;
+      return ((v.at - from) / (to - from)) * 100;
+    }
+    override _rangeAt(edge: RangeEdge, end: boolean): number {
+      if (edge === 'normal') return end ? 100 : 0;
+      const v = this._view();
+      if (!v) return end ? 100 : 0;
+      const [from, to] = v.cover;
+      if (!(to - from > 0)) return end ? 100 : 0;
+      const [a, b] = v.ranges(edge.name ?? 'cover');
+      const at = a + offsetPx(edge.offset, b - a);
+      return ((at - from) / (to - from)) * 100;
+    }
+  }
+  /** A view timeline's insets, from a string of one or two
+   *  `<length-percentage>` or `auto`, or a list of one or two values
+   *  (Scroll Animations 1, 3.3). `auto` is the scroll container's
+   *  `scroll-padding`, which is 0 here. */
+  const insetOf = (given: Any): [Any, Any] => {
+    const zero = percentOf(0);
+    const one = (v: Any): Any => {
+      if (v instanceof CSSKeywordValue) {
+        if (v.value !== 'auto') {
+          throw new TypeError(`'${v.value}' is not a valid inset.`);
+        }
+        return zero;
+      }
+      if (v instanceof CSSNumericValue) return rangeOffset(v);
+      const text = String(v).trim();
+      if (text === 'auto') return zero;
+      try {
+        return rangeOffset(CSSNumericValue.parse(text));
+      } catch {
+        throw new TypeError(`'${text}' is not a valid inset.`);
+      }
+    };
+    if (given === undefined) return [zero, zero];
+    let parts: Any[];
+    if (typeof given === 'string') {
+      parts = given.trim().split(/\s+(?![^(]*\))/);
+    } else if (given && typeof given[Symbol.iterator] === 'function') {
+      parts = [...given];
+    } else parts = [given];
+    if (!parts.length || parts.length > 2) {
+      throw new TypeError('An inset is one or two values.');
+    }
+    const values = parts.map(one);
+    return [values[0], values[1] ?? values[0]];
+  };
+
+  // --- the frame -----------------------------------------------------------------
+  //
+  // HTML's "update the rendering", as far as script sees it: the animations
+  // on a scroll-driven timeline brought up to date — their times, their
+  // auto-aligned start times, their pending tasks, their finished state —
+  // then the page's animation frame callbacks, at one time. A frame comes
+  // every 16 ms while a callback waits or a scroll-driven animation is
+  // under way, and every 100 ms once none of those has moved for half a
+  // second.
+
+  const frameCallbacks = new Map<number, Any>();
+  let frameSeq = 0;
+  let frameTimer = 0;
+  let quietFrames = 0;
+  /** Animations whose timeline is a scroll's, which a frame updates. */
+  const scrollLinked = new Set<Any>();
+  const wantFrame = (): void => {
+    if (!frameTimer) frameTimer = setTimer(runFrame, 16, [], false);
+  };
+  /** A scroll happened: the next frame comes soon. */
+  const nudgeFrames = (): void => {
+    quietFrames = 0;
+    if (scrollLinked.size) wantFrame();
+  };
+  const runFrame = (): void => {
+    frameTimer = 0;
+    const time = taskNow();
+    let moved = false;
+    for (const animation of [...scrollLinked]) {
+      if (animation._frame()) moved = true;
+    }
+    quietFrames = moved ? 0 : quietFrames + 1;
+    // the callbacks in a task of their own, after this one's microtasks —
+    // a finished promise, a ready one — and the events it queued: "update
+    // animations and send events" checkpoints before them (Web Animations
+    // 1, 4.4.19), and microtasks run here only as a task ends
+    const callbacks = [...frameCallbacks.values()];
+    frameCallbacks.clear();
+    if (callbacks.length) {
+      // queued from a microtask, after the finish notifications the
+      // update queued, so the events they tell come first
+      frameTimer = -1;
+      Promise.resolve().then(() => {
+        frameTimer = setTimer(
+          () => {
+            frameTimer = 0;
+            // the frame's time, as the timeline read it
+            taskTime = time;
+            taskTimeEpoch = taskEpoch;
+            for (const fn of callbacks) {
+              try {
+                fn(time);
+              } catch (error) {
+                report(error);
+              }
+            }
+            nextFrame();
+          },
+          0,
+          [],
+          false,
+        );
+      });
+      return;
+    }
+    nextFrame();
+  };
+  /** The next frame, where something waits for one. */
+  const nextFrame = (): void => {
+    if (frameTimer) return;
+    if (frameCallbacks.size) wantFrame();
+    else if (scrollLinked.size) {
+      frameTimer = setTimer(runFrame, quietFrames > 30 ? 100 : 16, [], false);
+    }
+  };
+  const requestFrame = (fn: Any): number => {
+    if (typeof fn !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'requestAnimationFrame' on 'Window': The callback provided as parameter 1 is not a function.",
+      );
+    }
+    const id = ++frameSeq;
+    frameCallbacks.set(id, fn);
+    wantFrame();
+    return id;
+  };
+  const cancelFrame = (id: Any): void => {
+    frameCallbacks.delete(Number(id));
+  };
+
+  /** The animations a page has made that are not idle: what
+   *  `getAnimations` lists, those that are relevant (Web Animations 1,
+   *  5.4.4). */
+  const liveAnimations = new Set<Any>();
+
+  /** A promise with its settling kept beside it. */
+  const settleable = (): Any => {
+    let settle: Any = null;
+    const promise = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    // a rejected one is handled (Web Animations 1, 4.4.15): no page has to
+    // listen for it
+    promise.catch(() => {});
+    return { promise, settle };
+  };
+
+  /**
+   * An animation a page started (`animate`, `new Animation`), as Web
+   * Animations 1 and 2 model one: a start time and a hold time, a
+   * playback rate and a pending one, its pending play and pause tasks and
+   * its ready and finished promises, each changed by the spec's
+   * procedures, step by step. Its times are milliseconds on the document's
+   * timeline and percentages on a scroll-driven one, where its start time
+   * is aligned to its attachment range as the timeline moves.
    *
    * What it animates is `<Html>`'s to draw, and the host is told, as
    * primitives, whenever its effect or where its time is changes
    * (`_report`, the `animation` op): `<Html>` samples its frames on its own
    * clock from where it was told the time was, as it samples a CSS
-   * animation, so what is drawn is where the timing here says it is, and a
-   * finished one is held where it finished, its fill saying what it
-   * leaves.
+   * animation, so what is drawn is where the timing here says it is. A
+   * scroll-driven one is told held at its time, at every frame it moves.
    */
   class Animation extends EventTarget {
     id = '';
@@ -1194,170 +2718,555 @@ export function installDom(
     _toldTo: Any = null;
     _told = '';
     _effect: Any = null;
-    _timeline: Any;
-    /** The timeline's time it started at, where it is running. */
+    _timeline: Any = null;
     _start: number | null = null;
-    /** Its own time where it is paused, or finished, or has not started. */
-    _held: number | null = null;
+    _hold: number | null = null;
     _rate = 1;
-    _paused = false;
+    _pendingRate: number | null = null;
+    _pendingPlay = false;
+    _pendingPause = false;
+    _ready: Any;
+    _readySettle: Any = null;
+    _finished: Any;
+    _finishedSettle: Any = null;
+    _finishedDone = false;
+    _previous: number | null = null;
+    _autoAlign = false;
+    _rangeStart: RangeEdge = 'normal';
+    _rangeEnd: RangeEdge = 'normal';
     _timer = 0;
-    _finishedPromise: Any;
-    _settle: Any = null;
-    _done = false;
-    constructor(effect: Any = null, timeline: Any = documentTimeline) {
+    _notifyQueued = false;
+    _notifyToken = 0;
+    constructor(effect: Any = null, timeline?: Any) {
       super();
-      this._timeline = timeline;
-      this.effect = effect;
+      const tl = timeline === undefined ? documentTimeline : timeline;
+      if (tl !== null && !(tl instanceof AnimationTimeline)) {
+        throw new TypeError(
+          "Failed to construct 'Animation': parameter 2 is not of type 'AnimationTimeline'.",
+        );
+      }
+      this._timeline = tl;
+      this._ready = Promise.resolve(this);
       this._newFinished();
+      this.effect = effect;
     }
+
+    // -- the model's own values
+
+    /** The timeline's time, null where there is none or it is inactive. */
+    _tlTime(): number | null {
+      return this._timeline ? this._timeline._time() : null;
+    }
+    /** Whether its timeline is not monotonically increasing. */
+    _finite(): boolean {
+      return !!this._timeline && !this._timeline._monotonic;
+    }
+    _effRate(): number {
+      return this._pendingRate ?? this._rate;
+    }
+    _effectEnd(): number {
+      return this._effect ? this._effect._end() : 0;
+    }
+    /** Its current time (Web Animations 1, 4.4.4). */
+    _cur(): number | null {
+      if (this._hold !== null) return this._hold;
+      const t = this._tlTime();
+      if (t === null || this._start === null) return null;
+      return (t - this._start) * this._rate;
+    }
+    _applyPendingRate(): void {
+      if (this._pendingRate === null) return;
+      this._rate = this._pendingRate;
+      this._pendingRate = null;
+    }
+    /** Its attachment range, in its timeline's time. */
+    _range(): [number, number] {
+      const tl = this._timeline;
+      if (!tl || tl._monotonic) return [0, 0];
+      return [
+        tl._rangeAt(this._rangeStart, false),
+        tl._rangeAt(this._rangeEnd, true),
+      ];
+    }
+    /** The span its timing is normalized to on a progress-based timeline,
+     *  its attachment range's; null on a monotonic one. */
+    _span(): number | null {
+      if (!this._finite()) return null;
+      const [from, to] = this._range();
+      return Math.max(to - from, 0);
+    }
+    /** Whether its timeline's time is at either end of the timeline (Web
+     *  Animations 2, "at timeline boundary"). */
+    _atBoundary(): boolean {
+      if (!this._finite() || !this._timeline._atEdge()) return false;
+      // and its time is the timeline's, not one held where it finished
+      const t = this._tlTime();
+      const cur = this._cur();
+      if (t === null || cur === null || this._start === null) return false;
+      return Math.abs((t - this._start) * this._rate - cur) < 1e-9;
+    }
+    /** A time as the page reads it: a percentage on a progress-based
+     *  timeline. */
+    _out(v: number | null): Any {
+      return v === null ? null : this._finite() ? percentOf(v) : v;
+    }
+    /** A time a page sets, as the model computes with it (Web Animations
+     *  2, 4.4.4, "validate a CSSNumberish time"). */
+    _in(v: Any, what: string): number | null {
+      if (v === null) return null;
+      const fail = (why: string): never => {
+        throw new TypeError(
+          `Failed to set the '${what}' property on 'Animation': ${why}`,
+        );
+      };
+      if (this._finite()) {
+        if (!(v instanceof CSSNumericValue)) {
+          return fail(
+            'CSSNumericValue must be a percentage for progress based animations.',
+          );
+        }
+        let pct: Any;
+        try {
+          pct = v.to('percent');
+        } catch {
+          return fail(
+            'CSSNumericValue must be a percentage for progress based animations.',
+          );
+        }
+        return pct.value;
+      }
+      if (v instanceof CSSNumericValue) {
+        let ms: Any;
+        try {
+          ms = v.to('ms');
+        } catch {
+          return fail(
+            'CSSNumericValue must be either a number or a time value for time based animations.',
+          );
+        }
+        return ms.value;
+      }
+      const n = Number(v);
+      if (!Number.isFinite(n))
+        return fail('The provided double value is non-finite.');
+      return n;
+    }
+
+    // -- attributes
+
     get effect(): Any {
       return this._effect;
     }
-    set effect(effect: Any) {
+    /** Web Animations 1, 4.4.3, "set the associated effect". */
+    set effect(v: Any) {
+      const effect = v ?? null;
+      if (effect !== null && !(effect instanceof AnimationEffect)) {
+        throw new TypeError(
+          "Failed to set the 'effect' property on 'Animation': The provided value is not of type 'AnimationEffect'.",
+        );
+      }
+      if (effect === this._effect) return;
+      if (effect?._animation && effect._animation !== this) {
+        effect._animation.effect = null;
+      }
       if (this._effect) this._effect._animation = null;
-      this._effect = effect ?? null;
+      this._effect = effect;
       if (effect) effect._animation = this;
-      this._schedule();
+      this._updateFinished(false, false);
+      this._changed();
     }
     get timeline(): Any {
       return this._timeline;
     }
-    get startTime(): number | null {
-      return this._start;
-    }
-    set startTime(v: Any) {
-      if (v === null) {
-        this._held = this.currentTime;
-        this._start = null;
-      } else {
-        this._start = Number(v);
-        this._held = null;
-        this._paused = false;
-      }
-      this._schedule();
-    }
-    get currentTime(): number | null {
-      if (this._held !== null) return this._held;
-      if (this._start === null) return null;
-      return (this._timeline.currentTime - this._start) * this._rate;
-    }
-    set currentTime(v: Any) {
-      if (v === null) {
+    /** Web Animations 2, 4.4.1, "set the timeline of an animation". */
+    set timeline(v: Any) {
+      const tl = v ?? null;
+      if (tl !== null && !(tl instanceof AnimationTimeline)) {
         throw new TypeError(
-          "Failed to set the 'currentTime' property on 'Animation': currentTime may not be changed from resolved to unresolved",
+          "Failed to set the 'timeline' property on 'Animation': The provided value is not of type 'AnimationTimeline'.",
         );
       }
-      const time = Number(v);
-      if (this._paused || this._start === null) this._held = time;
-      else this._start = this._timeline.currentTime - time / (this._rate || 1);
-      this._done = false;
-      this._schedule();
+      const old = this._timeline;
+      if (tl === old) return;
+      const previousState = this.playState;
+      const previous = this._cur();
+      const endBefore = this._effectEnd();
+      const progress =
+        previous === null ? null : endBefore === 0 ? 0 : previous / endBefore;
+      const fromFinite = old !== null && !old._monotonic;
+      const toFinite = tl !== null && !tl._monotonic;
+      this._timeline = tl;
+      if (toFinite) {
+        this._applyPendingRate();
+        this._autoAlign = true;
+        this._start = null;
+        this._hold = null;
+        if (previousState === 'finished' || previousState === 'running') {
+          if (!this._pendingPlay && !this._pendingPause) this._newReady();
+          this._pendingPlay = true;
+          this._schedulePending();
+        }
+        if (previousState === 'paused' && progress !== null) {
+          this._hold = progress * this._effectEnd();
+        }
+      } else if (fromFinite && progress !== null) {
+        this._setCurrent(progress * this._effectEnd());
+      }
+      if (this._start !== null) this._hold = null;
+      this._updateFinished(false, false);
+      this._changed();
+    }
+    get startTime(): Any {
+      return this._out(this._start);
+    }
+    /** Web Animations 2, 4.4.6, "set the start time". */
+    set startTime(v: Any) {
+      const start = this._in(v, 'startTime');
+      this._autoAlign = false;
+      const t = this._tlTime();
+      if (t === null && start !== null) this._hold = null;
+      const previous = this._cur();
+      this._applyPendingRate();
+      this._start = start;
+      if (start !== null) {
+        if (this._rate !== 0) this._hold = null;
+      } else this._hold = previous;
+      if (this._pendingPlay || this._pendingPause) {
+        this._pendingPlay = false;
+        this._pendingPause = false;
+        this._resolveReady();
+      }
+      this._updateFinished(true, false);
+      this._changed();
+    }
+    get currentTime(): Any {
+      return this._out(this._cur());
+    }
+    set currentTime(v: Any) {
+      this._setCurrent(this._in(v, 'currentTime'));
+      this._changed();
+    }
+    /** Web Animations 2, 4.4.5, "silently set the current time": whether
+     *  it set one. */
+    _silentlySet(seek: number | null): boolean {
+      if (seek === null) {
+        if (this._cur() !== null) {
+          throw new TypeError(
+            "Failed to set the 'currentTime' property on 'Animation': currentTime may not be changed from resolved to unresolved",
+          );
+        }
+        return false;
+      }
+      this._autoAlign = false;
+      const t = this._tlTime();
+      if (
+        this._hold !== null ||
+        this._start === null ||
+        t === null ||
+        this._rate === 0
+      ) {
+        this._hold = seek;
+      } else this._start = t - seek / this._rate;
+      if (t === null) this._start = null;
+      this._previous = null;
+      return true;
+    }
+    /** "Set the current time". */
+    _setCurrent(seek: number | null): void {
+      if (!this._silentlySet(seek)) return;
+      if (this._pendingPause) {
+        this._hold = seek;
+        this._applyPendingRate();
+        this._start = null;
+        this._pendingPause = false;
+        this._resolveReady();
+      }
+      this._updateFinished(true, false);
     }
     get playbackRate(): number {
       return this._rate;
     }
+    /** Web Animations 1, 4.4.15.1, "set the playback rate". */
     set playbackRate(v: Any) {
-      const time = this.currentTime;
-      this._rate = Number(v);
-      if (time !== null) this.currentTime = time;
+      const rate = Number(v);
+      if (!Number.isFinite(rate)) {
+        throw new TypeError(
+          "Failed to set the 'playbackRate' property on 'Animation': The provided double value is non-finite.",
+        );
+      }
+      this._pendingRate = null;
+      const previous = this._cur();
+      const previousRate = this._rate;
+      this._rate = rate;
+      const tl = this._timeline;
+      if (tl && tl._monotonic && previous !== null) {
+        this._setCurrent(previous);
+      } else if (
+        tl &&
+        !tl._monotonic &&
+        this._start !== null &&
+        this._effectEnd() !== Infinity &&
+        previousRate < 0 !== rate < 0
+      ) {
+        this._start = this._effectEnd() - this._start;
+        this._updateFinished(true, false);
+      } else this._updateFinished(true, false);
+      this._changed();
     }
+    /** "Seamlessly update the playback rate" (4.4.15.2). */
     updatePlaybackRate(v: Any): void {
-      this.playbackRate = v;
+      const rate = Number(v);
+      if (!Number.isFinite(rate)) {
+        throw new TypeError(
+          "Failed to execute 'updatePlaybackRate' on 'Animation': The provided double value is non-finite.",
+        );
+      }
+      const previousState = this.playState;
+      this._pendingRate = rate;
+      if (this._pendingPlay || this._pendingPause) {
+        this._changed();
+        return;
+      }
+      if (
+        previousState === 'idle' ||
+        previousState === 'paused' ||
+        this._cur() === null
+      ) {
+        this._applyPendingRate();
+      } else if (previousState === 'finished') {
+        const t = this._tlTime();
+        const unconstrained =
+          t === null || this._start === null
+            ? null
+            : (t - this._start) * this._rate;
+        if (t !== null && unconstrained !== null) {
+          this._start = rate === 0 ? t : t - unconstrained / rate;
+        }
+        this._applyPendingRate();
+        this._updateFinished(false, false);
+      } else {
+        this._play(false);
+      }
+      this._changed();
     }
     get pending(): boolean {
-      return false;
+      return this._pendingPlay || this._pendingPause;
     }
     get ready(): Any {
-      return Promise.resolve(this);
+      return this._ready;
     }
     get finished(): Any {
-      return this._finishedPromise;
+      return this._finished;
     }
+    /** Web Animations 1, 4.4.17. */
     get playState(): string {
-      const time = this.currentTime;
-      if (time === null && !this._paused) return 'idle';
-      if (this._paused) return 'paused';
-      if (this._ended(time!)) return 'finished';
+      const cur = this._cur();
+      if (
+        cur === null &&
+        this._start === null &&
+        !this._pendingPlay &&
+        !this._pendingPause
+      ) {
+        return 'idle';
+      }
+      if (this._pendingPause || (this._start === null && !this._pendingPlay)) {
+        return 'paused';
+      }
+      const rate = this._effRate();
+      if (
+        cur !== null &&
+        ((rate > 0 && cur >= this._effectEnd()) || (rate < 0 && cur <= 0))
+      ) {
+        return 'finished';
+      }
       return 'running';
     }
-    /** Where its effect ends, in its own time. */
-    _end(): number {
-      return this._effect ? this._effect.getComputedTiming().endTime : 0;
+    get overallProgress(): number | null {
+      const cur = this._cur();
+      if (!this._effect || cur === null) return null;
+      const end = this._effectEnd();
+      if (end === 0) return cur < 0 ? 0 : 1;
+      if (end === Infinity) return 0;
+      return Math.min(Math.max(cur / end, 0), 1);
     }
-    _ended(time: number): boolean {
-      return this._rate > 0
-        ? time >= this._end()
-        : this._rate < 0
-          ? time <= 0
-          : false;
+    get rangeStart(): Any {
+      return rangeOut(this._rangeStart);
     }
+    set rangeStart(v: Any) {
+      this._rangeStart = rangeEdgeOf(v, false);
+      this._effectChanged();
+    }
+    get rangeEnd(): Any {
+      return rangeOut(this._rangeEnd);
+    }
+    set rangeEnd(v: Any) {
+      this._rangeEnd = rangeEdgeOf(v, true);
+      this._effectChanged();
+    }
+
+    // -- the procedures
+
     play(): void {
-      const time = this.currentTime;
-      const end = this._end();
-      let from = time;
-      if (this._rate > 0 && (time === null || time < 0 || time >= end)) {
-        from = 0;
-      } else if (this._rate < 0 && (time === null || time <= 0 || time > end)) {
+      this._play(true);
+      this._changed();
+    }
+    /** Web Animations 2, 4.4.7, "play an animation". */
+    _play(autoRewind: boolean): void {
+      const abortedPause = this._pendingPause;
+      let hasPendingReady = false;
+      const finite = this._finite();
+      const previous = this._cur();
+      const seek = autoRewind && !finite;
+      const rate = this._effRate();
+      const end = this._effectEnd();
+      if (
+        rate > 0 &&
+        seek &&
+        (previous === null || previous < 0 || previous >= end)
+      ) {
+        this._hold = 0;
+      } else if (
+        rate < 0 &&
+        seek &&
+        (previous === null || previous <= 0 || previous > end)
+      ) {
         if (end === Infinity) {
           throw new DOMException(
             "Failed to execute 'play' on 'Animation': Cannot play reversed Animation with infinite target effect end.",
             'InvalidStateError',
           );
         }
-        from = end;
-      } else if (time === null) from = 0;
-      if (this._settle === null) this._newFinished();
-      this._paused = false;
-      this._held = null;
-      this._done = false;
-      this._start =
-        this._timeline.currentTime - (from ?? 0) / (this._rate || 1);
-      this._schedule();
+        this._hold = end;
+      } else if (rate === 0 && previous === null) {
+        this._hold = 0;
+      }
+      if (finite && autoRewind) {
+        this._autoAlign = true;
+        this._hold = previous;
+      }
+      if (this._hold !== null) this._start = null;
+      if (this._pendingPlay || this._pendingPause) {
+        this._pendingPlay = false;
+        this._pendingPause = false;
+        hasPendingReady = true;
+      }
+      // an animation whose start time the timeline aligns waits for that
+      // as a pending play task too, where its hold time is unresolved
+      if (
+        this._hold === null &&
+        !abortedPause &&
+        this._pendingRate === null &&
+        !(finite && autoRewind)
+      ) {
+        return;
+      }
+      if (!hasPendingReady) this._newReady();
+      this._pendingPlay = true;
+      this._schedulePending();
+      this._updateFinished(false, false);
     }
+    /** Web Animations 2, 4.4.8, "pause an animation". */
     pause(): void {
-      if (this._paused) return;
-      const time = this.currentTime ?? (this._rate < 0 ? this._end() : 0);
-      this._held = time;
-      this._start = null;
-      this._paused = true;
-      this._schedule();
+      if (this._pendingPause || this.playState === 'paused') return;
+      const finite = this._finite();
+      if (this._cur() === null && !finite) {
+        if (this._rate >= 0) this._hold = 0;
+        else {
+          const end = this._effectEnd();
+          if (end === Infinity) {
+            throw new DOMException(
+              "Failed to execute 'pause' on 'Animation': Cannot pause, Animation has infinite target effect end.",
+              'InvalidStateError',
+            );
+          }
+          this._hold = end;
+        }
+      }
+      if (finite && this._cur() === null) this._autoAlign = true;
+      let hasPendingReady = false;
+      if (this._pendingPlay) {
+        this._pendingPlay = false;
+        hasPendingReady = true;
+      }
+      if (!hasPendingReady) this._newReady();
+      this._pendingPause = true;
+      this._schedulePending();
+      this._updateFinished(false, false);
+      this._changed();
     }
+    /** Web Animations 1, 4.4.14, "reverse an animation". */
     reverse(): void {
-      this._rate = -this._rate;
-      this.play();
+      if (this._tlTime() === null) {
+        throw new DOMException(
+          "Failed to execute 'reverse' on 'Animation': Cannot reverse an animation with no active timeline.",
+          'InvalidStateError',
+        );
+      }
+      const original = this._pendingRate;
+      // 0 reversed is 0, and not -0
+      this._pendingRate = 0 - this._effRate();
+      try {
+        this._play(true);
+      } catch (error) {
+        this._pendingRate = original;
+        throw error;
+      }
+      this._changed();
     }
+    /** Web Animations 1, 4.4.12, "finish an animation". */
     finish(): void {
-      const end = this._end();
-      if (this._rate === 0 || (this._rate > 0 && end === Infinity)) {
+      const rate = this._effRate();
+      const end = this._effectEnd();
+      if (rate === 0 || (rate > 0 && end === Infinity)) {
         throw new DOMException(
           "Failed to execute 'finish' on 'Animation': Cannot finish Animation with a playbackRate of 0 or an infinite target effect end.",
           'InvalidStateError',
         );
       }
-      this._paused = false;
-      this._held = null;
-      this._start =
-        this._timeline.currentTime - (this._rate > 0 ? end : 0) / this._rate;
-      this._schedule();
-    }
-    cancel(): void {
-      if (this.playState === 'idle') return;
-      clearTimer(this._timer);
-      this._timer = 0;
-      if (this._settle) {
-        const reject = this._settle.reject;
-        this._settle = null;
-        reject(new DOMException('The user aborted a request.', 'AbortError'));
+      this._applyPendingRate();
+      const limit = this._rate > 0 ? end : 0;
+      this._silentlySet(limit);
+      const t = this._tlTime();
+      if (this._start === null && t !== null) {
+        this._start = t - limit / this._rate;
       }
-      this._newFinished();
+      if (this._pendingPause && this._start !== null) {
+        this._hold = null;
+        this._pendingPause = false;
+        this._resolveReady();
+      }
+      if (this._pendingPlay && this._start !== null) {
+        this._pendingPlay = false;
+        this._resolveReady();
+      }
+      this._updateFinished(true, true);
+      this._changed();
+    }
+    /** Web Animations 1, 4.4.13, "cancel an animation". */
+    cancel(): void {
+      if (this.playState !== 'idle') {
+        this._resetPending();
+        this._finishedSettle?.reject(
+          new DOMException('The user aborted a request.', 'AbortError'),
+        );
+        this._newFinished();
+        this._tell('cancel', null);
+      }
+      this._hold = null;
       this._start = null;
-      this._held = null;
-      this._paused = false;
-      this._done = false;
-      liveAnimations.delete(this);
-      this._report();
-      this._tell('cancel', null);
+      this._changed();
+    }
+    /** "Reset an animation's pending tasks". */
+    _resetPending(): void {
+      if (!this._pendingPlay && !this._pendingPause) return;
+      this._pendingPlay = false;
+      this._pendingPause = false;
+      this._applyPendingRate();
+      this._readySettle?.reject(
+        new DOMException('The user aborted a request.', 'AbortError'),
+      );
+      this._readySettle = null;
+      this._ready = Promise.resolve(this);
     }
     persist(): void {
       this.replaceState = 'persisted';
@@ -1398,30 +3307,250 @@ export function installDom(
         style.setProperty(prop, value);
       }
     }
+
+    // -- pending tasks and the finished state
+
+    _newReady(): void {
+      const { promise, settle } = settleable();
+      this._ready = promise;
+      this._readySettle = settle;
+    }
+    _resolveReady(): void {
+      const settle = this._readySettle;
+      this._readySettle = null;
+      settle?.resolve(this);
+    }
+    _newFinished(): void {
+      const { promise, settle } = settleable();
+      this._finished = promise;
+      this._finishedSettle = settle;
+      this._finishedDone = false;
+    }
+    /** Run its pending task as soon as it is ready: at once for one on the
+     *  document's timeline, which is, and for a scroll-driven one once its
+     *  timeline is active and its start time aligned — never synchronously
+     *  (Web Animations 1, 4.4.7). */
+    _schedulePending(): void {
+      Promise.resolve().then(() => this._tryPending());
+    }
+    /** The pending task, where it is ready; whether it ran. */
+    _tryPending(): boolean {
+      if (!this._pendingPlay && !this._pendingPause) return false;
+      this._autoAlignStart();
+      const t = this._tlTime();
+      if (t === null || (this._start === null && this._hold === null)) {
+        this._watch();
+        return false;
+      }
+      if (this._pendingPlay) {
+        if (this._hold !== null) {
+          this._applyPendingRate();
+          this._start = this._rate === 0 ? t : t - this._hold / this._rate;
+          if (this._rate !== 0) this._hold = null;
+        } else if (this._start !== null && this._pendingRate !== null) {
+          const match = (t - this._start) * this._rate;
+          this._applyPendingRate();
+          if (this._rate === 0) this._hold = match;
+          this._start = this._rate === 0 ? t : t - match / this._rate;
+        }
+        this._pendingPlay = false;
+      } else {
+        if (this._start !== null && this._hold === null) {
+          this._hold = (t - this._start) * this._rate;
+        }
+        this._applyPendingRate();
+        this._start = null;
+        this._pendingPause = false;
+      }
+      this._resolveReady();
+      this._updateFinished(false, false);
+      this._changed();
+      return true;
+    }
+    /** Scroll Animations 1, 8, "calculating an auto-aligned start time". */
+    _autoAlignStart(): void {
+      if (!this._autoAlign || this._tlTime() === null) return;
+      const state = this.playState;
+      if (state === 'idle') return;
+      if (state === 'paused' && this._hold !== null) return;
+      const [from, to] = this._range();
+      this._start = this._effRate() >= 0 ? from : to;
+      this._applyPendingRate();
+      this._hold = null;
+    }
+    /** Web Animations 1, 4.4.11, "update an animation's finished state". */
+    _updateFinished(didSeek: boolean, sync: boolean): void {
+      const t = this._tlTime();
+      const unconstrained = didSeek
+        ? this._cur()
+        : t === null || this._start === null
+          ? null
+          : (t - this._start) * this._rate;
+      if (
+        unconstrained !== null &&
+        this._start !== null &&
+        !this._pendingPlay &&
+        !this._pendingPause
+      ) {
+        const end = this._effectEnd();
+        if (this._rate > 0 && unconstrained >= end) {
+          this._hold = didSeek
+            ? unconstrained
+            : this._previous === null
+              ? end
+              : Math.max(this._previous, end);
+        } else if (this._rate < 0 && unconstrained <= 0) {
+          this._hold = didSeek
+            ? unconstrained
+            : this._previous === null
+              ? 0
+              : Math.min(this._previous, 0);
+        } else if (this._rate !== 0 && t !== null) {
+          if (didSeek && this._hold !== null) {
+            this._start = t - this._hold / this._rate;
+          }
+          this._hold = null;
+        }
+      }
+      this._previous = this._cur();
+      const finished = this.playState === 'finished';
+      if (finished && !this._finishedDone) {
+        if (sync) {
+          this._notifyToken += 1;
+          this._notifyQueued = false;
+          this._notifyFinished();
+        } else if (!this._notifyQueued) {
+          this._notifyQueued = true;
+          const token = this._notifyToken;
+          Promise.resolve().then(() => {
+            if (token !== this._notifyToken) return;
+            this._notifyQueued = false;
+            this._notifyFinished();
+          });
+        }
+      }
+      if (!finished && this._finishedDone) this._newFinished();
+    }
+    /** "Finish notification steps". */
+    _notifyFinished(): void {
+      if (this.playState !== 'finished' || this._finishedDone) return;
+      this._finishedDone = true;
+      const settle = this._finishedSettle;
+      settle?.resolve(this);
+      this._tell('finish', this._out(this._cur()));
+      this._replaceOlder();
+    }
+
+    // -- what it tells the host, and when it looks again
+
+    /** Something about it changed: the host told, and its timer or its
+     *  frames set for what comes next. */
+    _changed(): void {
+      // an idle one is nobody's, and a finished one that fills nothing
+      // has no effect until the page changes it
+      const state = this.playState;
+      if (
+        state === 'idle' ||
+        this.replaceState === 'removed' ||
+        (state === 'finished' && this._effect?._state().active === null)
+      ) {
+        liveAnimations.delete(this);
+      } else liveAnimations.add(this);
+      this._reschedule();
+      this._report();
+      this._watch();
+    }
+    /** Its effect's timing changed (`updateTiming`, a range). */
+    _effectChanged(): void {
+      this._updateFinished(false, false);
+      this._changed();
+    }
+    /** On the document's timeline, a timer at the moment it reaches its
+     *  end — or its start, played backwards — to update its finished
+     *  state there. */
+    _reschedule(): void {
+      clearTimer(this._timer);
+      this._timer = 0;
+      if (this._finite() || !this._timeline) return;
+      if (this._start === null || this._hold !== null || this._rate === 0) {
+        return;
+      }
+      if (this._pendingPlay || this._pendingPause) return;
+      const cur = this._cur();
+      if (cur === null) return;
+      const end = this._effectEnd();
+      const left =
+        this._rate > 0 ? (end - cur) / this._rate : cur / -this._rate;
+      if (!Number.isFinite(left) || left < 0) return;
+      this._timer = setTimer(
+        () => {
+          this._timer = 0;
+          this._updateFinished(false, false);
+          this._changed();
+        },
+        left,
+        [],
+        false,
+      );
+    }
+    /** A scroll-driven animation that is not idle is brought up to date at
+     *  every frame, as is one whose pending task waits for its timeline. */
+    _watch(): void {
+      const watched =
+        (this._finite() && this.playState !== 'idle') ||
+        ((this._pendingPlay || this._pendingPause) && this._tlTime() === null);
+      if (watched) {
+        scrollLinked.add(this);
+        wantFrame();
+      } else scrollLinked.delete(this);
+    }
+    /** A frame: its timeline's time taken up — its start time aligned, its
+     *  pending task run where it is ready now, its finished state — and
+     *  the host told. Whether it told the host anything new. */
+    _frame(): boolean {
+      this._autoAlignStart();
+      if (!this._tryPending()) {
+        this._updateFinished(false, false);
+      }
+      const told = this._told;
+      this._report();
+      this._watch();
+      return this._told !== told;
+    }
     /**
      * Tell the host what it animates and where its time is: its effect
      * (`KeyframeEffect._hostEffect`), and `1,<time>,<rate>` where it runs
-     * from that time, `0,<time>,<rate>` where it is held there — paused,
-     * finished; or, where it has no effect — idle, cancelled, replaced, of
-     * no element — that the element it was told of has it no longer.
+     * from that time on the document's clock, `0,<time>,<rate>` where it
+     * is held there — paused, finished, pending, or scroll-driven, whose
+     * time a frame tells again as it moves; or, where it has no effect —
+     * idle, cancelled, replaced, of no element — that the element it was
+     * told of has it no longer.
      */
     _report(): void {
       const effect = this._effect;
       const target = effect?.target ?? null;
-      const time = this.currentTime;
-      const described =
+      const time = this._cur();
+      let described: string | null = null;
+      if (
         target instanceof Element &&
         time !== null &&
         this.replaceState !== 'removed'
-          ? effect._hostEffect()
-          : null;
+      ) {
+        const n = effect._norm();
+        const fill = effect._state().boundary ? 'both' : n.fill;
+        described = effect._hostEffect(n, fill);
+      }
       if (this._toldTo && (this._toldTo !== target || described === null)) {
         call('animation', this._toldTo._id, this._hostId, null, null);
         this._toldTo = null;
         this._told = '';
       }
       if (described === null) return;
-      const running = this._start !== null && !this._paused;
+      const running =
+        !this._finite() &&
+        this._start !== null &&
+        this._hold === null &&
+        !this._pendingPause;
       // held, it is where it is; running, where it started says where it
       // is from now on, which the same start does not change
       const play = running
@@ -1432,59 +3561,6 @@ export function installDom(
       this._toldTo = target;
       this._told = told;
       call('animation', target._id, this._hostId, described, play);
-    }
-    _newFinished(): void {
-      this._finishedPromise = new Promise((resolve, reject) => {
-        this._settle = { resolve, reject };
-      });
-      // a cancelled animation's promise is handled (Web Animations 1,
-      // 4.4.15): no page has to listen for it
-      this._finishedPromise.catch(() => {});
-    }
-    /** Where it is now, and when it finishes from there: a timer at that
-     *  time, and the finish itself where that is now; and the host told
-     *  where it is. */
-    _schedule(): void {
-      this._reschedule();
-      this._report();
-    }
-    _reschedule(): void {
-      clearTimer(this._timer);
-      this._timer = 0;
-      const time = this.currentTime;
-      if (time === null) {
-        liveAnimations.delete(this);
-        return;
-      }
-      const fill = this._effect?.getTiming().fill;
-      if (this._paused) {
-        liveAnimations.add(this);
-        return;
-      }
-      if (this._ended(time)) {
-        if (fill === 'forwards' || fill === 'both') liveAnimations.add(this);
-        else liveAnimations.delete(this);
-        if (!this._done) this._finish();
-        return;
-      }
-      liveAnimations.add(this);
-      const left =
-        this._rate > 0 ? (this._end() - time) / this._rate : time / -this._rate;
-      if (!Number.isFinite(left)) return;
-      this._timer = setTimer(() => this._schedule(), left, [], false);
-    }
-    _finish(): void {
-      this._done = true;
-      const held = this._rate > 0 ? this._end() : 0;
-      this._start = null;
-      this._held = held;
-      // the host hears it is held before the page hears it finished
-      this._report();
-      const settle = this._settle;
-      this._settle = null;
-      settle?.resolve(this);
-      this._tell('finish', held);
-      this._replaceOlder();
     }
     /**
      * The finished animations of its target that fill and that this one
@@ -1520,7 +3596,7 @@ export function installDom(
         a.replaceState = 'removed';
         liveAnimations.delete(a);
         a._report();
-        a._tell('remove', a.currentTime);
+        a._tell('remove', a._out(a._cur()));
       }
     }
     /** Whether it may be replaced by later ones: finished, filling, not
@@ -1536,8 +3612,8 @@ export function installDom(
     }
     /** An event of its own, told in a task after the change, as the
      *  document's pending animation events are (Web Animations 1, 4.4.18). */
-    _tell(type: string, currentTime: number | null): void {
-      const timelineTime = this._timeline.currentTime;
+    _tell(type: string, currentTime: Any): void {
+      const timelineTime = this._timeline ? this._timeline.currentTime : null;
       setTimer(
         () => {
           const ev = new AnimationPlaybackEvent(type, {
@@ -1564,13 +3640,26 @@ export function installDom(
       configurable: true,
     });
   }
-  /** The animations running on `target`, or on what it holds as well. */
+  /** An attachment range's end as `rangeStart` and `rangeEnd` read it. */
+  const rangeOut = (edge: RangeEdge): Any =>
+    edge === 'normal'
+      ? 'normal'
+      : edge.name === null
+        ? edge.offset
+        : { rangeName: edge.name, offset: edge.offset };
+  /** The animations running on `target`, or on what it holds as well, in
+   *  their composite order. */
   const animationsOf = (target: Any, subtree: boolean): Any[] =>
-    [...liveAnimations].filter((a) => {
-      const on = a.effect?.target;
-      if (!on) return false;
-      return on === target || (subtree && target.contains?.(on));
-    });
+    [...liveAnimations]
+      .filter((a) => {
+        const on = a.effect?.target;
+        if (!on || a.replaceState === 'removed') return false;
+        if (a.playState === 'finished' && a._effect._state().active === null) {
+          return false;
+        }
+        return on === target || (subtree && target.contains?.(on));
+      })
+      .sort((a, b) => a._hostId - b._hostId);
 
   /** The mouse, the one pointer there is (Pointer Events 3): the buttons
    *  held, as the DOM's mask, kept from the presses and releases told
@@ -2821,6 +4910,8 @@ export function installDom(
     ): void {
       const ok = (v: number | undefined) =>
         v !== undefined && Number.isFinite(v);
+      // what a scroll-driven animation draws follows at the next frame
+      nudgeFrames();
       if (this._viewport()) {
         const v = viewport();
         call('scrollTo', ok(x) ? x : v.scrollX, ok(y) ? y : v.scrollY);
@@ -2943,10 +5034,18 @@ export function installDom(
     }
     animate(keyframes: Any, options?: Any): Any {
       const effect = new KeyframeEffect(this, keyframes, options);
-      const animation = new Animation(effect, documentTimeline);
-      if (options && typeof options === 'object' && options.id) {
-        animation.id = String(options.id);
+      const given = options && typeof options === 'object' ? options : null;
+      const animation = new Animation(
+        effect,
+        given && given.timeline !== undefined
+          ? given.timeline
+          : documentTimeline,
+      );
+      if (given?.id) animation.id = String(given.id);
+      if (given?.rangeStart !== undefined) {
+        animation.rangeStart = given.rangeStart;
       }
+      if (given?.rangeEnd !== undefined) animation.rangeEnd = given.rangeEnd;
       animation.play();
       return animation;
     }
@@ -17364,7 +19463,21 @@ export function installDom(
     KeyframeEffect,
     AnimationTimeline,
     DocumentTimeline,
+    ScrollTimeline,
+    ViewTimeline,
     Animation,
+    CSSStyleValue,
+    CSSNumericValue,
+    CSSUnitValue,
+    CSSKeywordValue,
+    CSSMathValue,
+    CSSMathSum,
+    CSSMathProduct,
+    CSSMathNegate,
+    CSSMathInvert,
+    CSSMathMin,
+    CSSMathMax,
+    CSSNumericArray,
     EventTarget,
     Node,
     CharacterData,
@@ -17672,6 +19785,7 @@ export function installDom(
   define('btoa', btoa);
   define('atob', atob);
   define('CSS', {
+    ...unitFactories,
     escape: (v: Any) => cssEscape(str(v)),
     highlights: highlightRegistry,
     registerProperty,
@@ -17895,10 +20009,8 @@ export function installDom(
   );
   define('clearTimeout', clearTimer);
   define('clearInterval', clearTimer);
-  define('requestAnimationFrame', (fn: Any) =>
-    setTimer(() => fn(now()), 16, [], false),
-  );
-  define('cancelAnimationFrame', clearTimer);
+  define('requestAnimationFrame', requestFrame);
+  define('cancelAnimationFrame', cancelFrame);
   define('requestIdleCallback', (fn: Any) =>
     setTimer(
       () => fn({ didTimeout: false, timeRemaining: () => 10 }),
@@ -18118,6 +20230,7 @@ export function installDom(
   const entry = (name: string, fn: () => Primitive): void => {
     Object.defineProperty(G, name, {
       value: () => {
+        taskEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (customElementsDefined) takeReactions();
@@ -18806,6 +20919,7 @@ export function installDom(
   // window (CSSOM View 13.1, run the scroll steps) — what CodeMirror
   // measures its lines again on once it has come into view
   entry('__scrolled', () => {
+    nudgeFrames();
     const ev = new Event('scroll', { bubbles: true });
     ev.isTrusted = true;
     return dispatch(document, ev);

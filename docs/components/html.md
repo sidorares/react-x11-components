@@ -821,6 +821,35 @@ answer from the realm's animations. Under `animate={false}` one that fills
 forwards is drawn at its end and any other not at all, as a CSS animation
 at rest is.
 
+**An animation is the spec's model, procedure by procedure.** Its start
+time, hold time, playback rate and pending playback rate, its pending play
+and pause tasks and its `ready` and `finished` promises change as Web
+Animations 1 and 2 have them: `play()` is pending, with a null start time,
+until its task runs — a microtask later on the document's timeline — and
+`ready` resolves then; `pause()` is pending the same way; `finish()` tells
+at once; `updatePlaybackRate()`, `reverse()`, `effect.updateTiming()` and
+setting `timeline` follow their steps, and an easing is checked and
+serialized as CSS has it. `document.timeline.currentTime` is read once a
+task, as a browser updates it once a frame, so a page that waits until it
+moves waits for a frame. A frame updates the scroll-driven animations and
+the finished state, then runs `requestAnimationFrame`'s callbacks in a task
+after that one's microtasks and events.
+
+**A scroll timeline is how far its source is scrolled** (Scroll Animations
+1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
+crosses the scroll container nearest it, from `cover 0%` to `cover 100%`,
+with its insets. Their times, and an animation's on them, are
+`CSSUnitValue` percentages — `CSS.percent()`, `CSSNumericValue.parse()` and
+the rest of Typed OM's numbers are there — and an animation's timing is
+normalized to its attachment range, which `rangeStart` and `rangeEnd` name
+(`contain 10%`, `{ rangeName, offset }`, an absolute length). Its start
+time aligns to the range at each frame until a page sets one, and it is
+drawn held at its time, told again at each frame its scroll moves it. Not
+yet: a vertical writing mode's axes, a right-to-left scroller's negative
+offsets, `scroll-padding` as an `auto` inset, sticky subjects, the
+viewport's horizontal scroll, and CSS's `animation-timeline`, `scroll()`
+and `view()`, which the cascade does not drive yet.
+
 What is not drawn: `composite: 'add'` and `'accumulate'` are drawn as
 `replace`; a pseudo-element other than `::before` and `::after`; and on
 macOS an element a script animates stays on the document's clock rather
