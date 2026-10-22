@@ -921,6 +921,48 @@ export class ScriptEngine {
     return ran;
   }
 
+  /**
+   * A worker's `importScripts` script, run as HTML runs one with "rethrow
+   * errors" (10.3.4): a script of its own, as `exec` runs one, so its
+   * declarations are the global's, from inside the page's call. What it
+   * throws, or why it did not parse, is left at `__thrown` for the facade to
+   * throw on to its caller, and never read here. Run through an indirect
+   * `eval`, a `'use strict'` script's functions stayed in the `eval`, and
+   * every worker variant of WPT's IndexedDB tests found none of the helpers
+   * it imported. The context runs its microtasks as the script ends
+   * (`microtaskMode: 'afterEvaluate'`), which HTML would leave for the end
+   * of the task; a worker imports its scripts first, as a rule, with none
+   * waiting. The outer call's timeout covers it.
+   */
+  runNested(code: string, url: string): 'ran' | 'threw' | null {
+    if (this._broken || this._disposed) return null;
+    const context = this._context as Record<string, unknown>;
+    let compiled: VmScript;
+    try {
+      compiled = new vm.Script(code, {
+        filename: String(url).replace(/\s/g, '%20'),
+        importModuleDynamically: this._importer as never,
+      });
+    } catch (error) {
+      context.__thrown = !isHostError(error)
+        ? error
+        : error.name === 'SyntaxError'
+          ? this._pageError(error.message, 'SyntaxError')
+          : this._pageError(messageOf(error));
+      return 'threw';
+    }
+    try {
+      compiled.runInContext(this._context);
+      return 'ran';
+    } catch (error) {
+      // the page's own exception, handed back unread
+      context.__thrown = isHostError(error)
+        ? this._pageError(messageOf(error))
+        : error;
+      return 'threw';
+    }
+  }
+
   /** Run an entry of the facade's with its input, and answer what it
    *  answered: a primitive, or undefined where it was stopped or failed. */
   call(name: string, input: unknown): Primitive {

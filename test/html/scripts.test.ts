@@ -806,6 +806,47 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
   );
 });
 
+test('a worker’s imported script is a script of its own: a strict one’s declarations are the worker’s, and what one throws is thrown to its caller', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var base = new URL(".", location.href).href;' +
+      'var src = "var base = " + JSON.stringify(base) + "; var r = [];" +' +
+      '  "importScripts(base + \'strict.js\'); r.push(helper(), typeof Kept, answer);" +' +
+      '  "try { importScripts(base + \'throws.js\'); } catch (e) { r.push(e instanceof RangeError, e.message); }" +' +
+      '  "try { importScripts(base + \'broken.js\'); } catch (e) { r.push(e.name); }" +' +
+      '  "try { importScripts(base + \'missing.js\'); } catch (e) { r.push(e.name); }" +' +
+      '  "postMessage(r.join(\'|\'));";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("out").textContent = e.data; };' +
+      '</script>',
+    {
+      answer: (request) => {
+        const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+        const body = {
+          'strict.js':
+            "'use strict'; function helper() { return 'helped'; } class Kept {} const answer = 42;",
+          'throws.js': "throw new RangeError('out of range');",
+          'broken.js': 'function (',
+        }[name];
+        if (body === undefined) return null;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', 'text/javascript']],
+          body,
+        };
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'helped|function|42|true|out of range|SyntaxError|NetworkError',
+    doc.logs.join('\n'),
+  );
+});
+
 // where the engine could turn JSPI on: Node 24's V8 and later, and not
 // Bun's JavaScriptCore or Node 20's and 22's V8, which have only an
 // earlier proposal

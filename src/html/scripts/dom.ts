@@ -15562,14 +15562,20 @@ export function installDom(
     define('importScripts', function importScripts(...urls: Any[]): void {
       for (const u of urls) {
         const href = new URL(str(u), workerLocation!.href).href;
-        const code = call('importScript', href);
-        if (typeof code !== 'string') {
+        // run by the host as a script of its own; what it threw is left at
+        // `__thrown`, and thrown on to the caller here
+        const ran = call('importScript', href);
+        if (ran === 'threw') {
+          const error = G.__thrown;
+          G.__thrown = undefined;
+          throw error;
+        }
+        if (ran !== 'ran') {
           throw new DOMException(
             `Failed to execute 'importScripts' on 'WorkerGlobalScope': The script at '${href}' failed to load.`,
             'NetworkError',
           );
         }
-        (0, eval)(`${code}\n//# sourceURL=${href}`);
       }
     });
     // an error nothing here caught is the `Worker`'s too, where the page

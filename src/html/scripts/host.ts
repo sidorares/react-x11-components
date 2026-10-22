@@ -788,6 +788,10 @@ export interface Entries {
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
    *  host repairs the tree then, as termination can leave it half-moved. */
   timedOutSince?(): boolean;
+  /** A worker's imported script, run in the page from inside its call
+   *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
+   *  `__thrown`. */
+  runNested?(code: string, url: string): 'ran' | 'threw' | null;
 }
 
 /**
@@ -2167,8 +2171,12 @@ export class DomHost {
       case 'workerClose':
         this.workerScope?.close();
         return null;
-      case 'importScript':
-        return this.workerScope?.importScript(text(a)) ?? null;
+      case 'importScript': {
+        // fetched before this returns, and run as a script of its own
+        const code = this.workerScope?.importScript(text(a)) ?? null;
+        if (code === null) return null;
+        return this.entries?.runNested?.(code, text(a)) ?? null;
+      }
       case 'workerErrorOut': {
         const [message, filename, line, column] = JSON.parse(text(a));
         this.workerScope?.error(message, filename, line, column);
