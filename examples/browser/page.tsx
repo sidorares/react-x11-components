@@ -200,6 +200,29 @@ interface Doc {
   baseUrl: string | null;
 }
 
+/**
+ * The pane watches its own resident memory. `--max-old-space-size` bounds
+ * V8's heap and `--wasm-max-mem-pages` a page's wasm memory, but neither
+ * counts ArrayBuffers, which a script can hold without end (`new
+ * Uint8Array(128 << 20)` in a loop). Past the cap the pane ends itself and
+ * the tab shows the crash-and-reload a page whose process died shows.
+ * `BROWSER_PANE_RSS_MB` sets it. Only in a real pane: under `BROWSER_INLINE`
+ * the page shares the browser's process, where exiting would take the whole
+ * browser, so `isFramed()` gates it.
+ */
+if (isFramed()) {
+  const limit = (Number(process.env.BROWSER_PANE_RSS_MB) || 2048) * 1024 * 1024;
+  const watch = setInterval(() => {
+    if (process.memoryUsage().rss > limit) {
+      process.stderr.write(
+        `browser pane: resident memory over ${Math.round(limit / 1048576)} MB; ending the tab.\n`,
+      );
+      process.exit(1);
+    }
+  }, 1000);
+  (watch as { unref?: () => void }).unref?.();
+}
+
 export default function Page(props: PageProps): ReactElement {
   const { entryId, doc, url, loadSeq, zoom } = props;
   const cocoa = useSupports('nativeControls');

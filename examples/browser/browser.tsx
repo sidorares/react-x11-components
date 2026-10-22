@@ -96,6 +96,12 @@ const PAGE = new URL('./page.tsx', import.meta.url);
  *    context bounds — ends its own tab there, and not the machine's
  *    memory. Node enforces it; Bun 1.4 passes the flag on and enforces
  *    nothing (core's `docs/frame.md`). `BROWSER_PANE_HEAP_MB` sets it.
+ *  - `--wasm-max-mem-pages`: how much `WebAssembly.Memory` a page may
+ *    grow, in 64 KiB pages — the old-space bound does not count it, so a
+ *    page could hold a half-gigabyte of wasm memory under a small heap
+ *    cap. `BROWSER_PANE_WASM_MB` sets it, in megabytes. (ArrayBuffers are
+ *    out of every flag; the pane watches its own resident size for those,
+ *    `page.tsx`.)
  *  - `--experimental-vm-modules`: what makes Node call the host for a
  *    page's `import()`, which fails there with the page's own error, and
  *    `vm.SourceTextModule`, which its module scripts run on; without it
@@ -106,9 +112,34 @@ const PAGE = new URL('./page.tsx', import.meta.url);
  */
 const PANE_FLAGS = [
   `--max-old-space-size=${Number(process.env.BROWSER_PANE_HEAP_MB) || 1024}`,
+  // in 64 KiB pages: megabytes × 16
+  `--wasm-max-mem-pages=${(Number(process.env.BROWSER_PANE_WASM_MB) || 512) * 16}`,
   '--experimental-vm-modules',
   '--disable-warning=ExperimentalWarning',
 ];
+
+/**
+ * The environment a page's pane starts with, cut to what a windowed Node
+ * process needs. A pane inherits the browser's environment (core's
+ * `paneEnv` starts from `process.env`), which on a developer's machine
+ * carries tokens, cloud credentials and `npm_config_*` secrets a page's
+ * scripts have no business near. `<Frame env>` takes `undefined` to mean
+ * "drop this one", so everything outside the allow-list below is dropped;
+ * what stays is the display, the locale, the paths and this example's own
+ * `BROWSER_*`/`REACT_X11_*` switches. It is a policy, not a boundary — the
+ * `node:vm` sandbox does not read the environment either way — and it is
+ * deliberately generous, so widen it rather than let the pane fail to
+ * start.
+ */
+const PANE_ENV: Record<string, string | undefined> = (() => {
+  const keep =
+    /^(PATH|HOME|USER|LOGNAME|SHELL|PWD|TMPDIR|LANG|LC_[A-Z]+|LANGUAGE|TZ|TERM|DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_[A-Z_]+|NODE_[A-Z_]*|BROWSER_[A-Z_]+|REACT_X11_[A-Z_]+)$/;
+  const out: Record<string, string | undefined> = {};
+  for (const name of Object.keys(process.env)) {
+    if (!keep.test(name)) out[name] = undefined;
+  }
+  return out;
+})();
 
 // --- the model ---------------------------------------------------------------
 
@@ -824,6 +855,7 @@ function TabPage({
       props={props as unknown as FrameProps}
       transport={transport}
       execArgv={PANE_FLAGS}
+      env={PANE_ENV}
       // A tab aside is still in the window, so its pane would be a stop in
       // the window's order, between the page showing and the tab strip:
       // Tab off the end of a page went on into the next tab's, off screen.

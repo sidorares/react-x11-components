@@ -744,6 +744,9 @@ const CHANGES_TOLD = 4000;
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** Whether an entry has timed out since last asked (`ScriptEngine`): the
+   *  host repairs the tree then, as termination can leave it half-moved. */
+  timedOutSince?(): boolean;
 }
 
 /**
@@ -956,7 +959,17 @@ export class DomHost {
   readonly bridge: Bridge = (op, a, b, c, d) => {
     try {
       const out = this._op(op, a, b, c, d);
-      return out === undefined || out === null || typeof out !== 'object'
+      // Only a primitive crosses. An object is the obvious leak and was
+      // always nulled; a function is not `typeof 'object'`, so the old
+      // guard let one through, and a host function in a page's hands is an
+      // escape (`e.constructor.constructor('return process')()`). No op
+      // returns one today — this keeps it that way.
+      const kind = typeof out;
+      return out === null ||
+        kind === 'string' ||
+        kind === 'number' ||
+        kind === 'boolean' ||
+        kind === 'undefined'
         ? out
         : null;
     } catch (error) {
@@ -981,6 +994,13 @@ export class DomHost {
   /** Hand the tree's changes to `<Html>`: a restyle, a layout and a paint
    *  of the document as the page left it. */
   flush(): void {
+    // A timed-out entry may have been terminated inside a tree-moving op,
+    // between the parent's `children` update and the siblings' `prev`/`next`
+    // — which `nextSibling`/`previousSibling` read straight off the node.
+    // Rebuild the links from the children arrays, the op's first write, so
+    // the tree is whole before it is drawn or read again. Only on a
+    // timeout, which is rare, so the walk costs nothing in the common case.
+    if (this.entries?.timedOutSince?.()) this._repairTree();
     if (this._sheetsChanged.size) this._writeSheets();
     if (this._s.changes.size && !this._disposed) {
       // what this realm, or another, changed in another realm's document
@@ -1007,6 +1027,54 @@ export class DomHost {
     this._seams.handle.refresh(
       changes.length > CHANGES_TOLD ? undefined : changes,
     );
+  }
+
+  /** Make the tree whole again from the `children` arrays — the first
+   *  write of a mutation op, and the source of truth — for this host's
+   *  document and any shadow trees in it. Run after a timeout (`flush`),
+   *  where termination may have left a node's `prev`/`next` out of step
+   *  with its parent's children, or — a half-finished move — a node in two
+   *  parents' children at once. A node is kept under the first parent the
+   *  walk reaches it through, in document order, and dropped from any
+   *  other, so the result is a tree: every node has one parent, and a
+   *  cycle a corrupt move might have made cannot loop the walk. One tree,
+   *  so the walk is the document's size, and only on a rare timeout. */
+  private _repairTree(): void {
+    this._relink(this.document, new Set());
+  }
+
+  private _relink(node: AnyNode, seen: Set<AnyNode>): void {
+    const kids = (node as { children?: AnyNode[] }).children;
+    if (!kids) return;
+    // drop any child already reached under another parent (or earlier in
+    // this same array): a tree holds each node once
+    let cleaned: AnyNode[] | null = null;
+    for (let i = 0; i < kids.length; i += 1) {
+      if (seen.has(kids[i])) {
+        cleaned ??= kids.slice(0, i);
+        continue;
+      }
+      seen.add(kids[i]);
+      cleaned?.push(kids[i]);
+    }
+    const list = cleaned ?? kids;
+    if (cleaned) (node as { children: AnyNode[] }).children = cleaned;
+    for (let i = 0; i < list.length; i += 1) {
+      const kid = list[i] as {
+        parent: AnyNode | null;
+        prev: AnyNode | null;
+        next: AnyNode | null;
+      };
+      kid.parent = node;
+      kid.prev = list[i - 1] ?? null;
+      kid.next = list[i + 1] ?? null;
+      // a shadow tree hangs off its host, not off `children`
+      if (list[i] instanceof Element) {
+        const root = shadowRootOf(list[i] as Element);
+        if (root) this._relink(root, seen);
+      }
+      this._relink(list[i], seen);
+    }
   }
 
   /** An event `<Html>` told of, dispatched in the page; whether its default
