@@ -1361,7 +1361,14 @@ class Builder {
     const cascade = this._options.cascade;
     const styles = this._styles;
     const byName = new Map<string, SelectionStyler>();
+    // what each name's styler kept, while what a highlight's style reads
+    // stands (`Cascade.highlightGeneration`)
+    let generation = cascade.highlightGeneration;
     return (name) => {
+      if (generation !== cascade.highlightGeneration) {
+        generation = cascade.highlightGeneration;
+        byName.clear();
+      }
       let styler = byName.get(name);
       if (styler) return styler;
       const known = new Map<Element, SelectionStyle | null>();

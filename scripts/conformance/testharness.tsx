@@ -577,6 +577,11 @@ async function render(
   if (!page.loaded || stillWaiting()) {
     return { page, pixels: null, source: doc.source, error: 'TIMEOUT' };
   }
+  // wptrunner waits two animation frames once the document is ready for
+  // its screenshot (`reftest-wait_webdriver.js`), and a test that resizes
+  // something in a `requestAnimationFrame` without `reftest-wait` counts
+  // on them
+  for (let i = 0; i < 4; i++) await pump(12);
   let last = await readViewport();
   for (let i = 0; i < 8; i++) {
     await pump(i < 2 ? 8 : 30);

@@ -5300,6 +5300,98 @@ metric(
   },
 );
 
+/** The pixels of two elements' boxes, the first's size, and how many of
+ *  them differ. */
+async function differing(doc: Hosted, a: string, b: string): Promise<number> {
+  const lit = doc.view.elementRect(doc.byId(a))!;
+  const ref = doc.view.elementRect(doc.byId(b))!;
+  const width = Math.round(lit.width);
+  const height = Math.round(lit.height);
+  const at = (r: typeof lit) =>
+    pixelsIn(doc.result.ctx, {
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      width,
+      height,
+    });
+  const [p, q] = [await at(lit), await at(ref)];
+  let differ = 0;
+  for (let i = 0; i < p.length; i += 1) if (p[i] !== q[i]) differ += 1;
+  return differ;
+}
+
+metric(
+  "a highlight's text-decoration and text-shadow are drawn as the element's would be, its container units the container's",
+  async () => {
+    // CSS Pseudo 4, 3.6: the lines and the shadows a ::highlight() sets are
+    // drawn over and under the text it lights, from its own style — its
+    // lengths in its element's font and container — and none of the
+    // element's text beside it casts. Each lit line is held to a line whose
+    // element sets the same, pixel for pixel.
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/40px sans-serif }' +
+        ' p { margin: 0 } .box { container-type: size; width: 300px; height: 50px }' +
+        ' ::highlight(lines) { text-decoration: underline wavy #008000 2px;' +
+        ' text-underline-offset: 0.25em }' +
+        ' ::highlight(through) { text-decoration: line-through #0000ff 2cqh }' +
+        ' ::highlight(cast) { text-shadow: 4px 6px rgba(0, 128, 0, 0.5) }' +
+        ' #r1 span { text-decoration: underline wavy #008000 2px;' +
+        ' text-underline-offset: 5px }' +
+        ' #r2 span { text-decoration: line-through #0000ff 1px }' +
+        ' #r3 span { text-shadow: 4px 6px rgba(0, 128, 0, 0.5) }' +
+        '</style>' +
+        '<p id="t1">one <b>two</b> three</p><p id="r1">one <span><b>two</b> thr</span>ee</p>' +
+        '<div class="box"><p id="t2">one two three</p></div>' +
+        '<div class="box"><p id="r2">one <span>two</span> three</p></div>' +
+        '<p id="t3">one two three</p><p id="r3">one <span>two</span> three</p>' +
+        '<p id="out"></p><script>' +
+        'function lit(name, id, from, to) {' +
+        '  var p = document.getElementById(id);' +
+        '  var r = new Range();' +
+        '  r.setStart(p.firstChild, from);' +
+        '  if (to < 0) r.setEnd(p.lastChild, -to); else r.setEnd(p.firstChild, to);' +
+        '  CSS.highlights.set(name, new Highlight(r)); }' +
+        'lit("lines", "t1", 4, -4); lit("through", "t2", 4, 7); lit("cast", "t3", 4, 7);' +
+        'document.getElementById("out").textContent = "set";' +
+        '</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    assert.equal(await differing(doc, 't1', 'r1'), 0, 'the underline');
+    assert.equal(await differing(doc, 't2', 'r2'), 0, 'the line through');
+    assert.equal(await differing(doc, 't3', 'r3'), 0, 'the shadow');
+  },
+);
+
+metric(
+  'a change that turns a ::highlight() rule on paints its text again in the new look',
+  async () => {
+    // the class tests only a highlight's rule, and restyles no element
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/40px sans-serif } p { margin: 0 }' +
+        ' span::highlight(lit) { background-color: #ffff00 }' +
+        ' .blue::highlight(lit) { background-color: #0000ff }' +
+        ' #ref { background: #0000ff; width: 10px; height: 10px }</style>' +
+        '<p><span id="s">Hello</span></p><div id="ref"></div><p id="out"></p>' +
+        '<script>var s = document.getElementById("s");' +
+        'var r = new Range(); r.setStart(s, 0); r.setEnd(s, 1);' +
+        'CSS.highlights.set("lit", new Highlight(r));' +
+        'document.getElementById("out").textContent = "set";</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    const ref = doc.view.elementRect(doc.byId('ref'))!;
+    const blue = await colourAt(doc, ref.x + 5, ref.y + 5);
+    const s = doc.view.elementRect(doc.byId('s'))!;
+    // the band's top edge, above any glyph
+    const top = () => colourAt(doc, s.x + s.width / 2, s.y + 2);
+    assert.notEqual(await top(), blue, 'yellow first');
+    await act(() => doc.run('s.className = "blue"'));
+    await settle(40);
+    assert.equal(await top(), blue, 'blue once the class is set');
+  },
+);
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
@@ -5913,6 +6005,28 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {
+  // HTML 4.8.5: the attribute's markup, parsed as the frame's document,
+  // ahead of its src
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" srcdoc="<p id=&quot;in&quot;>from srcdoc</p>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () {' +
+      '  var d = f.contentDocument;' +
+      '  document.getElementById("out").textContent = [d && d.getElementById("in").textContent,' +
+      '    f.contentWindow.location.href].join("|"); };' +
+      '</script>',
+    { 'frame.html': '<p id="in">from src</p>' },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, 'from srcdoc|about:srcdoc', logs.join('\n'));
+  assert.equal(text('f', 'in'), 'from srcdoc');
 });
 
 test('a frame of another origin runs at its own origin, and the two reach each other only by messages', async () => {

@@ -114,7 +114,7 @@ import {
   isInherited,
   sameStyle,
 } from './style.js';
-import type { ComputedStyle, RootLook } from './style.js';
+import type { BoxShadow, ComputedStyle, RootLook } from './style.js';
 import type { FontFamilies } from '../fonts.js';
 import { parseDeclarations } from './parse.js';
 import { CounterStyles, counterStyleRule } from './counter-styles.js';
@@ -560,7 +560,27 @@ const PSEUDO_ELEMENT =
 export interface SelectionStyle {
   color: string | null;
   background: string | null;
+  /** A custom highlight's own `text-decoration`, as a style whose
+   *  `underline` and `lineThrough` are its lines and nothing it inherits:
+   *  drawn over the text it lights (`paintHighlightRules`). Null or absent
+   *  for none. */
+  decoration?: ComputedStyle | null;
+  /** A custom highlight's own `text-shadow`, with the colour a shadow in
+   *  `currentColor` takes: cast from the text it lights
+   *  (`paintHighlightShadows`). Null or absent for none. */
+  shadow?: { shadows: BoxShadow[]; color: string } | null;
 }
+
+/** The properties of a highlight's `text-decoration`, which it draws over
+ *  the text it lights (CSS Pseudo 4, 3.6). */
+const DECORATION_PROPS = new Set([
+  'text-decoration',
+  'text-decoration-line',
+  'text-decoration-color',
+  'text-decoration-style',
+  'text-decoration-thickness',
+  'text-underline-offset',
+]);
 
 /**
  * A rule for a pseudo-element, as the pseudo-element it styles and a rule
@@ -3981,6 +4001,40 @@ export class Cascade {
     return this._containerReads.size > 0;
   }
 
+  /** Moves whenever what a custom highlight's style reads may have
+   *  changed — a container's size (`sizeContainers`), or the tree, which
+   *  an element's own style may not show (`HtmlViewNode.touchDocument`):
+   *  what a highlight's styler keeps is good while it stands. */
+  highlightGeneration = 0;
+
+  /**
+   * Every size container's content box as a layout left it, whether or not
+   * a style read it (`sizeOf` as `containersMoved` takes it): a custom
+   * highlight's style is worked out as the document is painted, after the
+   * layout that `containersMoved` hears of, and its `@container` rules and
+   * container units read the containers no element's style did.
+   */
+  sizeContainers(
+    containers: Iterable<Element>,
+    sizeOf: (el: Element) => ContainerSize | null | undefined,
+  ): void {
+    for (const el of containers) {
+      const size = sizeOf(el);
+      if (size === undefined) continue;
+      const had = this._containerSizes.get(el);
+      if (
+        had === size ||
+        (had && size && had.width === size.width && had.height === size.height)
+      ) {
+        continue;
+      }
+      // a style that read it still hears of it from `containersMoved`,
+      // which compares what it read with what `sizeOf` says, not with this
+      this._containerSizes.set(el, size);
+      this.highlightGeneration += 1;
+    }
+  }
+
   /** Whether some style read a container's scroll state, which a scroll
    *  can move with no layout (`containersMoved`'s `scrollOf`). */
   get readsScrollState(): boolean {
@@ -4617,22 +4671,42 @@ export class Cascade {
     this._matchInto(index, el, candidates);
     let color = false;
     let background = false;
+    let decorated = false;
+    let shadowed = false;
     for (const candidate of candidates) {
       for (const d of candidate.declarations) {
         if (d.prop === 'color') color = true;
         else if (d.prop === 'background' || d.prop === 'background-color') {
           background = true;
-        }
+        } else if (DECORATION_PROPS.has(d.prop)) decorated = true;
+        else if (d.prop === 'text-shadow') shadowed = true;
       }
     }
-    if (!color && !background) return parent;
+    if (!color && !background && !decorated && !shadowed) return parent;
     candidates.sort(byCascade);
     const own = this._computeStyle(el, style, false, candidates);
+    let decoration = parent?.decoration ?? null;
+    if (decorated) {
+      // its own lines alone: the ones the element's text is drawn with are
+      // the element's to draw, and the highlight's computed style inherits
+      // them as any style does
+      const ruled = { ...own, underline: null, lineThrough: null };
+      decorate(ruled);
+      decoration = ruled.underline || ruled.lineThrough ? ruled : null;
+    }
+    let shadow = parent?.shadow ?? null;
+    if (shadowed) {
+      shadow = own.textShadow?.length
+        ? { shadows: own.textShadow, color: own.color }
+        : null;
+    }
     return {
       color: color ? own.color : (parent?.color ?? null),
       background: background
         ? own.backgroundColor
         : (parent?.background ?? null),
+      decoration,
+      shadow,
     };
   }
 

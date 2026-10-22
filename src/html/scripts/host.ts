@@ -1223,7 +1223,9 @@ export class DomHost {
     for (const frame of this._s.frameList) {
       if (!this._inDocument(frame)) continue;
       const document = this._frames.get(frame);
-      const url = this._frameAt.get(frame) ?? 'about:blank';
+      let url = this._frameAt.get(frame) ?? 'about:blank';
+      // a `srcdoc` document's base is the page's (HTML 4.8.5)
+      if (url === 'about:srcdoc') url = this.url;
       if (!document || this._xml.has(document)) continue;
       out.push({ frame, document, url, realm: this._s.realms.has(document) });
     }
@@ -3614,7 +3616,11 @@ export class DomHost {
   /** Whether an address is the page's own origin's: `about:blank` is the
    *  origin of the document that made it (HTML 7.1.1). */
   private _sameOrigin(url: string): boolean {
-    return url === 'about:blank' || originOf(url) === this._origin();
+    return (
+      url === 'about:blank' ||
+      url === 'about:srcdoc' ||
+      originOf(url) === this._origin()
+    );
   }
 
   /** The address a frame loads — where its window sent it, else its `src`
@@ -3656,6 +3662,26 @@ export class DomHost {
       this.entries.call('__fire', [this.idOf(frame), 'load']);
       this._frameDone(frame);
     };
+    // an `<iframe srcdoc>` shows the document its attribute holds, before
+    // any `src` (HTML 4.8.5), until something sends it elsewhere
+    const srcdoc =
+      frame.name === 'iframe' && !this._frameSent.has(frame)
+        ? frame.attribs.srcdoc
+        : undefined;
+    if (srcdoc !== undefined) {
+      setTimeout(() => {
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        this._frameLoaded(
+          frame,
+          this._documentOf(srcdoc, true, !!this._seams.drawsFrames),
+          'about:srcdoc',
+          'text/html',
+          true,
+          loaded,
+        );
+      }, 0);
+      return;
+    }
     let src = this._frameSrc(frame);
     // a frame is never its own document's address again, which would hold
     // the page in itself without end (HTML 7.8.1, the iframe's "process the
@@ -3724,22 +3750,14 @@ export class DomHost {
         }
         // another origin's scripts never run in this realm
         if (foreign) scripts = false;
-        // a frame the browser draws runs its own scripts, and tells its own
-        // `load` once they have, in a realm of its own — where it has any:
-        // a document with none has no code to want globals of its own, and
-        // the page's realm reaches into it at once, as Acid3's do into
-        // theirs, where a realm would answer once React had mounted it
-        const realm =
-          !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
-        if (realm) this._s.realms.add(doc);
-        this._frames.set(frame, doc);
-        this._frameOf.set(doc, frame);
-        this._frameAt.set(frame, response.url || src);
-        this._s.frameList.add(frame);
-        this._s.framesChanged();
-        if (realm) return;
-        if (scripts) this._frameScripts(doc, response.url || src);
-        loaded();
+        this._frameLoaded(
+          frame,
+          doc,
+          response.url || src,
+          type,
+          scripts,
+          loaded,
+        );
       })
       .catch((error: unknown) => {
         // a frame whose document could not be had still hears `load`, as
@@ -3750,6 +3768,36 @@ export class DomHost {
         );
         loaded();
       });
+  }
+
+  /** A frame's new document, from `address`, put in the frame: its
+   *  scripts run, where it may run any, and its `load` told. */
+  private _frameLoaded(
+    frame: Element,
+    doc: Document,
+    address: string,
+    type: string,
+    scripts: boolean,
+    loaded: () => void,
+  ): void {
+    // a frame the browser draws runs its own scripts, and tells its own
+    // `load` once they have, in a realm of its own — where it has any: a
+    // document with none has no code to want globals of its own, and the
+    // page's realm reaches into it at once, as Acid3's do into theirs,
+    // where a realm would answer once React had mounted it
+    const realm =
+      !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
+    if (realm) this._s.realms.add(doc);
+    this._frames.set(frame, doc);
+    this._frameOf.set(doc, frame);
+    this._frameAt.set(frame, address);
+    this._s.frameList.add(frame);
+    this._s.framesChanged();
+    if (realm) return;
+    if (scripts) {
+      this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
+    }
+    loaded();
   }
 
   /**
