@@ -58,6 +58,7 @@ import type {
   Stylesheet,
 } from './parse.js';
 import { matchesSyntax } from './syntax.js';
+import { computedText } from '../computed.js';
 import {
   NO_ANIMATIONS,
   restingFrames,
@@ -107,6 +108,7 @@ import { FIXED_SIZE, keywordFontSize, parseLength } from './values.js';
 import {
   CustomProps,
   customProperties,
+  hasInherit,
   hasVar,
   substituteIn,
   validVars,
@@ -3941,10 +3943,15 @@ export class Cascade {
     candidates: Candidate[],
   ): CustomProps | null {
     let key = '';
+    let inherits = false;
     for (const c of candidates) {
       if (!this._hasCustom(c)) continue;
       key += `${this._idOf(c.declarations)}:${c.only},`;
+      if (!inherits && customInherits(c)) inherits = true;
     }
+    // what an `inherit()` of a property finds is the parent's style, not
+    // only its custom properties, so the set is the parent's style's own
+    if (inherits) key = `${this._idOf(parentStyle)}^${key}`;
     const parent = parentStyle.custom ?? this._registeredBase;
     // what a registered property that does not inherit holds above, it
     // does not hold here: a function of the parent's set, so of the key
@@ -3961,7 +3968,12 @@ export class Cascade {
     for (const c of candidates) {
       for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
     }
-    const made = customProperties(own, parent, this._ifEnv, this._registered);
+    const made = customProperties(
+      own,
+      parent,
+      inherits ? this._inheritEnv(parentStyle, '') : this._ifEnv,
+      this._registered,
+    );
     this._customs.set(key, made);
     return made;
   }
@@ -5083,9 +5095,33 @@ export class Cascade {
     } else {
       initialOne(style, this.initial, d.prop);
     }
-    const value = substituteIn(d.value, style.custom, this._ifEnv);
+    const env = hasInherit(d.value)
+      ? this._inheritEnv(parentStyle, d.prop)
+      : this._ifEnv;
+    const value = substituteIn(d.value, style.custom, env);
     if (value !== null)
       applyDeclaration(style, parentStyle, d.prop, value, ctx);
+  }
+
+  /**
+   * What an `inherit()` in a declaration of `property` finds (CSS Values 5,
+   * 7.6): the parent's custom property of a name, and the parent's
+   * computed value of a property as a declaration reads it back
+   * (`computedText`) — so `border-radius: calc(inherit() - 4px)` is the
+   * parent's radius less four pixels.
+   */
+  private _inheritEnv(
+    parentStyle: ComputedStyle,
+    property: string,
+  ): IfEnvironment {
+    return {
+      ...this._ifEnv,
+      property,
+      inherited: (name) =>
+        name.startsWith('--')
+          ? (parentStyle.custom ?? this._registeredBase)?.get(name)
+          : computedText(parentStyle, name, this.scale),
+    };
   }
 
   /**
@@ -6115,6 +6151,23 @@ function setsContent(c: Candidate): boolean {
 
 /** Whether a rule's declarations set a custom property, by the array. */
 const CUSTOM_IN = new WeakMap<Declaration[], boolean>();
+
+/** Whether a candidate sets a custom property with an `inherit()` in it,
+ *  which reads the parent's style (`_customFor`). */
+function customInherits(c: Candidate): boolean {
+  if (c.only >= 0) {
+    const d = c.declarations[c.only];
+    return !!d.custom && hasInherit(d.value);
+  }
+  let has = INHERIT_IN.get(c.declarations);
+  if (has === undefined) {
+    has = c.declarations.some((d) => !!d.custom && hasInherit(d.value));
+    INHERIT_IN.set(c.declarations, has);
+  }
+  return has;
+}
+
+const INHERIT_IN = new WeakMap<Declaration[], boolean>();
 
 /** The document's first element with an id, looked for from one of its
  *  elements: `shapeStyles`' answer where no index of them is handed in. */
