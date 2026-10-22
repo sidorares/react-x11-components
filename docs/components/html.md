@@ -3839,7 +3839,8 @@ its containing block, and `normal` alignment aligns it towards the anchor,
 or centres it on the anchor where an axis takes all three tracks.
 `position-try-fallbacks`, and the fallbacks of `position-try`, are tried in
 order where the box's margin box overflows its containing block: the
-tactics `flip-block`, `flip-inline` and `flip-start`, alone or combined, a
+tactics `flip-block`, `flip-inline` and `flip-start`, and `flip-x` and
+`flip-y` across and down, alone or combined, a
 `@position-try` rule by its name (its insets, margins, sizes,
 `position-anchor` and `position-area`, worked out as the element's own),
 and a `position-area`. The first option that fits is kept, or the box's own
@@ -3856,7 +3857,13 @@ in other properties, `position-try-order`, `position-visibility`,
 `anchor-scope`, a popover's implicit anchor, `justify-self` and
 `align-self` in a position area (including `anchor-center`), and
 following an anchor that a scroll moves. A box is placed against where its
-anchor was laid out, before relative offsets and scrolls.
+anchor was laid out, before relative offsets and scrolls. A script's
+`el.style` takes each of these properties only as its grammar has it, in
+canonical form — `anchor()` and `anchor-size()` with the name first, each
+only where it may be, and a `position-area` with its horizontal or block
+keyword first — keeps `position-try` as its two longhands, and
+`getComputedStyle` reads all of them, a `position-area` of block and
+inline keywords said with `start` and `end`.
 
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`

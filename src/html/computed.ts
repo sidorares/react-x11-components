@@ -12,6 +12,7 @@
 // `rgba()`, as a browser serializes every one.
 import type { BasicShape } from './css/basic-shape.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
+import { positionAreaComputed } from './css/anchor.js';
 import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
@@ -93,6 +94,21 @@ function timelineShorthand(
         .filter(Boolean)
         .join(' ');
     })
+    .join(', ');
+}
+
+/** `position-try-fallbacks` as it computes: each option a name before
+ *  its tactics, or a `position-area` in canonical form. */
+function tryFallbacksText(
+  options: ComputedStyle['positionTryFallbacks'],
+): string {
+  if (!options) return 'none';
+  return options
+    .map((o) =>
+      o.area
+        ? (o.area.text ?? o.text)
+        : [o.name, ...o.tactics].filter(Boolean).join(' '),
+    )
     .join(', ');
 }
 
@@ -430,6 +446,18 @@ function cssomAt(
       style.viewTimelineInset,
       scale,
     ),
+    'anchor-name': style.anchorNames ? style.anchorNames.join(', ') : 'none',
+    'anchor-scope': style.anchorScope,
+    'position-anchor': style.positionAnchorText,
+    'position-area': style.positionArea?.text
+      ? positionAreaComputed(style.positionArea.text)
+      : 'none',
+    'position-try-order': style.positionTryOrder,
+    'position-try-fallbacks': tryFallbacksText(style.positionTryFallbacks),
+    'position-try':
+      style.positionTryOrder === 'normal'
+        ? tryFallbacksText(style.positionTryFallbacks)
+        : `${style.positionTryOrder} ${tryFallbacksText(style.positionTryFallbacks)}`,
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, color),

@@ -1032,6 +1032,110 @@ test('the scroll-timeline and view-timeline shorthands set their longhands, and 
   assert.strictEqual(b['view-timeline-inset'], '1px 2px, auto');
 });
 
+test('the anchor positioning properties take their grammars, and anchor() and anchor-size() their canonical order where each may be', () => {
+  const v = specifiedValue;
+  assert.strictEqual(v('left', 'anchor(inside --foo)'), 'anchor(--foo inside)');
+  assert.strictEqual(
+    v('top', 'calc(anchor(top --a, 0) + 10px)'),
+    'calc(anchor(--a top, 0px) + 10px)',
+  );
+  assert.strictEqual(
+    v('width', 'anchor-size(width --foo)'),
+    'anchor-size(--foo width)',
+  );
+  assert.strictEqual(v('width', 'anchor-size(10px)'), 'anchor-size(10px)');
+  assert.strictEqual(
+    v('margin-left', 'anchor-size(--a height)'),
+    'anchor-size(--a height)',
+  );
+  for (const [prop, bad] of [
+    ['margin-top', 'anchor(--foo top)'],
+    ['font-size', 'anchor-size(--foo width)'],
+    ['top', 'anchor(--foo, top)'],
+    ['top', 'anchor(--foo top bottom)'],
+    ['top', 'anchor(foo top)'],
+    ['width', 'anchor-size(, 10px)'],
+  ]) {
+    assert.strictEqual(v(prop, bad), null, `${prop}: ${bad}`);
+  }
+  assert.strictEqual(v('position-area', 'top left'), 'left top');
+  assert.strictEqual(
+    v('position-area', 'inline-start block-end'),
+    'block-end inline-start',
+  );
+  assert.strictEqual(v('position-area', 'top span-all'), 'top');
+  assert.strictEqual(v('position-area', 'center top'), 'center top');
+  assert.strictEqual(v('position-area', 'start start'), 'start');
+  for (const bad of [
+    'none none',
+    'top top',
+    'left inline-start',
+    'top left top',
+  ]) {
+    assert.strictEqual(v('position-area', bad), null, bad);
+  }
+  assert.strictEqual(
+    v('position-try-fallbacks', 'flip-inline --foo'),
+    '--foo flip-inline',
+  );
+  assert.strictEqual(
+    v('position-try-fallbacks', 'top left, --a'),
+    'left top, --a',
+  );
+  for (const bad of [
+    'none, flip-start',
+    'flip-inline --bar flip-block',
+    'flip-y flip-y',
+    '--foo left',
+  ]) {
+    assert.strictEqual(v('position-try-fallbacks', bad), null, bad);
+  }
+  assert.strictEqual(v('position-try', 'normal --foo'), '--foo');
+  assert.strictEqual(
+    v('position-try', 'most-width flip-x'),
+    'most-width flip-x',
+  );
+  assert.strictEqual(v('position-try', 'flip-block most-height'), null);
+  assert.strictEqual(v('anchor-scope', '--a, --b'), '--a, --b');
+  assert.strictEqual(v('anchor-scope', 'none --a'), null);
+  assert.strictEqual(v('position-anchor', 'NORMAL'), 'normal');
+  assert.strictEqual(v('position-anchor', '--a, --b'), null);
+  assert.strictEqual(v('anchor-name', 'foo'), null);
+  // and `el.style` keeps `position-try` as its two longhands
+  const kept = new Map(
+    expandShorthand('position-try', 'most-width --a, flip-x')!,
+  );
+  assert.strictEqual(kept.get('position-try-order'), 'most-width');
+  assert.strictEqual(
+    composeShorthand('position-try', (n) => kept.get(n) ?? null),
+    'most-width --a, flip-x',
+  );
+});
+
+test('getComputedStyle reads the anchor positioning properties, a logical position-area said with start and end', async () => {
+  const { node } = await render(
+    '<div id="a" style="position-area: inline-start block-end; anchor-scope: all;' +
+      ' position-try: most-height flip-y --t, top left; position-anchor: auto;' +
+      ' anchor-name: --x, --y"></div>' +
+      '<div id="b" style="position-area: start span-all"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  const a = cssomStyle(style('a'), 1, null);
+  assert.strictEqual(a['position-area'], 'end start');
+  assert.strictEqual(a['anchor-scope'], 'all');
+  assert.strictEqual(a['position-try-order'], 'most-height');
+  assert.strictEqual(a['position-try-fallbacks'], '--t flip-y, left top');
+  assert.strictEqual(a['position-try'], 'most-height --t flip-y, left top');
+  assert.strictEqual(a['position-anchor'], 'auto');
+  assert.strictEqual(a['anchor-name'], '--x, --y');
+  assert.strictEqual(
+    cssomStyle(style('b'), 1, null)['position-area'],
+    'block-start',
+  );
+});
+
 test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {
   // `lh` is read against the element's line height as the cascade settles
   // it, not as it stands when the rule holding the length is reached: a
