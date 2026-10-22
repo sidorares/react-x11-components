@@ -804,6 +804,35 @@ change returns. GitHub's pages start their React apps from a `<react-app>`'s
 `connectedCallback`, and draw their content clipped away until the app
 reveals it.
 
+A page can also make **scoped registries** (`new CustomElementRegistry()`,
+HTML 4.13.4).
+
+- **Where a registry applies.** An element, a shadow root or a document has
+  its own registry. `createElement`, `createElementNS` and `importNode` take
+  one in their options, and `attachShadow` takes one in its init.
+  - A shadow root has its document's registry by default, whatever its
+    host's.
+  - A declarative one written with `shadowrootcustomelementregistry` has
+    none until a page's `initialize()` gives it one.
+  - An element keeps the registry it was made with wherever it moves. One
+    that moves into another document trades its old document's own registry
+    for the new one's.
+- **Definitions.** A scoped registry's definitions upgrade only the elements
+  whose registry it is.
+- **`innerHTML`.** It upgrades what it makes in a tree of a scoped registry
+  at once, connected or not. Under the window's registry, an element is
+  upgraded as it is connected, as Chrome has it.
+- **Constructors.** A class with no definition but a scoped one constructs
+  nothing, since its `super()` looks it up in the window's registry.
+- **What doesn't work yet:**
+  - shadow roots don't clone;
+  - `getHTML()` doesn't serialize them;
+  - the parser reads no `customelementregistry` attribute on an element.
+
+`setHTMLUnsafe()` parses declarative shadow roots, as the document's
+parser does, where `innerHTML` doesn't. An element of an HTML name no
+interface has is an `HTMLUnknownElement`.
+
 **A dialog `showModal()` opened is modal** (HTML 4.11.4): `:modal` matches
 it, and it is in the document's top layer (CSS Position 4) — drawn over
 every stacking context of the page, a box at the greatest `z-index`

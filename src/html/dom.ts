@@ -386,6 +386,10 @@ export class ShadowRoot extends DomDocument {
   readonly mode: ShadowRootMode;
   /** `shadowrootdelegatesfocus`. */
   readonly delegatesFocus: boolean;
+  /** `shadowrootcustomelementregistry`: a declarative root whose custom
+   *  element registry is null until a page's script initializes one
+   *  (HTML 4.13.4, scoped registries), where any other is the document's. */
+  registryNull = false;
   private _assignedAt = -1;
   /** The nodes assigned to each slot, in tree order. */
   private _assigned = new Map<Element, ChildNode[]>();
@@ -1304,6 +1308,7 @@ class Handler extends DomHandler {
     }
     const delegates = attribs.shadowrootdelegatesfocus !== undefined;
     const root = new ShadowRoot(host, mode, delegates);
+    root.registryNull = attribs.shadowrootcustomelementregistry !== undefined;
     SHADOW_ROOTS.set(host, root);
     treesChanged();
     stack.push(root);
@@ -1644,8 +1649,8 @@ export function createText(data: string): Text {
  *  shadowrootmode>` left a template: `attachShadow` makes a shadow root.
  *  Not streaming: a fragment is small by definition, and an app calling
  *  this already has the whole string. */
-export function parseFragment(html: string): ChildNode[] {
-  const { parser, handler } = createParser(false);
+export function parseFragment(html: string, declarative = false): ChildNode[] {
+  const { parser, handler } = createParser(declarative);
   parser.write(html);
   parser.end();
   const kids = handler.root.children.slice();
