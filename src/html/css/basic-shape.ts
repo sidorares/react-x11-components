@@ -3,7 +3,7 @@
 // SVG path — each read as the cascade reads it, its lengths device pixels or
 // percentages of the box it is measured in, and laid down for a box of a
 // size as polygons (`shapePolygons`): curves are cut into chords no further
-// than a quarter of a pixel from them, which is what every path a polygon
+// than a tenth of a pixel from them, which is what every path a polygon
 // is filled, clipped, stroked and hit-tested along here takes.
 
 import {
@@ -14,6 +14,12 @@ import {
   splitValue,
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
+import {
+  parseShapeFunction,
+  pathAsShape,
+  shapePathData,
+} from './shape-function.js';
+import type { ShapeFunction } from './shape-function.js';
 
 /** A circle's or an ellipse's radius: a length, or a side it reaches. */
 type Radius = Len | 'closest-side' | 'farthest-side';
@@ -36,16 +42,29 @@ export type BasicShape =
        *  its curves cut into chords as it is read. */
       polys: readonly (readonly number[])[];
       rule: FillRule;
+      /** The path data as written, for its computed value. */
+      d: string;
+      /** The same path as a `shape()`, which a `shape()` interpolates it
+       *  with (`pathAsShape`); null where it reads as none. */
+      asShape: ShapeFunction | null;
+    }
+  | {
+      kind: 'shape';
+      /** `shape()` (CSS Shapes 2, 4.2), whose commands are laid down as
+       *  path data for the box (`shapePathData`). */
+      shape: ShapeFunction;
     };
 
 export type FillRule = 'nonzero' | 'evenodd';
 
-/** How far a chord may stray from its curve, in device pixels. */
-const TOLERANCE = 0.25;
+/** How far a chord may stray from its curve, in device pixels: a tenth,
+ *  where a quarter put two arcs of radii a twentieth of a pixel apart
+ *  more pixels apart than WPT's shape tests allow. */
+const TOLERANCE = 0.1;
 
 /**
- * A basic shape, or null where `text` is none — `shape()` among them, which
- * is not read. `radiiOf` reads a `round`'s radii as `border-radius` does.
+ * A basic shape, or null where `text` is none. `radiiOf` reads a `round`'s
+ * radii as `border-radius` does.
  */
 export function parseBasicShape(
   text: string,
@@ -57,6 +76,10 @@ export function parseBasicShape(
   const m = /^([a-z-]+)\(([\s\S]*)\)$/i.exec(text.trim());
   if (!m) return null;
   const fn = m[1].toLowerCase();
+  if (fn === 'shape') {
+    const read = parseShapeFunction(text, ctx);
+    return read && { kind: 'shape', shape: read.shape };
+  }
   const inner = m[2].trim();
   const length = (part: string): Len | null => {
     const len = parseLength(part, ctx);
@@ -165,7 +188,15 @@ export function parseBasicShape(
       const quoted = /^(["'])([\s\S]*)\1$/.exec(args[0].trim());
       if (!quoted) return null;
       const polys = pathPolygons(quoted[2], ctx.scale);
-      return polys ? { kind: 'path', polys, rule } : null;
+      return polys
+        ? {
+            kind: 'path',
+            polys,
+            rule,
+            d: quoted[2],
+            asShape: pathAsShape(quoted[2], ctx.scale, rule),
+          }
+        : null;
     }
   }
   return null;
@@ -273,6 +304,12 @@ export function shapePolygons(
     }
     case 'path':
       return { polys: shape.polys.map((p) => p.slice()), rule: shape.rule };
+    case 'shape':
+      // laid down in the box's own units, which are device pixels already
+      return {
+        polys: pathPolygons(shapePathData(shape.shape, w, h), 1) ?? [],
+        rule: shape.shape.rule,
+      };
     default: {
       const [a, b, c, d] = shape.lengths;
       let x0 = 0;

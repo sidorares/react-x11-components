@@ -48,6 +48,7 @@ import {
   treeGeneration,
   treesChanged,
 } from '../dom.js';
+import { specifiedValue } from '../css/specified.js';
 import { Cascade } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
@@ -1812,11 +1813,15 @@ export class DomHost {
       case 'setStyle': {
         const el = this._element(a);
         const name = text(b);
+        // a value the property does not take leaves the declaration as it
+        // was; one it does is kept in its canonical form (CSSOM 6.7)
+        const value = text(c) && specifiedValue(name, text(c));
+        if (value === null) return null;
         const kept = this._declarations(el).filter((d) => d.prop !== name);
         if (text(c)) {
           kept.push({
             prop: name,
-            value: text(c),
+            value: value || text(c),
             important: d === 'important',
           });
         }

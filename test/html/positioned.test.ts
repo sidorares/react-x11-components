@@ -682,13 +682,13 @@ metric(
   },
 );
 
-test('clip-path is read: a rectangle in a box, a box alone, and a shape not drawn', async () => {
+test('clip-path is read: a rectangle in a box, a box alone, and another shape', async () => {
   // CSS Masking 1, 5.1: a basic shape, a `<geometry-box>`, or both in
   // either order. The rectangles of CSS Shapes 1, 3.1 are read as they are
   // written, a percentage among their lengths having no pixels yet; a
-  // shape that is neither a rectangle nor a polygon is a value, which sets
-  // the property, and clips nothing; and anything else leaves the value
-  // before it standing.
+  // shape that is neither a rectangle nor a polygon is read as a basic
+  // shape, laid down as polygons in the box; and anything else leaves the
+  // value before it standing.
   const { node } = await render(
     '<style>p { clip-path: inset(1px) } #kept { clip-path: inset(1px 2px 3px 4px 5px) }' +
       ' #none { clip-path: none } #circle { -webkit-clip-path: circle(40%) }</style>' +
@@ -768,7 +768,17 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
   assert.deepStrictEqual(path('wide'), inherited, 'nor a negative width');
   assert.deepStrictEqual(path('twice'), inherited, 'nor two boxes');
   assert.strictEqual(path('none'), null);
-  assert.strictEqual(path('circle'), null, 'a circle is a value, not drawn');
+  assert.deepStrictEqual(
+    path('circle'),
+    {
+      box: 'border-box',
+      lengths: [0, 0, 0, 0],
+      ...square,
+      shape: 'basic',
+      basic: { kind: 'circle', r: { pct: 40 }, at: [{ pct: 50 }, { pct: 50 }] },
+    },
+    'a circle is a basic shape',
+  );
 });
 
 test('clip-path: polygon() is read as its fill rule and its vertices', async () => {
@@ -893,6 +903,59 @@ metric(
     ]) {
       assert.ok(!fills.some((f) => f.style === parseColor(color)), why);
     }
+  },
+);
+
+metric(
+  'clip-path: shape(), circle(), path() and a url() to a <clipPath> cut a box to their outlines',
+  async () => {
+    // CSS Shapes 2, 4.2 and CSS Masking 1, 5.1 and 6: each is laid down as
+    // polygons in the border box, a shape's subpaths filled together by
+    // its rule, and a `<clipPath>`'s shapes in CSS pixels from the box's
+    // corner. A url() to no `<clipPath>` clips nothing. Every one of these
+    // clipped nothing before, and WPT's shape tests drew whole squares.
+    const { node } = await render(
+      '<style>body{margin:0}div{width:100px;height:100px}</style>' +
+        '<div id="s" style="background:#ff0000;clip-path:shape(evenodd from 10px 10px, ' +
+        'hline by 80px, vline by 80px, hline by -80%, close, ' +
+        'move to 30px 30px, hline by 40px, vline by 40px, hline by -40px, close)"></div>' +
+        '<div id="c" style="background:#00ff00;clip-path:circle(50%)"></div>' +
+        '<div id="p" style="background:#0000ff;clip-path:path(&quot;M0 0 L100 0 L0 100 Z&quot;)"></div>' +
+        '<div id="u" style="background:#800000;clip-path:url(#half)"></div>' +
+        '<div id="none" style="background:#008000;clip-path:url(#nothing)"></div>' +
+        '<svg width="0" height="0"><clipPath id="half">' +
+        '<rect x="0" y="0" width="50" height="100"/></clipPath></svg>',
+    );
+    const el = view(node);
+    const [s, c, p, u, none] = ['s', 'c', 'p', 'u', 'none'].map((id) =>
+      boxOf(el, id),
+    );
+    const { fills } = await pathsOf(el, {
+      x: 0,
+      y: 0,
+      width: 400,
+      height: 600,
+    });
+    const winding = (color: string, x: number, y: number) => {
+      const fill = fills.find((f) => f.style === parseColor(color));
+      assert.ok(fill, `${color} is drawn`);
+      return windingAt(fill.clips[fill.clips.length - 1], x, y);
+    };
+    const odd = (color: string, x: number, y: number) =>
+      winding(color, x, y) % 2 !== 0;
+    assert.ok(odd('#ff0000', s.x + 20, s.y + 20), 'in the outer square');
+    assert.ok(!odd('#ff0000', s.x + 50, s.y + 50), 'not in the hole');
+    assert.ok(!odd('#ff0000', s.x + 5, s.y + 5), 'nor outside');
+    assert.ok(winding('#00ff00', c.x + 50, c.y + 50), 'in the circle');
+    assert.ok(!winding('#00ff00', c.x + 4, c.y + 4), 'not its corner');
+    assert.ok(winding('#0000ff', p.x + 10, p.y + 10), 'in the triangle');
+    assert.ok(!winding('#0000ff', p.x + 90, p.y + 90), 'not past it');
+    assert.ok(winding('#800000', u.x + 25, u.y + 50), 'in the clipPath');
+    assert.ok(!winding('#800000', u.x + 75, u.y + 50), 'not past its rect');
+    assert.ok(
+      winding('#008000', none.x + 95, none.y + 95),
+      'a url() to nothing clips nothing',
+    );
   },
 );
 

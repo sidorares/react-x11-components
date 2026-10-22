@@ -557,13 +557,15 @@ test('border-shape reads one or two basic shapes, each in a box of its own', asy
       '#c{border-shape:ellipse(20px 30% at left top) circle(closest-side) content-box}' +
       "#d{border-shape:path(evenodd, 'M0 0 L10 0 L10 10 Z')}" +
       // a value that is none leaves the shape as it was
-      '#e{border-shape:circle();border-shape:shape(from 0 0, line to 10px 10px)}' +
+      '#e{border-shape:circle();border-shape:shape(from 0 0)}' +
+      '#i{border-shape:shape(from 0 0, line to 10px 10px, vline to 0)}' +
       '#f{border-shape:circle();border-shape:border-box circle()}' +
       '#g{border-shape:circle();border-shape:circle() circle() circle()}' +
       '#h{border-shape:circle();border-shape:none}' +
       '</style>' +
       '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
-      '<div id="e"></div><div id="f"></div><div id="g"></div><div id="h"></div>',
+      '<div id="e"></div><div id="f"></div><div id="g"></div><div id="h"></div>' +
+      '<div id="i"></div>',
   );
   const shape = (id: string) =>
     (boxOf(view(node), id) as unknown as { style: ComputedStyle }).style
@@ -598,6 +600,8 @@ test('border-shape reads one or two basic shapes, each in a box of its own', asy
     assert.strictEqual(shape(id)?.outer.shape.kind, 'circle', id);
   }
   assert.strictEqual(shape('h'), null);
+  // `shape()` is a basic shape too (CSS Shapes 2, 4.2)
+  assert.strictEqual(shape('i')?.outer.shape.kind, 'shape');
 });
 
 test('a basic shape is laid down in its box as polygons', () => {

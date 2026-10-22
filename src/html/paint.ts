@@ -77,7 +77,7 @@ import {
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
 import { cornerInset, cornerReach } from './css/corner-shape.js';
-import { shapePolygons, strokeBands } from './css/basic-shape.js';
+import { pathPolygons, shapePolygons, strokeBands } from './css/basic-shape.js';
 import type { FillRule } from './css/basic-shape.js';
 import {
   drawnThrough,
@@ -142,7 +142,7 @@ import type {
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
 import type { Element } from './dom.js';
-import { topLayerOrder } from './dom.js';
+import { topLayerOrder, treeGeneration } from './dom.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -3579,18 +3579,20 @@ function pushOwnClips(
 /** Cut what follows to a `clip-path`: its polygon, where it is one and the
  *  context draws one, and its rectangle elsewhere. */
 function pushPathClip(ctx: PaintContext, path: PathClip): boolean {
-  const points = path.polygon;
-  if (!points || !ctx.moveTo || !ctx.lineTo) {
+  const polygons = path.polygons;
+  if (!polygons || !ctx.moveTo || !ctx.lineTo) {
     return pushClip(ctx, path.rect, path.radii);
   }
   if (!ctx.beginPath || !ctx.clip) return false;
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(points[0], points[1]);
-  for (let i = 2; i < points.length; i += 2) {
-    ctx.lineTo(points[i], points[i + 1]);
+  for (const points of polygons) {
+    ctx.moveTo(points[0], points[1]);
+    for (let i = 2; i < points.length; i += 2) {
+      ctx.lineTo(points[i], points[i + 1]);
+    }
+    ctx.closePath?.();
   }
-  ctx.closePath?.();
   if (path.rule === 'evenodd') ctx.clip('evenodd');
   else ctx.clip();
   return true;
@@ -6804,6 +6806,9 @@ function clipPathOf(box: Box, options: ClipSpace): PathClip {
   if (path.shape === 'polygon') {
     return polygonClip(path, x0, y0, width, height);
   }
+  if (path.shape === 'basic' || path.shape === 'url') {
+    return shapeClip(box, path, x0, y0, width, height);
+  }
   const x = Math.round(x0 + left);
   const y = Math.round(y0 + top);
   const rect = {
@@ -6835,16 +6840,17 @@ function clipPathOf(box: Box, options: ClipSpace): PathClip {
     // to the rectangle they round
     radii = cornersFor(path.radii, path.radiiY, width, height, rect.w, rect.h);
   }
-  return { rect, radii, polygon: null, rule: 'nonzero' };
+  return { rect, radii, polygons: null, rule: 'nonzero' };
 }
 
 /** What a `clip-path` cuts to, in window coordinates (`clipPathOf`). */
 interface PathClip {
-  /** The rectangle, or the one around a polygon. */
+  /** The rectangle, or the one around the polygons. */
   rect: { x: number; y: number; w: number; h: number };
   radii: Corners | null;
-  /** A polygon's vertices, `x, y` by turns; null for a rectangle. */
-  polygon: number[] | null;
+  /** Each subpath's vertices, `x, y` by turns, filled together by `rule`;
+   *  null for a rectangle. */
+  polygons: number[][] | null;
   rule: 'nonzero' | 'evenodd';
 }
 
@@ -6887,7 +6893,175 @@ function polygonClip(
   const rect = encloses(polygon)
     ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
     : { x, y, w: 0, h: 0 };
-  return { rect, radii: null, polygon, rule: path.fillRule };
+  return { rect, radii: null, polygons: [polygon], rule: path.fillRule };
+}
+
+/**
+ * A `circle()`, an `ellipse()`, a `path()`, a `shape()` or a `<clipPath>`
+ * placed in the box at `x0, y0` it is measured in, as polygons: the box on
+ * the pixels its background is drawn on, as a `polygon()` is.
+ */
+function shapeClip(
+  box: Box,
+  path: ClipPath,
+  boxX: number,
+  boxY: number,
+  boxWidth: number,
+  boxHeight: number,
+): PathClip {
+  const x0 = Math.round(boxX);
+  const y0 = Math.round(boxY);
+  const width = Math.round(boxX + boxWidth) - x0;
+  const height = Math.round(boxY + boxHeight) - y0;
+  const laid = path.basic
+    ? shapePolygons(path.basic, width, height)
+    : clipSourceOf(box, path.url!, width, height);
+  if (!laid) {
+    // a reference to no `<clipPath>` is as though there were none (CSS
+    // Masking 1, 5.1): a rectangle past anything the box draws
+    const far = 1e7;
+    return {
+      rect: { x: x0 - far, y: y0 - far, w: 2 * far, h: 2 * far },
+      radii: null,
+      polygons: null,
+      rule: 'nonzero',
+    };
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const polygons: number[][] = [];
+  for (const poly of laid.polys) {
+    const placed: number[] = [];
+    for (let i = 0; i + 1 < poly.length; i += 2) {
+      const px = x0 + poly[i];
+      const py = y0 + poly[i + 1];
+      placed.push(px, py);
+      minX = Math.min(minX, px);
+      minY = Math.min(minY, py);
+      maxX = Math.max(maxX, px);
+      maxY = Math.max(maxY, py);
+    }
+    if (encloses(placed)) polygons.push(placed);
+  }
+  const x = Math.floor(minX);
+  const y = Math.floor(minY);
+  const rect = polygons.length
+    ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
+    : { x: x0, y: y0, w: 0, h: 0 };
+  return { rect, radii: null, polygons, rule: laid.rule };
+}
+
+/** Each document's elements by id, as of a tree generation. */
+const CLIP_IDS = new WeakMap<
+  object,
+  { generation: number; ids: Map<string, Element> }
+>();
+
+/**
+ * What a `<clipPath>` a `url(#id)` names clips to, laid down for a box `w`
+ * by `h` (CSS Masking 1, 6): the union of its shapes — a path, a rectangle,
+ * a circle, an ellipse, a polygon — in CSS pixels from the box's corner, or
+ * in fractions of it under `clipPathUnits="objectBoundingBox"`, each filled
+ * by its own `clip-rule`, the first one's taken for all. Null for an id
+ * that names no `<clipPath>`.
+ */
+function clipSourceOf(
+  box: Box,
+  url: { id: string; scale: number },
+  w: number,
+  h: number,
+): { polys: number[][]; rule: FillRule } | null {
+  let node: { parent?: unknown } | null =
+    box.el ?? GENERATED_FROM.get(box) ?? null;
+  if (!node) return null;
+  while (node.parent) node = node.parent as { parent?: unknown };
+  const generation = treeGeneration();
+  let kept = CLIP_IDS.get(node);
+  if (!kept || kept.generation !== generation) {
+    const ids = new Map<string, Element>();
+    const stack: unknown[] = [node];
+    for (let at = stack.pop(); at; at = stack.pop()) {
+      const el = at as Element;
+      const id = el.attribs?.id;
+      if (id && !ids.has(id)) ids.set(id, el);
+      const children = (el as { children?: unknown[] }).children;
+      if (children)
+        for (let i = children.length - 1; i >= 0; i -= 1)
+          stack.push(children[i]);
+    }
+    kept = { generation, ids };
+    CLIP_IDS.set(node, kept);
+  }
+  const source = kept.ids.get(url.id);
+  if (!source || source.name.toLowerCase() !== 'clippath') return null;
+  const units = source.attribs.clippathunits ?? source.attribs.clipPathUnits;
+  const bounding = units === 'objectBoundingBox';
+  // a shape in fractions of the box is laid down at a thousand to the
+  // unit, for chords as fine as its curves want, and scaled to the box
+  const unit = bounding ? 1000 : url.scale;
+  const polys: number[][] = [];
+  let rule: FillRule | null = null;
+  for (const child of source.children) {
+    if (!(child as Element).attribs) continue;
+    const el = child as Element;
+    const d = clipShapeData(el);
+    if (!d) continue;
+    const read = pathPolygons(d, unit);
+    if (!read) continue;
+    rule ??= /evenodd/i.test(el.attribs['clip-rule'] ?? el.attribs.style ?? '')
+      ? 'evenodd'
+      : 'nonzero';
+    for (const poly of read) {
+      if (bounding) {
+        for (let i = 0; i + 1 < poly.length; i += 2) {
+          poly[i] = (poly[i] / unit) * w;
+          poly[i + 1] = (poly[i + 1] / unit) * h;
+        }
+      }
+      polys.push(poly);
+    }
+  }
+  return { polys, rule: rule ?? 'nonzero' };
+}
+
+/** A `<clipPath>`'s shape as path data in its user units; null for an
+ *  element that is no shape. */
+function clipShapeData(el: Element): string | null {
+  const a = el.attribs;
+  const n = (name: string): number => Number.parseFloat(a[name] ?? '0') || 0;
+  switch (el.name.toLowerCase()) {
+    case 'path':
+      return a.d ?? null;
+    case 'rect': {
+      const [x, y, width, height] = [n('x'), n('y'), n('width'), n('height')];
+      if (!(width > 0 && height > 0)) return null;
+      return `M${x} ${y}h${width}v${height}h${-width}z`;
+    }
+    case 'circle':
+    case 'ellipse': {
+      const [cx, cy] = [n('cx'), n('cy')];
+      const rx = el.name.toLowerCase() === 'circle' ? n('r') : n('rx');
+      const ry = el.name.toLowerCase() === 'circle' ? n('r') : n('ry');
+      if (!(rx > 0 && ry > 0)) return null;
+      return (
+        `M${cx - rx} ${cy}A${rx} ${ry} 0 1 0 ${cx + rx} ${cy}` +
+        `A${rx} ${ry} 0 1 0 ${cx - rx} ${cy}z`
+      );
+    }
+    case 'polygon':
+    case 'polyline': {
+      const nums = (a.points ?? '')
+        .trim()
+        .split(/[\s,]+/)
+        .filter(Boolean);
+      if (nums.length < 6) return null;
+      return `M${nums.slice(0, 2).join(' ')}L${nums.slice(2).join(' ')}z`;
+    }
+    default:
+      return null;
+  }
 }
 
 /** Whether a polygon encloses anything: not where every vertex is on one
@@ -6922,11 +7096,11 @@ function roundedOf(c: Corners): Corners | null {
  * or of anything in it — is under a pointer (`deepestAt`).
  */
 export function inClipPath(box: Box, x: number, y: number): boolean {
-  const { rect, radii, polygon, rule } = clipPathOf(box, DOCUMENT);
+  const { rect, radii, polygons, rule } = clipPathOf(box, DOCUMENT);
   const right = rect.x + rect.w;
   const bottom = rect.y + rect.h;
   if (x < rect.x || x >= right || y < rect.y || y >= bottom) return false;
-  if (polygon) return inPolygon(polygon, rule, x, y);
+  if (polygons) return inPolygons(polygons, rule, x, y);
   if (!radii) return true;
   // inside the rectangle, and past a corner's curve: each corner is a
   // quarter of an ellipse about a centre its radii in from the two edges
@@ -6953,23 +7127,26 @@ export function inClipPath(box: Box, x: number, y: number): boolean {
  * once, under `evenodd`. An edge's bottom end is in it and its top end not,
  * so a ray through a vertex counts the two edges there once.
  */
-function inPolygon(
-  points: readonly number[],
+function inPolygons(
+  polygons: readonly (readonly number[])[],
   rule: 'nonzero' | 'evenodd',
   x: number,
   y: number,
 ): boolean {
+  // every subpath's edges count toward one winding, as they fill as one
   let winding = 0;
-  const n = points.length;
-  for (let i = 0; i < n; i += 2) {
-    const ax = points[i];
-    const ay = points[i + 1];
-    const bx = points[(i + 2) % n];
-    const by = points[(i + 3) % n];
-    if (ay <= y === by <= y) continue;
-    // where the edge is at the point's height, and the point left of it
-    const at = ax + ((y - ay) / (by - ay)) * (bx - ax);
-    if (x < at) winding += by > ay ? 1 : -1;
+  for (const points of polygons) {
+    const n = points.length;
+    for (let i = 0; i < n; i += 2) {
+      const ax = points[i];
+      const ay = points[i + 1];
+      const bx = points[(i + 2) % n];
+      const by = points[(i + 3) % n];
+      if (ay <= y === by <= y) continue;
+      // where the edge is at the point's height, and the point left of it
+      const at = ax + ((y - ay) / (by - ay)) * (bx - ax);
+      if (x < at) winding += by > ay ? 1 : -1;
+    }
   }
   return rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
 }
