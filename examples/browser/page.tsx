@@ -67,6 +67,7 @@ import {
   Html,
   HtmlNetwork,
   NetworkError,
+  canPlayMedia,
   decodeText as decode,
   linkTarget,
   navigableFor,
@@ -478,6 +479,9 @@ export default function Page(props: PageProps): ReactElement {
   const scripts: HtmlScripts | false = props.scripts && {
     userAgent: USER_AGENT,
     language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
+    // what the platform's player opens, where there is one: a stream's
+    // playlist among it, which a page with no `MediaSource` hands it
+    canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
     navigate: (to, how) =>
       live.current.onLink(to, how === 'tab' ? 'tab' : 'here', null),
     reload: () => live.current.onCommand('reload'),

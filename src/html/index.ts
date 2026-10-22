@@ -129,6 +129,7 @@ export {
   HTML_USER_AGENT,
   HtmlNetwork,
   NetworkError,
+  canPlayMedia,
   decodeText,
   defaultHtmlNetwork,
   escapeHtml,

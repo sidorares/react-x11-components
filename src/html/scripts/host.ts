@@ -332,6 +332,9 @@ export interface HostSeams {
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
   userAgent: string;
   language: string;
+  /** What a media element's `canPlayType` answers: whether what plays the
+   *  page's media can play the type. None, `''` for every type. */
+  canPlayType?(type: string): string;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -2973,6 +2976,11 @@ export class DomHost {
         return performance.now();
       case 'navigator':
         return `${this._seams.userAgent}\u0000${this._seams.language}`;
+      case 'canPlayType': {
+        // the three answers HTML has, and none other (4.8.11.3)
+        const answer = this._seams.canPlayType?.(text(a)) ?? '';
+        return answer === 'probably' || answer === 'maybe' ? answer : '';
+      }
       case 'base':
         return this._seams.handle.base ?? this.url;
       case 'location':

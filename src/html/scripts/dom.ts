@@ -8706,8 +8706,13 @@ export function installDom(
       call('mediaState', this._id, 'paused', true);
       mediaTask(() => fireMedia(this, 'pause'));
     }
-    canPlayType(): string {
-      return '';
+    /** HTML 4.8.11.3: whether what plays the page's media can play the
+     *  type — the host's to say, and `''` where it says nothing. A page
+     *  asks before it picks how to load a stream: an HLS player that finds
+     *  no `MediaSource` sets the playlist as the `src` where the answer for
+     *  `application/vnd.apple.mpegurl` is not `''`, as on Safari. */
+    canPlayType(type: Any): string {
+      return String(call('canPlayType', str(type)));
     }
   }
 

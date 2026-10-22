@@ -136,6 +136,7 @@ export function useScripts(
     get language() {
       return latest.current.language;
     },
+    canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
     navigate: (to, how) => latest.current.navigate(to, how),

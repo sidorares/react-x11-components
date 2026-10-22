@@ -871,6 +871,40 @@ export function mixedContent(
  */
 const UNPLAYABLE = new Set(['video/webm', 'video/ogg', 'application/ogg']);
 
+/** What the platform's player opens, by MIME type: AVFoundation's MP4 and
+ *  QuickTime readers, its audio, and HTTP Live Streaming's playlists, which
+ *  it plays from their URL as Safari does. */
+const PLAYABLE = new Set([
+  'video/mp4',
+  'video/quicktime',
+  'video/x-m4v',
+  'video/3gpp',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/aac',
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/x-wav',
+  'application/vnd.apple.mpegurl',
+  'application/x-mpegurl',
+  'audio/mpegurl',
+  'audio/x-mpegurl',
+]);
+
+/**
+ * What a media element's `canPlayType` answers where the platform's player
+ * plays what the page's `<video>` asks for (`videoSource`): `'maybe'` for a
+ * type it has a reader for — none of a type's codecs is checked, so never
+ * `'probably'` — and `''` for the rest. A page asks before it loads a
+ * stream: an HLS player with no `MediaSource` to feed sets the playlist as
+ * the `src` only where this is not `''`.
+ */
+export function canPlayMedia(type: string): '' | 'maybe' {
+  const media = type.split(';')[0].trim().toLowerCase();
+  return PLAYABLE.has(media) ? 'maybe' : '';
+}
+
 /**
  * What a page's `<video>` plays, where the platform has a player (core's
  * `useSupports('mediaPlayback')`): the URL itself, for the player to open —

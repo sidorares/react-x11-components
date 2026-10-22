@@ -109,6 +109,13 @@ export interface HtmlScripts {
   userAgent?: string;
   /** `navigator.language`. Default the runtime's locale. */
   language?: string;
+  /** What a media element's `canPlayType` answers for a MIME type: whether
+   *  what plays a `<video>` — `onResource`'s `kind: 'video'` — can play
+   *  it. Default none, `''` for every type, as the page has no player
+   *  until its host gives it one. `canPlayMedia` answers for the
+   *  platform's player, where `useSupports('mediaPlayback')` says there is
+   *  one. */
+  canPlayType?: (type: string) => '' | 'maybe' | 'probably';
   /**
    * Whether a frame's document is loaded, drawn over its box and run in a
    * realm of its own, linked to the page's — `parent`, `contentWindow`,
@@ -253,6 +260,7 @@ export function useScriptedHtml(
   const options: ScriptsOptions = {
     userAgent: config.userAgent ?? HTML_USER_AGENT,
     language: config.language ?? runtimeLanguage(),
+    canPlayType: config.canPlayType,
     viewport: config.viewport ?? (() => viewportOf(node())),
     scrollTo:
       config.scrollTo ??
