@@ -262,7 +262,10 @@ A `<template>`'s content is inert, as in a browser (HTML 4.12.3): no box is
 made in it, a `<style>` or `<link rel=stylesheet>` in it styles nothing, an
 image or a sheet in it is not asked for through `onResource`, a `<script>`
 in it is not handed to `onScript`, and its `<title>` and `<base>` are not the
-document's. It stays in the DOM, for an application that stamps it out. One
+document's. It stays in the DOM, for an application that stamps it out,
+and to a page's scripts it is the template's `content` alone: the template
+has no children, and `getElementById`, `getElementsByTagName`,
+`getElementsByClassName` and the window's names find nothing in it. One
 with a `shadowrootmode` is its parent's shadow tree instead — see
 [Shadow DOM](#shadow-dom) — whose images and sheets are asked for, and whose
 scripts are handed over, as the document's are.
@@ -2693,7 +2696,13 @@ root's pane, or the element itself — is scrolled along its axis;
 `view()` how far the element has crossed that scrollport, less its
 insets, from `cover 0%` to `cover 100%`; a name, the timeline the element
 or its nearest ancestor declares with `scroll-timeline-name` or
-`view-timeline-name`; and `none`, no timeline and no effect. Its timing
+`view-timeline-name`, a scroll's before a view's on one element — or,
+where an ancestor's `timeline-scope` takes the name first, the last
+element under that ancestor to declare it, and none where none does —
+and otherwise the last element in the document to declare it, as though
+the root took every name; an element whose own `timeline-scope` takes a
+name keeps what it and its subtree declare by it from outside; and
+`none`, no timeline and no effect. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
 the end of its scroller's scroll its end is held, as Web Animations 2's
 timeline boundary has it. It is styled again when a scroll or a layout
@@ -2701,8 +2710,8 @@ moves its timeline, and asks for no frame of the clock's.
 `animation-range`, and its `-start` and `-end`, narrow the part of the
 timeline it runs over: a percentage or a length into the whole timeline,
 or into a named range of a view timeline (`cover`, `contain`, `entry`,
-`exit`, `entry-crossing`, `exit-crossing`). Not yet: `timeline-scope` and
-a vertical writing mode's axes.
+`exit`, `entry-crossing`, `exit-crossing`). Not yet: a vertical writing
+mode's axes.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer

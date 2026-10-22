@@ -2185,6 +2185,27 @@ test('a shadow root attached with nothing in it hides the host’s children at t
   assert.equal(doc.view.computedStyle(doc.byId('gone')), null);
 });
 
+test("what a template holds is its content's, and no search of the document finds it", async () => {
+  const doc = await hosted(
+    '<main id="main"></main><template id="t"><div id="inner" class="c"></div><p></p></template>' +
+      '<p id="out"></p><script>' +
+      'var r = [], t = document.getElementById("t");' +
+      'r.push(document.getElementById("inner"), document.getElementsByClassName("c").length,' +
+      '  document.getElementsByTagName("p").length, t.childNodes.length, t.firstChild,' +
+      '  t.content.childNodes.length, typeof window.inner);' +
+      // a copy of it put in the document is the document's, by id and by name
+      'document.getElementById("main").append(t.content.cloneNode(true));' +
+      'r.push(document.getElementById("inner") === window.inner, String(window.inner));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '|0|1|0||2|undefined|true|[object HTMLDivElement]',
+    doc.logs.join('\n'),
+  );
+});
+
 // --- custom elements ---------------------------------------------------------
 
 test('a custom element defined after the parse upgrades the ones in the document, in tree order, and its callbacks run as the tree changes', async () => {

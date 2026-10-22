@@ -3666,6 +3666,41 @@ test('an animation on a scroll() timeline is where its scroller is scrolled, and
   assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
 });
 
+test('a named timeline is found through a timeline-scope, and from anywhere in the document where no scope stands between', async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '.sc{height:50px;overflow:auto} .sc>div{height:150px}' +
+      '#s1{scroll-timeline:--a} #s2{scroll-timeline:--b}' +
+      '#scope{timeline-scope:--b} #empty{timeline-scope:--a}' +
+      '.on-a{animation:fade linear;animation-timeline:--a}' +
+      '.on-b{animation:fade linear;animation-timeline:--b}</style>' +
+      '<div id="sibling" class="on-a"></div>' +
+      '<div class="sc" id="s1"><div></div></div>' +
+      '<div id="scope"><div id="inside" class="on-b"></div>' +
+      '<div class="sc" id="s2"><div></div></div></div>' +
+      '<div id="outside" class="on-b"></div>' +
+      '<div id="empty"><div id="stopped" class="on-a"></div></div>',
+  );
+  const scroll = async (id: string, y: number) => {
+    doc.el.scrollElementTo(findById(doc.el.document, id)!, { y });
+    await act();
+    for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+    await act();
+  };
+  await scroll('s1', 50);
+  await scroll('s2', 25);
+  // a sibling's timeline, with no scope between: the document's
+  assert.strictEqual(doc.style('sibling').opacity, 0.5);
+  // a timeline the scope around both takes
+  assert.strictEqual(doc.style('inside').opacity, 0.25);
+  // one a scope keeps from outside it, and a scope that holds none of
+  // the name: no timeline, and no effect
+  assert.strictEqual(doc.style('outside').opacity, 1);
+  assert.strictEqual(doc.style('stopped').opacity, 1);
+});
+
 test('an animation-range narrows the part of a scroll timeline an animation runs over, a named range of a view timeline among them', async (t) => {
   const doc = await triggering(
     t,

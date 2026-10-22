@@ -19880,7 +19880,22 @@ export function installDom(
     CSSFontFaceRule,
     CSSKeyframesRule,
   };
-  for (const [name, value] of Object.entries(classes)) define(name, value);
+  for (const [name, value] of Object.entries(classes)) {
+    // an interface's prototype says its name to `Object.prototype.toString`
+    // (Web IDL 3.7.3), so a `<div>` is `[object HTMLDivElement]`
+    const proto = typeof value === 'function' ? value.prototype : null;
+    if (
+      proto &&
+      value.name === name &&
+      !Object.prototype.hasOwnProperty.call(proto, Symbol.toStringTag)
+    ) {
+      Object.defineProperty(proto, Symbol.toStringTag, {
+        value: name,
+        configurable: true,
+      });
+    }
+    define(name, value);
+  }
 
   define('window', G);
   define('self', G);

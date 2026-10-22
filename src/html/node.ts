@@ -9125,46 +9125,116 @@ export interface CssAnimationInfo {
 /** The timeline an element's `animation-timeline` names (Scroll-driven
  *  Animations 1, 4.2): `scroll-timeline-name` or `view-timeline-name` on
  *  the element or the nearest ancestor that declares it, its axis and
- *  inset the ones at the name's place in their lists. */
+ *  inset the ones at the name's place in their lists — or, where an
+ *  ancestor's `timeline-scope` takes the name first, the last element in
+ *  its subtree that declares it outside a scope of its own, and none where
+ *  no element does (4.3). Where neither is found, the document is the
+ *  scope, as though its root took every name (csswg-drafts#7759). */
 function namedTimeline(
   tree: BoxTree,
   el: Element,
   name: string,
-): {
-  el: Element;
-  view: boolean;
-  axis: string;
-  inset: readonly [Len, Len];
-} | null {
+): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
     if (style) {
-      const scroll = style.scrollTimelineName.split(', ').indexOf(name);
-      if (scroll >= 0) {
-        const axes = style.scrollTimelineAxis.split(', ');
-        return {
-          el: at,
-          view: false,
-          axis: axes[scroll % axes.length],
-          inset: ['auto', 'auto'],
-        };
-      }
-      const view = style.viewTimelineName.split(', ').indexOf(name);
-      if (view >= 0) {
-        const axes = style.viewTimelineAxis.split(', ');
-        const insets = style.viewTimelineInset;
-        return {
-          el: at,
-          view: true,
-          axis: axes[view % axes.length],
-          inset: insets[view % insets.length],
-        };
-      }
+      const own = declaredTimeline(at, style, name);
+      if (own) return own;
+      if (scopes(style, name)) return scopedTimeline(tree, at, name);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
+  return scopedTimeline(tree, null, name);
+}
+
+interface NamedTimeline {
+  el: Element;
+  view: boolean;
+  axis: string;
+  inset: readonly [Len, Len];
+}
+
+/** Whether a style's `timeline-scope` takes a name. */
+function scopes(style: ComputedStyle, name: string): boolean {
+  const scope = style.timelineScope;
+  return (
+    scope === 'all' || (scope !== 'none' && scope.split(', ').includes(name))
+  );
+}
+
+/** The timeline an element declares by a name, a scroll's before a view's
+ *  and a later place in a list before an earlier (4.3). */
+function declaredTimeline(
+  at: Element,
+  style: ComputedStyle,
+  name: string,
+): NamedTimeline | null {
+  const scroll = style.scrollTimelineName.split(', ').lastIndexOf(name);
+  if (scroll >= 0) {
+    const axes = style.scrollTimelineAxis.split(', ');
+    return {
+      el: at,
+      view: false,
+      axis: axes[scroll % axes.length],
+      inset: ['auto', 'auto'],
+    };
+  }
+  const view = style.viewTimelineName.split(', ').lastIndexOf(name);
+  if (view >= 0) {
+    const axes = style.viewTimelineAxis.split(', ');
+    const insets = style.viewTimelineInset;
+    return {
+      el: at,
+      view: true,
+      axis: axes[view % axes.length],
+      inset: insets[view % insets.length],
+    };
+  }
   return null;
+}
+
+/** The timeline a `timeline-scope` on `scope` — or the document, for
+ *  null — makes of a name: the last element under it in tree order that
+ *  declares the name, where neither it nor an element between them has a
+ *  scope of the name of its own, which keeps it from outside. */
+function scopedTimeline(
+  tree: BoxTree,
+  scope: Element | null,
+  name: string,
+): NamedTimeline | null {
+  let found: NamedTimeline | null = null;
+  for (const [el, entry] of tree.styles) {
+    if (el === scope) continue;
+    const style = entry.style;
+    // most elements declare no timeline, and are passed over cheaply
+    if (
+      style.scrollTimelineName === 'none' &&
+      style.viewTimelineName === 'none'
+    ) {
+      continue;
+    }
+    const timeline = declaredTimeline(el, style, name);
+    if (!timeline) continue;
+    let under = scope === null;
+    for (
+      let at: AnyNode | null = el;
+      at && isElement(at);
+      at = flatParentOf(at)
+    ) {
+      if (at === scope) {
+        under = true;
+        break;
+      }
+      const style = tree.styles.get(at)?.style;
+      if (style && scopes(style, name)) {
+        under = false;
+        break;
+      }
+    }
+    if (under) found = timeline;
+  }
+  return found;
 }
 
 /** The scroll container a box is scrolled by: the nearest one around it,
