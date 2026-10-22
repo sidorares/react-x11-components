@@ -418,6 +418,10 @@ export class ScriptEngine {
   private _depth = 0;
   private _broken = false;
   private _disposed = false;
+  /** An entry has timed out since the host last asked (`timedOutSince`).
+   *  V8's termination can stop a tree-moving bridge op partway, so the
+   *  host repairs the tree before it is drawn or read again. */
+  private _timedOut = false;
 
   /** This document's module map (HTML 8.1.4.6): one module a URL, however
    *  many import it — and each linked once and evaluated once, which the
@@ -624,6 +628,7 @@ export class ScriptEngine {
       });
     } catch (error) {
       if (ownData(error, 'code') === TIMEOUT) {
+        this._timedOut = true;
         this._options.onTimeout();
         throw this._pageError(`The module ${module.identifier} ran too long.`);
       }
@@ -724,6 +729,7 @@ export class ScriptEngine {
     if (this._broken || this._disposed) return;
     if (isHostError(error)) {
       if ((error as { code?: unknown }).code === TIMEOUT) {
+        this._timedOut = true;
         this._options.onTimeout();
         return;
       }
@@ -802,7 +808,15 @@ export class ScriptEngine {
       const out = this._entry(name).runInContext(this._context, {
         timeout: this._options.timeout,
       });
-      return out === null || typeof out !== 'object'
+      // Only a primitive comes back. An entry answers one by design; a
+      // function or object is a page value the host has no business
+      // holding, so it is dropped, the mirror of the bridge's own guard.
+      const kind = typeof out;
+      return out === null ||
+        kind === 'string' ||
+        kind === 'number' ||
+        kind === 'boolean' ||
+        kind === 'undefined'
         ? (out as Primitive)
         : undefined;
     } catch (error) {
@@ -815,6 +829,7 @@ export class ScriptEngine {
         code = (error as { code?: unknown } | null)?.code;
       } catch {}
       if (code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+        this._timedOut = true;
         this._options.onTimeout();
       } else {
         this._options.log(
@@ -877,6 +892,19 @@ export class ScriptEngine {
       return;
     }
     this.call('__rejected', null);
+  }
+
+  /**
+   * Whether an entry has timed out since this was last asked, clearing the
+   * flag. The host calls it as it flushes, and repairs the tree if so:
+   * V8's termination of a timed-out entry can stop a tree-moving bridge op
+   * between updating a parent's `children` and the siblings' `prev`/`next`,
+   * which a page then reads (`DomHost._repairTree`).
+   */
+  timedOutSince(): boolean {
+    const was = this._timedOut;
+    this._timedOut = false;
+    return was;
   }
 
   dispose(): void {

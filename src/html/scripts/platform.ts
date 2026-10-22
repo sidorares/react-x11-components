@@ -143,6 +143,12 @@ export interface WorkerThreadsModule {
       transferList?: unknown[];
       name?: string;
       eval?: boolean;
+      resourceLimits?: {
+        maxOldGenerationSizeMb?: number;
+        maxYoungGenerationSizeMb?: number;
+        codeRangeSizeMb?: number;
+        stackSizeMb?: number;
+      };
     },
   ) => WorkerLike;
   MessageChannel: new () => {

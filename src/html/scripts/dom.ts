@@ -64,6 +64,14 @@ export function installDom(
   type Any = any;
   const G: Any = globalThis;
 
+  // The context's own `FinalizationRegistry`, kept for this facade's own
+  // registries (whose cleanup only calls the bridge) and wrapped for the
+  // page's (`FinalizationRegistry` is replaced below): a page's cleanup is
+  // run by V8 as a platform task, outside any entry and so outside the
+  // timeout, where a loop would wedge the pane with nothing to stop it.
+  const RealFinalizationRegistry: Any =
+    typeof FinalizationRegistry === 'function' ? FinalizationRegistry : null;
+
   // --- the bridge -------------------------------------------------------------
 
   /** An op's answer, or the host's error thrown as a `DOMException`. */
@@ -7063,12 +7071,11 @@ export function installDom(
   // A live range is the host's (`ranges.ts`), which moves it as the tree
   // changes; a `Range` holds its id, and lets it go when the page does.
 
-  const rangesHeld =
-    typeof FinalizationRegistry === 'function'
-      ? new FinalizationRegistry((id: number) => {
-          bridge('rangeDrop', id);
-        })
-      : null;
+  const rangesHeld = RealFinalizationRegistry
+    ? new RealFinalizationRegistry((id: number) => {
+        bridge('rangeDrop', id);
+      })
+    : null;
   /** The document a `Range` being made starts in: `createRange`'s, or the
    *  page's for `new Range()`. */
   let rangeDocument: Any = null;
@@ -7456,6 +7463,46 @@ export function installDom(
     if (!timers.delete(Number(id))) return;
     call('clearTimer', Number(id));
   };
+
+  // The page's `FinalizationRegistry`: its cleanup runs through a timer
+  // (`setTimer` → `__timer`), which the host runs under the engine's
+  // timeout, rather than from V8's platform task where nothing stops it.
+  // A real registry underneath does the holding and the validation; its
+  // own callback only schedules, so it stays cheap outside the timeout.
+  if (RealFinalizationRegistry) {
+    class PageFinalizationRegistry {
+      private _fr: Any;
+      constructor(cleanup: Any) {
+        if (typeof cleanup !== 'function') {
+          throw new TypeError(
+            "Failed to construct 'FinalizationRegistry': parameter 1 is not of type 'Function'.",
+          );
+        }
+        this._fr = new RealFinalizationRegistry((held: Any) => {
+          setTimer(() => cleanup(held), 0, [], false);
+        });
+      }
+      register(target: Any, held: Any, token?: Any): void {
+        this._fr.register(target, held, token);
+      }
+      unregister(token: Any): boolean {
+        return this._fr.unregister(token);
+      }
+    }
+    Object.defineProperty(
+      PageFinalizationRegistry.prototype,
+      Symbol.toStringTag,
+      {
+        value: 'FinalizationRegistry',
+        configurable: true,
+      },
+    );
+    Object.defineProperty(PageFinalizationRegistry, 'name', {
+      value: 'FinalizationRegistry',
+      configurable: true,
+    });
+    G.FinalizationRegistry = PageFinalizationRegistry;
+  }
 
   /** `location`, over the host's address for the document. */
   const location: Any = {
@@ -8494,12 +8541,11 @@ export function installDom(
     }
   }
 
-  const iteratorsHeld =
-    typeof FinalizationRegistry === 'function'
-      ? new FinalizationRegistry((id: number) => {
-          bridge('iterDrop', id);
-        })
-      : null;
+  const iteratorsHeld = RealFinalizationRegistry
+    ? new RealFinalizationRegistry((id: number) => {
+        bridge('iterDrop', id);
+      })
+    : null;
 
   /** `NodeIterator` (DOM 6.1): the tree in document order from `root`,
    *  with a reference node it is before or after. */

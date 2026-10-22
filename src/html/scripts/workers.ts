@@ -127,6 +127,20 @@ interface Running {
   fetches: Map<number, AbortController>;
 }
 
+/** How many workers one page may have running at once. A page that spawns
+ *  without end would otherwise make a thread each time; past this the
+ *  request is logged and dropped, as a browser caps a page's workers. */
+const MAX_WORKERS = 16;
+
+/** What a worker's thread may hold, in megabytes of V8's old and young
+ *  space. Node ends a thread that grows past it with
+ *  `ERR_WORKER_OUT_OF_MEMORY`; Bun 1.4 does not enforce it (the pane's own
+ *  bounds are the backstop there), so it is a hint, not a guarantee. */
+const WORKER_RESOURCE_LIMITS = {
+  maxOldGenerationSizeMb: 256,
+  maxYoungGenerationSizeMb: 64,
+};
+
 export class PageWorkers implements PageWorkersLike {
   private _running = new Map<number, Running>();
   private _seq = 0;
@@ -137,6 +151,13 @@ export class PageWorkers implements PageWorkersLike {
   start(init: WorkerInit): number {
     const id = ++this._seq;
     if (this._disposed) return id;
+    if (this._running.size >= MAX_WORKERS) {
+      this._seams.log(
+        'warn',
+        `A page tried to start more than ${MAX_WORKERS} workers at once; ${init.url} was not started.`,
+      );
+      return id;
+    }
     const { port1, port2 } = new MessageChannel();
     const flag = new SharedArrayBuffer(4);
     const data: WorkerThreadData = {
@@ -152,6 +173,7 @@ export class PageWorkers implements PageWorkersLike {
       transferList: [port2],
       name: init.name || init.url,
       eval: typeof source === 'string',
+      resourceLimits: WORKER_RESOURCE_LIMITS,
     });
     const running: Running = {
       thread,
