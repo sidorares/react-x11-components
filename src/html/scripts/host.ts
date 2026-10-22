@@ -1390,6 +1390,7 @@ export class DomHost {
   /** A copy of a node, its document's (DOM 4.5, "clone"). */
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
+    this._cloneShadows(node, clone, deep);
     const owner = this._ownerOf(node);
     if (owner !== this.document) this._owners.set(clone, owner);
     if (isDoctype(node)) this._doctypes.set(clone, this._doctypeOf(node));
@@ -1399,6 +1400,36 @@ export class DomHost {
       if (type) this._xml.set(clone as unknown as Document, type);
     }
     return clone;
+  }
+
+  /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
+   *  whose shadow root is clonable gives its copy a root of the same kind
+   *  and a copy of the tree in it, whether or not the clone is deep, and
+   *  a deep clone does so for every host in what it copies. */
+  private _cloneShadows(node: AnyNode, copy: AnyNode, deep: boolean): void {
+    if (node instanceof Element && copy instanceof Element) {
+      const root = shadowRootOf(node);
+      if (root?.clonable && !shadowRootOf(copy)) {
+        const made = attachShadow(copy, {
+          mode: root.mode,
+          delegatesFocus: root.delegatesFocus,
+          clonable: true,
+          serializable: root.serializable,
+        });
+        if (made) {
+          made.registryNull = root.registryNull;
+          for (const child of root.children) {
+            DomUtils.appendChild(made, this._clone(child, true));
+          }
+        }
+      }
+    }
+    if (!deep) return;
+    const from = (node as { children?: AnyNode[] }).children ?? [];
+    const to = (copy as { children?: AnyNode[] }).children ?? [];
+    for (let i = 0; i < from.length && i < to.length; i += 1) {
+      this._cloneShadows(from[i], to[i], true);
+    }
   }
 
   /** A dirty box's `checked` attribute set or taken away: its default
@@ -1932,9 +1963,12 @@ export class DomHost {
             "Failed to execute 'attachShadow' on 'Element': Shadow root cannot be created on a host which already hosts a shadow tree.",
           );
         }
+        const [clonable, serializable] = text(d).split(',');
         const root = attachShadow(host, {
           mode: b === 'closed' ? 'closed' : 'open',
           delegatesFocus: c === true,
+          clonable: clonable === '1',
+          serializable: serializable === '1',
         });
         if (!root) {
           throw new DomError(
@@ -1945,12 +1979,20 @@ export class DomHost {
         this._refreshAll = true;
         return this.idOf(root);
       }
+      // an open root, or a closed one where the element's own internals ask
       case 'shadowRoot': {
         const root = shadowRootOf(this._element(a));
-        return root && root.mode === 'open' ? this.idOf(root) : 0;
+        return root && (root.mode === 'open' || b === true)
+          ? this.idOf(root)
+          : 0;
       }
       case 'shadowHost':
         return this.idOf((this._node(a) as ShadowRoot).host);
+      // a shadow root's `clonable` and `serializable`
+      case 'shadowFlags': {
+        const root = this._node(a) as ShadowRoot;
+        return `${root.clonable ? 1 : 0}${root.serializable ? 1 : 0}`;
+      }
       case 'shadowMode':
         return (this._node(a) as ShadowRoot).mode;
       case 'shadowDelegates':

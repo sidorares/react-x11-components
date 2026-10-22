@@ -390,6 +390,11 @@ export class ShadowRoot extends DomDocument {
    *  element registry is null until a page's script initializes one
    *  (HTML 4.13.4, scoped registries), where any other is the document's. */
   registryNull = false;
+  /** `clonable` and `serializable` (DOM 4.2.2.4, 4.9): whether a clone of
+   *  the host takes a copy of this tree, and whether `getHTML()` writes
+   *  it. A declarative root is clonable where its template said so. */
+  clonable = false;
+  serializable = false;
   private _assignedAt = -1;
   /** The nodes assigned to each slot, in tree order. */
   private _assigned = new Map<Element, ChildNode[]>();
@@ -723,10 +728,17 @@ const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
  */
 export function attachShadow(
   host: Element,
-  init: { mode: ShadowRootMode; delegatesFocus?: boolean },
+  init: {
+    mode: ShadowRootMode;
+    delegatesFocus?: boolean;
+    clonable?: boolean;
+    serializable?: boolean;
+  },
 ): ShadowRoot | null {
   if (SHADOW_ROOTS.has(host) || !canHostShadow(host)) return null;
   const root = new ShadowRoot(host, init.mode, init.delegatesFocus ?? false);
+  root.clonable = !!init.clonable;
+  root.serializable = !!init.serializable;
   SHADOW_ROOTS.set(host, root);
   treesChanged();
   return root;
@@ -1309,6 +1321,8 @@ class Handler extends DomHandler {
     const delegates = attribs.shadowrootdelegatesfocus !== undefined;
     const root = new ShadowRoot(host, mode, delegates);
     root.registryNull = attribs.shadowrootcustomelementregistry !== undefined;
+    root.clonable = attribs.shadowrootclonable !== undefined;
+    root.serializable = attribs.shadowrootserializable !== undefined;
     SHADOW_ROOTS.set(host, root);
     treesChanged();
     stack.push(root);
