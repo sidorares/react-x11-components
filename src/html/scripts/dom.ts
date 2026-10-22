@@ -8672,6 +8672,20 @@ export function installDom(
     live.setEnd(ec, eo);
     return live;
   };
+  /** Whether a static range's points make a range (DOM 5.4, "valid"). */
+  const staticValid = (sc: Any, so: number, ec: Any, eo: number): boolean => {
+    const length = (node: Any): number =>
+      node.nodeType === 3 || node.nodeType === 4 || node.nodeType === 8
+        ? node.data.length
+        : node.childNodes.length;
+    if (so > length(sc) || eo > length(ec)) return false;
+    if (sc.getRootNode() !== ec.getRootNode()) return false;
+    try {
+      return comparePoints(sc, so, ec, eo) <= 0;
+    } catch {
+      return false;
+    }
+  };
   const highlightRegistry = new HighlightRegistry();
   /** Tell the host what the registry holds now. */
   const highlightsChanged = (): void => {
@@ -8681,6 +8695,9 @@ export function installDom(
       for (const range of setValues.call(highlight._ranges)) {
         if (range instanceof StaticRange) {
           const [sc, so, ec, eo] = range._points();
+          // only a valid one is lit (DOM 5.4): its points in one tree,
+          // inside their nodes, and the start not after the end
+          if (!staticValid(sc, so, ec, eo)) continue;
           ranges.push([idOf(sc), so, idOf(ec), eo]);
         } else if (range._id) ranges.push(range._id);
       }
