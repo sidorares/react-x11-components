@@ -18,7 +18,9 @@ import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
 import type { ContainerQuery } from './containers.js';
 import { parseLength, parseStretch, splitValue } from './values.js';
-import { hasVar, unbalanced, validVars } from './vars.js';
+import { closingParen, hasVar, unbalanced, validVars } from './vars.js';
+import type { CustomFunction, FunctionItem, FunctionParam } from './vars.js';
+import { matchesSyntax, validSyntax } from './syntax.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
 export interface Declaration {
@@ -47,6 +49,23 @@ export interface PropertyRule {
   /** Its `initial-value`, or null for none, which only the universal
    *  syntax may have: the guaranteed-invalid value. */
   initial: string | null;
+}
+
+/**
+ * A `@function` rule (CSS Mixins 1, 2.1): a custom function, which a
+ * `--name(…)` in a value calls. Which rule a name finds is the cascade's
+ * to say: the last of its name whose media hold, in the latest layer.
+ */
+export interface FunctionRule extends CustomFunction {
+  /** As written: a dashed ident, case and all. */
+  name: string;
+  /** The `@media` blocks the rule sits under, as a style rule's. */
+  media: MediaCondition[][] | null;
+  /** The cascade layer it is in, as a style rule's. */
+  layer: readonly number[] | null;
+  /** Whether its body has an `@media` block, which makes what a call
+   *  comes to the viewport's to say. */
+  readsMedia: boolean;
 }
 
 export interface StyleRule {
@@ -107,6 +126,8 @@ export interface Stylesheet {
   keyframes?: KeyframesRule[];
   /** The custom properties its `@property` rules register, in order. */
   properties?: PropertyRule[];
+  /** Its `@function` rules, in order. */
+  functions?: FunctionRule[];
 }
 
 /**
@@ -244,6 +265,7 @@ const BLOCK_AT_RULES = new Set([
   'container',
   'property',
   'font-feature-values',
+  'function',
 ]);
 
 /**
@@ -424,6 +446,9 @@ export function parseStylesheet(
         } else if (name === 'property' && at.block !== null) {
           const registered = parseProperty(at.prelude, at.block);
           if (registered) (sheet.properties ??= []).push(registered);
+        } else if (name === 'function' && at.block !== null) {
+          const fn = parseFunction(at.prelude, at.block, note);
+          if (fn) (sheet.functions ??= []).push({ ...fn, media, layer });
         } else if (name === 'counter-style' && at.block !== null) {
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,
@@ -760,6 +785,150 @@ function parseProperty(prelude: string, block: string): PropertyRule | null {
   if (initial === null && syntax !== '*') return null;
   if (initial !== null && hasVar(initial)) return null;
   return { name, syntax, inherits, initial };
+}
+
+/**
+ * A `@function` rule (CSS Mixins 1, 2.1), or null where it is none and is
+ * ignored: its prelude a dashed function's name, its parameters — each a
+ * custom property's name, a type and a default, the last two optional —
+ * and a `returns` type. A parameter named twice, a type that is no syntax,
+ * or a default not of its parameter's type makes the rule none. In the
+ * body, `result` and custom properties are its descriptors, in the order
+ * written, and an `@media` or a `@supports` block holds more of them; any
+ * other descriptor is dropped, and the rule stands. `note` is told of each
+ * `@media` the body has, as the sheet's own are.
+ */
+function parseFunction(
+  prelude: string,
+  block: string,
+  note: (conditions: MediaCondition[]) => void,
+): Omit<FunctionRule, 'media' | 'layer'> | null {
+  const head = /^(--(?:[\w-]|[^\x00-\x7f])+)\(/.exec(prelude);
+  if (!head) return null;
+  const name = head[1];
+  const close = closingParen(prelude, head[0].length);
+  if (close < 0 || close >= prelude.length) return null;
+  const params: FunctionParam[] = [];
+  const list = prelude.slice(head[0].length, close);
+  if (list.trim()) {
+    for (const raw of splitTopLevelCommas(list)) {
+      const param = parseFunctionParam(raw);
+      if (!param || params.some((p) => p.name === param.name)) return null;
+      params.push(param);
+    }
+  }
+  const rest = prelude.slice(close + 1).trim();
+  let returns: string | null = null;
+  if (rest) {
+    const m = /^returns\s+([\s\S]+)$/i.exec(rest);
+    const type = m ? functionType(m[1]) : undefined;
+    if (type === undefined) return null;
+    returns = type;
+  }
+  let readsMedia = false;
+  const body = (text: string): FunctionItem[] => {
+    const out: FunctionItem[] = [];
+    let i = 0;
+    while (i < text.length) {
+      i = skipTrivia(text, i);
+      if (i >= text.length) break;
+      if (text[i] === ';') {
+        i += 1;
+        continue;
+      }
+      if (text[i] === '@' && startsIdent(text, i + 1)) {
+        const at = readAtRule(text, i);
+        i = at.end;
+        if (at.block === null) continue;
+        const kind = at.name.toLowerCase();
+        if (kind === 'media') {
+          note(parseMediaQuery(at.prelude));
+          readsMedia = true;
+          out.push({
+            kind: 'media',
+            condition: at.prelude,
+            body: body(at.block),
+          });
+        } else if (kind === 'supports') {
+          if (supportsCondition(at.prelude) !== false)
+            out.push(...body(at.block));
+        }
+        continue;
+      }
+      const end = scanTo(text, i, ';');
+      for (const d of parseDeclarations(text.slice(i, end))) {
+        if (d.custom || d.prop === 'result') {
+          out.push({ kind: 'descriptor', name: d.prop, value: d.value });
+        }
+      }
+      i = end + 1;
+    }
+    return out;
+  };
+  return { name, params, returns, body: body(block), readsMedia };
+}
+
+/** One of a `@function`'s parameters, or null where it is none. */
+function parseFunctionParam(raw: string): FunctionParam | null {
+  const m = /^\s*(--(?:[\w-]|[^\x00-\x7f])+)([\s\S]*)$/.exec(raw);
+  if (!m) return null;
+  let rest = m[2].trim();
+  let fallback: string | null = null;
+  const colon = scanTo(rest, 0, ':');
+  if (colon < rest.length) {
+    fallback = rest.slice(colon + 1).trim();
+    rest = rest.slice(0, colon).trim();
+    if (!fallback) return null;
+  }
+  let syntax: string | null = null;
+  if (rest) {
+    const type = functionType(rest);
+    if (type === undefined) return null;
+    syntax = type;
+  }
+  // a default stands for an argument, so has to be one of its type —
+  // where that can be said as it is parsed, before a `var()` in it is
+  if (
+    fallback !== null &&
+    syntax !== null &&
+    !hasVar(fallback) &&
+    !matchesSyntax(fallback, syntax)
+  ) {
+    return null;
+  }
+  return { name: m[1], syntax, fallback };
+}
+
+/** A parameter's or a `returns` type — one component, `<length>`, or a
+ *  syntax in `type()`, and a string as `@property` writes one — as the
+ *  syntax it is: null for any, and undefined for none. */
+function functionType(text: string): string | null | undefined {
+  const t = text.trim();
+  const typed = /^type\(([\s\S]*)\)$/i.exec(t);
+  const quoted = /^(["'])([\s\S]*)\1$/.exec(t);
+  const syntax = (typed ? typed[1] : quoted ? quoted[2] : t).trim();
+  if (!typed && !quoted && /[|\s]/.test(syntax) && syntax !== '*') {
+    // more than one component is written in `type()`
+    return undefined;
+  }
+  if (!validSyntax(syntax)) return undefined;
+  return syntax === '*' ? null : syntax;
+}
+
+/** `text` cut at each comma outside brackets and strings. */
+function splitTopLevelCommas(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (
+    let i = scanTo(text, 0, ',');
+    i < text.length;
+    i = scanTo(text, i + 1, ',')
+  ) {
+    out.push(text.slice(start, i));
+    start = i + 1;
+  }
+  out.push(text.slice(start));
+  return out;
 }
 
 /** Split `a, b > c, d` on top-level commas. */

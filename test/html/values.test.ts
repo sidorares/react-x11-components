@@ -12,6 +12,8 @@ import {
   resolveOrNull,
   splitValue,
 } from '../../src/html/css/values.js';
+import { parseStylesheet } from '../../src/html/css/parse.js';
+import { substitute } from '../../src/html/css/vars.js';
 import { boxOf, metric, render, renderWithBytes, view } from './harness.js';
 
 afterEach(cleanup);
@@ -406,6 +408,144 @@ metric(
     assert.strictEqual(style('i').backgroundColor, '#0000ff');
   },
 );
+
+metric(
+  'a custom function is called where a var() would be replaced, with its arguments, defaults and locals',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>' +
+        '@function --double(--x) { result: calc(var(--x) * 2) }' +
+        // a typed parameter takes its default where the argument is none
+        // or not of its type
+        '@function --pad(--x <length>: 4px) { result: var(--x) }' +
+        // a local over a parameter of its name, and over what the caller
+        // sees; a default may name another parameter
+        '@function --scoped(--a, --b: var(--a)) {' +
+        '  --a: 7px; result: calc(var(--a) + var(--b) + var(--outer)) }' +
+        // the last result whose conditions hold stands, and a @supports
+        // block is read as the sheet's are
+        '@function --pick() { result: 1px; @media (width > 1px) { result: 2px }' +
+        '  @media (width > 100000px) { result: 99px }' +
+        '  @supports (display: grid) { --three: 3px } result: var(--three) }' +
+        // a result not of the type the function returns is none
+        '@function --colour() returns <color> { result: 10px }' +
+        '@function --length() returns <length> { result: 12px }' +
+        // a call of itself, however far round, is a cycle
+        '@function --loop(--x) { result: --loop(var(--x)) }' +
+        '@function --ping() { result: --pong() }' +
+        '@function --pong() { result: --ping() }' +
+        // a comma inside an argument is in braces
+        '@function --fade(--c) { result: linear-gradient(var(--c), transparent) }' +
+        '@function --first(--list) { result: var(--list) }' +
+        // in a stronger layer, a function wins over a later one in a weaker
+        '@layer low, high;' +
+        '@layer high { @function --layered() { result: 21px } }' +
+        '@layer low { @function --layered() { result: 99px } }' +
+        // the later of two in one layer
+        '@function --twice() { result: 99px } @function --twice() { result: 23px }' +
+        'body { --outer: 100px } p { width: 1px }' +
+        '#a { width: --double(20px) }' +
+        '#b { width: --pad() } #c { width: --pad(red) } #d { width: --pad(6px) }' +
+        '#e { width: --scoped(1px) } #f { width: --scoped(1px, 2px) }' +
+        '#g { width: --pick() } #h { width: --colour() } #i { width: --length() }' +
+        '#j { width: 5px; width: --loop(1px) } #k { width: --ping() }' +
+        // too many arguments, or a function nobody declared, is none
+        '#l { width: --double(1px, 2px) } #m { width: --nope(1px) }' +
+        // calls in arguments, in custom properties, in a fallback
+        '#n { width: --double(--double(5px)) }' +
+        '#o { --w: --double(15px); width: var(--w) }' +
+        '#q { width: var(--unset, --double(13px)) }' +
+        '#r { background-image: --fade(red) }' +
+        '#s { font-family: --first({monospace, serif}) }' +
+        '#t { width: --layered() } #u { width: --twice() }' +
+        '</style></head><body>' +
+        '<p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+        '<p id="e">e</p><p id="f">f</p><p id="g">g</p><p id="h">h</p>' +
+        '<p id="i">i</p><p id="j">j</p><p id="k">k</p><p id="l">l</p>' +
+        '<p id="m">m</p><p id="n">n</p><p id="o">o</p><p id="q">q</p>' +
+        '<p id="r">r</p><p id="s">s</p><p id="t">t</p><p id="u">u</p>' +
+        '</body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    const widths: [string, unknown][] = [
+      ['a', 40],
+      ['b', 4],
+      ['c', 4],
+      ['d', 6],
+      // 7 + 1 + 100: the local `--a` hides the parameter, `--b` is the
+      // parameter's default, which reads `--a` as the default's caller does
+      ['e', 108],
+      ['f', 109],
+      ['g', 3],
+      // invalid at computed-value time: `width` does not inherit, so auto
+      ['h', 'auto'],
+      ['i', 12],
+      ['j', 'auto'],
+      ['k', 'auto'],
+      ['l', 'auto'],
+      ['m', 'auto'],
+      ['n', 20],
+      ['o', 30],
+      ['q', 26],
+      ['t', 21],
+      ['u', 23],
+    ];
+    for (const [id, want] of widths) {
+      assert.strictEqual(style(id).width, want, id);
+    }
+    assert.ok(style('r').backgroundGradient, 'the gradient is the background');
+    assert.match(String(style('s').fontFamily), /^monospace,\s*serif$/);
+  },
+);
+
+test('a @function rule is parsed with its parameters, types, defaults and body', () => {
+  const sheet = parseStylesheet(
+    '@function --f(--a, --b <length>: 2px, --c type(<number> | auto)) returns <length> {' +
+      '  --local: 1px; color: red; result: var(--a);' +
+      '  @media (width > 40em) { result: var(--b) } }' +
+      // a parameter named twice, a default not of its type, a type that is
+      // no syntax, and a prelude with anything after its `returns` type
+      '@function --twice(--a, --a) { result: 1 }' +
+      '@function --typed(--a <length>: red) { result: 1 }' +
+      '@function --bad(--a <nope>) { result: 1 }' +
+      '@function --two(--a <length> | auto) { result: 1 }' +
+      '@function no-dashes() { result: 1 }',
+  );
+  const fns = sheet.functions ?? [];
+  assert.deepStrictEqual(
+    fns.map((f) => f.name),
+    ['--f'],
+  );
+  const [f] = fns;
+  assert.deepStrictEqual(f.params, [
+    { name: '--a', syntax: null, fallback: null },
+    { name: '--b', syntax: '<length>', fallback: '2px' },
+    { name: '--c', syntax: '<number> | auto', fallback: null },
+  ]);
+  assert.strictEqual(f.returns, '<length>');
+  assert.strictEqual(f.readsMedia, true);
+  // `color` is no descriptor of a function's, and goes
+  assert.deepStrictEqual(
+    f.body.map((item) => (item.kind === 'media' ? '@media' : item.name)),
+    ['--local', 'result', '@media'],
+  );
+  // a resize across the body's media query restyles
+  assert.ok(sheet.breakpoints.length > 0);
+  // a call is a function token of its own, in no string
+  const env = {
+    media: () => false,
+    supports: () => false,
+    fn: () => ({ params: [], returns: null, body: [] }),
+  };
+  assert.strictEqual(
+    substitute('"--f(1px)" a--f(1px)', null, env),
+    '"--f(1px)" a--f(1px)',
+  );
+  // and one with no result has no value
+  assert.strictEqual(substitute('--f()', null, env), null);
+});
 
 test('color-mix() mixes in the space it names, premultiplied and weighted', () => {
   const cases: [string, string | null][] = [
