@@ -21,9 +21,11 @@ import { FilterStore } from '../../src/html/filters.js';
 import {
   applyMatrices,
   blurPixels,
+  castShadow,
   colourFilter,
   filterOutsets,
   interpolateFilters,
+  runSteps,
 } from '../../src/html/css/filter.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -204,8 +206,8 @@ test('the colour functions come to the matrices Filter Effects 1 gives them, opa
     { fn: 'blur', radius: 4 },
   ])!;
   assert.deepStrictEqual(
-    [blurred.matrices.length, blurred.blur, blurred.css, blurred.partial],
-    [1, 5, 'grayscale(1) blur(5px)', false],
+    [blurred.matrices.length, blurred.blur, blurred.css, blurred.steps],
+    [1, 5, 'grayscale(1) blur(5px)', null],
     'two blurs are one, the root of the sum of their squares',
   );
   assert.notStrictEqual(
@@ -229,6 +231,31 @@ test('the colour functions come to the matrices Filter Effects 1 gives them, opa
     'three deviations a blur, rounded up, one after the other',
   );
   assert.strictEqual(filterOutsets([{ fn: 'invert', amount: 1 }]), null);
+  assert.deepStrictEqual(
+    filterOutsets([
+      { fn: 'drop-shadow', x: 10, y: -2, blur: 4, color: '#000000' },
+      { fn: 'drop-shadow', x: 0, y: 0, blur: 1, color: '#000000' },
+    ]),
+    { left: 5, top: 17, right: 25, bottom: 13 },
+    'a shadow as far as what it is cast from reaches, moved and grown',
+  );
+  const shadowed = colourFilter([
+    { fn: 'invert', amount: 1 },
+    { fn: 'blur', radius: 2 },
+    { fn: 'drop-shadow', x: 1, y: 2, blur: 3, color: 'currentColor' },
+    { fn: 'opacity', amount: 0.5 },
+    { fn: 'grayscale', amount: 1 },
+  ])!;
+  assert.deepStrictEqual(
+    shadowed.steps!.map((step) =>
+      step.kind === 'colour'
+        ? `${step.css} ${step.matrices.length}`
+        : `shadow ${step.x} ${step.y} ${step.blur} ${step.color}`,
+    ),
+    ['invert(1) blur(2px) 1', 'shadow 1 2 3 currentColor', 'grayscale(1) 1'],
+    'a list with a shadow is its steps, in the order written',
+  );
+  assert.strictEqual(shadowed.alpha, 0.5, 'and opacity() is the box’s');
   assert.strictEqual(
     filterOutsets([
       { fn: 'blur', radius: 4 },
@@ -437,6 +464,155 @@ test('a filter at 2x is run over the device pixels the box covers, and no more',
   await expectPixel(result.ctx, 40 + 82, 40 + 38, '#ffffff', {
     message: 'past its right edge, 80 device pixels in',
   });
+});
+
+test('drop-shadow() is cast from the alpha of what is there so far, moved, blurred by its length as a deviation, and drawn under it', () => {
+  // a 40 pixel black square at 100 to 140 across, as Chrome drew one with
+  // `drop-shadow(10px 0 4px #000)`, read over white along its middle
+  const width = 200;
+  const height = 80;
+  const square = () => {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let y = 20; y < 60; y += 1) {
+      for (let x = 100; x < 140; x += 1) {
+        data.set([0, 0, 0, 255], (y * width + x) * 4);
+      }
+    }
+    return data;
+  };
+  const data = square();
+  castShadow(data, width, height, { x: 10, y: 0, blur: 4, color: '#000000' });
+  const overWhite = (x: number) =>
+    Math.round(255 * (1 - data[(40 * width + x) * 4 + 3] / 255));
+  const chrome: Record<number, number> = {
+    140: 2,
+    144: 25,
+    148: 93,
+    150: 139,
+    152: 183,
+    154: 218,
+    156: 240,
+  };
+  for (const x in chrome) {
+    assert.ok(
+      Math.abs(overWhite(Number(x)) - chrome[x]) <= 4,
+      `x ${x}: ${overWhite(Number(x))}, Chrome's ${chrome[x]}`,
+    );
+  }
+  assert.strictEqual(overWhite(120), 0, 'the square, over its shadow');
+  assert.strictEqual(overWhite(96), 255, 'nothing cast the other way');
+  // a colour function after a shadow runs over it, and one before does not
+  const red = (list: Parameters<typeof colourFilter>[0]) => {
+    const pixels = square();
+    runSteps(pixels, width, height, colourFilter(list)!.steps!);
+    return Array.from(
+      pixels.subarray((40 * width + 145) * 4, (40 * width + 146) * 4),
+    );
+  };
+  const shadow = {
+    fn: 'drop-shadow',
+    x: 10,
+    y: 0,
+    blur: 0,
+    color: '#ff0000',
+  } as const;
+  assert.deepStrictEqual(
+    red([{ fn: 'invert', amount: 1 }, shadow]),
+    [255, 0, 0, 255],
+    'invert() before it: a red shadow',
+  );
+  assert.deepStrictEqual(
+    red([shadow, { fn: 'invert', amount: 1 }]),
+    [0, 255, 255, 255],
+    'invert() after it: the shadow inverted too',
+  );
+});
+
+test('drop-shadow() draws a box past where it is, in currentColor where it names none, and its ink reaches as far', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  const result = await drawn(
+    '<div id="b" style="margin:20px 0 0 100px;width:40px;height:40px;' +
+      'background:#000000;color:#0000ff;' +
+      'filter:drop-shadow(10px 0 4px)"></div>',
+  );
+  // half a pixel past the shadow's right edge, under half dark, as Chrome
+  // drew it, and in the box's colour
+  await waitForPixel(result.ctx, 150, 40, '#8b8bff', {
+    tolerance: 6,
+    message: 'past the edge of the shadow',
+  });
+  // and five and a half in, nine tenths dark, Chrome's 25 of 255
+  await expectPixel(result.ctx, 144, 40, '#1919ff', {
+    tolerance: 6,
+    message: 'the shadow, past the box',
+  });
+  await expectPixel(result.ctx, 120, 40, '#000000', { message: 'the box' });
+  await expectPixel(result.ctx, 96, 40, '#ffffff', {
+    message: 'nothing cast the other way',
+  });
+  const box = boxOf(
+    view(screen.getByTestName('doc') as DrawnNode),
+    'b',
+  ) as unknown as {
+    boundsX: number;
+    boundsY: number;
+    boundsWidth: number;
+    boundsHeight: number;
+  };
+  assert.deepStrictEqual(
+    [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight],
+    [100 - 2, 20 - 12, 40 + 2 + 22, 40 + 24],
+    'three deviations past the shadow, which is moved 10 across',
+  );
+});
+
+test("a context that runs a filter itself draws a shadow a step at a time: what is there kept where it covers, filled with the shadow's colour, drawn at the offset through blur(), and what is there over it", () => {
+  const drawn: string[] = [];
+  let made = 0;
+  const surface = () => {
+    const name = `surface ${++made}`;
+    let filter = 'none';
+    const ctx: Record<string, unknown> = {
+      globalCompositeOperation: 'source-over',
+      fillStyle: '#000000',
+      save() {},
+      restore() {},
+      clearRect: () => {},
+      fillRect: () =>
+        drawn.push(
+          `fill ${name} ${ctx.fillStyle} ${ctx.globalCompositeOperation}`,
+        ),
+      drawImage: (image: { name: string }, x: number, y: number) =>
+        drawn.push(
+          `draw ${image.name} on ${name} at ${x},${y} through ${filter}`,
+        ),
+    };
+    Object.defineProperty(ctx, 'filter', {
+      get: () => filter,
+      set: (v: string) => {
+        filter = v;
+      },
+    });
+    return { name, getContext: () => ctx, destroy() {} };
+  };
+  const store = new FilterStore(null, () => {}, undefined, surface);
+  const kept = store.at({}, '', {}, 30, 20, 'k');
+  assert.ok(store.group(kept));
+  const steps = colourFilter([
+    { fn: 'drop-shadow', x: 2, y: 3, blur: 4, color: '#ff0000' },
+    { fn: 'invert', amount: 1 },
+  ])!.steps!;
+  const out = store.through(kept, 'key', steps);
+  assert.ok(out, 'drawn through the context');
+  assert.deepStrictEqual(drawn, [
+    'draw surface 1 on surface 3 at 0,0 through none',
+    'fill surface 3 #ff0000 source-in',
+    'draw surface 3 on surface 2 at 2,3 through blur(4px)',
+    'draw surface 1 on surface 2 at 0,0 through none',
+    'draw surface 2 on surface 4 at 0,0 through invert(1)',
+  ]);
+  assert.strictEqual(store.through(kept, 'key', steps), out, 'kept');
+  assert.strictEqual(store.unfiltered, false);
 });
 
 test('blur() draws the box past where it is by three deviations, its ink reaching as far, at any scale', async (t) => {

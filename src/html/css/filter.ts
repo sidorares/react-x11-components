@@ -13,11 +13,13 @@
 // so it is taken out and multiplied into the group's opacity
 // (`colourFilter`). `blur()` is a Gaussian over the group's pixels
 // (`blurPixels`), and reaches past what the box draws by three of its
-// standard deviations (`filterOutsets`). `drop-shadow()` is read and
-// computed, so a list with it in it interpolates and makes the box what any
-// filter makes it, and is not drawn yet.
+// standard deviations (`filterOutsets`). A `drop-shadow()` is cast from
+// what the functions before it made, and the functions after it run over
+// the shadow as well, so a list with one is run in steps, in the order
+// written (`ColourFilter.steps`, `runSteps`).
 
 import { parseAngle, parseFactor } from './transform.js';
+import { rgbaOf } from './color.js';
 import { parseColor, parseLength } from './values.js';
 import type { UnitContext } from './values.js';
 import { splitValue } from './values.js';
@@ -211,7 +213,7 @@ export type ColourMatrix = Float64Array;
 
 /** What a `filter` list does that the pass can do: its colour matrices in
  *  the order written, each one's result clamped before the next, as each
- *  function's is; the blur; and what alpha is multiplied by. */
+ *  function's is; the blur; the shadows; and what alpha is multiplied by. */
 export interface ColourFilter {
   matrices: ColourMatrix[];
   /** The standard deviation of the blur its `blur()`s come to, in device
@@ -221,8 +223,8 @@ export interface ColourFilter {
    *  pixels, commutes with, so where in the list a blur is written changes
    *  nothing but where the clamps fall, and it is run after them. */
   blur: number;
-  /** What two filters with one key do the same (`matricesKey`, and the
-   *  blur). */
+  /** What two filters with one key do the same (`matricesKey`, the blur
+   *  and the shadows, their colours as written). */
   key: string;
   /** The colour functions and the blur as a filter list a 2d context takes
    *  — canvas's `filter`, which react-x11's native context runs
@@ -230,23 +232,62 @@ export interface ColourFilter {
    *  opacity. */
   css: string;
   alpha: number;
-  /** Whether the list has a function the pass does not do — a
-   *  `drop-shadow()` — which is drawn as though it were not there. */
-  partial: boolean;
+  /**
+   * Where the list has a `drop-shadow()`, all of it but `opacity()` as the
+   * steps it is run in, in the order written: a shadow is cast from what
+   * the functions before it made, and the functions after it run over the
+   * shadow too, so the matrices, the blur and `css` above no longer say
+   * what it does. Null where it has none.
+   */
+  steps: FilterStep[] | null;
 }
 
-/** The colour functions and the blur of a `filter` list (`ColourFilter`);
- *  null where there are none and alpha is left as it is, and only what the
- *  colour functions leave as they are is in the list. */
+/** One step of a list with a `drop-shadow()` in it (`ColourFilter.steps`):
+ *  the colour functions and the blurs written together, as `ColourFilter`
+ *  takes a whole list without one; or a shadow. */
+export type FilterStep =
+  | {
+      kind: 'colour';
+      matrices: ColourMatrix[];
+      blur: number;
+      css: string;
+    }
+  | {
+      kind: 'shadow';
+      /** The offset across and down, and the standard deviation of the
+       *  blur, in device pixels. */
+      x: number;
+      y: number;
+      blur: number;
+      /** As `parseColor` left it, `currentColor` included: the caller's
+       *  to resolve against the box's colour (`inkColor`). */
+      color: string;
+    };
+
+/** The colour functions, the blur and the shadows of a `filter` list
+ *  (`ColourFilter`); null where there are none and alpha is left as it is,
+ *  and only what the colour functions leave as they are is in the list. */
 export function colourFilter(
   list: readonly FilterFunction[] | null,
 ): ColourFilter | null {
   if (!list) return null;
-  const matrices: ColourMatrix[] = [];
-  const css: string[] = [];
+  const all: ColourMatrix[] = [];
+  const steps: FilterStep[] = [];
+  let matrices: ColourMatrix[] = [];
+  let css: string[] = [];
   let alpha = 1;
   let blur2 = 0;
-  let partial = false;
+  let total2 = 0;
+  let shadows = false;
+  const close = () => {
+    if (!matrices.length && !(blur2 > 0)) return;
+    const blur = Math.sqrt(blur2);
+    if (blur > 0) css.push(`blur(${blur}px)`);
+    steps.push({ kind: 'colour', matrices, blur, css: css.join(' ') });
+    matrices = [];
+    css = [];
+    blur2 = 0;
+  };
   for (const f of list) {
     if (f.fn === 'url') {
       // a reference to a `<filter>` that is not there has the whole list
@@ -259,41 +300,75 @@ export function colourFilter(
     }
     if (f.fn === 'blur') {
       blur2 += f.radius * f.radius;
+      total2 += f.radius * f.radius;
       continue;
     }
     if (f.fn === 'drop-shadow') {
-      partial = true;
+      close();
+      shadows = true;
+      steps.push({
+        kind: 'shadow',
+        x: f.x,
+        y: f.y,
+        blur: f.blur,
+        color: f.color,
+      });
       continue;
     }
     const m = matrixOf(f);
     if (!m) continue;
     matrices.push(m);
+    all.push(m);
     css.push(
       f.fn === 'hue-rotate'
         ? `hue-rotate(${f.angle}deg)`
         : `${f.fn}(${f.amount})`,
     );
   }
-  const blur = Math.sqrt(blur2);
-  if (!matrices.length && alpha === 1 && !(blur > 0)) return null;
+  const blur = Math.sqrt(total2);
+  if (shadows) {
+    close();
+    return {
+      matrices: all,
+      blur,
+      key: stepsKey(steps),
+      css: '',
+      alpha,
+      steps,
+    };
+  }
+  if (!all.length && alpha === 1 && !(blur > 0)) return null;
   if (blur > 0) css.push(`blur(${blur}px)`);
   return {
-    matrices,
+    matrices: all,
     blur,
-    key:
-      blur > 0
-        ? `${matricesKey(matrices)} blur ${blur}`
-        : matricesKey(matrices),
+    key: blur > 0 ? `${matricesKey(all)} blur ${blur}` : matricesKey(all),
     css: css.join(' '),
     alpha,
-    partial,
+    steps: null,
   };
 }
 
+/** A key for a list of steps, its shadows' colours as they are given:
+ *  two lists with one key do the same. */
+export function stepsKey(steps: readonly FilterStep[]): string {
+  let key = '';
+  for (const step of steps) {
+    key +=
+      step.kind === 'colour'
+        ? `${matricesKey(step.matrices)} blur ${step.blur}|`
+        : `shadow ${step.x} ${step.y} ${step.blur} ${step.color}|`;
+  }
+  return key;
+}
+
 /** Whether a filter has anything the pass runs over a group's pixels: a
- *  colour matrix or a blur. */
+ *  colour matrix, a blur or a shadow. */
 export function runsOverPixels(colour: ColourFilter | null): boolean {
-  return !!colour && (colour.matrices.length > 0 || colour.blur > 0);
+  return (
+    !!colour &&
+    (colour.matrices.length > 0 || colour.blur > 0 || !!colour.steps)
+  );
 }
 
 /** How far past what a box draws its filter's output reaches, each side. */
@@ -305,24 +380,46 @@ export interface FilterOutsets {
 }
 
 /**
- * How far past what a box and all it holds draw a `filter` list draws:
- * each `blur()` three of its standard deviations further, as far as a
- * Gaussian shows (Skia's blur, and so Chrome's ink overflow, is outset by
- * 3σ), in the order written. Null where it reaches no further — no blur,
- * or a `url()`, which has the whole list ignored (Filter Effects 1, 4).
- * It is ink, and no scrollable overflow.
+ * How far past what a box and all it holds draw a `filter` list draws, in
+ * the order written: each `blur()` three of its standard deviations
+ * further, as far as a Gaussian shows (Skia's blur, and so Chrome's ink
+ * overflow, is outset by 3σ), and each `drop-shadow()` as far as what came
+ * before it reaches, moved by its offset and grown by three of its
+ * deviations. Null where it reaches no further — neither, or a `url()`,
+ * which has the whole list ignored (Filter Effects 1, 4). It is ink, and no
+ * scrollable overflow.
  */
 export function filterOutsets(
   list: readonly FilterFunction[] | null,
 ): FilterOutsets | null {
   if (!list) return null;
-  let reach = 0;
+  let left = 0;
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
   for (const f of list) {
     if (f.fn === 'url') return null;
-    if (f.fn === 'blur' && f.radius > 0) reach += Math.ceil(3 * f.radius);
+    if (f.fn === 'blur' && f.radius > 0) {
+      const reach = Math.ceil(3 * f.radius);
+      left += reach;
+      top += reach;
+      right += reach;
+      bottom += reach;
+    } else if (f.fn === 'drop-shadow') {
+      const reach = Math.ceil(3 * f.blur);
+      left = Math.max(left, left + reach - f.x);
+      top = Math.max(top, top + reach - f.y);
+      right = Math.max(right, right + reach + f.x);
+      bottom = Math.max(bottom, bottom + reach + f.y);
+    }
   }
-  return reach > 0
-    ? { left: reach, top: reach, right: reach, bottom: reach }
+  return left > 0 || top > 0 || right > 0 || bottom > 0
+    ? {
+        left: Math.ceil(left),
+        top: Math.ceil(top),
+        right: Math.ceil(right),
+        bottom: Math.ceil(bottom),
+      }
     : null;
 }
 
@@ -546,6 +643,32 @@ export function blurPixels(
     b[p] = data[i + 2] * k;
     alpha[p] = a;
   }
+  blurPlanes(planes, width, height, sigma);
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const a = alpha[p];
+    if (!(a > 0.5)) {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 0;
+      continue;
+    }
+    const k = 255 / a;
+    data[i] = r[p] * k;
+    data[i + 1] = g[p] * k;
+    data[i + 2] = b[p] * k;
+    data[i + 3] = a;
+  }
+}
+
+/** `blurPixels`' Gaussian over planes of one value a pixel, each in
+ *  place. */
+function blurPlanes(
+  planes: readonly Float32Array[],
+  width: number,
+  height: number,
+  sigma: number,
+): void {
   const pass = blurPass(sigma);
   const long = Math.max(width, height);
   const line = new Float64Array(long);
@@ -563,20 +686,74 @@ export function blurPixels(
       for (let y = 0; y < height; y += 1) plane[y * width + x] = out[y];
     }
   }
-  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
-    const a = alpha[p];
-    if (!(a > 0.5)) {
-      data[i] = 0;
-      data[i + 1] = 0;
-      data[i + 2] = 0;
-      data[i + 3] = 0;
-      continue;
+}
+
+/**
+ * The steps of a list with a `drop-shadow()` in it run over straight RGBA
+ * pixels in place, in the order written (`ColourFilter.steps`), each
+ * shadow's colour resolved: the colour functions and the blurs as
+ * `applyMatrices` and `blurPixels` run them, and each shadow cast from
+ * what is there so far (`castShadow`).
+ */
+export function runSteps(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  steps: readonly FilterStep[],
+): void {
+  for (const step of steps) {
+    if (step.kind === 'colour') {
+      if (step.matrices.length) applyMatrices(data, data, step.matrices);
+      if (step.blur > 0) blurPixels(data, width, height, step.blur);
+    } else {
+      castShadow(data, width, height, step);
     }
-    const k = 255 / a;
-    data[i] = r[p] * k;
-    data[i + 1] = g[p] * k;
-    data[i + 2] = b[p] * k;
-    data[i + 3] = a;
+  }
+}
+
+/**
+ * `drop-shadow()` over straight RGBA pixels in place (Filter Effects 1,
+ * 13): what is there, over its alpha moved by the offset, blurred by the
+ * shadow's deviation — Chrome takes the length as the deviation, where a
+ * `box-shadow`'s is twice it — and filled with the shadow's colour, on
+ * premultiplied colour. The offset is taken to the nearest pixel; nothing
+ * past the edges casts anything.
+ */
+export function castShadow(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  shadow: { x: number; y: number; blur: number; color: string },
+): void {
+  const rgba = rgbaOf(shadow.color);
+  if (!rgba || !(rgba[3] > 0)) return;
+  const [sr, sg, sb, sa] = rgba;
+  const dx = Math.round(shadow.x);
+  const dy = Math.round(shadow.y);
+  const n = width * height;
+  const cast = new Float32Array(n);
+  for (let y = Math.max(0, dy); y < Math.min(height, height + dy); y += 1) {
+    const from = (y - dy) * width;
+    const to = y * width;
+    for (let x = Math.max(0, dx); x < Math.min(width, width + dx); x += 1) {
+      cast[to + x] = (data[(from + x - dx) * 4 + 3] / 255) * sa;
+    }
+  }
+  if (shadow.blur > 0) blurPlanes([cast], width, height, shadow.blur);
+  const r = sr * 255;
+  const g = sg * 255;
+  const b = sb * 255;
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const s = cast[p];
+    if (!(s > 0)) continue;
+    const a = data[i + 3] / 255;
+    const under = s * (1 - a);
+    const out = a + under;
+    if (!(out > 0)) continue;
+    data[i] = (data[i] * a + r * under) / out;
+    data[i + 1] = (data[i + 1] * a + g * under) / out;
+    data[i + 2] = (data[i + 2] * a + b * under) / out;
+    data[i + 3] = out * 255;
   }
 }
 

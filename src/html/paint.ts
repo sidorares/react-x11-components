@@ -171,8 +171,9 @@ import {
   colourFilter,
   filterOutsets,
   runsOverPixels,
+  stepsKey,
 } from './css/filter.js';
-import type { ColourFilter, FilterFunction } from './css/filter.js';
+import type { ColourFilter, FilterFunction, FilterStep } from './css/filter.js';
 import type { FilterStore } from './filters.js';
 
 export interface Rect {
@@ -2648,6 +2649,8 @@ function filteredFor(
   const store = options.filters;
   if (!store || !options.surface || !ctx.drawImage) return null;
   if (box.kind === 'inline') return null;
+  // a shadow in `currentColor` is in the box's colour
+  const steps = colour.steps && resolvedSteps(colour.steps, box.style.color);
   const own = through
     ? ownBounds(box)
     : {
@@ -2695,7 +2698,9 @@ function filteredFor(
           : inGroup(options, x0, y0, w, h),
       );
     }
-    const out = store.through(kept, colour.css);
+    const out = steps
+      ? store.through(kept, stepsKey(steps), steps)
+      : store.through(kept, colour.css);
     if (out) {
       store.placed(kept, fx, fy);
       return {
@@ -2730,8 +2735,9 @@ function filteredFor(
   const surface = store.filtered(
     kept,
     colour.matrices,
-    colour.key,
+    steps ? stepsKey(steps) : colour.key,
     colour.blur,
+    steps,
   );
   if (!surface) return undefined;
   store.placed(kept, fx, fy);
@@ -2742,6 +2748,24 @@ function filteredFor(
     width: w,
     height: h,
   };
+}
+
+/** A list's steps with each shadow's colour resolved against the box's,
+ *  the list's own where none names `currentColor`. */
+function resolvedSteps(
+  steps: readonly FilterStep[],
+  current: string,
+): readonly FilterStep[] {
+  let out: FilterStep[] | null = null;
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    if (step.kind !== 'shadow') continue;
+    const color = inkColor(step.color, current);
+    if (color === step.color) continue;
+    out ??= steps.slice();
+    out[i] = { ...step, color };
+  }
+  return out ?? steps;
 }
 
 /** What a kept surface's drawing depends on beyond its box's: whether it

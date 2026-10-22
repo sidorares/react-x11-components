@@ -17,7 +17,7 @@ colour.
 | `invert()`, `brightness()`, `contrast()`               | `feComponentTransfer`'s `linear`, as a matrix |
 | `opacity()`                                            | multiplied into the box's opacity             |
 | `blur()`                                               | a Gaussian, 3σ of ink past the box            |
-| `drop-shadow()`                                        | read and interpolated, not drawn yet          |
+| `drop-shadow()`                                        | the alpha, moved, blurred, coloured, under it |
 | `url()`                                                | the whole list ignored (Filter Effects 1, 4)  |
 
 Every list, drawn or not, makes the box a stacking context and the
@@ -149,12 +149,15 @@ Two things ntk could do, recorded so they are not rediscovered:
 
 - The vImage verb, macOS's second rung, which takes the pixel pass off the
   JavaScript thread.
-- `drop-shadow()`, and a `blur()` on X11 and Wayland that does not run on
-  the JavaScript thread. A `blur()` is drawn: through canvas's `filter`
-  where the context runs one, and over a read back elsewhere, where it is
-  `feGaussianBlur`'s three box blurs in JavaScript, run again only as the
-  read or the filter changes — a transition of a blur's deviation is one a
-  frame. Its ink, three deviations past the box, reaches
-  `computePaintBounds` (`filterOutsets`), so the damage and the surface
-  take it in. ntk's convolution, Core Image's or vImage's gaussian, two
+- A `blur()` and a `drop-shadow()` on X11 and Wayland that do not run on
+  the JavaScript thread. Both are drawn: a `blur()` through canvas's
+  `filter` where the context runs one; a list with a `drop-shadow()` a
+  step at a time there, each shadow the group kept where it covers
+  (`source-in`), filled with its colour and drawn at its offset through
+  `blur()`, under what came before it; and over a read back elsewhere,
+  where a blur is `feGaussianBlur`'s three box blurs in JavaScript, run
+  again only as the read or the filter changes — a transition of a blur's
+  deviation is one a frame. Their ink, three deviations past what they
+  blur, reaches `computePaintBounds` (`filterOutsets`), so the damage and
+  the surface take it in. ntk's convolution, Core Image's or vImage's gaussian, two
   shader passes on Wayland, would take the pass off the thread.
