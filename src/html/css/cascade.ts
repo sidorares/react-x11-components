@@ -108,6 +108,7 @@ import {
   decorate,
   familyList,
   inherit,
+  zoomedBy,
   initialOne,
   initialStyle,
   isInherited,
@@ -2539,6 +2540,9 @@ export class Cascade {
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
   private _lh = false;
+  /** Whether a declaration anywhere sets `zoom`, which only then is looked
+   *  for ahead of an element's other declarations (`_ownZoom`). */
+  private _zoom = false;
   /** The pseudo-classes css-select is handed: `:root` this cascade's, and
    *  the focus's three answered from `_focus`. */
   private _pseudos: typeof PSEUDOS;
@@ -2712,6 +2716,7 @@ export class Cascade {
     for (const rule of sheet.rules) {
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
+      if (!this._zoom && usesZoom(rule.declarations)) this._zoom = true;
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
         if (rule.media) this._mediaOutsideRules = true;
@@ -3898,13 +3903,19 @@ export class Cascade {
       size,
       (name) => style.custom?.get(name),
       (text) => {
-        // a query's relative lengths are the container's (3.2)
+        // a query's relative lengths are the container's (3.2), and its
+        // lengths at the container's zoom, since its size is: a query is
+        // in the container's CSS pixels (CSS Viewport 1, 5)
+        const zoom = style.effectiveZoom;
+        const root = this._root;
         const ctx: UnitContext = {
           em: style.fontSize,
-          rem: this._root?.fontSize ?? style.fontSize,
-          vw: this.viewportWidth,
-          vh: this.viewportHeight,
-          scale: this.scale,
+          rem: root
+            ? (root.fontSize * zoom) / root.effectiveZoom
+            : style.fontSize,
+          vw: this.viewportWidth * zoom,
+          vh: this.viewportHeight * zoom,
+          scale: this.scale * zoom,
         };
         const len = parseLength(text, ctx);
         return typeof len === 'number' ? len : null;
@@ -5043,10 +5054,26 @@ export class Cascade {
     candidates: Candidate[],
     own: boolean,
   ): ComputedStyle {
-    const style = inherit(parentStyle, this.initial);
+    let style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
     // declarations below finds the one that wins
     if (this._vars) style.custom = this._customFor(parentStyle, candidates);
+    // then the element's own `zoom` (CSS Viewport 1, 5), which every length
+    // after it is scaled by: the parent is seen at the element's zoom
+    // (`zoomedBy`), so what it inherits, an `inherit` and an `em` in its
+    // `font-size` are the parent's lengths zoomed, and the units below
+    // resolve at the display scale times the zooms from the root down
+    if (this._zoom) {
+      const own = this._ownZoom(style, parentStyle, candidates);
+      if (own !== 1) {
+        const custom = style.custom;
+        parentStyle = zoomedBy(parentStyle, own);
+        style = inherit(parentStyle, this.initial);
+        style.custom = custom;
+        style.zoom = own;
+      }
+    }
+    const zoom = style.effectiveZoom;
 
     // The unit context has to be built twice: once with the parent's font
     // size, so a `font-size: 1.2em` in the cascade resolves against the
@@ -5057,22 +5084,26 @@ export class Cascade {
     // whose declaration is being applied: the UA sheet's families are the
     // host's own faces, and its lists end where they end
     let authored = true;
+    // the root's lengths are at its own zoom, and a `rem` here is at this
+    // element's
+    const rootZoom = zoom / rootStyle.effectiveZoom;
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
-      rem: rootStyle.fontSize,
+      rem: rootStyle.fontSize * rootZoom,
       initial: this.initial,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       codeFamily: () => (authored ? null : this._codeFamily),
-      vw: this.viewportWidth,
-      vh: this.viewportHeight,
+      vw: this.viewportWidth * zoom,
+      vh: this.viewportHeight * zoom,
       viewport: this._viewportRead,
       cq: (axis) => this._containerUnit(el, !own, axis),
-      scale: this.scale,
+      scale: this.scale * zoom,
+      zoom,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chOf(parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
-      rlh: () => this._lineHeightOf(rootStyle),
+      rlh: () => this._lineHeightOf(rootStyle) * rootZoom,
       focusRing: this.look.focusRing,
       paletteScheme: this.look.colorScheme,
       systemColors: this._systemColors,
@@ -5120,7 +5151,7 @@ export class Cascade {
         style.fontSize = keywordFontSize(
           basis,
           parentStyle.fontSize,
-          this.initial.fontSize,
+          this.initial.fontSize * zoom,
           mono,
         )!;
       } else if (mono !== parentStyle.genericMonospace) {
@@ -5150,6 +5181,10 @@ export class Cascade {
       ch: () => this._chOf(face),
       lh: () => this._lineHeightOf(line ?? style),
     };
+    // an `lh` in `line-height` is the parent's line height, as an `em` in
+    // `font-size` is its size (CSS Values 4, 6.1.1): read as the element's,
+    // `line-height: 2lh` doubled itself in each pass that set it
+    const ctxLine: UnitContext = { ...ctx, lh: ctxParent.lh };
     // the line height, which an `lh` in any other declaration reads, ahead
     // of them — a `font` sets one too — and read as it is then, for the
     // same reason as the face: set again with the rest, in its place among
@@ -5163,7 +5198,12 @@ export class Cascade {
             d.prop === 'font' ||
             d.prop === 'all'
           ) {
-            this._apply(style, parentStyle, d, ctx);
+            this._apply(
+              style,
+              parentStyle,
+              d,
+              d.prop === 'line-height' ? ctxLine : ctx,
+            );
           }
         }
       }
@@ -5182,7 +5222,12 @@ export class Cascade {
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
-        this._apply(style, parentStyle, d, ctx);
+        this._apply(
+          style,
+          parentStyle,
+          d,
+          d.prop === 'line-height' ? ctxLine : ctx,
+        );
         if (scoped && ANIMATION_NAMES.has(d.prop)) animationTree = c.tree;
       }
     }
@@ -5223,7 +5268,7 @@ export class Cascade {
       style.userSelect = parentStyle.userSelect;
     }
     settleOverflow(style);
-    settleOutline(style, this.look, this.scale);
+    settleOutline(style, this.look, this.scale * zoom);
     settleContainer(style);
     settleContentVisibility(style);
     // after the containment, which keeps a body's `overflow` its own
@@ -5277,6 +5322,31 @@ export class Cascade {
     }
     decorate(style);
     return style;
+  }
+
+  /** The element's own `zoom`, its declarations applied to `style` ahead
+   *  of the rest. */
+  private _ownZoom(
+    style: ComputedStyle,
+    parentStyle: ComputedStyle,
+    candidates: Candidate[],
+  ): number {
+    let ctx: UnitContext | null = null;
+    for (const c of candidates) {
+      for (const d of pick(c)) {
+        if (d.prop !== 'zoom') continue;
+        ctx ??= {
+          em: parentStyle.fontSize,
+          rem: parentStyle.fontSize,
+          vw: this.viewportWidth,
+          vh: this.viewportHeight,
+          scale: this.scale,
+          initial: this.initial,
+        };
+        this._apply(style, parentStyle, d, ctx);
+      }
+    }
+    return style.zoom;
   }
 
   /** One declaration, its `var()`s replaced first. One that names a
@@ -5993,6 +6063,7 @@ export class Cascade {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
       if (!this._lh && usesLh(declarations)) this._lh = true;
+      if (!this._zoom && usesZoom(declarations)) this._zoom = true;
       pushInline(out, declarations, tree.depth, tree.root);
     }
 
@@ -6367,6 +6438,11 @@ function usesLh(declarations: readonly Declaration[]): boolean {
   return false;
 }
 const LH = /\d\.?r?lh\b/i;
+
+function usesZoom(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (d.prop === 'zoom') return true;
+  return false;
+}
 
 /** Whether a candidate declares `content`. */
 function setsContent(c: Candidate): boolean {

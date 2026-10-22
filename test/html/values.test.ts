@@ -908,6 +908,63 @@ test("a rem is the root element's font size, and the initial one in the root's o
   );
 });
 
+test('zoom scales every length under it, rescales what is inherited from the parent’s zoom, and getComputedStyle answers unzoomed', async () => {
+  // CSS Viewport 1, 5. A style's lengths are at its effective zoom, the
+  // zooms from the root down multiplied, so a child sees its parent's at
+  // its own: an `inherit`, an inherited font size and a `rem` are zoomed
+  // where the element is, and a query reads them back as an unzoomed
+  // element's, as Chrome answers
+  const { node } = await render(
+    '<html style="font-size:10px"><body style="margin:0">' +
+      '<div style="width:50px;height:10px">' +
+      '<div id="i" style="zoom:2;width:inherit;height:inherit"></div></div>' +
+      '<div style="font-size:12px;line-height:1">' +
+      '<p id="f" style="zoom:200%;margin:0">x</p></div>' +
+      '<div style="zoom:2"><div id="n" style="zoom:2;width:1rem;height:5px">' +
+      '</div></div>' +
+      '<div id="z" style="zoom:0;width:7px;height:7px"></div></body></html>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('i'), [100, 20], 'an inherit at its own zoom');
+  assert.strictEqual(boxOf(el, 'f').height, 24, 'an inherited 12px at 2');
+  assert.deepStrictEqual(size('n'), [40, 20], 'a rem, and zooms multiply');
+  assert.deepStrictEqual(size('z'), [7, 7], 'a zoom of 0 is 1');
+  const css = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.strictEqual(css('i').width, '50px');
+  assert.strictEqual(css('f')['font-size'], '12px');
+  assert.strictEqual(css('n').width, '10px');
+  assert.strictEqual(css('n').zoom, '2');
+  assert.strictEqual(css('z').zoom, '1');
+  // and a page reads and tests the property as it does any other
+  assert.strictEqual(specifiedValue('zoom', ' 150% '), '150%');
+  assert.strictEqual(specifiedValue('zoom', '-1'), null);
+  assert.strictEqual(supportsCondition('(zoom: normal)'), true);
+  assert.strictEqual(supportsCondition('(zoom: -2)'), false);
+});
+
+test('an lh in line-height is the parent’s line height, and a container query reads its container unzoomed', async () => {
+  // CSS Values 4, 6.1.1, as an `em` in `font-size` is the parent's size:
+  // read as the element's, `2lh` doubled itself in each pass that set it.
+  // And a query is in the container's CSS pixels (CSS Viewport 1, 5)
+  const { node } = await render(
+    '<body style="margin:0"><div style="line-height:20px">' +
+      '<p id="l" style="margin:0;line-height:2lh">x</p>' +
+      '<p id="z" style="margin:0;zoom:2;line-height:2lh">x</p></div>' +
+      '<style>.c{container-type:inline-size;width:100px}' +
+      ' .q{height:5px} @container (width > 120px) {.q{height:50px}}</style>' +
+      '<div class="c" style="zoom:2"><div id="q" class="q"></div></div></body>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'l').height, 40);
+  assert.strictEqual(boxOf(el, 'z').height, 80, "the parent's, zoomed");
+  assert.strictEqual(
+    boxOf(el, 'q').height,
+    10,
+    'a 100px container is no wider than 120px',
+  );
+});
+
 test('shape() is read as CSS Shapes 2 has it, and written back as its specified value', () => {
   const ctx = { em: 16, rem: 16, vw: 8, vh: 6, scale: 1 };
   const text = (value: string) => parseShapeFunction(value, ctx)?.text ?? null;

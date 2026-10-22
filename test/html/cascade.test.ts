@@ -433,6 +433,8 @@ test('all sets every field a property does, and not direction, unicode-bidi or a
   const kept = [
     'custom',
     'direction',
+    // no property: the zooms from the root down, which `all` cannot undo
+    'effectiveZoom',
     'lineThrough',
     'lineThroughStyle',
     'lineThroughThickness',

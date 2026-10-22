@@ -271,6 +271,8 @@ export function computedText(
   name: string,
   scale: number,
 ): string | undefined {
+  // a style's lengths are zoomed, and a declaration reads them unzoomed
+  scale *= style.effectiveZoom;
   const prop = name.toLowerCase();
   const xs = style.borderRadius;
   const ys = style.borderRadiusY ?? style.borderRadius;
@@ -294,7 +296,7 @@ export function computedText(
   if (prop === 'gap') {
     return rowGap === columnGap ? rowGap : `${rowGap} ${columnGap}`;
   }
-  const all = cssomStyle(style, scale, null);
+  const all = cssomAt(style, scale, null);
   if (Object.hasOwn(all, prop)) return all[prop];
   const sides = FOUR_SIDES[prop];
   return sides ? shortest(sides.map((side) => all[side])) : undefined;
@@ -303,9 +305,19 @@ export function computedText(
 /**
  * An element's style as `getComputedStyle` answers it, by property name:
  * `box` where a layout gave the element one, for the used values of its
- * size and its edges. `scale` is device pixels to the CSS pixel.
+ * size and its edges. `scale` is device pixels to the CSS pixel. Its
+ * lengths are as an unzoomed element's (CSS Viewport 1, 5): the style's
+ * and the box's are divided by its effective zoom, as Chrome answers.
  */
 export function cssomStyle(
+  style: ComputedStyle,
+  scale: number,
+  box: UsedBox | null,
+): Record<string, string> {
+  return cssomAt(style, scale * style.effectiveZoom, box);
+}
+
+function cssomAt(
   style: ComputedStyle,
   scale: number,
   box: UsedBox | null,
@@ -318,6 +330,7 @@ export function cssomStyle(
     clear: style.clear,
     visibility: style.visibility,
     opacity: num(style.opacity),
+    zoom: num(style.zoom),
     'z-index': String(style.zIndex),
     'clip-path': clipPathText(style.clipPath, scale),
     'box-sizing': style.boxSizing,

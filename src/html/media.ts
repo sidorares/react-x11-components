@@ -438,7 +438,11 @@ function placementOf(
       ? { clip: clip!, clipRadius: round }
       : clip && !covers(clip, picture) && { clip: shows }),
     ...(opacity < 1 && { opacity: Math.max(0, opacity) }),
-    ...(zoom.k !== 1 && { zoom: zoom.k }),
+    // and what it shows is zoomed as the element's lengths are (CSS
+    // Viewport 1, 5): a frame's document laid out at its CSS size
+    ...(zoom.k * box.style.effectiveZoom !== 1 && {
+      zoom: zoom.k * box.style.effectiveZoom,
+    }),
     ...(atViewport && { atViewport: true as const }),
   };
 }

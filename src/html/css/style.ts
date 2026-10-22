@@ -21,6 +21,7 @@ import {
   isTransparent,
   keywordFontSize,
   parseAlpha,
+  parseZoom,
   parseColor,
   isPct,
   parseLength,
@@ -949,6 +950,14 @@ export interface ComputedStyle {
    *  shape this does not draw. */
   clipPath: ClipPath | null;
   opacity: number;
+  /** `zoom` (CSS Viewport 1, 5): the element's own factor, 1 for `normal`
+   *  and for 0. */
+  zoom: number;
+  /** The `zoom`s from the root down to the element, multiplied: every
+   *  length the style holds is scaled by it already, as Blink keeps them,
+   *  so layout and paint read zoomed values and know nothing of it, and
+   *  `getComputedStyle` divides it back out (`computed.ts`). */
+  effectiveZoom: number;
   /** `filter`: its functions in the order written (`css/filter.ts`); null
    *  for `none`. Any list makes the box a stacking context and the
    *  containing block of the absolute and the fixed boxes in it, an inline
@@ -1378,6 +1387,7 @@ export const INHERITED = [
   'tableTextAlignSet',
   'quotes',
   'custom',
+  'effectiveZoom',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /** What the document's root inherits from — the host's own text look, so an
@@ -1593,6 +1603,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clip: null,
     clipPath: null,
     opacity: 1,
+    zoom: 1,
+    effectiveZoom: 1,
     filter: null,
     backdropFilter: null,
     isolation: 'auto',
@@ -1851,6 +1863,7 @@ export function inherit(
   out.tableTextAlignSet = parent.tableTextAlignSet;
   out.quotes = parent.quotes;
   out.custom = parent.custom;
+  out.effectiveZoom = parent.effectiveZoom;
   out.borderTopColor = 'currentColor';
   out.borderRightColor = 'currentColor';
   out.borderBottomColor = 'currentColor';
@@ -1864,6 +1877,85 @@ export function inherit(
   out.lineThrough = parent.lineThrough;
   out.lineThroughStyle = parent.lineThroughStyle;
   out.lineThroughThickness = parent.lineThroughThickness;
+  return out;
+}
+
+/** The box's own lengths an `inherit` takes from the parent, which
+ *  `zoomedBy` scales. */
+const BOX_LENGTHS = [
+  'width',
+  'height',
+  'minWidth',
+  'minHeight',
+  'maxWidth',
+  'maxHeight',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+  'top',
+  'right',
+  'bottom',
+  'left',
+] as const satisfies readonly (keyof ComputedStyle)[];
+const BOX_WIDTHS = [
+  'borderTopWidth',
+  'borderRightWidth',
+  'borderBottomWidth',
+  'borderLeftWidth',
+  'outlineWidth',
+  'outlineOffset',
+] as const satisfies readonly (keyof ComputedStyle)[];
+
+/** A length scaled by `r`, its percentage left as it is. */
+function zoomLen<T extends Len | 'none'>(v: T, r: number): T {
+  if (typeof v === 'number') return (v * r) as T;
+  if (typeof v !== 'object' || v.px === undefined) return v;
+  return { ...v, px: v.px * r } as T;
+}
+
+/**
+ * `style` as a child whose own `zoom` is `r` sees it (CSS Viewport 1, 5):
+ * every length the child can take from it scaled by `r`, since a style's
+ * lengths are at its own effective zoom. What the child inherits, what an
+ * `inherit` names and what an `em` in its `font-size` or a `larger` reads
+ * are the parent's lengths at the child's zoom: a `50px` parent's child at
+ * `zoom: 2` with `width: inherit` is 100px across.
+ */
+export function zoomedBy(style: ComputedStyle, r: number): ComputedStyle {
+  const out = copyStyle(style);
+  const at = (v: number | null): number | null => (v === null ? v : v * r);
+  out.fontSize *= r;
+  if (style.lineHeightIsLength && typeof style.lineHeight === 'number') {
+    out.lineHeight = style.lineHeight * r;
+  }
+  out.textIndent = zoomLen(style.textIndent, r);
+  out.letterSpacing *= r;
+  out.wordSpacing *= r;
+  if (style.textShadow) {
+    out.textShadow = style.textShadow.map((s) => ({
+      ...s,
+      x: s.x * r,
+      y: s.y * r,
+      blur: s.blur * r,
+      spread: s.spread * r,
+    }));
+  }
+  if (style.tabSizeIsLength) out.tabSize *= r;
+  out.borderSpacing *= r;
+  out.borderSpacingY *= r;
+  out.textUnderlineOffset = at(style.textUnderlineOffset);
+  out.underlineThickness = at(style.underlineThickness);
+  out.underlineOffset = at(style.underlineOffset);
+  out.lineThroughThickness = at(style.lineThroughThickness);
+  const fields = out as unknown as Record<string, unknown>;
+  for (const key of BOX_LENGTHS) fields[key] = zoomLen(style[key], r);
+  for (const key of BOX_WIDTHS) fields[key] = style[key] * r;
+  out.effectiveZoom = style.effectiveZoom * r;
   return out;
 }
 
@@ -2570,6 +2662,11 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'zoom': {
+      const z = parseZoom(value);
+      if (z !== null) style.zoom = z;
       return;
     }
     case 'filter': {
@@ -3382,7 +3479,7 @@ export function applyDeclaration(
       const kw = keywordFontSize(
         value,
         parent.fontSize,
-        ctx.initial?.fontSize ?? ctx.rem,
+        ctx.initial ? ctx.initial.fontSize * (ctx.zoom ?? 1) : ctx.rem,
       );
       if (kw !== null) {
         style.fontSize = Math.min(kw, most);
@@ -7457,6 +7554,7 @@ const NOT_ALL: ReadonlySet<string> = new Set<keyof ComputedStyle>([
   'lineThroughThickness',
   'styledControl',
   'overlay',
+  'effectiveZoom',
 ]);
 
 type AllCopier = (to: ComputedStyle, from: ComputedStyle) => void;
@@ -7896,6 +7994,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'scrollbar-width': ['scrollbarWidth'],
   'scrollbar-color': ['scrollbarThumbColor'],
   opacity: ['opacity'],
+  zoom: ['zoom'],
   filter: ['filter'],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
