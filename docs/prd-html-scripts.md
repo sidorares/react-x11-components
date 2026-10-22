@@ -969,10 +969,15 @@ the Interop 2026 focus areas through `<Html scripts>`
   does, and a script that does not parse is the page's `SyntaxError`.
   What it throws is reported once the microtasks it queued have run,
   since the runtime runs them as the script returns
-  (`microtaskMode: 'afterEvaluate'`); HTML reports it first. Two places
-  still `eval`: a string timer and a worker's `importScripts`,
-  both run from inside the page's own call, where a nested `vm.Script`
-  would run the page's microtasks before the caller goes on.
+  (`microtaskMode: 'afterEvaluate'`); HTML reports it first. A string
+  timer still `eval`s, from inside the page's own call, where a nested
+  `vm.Script` would run the page's microtasks before the caller goes on.
+  A worker's `importScripts` takes that cost (`ScriptEngine.runNested`):
+  its scripts are the worker's helpers, a strict one's declarations were
+  lost in the `eval`, and every worker variant of WPT's IndexedDB tests
+  failed on one; a worker imports first, with no microtask waiting. What
+  an imported script throws is thrown on to its caller, through
+  `__thrown`, unread.
 - **An element is a global by its `id`** (HTML 7.2.2.3), and an `embed`,
   a `form`, an `img`, an `object` or a frame by its `name`: `target`, as
   WPT's tests that have a `#target` read it. A proxy is the next link of the
