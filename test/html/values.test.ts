@@ -29,6 +29,7 @@ import {
   metric,
   render,
   renderWithBytes,
+  treeOf,
   view,
 } from './harness.js';
 
@@ -901,6 +902,31 @@ test('attr() reads an attribute into any property: as a string, a number with a 
     el.computedStyle(findById(el.document, 's')!)?.['font-size'],
   );
   assert.match(drawnText(el), /\(hi\)/, 'a string in content');
+});
+
+test("a typed attr()'s units are lowercase, and an attr() in a container's style() query reads the container", async () => {
+  // a value parsed as a type is serialized as it was parsed: `3EM` is
+  // `3em`; and what a `style()` feature compares with is the container's,
+  // its attributes as much as its custom properties
+  const { node } = await render(
+    '<style>#d { --l: attr(data-l type(<length>)); --s: attr(data-l) }' +
+      ' #c { --foo: bar }' +
+      ' @container style(--foo: attr(data-foo type(<custom-ident>))) { #t { color: #008000 } }' +
+      '</style><div id="d" data-l="3EM"></div>' +
+      '<div id="c" data-foo="bar"><p id="t">t</p></div>' +
+      '<div data-foo="baz" style="--foo: bar"><p id="f">f</p></div>',
+  );
+  const el = view(node);
+  const style = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  const tree = treeOf(el) as {
+    styles: Map<unknown, { style: ComputedStyle }>;
+  };
+  const custom = (name: string) =>
+    tree.styles.get(findById(el.document, 'd'))!.style.custom?.get(name);
+  assert.strictEqual(custom('--l'), '3em');
+  assert.strictEqual(custom('--s'), '"3EM"', 'a string as written');
+  assert.strictEqual(style('t').color, 'rgb(0, 128, 0)');
+  assert.notStrictEqual(style('f').color, 'rgb(0, 128, 0)', "another's");
 });
 
 test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {

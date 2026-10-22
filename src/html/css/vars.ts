@@ -512,8 +512,17 @@ function attrValue(
     ? substitute(raw, get, env, [...calls, key])
     : raw.trim();
   if (parsed === null || !parsed) return fallback();
-  return matchesSyntax(parsed, syntax!) ? parsed : fallback();
+  if (!matchesSyntax(parsed, syntax!)) return fallback();
+  // substituted as the value it was parsed as, which serializes a
+  // dimension's unit in lowercase (CSS Values 4, 4.2): `3EM` is `3em`
+  return NUMERIC_SYNTAX.test(syntax!)
+    ? parsed.replace(/(\d\.?)([a-z]+)\b/gi, (_, n, u) => n + u.toLowerCase())
+    : parsed;
 }
+
+/** A syntax with a dimension in it, whose units serialize lowercase. */
+const NUMERIC_SYNTAX =
+  /<(?:length|length-percentage|angle|time|resolution|flex|frequency)>/;
 
 /** An `attr()`'s name and type, before its fallback: null where it is
  *  none, which makes its declaration none as it is parsed. */
