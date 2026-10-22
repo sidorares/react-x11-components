@@ -8792,6 +8792,9 @@ function paintBackgroundImage(
   const tiles =
     Math.ceil((toX - fromX) / stepX) * Math.ceil((toY - fromY) / stepY);
   let block: ReturnType<typeof tileBlock> = null;
+  // null where the context has no patterns — the Wayland backend's, today —
+  // and the tiles below are drawn the other ways
+  let pattern: unknown = null;
   if (svg) {
     // a drawing is drawn a tile at a time, at the size it was given
     if (tiles <= MAX_TILES) {
@@ -8819,12 +8822,13 @@ function paintBackgroundImage(
     stepX === iw &&
     stepY === ih &&
     ctx.createPattern &&
-    ctx.translate
+    ctx.translate &&
+    (pattern = ctx.createPattern(loaded.image, 'repeat'))
   ) {
     // a pattern tiles from the origin of the space it is filled in, and
     // draws the image at its own size: a tile of a device pixel an image
     // pixel, which is 1x and `background-size` leaving it be
-    ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
+    ctx.fillStyle = pattern;
     ctx.translate(x0, y0);
     ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
   } else if (
