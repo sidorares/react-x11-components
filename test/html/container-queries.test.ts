@@ -8,7 +8,11 @@ import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseStylesheet } from '../../src/html/css/parse.js';
-import { parseContainerPrelude } from '../../src/html/css/containers.js';
+import {
+  containerHolds,
+  parseContainerPrelude,
+} from '../../src/html/css/containers.js';
+import { substitute } from '../../src/html/css/vars.js';
 import {
   FONTS,
   boxOf,
@@ -152,6 +156,33 @@ metric(
     assert.strictEqual(colorOf(el, 'down'), BLUE, 'scrolled down');
   },
 );
+
+test('a style query compares with its var()s substituted, holds nowhere where a feature is of no custom property, and takes unset as initial', () => {
+  // CSS Conditional 5, 3.3: what a feature compares with is the
+  // container's, `var()`s and all; a feature of what is no custom property
+  // makes the whole query none, not one term of it unknown
+  const custom = new Map([
+    ['--a', '1'],
+    ['--b', '1'],
+  ]);
+  const get = (name: string) => custom.get(name);
+  const holds = (prelude: string) =>
+    containerHolds(
+      parseContainerPrelude(prelude)![0],
+      null,
+      get,
+      () => null,
+      null,
+      (text) => substitute(text, get),
+    );
+  assert.strictEqual(holds('style(--a: var(--b))'), true);
+  assert.strictEqual(holds('style(--a: var(--nope, 1))'), true);
+  assert.strictEqual(holds('style(--a: var(--nope))'), false);
+  assert.strictEqual(holds('style((--a: 1) or (unknown))'), false);
+  assert.strictEqual(holds('style(not (unknown))'), false);
+  assert.strictEqual(holds('style(--nope: unset)'), true);
+  assert.strictEqual(holds('style(--a: unset)'), false);
+});
 
 test('an @container prelude is a name, a condition, or both, and a list of them', () => {
   assert.deepStrictEqual(parseContainerPrelude('(min-width: 400px)'), [

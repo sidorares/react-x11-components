@@ -127,6 +127,7 @@ import {
   customProperties,
   hasInherit,
   hasVar,
+  substitute,
   substituteIn,
   validVars,
 } from './vars.js';
@@ -3932,6 +3933,11 @@ export class Cascade {
         return typeof len === 'number' ? len : null;
       },
       scroll,
+      // a `var()` in what a feature compares with is the container's
+      (text) =>
+        hasVar(text)
+          ? substitute(text, style.custom ?? this._registeredBase)
+          : text,
     );
   }
 
