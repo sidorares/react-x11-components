@@ -18,7 +18,12 @@
 
 import { ease, progressAt, timingAt, tracksOf } from './animation.js';
 import type { Animations, Easing, Transitions } from './animation.js';
-import { discrete, interpolateField, same } from './interpolate.js';
+import {
+  discreteField,
+  interpolateField,
+  keywordSizes,
+  same,
+} from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
 import type { ScriptSampling } from './scripted.js';
 import {
@@ -482,7 +487,33 @@ export class AnimationTimeline {
     if (!state && !fields.size) return after;
     const now = this.now;
     const list = after.transitions;
-    const a = after as unknown as Record<string, unknown>;
+    let wasStyle: ComputedStyle | null | undefined;
+    let was: Record<string, unknown> | null = null;
+    let wasAnimated: ReadonlySet<string> | undefined;
+    // Under `interpolate-size: allow-keywords` a size between a length and
+    // a keyword runs as a `calc-size()` of the keyword (CSS Values 5,
+    // 12.1): both ends are written so (`keywordSizes`), and so is what is
+    // drawn while one runs, which the next change starts from
+    let sized = after;
+    if (
+      after.interpolateSize === 'allow-keywords' &&
+      (fields.has('heightSize') || fields.has('widthSize'))
+    ) {
+      wasStyle = before();
+      was = wasStyle as unknown as Record<string, unknown> | null;
+      if (wasStyle) {
+        wasAnimated = ANIMATED_FIELDS.get(wasStyle);
+        const pair = keywordSizes(wasStyle, after);
+        if (pair) {
+          sized = Object.assign(copyStyle(after), pair.now);
+          was = Object.assign(
+            copyStyle(wasStyle),
+            pair.was,
+          ) as unknown as Record<string, unknown>;
+        }
+      }
+    }
+    const a = sized as unknown as Record<string, unknown>;
     const running = state?.running ?? new Map<string, Transit>();
     const completed = state?.completed ?? new Map<string, unknown>();
     // one run to its end and left there: a change from a frame a little
@@ -490,9 +521,6 @@ export class AnimationTimeline {
     for (const [field, end] of completed) {
       if (!same(end, a[field])) completed.delete(field);
     }
-    let wasStyle: ComputedStyle | null | undefined;
-    let was: Record<string, unknown> | null = null;
-    let wasAnimated: ReadonlySet<string> | undefined;
     for (const [field, index] of fields) {
       if (running.has(field) || completed.has(field)) continue;
       if (animated?.has(field)) continue;
@@ -506,7 +534,14 @@ export class AnimationTimeline {
       const from = was[field];
       const to = a[field];
       if (same(from, to)) continue;
-      if (interpolateField(field, from, to, 0.5) === undefined) continue;
+      // a value that does not interpolate goes over at once, but where the
+      // transition says `allow-discrete` (CSS Transitions 2, 3.1)
+      if (
+        interpolateField(field, from, to, 0.5) === undefined &&
+        item(list.behaviors, index) !== 'allow-discrete'
+      ) {
+        continue;
+      }
       running.set(field, {
         serial: ++transitSeq,
         start: now + item(list.delays, index),
@@ -535,7 +570,8 @@ export class AnimationTimeline {
       const easing = item(list.easings, index);
       if (
         same(current, to) ||
-        interpolateField(field, current, to, 0.5) === undefined
+        (interpolateField(field, current, to, 0.5) === undefined &&
+          item(list.behaviors, index) !== 'allow-discrete')
       ) {
         running.delete(field);
         continue;
@@ -587,7 +623,14 @@ export class AnimationTimeline {
       }
       // the animation's value is over it, and asks for its own frames
       if (animated?.has(field)) continue;
-      out ??= copyStyle(after);
+      // a size running as a `calc-size()` is drawn as one, its keyword and
+      // all, which `sized` has
+      out ??= copyStyle(
+        sized !== after &&
+          (running.has('heightSize') || running.has('widthSize'))
+          ? sized
+          : after,
+      );
       (out as unknown as Record<string, unknown>)[field] = transitValue(
         field,
         run,
@@ -768,7 +811,7 @@ function transitValue(field: string, run: Transit, t: number): unknown {
   const q = ease(run.easing, p);
   return (
     interpolateField(field, run.from, run.to, q) ??
-    discrete(run.from, run.to, q)
+    discreteField(field, run.from, run.to, q)
   );
 }
 

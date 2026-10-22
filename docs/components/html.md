@@ -1496,7 +1496,13 @@ suffix has none, as `、` does, and its direction is its own. A string
 a right-to-left item stands at its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
 system font's, where the document's has none — and has no margin of its
-own, as in a browser. A `<dialog>` is not drawn
+own, as in a browser. All it holds but that summary is in its
+`::details-content` (CSS Pseudo 4), a box after the summary that a page's
+rules style — `display: block`, and while it is shut `content-visibility:
+hidden`, which keeps the box and draws nothing in it, from the UA sheet —
+so an accordion can transition its height open and shut (see
+`interpolate-size` under Transitions). `:open` and `:closed` match a
+`<details>` or a `<dialog>` open and shut. A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred
 across its containing block; one a page's scripts opened with
 `showModal()` is in the top layer, centred in the viewport over all of
@@ -2263,6 +2269,16 @@ without them, as HTML sizes them — with nothing in them, because nothing is
 loaded, and what a host mounts over them where it gives one — see [Embedded
 content](#embedded-content).
 
+**`calc-size()`** (CSS Values 5): `width` and `height` take a size
+worked out from the one a keyword gives the box — `calc-size(auto, size *
+0.5)` is half of its content's height, `calc-size(min-content, size +
+20px)` its narrowest width and 20px — or from a length, `calc-size(50px,
+size * 2)`, which is the length it comes to. The calculation is a sum of
+`size` scaled and lengths or percentages, and one of anything else, `size *
+size`, is none. A block-level box in the flow is sized so; a flex item, a
+grid item, a float and a box out of the flow take the keyword's size, and
+`min-` and `max-` sizes do not take it.
+
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`
 and `min-w-max` — as CSS Sizing 3 has them: a block as wide as its content
@@ -2483,8 +2499,16 @@ from the value before the change to the value after it (CSS Transitions 1,
 3): it holds the value before through its delay, is eased by its timing
 function, and is interpolated field by field of the computed style, as an
 animation's frames are; `all` names every property that interpolates. A
-property whose values do not interpolate, a keyword, goes over at once —
-`transition-behavior: allow-discrete` is read, and runs nothing more. One
+property whose values do not interpolate, a keyword, goes over at once,
+but under `transition-behavior: allow-discrete`, which runs it and has it
+go over half way (CSS Transitions 2) — `content-visibility` and `display`
+being the end that is not `hidden` or `none` all the while it runs, so what
+an accordion shuts is drawn as it shuts. Under `interpolate-size:
+allow-keywords` (CSS Values 5), inherited and so usually set on `:root`, a
+`width` or a `height` runs between a length and a keyword — `height: 0` to
+`auto` — through a `calc-size()` of the keyword, both ends written as one
+(`calc-size(auto, size * 0)` to `calc-size(auto, size)`), and in `@keyframes`
+as well; two keywords still go over at once. One
 under way that is turned back the way it came runs back as far as it had
 come, in that part of its duration; one given a new end runs on to it from
 where it is; and one whose property the list no longer names is at its

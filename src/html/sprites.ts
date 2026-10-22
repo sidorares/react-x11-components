@@ -365,7 +365,13 @@ export function stillLiftOf(host: SpriteHost, box: Box): Lift | null {
  */
 export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
   const which = box.pseudo;
-  if (which === 'first-letter' || which === 'backdrop') return null;
+  if (
+    which === 'first-letter' ||
+    which === 'backdrop' ||
+    which === 'details-content'
+  ) {
+    return null;
+  }
   const pseudo: Pseudo = which ?? '';
   const el = pseudo ? GENERATED_FROM.get(box) : box.el;
   if (!el) return null;

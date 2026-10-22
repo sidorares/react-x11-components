@@ -25,6 +25,7 @@ import type {
   ComputedStyle,
   ContentSize,
   GridLine,
+  SizeOf,
 } from '../css/style.js';
 import {
   CONTAIN_INLINE_SIZE,
@@ -3274,6 +3275,20 @@ function finishHeight(box: Box, contentHeight: number): void {
       contentHeight = automatic ? Math.max(ratio, contentHeight) : ratio;
     }
   }
+  // a `calc-size()` of the content's height (CSS Values 5, 9)
+  if (specified === null && box.style.heightSize) {
+    box.height = clampHeight(
+      box,
+      sizedBy(
+        box.style.heightSize,
+        contentHeight + box.verticalExtra,
+        box.verticalExtra,
+        box.style.boxSizing,
+        box.percentHeightBase,
+      ),
+    );
+    return;
+  }
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
@@ -3384,10 +3399,20 @@ function blockWidth(
     const room = Math.max(0, available);
     const keyword =
       style.widthKeyword ?? (fitsContent(box) ? 'fit-content' : null);
-    const width =
+    let width =
       keyword && ctx
         ? contentSizedWidth(box, ctx, keyword, room, percentBase)
         : room;
+    // a `calc-size()` of that width (CSS Values 5, 9)
+    if (style.widthSize) {
+      width = sizedBy(
+        style.widthSize,
+        width,
+        box.horizontalExtra,
+        style.boxSizing,
+        percentBase,
+      );
+    }
     return clampWidth(
       box,
       transferredWidth(box, width),
@@ -3403,6 +3428,27 @@ function blockWidth(
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
   return clampWidth(box, borderBox, percentBase, ctx, containingWidth);
+}
+
+/**
+ * A border-box size a `calc-size()` makes of the one its keyword gives a
+ * box, `border` that size as a border box (CSS Values 5, 9): `size` of it,
+ * as the property measures it — its content box but under `box-sizing:
+ * border-box` — with `plus` added, a percentage of `base`, and none of it
+ * less than nothing.
+ */
+export function sizedBy(
+  sized: SizeOf,
+  border: number,
+  extra: number,
+  boxSizing: ComputedStyle['boxSizing'],
+  base: number,
+): number {
+  const content = boxSizing !== 'border-box';
+  const basis = content ? Math.max(0, border - extra) : border;
+  const plus = resolve(sized.plus, Number.isFinite(base) ? base : 0);
+  const value = Math.max(0, sized.size * basis + plus);
+  return content ? value + extra : Math.max(value, extra);
 }
 
 /**

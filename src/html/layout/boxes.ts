@@ -451,7 +451,13 @@ export class Box {
    *  a click on a link's generated text or first letter is a click on the
    *  link. A `::backdrop`'s is the sibling before its element's box, and
    *  holds nothing. */
-  pseudo: 'before' | 'after' | 'first-letter' | 'backdrop' | null = null;
+  pseudo:
+    | 'before'
+    | 'after'
+    | 'first-letter'
+    | 'backdrop'
+    | 'details-content'
+    | null = null;
 
   /**
    * The bounds of everything this box and its descendants draw, in document
@@ -1379,17 +1385,16 @@ class Builder {
     // CSS 2.1 17.2.1: a column group holds columns, and anything else in it
     // is not rendered
     const onlyColumns = parentStyle.display === 'table-column-group';
-    // A closed `<details>` shows its first `<summary>` and nothing else:
-    // HTML renders the rest into a slot that is out of the box tree until
-    // the element is `open`.
-    const closed =
-      owner !== null &&
-      tagOf(owner) === 'details' &&
-      owner.attribs.open === undefined;
+    // A `<details>` shows its first `<summary>` first, and all else it holds
+    // in its `::details-content` after it (HTML 15.3.4), which the UA sheet
+    // hides while it is shut (`_detailsContent`).
+    const held =
+      owner !== null && tagOf(owner) === 'details' ? ([] as ChildNode[]) : null;
     let summarised = false;
     for (const child of flatChildrenOf(node as Element)) {
-      if (closed) {
-        if (!isElement(child) || summarised || tagOf(child) !== 'summary') {
+      if (held) {
+        if (summarised || !isElement(child) || tagOf(child) !== 'summary') {
+          held.push(child);
           continue;
         }
         summarised = true;
@@ -1408,6 +1413,71 @@ class Builder {
       if (!isElement(child)) continue;
       this._element(child, into, parentStyle, inFlex, parentKey, onlyColumns);
     }
+    if (held?.length) this._detailsContent(owner!, held, into, parentStyle);
+  }
+
+  /**
+   * A `<details>`'s `::details-content` (HTML 15.3.4, CSS Pseudo 4): a box
+   * of its own `display` after the summary, holding all the element holds
+   * but its summary, and inheriting from it. Shut, the UA sheet gives it
+   * `content-visibility: hidden`, which keeps the box and makes none of
+   * what is in it (`_element`'s `skips`) — so a page that makes it visible
+   * while it shuts, as an accordion animating its height does, still has
+   * its content to draw. It is its element's to the pointer and to its
+   * images, as a `::before` is (`GENERATED_FROM`).
+   */
+  private _detailsContent(
+    details: Element,
+    held: ChildNode[],
+    into: Box,
+    detailsStyle: ComputedStyle,
+  ): void {
+    const cascade = this._options.cascade;
+    const style = cascade.detailsContentStyleFor(details, detailsStyle);
+    if (style.display === 'none') return;
+    if (isRelative(style) || style.translate || style.transform) {
+      this._relative = true;
+    }
+    if (outOfPlane(style)) this._tilted = true;
+    if (isNegative(style)) this._negative = true;
+    const box = new Box(boxKindFor(style.display), null, style);
+    box.pseudo = 'details-content';
+    into.append(box);
+    GENERATED_FROM.set(box, details);
+    if (namesImages(style)) this._backgrounds.push(box);
+    placeInFlow(box, style, into);
+    if (into.kind === 'inline' && (box.outOfFlow || box.isFloat)) {
+      this._nestedOutOfLine = true;
+    }
+    const flow = flowOf(style, box);
+    const around = this._ws;
+    const aroundWord = this._lettered;
+    if (flow === 'block') this._endLine();
+    if (flow !== 'inline') this._ws = 'start';
+    const skips =
+      style.contentVisibility === 'hidden' &&
+      containmentApplies(box, CONTAIN_SIZE);
+    if (!skips) {
+      const inFlex =
+        style.display === 'flex' || style.display === 'inline-flex';
+      // what is in it is styled under its style, which no element's key
+      // stands for
+      const key = cascade.freshShareKey();
+      for (const child of held) {
+        if (isText(child)) {
+          const start = this._length;
+          this._textNode(child.data, box, style, details);
+          if (this._length > start) {
+            this._textNodes.push({ node: child, start, end: this._length });
+          }
+        } else if (isElement(child)) {
+          this._element(child, box, style, inFlex, key);
+        }
+      }
+    }
+    if (flow !== 'inline') this._endLine();
+    this._ws = after(flow, this._ws, around);
+    this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
   private _element(

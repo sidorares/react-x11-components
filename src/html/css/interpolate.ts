@@ -21,7 +21,7 @@
 import { blend, rgbaOf } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
-import type { BoxShadow, CornerShapes } from './style.js';
+import type { BoxShadow, ComputedStyle, CornerShapes } from './style.js';
 import { halfCorner, shapeAtHalfCorner } from './corner-shape.js';
 import {
   IDENTITY,
@@ -154,6 +154,55 @@ function interpolateShadows(
 }
 
 /**
+ * The fields of a width and a height written so that a size between a
+ * length and a keyword runs, as `interpolate-size: allow-keywords` lets it
+ * (CSS Values 5, 12.1): both ends as a `calc-size()` of the keyword — the
+ * length as none of the keyword's size and the length added, the keyword
+ * as all of it, a `calc-size()` already as it is — so that `widthSize`
+ * and `heightSize` run between the two as any record of numbers does,
+ * and `width`, `height` and their keywords are the same at both ends. A
+ * size the two ends give the same way, two lengths or one keyword, is
+ * left as it is, and so are two keywords, which do not run. Null where
+ * nothing was written so.
+ */
+export function keywordSizes(
+  was: ComputedStyle,
+  now: ComputedStyle,
+): { was: Partial<ComputedStyle>; now: Partial<ComputedStyle> } | null {
+  let out: { was: Partial<ComputedStyle>; now: Partial<ComputedStyle> } | null =
+    null;
+  for (const axis of ['width', 'height'] as const) {
+    const keyField = axis === 'width' ? 'widthKeyword' : 'heightKeyword';
+    const sizeField = axis === 'width' ? 'widthSize' : 'heightSize';
+    const ends = [was, now].map((s) =>
+      s[axis] === 'auto'
+        ? { keyword: s[keyField], size: s[sizeField] }
+        : { len: s[axis] as Len },
+    );
+    const [a, b] = ends;
+    const keyword =
+      'keyword' in a ? a.keyword : 'keyword' in b ? b.keyword : undefined;
+    if (keyword === undefined) continue;
+    if ('keyword' in a && 'keyword' in b) {
+      // one keyword both ends: written alike where one is a calc-size()
+      if (a.keyword !== b.keyword || !a.size === !b.size) continue;
+    }
+    const as = (end: (typeof ends)[number]): Partial<ComputedStyle> => ({
+      [axis]: 'auto',
+      [keyField]: keyword,
+      [sizeField]:
+        'len' in end
+          ? { size: 0, plus: end.len }
+          : (end.size ?? { size: 1, plus: 0 }),
+    });
+    out ??= { was: {}, now: {} };
+    Object.assign(out.was, as(a));
+    Object.assign(out.now, as(b));
+  }
+  return out;
+}
+
+/**
  * Corners' shapes `q` of the way between (CSS Borders 4, 3.9.6): each by
  * the point its curve crosses its diagonal at, which runs from a notch to
  * a square corner through a bevel, and back to the parameter that crosses
@@ -192,6 +241,33 @@ const nothingLike = (like: BoxShadow): BoxShadow => ({
 /** The value a discrete property has `q` of the way between two. */
 export function discrete<T>(a: T, b: T, q: number): T {
   return q < 0.5 ? a : b;
+}
+
+/**
+ * A field's value `q` of the way along a transition that runs it though it
+ * does not interpolate, as `allow-discrete` has one run (CSS Transitions
+ * 2): over half-way — but `content-visibility`, which is the end that is
+ * not `hidden` all the time it runs (CSS Containment 2, 4), so content an
+ * accordion shuts is there to draw while its height closes, and is there
+ * from its first frame as it opens; and `display` likewise.
+ */
+export function discreteField(
+  field: string,
+  a: unknown,
+  b: unknown,
+  q: number,
+): unknown {
+  // and `display`, the end that is not `none` (CSS Display 4, 2.8)
+  const off =
+    field === 'contentVisibility'
+      ? 'hidden'
+      : field === 'display'
+        ? 'none'
+        : undefined;
+  if (off !== undefined && (a === off) !== (b === off)) {
+    return q >= 1 ? b : a === off ? b : a;
+  }
+  return discrete(a, b, q);
 }
 
 /** `translate` and `scale` at nothing: what `none` is at one end of an

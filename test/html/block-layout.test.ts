@@ -49,6 +49,43 @@ metric('sibling margins collapse to the larger of the two', async () => {
   );
 });
 
+test('calc-size() sizes a box from the size its keyword would give it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.c{height:100px}</style>' +
+      // half the content's height, and the content's less 10px
+      '<div id="a" style="height:calc-size(auto, size * 0.5)"><div class="c"></div></div>' +
+      '<div id="b" style="height:calc-size(auto, size - 10px)"><div class="c"></div></div>' +
+      // `size` alone where there is no calculation; a fit-content's
+      '<div id="c" style="height:calc-size(fit-content)"><div class="c"></div></div>' +
+      // a width: what the room comes to, and a content keyword's
+      '<div id="d" style="width:calc-size(auto, size - 40px)"></div>' +
+      '<div id="e" style="width:calc-size(auto, size * 0.5 + 10%)"></div>' +
+      '<div id="f" style="width:calc-size(min-content, size + 20px)">' +
+      '<div style="width:30px;height:5px"></div></div>' +
+      // a length basis is the length its calculation comes to
+      '<div id="g" style="height:calc-size(50px, size * 2)"></div>' +
+      // the box it measures under border-box sizing is the border box
+      '<div id="h" style="box-sizing:border-box;padding:10px;' +
+      'height:calc-size(auto, size * 0.5)"><div class="c"></div></div>' +
+      // where it is not read, the declaration before it stands
+      '<div id="i" style="height:30px;height:calc-size(auto, size * size)"></div>' +
+      '<div id="j" style="min-height:30px;min-height:calc-size(auto, size)"></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 50);
+  assert.strictEqual(boxOf(el, 'b').height, 90);
+  assert.strictEqual(boxOf(el, 'c').height, 100);
+  assert.strictEqual(boxOf(el, 'd').width, 360);
+  assert.strictEqual(boxOf(el, 'e').width, 240);
+  assert.strictEqual(boxOf(el, 'f').width, 50);
+  assert.strictEqual(boxOf(el, 'g').height, 100);
+  // (100 + 20) / 2, the padding inside it
+  assert.strictEqual(boxOf(el, 'h').height, 60);
+  assert.strictEqual(boxOf(el, 'i').height, 30);
+  assert.strictEqual(boxOf(el, 'j').height, 30);
+});
+
 test('margins of both signs collapse to the largest and the most negative of all', async () => {
   // 2, -4, 0, 14, -4 and 2 are 14 less 4: taken two at a time they came
   // to 8, and the block after them stood two pixels high (CSS 2.1 8.3.1)
