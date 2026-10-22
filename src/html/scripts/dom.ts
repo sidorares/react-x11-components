@@ -14247,10 +14247,14 @@ export function installDom(
       item: (i: number) => Object.keys(values)[i] ?? '',
       cssText: '',
     };
+    const names = Object.keys(values);
     for (const [name, value] of Object.entries(values)) {
       out[name] = value;
       out[camel(name)] = value;
     }
+    // its names by index, as a declaration's are, and in order
+    names.forEach((name, i) => (out[i] = name));
+    out[Symbol.iterator] = () => names[Symbol.iterator]();
     return out;
   };
 

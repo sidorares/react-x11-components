@@ -999,6 +999,19 @@ export interface ComputedStyle {
   /** And the names it lists, as its computed value is serialized: `auto`,
    *  or the names, lowercased, in the order written. What an animation
    *  makes of the element is none of them. */
+  /** `animation-timeline` (CSS Animations 2, Scroll-driven Animations 1):
+   *  each animation's timeline, as its computed value is serialized. */
+  animationTimeline: readonly TimelineRef[];
+  /** `timeline-scope`: `none`, `all`, or the names, as written. */
+  timelineScope: string;
+  /** `scroll-timeline-name` and `-axis`, `view-timeline-name` and `-axis`:
+   *  their lists as written, keywords lowercased. */
+  scrollTimelineName: string;
+  scrollTimelineAxis: string;
+  viewTimelineName: string;
+  viewTimelineAxis: string;
+  /** `view-timeline-inset`: each timeline's start and end inset. */
+  viewTimelineInset: readonly (readonly [Len, Len])[];
   willChangeNames: string;
   /** `view-transition-name` and `view-transition-class` (CSS View
    *  Transitions), as they are serialized: `none`, a keyword or the names
@@ -1649,6 +1662,13 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clip: null,
     clipPath: null,
     opacity: 1,
+    animationTimeline: AUTO_TIMELINES,
+    timelineScope: 'none',
+    scrollTimelineName: 'none',
+    scrollTimelineAxis: 'block',
+    viewTimelineName: 'none',
+    viewTimelineAxis: 'block',
+    viewTimelineInset: AUTO_INSETS,
     zoom: 1,
     effectiveZoom: 1,
     filter: null,
@@ -2221,8 +2241,13 @@ export function applyDeclaration(
     // earlier declaration of the property was that declaration. `revert`
     // would be the UA sheet's value, and leaving the one the cascade has
     // reached is the closest this gets without a third cascade level.
-    if (lower === 'unset' && isInherited(name)) inheritOne(style, parent, name);
-    else if (lower !== 'revert' && ctx.initial) {
+    // A property the UA sheet never sets reverts to what no sheet set,
+    // which is `unset`.
+    const unset =
+      lower === 'unset' ||
+      (lower === 'revert' && ctx.uaSets !== undefined && !ctx.uaSets(name));
+    if (unset && isInherited(name)) inheritOne(style, parent, name);
+    else if ((lower === 'initial' || unset) && ctx.initial) {
       inheritOne(style, ctx.initial, name);
     }
     return;
@@ -2814,6 +2839,46 @@ export function applyDeclaration(
     case 'view-transition-class': {
       const names = viewTransitionClass(value);
       if (names !== null) style.viewTransitionClass = names;
+      return;
+    }
+    case 'animation-timeline': {
+      const timelines = timelinesOf(value, ctx);
+      if (timelines) style.animationTimeline = timelines;
+      return;
+    }
+    case 'timeline-scope': {
+      const v = value.trim();
+      if (/^(?:none|all)$/i.test(v)) style.timelineScope = v.toLowerCase();
+      else {
+        const names = dashedList(v, false);
+        if (names) style.timelineScope = names;
+      }
+      return;
+    }
+    case 'scroll-timeline-name':
+    case 'view-timeline-name': {
+      const names = dashedList(value, true);
+      if (!names) return;
+      if (written === 'scroll-timeline-name') style.scrollTimelineName = names;
+      else style.viewTimelineName = names;
+      return;
+    }
+    case 'scroll-timeline-axis':
+    case 'view-timeline-axis': {
+      const axes = axisList(value);
+      if (!axes) return;
+      if (written === 'scroll-timeline-axis') style.scrollTimelineAxis = axes;
+      else style.viewTimelineAxis = axes;
+      return;
+    }
+    case 'view-timeline-inset': {
+      const insets: [Len, Len][] = [];
+      for (const part of splitCommas(value)) {
+        const inset = insetOf(splitValue(part.trim()), ctx);
+        if (!inset) return;
+        insets.push(inset);
+      }
+      if (insets.length) style.viewTimelineInset = insets;
       return;
     }
     case 'will-change': {
@@ -7603,6 +7668,13 @@ let TRANSITIONABLE: ReadonlySet<keyof ComputedStyle> | null = null;
 const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'contain',
   'willChange',
+  'animationTimeline',
+  'timelineScope',
+  'scrollTimelineName',
+  'scrollTimelineAxis',
+  'viewTimelineName',
+  'viewTimelineAxis',
+  'viewTimelineInset',
   'willChangeNames',
   'viewTransitionName',
   'viewTransitionClass',
@@ -8164,6 +8236,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'scroll-margin-left': ['scrollMarginLeft'],
   zoom: ['zoom'],
   filter: ['filter'],
+  'animation-timeline': ['animationTimeline'],
+  'timeline-scope': ['timelineScope'],
+  'scroll-timeline-name': ['scrollTimelineName'],
+  'scroll-timeline-axis': ['scrollTimelineAxis'],
+  'view-timeline-name': ['viewTimelineName'],
+  'view-timeline-axis': ['viewTimelineAxis'],
+  'view-timeline-inset': ['viewTimelineInset'],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
   'will-change': ['willChange', 'willChangeNames'],
@@ -8572,4 +8651,112 @@ function setScrollSides<T extends Len>(
       set('Right', parts[0]);
       return;
   }
+}
+
+/** An animation's timeline (Scroll-driven Animations 1, 4.1): `auto`,
+ *  `none`, a named one, or an anonymous `scroll()` or `view()`. */
+export type TimelineRef =
+  | { kind: 'auto' | 'none' }
+  | { kind: 'name'; name: string }
+  | { kind: 'scroll'; scroller: 'nearest' | 'root' | 'self'; axis: Axis }
+  | { kind: 'view'; axis: Axis; inset: readonly [Len, Len] };
+type Axis = 'block' | 'inline' | 'x' | 'y';
+
+const AUTO_TIMELINES: readonly TimelineRef[] = [{ kind: 'auto' }];
+const AUTO_INSETS: readonly (readonly [Len, Len])[] = [['auto', 'auto']];
+const AXES = /^(?:block|inline|x|y)$/i;
+const DASHED = /^--(?:[\w\u0080-\uffff-]|\\.)+$/;
+
+/** A list of `animation-timeline` values, or null for none. */
+function timelinesOf(value: string, ctx: UnitContext): TimelineRef[] | null {
+  const out: TimelineRef[] = [];
+  for (const part of splitCommas(value)) {
+    const v = part.trim();
+    const lower = v.toLowerCase();
+    if (lower === 'auto' || lower === 'none') {
+      out.push({ kind: lower });
+      continue;
+    }
+    if (DASHED.test(v)) {
+      out.push({ kind: 'name', name: v });
+      continue;
+    }
+    const m = /^(scroll|view)\(([^]*)\)$/i.exec(v);
+    if (!m) return null;
+    const args = m[2].trim() ? splitValue(m[2].trim()) : [];
+    if (m[1].toLowerCase() === 'scroll') {
+      let scroller: 'nearest' | 'root' | 'self' | null = null;
+      let axis: Axis | null = null;
+      for (const arg of args) {
+        const a = arg.toLowerCase();
+        if (/^(?:nearest|root|self)$/.test(a) && !scroller) {
+          scroller = a as 'nearest' | 'root' | 'self';
+        } else if (AXES.test(a) && !axis) axis = a as Axis;
+        else return null;
+      }
+      out.push({
+        kind: 'scroll',
+        scroller: scroller ?? 'nearest',
+        axis: axis ?? 'block',
+      });
+      continue;
+    }
+    // an axis, and one or two insets, either first
+    let axis: Axis | null = null;
+    let rest = args;
+    if (rest.length && AXES.test(rest[0])) {
+      axis = rest[0].toLowerCase() as Axis;
+      rest = rest.slice(1);
+    } else if (rest.length && AXES.test(rest[rest.length - 1])) {
+      axis = rest[rest.length - 1].toLowerCase() as Axis;
+      rest = rest.slice(0, -1);
+    }
+    const inset: readonly [Len, Len] | null = rest.length
+      ? insetOf(rest, ctx)
+      : ['auto', 'auto'];
+    if (!inset) return null;
+    out.push({ kind: 'view', axis: axis ?? 'block', inset });
+  }
+  return out.length ? out : null;
+}
+
+/** One or two insets, each a length, a percentage or `auto`: the end
+ *  the start where it is not given. Null for no inset. */
+function insetOf(
+  words: readonly string[],
+  ctx: UnitContext,
+): [Len, Len] | null {
+  if (!words.length || words.length > 2) return null;
+  const one = (w: string): Len | null => {
+    if (/^auto$/i.test(w)) return 'auto';
+    const len = parseLength(w, ctx);
+    return len === null || len === 'auto' ? null : len;
+  };
+  const start = one(words[0]);
+  const end = words.length > 1 ? one(words[1]) : start;
+  return start === null || end === null ? null : [start, end];
+}
+
+/** A list of dashed names, `none` among them where `none` is allowed:
+ *  as written, `none` lowercased. Null where one is neither. */
+function dashedList(value: string, none: boolean): string | null {
+  const out: string[] = [];
+  for (const part of splitCommas(value)) {
+    const v = part.trim();
+    if (none && /^none$/i.test(v)) out.push('none');
+    else if (DASHED.test(v)) out.push(v);
+    else return null;
+  }
+  return out.length ? out.join(', ') : null;
+}
+
+/** A list of axes, lowercased; null where one is none. */
+function axisList(value: string): string | null {
+  const out: string[] = [];
+  for (const part of splitCommas(value)) {
+    const v = part.trim().toLowerCase();
+    if (!AXES.test(v)) return null;
+    out.push(v);
+  }
+  return out.length ? out.join(', ') : null;
 }

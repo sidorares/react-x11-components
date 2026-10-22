@@ -863,6 +863,52 @@ test('computedStyle reads will-change as the names it lists, and isolation, neit
   assert.strictEqual(of('e')['will-change'], 'auto', '`all` is no value');
 });
 
+test('computedStyle reads the scroll-driven timeline properties as their computed values', async () => {
+  // Scroll-driven Animations 1: defaults left out, scroll()'s scroller
+  // before its axis, an inset's end left out where it is its start, and
+  // lengths computed
+  const { node } = await render(
+    '<style>#a { font-size: 10px; animation-timeline: scroll(y root), view(1em 1em),' +
+      ' view(x auto calc(1% + 1em)), --t, none;' +
+      ' scroll-timeline-name: --s, none; scroll-timeline-axis: Y, inline;' +
+      ' view-timeline-name: --v; view-timeline-axis: x;' +
+      ' view-timeline-inset: 1px 1px, auto auto, 2em auto; timeline-scope: --t, --u }' +
+      '</style><div id="a"></div><div id="b"></div>',
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    el.computedStyle(findById(el.document, id) as DocElement)!;
+  const a = of('a');
+  assert.strictEqual(
+    a['animation-timeline'],
+    'scroll(root y), view(10px), view(x auto calc(1% + 10px)), --t, none',
+  );
+  assert.strictEqual(a['scroll-timeline-name'], '--s, none');
+  assert.strictEqual(a['scroll-timeline-axis'], 'y, inline');
+  assert.strictEqual(a['view-timeline-name'], '--v');
+  assert.strictEqual(a['view-timeline-axis'], 'x');
+  assert.strictEqual(a['view-timeline-inset'], '1px, auto, 20px auto');
+  assert.strictEqual(a['timeline-scope'], '--t, --u');
+  const b = of('b');
+  assert.strictEqual(b['animation-timeline'], 'auto');
+  assert.strictEqual(b['view-timeline-inset'], 'auto');
+  assert.strictEqual(b['scroll-timeline-axis'], 'block');
+});
+
+test('revert, for a property no user agent rule sets, is unset', async () => {
+  // CSS Cascade 4, 7.3.3: what the user agent origin has, which for a
+  // property its sheet leaves alone is what no sheet sets: the initial
+  // value, for one that does not inherit
+  const { node } = await render(
+    '<style>#p { will-change: opacity } #c { will-change: transform }' +
+      ' #c { will-change: revert }</style>' +
+      '<div id="p"><p id="c">c</p></div>',
+  );
+  const el = view(node);
+  const c = el.computedStyle(findById(el.document, 'c') as DocElement)!;
+  assert.strictEqual(c['will-change'], 'auto');
+});
+
 test("a <meta name=color-scheme> draws the page in its scheme and leaves the root's color-scheme normal", async () => {
   const { node } = await render(
     '<html><head><meta name="color-scheme" content="dark">' +

@@ -147,6 +147,9 @@ export interface UnitContext {
   rlh?: () => number;
   /** Every property at its initial value, which `initial` sets one to. */
   initial?: ComputedStyle;
+  /** Whether the user agent's sheet sets a property, a longhand of it or
+   *  a shorthand over it: where it does not, `revert` is `unset`. */
+  uaSets?: (name: string) => boolean;
   /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
   focusRing?: string;
   /** The scheme the palette is, the reader's preference, which a

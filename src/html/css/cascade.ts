@@ -2570,6 +2570,18 @@ export class Cascade {
     return attribs[name] ?? attribs[name.toLowerCase()];
   };
   private _lh = false;
+  /** The properties the user agent's sheet declares (`UnitContext.uaSets`). */
+  private _uaProps = new Set<string>();
+  private _uaSets = (name: string): boolean => {
+    const props = this._uaProps;
+    if (props.has(name)) return true;
+    // a shorthand over it, or a longhand of it, the UA sheet sets
+    for (let at = name.indexOf('-'); at > 0; at = name.indexOf('-', at + 1)) {
+      if (props.has(name.slice(0, at))) return true;
+    }
+    for (const p of props) if (p.startsWith(`${name}-`)) return true;
+    return false;
+  };
   /** Whether a declaration anywhere sets `scroll-snap-type`: what makes a
    *  layout ask whether a snap container is at rest where it should be
    *  (`HtmlViewNode._resnap`). */
@@ -2750,6 +2762,9 @@ export class Cascade {
     breakpoints: Set<number>,
   ): void {
     for (const rule of sheet.rules) {
+      if (rule.order < 0) {
+        for (const d of rule.declarations) this._uaProps.add(d.prop);
+      }
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
       if (!this.snaps && usesSnap(rule.declarations)) this.snaps = true;
@@ -5215,6 +5230,7 @@ export class Cascade {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize * rootZoom,
       initial: this.initial,
+      uaSets: this._uaSets,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth * zoom,
