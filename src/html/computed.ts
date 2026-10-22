@@ -129,6 +129,75 @@ function display(style: ComputedStyle): string {
   return style.display;
 }
 
+/** The four sides' properties a shorthand of them stands for, in CSS's
+ *  top-right-bottom-left order. */
+const FOUR_SIDES: Record<string, readonly string[]> = {
+  margin: SIDES.map((s) => `margin-${s}`),
+  padding: SIDES.map((s) => `padding-${s}`),
+  'border-width': SIDES.map((s) => `border-${s}-width`),
+  'border-style': SIDES.map((s) => `border-${s}-style`),
+  'border-color': SIDES.map((s) => `border-${s}-color`),
+  inset: SIDES,
+};
+
+const CORNERS = [
+  'border-top-left-radius',
+  'border-top-right-radius',
+  'border-bottom-right-radius',
+  'border-bottom-left-radius',
+];
+
+/** Four sides' values as CSSOM writes their shorthand: as few as say all
+ *  four, the last left off where it is the second, and so on. */
+function shortest(parts: readonly string[]): string {
+  const [t, r, b, l] = parts;
+  if (r === l && t === b && t === r) return t;
+  if (r === l && t === b) return `${t} ${r}`;
+  if (r === l) return `${t} ${r} ${b}`;
+  return parts.join(' ');
+}
+
+/**
+ * A property's computed value as a declaration reads it back, for
+ * `inherit()` (CSS Values 5, 7.6): what `cssomStyle` answers, with no box
+ * and so its computed sizes, and the shorthands of four sides, the border
+ * radii and the gaps, as CSSOM serializes them. Undefined for a property
+ * none of that serializes.
+ */
+export function computedText(
+  style: ComputedStyle,
+  name: string,
+  scale: number,
+): string | undefined {
+  const prop = name.toLowerCase();
+  const xs = style.borderRadius;
+  const ys = style.borderRadiusY ?? style.borderRadius;
+  const corner = CORNERS.indexOf(prop);
+  if (corner >= 0) {
+    const x = len(xs[corner], scale);
+    const y = len(ys[corner], scale);
+    return x === y ? x : `${x} ${y}`;
+  }
+  if (prop === 'border-radius') {
+    const across = shortest(xs.map((r) => len(r, scale)));
+    if (!style.borderRadiusY) return across;
+    return `${across} / ${shortest(ys.map((r) => len(r, scale)))}`;
+  }
+  const rowGap = style.rowGapNormal ? 'normal' : len(style.rowGap, scale);
+  const columnGap = style.columnGapNormal
+    ? 'normal'
+    : len(style.columnGap, scale);
+  if (prop === 'row-gap') return rowGap;
+  if (prop === 'column-gap') return columnGap;
+  if (prop === 'gap') {
+    return rowGap === columnGap ? rowGap : `${rowGap} ${columnGap}`;
+  }
+  const all = cssomStyle(style, scale, null);
+  if (Object.hasOwn(all, prop)) return all[prop];
+  const sides = FOUR_SIDES[prop];
+  return sides ? shortest(sides.map((side) => all[side])) : undefined;
+}
+
 /**
  * An element's style as `getComputedStyle` answers it, by property name:
  * `box` where a layout gave the element one, for the used values of its

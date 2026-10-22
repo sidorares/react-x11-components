@@ -11,7 +11,9 @@
 //
 // A custom function's call (CSS Mixins 1, 2), `--name(…)`, is the third:
 // the `@function` it names is evaluated with its arguments where the call
-// is replaced, and what its `result` comes to stands for the call.
+// is replaced, and what its `result` comes to stands for the call. And
+// `inherit()` (CSS Values 5, 7.6) is the fourth: the value the parent has,
+// of a custom property or of a property, or of the one declared.
 //
 // A document with none of these pays nothing: the cascade asks only when
 // some declaration has one (`Declaration.custom`, `Declaration.vars`).
@@ -128,7 +130,13 @@ export function customProperties(
     stack.push(name);
     const raw = out.own.get(name);
     if (raw && hasVar(raw)) {
-      const value = substitute(raw, visit, env);
+      // an `inherit()` finds the parent's, its own name's where it names
+      // none
+      const value = substitute(
+        raw,
+        visit,
+        hasInherit(raw) ? inheritingEnv(env, name, parent) : env,
+      );
       out.own.set(
         name,
         value !== null && !cyclic.has(name)
@@ -160,10 +168,12 @@ export function substituteIn(
 ): string | null {
   // what a `media()` answers is the viewport's, which the properties do
   // not say
+  // nor what an `inherit()` finds, which is the parent's
   if (
     !props ||
     (env &&
       (MEDIA.test(value) ||
+        INHERIT_CALL.test(value) ||
         (env.functionsReadMedia && DASHED_CALL.test(value))))
   ) {
     return substitute(value, props, env);
@@ -184,12 +194,41 @@ const SUBSTITUTED = new WeakMap<CustomProps, Map<string, string | null>>();
 
 const MEDIA = /(?:^|[^\w-])media\(/i;
 
-/** Whether a value has a `var()`, an `if()` or a custom function's call
- *  in it: whether it is read only once the element's custom properties are
- *  known. */
+/** Whether a value has a `var()`, an `if()`, an `inherit()` or a custom
+ *  function's call in it: whether it is read only once the element's
+ *  custom properties are known. */
 export function hasVar(value: string): boolean {
   return VAR.test(value) || (value.includes('--') && DASHED_CALL.test(value));
 }
+
+/** Whether a value has an `inherit()` in it, which reads the parent. */
+export function hasInherit(value: string): boolean {
+  return INHERIT_CALL.test(value);
+}
+
+/**
+ * `env` for a value of `property` with an `inherit()` in it: one whose
+ * `inherited` finds a custom property in `parent`, the parent's custom
+ * properties, and anything else where `env` would.
+ */
+export function inheritingEnv(
+  env: IfEnvironment | null,
+  property: string,
+  parent: CustomProps | null,
+): IfEnvironment {
+  return {
+    ...(env ?? NO_ENV),
+    property,
+    inherited: (name) =>
+      name.startsWith('--') ? parent?.get(name) : env?.inherited?.(name),
+  };
+}
+
+/** What nothing answers: no media query and no `@supports` holds. */
+const NO_ENV: IfEnvironment = {
+  media: () => false,
+  supports: () => false,
+};
 
 /**
  * What an `if()` asks beyond the element's custom properties: whether a
@@ -209,6 +248,13 @@ export interface IfEnvironment {
   /** Whether some `@function` is chosen by a media query, or holds one,
    *  so that what a call comes to is the viewport's to say. */
   functionsReadMedia?: boolean;
+  /** What an `inherit()` of `name` finds: the parent's custom property of
+   *  the name, or the parent's computed value of the property, as text;
+   *  undefined for none. Absent, `inherit()` finds nothing. */
+  inherited?(name: string): string | undefined;
+  /** The property the value is the declaration of, which an `inherit()`
+   *  with no name inherits. */
+  property?: string;
 }
 
 /**
@@ -256,7 +302,7 @@ export function validVars(value: string): boolean {
     const close = closingParen(value, open);
     if (close < 0) return false;
     const inner = value.slice(open, close);
-    if (kind !== 'var') {
+    if (kind === 'if' || kind === 'fn') {
       if (!(kind === 'if' ? validIf(inner) : validArguments(inner))) {
         return false;
       }
@@ -265,7 +311,9 @@ export function validVars(value: string): boolean {
     }
     const comma = topLevelComma(inner);
     const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
-    if (!NAME.test(name)) return false;
+    // an `inherit()` may name a property, or nothing: the one declared
+    const named = kind === 'inherit' ? !name || INHERIT_NAME.test(name) : false;
+    if (!named && !NAME.test(name)) return false;
     if (comma >= 0) {
       const fallback = inner.slice(comma + 1);
       if (topLevel(fallback, ';') >= 0 || topLevel(fallback, '!') >= 0) {
@@ -299,7 +347,12 @@ function unescapeName(name: string): string {
   );
 }
 
-const VAR = /(?:^|[^\w-])(?:var|if)\(/i;
+const VAR = /(?:^|[^\w-])(?:var|if|inherit)\(/i;
+
+const INHERIT_CALL = /(?:^|[^\w-])inherit\(/i;
+
+/** What an `inherit()` may name: a custom property, or a property. */
+const INHERIT_NAME = /^-?[a-z][a-z-]*$/i;
 
 /** A custom function's call: a dashed ident straight before a bracket. */
 const DASHED_CALL = /(?:^|[^\w-])--(?:[\w-]|[^\x00-\x7f])+\(/;
@@ -341,8 +394,16 @@ export function substitute(
     } else {
       const comma = topLevelComma(inner);
       const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
-      if (!NAME.test(name)) return null;
-      replacement = get(unescapeName(name));
+      if (kind === 'inherit') {
+        // the parent's value of what it names, a custom property's or a
+        // property's, or of the property declared where it names none
+        if (name && !NAME.test(name) && !INHERIT_NAME.test(name)) return null;
+        const of = name ? unescapeName(name) : env?.property;
+        replacement = of ? env?.inherited?.(of) : undefined;
+      } else {
+        if (!NAME.test(name)) return null;
+        replacement = get(unescapeName(name));
+      }
       if (replacement === undefined) {
         if (comma < 0) return null;
         const fallback = inner.slice(comma + 1);
@@ -599,11 +660,11 @@ function topLevelSplit(value: string, sep: string): string[] {
 interface Found {
   at: number;
   open: number;
-  kind: 'var' | 'if' | 'fn';
+  kind: 'var' | 'if' | 'inherit' | 'fn';
 }
 
-/** The next `var(`, `if(` or `--name(` from `from` that is a function of
- *  its own, and in no string; null where there is none. */
+/** The next `var(`, `if(`, `inherit(` or `--name(` from `from` that is a
+ *  function of its own, and in no string; null where there is none. */
 function findVar(value: string, from: number): Found | null {
   const n = value.length;
   for (let i = from; i < n; i += 1) {
@@ -626,6 +687,9 @@ function findVar(value: string, from: number): Found | null {
     } else if (c === 'i' || c === 'I') {
       if (value.slice(i, i + 3).toLowerCase() === 'if(') {
         return { at: i, open: i + 3, kind: 'if' };
+      }
+      if (value.slice(i, i + 8).toLowerCase() === 'inherit(') {
+        return { at: i, open: i + 8, kind: 'inherit' };
       }
     } else if (c === '-' && value[i + 1] === '-') {
       let end = i + 2;

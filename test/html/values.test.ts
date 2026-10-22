@@ -500,6 +500,55 @@ metric(
   },
 );
 
+metric(
+  'an inherit() is the value the parent has, of a custom property, a property, or the one declared',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>' +
+        // each level one deeper than its parent, from a fallback at the top
+        '.nest { --depth: calc(inherit(--depth, 0) + 1);' +
+        '  width: calc(var(--depth) * 10px) }' +
+        // the parent's, not each other's: a swap
+        '#swap { --a: 1px; --b: 2px }' +
+        '#swap > p { --a: inherit(--b); --b: inherit(--a);' +
+        '  margin-top: var(--a); margin-bottom: var(--b) }' +
+        // a property's computed value, and with no name the one declared —
+        // a shorthand included
+        '#card { border-radius: 16px; padding: 8px 4px; width: 200px; color: #0000ff }' +
+        '#inner { border-radius: calc(inherit() - 4px);' +
+        '  padding-left: calc(inherit(padding-left) * 3);' +
+        '  width: calc(inherit() / 2); background-color: inherit(color) }' +
+        // nothing to find falls back, and with no fallback has no value
+        '#none { width: 5px; width: inherit(--missing, 7px); height: inherit(--missing) }' +
+        // a name that is no property's is none as it is parsed, and the
+        // declaration before it stands
+        '#bad { width: 9px; width: inherit(1px) }' +
+        '</style></head><body>' +
+        '<div class="nest" id="d1"><div class="nest" id="d2">' +
+        '<div class="nest" id="d3">x</div></div></div>' +
+        '<div id="swap"><p id="s">s</p></div>' +
+        '<div id="card"><div id="inner">i</div></div>' +
+        '<p id="none">n</p><p id="bad">b</p>' +
+        '</body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style('d1').width, 10);
+    assert.strictEqual(style('d2').width, 20);
+    assert.strictEqual(style('d3').width, 30);
+    assert.strictEqual(style('s').marginTop, 2);
+    assert.strictEqual(style('s').marginBottom, 1);
+    assert.deepStrictEqual(style('inner').borderRadius, [12, 12, 12, 12]);
+    assert.strictEqual(style('inner').paddingLeft, 12);
+    assert.strictEqual(style('inner').width, 100);
+    assert.strictEqual(style('inner').backgroundColor, '#0000ff');
+    assert.strictEqual(style('none').width, 7);
+    assert.strictEqual(style('none').height, 'auto');
+    assert.strictEqual(style('bad').width, 9);
+  },
+);
+
 test('a @function rule is parsed with its parameters, types, defaults and body', () => {
   const sheet = parseStylesheet(
     '@function --f(--a, --b <length>: 2px, --c type(<number> | auto)) returns <length> {' +

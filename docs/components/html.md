@@ -3157,6 +3157,22 @@ a `vw` in it is; `supports()` as a `@supports` block's condition is. A
 branch that is no condition, or has no `:`, makes the declaration none as
 it is parsed, and the one before it stands.
 
+**`inherit()`** (CSS Values 5): the value the parent has, replaced when a
+`var()` is. `inherit(--depth, 0)` is the parent's custom property, or the
+fallback where the parent has none, so `--depth: calc(inherit(--depth, 0) +
+1)` counts how deep an element is, and `--a: inherit(--b); --b:
+inherit(--a)` swaps two. It also takes a property's name, and with no name
+at all the property it is declared in, which is a step past the
+specification's custom properties: `border-radius: calc(inherit() - 4px)`
+is the parent's radius less four pixels, for a box nested in a rounded one.
+What it finds is the parent's computed value as `getComputedStyle` writes
+it — in CSS pixels, with a `width` its computed and not its used one, and a
+shorthand of four sides or corners as one value where all four are one — so
+a parent whose corners differ gives `calc()` four values, which make the
+declaration nothing. A property that has no such serialization (a
+`transform`, a `grid-template`) finds nothing and falls back. A name that
+is no property's makes the declaration none as it is parsed.
+
 **Custom functions** (CSS Mixins 1): an `@function` rule declares one, and
 `--name(…)` calls it anywhere a `var()` may be, replaced when a `var()` is
 and with the same consequences — a call with no value leaves its property
