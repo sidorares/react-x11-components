@@ -4863,7 +4863,7 @@ export function installDom(
       this.setAttribute('method', v);
     }
     submit(): void {
-      call('submit', this._id, 0);
+      submitForm(this, null, false);
     }
     requestSubmit(submitter?: Any): void {
       const id = submitter ? idOf(submitter) : 0;
@@ -4874,7 +4874,7 @@ export function installDom(
         submitter: submitter ?? null,
       });
       ev.isTrusted = true;
-      if (dispatch(this, ev)) call('submit', this._id, id);
+      if (dispatch(this, ev)) submitForm(this, submitter ?? null, false);
     }
     reset(): void {
       const ev = new Event('reset', { bubbles: true, cancelable: true });
@@ -7789,7 +7789,7 @@ export function installDom(
             submitter: target,
           });
           ev.isTrusted = true;
-          if (dispatch(form, ev)) call('submit', form._id, target._id);
+          if (dispatch(form, ev)) submitForm(form, target, false);
         } else form.requestSubmit(target);
       }
       return true;
@@ -14815,6 +14815,8 @@ export function installDom(
     sourceElement?: Any;
     /** `pushState` or `replaceState`'s, which no `hashChange` is. */
     historyApi?: boolean;
+    /** A POST form submission's entry list (`NavigateEvent.formData`). */
+    formData?: Any;
   }
 
   /**
@@ -14875,6 +14877,7 @@ export function installDom(
         info: params.info,
         userInitiated: !!params.userInitiated,
         sourceElement: params.sourceElement ?? null,
+        formData: params.formData ?? null,
       }),
     );
     const tracker = params.tracker ?? null;
@@ -15108,10 +15111,13 @@ export function installDom(
       /** Where the host goes to another document itself, as it follows a
        *  link it was told to activate. */
       hostFollows?: boolean;
+      /** A form's submission: another document whatever its URL, with
+       *  what a POST sends. */
+      form?: { formData: Any };
     } = {},
   ): 'same' | 'canceled' | 'other' => {
     const from = currentOf(s).url;
-    const fragment = fragmentOf(from, url);
+    const fragment = !options.form && fragmentOf(from, url);
     const went = navigateWith(
       s,
       {
@@ -15123,6 +15129,7 @@ export function installDom(
         userInitiated: options.userInitiated,
         sourceElement: options.sourceElement,
         sameDocument: fragment,
+        formData: options.form?.formData,
       },
       (intercepted) => {
         commitEntry(s, url, type, null, options.navState, type);
@@ -15164,6 +15171,73 @@ export function installDom(
       hostFollows: true,
     });
     return went === 'other';
+  };
+
+  /** A form's submission (HTML 4.10.21.3, "submit"), once its `submit`
+   *  went on: planned as a task, as a browser plans one, in which the page
+   *  hears `navigate` — a POST's entry list its `formData`, the submitter
+   *  or the form its `sourceElement` — and the host submits it only where
+   *  it goes to another document and the page let it. One aimed at another
+   *  window, or a dialog's, is no navigation of this one's, and goes to
+   *  the host at once. */
+  const submitForm = (
+    form: Any,
+    submitter: Any,
+    userInitiated: boolean,
+  ): void => {
+    const submit = () =>
+      call('submit', form._id, submitter ? idOf(submitter) : 0);
+    const attr = (own: string, form_: string): string | null =>
+      submitter?.hasAttribute?.(own)
+        ? submitter.getAttribute(own)
+        : form.getAttribute(form_);
+    const target = (attr('formtarget', 'target') ?? '').trim();
+    const method = (attr('formmethod', 'method') ?? '').trim().toLowerCase();
+    const action = attr('formaction', 'action');
+    let url = action
+      ? String(call('resolve', action))
+      : String(call('location'));
+    if (
+      !/^(|_self)$/i.test(target) ||
+      method === 'dialog' ||
+      /^javascript:/i.test(url)
+    ) {
+      submit();
+      return;
+    }
+    const formData = new FormData(form);
+    if (submitter?.name && /^(submit|image)$/.test(submitter.type)) {
+      formData.append(submitter.name, submitter.value ?? '');
+    }
+    const post = method === 'post';
+    if (!post) {
+      // the action's query is the entry list, empty or not (HTML
+      // 4.10.21.3, "mutate action URL")
+      const hash = url.indexOf('#');
+      const fragment = hash < 0 ? '' : url.slice(hash);
+      const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
+      url = `${base}?${new URLSearchParams(formData as Any)}${fragment}`;
+    }
+    // replaced where it is made while the document loads, unless a user
+    // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
+    const loading = !userInitiated && !pageSession.session.ctx.loaded();
+    setTimer(
+      () => {
+        const s = pageSession.session;
+        const type =
+          loading || (!post && url === currentOf(s).url) ? 'replace' : 'push';
+        const went = navigateTo(s, url, type, {
+          userInitiated,
+          sourceElement: submitter ?? form,
+          hostFollows: true,
+          form: { formData: post ? formData : null },
+        });
+        if (went === 'other') submit();
+      },
+      0,
+      [],
+      false,
+    );
   };
 
   /** Go to another of the window's entries (HTML 7.4.6.1, "traverse the
@@ -15532,10 +15606,15 @@ export function installDom(
     return { session: s, history, navigation: s.navigation };
   };
 
+  /** Whether the document is completely loaded (HTML 8.4, "completely
+   *  finish loading"): its `load` told. */
+  let completelyLoaded = false;
   const pageSession = makeSession({
     url: () => String(call('location')),
     base: () => document.baseURI,
-    loaded: () => document.readyState === 'complete',
+    // completely loaded once `load` was told, as a navigation a handler
+    // of it makes is still one during load (HTML 7.4.2.2)
+    loaded: () => completelyLoaded,
     setUrl: (url) => void call('setLocation', url),
     doc: () => document,
     get target() {
@@ -18065,17 +18144,23 @@ export function installDom(
           target,
           trusted(new Event('change', { bubbles: true })),
         );
-      case 'submit':
-        return dispatch(
+      case 'submit': {
+        const submitter = e.submitter ? wrap(e.submitter) : null;
+        const go = dispatch(
           target,
           trusted(
             new SubmitEvent('submit', {
               bubbles: true,
               cancelable: true,
-              submitter: e.submitter ? wrap(e.submitter) : null,
+              submitter,
             }),
           ),
         );
+        // the submission is this realm's to make, once the page's
+        // `navigate` lets it go, and the host's own is stopped
+        if (go) submitForm(target, submitter, true);
+        return false;
+      }
       case 'reset':
         return dispatch(
           target,
@@ -18363,6 +18448,7 @@ export function installDom(
       const ev = new Event('load');
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
+      completelyLoaded = true;
     }
     return true;
   });
