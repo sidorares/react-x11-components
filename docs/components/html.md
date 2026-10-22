@@ -3378,9 +3378,12 @@ Highlight API 1) holds `Highlight`s, sets of `Range`s and `StaticRange`s by
 name, and `::highlight(name)` gives their text a band and a colour as
 `::selection` does, inherited the same way. Each highlight is drawn under the
 selection, a lower `priority` under a higher one, over the text's content
-area rather than its line, as Chrome draws one. A live range follows the
-tree as it changes; a highlight with no rule is not drawn, since a custom
-highlight has no look of its own. `highlightsFromPoint()` answers which are
+area rather than its line, as Chrome draws one. Its bands are lit once
+where its own ranges overlap, and text several highlights colour is set
+once, in the colour of the topmost that gives one. A `StaticRange` that is
+no range — reversed, or past its node's end — lights nothing. A live range
+follows the tree as it changes; a highlight with no rule is not drawn,
+since a custom highlight has no look of its own. `highlightsFromPoint()` answers which are
 under a point. A highlight's decorations and shadows are not drawn yet.
 
 **Placeholders:** `::placeholder` (and `::-webkit-input-placeholder`) gives

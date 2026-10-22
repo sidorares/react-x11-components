@@ -19,6 +19,7 @@
 // unchanged: the runs handed to ntk were richtext's `TextRun`s, so what comes
 // back on the laid-out lines is exactly what that module already knows how to
 // draw.
+import * as ntk from 'react-x11/ntk';
 import {
   canFill,
   lineBands,
@@ -13821,6 +13822,9 @@ interface SelectedBand extends Rect {
   fade: number;
   /** The layout whose text it is. */
   layout: unknown;
+  /** The text it lights, in the layout's code units. */
+  from: number;
+  to: number;
 }
 
 const NO_BANDS: SelectedBand[] = [];
@@ -13923,14 +13927,21 @@ function selectedIn(
       piece.from,
       piece.to,
     )) {
+      // a highlight's edges each snapped, as its height is
+      const left = band.x + text.drawX + options.originX;
+      const x = Math.round(left);
       out.push({
-        x: Math.round(band.x + text.drawX + options.originX),
+        x,
         y,
-        width: Math.ceil(band.width),
+        width: options.selection?.contentArea
+          ? Math.round(left + band.width) - x
+          : Math.ceil(band.width),
         height,
         style: piece.style,
         fade: piece.fade,
         layout: text.layout,
+        from: piece.from,
+        to: piece.to,
       });
     }
   }
@@ -14043,7 +14054,10 @@ function highlightOptions(options: PaintOptions): PaintOptions[] {
 }
 
 /** The recoloured bands of several ranges, a layout's in the order the
- *  ranges are given: the later drawn over the earlier. */
+ *  ranges are given: where two colour the same text, the later's colour
+ *  alone, as the topmost highlight that sets one is the text's (CSS
+ *  Pseudo 4, 4.2) — drawn over the earlier, the earlier's glyphs showed
+ *  round the later's edges. */
 function recoloredWith(
   lines: LineBox[],
   each: readonly PaintOptions[],
@@ -14057,9 +14071,47 @@ function recoloredWith(
     out ??= new Map();
     for (const [layout, list] of bands) {
       const had = out.get(layout);
-      if (had) had.push(...list);
-      else out.set(layout, list.slice());
+      out.set(layout, had ? [...bandsLess(had, list), ...list] : list.slice());
     }
+  }
+  return out;
+}
+
+/** Bands less what some rectangles cover: each cut into what is above,
+ *  below, left and right of each rectangle it meets. */
+function bandsLess(
+  bands: readonly SelectedBand[],
+  cuts: readonly Rect[],
+): SelectedBand[] {
+  let out = bands.slice();
+  for (const cut of cuts) {
+    const right = cut.x + cut.width;
+    const bottom = cut.y + cut.height;
+    const next: SelectedBand[] = [];
+    for (const b of out) {
+      const bRight = b.x + b.width;
+      const bBottom = b.y + b.height;
+      if (
+        cut.x >= bRight ||
+        right <= b.x ||
+        cut.y >= bBottom ||
+        bottom <= b.y
+      ) {
+        next.push(b);
+        continue;
+      }
+      if (cut.y > b.y) next.push({ ...b, height: cut.y - b.y });
+      if (bottom < bBottom) {
+        next.push({ ...b, y: bottom, height: bBottom - bottom });
+      }
+      const y = Math.max(b.y, cut.y);
+      const height = Math.min(bBottom, bottom) - y;
+      if (cut.x > b.x) next.push({ ...b, y, height, width: cut.x - b.x });
+      if (right < bRight) {
+        next.push({ ...b, x: right, y, height, width: bRight - right });
+      }
+    }
+    out = next;
   }
   return out;
 }
@@ -14085,14 +14137,19 @@ function recoloredBands(
 /**
  * A layout with some of its text selected in a `::selection`'s colour
  * (CSS Pseudo 4, 3.2): its own colours everywhere but those bands, and in
- * each band the glyphs in that band's colour — cast there as a hard shadow
- * from the layout drawn clear of the window, the way `castShadows` draws a
- * text shadow, since a layout draws in its runs' own colours. Drawn over
- * rather than in place of the text, the old glyphs' edges showed round the
- * new ones. Where the context cannot clip or cast, the text keeps its own
- * colours. A band's colour is faded as the inline boxes around its text
- * fade it, as the glyphs it replaces were (`fadeRun`) — but by a context
- * that casts from what it draws, which casts from those faded glyphs.
+ * each band the glyphs in that band's colour. ntk's layout is drawn there
+ * again with its runs in that colour (`inColour`), since it draws each run
+ * in its own; any other is cast there as a hard shadow from the layout
+ * drawn clear of the window, the way `castShadows` draws a text shadow.
+ * Not ntk's as a shadow: its text shadow sets each run on a whole pixel,
+ * where its glyphs are drawn from the run's fraction of one, and a glyph
+ * of a highlight came out a pixel from where the text had it. Drawn over
+ * rather than in place of the text, the old glyphs' edges showed round
+ * the new ones. Where the context cannot clip or cast, the text keeps its
+ * own colours. A band's colour is faded as the inline boxes around its
+ * text fade it, as the glyphs it replaces were (`fadeRun`) — but by a
+ * context that casts from what it draws, which casts from those faded
+ * glyphs.
  */
 function drawRecolored(
   ctx: PaintContext,
@@ -14102,6 +14159,10 @@ function drawRecolored(
   top: number,
   bands: SelectedBand[],
 ): void {
+  if (ownLayout(layout)) {
+    inColours(layout, bands).draw(ctx, left, top);
+    return;
+  }
   if (
     !ctx.save ||
     !ctx.restore ||
@@ -14155,6 +14216,91 @@ function drawRecolored(
     layout.draw(ctx, left + move.x, top + move.y);
     ctx.restore();
   }
+}
+
+/** ntk's text layout, which draws each run in its span's colour from the
+ *  layout's `lines` (`TextLayout.draw`). */
+const NtkLayout = (ntk as unknown as { TextLayout?: abstract new () => object })
+  .TextLayout;
+function ownLayout(layout: LineText['layout']): boolean {
+  return typeof NtkLayout === 'function' && layout instanceof NtkLayout;
+}
+
+/** A glyph of ntk's, as much of it as `inColours` reads. */
+interface NtkGlyph {
+  ax: number;
+  codePoints: readonly number[];
+}
+
+/**
+ * ntk's layout with its lit text in the colour of the band over it, the
+ * last band over a character the one it takes: the same lines and glyphs,
+ * a run a band lights only some of cut where the colour changes, each piece
+ * from where its first glyph is in the run. So the layout is drawn once,
+ * and a glyph where it is drawn unlit — clipped to the bands instead, a
+ * pixel two glyphs share took one colour for both.
+ */
+function inColours(
+  layout: LineText['layout'],
+  bands: readonly SelectedBand[],
+): LineText['layout'] {
+  const colours = bands.map((b) => fadeColor(b.style!.color!, b.fade));
+  const colourAt = (at: number): string | null => {
+    for (let i = bands.length - 1; i >= 0; i -= 1) {
+      if (bands[i].from <= at && at < bands[i].to) return colours[i];
+    }
+    return null;
+  };
+  const lines = layout.lines.map((line) => {
+    const runs: (typeof line.runs)[number][] = [];
+    for (const r of line.runs) {
+      if (!bands.some((b) => b.from < r.end && b.to > r.start)) {
+        runs.push(r);
+        continue;
+      }
+      const glyphs = (r.run as { glyphs?: readonly NtkGlyph[] } | undefined)
+        ?.glyphs;
+      if (!glyphs) {
+        const colour = colourAt(r.start);
+        runs.push(colour ? { ...r, span: { ...r.span!, color: colour } } : r);
+        continue;
+      }
+      // each glyph's colour, by the first code unit of its cluster: in
+      // logical order from the start, or from the end where the glyphs
+      // are in visual order right to left
+      const rtl = r.run!.direction === 'rtl';
+      let at = rtl ? r.end : r.start;
+      let last: string | null = null;
+      const of = glyphs.map((g) => {
+        let units = 0;
+        for (const cp of g.codePoints) units += cp > 0xffff ? 2 : 1;
+        if (!units) return last;
+        if (rtl) at -= units;
+        last = colourAt(at);
+        if (!rtl) at += units;
+        return last;
+      });
+      let from = 0;
+      let x = r.x;
+      for (let i = 1; i <= glyphs.length; i += 1) {
+        if (i < glyphs.length && of[i] === of[from]) continue;
+        let width = 0;
+        for (let k = from; k < i; k += 1) width += glyphs[k].ax;
+        const colour = of[from];
+        runs.push({
+          ...r,
+          x,
+          width,
+          run: { ...r.run!, glyphs: glyphs.slice(from, i) } as typeof r.run,
+          span: colour ? { ...r.span!, color: colour } : r.span,
+        });
+        x += width;
+        from = i;
+      }
+    }
+    return { ...line, runs };
+  });
+  return Object.create(layout, { lines: { value: lines } });
 }
 
 /** Everything but some rectangles, as rectangles: a strip between each two

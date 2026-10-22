@@ -5239,6 +5239,67 @@ metric(
   },
 );
 
+metric(
+  'overlapping highlights set text once, in the topmost colour, and lit as the same text in a span is',
+  async () => {
+    // Text two highlights colour is the later's colour alone, each glyph
+    // where it is drawn unlit (CSS Pseudo 4, 4.2); a highlight's ranges
+    // that overlap light their text once; and a static range that is no
+    // range — reversed, or past its node's end — lights nothing (DOM
+    // 5.4). Each holds the line to a span set as the highlights should
+    // have it, pixel for pixel: the earlier colour round the later's
+    // glyphs, a glyph cast a pixel aside, a band lit twice or one a pixel
+    // wider all show.
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/30px sans-serif }' +
+        ' p { margin: 0 } ::highlight(one) { color: #ff0000 }' +
+        ' ::highlight(two) { color: #008000;' +
+        ' background-color: rgba(0, 0, 255, 0.3) }' +
+        ' ::highlight(bad) { background-color: #ffff00 }' +
+        ' #ref span { color: #008000; background: rgba(0, 0, 255, 0.3) }' +
+        '</style>' +
+        '<p id="t">Lo<b>rem</b> ipsum. Lorem</p>' +
+        '<p id="ref">Lo<b><span>rem</span></b><span> ipsum. </span>Lorem</p>' +
+        '<p id="out"></p><script>' +
+        'var p = document.getElementById("t");' +
+        'var b = p.childNodes[1].firstChild, t = p.childNodes[2];' +
+        'var all = new Range(); all.setStart(b, 0); all.setEnd(t, 8);' +
+        'var r1 = new Range(); r1.setStart(b, 0); r1.setEnd(t, 4);' +
+        'var r2 = new Range(); r2.setStart(t, 2); r2.setEnd(t, 8);' +
+        'CSS.highlights.set("one", new Highlight(all));' +
+        'CSS.highlights.set("two", new Highlight(r1, r2));' +
+        'CSS.highlights.set("bad", new Highlight(' +
+        ' new StaticRange({ startContainer: t, startOffset: 5,' +
+        '   endContainer: t, endOffset: 2 }),' +
+        ' new StaticRange({ startContainer: t, startOffset: 0,' +
+        '   endContainer: t, endOffset: 99 })));' +
+        'document.getElementById("out").textContent = "set";' +
+        '</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    const lit = doc.view.elementRect(doc.byId('t'))!;
+    const ref = doc.view.elementRect(doc.byId('ref'))!;
+    const width = Math.round(lit.width);
+    const height = Math.round(lit.height);
+    const a = await pixelsIn(doc.result.ctx, {
+      x: Math.round(lit.x),
+      y: Math.round(lit.y),
+      width,
+      height,
+    });
+    const r = await pixelsIn(doc.result.ctx, {
+      x: Math.round(ref.x),
+      y: Math.round(ref.y),
+      width,
+      height,
+    });
+    let differ = 0;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== r[i]) differ += 1;
+    assert.equal(differ, 0, 'the lit line is the span line');
+  },
+);
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

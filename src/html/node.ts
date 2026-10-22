@@ -4005,11 +4005,30 @@ export class HtmlViewNode extends Node {
       .sort((a, b) => a.h.priority - b.h.priority || a.i - b.i);
     for (const { h } of ordered) {
       const lit = styler(h.name);
+      // a highlight's ranges lit as one, so where two of them overlap
+      // their text is lit once (CSS Highlight API 1, 4)
+      const spans: [number, number][] = [];
       for (const r of h.ranges) {
         const start = unitOfPoint(tree, r.sc, r.so);
         const end = unitOfPoint(tree, r.ec, r.eo);
-        if (end > start) out.push({ selection: { start, end }, styler: lit });
+        if (end > start) spans.push([start, end]);
       }
+      spans.sort((a, b) => a[0] - b[0]);
+      let last: [number, number] | null = null;
+      for (const span of spans) {
+        if (last && span[0] <= last[1]) {
+          last[1] = Math.max(last[1], span[1]);
+          continue;
+        }
+        if (last)
+          out.push({
+            selection: { start: last[0], end: last[1] },
+            styler: lit,
+          });
+        last = span;
+      }
+      if (last)
+        out.push({ selection: { start: last[0], end: last[1] }, styler: lit });
     }
     return out.length ? out : undefined;
   }

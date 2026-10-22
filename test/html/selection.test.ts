@@ -681,16 +681,23 @@ metric(
   },
 );
 
+/** A layout as `paintSelected` reads what it is drawn in. */
+interface DrawnLayout {
+  lines: { runs: { span?: { color?: string } }[] }[];
+  draw(): void;
+}
+
 /** A document painted with its text selected from `start` to `end`, into a
  *  context that records each fill's colour and, for each layout drawn, the
- *  shadow it was cast in — how `drawRecolored` sets selected text in a
- *  `::selection`'s colour. */
+ *  colour it was set in besides its own — how `drawRecolored` sets selected
+ *  text in a `::selection`'s colour: the shadow it was cast in, or the
+ *  colours a copy of ntk's layout gives its runs. */
 async function paintSelected(source: string, start: number, end?: number) {
   const { node } = await render(source);
   const el = view(node);
   const tree = (el as unknown as { _tree: never })._tree as {
     root: LaidBox & {
-      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+      lines: { texts: { layout: DrawnLayout }[] }[] | null;
     };
   };
   const state = { fillStyle: null as unknown, shadowColor: '' };
@@ -699,7 +706,17 @@ async function paintSelected(source: string, start: number, end?: number) {
   const patch = (box: typeof tree.root): void => {
     for (const line of box.lines ?? []) {
       for (const text of line.texts) {
-        text.layout.draw = () => casts.push(state.shadowColor);
+        const layout = text.layout;
+        const colours = (of: DrawnLayout) =>
+          of.lines.flatMap((l) => l.runs.map((r) => r.span?.color ?? ''));
+        layout.draw = function (this: DrawnLayout) {
+          if (state.shadowColor || this.lines === layout.lines) {
+            casts.push(state.shadowColor);
+            return;
+          }
+          const own = new Set(colours(layout));
+          casts.push(...colours(this).filter((c) => !own.has(c)));
+        };
       }
     }
     for (const child of box.children) patch(child as typeof box);
