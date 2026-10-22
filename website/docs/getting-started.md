@@ -71,7 +71,7 @@ when it is missing — each has a `status` and a `fallback` instead.
 | ---------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
 | `<Terminal backend="vt">`                | `npm i node-pty` or `@lydell/node-pty` (nothing under Bun ≥ 1.4) | `status` is `'unavailable'`, `fallback` renders                |
 | `<Terminal>` on an embedded emulator     | xterm, urxvt or alacritty on `PATH`                              | `backend="auto"` falls through to `vt`                         |
-| `<MediaPlayer>`                          | mpv or VLC on `PATH`                                             | `fallback` renders, `onError` names what it looked for         |
+| `<MediaPlayer>`                          | mpv or VLC on `PATH` (X11), or ffmpeg and ffprobe                | `fallback` renders, `onError` names what it looked for         |
 | `<Mermaid>` diagrams                     | `npm i ondine`                                                   | the source renders as muted code                               |
 | Recurring events in the desktop calendar | `npm i ical.js`                                                  | `status` is `'unavailable'`; the calendar renders without dots |
 

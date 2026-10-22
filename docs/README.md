@@ -24,7 +24,7 @@ component.
 | [Html](components/html.md)                             | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
 | [Map](components/maps.md)                              | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
-| [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.  |
 | [Mermaid](components/mermaid.md)                       | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
@@ -160,6 +160,6 @@ parts.
 - **A page says so when it is not backend-neutral.** react-x11 has an X11
   backend and a native macOS one, and most of what is here draws through
   contracts both answer. Where a component needs something only one of them
-  has — XEmbed for `<Terminal>`'s embedded emulators, `<MediaPlayer>` and
-  `<TrayHost>`; the X selection for PRIMARY — its page names the backend
+  has — XEmbed for `<Terminal>`'s embedded emulators, `<MediaPlayer>`'s mpv
+  and VLC, and `<TrayHost>`; the X selection for PRIMARY — its page names the backend
   rather than leaving the reader to find out on the other one.

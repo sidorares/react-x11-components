@@ -12,18 +12,30 @@
 // player rather than by respawning one. `./backends.ts` is where that and
 // VLC's much narrower rc interface are reconciled.
 //
-// Registers no element: `<foreign>` is a built-in. Nothing here happens at
-// import time.
+// Registers no element: `<foreign>` and `<video>` are built-ins. Nothing here
+// happens at import time.
+//
+// ### The third backend, which is not a window
+//
+// `backend="ffmpeg"` (`./ffmpeg.ts`, `./frames.ts`) decodes the file in an
+// ffmpeg child process and pushes each frame into a core `<video frames>`
+// sink — so it needs no XEmbed, runs on every react-x11 backend, and is a
+// drawn node in the paint order rather than a window over it. It is silent.
+// `'auto'` reaches it where nothing can be embedded (Wayland, macOS) and on
+// an X11 desktop with neither player, and `MediaPlayer` below is only the
+// choice between the two paths: `EmbeddedPlayer` and `FramesPlayer`.
 //
 // ### Controls
 //
-// There are none drawn, on purpose. The player's window stacks above
-// everything drawn in ours — the same rule `<glarea>` has — so a transport bar
-// laid over the video cannot be a sibling `<box>`; it has to be a `<popup>`,
-// which is a placement and dismissal problem an app is better placed to solve
-// than a component is. What this exposes instead is the whole of the state a
-// transport bar needs (`onProgress`, `onPlayingChange`, the handle) plus
-// `osd` for the player's own overlay when a quick one will do.
+// There are none drawn, on purpose. An embedded player's window stacks above
+// everything drawn in ours — the same rule `<glarea>` has — so a transport
+// bar laid over the video cannot be a sibling `<box>`; it has to be a
+// `<popup>`, which is a placement and dismissal problem an app is better
+// placed to solve than a component is. What this exposes instead is the
+// whole of the state a transport bar needs (`onProgress`, `onPlayingChange`,
+// the handle) plus `osd` for the player's own overlay when a quick one will
+// do. Under ffmpeg the bar *can* be a sibling laid over the picture, and it
+// is still the app's to draw.
 import React, {
   useCallback,
   useEffect,
@@ -39,6 +51,7 @@ import type { Style } from 'react-x11/style';
 import {
   BackendUnavailableError,
   canHostXEmbed,
+  nodeProcessHost,
   resolveBackend,
   useEmbeddedClient,
 } from '../embed/index.js';
@@ -49,18 +62,27 @@ import type {
   PlanContext,
   ProcessHost,
 } from '../embed/index.js';
-import { mediaBackendsFor } from './backends.js';
+import { MEDIA_BACKENDS, mediaBackendsFor } from './backends.js';
 import type { MediaBackendName, MediaLaunch } from './backends.js';
 import type { PlayerControl } from './control.js';
+import { FramesPlayer } from './frames.js';
 import { hx } from './hx.js';
+import { surfaceStyles } from './surface.js';
 
-export { MEDIA_BACKENDS, mediaBackendsFor, mpv, vlc } from './backends.js';
+export {
+  MEDIA_BACKENDS,
+  ffmpeg,
+  mediaBackendsFor,
+  mpv,
+  vlc,
+} from './backends.js';
 export type {
   MediaBackend,
   MediaBackendName,
   MediaLaunch,
 } from './backends.js';
 export type { PlayerControl, PlayerEvents } from './control.js';
+export { MediaProbeError } from './ffmpeg.js';
 
 const h = React.createElement;
 
@@ -83,12 +105,15 @@ export interface MediaPlayerHandle {
   seek(seconds: number): void;
   /** 0–1. */
   setVolume(volume: number): void;
-  /** Stop playback without stopping the player: the window stays, idle. */
+  /** Stop playback without stopping the player: the window stays, idle.
+   *  Under ffmpeg the picture goes, and `play()` starts from the top. */
   stop(): void;
   /** Stop the player process and start a new one. */
   restart(): void;
+  /** Under ffmpeg, the decoder running now — there is one per seek. */
   signal(signal?: string): boolean;
   readonly pid: number | null;
+  /** The embedded player's container. Null under ffmpeg, which has none. */
   readonly windowId: number | null;
   readonly backend: string | null;
   readonly status: EmbedStatus;
@@ -100,9 +125,15 @@ export interface MediaPlayerProps {
   /**
    * A path or a URL. **Changing it does not restart the player** — the new
    * source is loaded into the running one, so the window never blinks.
+   * Under ffmpeg the old clip plays on until the new one has been probed.
    */
   src?: string;
-  /** Which player. Default `'auto'`: mpv if it is installed, else VLC. */
+  /**
+   * Which player. Default `'auto'`: mpv if it is installed, else VLC — where
+   * this app can embed a window — and else ffmpeg, decoding into a
+   * `<video frames>` sink. On a backend that cannot embed (Wayland, macOS),
+   * `'auto'` is ffmpeg alone.
+   */
   backend?: MediaBackendName;
   /** Start playing. Default true. */
   autoPlay?: boolean;
@@ -112,18 +143,22 @@ export interface MediaPlayerProps {
    * `play()`/`pause()` move it from there.
    */
   paused?: boolean;
-  /** 0–1. Default: the player's own. */
+  /** 0–1. Default: the player's own. Nothing under ffmpeg, which is
+   *  silent. */
   volume?: number;
+  /** Nothing under ffmpeg, which is silent. */
   muted?: boolean;
   /** `'16:9'`, `'4:3'`. The player letterboxes inside the element's rect. */
   aspectRatio?: string;
   loop?: boolean;
   /** The player's own on-screen controls. Off by default: they are drawn by
-   *  the player and will not match the app's theme. */
+   *  the player and will not match the app's theme. ffmpeg has none. */
   osd?: boolean;
-  /** Appended to the player's command line verbatim. */
+  /** Appended to the player's command line verbatim. Under ffmpeg they are
+   *  input options, before `-i`: `['-hwaccel', 'vaapi']`. */
   extraArgs?: readonly string[];
-  /** Position and duration, as the player reports them. mpv only. */
+  /** Position and duration, as the player reports them. mpv and ffmpeg —
+   *  never VLC; see `reportsProgress`. */
   onProgress?: (progress: MediaProgress) => void;
   /** The file reached its end. Not fired for `stop()` or a new `src`. */
   onEnded?: (info: { node: unknown }) => void;
@@ -131,12 +166,13 @@ export interface MediaPlayerProps {
   /** The player process ended. */
   onExit?: (info: ExitInfo) => void;
   /** Spawn failures, control-channel failures, the `BackendUnavailableError`
-   *  for a machine with neither player installed, and the
-   *  `EmbedUnsupportedError` for a react-x11 backend that cannot embed a
-   *  player's window at all. */
+   *  for a machine with no player installed, the `EmbedUnsupportedError`
+   *  for `backend="mpv"` or `"vlc"` on a react-x11 backend that cannot embed
+   *  a window at all, and under ffmpeg a `MediaProbeError` for a file it
+   *  cannot read. */
   onError?: (err: Error) => void;
   /** Rendered instead of the surface when no player is available — none
-   *  installed, or none can be embedded on this react-x11 backend. */
+   *  installed, or none that can run on this react-x11 backend. */
   fallback?: ReactNode;
   /** False holds off spawning entirely. */
   enabled?: boolean;
@@ -166,15 +202,130 @@ export interface MediaPlayerProps {
  * />
  * ```
  *
- * The player's window stacks above everything drawn in this one, so nothing 2D
- * can overlap it — see "Controls" at the top of this file.
+ * An embedded player's window stacks above everything drawn in this one, so
+ * nothing 2D can overlap it — see "Controls" at the top of this file. The
+ * ffmpeg backend's picture is drawn, and can be overlapped like anything.
  *
- * **X11 only.** Both players are embedded by window id, which is XEmbed's
- * mechanism; on a react-x11 backend with none — the native macOS one — the
- * player is `'unavailable'` from the first render and `fallback` shows,
- * rather than a player spawned at a window id that does not exist.
+ * **mpv and VLC are X11 only.** Both are embedded by window id, which is
+ * XEmbed's mechanism; on a react-x11 backend with none — Wayland, the native
+ * macOS one — `'auto'` goes to ffmpeg, and an explicit `backend="mpv"` is
+ * `'unavailable'` from the first render, with `fallback` showing, rather than
+ * a player spawned at a window id that does not exist.
  */
 export function MediaPlayer(props: MediaPlayerProps): ReactElement {
+  const { backend = 'auto', enabled = true, processes } = props;
+  const theme = useTheme() as unknown as Record<string, unknown>;
+  const embeddable = canHostXEmbed(useApp());
+  const host = useMemo(() => processes ?? nodeProcessHost(), [processes]);
+  const route = useRoute(backend, embeddable, host);
+
+  // One handle, over whichever player is mounted: the route can take a PATH
+  // probe to settle, and a ref that is null until then — or that changes
+  // identity when the route does — is a ref an app cannot call through.
+  const inner = useRef<MediaPlayerHandle | null>(null);
+  React.useImperativeHandle(
+    props.ref,
+    () => ({
+      play: () => inner.current?.play(),
+      pause: () => inner.current?.pause(),
+      seek: (seconds: number) => inner.current?.seek(seconds),
+      setVolume: (volume: number) => inner.current?.setVolume(volume),
+      stop: () => inner.current?.stop(),
+      restart: () => inner.current?.restart(),
+      signal: (sig?: string) => inner.current?.signal(sig) ?? false,
+      get pid() {
+        return inner.current?.pid ?? null;
+      },
+      get windowId() {
+        return inner.current?.windowId ?? null;
+      },
+      get backend() {
+        return inner.current?.backend ?? null;
+      },
+      get status() {
+        return inner.current?.status ?? (enabled ? 'starting' : 'idle');
+      },
+      get reportsProgress() {
+        return inner.current?.reportsProgress ?? false;
+      },
+    }),
+    [enabled],
+  );
+
+  if (route === null) {
+    // Still asking PATH which player there is: the box holds the layout.
+    return hx('box', { style: surfaceStyles(theme, props.style) });
+  }
+  if (route.kind === 'frames') {
+    return h(FramesPlayer, { ...props, ref: inner, tried: route.tried });
+  }
+  return h(EmbeddedPlayer, { ...props, backend: route.backend, ref: inner });
+}
+
+/** Which of the two players a `backend` prop comes to. */
+type Route =
+  | { kind: 'embed'; backend: Exclude<MediaBackendName, 'ffmpeg'> }
+  | { kind: 'frames'; tried: readonly string[] };
+
+const FRAMES: Route = { kind: 'frames', tried: [] };
+
+/**
+ * The route, or null while PATH is being asked.
+ *
+ * Only `'auto'` on an app that can embed has to ask: it is mpv or VLC if
+ * either is installed, and ffmpeg after them. Everything else is decided by
+ * the props and the app on the first render — an explicit player embeds (and
+ * says `EmbedUnsupportedError` where it cannot), `'ffmpeg'` decodes, and
+ * `'auto'` where nothing can be embedded decodes without looking for a
+ * player it could not use.
+ */
+function useRoute(
+  backend: MediaBackendName,
+  embeddable: boolean,
+  host: ProcessHost,
+): Route | null {
+  let decided: Route | null = null;
+  if (backend === 'ffmpeg') decided = FRAMES;
+  else if (backend !== 'auto') decided = { kind: 'embed', backend };
+  else if (!embeddable) decided = FRAMES;
+
+  const [asked, setAsked] = useState<{
+    host: ProcessHost;
+    route: Route;
+  } | null>(null);
+  const asking = decided === null;
+  useEffect(() => {
+    if (!asking) return undefined;
+    let live = true;
+    void (async () => {
+      const tried: string[] = [];
+      for (const candidate of MEDIA_BACKENDS) {
+        for (const binary of candidate.binaries) {
+          tried.push(binary);
+          if (await host.which(binary)) {
+            if (live)
+              setAsked({ host, route: { kind: 'embed', backend: 'auto' } });
+            return;
+          }
+        }
+      }
+      if (live) setAsked({ host, route: { kind: 'frames', tried } });
+    })().catch(() => {
+      // A host whose `which` throws: the embedded path asks it again in its
+      // plan, and reports what it says through `onError` as it always has.
+      if (live) setAsked({ host, route: { kind: 'embed', backend: 'auto' } });
+    });
+    return () => {
+      live = false;
+    };
+  }, [asking, host]);
+
+  if (decided) return decided;
+  return asked?.host === host ? asked.route : null;
+}
+
+/** mpv or VLC, embedded over `<foreign>`. */
+function EmbeddedPlayer(props: MediaPlayerProps): ReactElement {
   const {
     backend = 'auto',
     enabled = true,
@@ -350,20 +501,7 @@ export function MediaPlayer(props: MediaPlayerProps): ReactElement {
     [client, noop, reportsProgress],
   );
 
-  // Black rather than the theme background: this is a video surface, and what
-  // shows around a letterboxed frame should be what a player would put there.
-  const style: Style = {
-    flexGrow: 1,
-    backgroundColor: String(theme.videoBackground ?? '#000000'),
-  };
-  const styles: Style[] = [style];
-  if (props.style) {
-    for (const extra of Array.isArray(props.style)
-      ? props.style
-      : [props.style]) {
-      styles.push(extra);
-    }
-  }
+  const styles = surfaceStyles(theme, props.style);
 
   if (client.status === 'unavailable' && props.fallback !== undefined) {
     return h(React.Fragment, null, props.fallback);

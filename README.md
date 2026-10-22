@@ -58,11 +58,11 @@ all — there is no `<foreign>` to build on, which react-x11's own
 [`docs/macos.md`](https://github.com/sidorares/react-x11/blob/master/docs/macos.md)
 names this package in as much:
 
-| Component                                                 | On the Cocoa backend                                                                                                                                                                                       |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<Terminal>`, embedded backends (xterm, urxvt, alacritty) | No equivalent. `backend="auto"` skips them and lands on `backend="vt"`, which is native and needs no emulator installed anyway; one named outright reports `status: 'unavailable'` and renders `fallback`. |
-| `<MediaPlayer>`                                           | No equivalent — mpv's `--wid` and VLC's `--drawable-xid` are X mechanisms. Reports `status: 'unavailable'` and renders `fallback`.                                                                         |
-| `<TrayHost>`                                              | Reports `status: 'unavailable'` and renders `fallback`; there is no manager selection to take. Putting an icon _in_ a Mac's status bar is the other direction, and is core's `useTray()`.                  |
+| Component                                                 | On the Cocoa backend                                                                                                                                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<Terminal>`, embedded backends (xterm, urxvt, alacritty) | No equivalent. `backend="auto"` skips them and lands on `backend="vt"`, which is native and needs no emulator installed anyway; one named outright reports `status: 'unavailable'` and renders `fallback`.    |
+| `<MediaPlayer>`, embedded backends (mpv, VLC)             | No equivalent — `--wid` and `--drawable-xid` are X mechanisms. `backend="auto"` lands on `backend="ffmpeg"`, which decodes into a core `<video frames>` (silent); one named outright reports `'unavailable'`. |
+| `<TrayHost>`                                              | Reports `status: 'unavailable'` and renders `fallback`; there is no manager selection to take. Putting an icon _in_ a Mac's status bar is the other direction, and is core's `useTray()`.                     |
 
 `<Three>` is the one that looks like it should be on that list and is not: it
 draws through `<glarea>`, which the Cocoa backend implements as GL into a
@@ -175,7 +175,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Html`           | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
 | `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
-| `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.  |
 | `Mermaid`        | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
 | `QmlView`        | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
@@ -1164,9 +1164,11 @@ element was added for: a react-x11 app can now **host** another X client
 rather than only drawing its own pixels.
 
 **Both are X11-only**, and the heading says why: an X client is what they
-host. macOS has no cross-process window embedding to build the same thing
-on, so on the Cocoa backend `<Terminal backend="vt">` is the terminal and
-`<MediaPlayer>` has no counterpart — see
+host. macOS and Wayland have no cross-process window embedding to build the
+same thing on, so there `<Terminal backend="vt">` is the terminal and
+`<MediaPlayer backend="ffmpeg">` the player — an ffmpeg child process
+decoding into a core `<video frames>`, silent, and drawn in the paint order
+rather than stacked above it — see
 [Two backends](#two-backends-and-the-three-components-that-only-run-on-one).
 
 ```jsx

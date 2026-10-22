@@ -131,6 +131,21 @@ machine with no xterm on it.
 replacing it — a terminal with no `PATH` and no `HOME` is not a terminal. An
 explicit `undefined` removes a variable.
 
+`SpawnOptions.output` pipes the child's stdout and stderr to
+`SpawnedProcess.onStdout` and `onStderr`, as bytes, where the default
+discards them — a program that draws into a window has no output worth
+reading. [`<MediaPlayer backend="ffmpeg">`](media-player.md) is the caller
+that sets it: ffprobe answers JSON and ffmpeg writes frames. The node host
+reads both pipes from the start, listeners or not, so a child is never
+blocked on a full one, and reports `onExit` after the last chunk rather
+than when the process is reaped. The two methods are optional on the
+interface, so a host written before them still type-checks; the ffmpeg
+backend says so through `onError` when it meets one.
+
+`kill(signal)` delivers any signal to a child that has not exited, any
+number of times — a SIGSTOP and then the SIGCONT after it, or a SIGINT
+through a handle and then the SIGTERM of an unmount.
+
 ## `resolveBackend(host, what, candidates)`
 
 Walks the candidates in order, and inside each one its `binaries` in order,

@@ -345,7 +345,8 @@ test('no player installed renders the fallback', async () => {
   await waitFor(() => assert.ok(screen.getByTestName('no-player')));
   assert.strictEqual(foreignNode(), undefined);
   assert.match(errors[0]!.message, /no media player backend is installed/);
-  assert.match(errors[0]!.message, /mpv, vlc/);
+  // `'auto'` falls through to ffmpeg, so the list is all three
+  assert.match(errors[0]!.message, /mpv, vlc, ffmpeg/);
 });
 
 test('the surface is not focusable by default', async () => {
@@ -380,15 +381,17 @@ test('vlc gets write-only control and says so', async () => {
   ]);
 });
 
-test('on a backend that cannot embed a player it says so, and spawns nothing', async () => {
+test('mpv asked for on a backend that cannot embed it says so, and spawns nothing', async () => {
   // The Cocoa backend's shape: an `X` with no XEmbed in it. mpv is
   // "installed", so the only thing between this and a spawn is the app —
-  // which is the point.
+  // which is the point. Asked for by name, because `'auto'` goes to ffmpeg
+  // there (`media-player-ffmpeg.test.ts`).
   const host = new FakeHost({ installed: ['mpv'] });
   const ref = React.createRef<MediaPlayerHandle>();
   const errors: Error[] = [];
   const props = {
     processes: host,
+    backend: 'mpv' as const,
     src: '/a.mkv',
     ref,
     onError: (err: Error) => errors.push(err),

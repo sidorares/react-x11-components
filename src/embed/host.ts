@@ -44,8 +44,18 @@ export interface SpawnedProcess {
   readonly pid: number | null;
   /** POSIX signal name. Returns whether it was delivered. */
   kill(signal?: string): boolean;
+  /** For a child spawned with `output`, after its last `onStdout` chunk. */
   onExit(listener: (info: ExitInfo) => void): void;
   onError(listener: (err: Error) => void): void;
+  /**
+   * The child's stdout, as bytes, when it was spawned with `output: true`.
+   * Optional so that a host written before `<MediaPlayer backend="ffmpeg">`
+   * still type-checks; that backend is the one caller, and it reports a host
+   * without these as an error rather than playing nothing.
+   */
+  onStdout?(listener: (chunk: Uint8Array) => void): void;
+  /** The child's stderr, the same way. */
+  onStderr?(listener: (chunk: Uint8Array) => void): void;
 }
 
 export interface SpawnOptions {
@@ -56,6 +66,13 @@ export interface SpawnOptions {
    * removes a variable.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Pipe stdout and stderr to `onStdout` and `onStderr` rather than
+   * discarding them. Off for a program that draws into a window, whose stdio
+   * is not ours to show; on for one whose output *is* the product — `ffmpeg`
+   * writing frames, `ffprobe` writing JSON.
+   */
+  output?: boolean;
 }
 
 /**
@@ -119,18 +136,26 @@ interface ChildProcessModule {
     options: {
       cwd?: string;
       env?: Record<string, string | undefined>;
-      stdio?: string;
+      stdio?: string | readonly string[];
       detached?: boolean;
     },
   ): NodeChildProcess;
 }
 
+interface NodeReadable {
+  on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+}
+
 interface NodeChildProcess {
   pid?: number;
-  killed: boolean;
+  exitCode: number | null;
+  signalCode: string | null;
+  stdout?: NodeReadable | null;
+  stderr?: NodeReadable | null;
   kill(signal?: string): boolean;
   on(
-    event: 'exit',
+    event: 'exit' | 'close',
     listener: (code: number | null, signal: string | null) => void,
   ): void;
   on(event: 'error', listener: (err: Error) => void): void;
@@ -213,9 +238,25 @@ export class IpcConnectError extends Error {
 
 class NodeSpawnedProcess implements SpawnedProcess {
   #child: NodeChildProcess;
+  #output: boolean;
+  #stdout: ((chunk: Uint8Array) => void)[] = [];
+  #stderr: ((chunk: Uint8Array) => void)[] = [];
 
-  constructor(child: NodeChildProcess) {
+  constructor(child: NodeChildProcess, output: boolean) {
     this.#child = child;
+    this.#output = output;
+    // Both pipes are read from the start, listeners or not: a pipe nobody
+    // drains fills and blocks the child, which is the failure `stdio:
+    // 'ignore'` exists to avoid. Nothing is lost by it — the listeners are
+    // added in the same turn `spawn` resolves in, before any read lands.
+    child.stdout?.on('data', (chunk) => {
+      for (const listener of this.#stdout) listener(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      for (const listener of this.#stderr) listener(chunk);
+    });
+    child.stdout?.on('error', () => {});
+    child.stderr?.on('error', () => {});
   }
 
   get pid(): number | null {
@@ -223,7 +264,13 @@ class NodeSpawnedProcess implements SpawnedProcess {
   }
 
   kill(signal = 'SIGTERM'): boolean {
-    if (this.#child.killed) return false;
+    // Not `child.killed`: node sets that after *any* signal is delivered, so
+    // a child sent SIGSTOP would never be sent the SIGCONT after it, and one
+    // sent SIGINT through the handle would not get its SIGTERM on unmount.
+    // Whether it has ended is the question.
+    if (this.#child.exitCode !== null || this.#child.signalCode !== null) {
+      return false;
+    }
     try {
       return this.#child.kill(signal);
     } catch {
@@ -233,11 +280,25 @@ class NodeSpawnedProcess implements SpawnedProcess {
   }
 
   onExit(listener: (info: ExitInfo) => void): void {
-    this.#child.on('exit', (code, signal) => listener({ code, signal }));
+    // With pipes, `close` rather than `exit`: node reports the exit as soon
+    // as the child is reaped, which can be before the last of its output has
+    // been read — and a reader told "it ended" before its last bytes would
+    // drop the last frame, or parse half of a JSON document.
+    this.#child.on(this.#output ? 'close' : 'exit', (code, signal) =>
+      listener({ code, signal }),
+    );
   }
 
   onError(listener: (err: Error) => void): void {
     this.#child.on('error', listener);
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.#stdout.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.#stderr.push(listener);
   }
 }
 
@@ -336,15 +397,17 @@ export function nodeProcessHost(): ProcessHost {
       const env = options.env
         ? { ...host.environment(), ...options.env }
         : undefined;
+      const output = options.output === true;
       const child = cp.spawn(command, args, {
         cwd: options.cwd,
         env,
-        // The child draws into an X window; its stdio is not ours to show,
-        // and an inherited one would interleave with the app's own output.
-        // A pipe nobody reads fills and blocks the child, which is worse.
-        stdio: 'ignore',
+        // A child that draws into an X window: its stdio is not ours to
+        // show, and an inherited one would interleave with the app's own
+        // output. A pipe nobody reads fills and blocks the child, which is
+        // worse — so `output` pipes are always read (`NodeSpawnedProcess`).
+        stdio: output ? ['ignore', 'pipe', 'pipe'] : 'ignore',
       });
-      return new NodeSpawnedProcess(child);
+      return new NodeSpawnedProcess(child, output);
     },
 
     async socketPath(prefix) {
