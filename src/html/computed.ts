@@ -343,6 +343,8 @@ function cssomAt(
     cursor: style.cursor ?? 'auto',
     'pointer-events': style.pointerEvents,
     'user-select': style.userSelect,
+    isolation: style.isolation,
+    'will-change': style.willChangeNames,
     color: cssomColor(color, color),
     'color-scheme': style.colorSchemeKeywords,
     'background-color': cssomColor(style.backgroundColor, color),
