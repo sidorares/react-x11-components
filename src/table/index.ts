@@ -230,20 +230,34 @@ const s = createStyles({
     alignSelf: 'center',
     flexShrink: 0,
   },
-  /** The lane the fast-scroll pill floats in: absolute against the table's
-   *  root so the body pane scrolls under it, full-width so the pill centres
-   *  itself, and transparent to the pointer so the rows beneath stay
-   *  clickable. */
+  /** Where the fast-scroll pill hangs from: a point in the body pane — its
+   *  last child — held by `position: 'sticky'` at the middle of the bottom
+   *  edge of the pane's scrollport, however far it is scrolled along either
+   *  axis. See where it is rendered for why it is inside the pane. A point,
+   *  so that it adds nothing to the scroll extent and what core repaints
+   *  for it is the pill and not a band across the pane; the pill hangs up
+   *  out of it, centred by the lane's alignment. Transparent to the
+   *  pointer, so the rows beneath stay clickable. */
   scrollHintLane: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
+    position: 'sticky',
     bottom: 12,
+    start: '50%',
+    width: 0,
+    height: 0,
+    flexShrink: 0,
+    alignSelf: 'center',
     flexDirection: 'row',
     justifyContent: 'center',
+    alignItems: 'flex-end',
     pointerEvents: 'none',
   },
+  /** The lane between catch-ups: mounted, and out of the layout. */
+  scrollHintHidden: { display: 'none' },
+  /** The pill. Absolute, because that is what measures it at the width its
+   *  content wants: an item of a lane no wider than a point is laid out in
+   *  no room, and its text broke at every space it had. */
   scrollHint: {
+    position: 'absolute',
     paddingStart: 10,
     paddingEnd: 10,
     paddingTop: 5,
@@ -1684,7 +1698,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
    * frame will absorb is not worth announcing. Once up it stays until the
    * view is whole again, so it does not flicker through the catch-up.
    */
-  let scrollHint: ReactNode = null;
+  let pill: ReactNode = null;
   if (virtualizing && ordered.length > 0 && view.height > 0) {
     const vFirst = heights.indexAt(view.top);
     const vLast = Math.min(
@@ -1728,29 +1742,40 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
             `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
           );
       if (content !== null && content !== undefined && content !== false) {
-        scrollHint = hx(
+        pill = hx(
           'box',
           {
-            key: 'scroll-hint',
             // The pill duplicates what the scrollbar already tells an
             // assistive technology, and it comes and goes with the catch-up
             // — chatter, not content.
             'aria-hidden': true,
-            style: s.scrollHintLane,
+            style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
           },
-          hx(
-            'box',
-            {
-              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
-            },
-            content,
-          ),
+          content,
         );
       }
     }
   } else {
     hintShown.current = false;
   }
+  // The pill's lane stays mounted for as long as the table virtualizes, and
+  // between catch-ups it is out of the layout rather than out of the tree.
+  // It lives in the scroll pane (see below), and a child the pane gains or
+  // loses is a change to everything the pane holds as far as the repaint
+  // can tell: unmounted, the pill's going repainted the whole table on the
+  // frame a fling came to rest. Hidden, it is a change to the lane, which
+  // is the pill. Hidden rather than mounted empty, too: an empty lane would
+  // still be held against the scroll, and claim its point on every frame.
+  const scrollHint = virtualizing
+    ? hx(
+        'box',
+        {
+          key: 'scroll-hint',
+          style: [s.scrollHintLane, pill === null && s.scrollHintHidden],
+        },
+        pill,
+      )
+    : null;
 
   return hx(
     'box',
@@ -1844,7 +1869,23 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         },
       },
       hx('box', { style: [s.rowsBox, { width: total }] }, bodyChildren),
+      // The pill is *in* the pane, held to its viewport by `position:
+      // 'sticky'`, and not laid over it — because a pane scrolls by copying
+      // what stays in view only when everything over its viewport is its
+      // own content. Laid over it from outside, the pill would be dragged
+      // along by the copy, so core refused the copy for as long as the pill
+      // was up — and the pill stays up through any scroll that follows a
+      // fast one, so after a fling every slow frame repainted the whole
+      // pane: 9-14 ms and 5 Mpx a frame at 2x on a Mac, where the copy, its
+      // strip and the pill are 3.5-4 ms and 0.06 Mpx. A sticky node is what
+      // core keeps that path for: a held one repaints where it was and where
+      // it is, two pill-sized rects in the copy's ledger, the way a held
+      // section header does. Core's other seams fit worse —
+      // `viewportFixedRects()` is asked of an element that draws its own
+      // furniture, and this pill is whatever `renderScrollHint` returns, and
+      // pinned rects belong to an element blit (`scrollContents`), not to a
+      // scroll pane's.
+      scrollHint,
     ),
-    scrollHint,
   );
 }

@@ -1204,6 +1204,92 @@ test('renderScrollHint replaces the pill, and returning null disables it', async
   await clock.finish();
 });
 
+test('a scroll under the pill still moves the pane’s pixels', async (t) => {
+  // The pill stays up for as long as a scroll that outran the rows goes on,
+  // and it was laid over the pane: a pane scrolls by copying only when
+  // nothing outside it draws over its viewport, so every step of a slow
+  // scroll after a fast one repainted the whole pane. The pill is the
+  // pane's own now, held at its foot by `position: 'sticky'`, which core
+  // repaints beside the copy. The window's clock is held so the scroll
+  // stays in flight, and the pill up, for as long as the test looks.
+  const clock = holdClock(t, windowClock);
+  await mount({ rows: many(400), rowHeight: 24, scrollHintDelay: 0 }, 400, 640);
+  await settle();
+  await clock.finish();
+  const pill = (): RetainedNode | undefined =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    )[0] as RetainedNode | undefined;
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  assert.ok(pill(), 'the pill never showed for the jump');
+  // the first step lands the rows the jump left as placeholders, which is
+  // a repaint of what changed and not a scroll
+  bodyPane().scrollTo({ y: 6008 });
+  await settle();
+
+  const wnd = (retained(bodyPane()).root as unknown as { window: unknown })
+    .window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dy);
+    return own(rect, dx, dy);
+  };
+  for (let step = 1; step <= 4; step++) {
+    bodyPane().scrollTo({ y: 6008 + step * 8 });
+    await act();
+    assert.ok(pill(), `the pill went at step ${step}`);
+  }
+  assert.deepStrictEqual(moved, [-8, -8, -8, -8], 'every step moved pixels');
+
+  // …and the pill is where it was laid over the pane: centred, 12px off
+  // the foot of the viewport, whatever the rows scrolled under it
+  const pane = bodyPane().abs;
+  const at = (retained(pill()).parent as RetainedNode).abs;
+  assert.ok(
+    Math.abs(at.x + at.width / 2 - (pane.x + pane.width / 2)) <= 1,
+    `the pill is centred at ${at.x + at.width / 2}, the pane at ${pane.x + pane.width / 2}`,
+  );
+  assert.strictEqual(at.y + at.height, pane.y + pane.height - 12);
+  assert.strictEqual(
+    bodyPane().contentHeight,
+    400 * 24,
+    'the pill added to the scroll extent',
+  );
+
+  // Going, it repaints where it was. A child the pane loses is a change to
+  // everything the pane holds, as far as the repaint can tell, so the pill
+  // is hidden rather than unmounted; unmounted, the frame a fling came to
+  // rest in repainted the whole table.
+  const root = retained(bodyPane()).root as unknown as {
+    flush(): void;
+    _lastDamageRects: Array<{ width: number; height: number }> | null;
+  };
+  const painted: number[] = [];
+  const flush = root.flush.bind(root);
+  root.flush = () => {
+    flush();
+    const rects = root._lastDamageRects;
+    painted.push(
+      rects === null
+        ? Infinity
+        : rects.reduce((sum, r) => sum + r.width * r.height, 0),
+    );
+  };
+  await clock.finish();
+  await settle();
+  assert.strictEqual(pill(), undefined, 'the pill outlived the catch-up');
+  assert.ok(
+    painted.every((area) => area < (pane.width * pane.height) / 4),
+    `the pill's going repainted ${painted} px of a ${pane.width}×${pane.height} pane`,
+  );
+});
+
 test('the idle band grows without moving what is on screen', async () => {
   // The band works while the user is not looking, and nothing it does —
   // building rows, measuring them, re-learning the estimate — may move the
