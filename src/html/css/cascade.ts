@@ -37,8 +37,17 @@ import {
   tagOf,
   treeGeneration,
 } from '../dom.js';
-import { BLOCK_AXIS, INLINE_AXIS, containerHolds } from './containers.js';
-import type { ContainerQuery, ContainerSize } from './containers.js';
+import {
+  BLOCK_AXIS,
+  INLINE_AXIS,
+  NO_SCROLL_STATES,
+  containerHolds,
+} from './containers.js';
+import type {
+  ContainerQuery,
+  ContainerSize,
+  ScrollStates,
+} from './containers.js';
 import { systemColorTable, usedColorScheme } from './color.js';
 import {
   asciiLower,
@@ -3749,6 +3758,10 @@ export class Cascade {
   /** Each size container's content box as the last layout left it, in
    *  device pixels, or null for one it gave no box. */
   private _containerSizes = new Map<Element, ContainerSize | null>();
+  /** Each scroll-state container's scroll states as the renderer last
+   *  told them (`containersMoved`), none where it has not. */
+  private _scrollStates = new Map<Element, ScrollStates>();
+  private _scrollRead = false;
   /** What each element's style read of size containers: for each query,
    *  the container it found and how it answered — and for a length in
    *  `cqw` or its kin, the size it was read as (`CQ_INLINE`, `CQ_BLOCK`). */
@@ -3832,8 +3845,12 @@ export class Cascade {
     const size = query.axes
       ? (this._containerSizes.get(container) ?? null)
       : null;
-    const answer = this._ask(query, size, style);
-    if (query.axes) {
+    const scroll = query.scroll
+      ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
+      : null;
+    const answer = this._ask(query, size, style, scroll);
+    if (query.axes || query.scroll) {
+      if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
       reads.set(query, { container, answer });
@@ -3846,6 +3863,7 @@ export class Cascade {
     query: ContainerQuery,
     size: ContainerSize | null,
     style: ComputedStyle,
+    scroll: ScrollStates | null = null,
   ): boolean {
     return containerHolds(
       query,
@@ -3863,6 +3881,7 @@ export class Cascade {
         const len = parseLength(text, ctx);
         return typeof len === 'number' ? len : null;
       },
+      scroll,
     );
   }
 
@@ -3892,6 +3911,8 @@ export class Cascade {
         if (type === 'normal' || style.display === 'inline') continue;
         if (query.axes & BLOCK_AXIS && type !== 'size') continue;
       }
+      // a scroll-state query, of a scroll-state container
+      if (query.scroll && !style.scrollStateContainer) continue;
       return [at, style];
     }
     return null;
@@ -3900,6 +3921,12 @@ export class Cascade {
   /** Whether any rule is under an `@container` whose answer is a size's. */
   get readsContainers(): boolean {
     return this._containerReads.size > 0;
+  }
+
+  /** Whether some style read a container's scroll state, which a scroll
+   *  can move with no layout (`containersMoved`'s `scrollOf`). */
+  get readsScrollState(): boolean {
+    return this._scrollRead && this._containerReads.size > 0;
   }
 
   /**
@@ -3913,24 +3940,51 @@ export class Cascade {
    */
   containersMoved(
     sizeOf: (el: Element) => ContainerSize | null | undefined,
+    /** A scroll-state container's scroll states, as `sizeOf` its size:
+     *  undefined where they stand as they were told last. */
+    scrollOf: ((el: Element) => ScrollStates | undefined) | null = null,
   ): Set<Element> | null {
     if (!this._containerReads.size) return null;
     const sizes = new Map<Element, ContainerSize | null | undefined>();
+    const scrolls = new Map<Element, ScrollStates | undefined>();
     const moved = new Set<Element>();
     for (const [el, reads] of this._containerReads) {
       for (const [query, read] of reads) {
-        let size = sizes.get(read.container);
-        if (!sizes.has(read.container)) {
-          size = sizeOf(read.container);
-          sizes.set(read.container, size);
+        let size: ContainerSize | null | undefined;
+        if (query.axes || query === CQ_INLINE || query === CQ_BLOCK) {
+          size = sizes.get(read.container);
+          if (!sizes.has(read.container)) {
+            size = sizeOf(read.container);
+            sizes.set(read.container, size);
+          }
+        } else size = this._containerSizes.get(read.container) ?? null;
+        let scroll: ScrollStates | undefined;
+        if (query.scroll) {
+          if (!scrolls.has(read.container)) {
+            scrolls.set(read.container, scrollOf?.(read.container));
+          }
+          scroll = scrolls.get(read.container);
         }
-        if (size === undefined) continue;
+        // nothing it reads is told otherwise
+        if (size === undefined && scroll === undefined) continue;
+        if (query.axes && size === undefined) {
+          size = this._containerSizes.get(read.container) ?? null;
+        }
         const style = this.stylesOf?.(read.container);
         if (!style) continue;
         const now =
           query === CQ_INLINE || query === CQ_BLOCK
-            ? this._unitBasis(query, size)
-            : this._ask(query, size, style);
+            ? this._unitBasis(query, size ?? null)
+            : this._ask(
+                query,
+                size ?? null,
+                style,
+                query.scroll
+                  ? (scroll ??
+                      this._scrollStates.get(read.container) ??
+                      NO_SCROLL_STATES)
+                  : null,
+              );
         if (now !== read.answer) {
           moved.add(el);
           break;
@@ -3939,6 +3993,9 @@ export class Cascade {
     }
     for (const [container, size] of sizes) {
       if (size !== undefined) this._containerSizes.set(container, size);
+    }
+    for (const [container, scroll] of scrolls) {
+      if (scroll !== undefined) this._scrollStates.set(container, scroll);
     }
     return moved.size ? moved : null;
   }

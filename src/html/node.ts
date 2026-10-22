@@ -111,12 +111,20 @@ import type { ComputedStyle, RootLook } from './css/style.js';
 import {
   CONTAIN_INLINE_SIZE,
   sameValue,
+  scrolls,
   urlOf,
   WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
   WILL_STACK,
   WILL_STACK_BOX,
 } from './css/style.js';
+import {
+  BOTTOM_EDGE,
+  LEFT_EDGE,
+  RIGHT_EDGE,
+  TOP_EDGE,
+} from './css/containers.js';
+import type { ScrollStates } from './css/containers.js';
 import {
   BOX_RAISES,
   buildBoxes,
@@ -1936,6 +1944,11 @@ export class HtmlViewNode extends Node {
    */
   private _followViewport(): void {
     const tree = this._tree;
+    // a pane's scroll, which `scroll-state()` asks the root's and its
+    // sticky boxes' of: asked again once what is drawn now is drawn
+    if (this._cascade?.readsScrollState && this._noteRootScroll()) {
+      void Promise.resolve().then(() => this._askScrollStates());
+    }
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     if (!boxes) return;
     const viewport = this._viewport();
@@ -5243,13 +5256,121 @@ export class HtmlViewNode extends Node {
     // a tree built before any style read one — a restyle in place read the
     // first — has none taken, and takes them now
     const boxes = (tree.containers ??= containerBoxes(tree.root));
-    return cascade.containersMoved((el) => {
-      const box = boxes.get(el);
-      if (!box) return null;
-      if (heldBack(tree, box)) return undefined;
-      if (!containmentApplies(box, CONTAIN_INLINE_SIZE)) return null;
-      return { width: box.contentWidth, height: box.contentHeight };
-    });
+    return cascade.containersMoved(
+      (el) => {
+        const box = boxes.get(el);
+        if (!box) return null;
+        if (heldBack(tree, box)) return undefined;
+        if (!containmentApplies(box, CONTAIN_INLINE_SIZE)) return null;
+        return { width: box.contentWidth, height: box.contentHeight };
+      },
+      (el) => this._scrollStatesOf(boxes.get(el)),
+    );
+  }
+
+  /**
+   * A scroll-state container's scroll states (CSS Conditional 5, 3.2.6), as
+   * the boxes are now: the edge a sticky box is stuck to, by the way its
+   * sticky offsets moved it (`STUCK`); the edges a scroll container — or
+   * the root, scrolled by the pane the document is in — can scroll on to;
+   * and which way it was scrolled last (`_scrolledLast`).
+   */
+  private _scrollStatesOf(box: Box | undefined): ScrollStates | undefined {
+    if (!box?.el) return undefined;
+    const style = box.style;
+    const el = box.el;
+    let stuck = 0;
+    const moved = style.position === 'sticky' ? STUCK.get(box) : undefined;
+    if (moved) {
+      const [dx, dy] = moved;
+      if (dy > 0.01) stuck |= TOP_EDGE;
+      if (dy < -0.01) stuck |= BOTTOM_EDGE;
+      if (dx > 0.01) stuck |= LEFT_EDGE;
+      if (dx < -0.01) stuck |= RIGHT_EDGE;
+    }
+    let scrollable = 0;
+    const edges = (
+      x: number,
+      y: number,
+      overX: number,
+      overY: number,
+    ): number =>
+      (y > 0.5 ? TOP_EDGE : 0) |
+      (y < overY - 0.5 ? BOTTOM_EDGE : 0) |
+      (x > 0.5 ? LEFT_EDGE : 0) |
+      (x < overX - 0.5 ? RIGHT_EDGE : 0);
+    if (scrolls(style)) {
+      const st = scrollStateOf(box);
+      scrollable = edges(
+        st.x,
+        st.y,
+        st.width - st.clientWidth,
+        st.height - st.clientHeight,
+      );
+    } else if (box === this._tree?.root || !flatParentOf(el)) {
+      // the root, which the pane the document is in scrolls
+      const viewport = this._viewportInDocument();
+      if (viewport) {
+        scrollable = edges(
+          viewport.x,
+          viewport.y,
+          this._documentWidth - viewport.width,
+          this._documentHeight - viewport.height,
+        );
+      }
+    }
+    return {
+      stuck,
+      scrollable,
+      scrolled: this._scrolledLast.get(el) ?? 0,
+      rtl: style.direction === 'rtl',
+    };
+  }
+
+  /** Which way each scroll container was scrolled last, as the edges it
+   *  was scrolled towards — the root's by the pane the document is in. */
+  private _scrolledLast = new Map<Element, number>();
+  /** Where the pane had the viewport the last time the root's scroll
+   *  states were asked. */
+  private _viewportWas: { x: number; y: number } | null = null;
+
+  /**
+   * After a scroll, which moves no layout: where a container's scroll
+   * states answer a query otherwise now — a header stuck, a list scrolled
+   * to its end — the elements under it are styled again, as a layout's
+   * new sizes style a size container's.
+   */
+  private _askScrollStates(): void {
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade?.readsScrollState) return;
+    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    const moved = cascade.containersMoved(
+      () => undefined,
+      (el) => this._scrollStatesOf(boxes.get(el)),
+    );
+    if (moved) this._invalidate(Stale.Boxes, moved, true);
+  }
+
+  /** The way the pane scrolled the root since it was last asked, noted as
+   *  the root's last scroll; true where it moved. */
+  private _noteRootScroll(): boolean {
+    const viewport = this._viewportInDocument();
+    // the root element, which the pane scrolls for: a fragment has none
+    const root = this._tree
+      ? this.document.children.find(
+          (c): c is Element => isElement(c) && tagOf(c) === 'html',
+        )
+      : undefined;
+    if (!viewport || !root) return false;
+    const was = this._viewportWas;
+    this._viewportWas = { x: viewport.x, y: viewport.y };
+    if (!was) return false;
+    const dx = viewport.x - was.x;
+    const dy = viewport.y - was.y;
+    if (!dx && !dy) return false;
+    this._scrolledLast.set(root, scrolledTowards(dx, dy));
+    return true;
   }
 
   private _firstBoxesOf(tree: BoxTree): Map<Element, Box> {
@@ -6972,6 +7093,7 @@ export class HtmlViewNode extends Node {
     if (offset.x || offset.y) this._scrollOffsets.set(el, offset);
     else this._scrollOffsets.delete(el);
     if (to.x === was.x && to.y === was.y) return offset;
+    this._scrolledLast.set(el, scrolledTowards(to.x - was.x, to.y - was.y));
     const tree = this._tree!;
     computePaintBounds(tree.root, tree.movedInline);
     // what a read of the pixels or a layer holds of what moved
@@ -6990,6 +7112,9 @@ export class HtmlViewNode extends Node {
     this._reportMedia();
     this._reportEmbedded();
     this._reportStops();
+    // what a `scroll-state()` query answers for it, or for a sticky box
+    // in it
+    this._askScrollStates();
     this._props().onElementScroll?.(el);
     return offset;
   }
@@ -7960,6 +8085,17 @@ function focusCandidates(tree: BoxTree): Candidates {
   }
   CANDIDATES.set(tree, found);
   return found;
+}
+
+/** The edges a scroll by `dx` and `dy` went towards: a scroll down is
+ *  towards the bottom (`scrolled: bottom`). */
+function scrolledTowards(dx: number, dy: number): number {
+  return (
+    (dy < 0 ? TOP_EDGE : 0) |
+    (dy > 0 ? BOTTOM_EDGE : 0) |
+    (dx < 0 ? LEFT_EDGE : 0) |
+    (dx > 0 ? RIGHT_EDGE : 0)
+  );
 }
 
 function sameRect(a: Rect | null, b: Rect | null): boolean {

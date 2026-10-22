@@ -3469,6 +3469,24 @@ of a document whose queries hold is followed by a second, for the elements
 they answer for, and each level of containers whose size a query moves
 adds one more, up to four. See [the decisions](#the-decisions).
 
+**Scroll-state queries** (CSS Conditional 5): `container-type:
+scroll-state`, alone or beside a size type, makes an element answer
+`scroll-state()`, which takes no containment. `stuck: top` — or `right`,
+`bottom`, `left`, or a logical edge — holds where the container is a sticky
+box its sticky offsets move towards that edge of what scrolls it; it holds
+neither at rest where the flow has it nor for a box not sticky.
+`scrollable` holds for an edge a scroll container can still be scrolled
+towards — or `x` and `y` for either side — and for the root element, the
+pane the document is in; `scrolled` for the way it was scrolled last, so
+a header can hide as a page scrolls down and come back as it scrolls up.
+Each in a boolean context holds for any, and `none` for none. `snapped` is
+only ever `none`: nothing here snaps. A scroll moves no layout, so after
+one the answers are asked again, and the elements whose answers changed
+are styled again, as after a layout that moved a size container; the
+pane's scroll is noticed at the paint that draws it, and the restyle comes
+after that paint. A fragment has no root element for the root's states to
+answer for.
+
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`
 attribute as the conditions of its sheet. Cascade layers are read (CSS

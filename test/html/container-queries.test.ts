@@ -2,6 +2,7 @@
 // `@container`, and the container units. Each case's answer is Chromium's
 // for the same markup.
 import { afterEach, test } from 'node:test';
+import React from 'react';
 import assert from 'node:assert';
 import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
@@ -29,6 +30,128 @@ const BLUE = '#0000ff';
 function colorOf(el: HtmlViewNode, id: string): string {
   return (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
 }
+
+test('a scroll-state() query reads stuck, scrollable, scrolled and snapped', () => {
+  assert.deepStrictEqual(parseContainerPrelude('scroll-state(stuck: top)'), [
+    {
+      name: null,
+      condition: 'scroll-state(stuck: top)',
+      axes: 0,
+      scroll: true,
+    },
+  ]);
+  for (const ok of [
+    'scroll-state(scrollable: y)',
+    'scroll-state(scrolled: inline-end)',
+    'scroll-state((stuck: top) or (stuck: bottom))',
+    'scroll-state(not (scrollable: bottom))',
+    'scroll-state(snapped: none)',
+    'scroll-state(stuck)',
+    'header scroll-state(stuck: block-start) and (width > 10px)',
+  ]) {
+    assert.ok(parseContainerPrelude(ok), ok);
+  }
+  // an edge `stuck` cannot be at, a feature nothing knows
+  assert.strictEqual(parseContainerPrelude('scroll-state(stuck: x)'), null);
+  assert.strictEqual(parseContainerPrelude('scroll-state(stuck: up)'), null);
+  assert.strictEqual(parseContainerPrelude('scroll-state(tilted)'), null);
+});
+
+metric(
+  'a scroll-state container answers what a scroll does to it, without a layout to ask for it',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}' +
+        '#list{height:100px;overflow:auto;container-type:scroll-state}' +
+        '.row{height:40px} p{margin:0;color:#000000}' +
+        '@container scroll-state(scrollable: bottom) { #more { color: #0000ff } }' +
+        '@container scroll-state(scrollable: top) { #back { color: #0000ff } }' +
+        '@container scroll-state(scrolled: top) { #up { color: #0000ff } }' +
+        '@container scroll-state(scrolled: bottom) { #down { color: #0000ff } }' +
+        // a sticky header that answers for what is in it
+        '#pane{height:100px;overflow:auto}' +
+        '#head{position:sticky;top:0;container-type:scroll-state}' +
+        '@container scroll-state(stuck: top) { #title { color: #0000ff } }' +
+        '</style>' +
+        '<div id="list"><p id="more">more</p><p id="back">back</p>' +
+        '<p id="up">up</p><p id="down">down</p>' +
+        '<div class="row"></div><div class="row"></div><div class="row"></div>' +
+        '<div class="row"></div></div>' +
+        '<div id="pane"><div class="row"></div><div id="head">' +
+        '<p id="title">title</p></div><div class="row"></div>' +
+        '<div class="row"></div><div class="row"></div></div>',
+    );
+    const el = view(node);
+    const blue = BLUE;
+    const color = (id: string) => colorOf(el, id);
+    // at the top: more below, none above, not scrolled yet
+    assert.strictEqual(color('more'), blue);
+    assert.notStrictEqual(color('back'), blue);
+    assert.notStrictEqual(color('down'), blue);
+    assert.notStrictEqual(color('title'), blue, 'not stuck yet');
+    el.scrollElementTo(findById(el.document, 'list')!, { y: 30 });
+    await act();
+    assert.strictEqual(color('back'), blue, 'something above now');
+    assert.strictEqual(color('down'), blue, 'scrolled down');
+    assert.strictEqual(color('more'), blue);
+    // to the end: nothing more below; then back up
+    el.scrollElementTo(findById(el.document, 'list')!, { y: 1000 });
+    await act();
+    assert.notStrictEqual(color('more'), blue, 'at the end');
+    el.scrollElementTo(findById(el.document, 'list')!, { y: 10 });
+    await act();
+    assert.strictEqual(color('up'), blue, 'scrolled up last');
+    assert.notStrictEqual(color('down'), blue);
+    // the header stuck once its pane scrolls past where the flow has it
+    el.scrollElementTo(findById(el.document, 'pane')!, { y: 60 });
+    await act();
+    assert.strictEqual(color('title'), blue, 'stuck at the top');
+    el.scrollElementTo(findById(el.document, 'pane')!, { y: 0 });
+    await act();
+    assert.notStrictEqual(color('title'), blue, 'unstuck');
+  },
+);
+
+metric(
+  'a header the viewport holds is stuck as the pane scrolls, and the root scrolled and scrollable',
+  async () => {
+    const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
+    await renderX11(
+      h(
+        'box',
+        { ref: pane, style: { width: 300, height: 200, overflow: 'scroll' } },
+        h(Html, {
+          source:
+            '<html><head><style>html{container-type:scroll-state}body{margin:0}' +
+            'p{margin:0;color:#000000}.tall{height:800px}' +
+            'header{position:sticky;top:0;container-type:scroll-state}' +
+            '@container scroll-state(stuck: top) { #title { color: #0000ff } }' +
+            '@container scroll-state(scrollable: top) { #back { color: #0000ff } }' +
+            '@container scroll-state(scrolled: bottom) { #down { color: #0000ff } }' +
+            '</style></head><body><p id="back">back</p><p id="down">down</p>' +
+            '<div style="height:40px"></div>' +
+            '<header><p id="title">title</p></header><div class="tall"></div>' +
+            '</body></html>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 300, height: 200, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    assert.notStrictEqual(colorOf(el, 'title'), BLUE, 'not stuck at first');
+    assert.notStrictEqual(colorOf(el, 'back'), BLUE, 'nothing above');
+    await act(async () => pane.current!.scrollTo(300));
+    // the paint that follows the pane notes the scroll, and the restyle
+    // it asks for comes after it
+    await act();
+    await act();
+    assert.strictEqual(colorOf(el, 'title'), BLUE, 'stuck');
+    assert.strictEqual(colorOf(el, 'back'), BLUE, 'something above');
+    assert.strictEqual(colorOf(el, 'down'), BLUE, 'scrolled down');
+  },
+);
 
 test('an @container prelude is a name, a condition, or both, and a list of them', () => {
   assert.deepStrictEqual(parseContainerPrelude('(min-width: 400px)'), [

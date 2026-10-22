@@ -22,7 +22,38 @@ export interface ContainerQuery {
    *  next one out is asked. None for a query of `style()` alone, which
    *  any element answers. */
   axes: number;
+  /** Whether it asks `scroll-state()` (CSS Conditional 5, 3.2.6), which
+   *  only a scroll-state container answers. */
+  scroll?: true;
 }
+
+/** Edges of a box, as the bits a scroll state is made of. */
+export const TOP_EDGE = 1;
+export const RIGHT_EDGE = 2;
+export const BOTTOM_EDGE = 4;
+export const LEFT_EDGE = 8;
+
+/**
+ * What a scroll-state container's `scroll-state()` queries are answered
+ * for, as edges (`TOP_EDGE`…): where a sticky box is stuck — moved by its
+ * sticky offsets towards that edge of its scroll container's — where a
+ * scroll container can scroll on to, and which way it was scrolled last.
+ * `rtl` is its direction, which an inline edge is read in.
+ */
+export interface ScrollStates {
+  stuck: number;
+  scrollable: number;
+  scrolled: number;
+  rtl: boolean;
+}
+
+/** A container no layout has placed, or that is nothing of the three. */
+export const NO_SCROLL_STATES: ScrollStates = Object.freeze({
+  stuck: 0,
+  scrollable: 0,
+  scrolled: 0,
+  rtl: false,
+});
 
 /** A size feature of the inline axis: `width`, `inline-size`. */
 export const INLINE_AXIS = 1;
@@ -64,17 +95,23 @@ export function parseContainerPrelude(
       continue;
     }
     let axes = 0;
+    let scroll = false;
     let valid = true;
     const read = evaluateCondition(condition, (fn, inner) => {
       if (fn === '') {
         const feature = sizeFeature(inner);
         if (!feature) valid = false;
         else axes |= feature.axes;
+      } else if (fn === 'scroll-state') {
+        scroll = true;
+        if (scrollStateHolds(inner, NO_SCROLL_STATES) === null) valid = false;
       }
       return undefined;
     });
     if (read === null || !valid) return null;
-    out.push({ name, condition, axes });
+    out.push(
+      scroll ? { name, condition, axes, scroll } : { name, condition, axes },
+    );
   }
   return out.length ? out : null;
 }
@@ -99,16 +136,102 @@ export function containerHolds(
   size: ContainerSize | null,
   custom: (name: string) => string | undefined,
   length: (value: string) => number | null,
+  scroll: ScrollStates | null = null,
 ): boolean {
   if (!query.condition) return true;
   const answer = evaluateCondition(query.condition, (fn, inner) => {
     if (fn === 'style') return styleQuery(inner, custom);
+    if (fn === 'scroll-state') {
+      return scroll
+        ? (scrollStateHolds(inner, scroll) ?? undefined)
+        : undefined;
+    }
     if (fn !== '') return undefined;
     const feature = sizeFeature(inner);
     if (!feature || !size) return undefined;
     return featureHolds(feature, size, length);
   });
   return answer === true;
+}
+
+/**
+ * A `scroll-state()` query's answer for a container in `state` (CSS
+ * Conditional 5, 3.2.6), or null for one that is none: a feature, or a
+ * condition of them in brackets, `not`, `and` and `or`. `stuck` takes an
+ * edge, physical or logical, and `scrollable` and `scrolled` an edge or an
+ * axis — `x` either side across, `y` either side down — and each in a
+ * boolean context is any; `none` is none of them. `snapped`, which no
+ * scroll here snaps, is only ever `none`.
+ */
+export function scrollStateHolds(
+  inner: string,
+  state: ScrollStates,
+): Kleene | null {
+  const text = inner.trim();
+  const wrapped =
+    text.startsWith('(') || /^not\s/i.test(text) ? text : `(${text})`;
+  let valid = true;
+  const answer = evaluateCondition(wrapped, (fn, feature) => {
+    if (fn !== '') {
+      valid = false;
+      return undefined;
+    }
+    const held = scrollFeatureHolds(feature, state);
+    if (held === null) valid = false;
+    return held ?? undefined;
+  });
+  return valid && answer !== null ? answer : null;
+}
+
+/** The edges each word of a scroll-state feature names: physical, logical
+ *  in a horizontal writing mode, and the two axes. */
+function edgesOf(word: string, rtl: boolean, axes: boolean): number | null {
+  switch (word) {
+    case 'top':
+    case 'block-start':
+      return TOP_EDGE;
+    case 'bottom':
+    case 'block-end':
+      return BOTTOM_EDGE;
+    case 'left':
+      return LEFT_EDGE;
+    case 'right':
+      return RIGHT_EDGE;
+    case 'inline-start':
+      return rtl ? RIGHT_EDGE : LEFT_EDGE;
+    case 'inline-end':
+      return rtl ? LEFT_EDGE : RIGHT_EDGE;
+  }
+  if (!axes) return null;
+  if (word === 'x' || word === 'inline') return LEFT_EDGE | RIGHT_EDGE;
+  if (word === 'y' || word === 'block') return TOP_EDGE | BOTTOM_EDGE;
+  return null;
+}
+
+function scrollFeatureHolds(text: string, state: ScrollStates): Kleene | null {
+  const m = /^\s*([a-z-]+)\s*(?::\s*([a-z-]+)\s*)?$/i.exec(text);
+  if (!m) return null;
+  const feature = m[1].toLowerCase();
+  const value = m[2]?.toLowerCase();
+  if (feature === 'snapped') {
+    if (value === undefined) return false;
+    if (value === 'none') return true;
+    return ['x', 'y', 'block', 'inline', 'both'].includes(value) ? false : null;
+  }
+  const bits =
+    feature === 'stuck'
+      ? state.stuck
+      : feature === 'scrollable'
+        ? state.scrollable
+        : feature === 'scrolled'
+          ? state.scrolled
+          : null;
+  if (bits === null) return null;
+  if (value === undefined) return bits !== 0;
+  if (value === 'none') return bits === 0;
+  const edges = edgesOf(value, state.rtl, feature !== 'stuck');
+  if (edges === null) return null;
+  return (bits & edges) !== 0;
 }
 
 /** A size feature read: which feature, and the comparisons it makes of
