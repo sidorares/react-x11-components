@@ -637,6 +637,57 @@ named(
   },
 );
 
+test('an @container rule is a CSSContainerRule, its name and its query serialized as CSSOM serializes them', async () => {
+  // WPT's at-container-style-serialization cases, and the check every
+  // style-query test makes before it runs (`cq-testcommon.js`)
+  const cases: [string, string][] = [
+    ['STYLE(--foo: bar)', 'style(--foo: bar)'],
+    ['style(        --foo:bar)', 'style(--foo: bar)'],
+    ['STyle(--foo:    )', 'style(--foo: )'],
+    ['STyle(--foo:)', 'style(--foo: )'],
+    ['STyle(--foo)', 'style(--foo)'],
+    [
+      ' style(  ( --FOO: BAR) OR ( prop: val  ) )',
+      'style((--FOO: BAR) or ( prop: val  ))',
+    ],
+    // a container named `style`, and its query
+    ['style (--foo: bar)', 'style (--foo: bar)'],
+    ['style(--foo: bar   baz)', 'style(--foo: bar   baz)'],
+    ['style(--foo:2.100  )', 'style(--foo: 2.100)'],
+    ['style((--foo: bar))', 'style((--foo: bar))'],
+    ['style(( (  (( (--foo )) )  )))', 'style((((((--foo))))))'],
+    ['style((not ((--foo: BAR))))', 'style((not ((--foo: BAR))))'],
+    [
+      'style(((--FOO: BAR)) and (--bar: foo))',
+      'style(((--FOO: BAR)) and (--bar: foo))',
+    ],
+    ['style(100px  > --foo >10px)', 'style(100px > --foo > 10px)'],
+  ];
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      `var cases = ${JSON.stringify(cases.map(([q]) => q))};` +
+      'var out = cases.map(function (q) {' +
+      "  var sheet = new CSSStyleSheet(); sheet.replaceSync('@container ' + q + ' {}');" +
+      '  var rule = sheet.cssRules[0];' +
+      "  return rule instanceof CSSContainerRule ? rule.conditionText : 'not a CSSContainerRule';" +
+      '});' +
+      "var named = new CSSStyleSheet(); named.replaceSync('@container card (width > 10px) { p { color: red } } @container STYLE(--foo: bar) {}');" +
+      'var rule = named.cssRules[0];' +
+      'out.push(rule.containerName, rule.containerQuery, rule.conditionText, String(rule.cssRules.length));' +
+      'out.push(named.cssRules[1].containerName, named.cssRules[1].containerQuery);' +
+      "document.getElementById('out').textContent = JSON.stringify(out);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    ...cases.map(([, want]) => want),
+    'card',
+    '(width > 10px)',
+    'card (width > 10px)',
+    '1',
+    '',
+    'style(--foo: bar)',
+  ]);
+});
+
 test('a script innerHTML puts in never runs, and one a script appends does', async () => {
   const doc = await hosted(
     '<html><body><p id="out">-</p><div id="box"></div><script>' +
