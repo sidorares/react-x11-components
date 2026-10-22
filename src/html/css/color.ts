@@ -180,6 +180,7 @@ function readRgbaFunction(value: string): Rgba | null {
   // `rgb(0, 128, 0` as a sheet's last words is green
   if (body.endsWith(')')) body = body.slice(0, -1);
   if (name === 'color-mix') return mix(body);
+  if (name === 'contrast-color') return contrast(body);
   if (RELATIVE.test(body)) return relative(name, body);
 
   let channels: Component[];
@@ -549,10 +550,13 @@ function predefined(space: string, v: Triple): Triple | null {
 
 // --- color-mix() (CSS Color 5 3) ---------------------------------------------
 
-/** `color-mix(in <space> [<hue> hue]?, <colour> <p>?, <colour> <p>?)`: the
- *  two colours in `space`, premultiplied, weighted by their percentages. */
+/** `color-mix([in <space> [<hue> hue]?,]? <colour> <p>?, <colour> <p>?)`:
+ *  the two colours in `space`, premultiplied, weighted by their
+ *  percentages. With no space named the mix is in `oklab` (CSS Color 5,
+ *  3.1). */
 function mix(body: string): Rgba | null {
-  const parts = topLevelParts(body, ',');
+  let parts = topLevelParts(body, ',');
+  if (parts.length === 2) parts = ['in oklab', ...parts];
   if (parts.length !== 3) return null;
   const head = parts[0].trim().toLowerCase().split(/\s+/);
   if (head[0] !== 'in' || head.length < 2) return null;
@@ -596,6 +600,28 @@ function mix(body: string): Rgba | null {
   const rgb = fromSpace(space, out);
   // percentages that come to less than 100% take their share of the alpha
   return rgb ? { rgb, a: alpha * Math.min(1, sum / 100) } : null;
+}
+
+// --- contrast-color() (CSS Color 5 4) ----------------------------------------
+
+/** `contrast-color(<colour>)`: white or black, whichever has the greater
+ *  WCAG 2.1 contrast ratio against the colour, as Chrome and Safari answer
+ *  it. The colour is read as it is, its alpha set aside. */
+function contrast(body: string): Rgba | null {
+  const text = body.trim();
+  if (topLevelParts(text, ' ').filter(Boolean).length !== 1) return null;
+  const read = readRgba(text);
+  if (!read) return null;
+  const linear = read.rgb.map((c) => {
+    const v = clamp01(c);
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  const y = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  const onWhite = 1.05 / (y + 0.05);
+  const onBlack = (y + 0.05) / 0.05;
+  return onBlack >= onWhite
+    ? { rgb: [0, 0, 0], a: 1 }
+    : { rgb: [1, 1, 1], a: 1 };
 }
 
 /** Which component of a polar space is its hue. */

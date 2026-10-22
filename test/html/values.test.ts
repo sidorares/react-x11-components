@@ -14,7 +14,14 @@ import {
 } from '../../src/html/css/values.js';
 import { parseStylesheet } from '../../src/html/css/parse.js';
 import { substitute } from '../../src/html/css/vars.js';
-import { boxOf, metric, render, renderWithBytes, view } from './harness.js';
+import {
+  boxOf,
+  findById,
+  metric,
+  render,
+  renderWithBytes,
+  view,
+} from './harness.js';
 
 afterEach(cleanup);
 
@@ -622,6 +629,60 @@ test('color-mix() mixes in the space it names, premultiplied and weighted', () =
   for (const [value, want] of cases) {
     assert.strictEqual(parseColor(value), want, value);
   }
+});
+
+test('contrast-color() is white or black, whichever reads better on its colour', () => {
+  const cases: [string, string | null][] = [
+    ['contrast-color(white)', '#000000'],
+    ['contrast-color(black)', '#ffffff'],
+    ['contrast-color(pink)', '#000000'],
+    ['contrast-color(navy)', '#ffffff'],
+    // out of gamut is clipped, and the alpha set aside
+    ['contrast-color(color(srgb 10 10 10))', '#000000'],
+    ['contrast-color(color(srgb -10 -10 -10))', '#ffffff'],
+    ['contrast-color(rgba(255, 255, 255, 0.2))', '#000000'],
+    // inside another colour function, and around one
+    ['contrast-color(contrast-color(pink))', '#ffffff'],
+    ['contrast-color(color-mix(blue, green))', '#ffffff'],
+    ['rgb(from contrast-color(blue) r g b)', '#ffffff'],
+    // one colour and nothing else
+    ['contrast-color()', null],
+    ['contrast-color(1)', null],
+    ['contrast-color(max)', null],
+    ['contrast-color(white white)', null],
+    ['contrast-color(white max)', null],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+  // with `currentColor` in it, it is kept as itself and worked out with the
+  // colour of whichever element uses it, so it inherits as itself
+  const kept = parseColor('contrast-color(currentcolor)');
+  assert.strictEqual(kept, 'contrast-color(currentcolor)');
+  assert.strictEqual(inkColor(kept!, '#000000'), '#ffffff');
+  assert.strictEqual(inkColor(kept!, '#ffffff'), '#000000');
+});
+
+test('color-mix() with no space named mixes in oklab', () => {
+  assert.strictEqual(
+    parseColor('color-mix(white, black)'),
+    parseColor('color-mix(in oklab, white, black)'),
+  );
+});
+
+test("getComputedStyle reads a mix or a contrast of currentColor with the element's colour, and a child works an inherited one out again", async () => {
+  const { node } = await render(
+    '<style>#outer { color: black; background-color: contrast-color(currentcolor); }' +
+      '#inner { color: white; background-color: inherit; }' +
+      '#mix { color: red; background-color: color-mix(in srgb, currentcolor, blue); }</style>' +
+      '<div id="outer"><div id="inner">x</div></div><div id="mix">y</div>',
+  );
+  const el = view(node);
+  const bg = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.['background-color'];
+  assert.strictEqual(bg('outer'), 'rgb(255, 255, 255)');
+  assert.strictEqual(bg('inner'), 'rgb(0, 0, 0)');
+  assert.strictEqual(bg('mix'), 'rgb(128, 0, 128)');
 });
 
 test('a relative colour takes its origin into its function and reads its channels', () => {

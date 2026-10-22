@@ -13,6 +13,7 @@
 import type { ComputedStyle } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
+import { inkColor } from './css/values.js';
 import { rgbaOf } from './css/color.js';
 
 /** What a layout made of an element's principal box, in device pixels:
@@ -110,7 +111,8 @@ function primitiveText(fn: Primitive, scale: number): string {
 /** A colour as CSSOM serializes it: `rgb()` opaque, `rgba()` not. */
 export function cssomColor(value: string | null, color: string): string {
   if (value === null) return 'rgba(0, 0, 0, 0)';
-  const read = rgbaOf(value === 'currentColor' ? color : value);
+  // `currentColor` itself, or in a mix or a contrast, is the element's
+  const read = rgbaOf(inkColor(value, color));
   if (!read) return value;
   const [r, g, b] = read.slice(0, 3).map((c) => Math.round(c * 255));
   const a = read[3];
