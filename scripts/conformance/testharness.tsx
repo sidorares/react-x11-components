@@ -233,6 +233,8 @@ interface Current {
 let current: Current | null = null;
 let handle: HtmlHandle | null = null;
 let harness: RenderX11Result | null = null;
+/** The document's node, whose parent is the surface it is drawn on. */
+let view: { parent?: { focus?(): void } | null } | null = null;
 
 /** Mounted once per document: hands its handle out. */
 function Page(props: {
@@ -313,7 +315,12 @@ function Page(props: {
       'Mozilla/5.0 (X11; Linux x86_64) react-x11-components (wpt runner)',
   };
   const htmlProps: HtmlProps & { ref: React.Ref<unknown> } = {
-    ref: handleOf.ref,
+    ref: (node: unknown) => {
+      const ref = handleOf.ref as React.Ref<unknown>;
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.MutableRefObject<unknown>).current = node;
+      view = node as typeof view;
+    },
     source: props.source,
     charset: props.charset,
     partial: false,
@@ -326,6 +333,12 @@ function Page(props: {
     scripts,
     onLoaded: () => {
       page.loaded = true;
+      // The window a browser runs a test in has the focus, and its
+      // document is the focused area where nothing in it has the focus, so
+      // a key a test sends to the document element reaches the page: the
+      // document's surface takes it here, where nothing of the page's has
+      // it, as a press on the document would give it.
+      if (!handleOf.activeElement) view?.parent?.focus?.();
     },
     style: { flexGrow: 1 },
   };

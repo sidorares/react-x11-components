@@ -3642,12 +3642,8 @@ export function installDom(
    *  between them, and one Escape closes them all; this closes one at a
    *  time. */
   const closeRequest = (): void => {
-    let dialog: Any = null;
-    while (openDialogs.length && !dialog) {
-      const last = openDialogs[openDialogs.length - 1];
-      if (last.hasAttribute('open') && last.isConnected) dialog = last;
-      else openDialogs.pop();
-    }
+    syncOpenDialogs();
+    const dialog: Any = openDialogs[openDialogs.length - 1] ?? null;
     const popover = topPopover();
     if (
       popover &&
@@ -3656,7 +3652,24 @@ export function installDom(
       hidePopoverOf(popover, true, true, false);
       return;
     }
+    // one `closedby` says nothing closes takes the request all the same,
+    // and closes no dialog under it
     if (dialog && closedByOf(dialog) !== 'none') requestClose(dialog, null);
+  };
+  /** The open dialogs list as the `open` attributes have it: a dialog
+   *  open by its attribute — parsed open, or set by `setAttribute` — that
+   *  `show()` did not open is in it too (HTML 4.11.4, the dialog's
+   *  attribute change steps), ahead of those opened since, in tree order;
+   *  and one that is closed, or out of the document, is in it no more. */
+  const syncOpenDialogs = (): void => {
+    for (let i = openDialogs.length - 1; i >= 0; i -= 1) {
+      const d = openDialogs[i];
+      if (!d.hasAttribute('open') || !d.isConnected) openDialogs.splice(i, 1);
+    }
+    const missing = Array.from(
+      document.querySelectorAll('dialog[open]'),
+    ).filter((d: Any) => !openDialogs.includes(d));
+    if (missing.length) openDialogs.unshift(...missing);
   };
   /** A dialog opened: last of the open dialogs, and of the close watchers. */
   const dialogOpened = (el: Any): void => {
@@ -3729,7 +3742,23 @@ export function installDom(
       requestClose(this, result === undefined ? null : String(result));
     }
   }
-  Object.defineProperty(HTMLDialogElement.prototype, 'open', flag('open'));
+  // `open` set is a dialog opened or closed as the attribute's change
+  // steps have it: last of the open dialogs, or out of them
+  Object.defineProperty(HTMLDialogElement.prototype, 'open', {
+    get(this: Any): boolean {
+      return this.hasAttribute('open');
+    },
+    set(this: Any, v: Any) {
+      const was = this.hasAttribute('open');
+      this.toggleAttribute('open', !!v);
+      if (!was && v) dialogOpened(this);
+      else if (was && !v) {
+        const i = openDialogs.indexOf(this);
+        if (i >= 0) openDialogs.splice(i, 1);
+      }
+    },
+    configurable: true,
+  });
   Object.defineProperty(HTMLDialogElement.prototype, 'closedBy', {
     get(this: Any): string {
       return closedByOf(this);
@@ -4684,12 +4713,7 @@ export function installDom(
         if (same) hidePopoversUntil(ancestor, false, true);
       }
     }
-    while (
-      openDialogs.length &&
-      !openDialogs[openDialogs.length - 1].hasAttribute('open')
-    ) {
-      openDialogs.pop();
-    }
+    syncOpenDialogs();
     if (!openDialogs.length) return;
     const clicked = nearestClickedDialog(target, x, y);
     if (type === 'pointerdown') {

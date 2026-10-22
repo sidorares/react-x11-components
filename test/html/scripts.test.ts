@@ -2661,6 +2661,32 @@ test('a modal dialog with nothing in it to focus keeps the keys in the document,
   assert.equal(doc.text('out'), 'closed');
 });
 
+test('a dialog open by its attribute is one of the open dialogs, last where a script set it, so Escape closes it where its closedby lets it and stops at one it does not', async () => {
+  // HTML 4.11.4, the dialog's attribute change steps: parsed open, it is
+  // there from the start; `open` set by a script makes it the last opened
+  const doc = await hosted(
+    '<dialog id="a" closedby="any" open>a</dialog><dialog id="b" closedby="any">b</dialog>' +
+      '<dialog id="c" closedby="none" open>c</dialog><p id="out"></p><script>' +
+      'var r = [];' +
+      '["a", "b", "c"].forEach(function (id) { document.getElementById(id).addEventListener("close", function () {' +
+      '  r.push(id); document.getElementById("out").textContent = r.join("|"); }); });' +
+      'document.getElementById("b").open = true;' +
+      '</script>',
+  );
+  // the document has the focus, as a press on it would give it
+  await act(async () => void (doc.view.parent as unknown as DrawnNode).focus());
+  await userEvent.key(XK_ESCAPE);
+  await settle();
+  assert.equal(doc.text('out'), 'b');
+  await userEvent.key(XK_ESCAPE);
+  await settle();
+  // `c` is no dialog Escape closes, and it takes the request all the same:
+  // `a`, open before it, stays open
+  assert.equal(doc.text('out'), 'b');
+  assert.equal(doc.byId('a').attribs.open, '');
+  assert.equal(doc.byId('c').attribs.open, '');
+});
+
 test('a page keeps its own session history: pushState and replaceState, a fragment, and traversal with popstate and hashchange', async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="x"></div><script>' +
