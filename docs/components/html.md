@@ -2064,7 +2064,34 @@ in its shade, as a solid side takes it in its colour, so a field or a
 button the page gave only a radius, its UA border `2px inset` or `outset`,
 is a ring of two shades that change on the same line. A dotted, dashed,
 double, groove or ridge side on a rounded box has its border drawn
-straight. Two solid
+straight.
+
+**`corner-shape`** (CSS Borders 4) draws a corner's radii in another curve:
+`round`, `squircle`, `bevel`, `scoop`, `notch`, `square`, or
+`superellipse()` of a number or an infinity — 1 for round, 2 for a
+squircle, 0 for a straight bevel, -1 for a concave scoop, the infinities
+for the square corner and the notch through the corner's inner point. It
+takes one to four values as `border-radius` does, and there are the four
+corners' longhands, the sides' — `corner-top-shape` and its kin, one or two
+values — and the logical corners', `corner-start-end-shape` and its kin. It
+draws nothing on a corner with no radius. It is the border box's shape and
+not a clip, so everything drawn from the box's edges follows it: the
+background in each of its boxes, the border — its inside a shaped curve as
+far in across the corner as the border is wide along the sides, so a
+bevel's band is as thick across as down — a border of two colours, cut
+between them where a round one is, the shadows, out or in by their spread,
+the outline, and what `overflow` clips. A shape animates by where its curve
+crosses the corner's diagonal, as the specification has it, so a corner
+runs from a bevel to round through the curves between. Not done: radii
+reduced where two opposite concave corners would meet, which the
+specification asks for and a box of `scoop` corners near half its size
+shows; a box with shaped corners is not lifted onto a layer, and a video,
+a frame or an embed with shaped corners is not mounted — a video keeps its
+poster — since a layer's clip and a mount's corners are circles; and a
+dotted, dashed or double side on one is drawn straight, as on a rounded
+box.
+
+Two solid
 sides of different colours share their corner on its diagonal, from its
 outer point to its inner one (CSS Backgrounds 3, 4.4), so each is a
 trapezoid — and a triangle on a box with nothing inside its borders, which

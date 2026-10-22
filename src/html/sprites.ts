@@ -1446,8 +1446,12 @@ function shadowOf(
 
 /** The radius of corners that are one circle each, all four alike; 0 for
  *  square ones, and null for any other. */
-function circleOf(c: { x: number[]; y: number[] } | null): number | null {
+function circleOf(
+  c: { x: number[]; y: number[]; shape?: unknown } | null,
+): number | null {
   if (!c) return 0;
+  // a shaped corner is no circle's, which is all a layer's clip takes
+  if (c.shape) return null;
   const r = c.x[0];
   for (let i = 0; i < 4; i += 1) {
     if (c.x[i] !== r || c.y[i] !== r) return null;

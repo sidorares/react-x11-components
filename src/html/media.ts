@@ -652,6 +652,8 @@ function pixelsOf(box: Box, zoom: Zoom): Rect {
 function radiusOf(box: Box): number | null {
   const corners = contentCorners(box);
   if (!corners) return 0;
+  // nor is a corner `corner-shape` draws otherwise than round
+  if (corners.shape) return null;
   const r = corners.x[0];
   for (let i = 0; i < 4; i += 1) {
     if (Math.abs(corners.x[i] - r) > 0.5 || Math.abs(corners.y[i] - r) > 0.5) {

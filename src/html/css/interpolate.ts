@@ -21,7 +21,8 @@
 import { blend, rgbaOf } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
-import type { BoxShadow } from './style.js';
+import type { BoxShadow, CornerShapes } from './style.js';
+import { halfCorner, shapeAtHalfCorner } from './corner-shape.js';
 import {
   IDENTITY,
   multiply,
@@ -100,6 +101,8 @@ export function interpolateField(
         b as readonly BoxShadow[] | null,
         q,
       );
+    case 'cornerShape':
+      return interpolateCornerShapes(a as CornerShapes, b as CornerShapes, q);
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the
@@ -148,6 +151,31 @@ function interpolateShadows(
     });
   }
   return out;
+}
+
+/**
+ * Corners' shapes `q` of the way between (CSS Borders 4, 3.9.6): each by
+ * the point its curve crosses its diagonal at, which runs from a notch to
+ * a square corner through a bevel, and back to the parameter that crosses
+ * there — so a bevel half way to `round` is the curve half way between the
+ * two, and the infinities are ends a corner can run to and from. The four
+ * round corners of `ROUND_CORNERS` stay that array, which paint tells round
+ * corners by.
+ */
+function interpolateCornerShapes(
+  a: CornerShapes,
+  b: CornerShapes,
+  q: number,
+): CornerShapes {
+  const out = a.map((k, i) => {
+    // a corner the same at both ends is that shape between them, exactly
+    if (k === b[i]) return k;
+    const from = halfCorner(k);
+    const h = from + (halfCorner(b[i]) - from) * q;
+    return shapeAtHalfCorner(Math.max(0, Math.min(1, h)));
+  });
+  if (out.every((k) => k === 1)) return q < 0.5 ? a : b;
+  return out as unknown as CornerShapes;
 }
 
 /** A shadow of nothing, inset as `like` is: what a shorter list of
