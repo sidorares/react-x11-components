@@ -3715,7 +3715,11 @@ size containment, both with style containment, and makes the box a
 formatting context of its own: it holds its floats and keeps its
 children's margins. It is no containing block for what is positioned in
 it, as in Chrome. An inline box takes no size containment, and is no size
-container. `cqw`, `cqh`, `cqi`, `cqb`, `cqmin` and `cqmax` are hundredths
+container; an element of no box, `display: contents`, still is one, whose
+size features are unknown, so `(width > 0) or style(--x: 1)` answers by
+its custom property. A name may be a dashed identifier (`--root`). A
+script's change to a container's custom property is what its `style()`
+queries read straight after. `cqw`, `cqh`, `cqi`, `cqb`, `cqmin` and `cqmax` are hundredths
 of the nearest size container's content box that has the axis, or the
 viewport's where none has. A container's size is layout's, so a query is
 answered for the size the last layout gave its container: the first layout

@@ -3970,7 +3970,9 @@ export class Cascade {
    *  ancestor in the flat tree — or `el`, for its pseudo-element — of the
    *  query's name, if it gives one, and that is a size container of the
    *  axes it reads. An inline box takes no size containment, and is no
-   *  size container; an element of no box is none at all. */
+   *  size container; an element of no box — `display: contents` — still
+   *  is one, whose size features are unknown (CSS Conditional 5, 3.1), so
+   *  a style feature beside them in an `or` still answers. */
   private _containerFor(
     query: ContainerQuery,
     el: Element,
@@ -3980,7 +3982,7 @@ export class Cascade {
     if (!stylesOf) return null;
     for (let at = self ? el : flatParentOf(el); at; at = flatParentOf(at)) {
       const style = stylesOf(at);
-      if (!style || style.display === 'contents') continue;
+      if (!style) continue;
       if (
         query.name !== null &&
         !` ${style.containerName} `.includes(` ${query.name} `)

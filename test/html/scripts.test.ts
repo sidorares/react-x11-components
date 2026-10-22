@@ -3213,6 +3213,30 @@ test('Selection.modify moves through the text the document draws, from one node 
   );
 });
 
+test("a script's change to a container's custom property is what its style() queries read, at once", async () => {
+  // restyled in place, a query found the container's style from before
+  // the change, and every answer was one change behind
+  const doc = await hosted(
+    '<p id="out"></p><style>#k { container-name: k }' +
+      ' #a, #b { color: #ff0000 }' +
+      ' @container style(--t: a) { #a { color: #008000 } }' +
+      ' @container k style(--t: b) { #b { color: #008000 } }</style>' +
+      '<div id="k"><p id="a">a</p><div><p id="b">b</p></div></div><script>' +
+      'var k = document.getElementById("k"), r = [];' +
+      'function c(id) { return getComputedStyle(document.getElementById(id)).color === "rgb(0, 128, 0)" ? "g" : "r"; }' +
+      'r.push(c("a") + c("b"));' +
+      'k.style.setProperty("--t", "a"); r.push(c("a") + c("b"));' +
+      'k.style.setProperty("--t", "b"); r.push(c("a") + c("b"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'rr|gr|rg',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a text field’s selection is what a script set, kept to its value, and told as select; a type with none says null and refuses one', async () => {
   const doc = await hosted(
     '<p id="out"></p><input id="i" value="hello"><textarea id="t">abc</textarea><input id="n" type="number" value="5">' +

@@ -5114,9 +5114,18 @@ export class HtmlViewNode extends Node {
       fresh.set(el, style);
       return style;
     };
-    for (const el of reach) {
-      styleOf(el);
-      if (refused) return false;
+    // a container query finds its container's style as this restyle made
+    // it, as a build finds the one it made: a script's change to a
+    // container's custom property is what a `style()` query reads of it
+    const builtStyles = cascade.stylesOf;
+    cascade.stylesOf = (el) => fresh.get(el) ?? tree.styles.get(el)?.style;
+    try {
+      for (const el of reach) {
+        styleOf(el);
+        if (refused) return false;
+      }
+    } finally {
+      cascade.stylesOf = builtStyles;
     }
     // The drawings the move reached. What the rules give the shapes in one
     // is no box's style (`BoxTree.shapeStyler`), so it is asked for again:
