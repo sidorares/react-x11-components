@@ -54,7 +54,7 @@ and it belongs here.
 | [Code](/docs/reference/components/code)                      | A static code block: highlighted, selectable.         |
 | [CodeEditor](/docs/reference/components/code-editor)         | Multiline code editing: highlighting, completion.     |
 | [Markdown](/docs/reference/components/markdown)              | Streaming-friendly GFM with cross-block selection.    |
-| [MediaPlayer](/docs/reference/components/media-player)       | mpv or VLC, embedded, with real transport control.    |
+| [MediaPlayer](/docs/reference/components/media-player)       | mpv or VLC embedded, or ffmpeg into a `<video>`.      |
 | [Mermaid](/docs/reference/components/mermaid)                | Mermaid diagrams: ondine's layout, native ink.        |
 | [Terminal](/docs/reference/components/terminal)              | A real terminal: an embedded emulator, or its own.    |
 | [TrayHost](/docs/reference/components/tray-host)             | The system tray: applications dock their icons in.    |

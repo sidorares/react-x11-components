@@ -74,15 +74,18 @@ before writing the next component:
 - frame pacing, because a Cocoa window paints at the display's rate with no
   server backpressure behind it (`docs/prd-frame-pacing.md`).
 
-**Three components are X11-only, and always will be**: `<Terminal>`'s
-embedded emulators, `<MediaPlayer>` and `<TrayHost>`. All three are XEmbed,
-and macOS has no cross-process window embedding — react-x11's own
-`docs/macos.md` says so and names this package in as much. That is a wall,
-not a gap, so do not file it as one; the answer where an app needs the
-capability on both backends is a native sibling, which is what
-`backend="vt"` is for the terminal.
+**Three components embed over XEmbed, and that part of them is X11-only
+for good**: `<Terminal>`'s embedded emulators, `<MediaPlayer>`'s mpv and VLC,
+and `<TrayHost>`. macOS has no cross-process window embedding — react-x11's
+own `docs/macos.md` says so and names this package in as much — and neither
+has Wayland. That is a wall, not a gap, so do not file it as one; the answer
+where an app needs the capability on every backend is a native sibling,
+which is what `backend="vt"` is for the terminal and `backend="ffmpeg"` is
+for the player: a decoder pushing frames into core's `<video frames>`,
+silent, drawn in the paint order (react-x11 `docs/architecture/video.md`
+§8.3).
 
-All three degrade the same way there — `status: 'unavailable'` plus
+All three embedders degrade the same way there — `status: 'unavailable'` plus
 `fallback` — and all three find out from the **app**, never the machine:
 core's Cocoa `X` is a stub with no selection machinery and no reparent, the
 same posture as the headless mock's. `<TrayHost>`'s manager asks for
@@ -94,7 +97,8 @@ same posture as the headless mock's. `<TrayHost>`'s manager asks for
 spawning components used to run their plans with it — `xterm -into
 undefined`, `mpv --wid=undefined` — over a blank pane, with no error.
 `<Terminal backend="auto">` asks before its `PATH` probe, so a Mac with
-XQuartz's xterm installed lands on vt. **That is the posture to copy for
+XQuartz's xterm installed lands on vt, and `<MediaPlayer backend="auto">`
+the same way lands on ffmpeg without looking for an mpv it could not use. **That is the posture to copy for
 anything else that reaches for raw X**: ask the connection, answer on the
 first render, and mount no `<foreign>` where it has no socket to be — on
 core's headless mock one throws from the commit.
@@ -972,6 +976,18 @@ they are not re-litigated:
   so a reply cannot be matched to its question except by counting, and one
   dropped line desynchronises that permanently. `reportsProgress: false` says
   so in the type rather than shipping a parser that lies to a progress bar.
+
+`<MediaPlayer backend="ffmpeg">` (`src/media-player/ffmpeg.ts`,
+`frames.ts`) runs its program through the same `ProcessHost` and is the one
+caller that reads a child's output: `SpawnOptions.output` pipes stdout and
+stderr to `onStdout`/`onStderr`, which are optional on the interface so a
+host written before them still type-checks. Its transport is signals and
+restarts — SIGSTOP/SIGCONT for pause, a respawn with `-ss` for a seek — which
+is why `kill()` asks whether the child has exited rather than reading node's
+`killed`: that flag goes true after the first signal of any kind, and the
+SIGCONT after a SIGSTOP was silently dropped. The route between it and the
+embedders is `useRoute` in `index.ts`: `'auto'` on an app that can embed asks
+`PATH` for mpv and VLC first, and nowhere else asks at all.
 
 ## The terminal that is not somebody else's program
 
@@ -3734,7 +3750,7 @@ npm run examples:maps        # and a network — real OSM tiles
 npm run examples:terminal    # X11 only, and an emulator installed
 npm run examples:terminal-vt # a pty module (node-pty), or Bun >= 1.4
 npm run examples:terminal-ssh   # SSH_HOST/SSH_USER, and `npm i -D ssh2`
-npm run examples:media-player -- <file>   # X11 only, and mpv or VLC
+npm run examples:media-player -- <file>   # mpv or VLC on X11, or ffmpeg
 npm run examples:tray-host   # X11 only, and no other tray on that display
 npm run examples:three       # a GL context: see docs/components/three.md
 npm run examples:tree -- <dir>  # defaults to cwd

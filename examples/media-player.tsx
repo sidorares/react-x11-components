@@ -1,18 +1,25 @@
 // Run with: npm run examples:media-player -- /path/to/video.mkv
-// (needs an X server / DISPLAY, and mpv or VLC installed)
+// (needs mpv or VLC on X11, or ffmpeg and ffprobe on any backend —
+// `MEDIA_BACKEND=ffmpeg` asks for ffmpeg where mpv would be found first)
 //
 // A video surface with a transport bar drawn in react-x11 underneath it. Note
-// where the bar is: *beside* the player, not over it. The embedded client's X
+// where the bar is: *beside* the player, not over it. An embedded player's X
 // window stacks above everything drawn in ours — the same rule `<glarea>` has
-// — so an overlay would have to be a sibling `<popup>`.
+// — so an overlay would have to be a sibling `<popup>`. ffmpeg's picture is a
+// drawn `<video>`, which a bar could overlap; this one stays beside it so the
+// example looks the same on every backend.
 import { useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
 import { MediaPlayer } from '../src/media-player/index.js';
-import type { MediaPlayerHandle } from '../src/media-player/index.js';
+import type {
+  MediaBackendName,
+  MediaPlayerHandle,
+} from '../src/media-player/index.js';
 
 const src = process.argv[2];
+const backend = process.env.MEDIA_BACKEND as MediaBackendName | undefined;
 
 function clock(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -42,6 +49,7 @@ function App(): ReactElement {
         <MediaPlayer
           ref={player}
           src={src}
+          backend={backend}
           volume={volume}
           aspectRatio="16:9"
           style={{ flexGrow: 1 }}
@@ -51,8 +59,9 @@ function App(): ReactElement {
           fallback={
             <box style={{ flexGrow: 1, padding: 24 }}>
               <text style={{ fontSize: 13, color: '$textMuted' }}>
-                No media player found. Install mpv (preferred — it reports
-                position back) or VLC.
+                No media player found. Install mpv (preferred on X11 — it has
+                sound and reports position back), VLC, or ffmpeg, which plays
+                silently on every backend.
               </text>
             </box>
           }

@@ -29,6 +29,8 @@ export class FakeProcess implements SpawnedProcess {
   readonly signals: string[] = [];
   #exit: ((info: ExitInfo) => void)[] = [];
   #error: ((err: Error) => void)[] = [];
+  #stdout: ((chunk: Uint8Array) => void)[] = [];
+  #stderr: ((chunk: Uint8Array) => void)[] = [];
 
   constructor(pid: number) {
     this.pid = pid;
@@ -54,6 +56,27 @@ export class FakeProcess implements SpawnedProcess {
 
   fail(err: Error): void {
     for (const listener of this.#error) listener(err);
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.#stdout.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.#stderr.push(listener);
+  }
+
+  /** Write to the parent as the child's stdout. */
+  stdout(chunk: Uint8Array | string): void {
+    const bytes =
+      typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+    for (const listener of this.#stdout) listener(bytes);
+  }
+
+  /** Write to the parent as the child's stderr. */
+  stderr(text: string): void {
+    const bytes = new TextEncoder().encode(text);
+    for (const listener of this.#stderr) listener(bytes);
   }
 }
 
@@ -134,8 +157,31 @@ export class FakeHost implements ProcessHost {
   ): Promise<SpawnedProcess> {
     if (this.spawnError) throw this.spawnError;
     const process = new FakeProcess(this.#pid++);
-    this.spawns.push({ command, args: [...args], options, process });
+    const record = { command, args: [...args], options, process };
+    this.spawns.push(record);
+    const script = this.#scripts.get(command.split('/').pop() ?? command);
+    // A turn later, as a real child's output arrives: after the caller has
+    // had its `spawn` back and attached its listeners.
+    if (script) setImmediate(() => script(record));
     return process;
+  }
+
+  #scripts = new Map<string, (record: SpawnRecord) => void>();
+
+  /**
+   * What every later spawn of `name` (a binary name, not a path) does on its
+   * own — ffprobe answering its JSON and exiting, say. Run a turn after the
+   * spawn resolves.
+   */
+  script(name: string, run: (record: SpawnRecord) => void): void {
+    this.#scripts.set(name, run);
+  }
+
+  /** Every spawn of `name`, in order. */
+  spawnsOf(name: string): SpawnRecord[] {
+    return this.spawns.filter(
+      (s) => (s.command.split('/').pop() ?? s.command) === name,
+    );
   }
 
   async socketPath(prefix: string): Promise<ScratchSocket> {

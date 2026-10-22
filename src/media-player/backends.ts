@@ -8,13 +8,22 @@
 //
 // The argv builders are pure and synchronous, so `test/media-player.test.ts`
 // asserts every flag without mpv or VLC installed anywhere.
+//
+// `ffmpeg` is listed here as well, but it is not a row of this table: it
+// embeds no window and has no control channel, so it cannot be a
+// `MediaBackend`. `./ffmpeg.ts` is the whole of it.
 import type { ProcessHost } from '../embed/index.js';
 import type { PlayerControl, PlayerEvents } from './control.js';
+import { ffmpegArgs, ffprobeArgs } from './ffmpeg.js';
 import { connectMpv } from './mpv.js';
 import { connectVlc } from './vlc.js';
 
-/** Which player to embed. `'auto'` takes the first one installed. */
-export type MediaBackendName = 'auto' | 'mpv' | 'vlc';
+/**
+ * Which player. `'auto'` takes the first one installed of mpv and VLC where
+ * the app can embed a window, and ffmpeg after them — or ffmpeg alone, where
+ * it cannot.
+ */
+export type MediaBackendName = 'auto' | 'mpv' | 'vlc' | 'ffmpeg';
 
 /** Everything the argv builders read. */
 export interface MediaLaunch {
@@ -40,7 +49,7 @@ export interface MediaLaunch {
 }
 
 export interface MediaBackend {
-  name: Exclude<MediaBackendName, 'auto'>;
+  name: Exclude<MediaBackendName, 'auto' | 'ffmpeg'>;
   binaries: readonly string[];
   /** Whether `onProgress` can fire under this backend. */
   reportsProgress: boolean;
@@ -146,10 +155,25 @@ function clampUnit(value: number): number {
  */
 export const MEDIA_BACKENDS: readonly MediaBackend[] = [mpv, vlc];
 
-/** The backends a `backend` prop selects. `'auto'` is all of them, in order. */
+/** The embedding backends a `backend` prop selects. `'auto'` is all of them,
+ *  in order; `'ffmpeg'` is none of them. */
 export function mediaBackendsFor(
   name: MediaBackendName,
 ): readonly MediaBackend[] {
   if (name === 'auto') return MEDIA_BACKENDS;
   return MEDIA_BACKENDS.filter((b) => b.name === name);
 }
+
+/**
+ * ffmpeg, decoding into a `<video frames>` sink rather than drawing into a
+ * window — the backend for an app that cannot embed one, and for a machine
+ * with neither player. Both binaries are needed: ffprobe answers the size and
+ * colour the sink is made in before ffmpeg starts. See `./ffmpeg.ts`.
+ */
+export const ffmpeg = {
+  name: 'ffmpeg',
+  binaries: ['ffmpeg', 'ffprobe'],
+  reportsProgress: true,
+  probeArgs: ffprobeArgs,
+  args: ffmpegArgs,
+} as const;
