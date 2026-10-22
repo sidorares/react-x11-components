@@ -120,6 +120,9 @@ export interface FetchRequest {
   method: string;
   headers: [string, string][];
   body: string | null;
+  /** The body's bytes, where it is not text — a stream read to its end, a
+   *  `Blob`, an `ArrayBuffer`, a multipart form — sent as they are. */
+  bytes?: Uint8Array;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -554,8 +557,13 @@ function corsSafelisted(name: string, value: string): boolean {
         essence === 'text/plain'
       );
     }
-    case 'range':
-      return /^bytes=\d+-\d*$/.test(value);
+    case 'range': {
+      // a simple range, one whose start is no later than its end
+      const range = /^bytes=(\d+)-(\d*)$/.exec(value);
+      return (
+        !!range && (range[2] === '' || BigInt(range[1]) <= BigInt(range[2]))
+      );
+    }
     default:
       return false;
   }
@@ -3921,6 +3929,13 @@ export class DomHost {
               .filter(([k]) => !forbiddenRequestHeader(k))
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
+        ...(typeof (raw as { base64?: unknown }).base64 === 'string'
+          ? {
+              bytes: new Uint8Array(
+                Buffer.from((raw as { base64: string }).base64, 'base64'),
+              ),
+            }
+          : {}),
         mode:
           raw.mode === 'no-cors' || raw.mode === 'same-origin'
             ? raw.mode
@@ -3981,6 +3996,7 @@ export class DomHost {
       method: request.method,
       headers: request.headers,
       body: request.body,
+      ...(request.bytes ? { bytes: request.bytes } : {}),
     };
     if (own) {
       const response = await this._seams.fetch(plain, signal);

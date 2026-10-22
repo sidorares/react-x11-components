@@ -83,7 +83,7 @@ export type HtmlTransport = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body?: string;
+    body?: string | Uint8Array;
     signal: AbortSignalLike;
     redirect: 'follow';
   },
@@ -484,6 +484,7 @@ export class HtmlNetwork {
       method: string;
       headers: [string, string][];
       body: string | null;
+      bytes?: Uint8Array;
     },
     page: string,
     signal: AbortSignalLike,
@@ -531,7 +532,7 @@ export class HtmlNetwork {
         body:
           method === 'GET' || method === 'HEAD'
             ? undefined
-            : (request.body ?? undefined),
+            : (request.bytes ?? request.body ?? undefined),
         signal: AbortSignal.any([signal, timer]),
         redirect: 'follow',
       }),

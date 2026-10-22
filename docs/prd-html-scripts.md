@@ -987,6 +987,21 @@ the Interop 2026 focus areas through `<Html scripts>`
   with `v8.setFlagsFromString` as it loads, before any page's context is
   made. It is a flag of the process's, and adds the two to every context
   made after it and nothing else. Bun's JavaScriptCore has neither.
+- **A body is extracted once, as Fetch extracts it.** `Request`,
+  `Response` and `fetch` read a body through one function
+  (`extractBody`), so the three agree on its bytes and its implied
+  `Content-Type`: a string's `text/plain;charset=UTF-8`, a form's
+  multipart type and boundary, a `Blob`'s type, none for a buffer. A
+  stream is read to its end before it is sent, and only where `duplex` is
+  `'half'`. A `GET` with a body is a `TypeError`, as an abort is the
+  signal's own reason. What crosses to the host is the body as text where
+  its bytes are UTF-8 and as base64 where they are not
+  (`FetchRequest.bytes`): a `Uint8Array` of `0xFF`s had been sent as its
+  `String()`, `"255,255"`. A `blob:` URL answers a `Range` as Fetch's
+  blob scheme does, a `data:` URL is answered in the page, and a headers
+  object has the guard its owner gives it (Fetch 5.1): a request's drops
+  what a page may not set, a `no-cors` one's all but the safelisted few,
+  a network response's refuses every change.
 
 ## What core would be asked
 

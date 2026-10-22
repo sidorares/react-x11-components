@@ -8715,48 +8715,220 @@ export function installDom(
       );
 
   /** `Headers`, a list of names and values, names lowercased. */
+  /** A header a page may not set on a request (Fetch 2.2.2, "forbidden
+   *  request-header"), which a request's headers drop, as the host does. */
+  const FORBIDDEN_REQUEST_HEADER =
+    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|user-agent|via)$|^(proxy-|sec-)/;
+  /** A header's name, a token (RFC 9110, 5.1). */
+  const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  /** The bytes no CORS-safelisted header value may hold (Fetch 2.2.2). */
+  const UNSAFE_HEADER_BYTES =
+    /[\u0000-\u0008\u000a-\u001f"():<>?@[\\\]{}\u007f]/;
+  /** Whether a `no-cors` request may have a header (Fetch 2.2.2,
+   *  "no-CORS-safelisted request-header"). */
+  const noCorsSafelisted = (name: string, value: string): boolean => {
+    if (value.length > 128) return false;
+    switch (name) {
+      case 'accept':
+        return !UNSAFE_HEADER_BYTES.test(value);
+      case 'accept-language':
+      case 'content-language':
+        return /^[0-9A-Za-z *,\-.;=]*$/.test(value);
+      case 'content-type': {
+        if (UNSAFE_HEADER_BYTES.test(value)) return false;
+        const essence = value.split(';')[0].trim().toLowerCase();
+        return (
+          essence === 'application/x-www-form-urlencoded' ||
+          essence === 'multipart/form-data' ||
+          essence === 'text/plain'
+        );
+      }
+      default:
+        return false;
+    }
+  };
+
   class Headers {
     _map = new Map<string, string>();
+    /** What a page may change of the list (Fetch 5.1, its guard): all of
+     *  it, a request's own, a `no-cors` request's safelisted few, a
+     *  response's, or none of it — a network response's. */
+    _guard = 'none';
     constructor(init: Any = {}) {
-      if (init instanceof Headers) init = Array.from(init._map.entries());
-      if (Array.isArray(init)) for (const [k, v] of init) this.append(k, v);
-      else if (init && typeof init === 'object') {
-        for (const k of Object.keys(init)) this.append(k, init[k]);
+      fillHeaders(this, init);
+    }
+    /** A name and a value as Fetch's `append` and `set` take them: the
+     *  value's white space trimmed and both checked, or null where the
+     *  guard drops the header without a word. */
+    _admit(
+      method: string,
+      k: Any,
+      v: Any,
+      appending: boolean,
+    ): [string, string] | null {
+      const name = str(k);
+      const value = str(v).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
+      if (!HEADER_NAME.test(name)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'Headers': Invalid name`,
+        );
       }
+      if (/[\0\r\n]/.test(value)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'Headers': Invalid value`,
+        );
+      }
+      if (this._guard === 'immutable') {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'Headers': Headers are immutable`,
+        );
+      }
+      const key = name.toLowerCase();
+      if (this._guard === 'request' && FORBIDDEN_REQUEST_HEADER.test(key)) {
+        return null;
+      }
+      if (this._guard === 'response' && /^set-cookie2?$/.test(key)) {
+        return null;
+      }
+      if (this._guard === 'request-no-cors') {
+        const had = appending ? this._map.get(key) : undefined;
+        if (
+          !noCorsSafelisted(key, had === undefined ? value : `${had}, ${value}`)
+        ) {
+          return null;
+        }
+      }
+      return [key, value];
+    }
+    _name(method: string, k: Any): string {
+      const name = str(k);
+      if (!HEADER_NAME.test(name)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'Headers': Invalid name`,
+        );
+      }
+      return name.toLowerCase();
     }
     append(k: Any, v: Any): void {
-      const key = str(k).toLowerCase();
+      const admitted = this._admit('append', k, v, true);
+      if (!admitted) return;
+      const [key, value] = admitted;
       const had = this._map.get(key);
-      this._map.set(key, had === undefined ? str(v) : `${had}, ${str(v)}`);
+      this._map.set(key, had === undefined ? value : `${had}, ${value}`);
     }
     set(k: Any, v: Any): void {
-      this._map.set(str(k).toLowerCase(), str(v));
+      const admitted = this._admit('set', k, v, false);
+      if (admitted) this._map.set(admitted[0], admitted[1]);
     }
     get(k: Any): string | null {
-      return this._map.get(str(k).toLowerCase()) ?? null;
+      return this._map.get(this._name('get', k)) ?? null;
+    }
+    getSetCookie(): string[] {
+      const value = this._map.get('set-cookie');
+      return value === undefined ? [] : [value];
     }
     has(k: Any): boolean {
-      return this._map.has(str(k).toLowerCase());
+      return this._map.has(this._name('has', k));
     }
     delete(k: Any): void {
-      this._map.delete(str(k).toLowerCase());
+      const key = this._name('delete', k);
+      if (this._guard === 'immutable') {
+        throw new TypeError(
+          "Failed to execute 'delete' on 'Headers': Headers are immutable",
+        );
+      }
+      if (this._guard === 'request' && FORBIDDEN_REQUEST_HEADER.test(key)) {
+        return;
+      }
+      if (
+        this._guard === 'request-no-cors' &&
+        !/^(accept|accept-language|content-language|content-type|range)$/.test(
+          key,
+        )
+      ) {
+        return;
+      }
+      if (this._guard === 'response' && /^set-cookie2?$/.test(key)) return;
+      this._map.delete(key);
+    }
+    /** The list as a page iterates it: sorted by name (Fetch 2.2, "sort
+     *  and combine"). */
+    _sorted(): [string, string][] {
+      return [...this._map.entries()].sort((x, y) =>
+        x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0,
+      );
     }
     forEach(fn: Any, self?: Any): void {
-      for (const [k, v] of this._map) fn.call(self, v, k, this);
+      for (const [k, v] of this._sorted()) fn.call(self, v, k, this);
     }
     entries(): Any {
-      return this._map.entries();
+      return this._sorted()[Symbol.iterator]();
     }
     keys(): Any {
-      return this._map.keys();
+      return this._sorted()
+        .map(([k]) => k)
+        [Symbol.iterator]();
     }
     values(): Any {
-      return this._map.values();
+      return this._sorted()
+        .map(([, v]) => v)
+        [Symbol.iterator]();
     }
     [Symbol.iterator](): Any {
-      return this._map.entries();
+      return this._sorted()[Symbol.iterator]();
     }
   }
+
+  /** A headers object filled from what a page hands in (Fetch 5.2,
+   *  "fill"): another, a sequence of pairs, or a record. */
+  function fillHeaders(headers: Any, init: Any): void {
+    if (init === undefined || init === null) return;
+    if (init instanceof Headers) {
+      for (const [k, v] of init._map) headers.append(k, v);
+      return;
+    }
+    if (typeof init !== 'object' && typeof init !== 'function') {
+      throw new TypeError(
+        "Failed to construct 'Headers': The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.",
+      );
+    }
+    if (typeof init[Symbol.iterator] === 'function') {
+      for (const pair of init) {
+        const items = Array.from(pair as Any);
+        if (items.length !== 2) {
+          throw new TypeError("Failed to construct 'Headers': Invalid value");
+        }
+        headers.append(items[0], items[1]);
+      }
+      return;
+    }
+    for (const k of Object.keys(init)) headers.append(k, init[k]);
+  }
+
+  /** A headers object with a guard, filled under it: a request's drops
+   *  what a page may not set on one; a network response's is filled as
+   *  it came and then let alone. */
+  const guardedHeaders = (init: Any, guard: string): Any => {
+    const headers = new Headers();
+    if (guard === 'immutable') {
+      const pairs: Any =
+        init instanceof Headers
+          ? init._map
+          : Array.isArray(init)
+            ? init
+            : Object.entries(init ?? {});
+      for (const [k, v] of pairs) {
+        const key = str(k).toLowerCase();
+        const had = headers._map.get(key);
+        headers._map.set(key, had === undefined ? str(v) : `${had}, ${str(v)}`);
+      }
+    } else {
+      headers._guard = guard;
+      fillHeaders(headers, init);
+    }
+    headers._guard = guard;
+    return headers;
+  };
 
   /** Bytes from base64: what the network's bytes and a worker's buffers
    *  cross the bridge as (`__fetched`, `deserializeClone`). The runtime's
@@ -8815,6 +8987,172 @@ export function installDom(
     return out;
   }
 
+  const utf8Bytes = (text: string): Uint8Array =>
+    new TextEncoder().encode(text);
+  const joinBytes = (parts: Uint8Array[]): Uint8Array => {
+    let length = 0;
+    for (const part of parts) length += part.length;
+    const out = new Uint8Array(length);
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length;
+    }
+    return out;
+  };
+  /** A form's entries as `multipart/form-data` (HTML 4.10.21.8): a file's
+   *  part its bytes as they are, a string's its UTF-8. */
+  const multipartOf = (form: Any, boundary: string): Uint8Array => {
+    const quoted = (s: string) =>
+      s.replace(/"/g, '%22').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+    const parts: Uint8Array[] = [];
+    for (const [name, value] of form._entries) {
+      const file = value instanceof File;
+      let head = `--${boundary}\r\nContent-Disposition: form-data; name="${quoted(name)}"`;
+      if (file) {
+        head += `; filename="${quoted(value.name)}"\r\nContent-Type: ${value.type || 'application/octet-stream'}`;
+      }
+      parts.push(
+        utf8Bytes(`${head}\r\n\r\n`),
+        file ? value._bytes : utf8Bytes(value),
+        utf8Bytes('\r\n'),
+      );
+    }
+    parts.push(utf8Bytes(`--${boundary}--\r\n`));
+    return joinBytes(parts);
+  };
+  /**
+   * Fetch's "extract a body" (5.2): what a body init is, as its bytes or as
+   * the stream it is, and the `Content-Type` it implies, or null — text's
+   * and a form's are theirs, a `Blob`'s its type, a buffer's none.
+   */
+  const extractBody = (
+    init: Any,
+  ): { bytes: Uint8Array | null; stream: Any; type: string | null } => {
+    if (init instanceof ReadableStream) {
+      return { bytes: null, stream: init, type: null };
+    }
+    if (init instanceof Blob) {
+      return { bytes: init._bytes, stream: null, type: init.type || null };
+    }
+    if (init instanceof ArrayBuffer) {
+      return { bytes: new Uint8Array(init.slice(0)), stream: null, type: null };
+    }
+    if (ArrayBuffer.isView(init)) {
+      return {
+        bytes: new Uint8Array(
+          init.buffer.slice(init.byteOffset, init.byteOffset + init.byteLength),
+        ),
+        stream: null,
+        type: null,
+      };
+    }
+    if (init instanceof FormData) {
+      const boundary = `----formdata-${Math.random().toString(36).slice(2)}`;
+      return {
+        bytes: multipartOf(init, boundary),
+        stream: null,
+        type: `multipart/form-data; boundary=${boundary}`,
+      };
+    }
+    if (init instanceof URLSearchParams) {
+      return {
+        bytes: utf8Bytes(init.toString()),
+        stream: null,
+        type: 'application/x-www-form-urlencoded;charset=UTF-8',
+      };
+    }
+    return {
+      bytes: utf8Bytes(str(init)),
+      stream: null,
+      type: 'text/plain;charset=UTF-8',
+    };
+  };
+  /** A stream read to its end: the bytes of each chunk, which has to be a
+   *  view of them (Fetch, "extract a body"). */
+  const drainStream = async (
+    stream: Any,
+    onReader?: (reader: Any) => void,
+  ): Promise<Uint8Array> => {
+    const reader = stream.getReader();
+    onReader?.(reader);
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new TypeError(
+          'Failed to read the stream: the chunk is not a Uint8Array.',
+        );
+      }
+      chunks.push(value);
+    }
+    return joinBytes(chunks);
+  };
+  /** A body as `FormData` (Fetch 6.2, "package data"): the entries of a
+   *  `multipart/form-data` body or an urlencoded one, by its type. */
+  const formDataOf = (bytes: Uint8Array, type: string | null): Any => {
+    const header = type ?? '';
+    const essence = header.split(';')[0].trim().toLowerCase();
+    const form = new FormData();
+    if (essence === 'application/x-www-form-urlencoded') {
+      const text = new TextDecoder().decode(bytes);
+      for (const [k, v] of new URLSearchParams(text)) form.append(k, v);
+      return form;
+    }
+    const fail = () =>
+      new TypeError(
+        "Failed to execute 'formData': Could not parse content as FormData.",
+      );
+    if (essence !== 'multipart/form-data') throw fail();
+    const m = /;\s*boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(header);
+    const boundary = m ? (m[1] ?? m[2]) : null;
+    if (!boundary) throw fail();
+    // found in the bytes as Latin-1, each byte a code unit, so an index
+    // in the text is one in the bytes
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+      text += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    const delimiter = `--${boundary}`;
+    let at = text.indexOf(delimiter);
+    if (at < 0) throw fail();
+    for (;;) {
+      at += delimiter.length;
+      if (text.startsWith('--', at)) break;
+      if (!text.startsWith('\r\n', at)) throw fail();
+      at += 2;
+      const headEnd = text.indexOf('\r\n\r\n', at);
+      if (headEnd < 0) throw fail();
+      const next = text.indexOf(`\r\n${delimiter}`, headEnd + 4);
+      if (next < 0) throw fail();
+      let name: string | null = null;
+      let filename: string | null = null;
+      let partType = '';
+      for (const line of text.slice(at, headEnd).split('\r\n')) {
+        const colon = line.indexOf(':');
+        if (colon < 0) continue;
+        const key = line.slice(0, colon).trim().toLowerCase();
+        const value = line.slice(colon + 1).trim();
+        if (key === 'content-disposition') {
+          const param = (p: string): string | null => {
+            const found = new RegExp(`;\\s*${p}="([^"]*)"`, 'i').exec(value);
+            return found ? found[1] : null;
+          };
+          name = param('name');
+          filename = param('filename');
+        } else if (key === 'content-type') partType = value;
+      }
+      if (name === null) throw fail();
+      const content = bytes.subarray(headEnd + 4, next);
+      if (filename !== null) {
+        form.append(name, new File([content], filename, { type: partType }));
+      } else form.append(name, new TextDecoder().decode(content));
+      at = next + 2;
+    }
+    return form;
+  };
+
   class Response {
     readonly status: number;
     readonly statusText: string;
@@ -8831,25 +9169,59 @@ export function installDom(
      *  image, a font, which no text decoding may pass through. */
     _raw: Uint8Array | null = null;
     bodyUsed = false;
-    constructor(body: Any = '', init: Any = {}) {
+    constructor(body: Any = null, init: Any = {}) {
       this._body = '';
-      // a stream is read as it is asked for: three.js's loaders hand a
-      // fetch's body on through one, to count its progress
-      if (body instanceof ReadableStream) this._stream = body;
-      else if (body instanceof ArrayBuffer)
-        this._raw = new Uint8Array(body.slice(0));
-      else if (ArrayBuffer.isView(body)) {
-        this._raw = new Uint8Array(
-          body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-        );
-      } else if (body instanceof Blob) this._raw = body._bytes;
-      else this._body = body === null ? '' : str(body);
-      this.type = init.type === undefined ? 'default' : str(init.type);
+      const page = init.type === undefined;
+      this.type = page ? 'default' : str(init.type);
       this.status = Number(init.status ?? 200);
       this.statusText = String(init.statusText ?? '');
-      this.headers = new Headers(init.headers ?? {});
+      if (page) {
+        // what a page may make one of (Fetch 6.4, "initialize a response")
+        if (!(this.status >= 200 && this.status <= 599)) {
+          throw new RangeError(
+            `Failed to construct 'Response': The status provided (${this.status}) is outside the range [200, 599].`,
+          );
+        }
+        if (!/^[\t\u0020-\u007e\u0080-\u00ff]*$/.test(this.statusText)) {
+          throw new TypeError(
+            "Failed to construct 'Response': Invalid statusText",
+          );
+        }
+        if (
+          body !== null &&
+          body !== undefined &&
+          [101, 103, 204, 205, 304].includes(this.status)
+        ) {
+          throw new TypeError(
+            "Failed to construct 'Response': Response with null body status cannot have body",
+          );
+        }
+      }
+      this.headers = guardedHeaders(
+        init.headers ?? {},
+        page ? 'response' : str(init.guard ?? 'immutable'),
+      );
       this.url = String(init.url ?? '');
       this.redirected = !!init.redirected;
+      if (body === null || body === undefined) return;
+      if (page) {
+        // a page's: its body extracted, and its type the header where it
+        // names none (Fetch 6.4, the `Response` constructor)
+        const extracted = extractBody(body);
+        // a stream is read as it is asked for: three.js's loaders hand a
+        // fetch's body on through one, to count its progress
+        if (extracted.stream) this._stream = extracted.stream;
+        else this._raw = extracted.bytes;
+        if (extracted.type !== null && !this.headers.has('content-type')) {
+          this.headers.set('content-type', extracted.type);
+        }
+        return;
+      }
+      // the network's, or one made of another's body: as it is
+      if (body instanceof ReadableStream) this._stream = body;
+      else if (body instanceof Uint8Array) this._raw = body;
+      else if (body instanceof Blob) this._raw = body._bytes;
+      else this._body = str(body);
     }
     get ok(): boolean {
       return this.status >= 200 && this.status < 300;
@@ -8871,27 +9243,7 @@ export function installDom(
     async _drain(): Promise<Uint8Array> {
       if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
       this.bodyUsed = true;
-      const reader = this._stream.getReader();
-      const chunks: Uint8Array[] = [];
-      let length = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!(value instanceof Uint8Array)) {
-          throw new TypeError(
-            'Failed to read the stream: the chunk is not a Uint8Array.',
-          );
-        }
-        chunks.push(value);
-        length += value.length;
-      }
-      const out = new Uint8Array(length);
-      let at = 0;
-      for (const chunk of chunks) {
-        out.set(chunk, at);
-        at += chunk.length;
-      }
-      return out;
+      return drainStream(this._stream);
     }
     text(): Promise<string> {
       if (this._given()) {
@@ -8928,6 +9280,11 @@ export function installDom(
           new Blob([bytes], { type: this.headers.get('content-type') ?? '' }),
       );
     }
+    formData(): Promise<Any> {
+      return this.bytes().then((bytes) =>
+        formDataOf(bytes, this.headers.get('content-type')),
+      );
+    }
     /** The body as a stream of its bytes, read once, as the methods read
      *  it: what the app router of Next.js reads a server's payload with. */
     get body(): Any {
@@ -8947,109 +9304,332 @@ export function installDom(
     _made = false;
     clone(): Any {
       if (this.bodyUsed) throw new TypeError('Response body is already used');
+      const init = {
+        status: this.status,
+        statusText: this.statusText,
+        url: this.url,
+        redirected: this.redirected,
+        type: this.type,
+        headers: this.headers,
+        guard: this.headers._guard,
+      };
       if (this._given()) {
         const [mine, theirs] = this._stream.tee();
         this._stream = mine;
-        return new Response(theirs, this);
+        return new Response(theirs, init);
       }
-      return new Response(this._raw ?? this._body, this);
+      return new Response(this._raw ?? this._body, init);
+    }
+    static error(): Any {
+      return new Response(null, { status: 0, type: 'error' });
+    }
+    static redirect(url: Any, status: Any = 302): Any {
+      const to = new URL(str(url), location.href).href;
+      const code = Number(status);
+      if (![301, 302, 303, 307, 308].includes(code)) {
+        throw new RangeError(
+          `Failed to execute 'redirect' on 'Response': Invalid status code`,
+        );
+      }
+      return new Response(null, {
+        status: code,
+        type: 'default',
+        headers: [['location', to]],
+      });
+    }
+    static json(data: Any, init: Any = {}): Any {
+      const text = JSON.stringify(data);
+      if (text === undefined) {
+        throw new TypeError(
+          "Failed to execute 'json' on 'Response': The data provided cannot be converted to JSON.",
+        );
+      }
+      const headers = new Headers(init.headers ?? {});
+      if (!headers.has('content-type')) {
+        headers.set('content-type', 'application/json');
+      }
+      return new Response(text, {
+        status: init.status,
+        statusText: init.statusText,
+        headers,
+      });
     }
   }
 
   // `fetch`: the request is the host's, which keeps the browser's network
   // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
-  const fetches = new Map<number, { resolve: Any; reject: Any }>();
+  const fetches = new Map<
+    number,
+    { resolve: Any; reject: Any; streamed?: boolean }
+  >();
+  /**
+   * A `Range` header's one range of bytes (Fetch, "parse a single range
+   * header value", white space allowed): its start and its end, either
+   * null where it is left out, or null for a value that is no such range —
+   * another unit, a second range, a sign, a stray character.
+   */
+  const parseRange = (value: string): [number | null, number | null] | null => {
+    let at = 0;
+    const skip = () => {
+      while (value[at] === ' ' || value[at] === '\t') at += 1;
+    };
+    const digits = (): number | null => {
+      const from = at;
+      while (at < value.length && value[at] >= '0' && value[at] <= '9') at += 1;
+      return at > from ? Number(value.slice(from, at)) : null;
+    };
+    const unit = /^[^=\t ]*/.exec(value)![0];
+    if (unit !== 'bytes') return null;
+    at = unit.length;
+    skip();
+    if (value[at] !== '=') return null;
+    at += 1;
+    skip();
+    const start = digits();
+    skip();
+    if (value[at] !== '-') return null;
+    at += 1;
+    skip();
+    const end = digits();
+    if (at < value.length) return null;
+    if (start === null && end === null) return null;
+    if (start !== null && end !== null && start > end) return null;
+    return [start, end];
+  };
+
+  /** A blob URL's response (Fetch 4.2, its scheme fetch): the blob, or the
+   *  part of it a `Range` names, as a `206`; null for a network error. */
+  const blobResponse = (blob: Any, url: string, headers: Any): Any => {
+    const full = blob.size;
+    const type = blob.type;
+    const range = headers.get('range');
+    if (range === null) {
+      return new Response(blob, {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-length': String(full), 'content-type': type },
+        url,
+        type: 'basic',
+      });
+    }
+    const parsed = parseRange(range);
+    if (!parsed) return null;
+    let [start, end] = parsed;
+    if (start === null) {
+      start = Math.max(0, full - end!);
+      end = full - 1;
+    } else {
+      if (start >= full) return null;
+      if (end === null || end >= full) end = full - 1;
+    }
+    const part = blob.slice(start, end + 1, type);
+    return new Response(part, {
+      status: 206,
+      statusText: 'Partial Content',
+      headers: {
+        'content-length': String(part.size),
+        'content-range': `bytes ${start}-${end}/${full}`,
+        'content-type': type,
+      },
+      url,
+      type: 'basic',
+    });
+  };
+
+  /** A data: URL's response (Fetch 4.2, its scheme fetch, over the data:
+   *  URL processor): its bytes and its type, or null where its base64 is
+   *  none. */
+  const dataResponse = (url: string): Any => {
+    const comma = url.indexOf(',');
+    if (comma < 0) return null;
+    let type = url.slice(5, comma).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+    const bytes = percentDecodedBytes(url.slice(comma + 1));
+    let body: Uint8Array = bytes;
+    const base64 = /;[\u0020]*base64$/i.exec(type);
+    if (base64) {
+      type = type.slice(0, base64.index);
+      let text = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        text += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+      text = text.replace(/[\t\n\f\r ]/g, '');
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 === 1) {
+        return null;
+      }
+      body = bytesOfBase64(text);
+    }
+    if (type.startsWith(';')) type = `text/plain${type}`;
+    const essence = /^([^\s/;]+)\/([^\s;]+)/.exec(type);
+    const mime = essence
+      ? `${essence[1]}/${essence[2]}`.toLowerCase() +
+        type
+          .slice(essence[0].length)
+          .split(';')
+          .map((part) => part.trim())
+          .filter((part) => /^[^=]+=.+$/.test(part))
+          .map((part) => {
+            const at = part.indexOf('=');
+            return `;${part.slice(0, at).toLowerCase()}=${part.slice(at + 1)}`;
+          })
+          .join('')
+      : 'text/plain;charset=US-ASCII';
+    return new Response(body, {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': mime },
+      url,
+      type: 'basic',
+    });
+  };
+  /** A URL's percent-encoded bytes decoded, as the URL standard's
+   *  "percent-decode" has them: a `%` not before two hex digits stays. */
+  const percentDecodedBytes = (text: string): Uint8Array => {
+    const raw = utf8Bytes(text);
+    const out: number[] = [];
+    const hex = (c: number) =>
+      (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+    for (let i = 0; i < raw.length; i += 1) {
+      if (raw[i] === 37 && hex(raw[i + 1]) && hex(raw[i + 2])) {
+        out.push(parseInt(String.fromCharCode(raw[i + 1], raw[i + 2]), 16));
+        i += 2;
+      } else out.push(raw[i]);
+    }
+    return new Uint8Array(out);
+  };
+
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
       const request = input instanceof Request ? input : null;
       const url =
         typeof input === 'string' ? input : (input?.url ?? str(input));
+      const mode = str(init.mode ?? request?.mode ?? 'cors');
+      const headers = guardedHeaders(
+        init.headers ?? input?.headers ?? {},
+        mode === 'no-cors' ? 'request-no-cors' : 'request',
+      );
+      const duplex = init.duplex;
+      const signal = init.signal ?? request?.signal;
+      const aborted = () =>
+        signal?.reason ??
+        new DOMException('The operation was aborted.', 'AbortError');
+      // a data: URL is answered here, whatever its Range (Fetch 4.2)
+      if (/^data:/i.test(url)) {
+        const response = dataResponse(url);
+        if (response) resolve(response);
+        else reject(new TypeError('Failed to fetch'));
+        return;
+      }
       // a blob URL is this realm's, read here
       if (url.startsWith('blob:')) {
         const blob = blobUrls.get(url);
-        if (!blob) {
-          reject(new TypeError('Failed to fetch'));
+        const response = blob ? blobResponse(blob, url, headers) : null;
+        if (response) resolve(response);
+        else reject(new TypeError('Failed to fetch'));
+        return;
+      }
+      const method = str(init.method ?? request?.method ?? 'GET').toUpperCase();
+      let extracted: ReturnType<typeof extractBody> | null = null;
+      if (init.body !== undefined && init.body !== null) {
+        extracted = extractBody(init.body);
+        if (extracted.stream && duplex !== 'half') {
+          reject(
+            new TypeError(
+              "Failed to execute 'fetch' on 'Window': The `duplex` member must be specified for a request with a streaming body.",
+            ),
+          );
           return;
         }
-        const response = new Response(blob, {
-          status: 200,
-          headers: blob.type ? { 'content-type': blob.type } : {},
-          url,
-          type: 'basic',
-        });
-        resolve(response);
-        return;
-      }
-      const headers = new Headers(init.headers ?? input?.headers ?? {});
-      let body = init.body ?? request?._body ?? null;
-      init = {
-        ...init,
-        method: init.method ?? request?.method,
-        signal: init.signal ?? request?.signal,
-      };
-      if (body instanceof FormData) {
-        // multipart, as a browser sends one (HTML 4.10.21.8); a file's
-        // part is its bytes as UTF-8 text, the bridge carrying text
-        const boundary = `----formdata-${Math.random().toString(36).slice(2)}`;
-        let out = '';
-        for (const [name, value] of body._entries) {
-          const file = value instanceof File;
-          const quoted = (s: string) =>
-            s.replace(/"/g, '%22').replace(/\r?\n|\r/g, '%0D%0A');
-          out += `--${boundary}\r\nContent-Disposition: form-data; name="${quoted(name)}"`;
-          if (file) {
-            out += `; filename="${quoted(value.name)}"\r\nContent-Type: ${value.type || 'application/octet-stream'}`;
-          }
-          out += `\r\n\r\n${file ? new TextDecoder().decode(value._bytes) : value}\r\n`;
+      } else if (request && (request._raw || request._stream)) {
+        if (request.bodyUsed) {
+          reject(new TypeError('Body has already been consumed.'));
+          return;
         }
-        body = `${out}--${boundary}--\r\n`;
-        headers.set(
-          'content-type',
-          `multipart/form-data; boundary=${boundary}`,
+        request.bodyUsed = true;
+        extracted = {
+          bytes: request._raw,
+          stream: request._stream,
+          type: null,
+        };
+      }
+      if (extracted && (method === 'GET' || method === 'HEAD')) {
+        reject(
+          new TypeError(
+            "Failed to execute 'fetch' on 'Window': Request with GET/HEAD method cannot have body.",
+          ),
         );
-      } else if (body instanceof Blob) {
-        if (body.type && !headers.has('content-type')) {
-          headers.set('content-type', body.type);
-        }
-        body = new TextDecoder().decode(body._bytes);
-      } else if (body instanceof URLSearchParams) {
-        body = body.toString();
-        if (!headers.has('content-type')) {
-          headers.set(
-            'content-type',
-            'application/x-www-form-urlencoded;charset=UTF-8',
-          );
-        }
-      } else if (body !== null && typeof body !== 'string') {
-        body = str(body);
-      }
-      if (init.signal?.aborted) {
-        reject(new DOMException('The operation was aborted.', 'AbortError'));
         return;
       }
-      fetches.set(id, { resolve, reject });
-      init.signal?.addEventListener?.('abort', () => {
+      if (extracted?.type && !headers.has('content-type')) {
+        headers.set('content-type', extracted.type);
+      }
+      if (signal?.aborted) {
+        if (extracted?.stream) extracted.stream.cancel?.(aborted());
+        reject(aborted());
+        return;
+      }
+      // a stream body is read through a reader of fetch's own, which is
+      // what an abort cancels it through (Fetch 4.1, "abort fetch")
+      let bodyReader: Any = null;
+      // a stream's body cannot be sent again for credentials, so a 401 is
+      // a network error (Fetch 4.6)
+      fetches.set(id, { resolve, reject, streamed: !!extracted?.stream });
+      signal?.addEventListener?.('abort', () => {
         if (!fetches.delete(id)) return;
         call('abortFetch', id);
-        reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (bodyReader) bodyReader.cancel(aborted()).catch(() => {});
+        else if (extracted?.stream) extracted.stream.cancel?.(aborted());
+        reject(aborted());
       });
-      call(
-        'fetch',
-        id,
-        JSON.stringify({
-          url: str(url),
-          method: str(init.method ?? 'GET').toUpperCase(),
-          headers: Array.from(headers._map.entries()),
-          body,
-          // what the host checks another origin's answer against
-          mode: str(init.mode ?? request?.mode ?? 'cors'),
-          credentials: str(
-            init.credentials ?? request?.credentials ?? 'same-origin',
-          ),
-        }),
-      );
+      // what crosses: text where the bytes are UTF-8, which is every
+      // string's and most forms', and base64 where they are not
+      const textOf = (bytes: Uint8Array): string | null => {
+        try {
+          return new TextDecoder('utf-8', {
+            fatal: true,
+            ignoreBOM: true,
+          }).decode(bytes);
+        } catch {
+          return null;
+        }
+      };
+      const send = (bytes: Uint8Array | null): void => {
+        if (!fetches.has(id)) return;
+        call(
+          'fetch',
+          id,
+          JSON.stringify({
+            url: str(url),
+            method,
+            headers: Array.from(headers._map.entries()),
+            ...(bytes === null
+              ? { body: null }
+              : textOf(bytes) !== null
+                ? { body: textOf(bytes) }
+                : { body: '', base64: base64OfBytes(bytes) }),
+            // what the host checks another origin's answer against
+            mode,
+            credentials: str(
+              init.credentials ?? request?.credentials ?? 'same-origin',
+            ),
+          }),
+        );
+      };
+      // a stream is read to its end and sent whole: a request with a body
+      // that is still coming is no request this network makes
+      if (extracted?.stream) {
+        drainStream(extracted.stream, (reader) => {
+          bodyReader = reader;
+        }).then(send, (error: Any) => {
+          if (!fetches.delete(id)) return;
+          reject(
+            error instanceof TypeError
+              ? error
+              : new TypeError('Failed to fetch'),
+          );
+        });
+      } else send(extracted?.bytes ?? null);
     });
 
   /** `Request` (Fetch 6.3): what a page hands `fetch`, or keeps, or
@@ -9068,53 +9648,123 @@ export function installDom(
     readonly integrity = '';
     readonly keepalive: boolean;
     readonly destination = '';
-    _body: Any;
+    readonly duplex = 'half';
+    /** The body's bytes, or the stream it is, or neither for none. */
+    _raw: Uint8Array | null = null;
+    _stream: Any = null;
     bodyUsed = false;
     constructor(input: Any, init: Any = {}) {
       const from = input instanceof Request ? input : null;
+      // every member of the dictionary is read, as WebIDL converts one —
+      // `duplex` among them, whose being read a page feature-detects a
+      // stream body by
+      const duplex = init.duplex;
       this.url = new URL(from ? from.url : str(input), location.href).href;
       this.method = str(init.method ?? from?.method ?? 'GET').toUpperCase();
-      this.headers = new Headers(init.headers ?? from?.headers ?? {});
       this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
       this.mode = str(init.mode ?? from?.mode ?? 'cors');
+      if (this.mode === 'no-cors' && !/^(GET|HEAD|POST)$/.test(this.method)) {
+        throw new TypeError(
+          `Failed to construct 'Request': '${this.method}' is unsupported in no-cors mode.`,
+        );
+      }
+      this.headers = guardedHeaders(
+        init.headers ?? from?.headers ?? {},
+        this.mode === 'no-cors' ? 'request-no-cors' : 'request',
+      );
       this.credentials = str(
         init.credentials ?? from?.credentials ?? 'same-origin',
       );
       this.cache = str(init.cache ?? from?.cache ?? 'default');
       this.redirect = str(init.redirect ?? from?.redirect ?? 'follow');
       this.keepalive = !!(init.keepalive ?? from?.keepalive);
-      this._body = init.body ?? from?._body ?? null;
-      if (
-        this._body !== null &&
-        (this.method === 'GET' || this.method === 'HEAD')
-      ) {
+      const given = init.body !== undefined && init.body !== null;
+      if (!given && from && from.bodyUsed) {
+        throw new TypeError(
+          "Failed to construct 'Request': Cannot construct a Request with a Request object that has already been used.",
+        );
+      }
+      const extracted = given ? extractBody(init.body) : null;
+      const has = given || !!(from && (from._raw || from._stream));
+      if (has && (this.method === 'GET' || this.method === 'HEAD')) {
         throw new TypeError(
           "Failed to construct 'Request': Request with GET/HEAD method cannot have body.",
         );
       }
+      if (extracted) {
+        if (extracted.stream && duplex !== 'half') {
+          throw new TypeError(
+            "Failed to construct 'Request': The `duplex` member must be specified for a request with a streaming body.",
+          );
+        }
+        this._raw = extracted.bytes;
+        this._stream = extracted.stream;
+        if (extracted.type !== null && !this.headers.has('content-type')) {
+          this.headers.set('content-type', extracted.type);
+        }
+      } else if (from) {
+        this._raw = from._raw;
+        this._stream = from._stream;
+      }
     }
     get body(): Any {
-      return this._body === null ? null : new Response(this._body).body;
+      if (this._stream) return this._stream;
+      if (!this._raw) return null;
+      // made once, of the bytes, as a response's is
+      const bytes = this._raw;
+      this._stream = new ReadableStream({
+        pull(controller: Any) {
+          if (bytes.length) controller.enqueue(new Uint8Array(bytes));
+          controller.close();
+        },
+      });
+      return this._stream;
     }
     clone(): Any {
-      return new Request(this);
+      if (this.bodyUsed) {
+        throw new TypeError(
+          "Failed to execute 'clone' on 'Request': Request body is already used",
+        );
+      }
+      const copy = new Request(this);
+      if (this._stream) {
+        const [mine, theirs] = this._stream.tee();
+        this._stream = mine;
+        copy._stream = theirs;
+      }
+      return copy;
     }
-    text(): Promise<string> {
-      if (this.bodyUsed)
+    /** The body read once, as a response that holds it: what every method
+     *  reads it through. */
+    _consume(): Promise<Any> {
+      if (this.bodyUsed) {
         return Promise.reject(new TypeError('Body has already been consumed.'));
-      this.bodyUsed = true;
-      return new Response(this._body).text();
-    }
-    json(): Promise<Any> {
-      return this.text().then((t) => JSON.parse(t));
-    }
-    arrayBuffer(): Promise<ArrayBuffer> {
-      return this.text().then(
-        (t) => new TextEncoder().encode(t).buffer as ArrayBuffer,
+      }
+      if (this._stream || this._raw) this.bodyUsed = true;
+      return Promise.resolve(
+        new Response(this._stream ?? this._raw ?? null, {
+          type: 'basic',
+          headers: this.headers,
+        }),
       );
     }
+    text(): Promise<string> {
+      return this._consume().then((r) => r.text());
+    }
+    json(): Promise<Any> {
+      return this._consume().then((r) => r.json());
+    }
+    arrayBuffer(): Promise<ArrayBuffer> {
+      return this._consume().then((r) => r.arrayBuffer());
+    }
+    bytes(): Promise<Uint8Array> {
+      return this._consume().then((r) => r.bytes());
+    }
     blob(): Promise<Any> {
-      return this.text().then((t) => new Blob([t]));
+      return this._consume().then((r) => r.blob());
+    }
+    formData(): Promise<Any> {
+      return this._consume().then((r) => r.formData());
     }
   }
 
@@ -9194,6 +9844,19 @@ export function installDom(
         throw new DOMException(
           "Failed to execute 'setRequestHeader' on 'XMLHttpRequest': The object's state must be OPENED.",
           'InvalidStateError',
+        );
+      }
+      // XMLHttpRequest's own checks, which throw its own error
+      if (!HEADER_NAME.test(str(name))) {
+        throw new DOMException(
+          `Failed to execute 'setRequestHeader' on 'XMLHttpRequest': '${str(name)}' is not a valid HTTP header field name.`,
+          'SyntaxError',
+        );
+      }
+      if (/[\0\r\n]/.test(str(value).trim())) {
+        throw new DOMException(
+          `Failed to execute 'setRequestHeader' on 'XMLHttpRequest': '${str(value)}' is not a valid HTTP header field value.`,
+          'SyntaxError',
         );
       }
       this._headers.append(name, value);
@@ -15596,7 +16259,9 @@ export function installDom(
     if (!pending) return false;
     fetches.delete(id);
     if (typeof answer === 'string') pending.reject(new TypeError(answer));
-    else {
+    else if (pending.streamed && answer.status === 401) {
+      pending.reject(new TypeError('Failed to fetch'));
+    } else {
       // the network's bytes, which cross as base64: a string is all that
       // crosses, and one of raw bytes is mostly escapes once it is JSON
       const response = new Response(
