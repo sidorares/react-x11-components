@@ -3851,13 +3851,24 @@ cells it takes), `none` where it took none, and any option in a boolean
 context. That answer is layout's, so as for a size query, a layout that
 changes it restyles what it holds and lays the document out again. An
 anchor is the last box with the name that is not the positioned box or
-inside it, an inline one by the rectangle around its fragments. Not done:
-`anchor()` inside `calc()` (the declaration is dropped), `anchor-size()`
-in other properties, `position-try-order`, `position-visibility`,
-`anchor-scope`, a popover's implicit anchor, `justify-self` and
-`align-self` in a position area (including `anchor-center`), and
-following an anchor that a scroll moves. A box is placed against where its
-anchor was laid out, before relative offsets and scrolls. A script's
+inside it and is laid out before it (2.3): inside its containing block,
+and, where the anchor's chain of containing blocks reaches the box's
+through an absolutely positioned one, that one before the box in the
+tree; an inline one by the rectangle around its fragments. A scroll
+container that scrolls a box's default anchor, and not the box, moves the
+box with it (6.2), on each axis it is placed against an anchor in that
+scroll container. `position-visibility` hides such a box, with all it
+holds, where its default anchor is cut away entirely by a box that clips
+between the two (`anchors-visible`, the initial value) and where it
+overflows its containing block (`no-overflow`); a scroll that changes
+either hides or shows it in the frame it scrolls. Not done: `anchor()`
+inside `calc()` (the declaration is dropped), `anchor-size()` in other
+properties, `position-try-order`, `anchors-valid`, `anchor-scope`, a
+popover's implicit anchor,
+`justify-self` and `align-self` in a position area (including
+`anchor-center`), a fixed box following an anchor the pane scrolls, and
+trying the fallbacks again after a scroll. A box is placed against where
+its anchor was laid out, before relative offsets. A script's
 `el.style` takes each of these properties only as its grammar has it, in
 canonical form — `anchor()` and `anchor-size()` with the name first, each
 only where it may be, and a `position-area` with its horizontal or block

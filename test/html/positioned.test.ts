@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, pixelAt } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
+import { CLAMPED } from '../../src/html/layout/boxes.js';
 import {
   parsePositionArea,
   parseTryFallbacks,
@@ -16,6 +17,7 @@ import {
   boxOf,
   clipsAround,
   fillsOf,
+  findById,
   linesOf,
   metric,
   pathsOf,
@@ -1520,6 +1522,67 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('mid'), [130, 50, 20, 10]);
   assert.deepStrictEqual(at('sized'), [0, 0, 60, 30]);
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
+});
+
+test('a box anchored to something a scroller scrolls moves with it, on the axes its anchors share that scroller, and only an anchor laid out before it is one', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '#s{width:100px;height:100px;overflow:scroll;position:relative}' +
+      '#space{width:300px;height:300px}' +
+      '.a{position:absolute;width:20px;height:20px}' +
+      '#a1{anchor-name:--a1;left:10px;top:50px}' +
+      '.t{position:absolute;width:10px;height:10px}' +
+      // both axes against the default anchor
+      '#t1{position-anchor:--a1;left:anchor(right);top:anchor(top)}' +
+      // across against it, down against the scroller itself
+      '#t2{position-anchor:--a1;left:anchor(right);top:anchor(--s bottom)}' +
+      '#s{anchor-name:--s}' +
+      // a later absolute box of the same name is laid out after it
+      '#late{anchor-name:--a1;position:absolute;left:300px;top:300px;width:5px;height:5px}' +
+      '</style><div id="cb"><div id="s"><div id="space"></div>' +
+      '<div class="a" id="a1"></div></div>' +
+      '<div class="t" id="t1"></div><div class="t" id="t2"></div>' +
+      '<div id="late"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  assert.deepStrictEqual(at('t1'), [30, 50], 'against #a1, not #late');
+  assert.deepStrictEqual(at('t2'), [30, 100]);
+  el.scrollElementTo(findById(el.document, 's')!, { x: 5, y: 20 });
+  assert.deepStrictEqual(at('a1'), [5, 30]);
+  assert.deepStrictEqual(at('t1'), [25, 30], 'with its anchor');
+  assert.deepStrictEqual(at('t2'), [25, 100], 'across only');
+});
+
+test('position-visibility hides a box whose anchor a scroll cuts away, or that overflows its containing block, with what it holds', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}#s{width:300px;height:100px;overflow:hidden scroll}' +
+      '#a{anchor-name:--a;height:100px}#space{height:100px}' +
+      '.t{position:absolute;position-anchor:--a;position-area:bottom;width:50px;height:50px}' +
+      '#always{position-visibility:always}' +
+      '#cb{position:relative;width:200px;height:120px}' +
+      '#b{anchor-name:--b;width:50px;height:100px}' +
+      '#over{position:absolute;position-anchor:--b;position-area:bottom;' +
+      'width:50px;height:50px;position-visibility:no-overflow}' +
+      '</style><div id="s"><div id="a"></div><div id="space"></div>' +
+      '<div class="t" id="seen"><div id="inner" style="position:absolute;z-index:1"></div></div>' +
+      '<div class="t" id="always"></div></div>' +
+      '<div id="cb"><div id="b"></div><div id="over"></div></div>',
+  );
+  const el = view(node);
+  const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+  assert.strictEqual(hidden('seen'), false);
+  // the anchor is 100 tall, and 70 of the 100 its containing block has
+  // under it are what the box needs: it overflows
+  assert.strictEqual(hidden('over'), true, 'no-overflow');
+  el.scrollElementTo(findById(el.document, 's')!, { y: 100 });
+  assert.strictEqual(hidden('seen'), true, 'its anchor scrolled away');
+  assert.strictEqual(hidden('always'), false, 'always is always');
+  el.scrollElementTo(findById(el.document, 's')!, { y: 50 });
+  assert.strictEqual(hidden('seen'), false, 'and back');
 });
 
 test("an anchor is its element's own box, not the label inside it", async () => {

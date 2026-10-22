@@ -19,6 +19,7 @@
 import type { Element } from 'domhandler';
 
 import { scrolls } from '../css/style.js';
+import { CLAMPED } from './boxes.js';
 import type { Box, BoxTree, LineBox } from './boxes.js';
 import { clipsOverflow, containingBlockOf, hasRect, holds } from '../paint.js';
 
@@ -168,6 +169,13 @@ export function scrollContent(
     moveLines(box.lines, -dx, -dy);
     for (const child of box.children) {
       if (!stays(child)) move(child, -dx, -dy, stays);
+    }
+    // and a box anchored to something it scrolls, outside it, with its
+    // anchor (CSS Anchor Positioning 1, 6.2, the default scroll shift)
+    for (const { box: anchored, x, y } of anchoredAcross(box)) {
+      if ((x && dx) || (y && dy)) {
+        move(anchored, x ? -dx : 0, y ? -dy : 0, () => false);
+      }
     }
   }
   if (to.x || to.y) APPLIED.set(box, to);
@@ -514,4 +522,134 @@ export function scrollBarHit(
   return along >= bar.thumbStart && along <= bar.thumbStart + bar.thumbLength
     ? 'thumb'
     : 'track';
+}
+
+/** Each anchor-positioned box and the box of its default anchor, by the
+ *  root of the tree they were laid out in (`noteDefaultAnchor`). */
+const DEFAULT_ANCHORS = new WeakMap<
+  Box,
+  Map<Box, { anchor: Box; x: boolean; y: boolean }>
+>();
+
+/** A layout begins resolving anchors in the tree under `root`: what the
+ *  last one noted is of boxes it may have replaced. */
+export function clearDefaultAnchors(root: Box): void {
+  DEFAULT_ANCHORS.delete(root);
+  VISIBILITY.delete(root);
+}
+
+/** Each box `position-visibility` may hide, by the root of its tree, and
+ *  whether it overflowed its containing block where layout placed it. */
+const VISIBILITY = new WeakMap<Box, Map<Box, boolean>>();
+
+/** Layout placed a box `position-visibility` may hide. */
+export function noteVisibility(root: Box, box: Box, overflows: boolean): void {
+  let map = VISIBILITY.get(root);
+  if (!map) VISIBILITY.set(root, (map = new Map()));
+  map.set(box, overflows);
+}
+
+/**
+ * Which boxes `position-visibility` hides now (CSS Anchor Positioning 1,
+ * 5.4), strongly — passed over by paint and by the paint bounds, as a box
+ * past a clamp point is (`CLAMPED`): one with `no-overflow` that
+ * overflowed its containing block, and one with `anchors-visible` whose
+ * default anchor a box between the two clips away entirely. The boxes
+ * that were hidden or shown by it.
+ */
+export function positionVisibilityBoxes(root: Box): Box[] {
+  return [...(VISIBILITY.get(root)?.keys() ?? [])];
+}
+
+export function updatePositionVisibility(root: Box): Box[] {
+  const map = VISIBILITY.get(root);
+  if (!map?.size) return [];
+  const anchors = DEFAULT_ANCHORS.get(root);
+  const changed: Box[] = [];
+  for (const [box, overflows] of map) {
+    const bits = box.style.positionVisibility;
+    const anchor = anchors?.get(box)?.anchor;
+    const hidden =
+      (!!(bits & 2) && overflows) ||
+      (!!(bits & 1) && !!anchor && clippedAway(anchor, box));
+    if (hidden === CLAMPED.has(box)) continue;
+    if (hidden) CLAMPED.add(box);
+    else CLAMPED.delete(box);
+    changed.push(box);
+  }
+  return changed;
+}
+
+/** Whether a box that clips what overflows it, between an anchor and the
+ *  containing block of the box it anchors, leaves nothing of the anchor. */
+function clippedAway(anchor: Box, box: Box): boolean {
+  // an inline box has no rectangle of its own to cut, only its lines'
+  if (anchor.kind === 'inline') return false;
+  const cb = containingBlockOf(box);
+  // up the anchor's chain of containing blocks: a box positioned out of a
+  // clip is not cut by it
+  const up = (b: Box): Box | null =>
+    b.style.position === 'absolute' || b.style.position === 'fixed'
+      ? containingBlockOf(b)
+      : b.parent;
+  for (let at = up(anchor); at && at !== cb; at = up(at)) {
+    if (!clipsOverflow(at)) continue;
+    const x = at.x + at.borderLeft;
+    const y = at.y + at.borderTop;
+    const w = at.width - at.borderLeft - at.borderRight;
+    const h = at.height - at.borderTop - at.borderBottom;
+    if (
+      anchor.x >= x + w ||
+      anchor.x + anchor.width <= x ||
+      anchor.y >= y + h ||
+      anchor.y + anchor.height <= y
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Layout placed `box` against `anchor`, its default anchor, across
+ *  where `x` and down where `y`: the axes its scroll moves it on. */
+export function noteDefaultAnchor(
+  root: Box,
+  box: Box,
+  anchor: Box,
+  x: boolean,
+  y: boolean,
+): void {
+  let map = DEFAULT_ANCHORS.get(root);
+  if (!map) DEFAULT_ANCHORS.set(root, (map = new Map()));
+  map.set(box, { anchor, x, y });
+}
+
+/** The boxes anchored to something inside `scroller`, that are outside it
+ *  themselves: what its scroll moves with their anchors. */
+export function anchoredAcross(
+  scroller: Box,
+): { box: Box; x: boolean; y: boolean }[] {
+  let root = scroller;
+  while (root.parent) root = root.parent;
+  const map = DEFAULT_ANCHORS.get(root);
+  if (!map?.size) return [];
+  // what the scroller moves: inside it, and not positioned against
+  // something outside it on the way down
+  const movedBy = (b: Box) => {
+    for (let at: Box | null = b; at; at = at.parent) {
+      if (at === scroller) return true;
+      if (at.parent === scroller && escapes(at, scroller)) return false;
+      if (at.outOfFlow && !holds(scroller, containingBlockOf(at))) {
+        return false;
+      }
+    }
+    return false;
+  };
+  const out: { box: Box; x: boolean; y: boolean }[] = [];
+  for (const [anchored, { anchor, x, y }] of map) {
+    if (anchor !== scroller && movedBy(anchor) && !movedBy(anchored)) {
+      out.push({ box: anchored, x, y });
+    }
+  }
+  return out;
 }

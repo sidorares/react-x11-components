@@ -97,6 +97,18 @@ function timelineShorthand(
     .join(', ');
 }
 
+/** `position-visibility` as it computes: `always`, or its keywords. */
+function positionVisibilityText(bits: number): string {
+  if (!bits) return 'always';
+  return [
+    bits & 4 ? 'anchors-valid' : '',
+    bits & 1 ? 'anchors-visible' : '',
+    bits & 2 ? 'no-overflow' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 /** `position-try-fallbacks` as it computes: each option a name before
  *  its tactics, or a `position-area` in canonical form. */
 function tryFallbacksText(
@@ -453,6 +465,7 @@ function cssomAt(
       ? positionAreaComputed(style.positionArea.text)
       : 'none',
     'position-try-order': style.positionTryOrder,
+    'position-visibility': positionVisibilityText(style.positionVisibility),
     'position-try-fallbacks': tryFallbacksText(style.positionTryFallbacks),
     'position-try':
       style.positionTryOrder === 'normal'
