@@ -485,7 +485,9 @@ export class ScriptRunner {
       }
       return;
     }
-    const url = request.src ?? `${this.host.url} (inline)`;
+    // an inline script's file is its document, as a browser names it in a
+    // stack and an error event's `filename`
+    const url = request.src ?? this.host.url;
     // where what it writes goes: after it, as the parser would have read it
     // there, for a script the parser met and that is not `async` or `defer`
     const { attribs } = request.element;
