@@ -1217,6 +1217,24 @@ positive one is read as zero, as it is on a control's widget: it would put
 a page's element ahead of the application's own, and the order between a
 document and the window around it is not the document's to set.
 
+**`reading-flow`** (CSS Display 4) changes the order Tab reaches a
+container's items in, where the markup's is not the order they are seen
+in: `flex-visual`, a flex container's items as they are seen — down its
+lines and along each from the start of the line, in a `row-reverse` row
+right to left as drawn; `flex-flow`, along its flex flow, by `order`;
+`grid-rows` and `grid-columns`, a grid's by the row and then the column
+each is placed in, or the other way round; `grid-order`, a grid's by
+`order`; and `source-order`, a flex, grid or block container's in the
+markup's order — and under any of them, `reading-order` on an item puts it
+before those of a higher one, its equals keeping that order. What an item
+holds is reached in the markup's order inside where the item is reached,
+and a container inside it orders its own items again; controls' widgets
+are reached in the same order as links. A value that is not the container's
+kind's — `grid-rows` on a flex container — is `normal`. It is worked out
+from the layout, after every one, so a window that wraps a row's items
+onto another line changes where Tab goes. Shift+Tab goes back the same
+way.
+
 **The focus is the document's to draw.** The element Tab reaches is
 `:focus` and `:focus-visible`, and every element around it `:focus-within`,
 so a page's focus styles show — the Zen Garden's `a:focus`, a 5px outline

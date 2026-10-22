@@ -918,6 +918,21 @@ export interface ComputedStyle {
   /** Whether a size may run between a length and a keyword (CSS Values 5,
    *  12.1): `allow-keywords` lets `height: 0` grow to `auto`. Inherited. */
   interpolateSize: 'numeric-only' | 'allow-keywords';
+  /** The order Tab reaches what a flex, grid or block container holds in
+   *  (CSS Display 4, 4.1): `normal`, the document's, or its items as they
+   *  are seen, along its flex flow, by its grid's rows or columns, by
+   *  `order`, or in the document's order with `reading-order` read. */
+  readingFlow:
+    | 'normal'
+    | 'flex-visual'
+    | 'flex-flow'
+    | 'grid-rows'
+    | 'grid-columns'
+    | 'grid-order'
+    | 'source-order';
+  /** Where an item of a container a `reading-flow` reorders comes in it,
+   *  before its others: lower first, and in their order among equals. */
+  readingOrder: number;
 
   marginTop: Len;
   marginRight: Len;
@@ -1447,6 +1462,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     widthSize: null,
     heightSize: null,
     interpolateSize: 'numeric-only',
+    readingFlow: 'normal',
+    readingOrder: 0,
 
     marginTop: 0,
     marginRight: 0,
@@ -2553,6 +2570,18 @@ export function applyDeclaration(
         else if (name === 'min-height') style.minHeightKeyword = null;
         else style.heightKeyword = null;
       }
+      return;
+    }
+    case 'reading-flow': {
+      const v = value.trim().toLowerCase();
+      if (READING_FLOWS.has(v)) {
+        style.readingFlow = v as ComputedStyle['readingFlow'];
+      }
+      return;
+    }
+    case 'reading-order': {
+      const n = parseNumber(value);
+      if (n !== null && Number.isInteger(n)) style.readingOrder = n;
       return;
     }
     case 'interpolate-size': {
@@ -5605,6 +5634,17 @@ function whiteSpaceOf(collapse: Collapse, wrap: boolean): WhiteSpace {
  *  `fit-content()` of a length or a percentage (CSS Sizing 3, 3.1) — a
  *  width's, where a height's is its content height as the keyword is;
  *  null for anything else. */
+/** What `reading-flow` takes (CSS Display 4, 4.1). */
+const READING_FLOWS = new Set([
+  'normal',
+  'flex-visual',
+  'flex-flow',
+  'grid-rows',
+  'grid-columns',
+  'grid-order',
+  'source-order',
+]);
+
 const CALC_SIZE = /^\s*calc-size\(/i;
 
 /** `size` in a `calc-size()`'s calculation, standing for its basis. */
@@ -7289,6 +7329,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   width: ['width', 'widthKeyword', 'widthSize'],
   height: ['height', 'heightKeyword', 'heightSize'],
   'interpolate-size': ['interpolateSize'],
+  'reading-flow': ['readingFlow'],
+  'reading-order': ['readingOrder'],
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight', 'minHeightKeyword'],

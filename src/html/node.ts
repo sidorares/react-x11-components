@@ -275,6 +275,7 @@ import {
 } from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
+import { inReadingOrder } from './reading.js';
 import type { BareField, ControlRect, CoverAnswer } from './controls.js';
 import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
@@ -3500,7 +3501,10 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const report = this._props().onFocusStops;
     if (!tree || !report) return;
-    const { stops: all, boxes } = focusCandidates(tree);
+    let { stops: all, boxes } = focusCandidates(tree);
+    // in the order a container's `reading-flow` reads its items in, where
+    // one does, which is layout's to say
+    if (tree.readingFlow) ({ stops: all, boxes } = inReadingOrder(all, boxes));
     const widgets = this._widgetElements();
     // Asked after every restyle in place, a pointer's included, and the
     // answer is nearly always the last: compared as it is found, and a new

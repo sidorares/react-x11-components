@@ -354,6 +354,7 @@ export function layoutGrid(
       cols: widths.map((w, i) => [lefts[i], lefts[i] + w]),
       rows: heights.map((h, i) => [tops[i], tops[i] + h]),
       areas: items.map((item) => [item.col, item.cols, item.row, item.rows]),
+      items: items.map((item) => item.box),
     },
   });
 
