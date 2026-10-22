@@ -937,7 +937,10 @@ whichever dialog or popover opened last.
 **A media element is `:muted`** (Selectors 4, 12.3) where its `muted`
 attribute says or a script set `muted`, which holds whatever the attribute
 comes to after; `:volume-locked` matches nothing, since a page cannot lock
-a volume. A text field's `select()`, `setSelectionRange()` and its
+a volume. It is `:playing` or `:paused` (12.2) as its `paused` is: paused
+from the first, but for one with `autoplay`, played by `play()` and paused
+by `pause()` and `load()`. `:seeking`, `:buffering` and `:stalled` match
+nothing, since nothing comes back from the player yet. A text field's `select()`, `setSelectionRange()` and its
 `selectionStart`, `selectionEnd` and `selectionDirection` are what a script
 set, kept to its value, which a value set moves to its end, and a change
 is told as `select`; an input type with no selection answers null and

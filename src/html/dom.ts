@@ -647,6 +647,27 @@ export function isMuted(el: Element): boolean {
   return MUTED.get(el) ?? el.attribs.muted !== undefined;
 }
 
+/** What a page's scripts made a media element's `paused`: `play()`,
+ *  `pause()` and `load()` (HTML 4.8.11.8). */
+const PAUSED = new WeakMap<Element, boolean>();
+
+/** A media element's `paused`, as a page's script set it: whether it
+ *  changed. */
+export function setPaused(el: Element, paused: boolean): boolean {
+  const was = isPaused(el);
+  PAUSED.set(el, paused);
+  return was !== paused;
+}
+
+/** Whether an `<audio>` or a `<video>` is paused (`:paused`, Selectors 4,
+ *  12.2): what a script made it, or paused but for one with `autoplay`,
+ *  which the player plays from the start. Not a media element: neither
+ *  `:paused` nor `:playing`. */
+export function isPaused(el: Element): boolean | null {
+  if (el.name !== 'video' && el.name !== 'audio') return null;
+  return PAUSED.get(el) ?? el.attribs.autoplay === undefined;
+}
+
 /** Whether an element is in its document's top layer, as either. */
 export function inTopLayer(el: Element): boolean {
   return IN_TOP_LAYER.has(el);

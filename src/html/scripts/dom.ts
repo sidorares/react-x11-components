@@ -6599,7 +6599,14 @@ export function installDom(
         }
       });
     }
-    load(): void {}
+    /** HTML 4.8.11.5, the media element load algorithm: whatever it was
+     *  doing ends, and it is paused. */
+    load(): void {
+      if (this.paused) return;
+      askOf(this).paused = true;
+      call('mediaState', this._id, 'paused', true);
+      mediaTask(() => fireMedia(this, 'pause'));
+    }
     canPlayType(): string {
       return '';
     }

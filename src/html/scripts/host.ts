@@ -42,7 +42,9 @@ import {
   isModal,
   isPopoverOpen,
   isMuted,
+  isPaused,
   setMuted,
+  setPaused,
   markCustomized,
   setModal,
   setPopoverOpen,
@@ -2802,6 +2804,14 @@ export class DomHost {
               attributeName: '-rx-muted',
             });
           }
+          // and `:playing` and `:paused` read the other
+          if (name === 'paused' && setPaused(el, c === true)) {
+            this._tell(el, {
+              type: 'attributes',
+              target: el,
+              attributeName: '-rx-paused',
+            });
+          }
         } else if (
           (name === 'volume' ||
             name === 'playbackRate' ||
@@ -3470,6 +3480,11 @@ export class DomHost {
       modal: (el) => isModal(el),
       'popover-open': (el) => isPopoverOpen(el),
       muted: (el) => isMuted(el),
+      playing: (el) => isPaused(el) === false,
+      paused: (el) => isPaused(el) === true,
+      seeking: nothing,
+      buffering: nothing,
+      stalled: nothing,
       // a page cannot lock a volume, and nothing here does
       'volume-locked': nothing,
       fullscreen: nothing,
@@ -3478,8 +3493,6 @@ export class DomHost {
       'user-valid': nothing,
       'user-invalid': nothing,
       indeterminate: nothing,
-      playing: nothing,
-      paused: nothing,
       host: nothing,
     };
     return (this._pseudos = { pseudos });
