@@ -773,8 +773,16 @@ or `navigateerror`. A link followed and an address assigned to `location`
 fire it first too, so the host's `navigate` and `onLink` hear only of a
 navigation to another document that nothing kept. An address assigned while
 the document still loads replaces its entry, as HTML's Location-object
-navigate has it with no user activation. A frame keeps a history of its own
-over the frame's URL. Not yet: a form's submission fires no `navigate`, and
+navigate has it with no user activation. `navigation.transition` is the
+intercepted navigation's until `navigatesuccess` or `navigateerror` has been
+told, and its `finished` settles after it, as the method's result does.
+Each entry keeps where the document was scrolled to as it left it, which a
+traversal back restores where `history.scrollRestoration` is `auto`; an
+intercepted navigation scrolls once its handlers are done — a traversal to
+where its entry was, anything else to its fragment or the top — unless the
+page asked for `scroll: 'manual'` and calls the event's `scroll()` itself.
+A frame keeps a history of its own over the frame's URL. Not yet: a form's
+submission fires no `navigate`, and
 the host's own entries before and after the page's are not in
 `navigation.entries()`.
 

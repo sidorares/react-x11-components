@@ -4938,6 +4938,9 @@ export function installDom(
         tellsFragments: false,
         reload: () => void call('frameNavigate', frame._id, at()),
         go: () => {},
+        // a frame's scroll is its own document's, which no entry keeps
+        scroll: () => [0, 0],
+        scrollTo: () => {},
       });
       frameSessions.set(doc, made);
     }
@@ -14224,6 +14227,9 @@ export function installDom(
     api: Any;
     /** `history.state` read back, once. */
     read?: { value: Any };
+    /** Where the document was scrolled to as it left the entry (HTML
+     *  7.4.1, "scroll position data"), which going back to it restores. */
+    scroll?: [number, number];
   }
   /** What a window's session history stands on. */
   interface SessionContext {
@@ -14245,6 +14251,9 @@ export function installDom(
     tellsFragments: boolean;
     reload(): void;
     go(delta: number): void;
+    /** Where the document is scrolled to, and a scroll of it. */
+    scroll(): [number, number];
+    scrollTo(x: number, y: number): void;
   }
   /** A navigation an API method started, and the two promises it hands
    *  back (HTML 7.2.6.10, "navigation API method tracker"). */
@@ -14262,10 +14271,20 @@ export function installDom(
     index: number;
     /** The navigation whose `navigate` event is running now, which the
      *  next one aborts (HTML 7.2.6.10, "ongoing navigation"). */
-    ongoing: { controller: Any; tracker: Tracker | null; event: Any } | null;
+    ongoing: {
+      controller: Any;
+      tracker: Tracker | null;
+      event: Any;
+      /** What settles `navigation.transition`'s promises, where the
+       *  navigation made one: the method's tracker, or one of its own. */
+      transition: Tracker | null;
+    } | null;
     transition: Any;
     activation: Any;
     navigation: Any;
+    /** `history.scrollRestoration`: whether a traversal restores where the
+     *  entry it goes to was scrolled to. */
+    restoration: 'auto' | 'manual';
   }
   const sessionEntry = (url: string, key?: string): SessionEntry => ({
     url,
@@ -14434,6 +14453,13 @@ export function installDom(
     _precommits: Any[] = [];
     _intercepted = false;
     _dispatching = false;
+    /** `intercept()`'s `scroll`: after the handlers, or the page's. */
+    _scrollBehavior: 'after-transition' | 'manual' = 'after-transition';
+    /** Where the navigation is (HTML 7.2.6.9, "interception state"): what
+     *  `scroll()` may do, and whether the end scrolls. */
+    _state: 'none' | 'committed' | 'scrolled' | 'finished' = 'none';
+    /** What a scroll restores or scrolls to, once committed. */
+    _scroller: (() => void) | null = null;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       if (
@@ -14496,16 +14522,26 @@ export function installDom(
         }
         this._precommits.push(options.precommitHandler);
       }
+      if (
+        options?.scroll === 'manual' ||
+        options?.scroll === 'after-transition'
+      ) {
+        this._scrollBehavior = options.scroll;
+      }
       this._intercepted = true;
     }
-    /** Scrolling is the page's to ask for; nothing here restores one. */
+    /** HTML 7.2.6.9, `scroll()`: what the end of an intercepted navigation
+     *  would have scrolled, now, once it has committed and before it has
+     *  scrolled. */
     scroll(): void {
-      if (!this._intercepted) {
+      if (this._state !== 'committed' || !this._scroller) {
         throw new DOMException(
-          "Failed to execute 'scroll' on 'NavigateEvent': The navigation was not intercepted.",
+          "Failed to execute 'scroll' on 'NavigateEvent': The navigation has not committed, or was scrolled already.",
           'InvalidStateError',
         );
       }
+      this._state = 'scrolled';
+      this._scroller();
     }
   }
 
@@ -14525,16 +14561,26 @@ export function installDom(
   }
 
   class NavigationTransition {
-    readonly navigationType: string;
-    readonly from: Any;
-    readonly committed: Any;
-    readonly finished: Any;
+    _type: string;
+    _from: Any;
+    _tracker: Tracker;
     constructor(token: Any, type: string, from: Any, tracker: Tracker) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
-      this.navigationType = type;
-      this.from = from;
-      this.committed = tracker.committed;
-      this.finished = tracker.finished;
+      this._type = type;
+      this._from = from;
+      this._tracker = tracker;
+    }
+    get navigationType(): string {
+      return this._type;
+    }
+    get from(): Any {
+      return this._from;
+    }
+    get committed(): Any {
+      return this._tracker.committed;
+    }
+    get finished(): Any {
+      return this._tracker.finished;
     }
   }
 
@@ -14559,7 +14605,8 @@ export function installDom(
     const reason =
       error ?? new DOMException('The navigation was aborted.', 'AbortError');
     running.controller.abort(reason);
-    s.transition = null;
+    // `navigateerror` while the transition is still the navigation's, then
+    // its promises, then the method's (HTML 7.2.6.10)
     dispatch(
       s.navigation,
       asTrusted(
@@ -14569,6 +14616,10 @@ export function installDom(
         }),
       ),
     );
+    if (running.transition && running.transition !== running.tracker) {
+      running.transition.fail(reason);
+    }
+    if (running.transition) s.transition = null;
     running.tracker?.fail(reason);
   };
 
@@ -14597,7 +14648,9 @@ export function installDom(
   const navigateWith = (
     s: Session,
     params: NavigateParams,
-    apply: () => void,
+    /** Told whether a handler of the page's has it, which then scrolls
+     *  where it ends, not where it commits. */
+    apply: (intercepted: boolean) => void,
   ): 'same' | 'canceled' | 'other' => {
     abortOngoing(s);
     const from = currentOf(s);
@@ -14632,7 +14685,7 @@ export function installDom(
       }),
     );
     const tracker = params.tracker ?? null;
-    s.ongoing = { controller, tracker, event };
+    s.ongoing = { controller, tracker, event, transition: null };
     event._dispatching = true;
     const go = dispatch(s.navigation, event);
     event._dispatching = false;
@@ -14646,17 +14699,24 @@ export function installDom(
       s.ongoing = null;
       return 'other';
     }
+    const ongoing = s.ongoing!;
     if (event._intercepted) {
+      ongoing.transition = tracker ?? makeTracker();
       s.transition = new NavigationTransition(
         TOKEN,
         params.type,
         fromApi,
-        tracker ?? makeTracker(),
+        ongoing.transition,
       );
     }
-    apply();
+    apply(event._intercepted);
     const entryNow = apiEntryOf(s, currentOf(s));
-    tracker?.commit(entryNow);
+    if (event._intercepted) {
+      event._state = 'committed';
+      event._scroller = () => processScroll(s, params.type, params.url);
+    }
+    ongoing.transition?.commit(entryNow);
+    if (tracker !== ongoing.transition) tracker?.commit(entryNow);
     // each handler, then the end of all of them (`navigatesuccess`)
     const results: Any[] = [];
     for (const handler of event._intercepts) {
@@ -14666,20 +14726,79 @@ export function installDom(
         results.push(Promise.reject(error));
       }
     }
-    Promise.all(results).then(
+    waitForAll(
+      results,
       () => {
         if (s.ongoing?.event !== event) return;
         s.ongoing = null;
-        s.transition = null;
+        // what it scrolls to, unless the page scrolled it or said it would
+        // (HTML 7.2.6.9, "potentially process scroll behavior")
+        if (
+          event._state === 'committed' &&
+          event._scrollBehavior === 'after-transition'
+        ) {
+          event._state = 'scrolled';
+          event._scroller?.();
+        }
+        event._state = 'finished';
+        // `navigatesuccess` while the transition is still the
+        // navigation's, then its promises, then the method's
         dispatch(s.navigation, asTrusted(new Event('navigatesuccess')));
+        if (ongoing.transition && ongoing.transition !== tracker) {
+          ongoing.transition.finish(entryNow);
+        }
+        if (ongoing.transition) s.transition = null;
         tracker?.finish(entryNow);
       },
       (error: Any) => {
         if (s.ongoing?.event !== event) return;
+        event._state = 'finished';
         abortOngoing(s, error);
       },
     );
     return 'same';
+  };
+
+  /** HTML 7.2.6.9, "process scroll behavior": a traversal restores where
+   *  the entry it went to was scrolled to, and anything else scrolls to the
+   *  fragment, or to the top where it names none the document has. */
+  const processScroll = (s: Session, type: string, url: string): void => {
+    if (type === 'traverse') {
+      const at = currentOf(s).scroll;
+      if (at) s.ctx.scrollTo(at[0], at[1]);
+      return;
+    }
+    if (!scrollToFragment(s.ctx.doc(), url)) s.ctx.scrollTo(0, 0);
+  };
+
+  /** WebIDL's "wait for all": `success` once every one of `values` has
+   *  fulfilled, or `failure` with the first rejection, each reacted to
+   *  directly — a microtask after the last settles, where `Promise.all`
+   *  takes several, and a page's own reactions to what the navigation
+   *  settles came before its `navigatesuccess`. None is a microtask. */
+  const waitForAll = (
+    values: Any[],
+    success: () => void,
+    failure: (error: Any) => void,
+  ): void => {
+    if (!values.length) {
+      queueMicrotask(success);
+      return;
+    }
+    let left = values.length;
+    let failed = false;
+    for (const value of values) {
+      Promise.resolve(value).then(
+        () => {
+          if (--left === 0 && !failed) success();
+        },
+        (error: Any) => {
+          if (failed) return;
+          failed = true;
+          failure(error);
+        },
+      );
+    }
   };
 
   const entryChanged = (s: Session, type: string | null, from: Any): void => {
@@ -14707,6 +14826,8 @@ export function installDom(
   ): void => {
     const old = currentOf(s);
     const from = apiEntryOf(s, old);
+    // where the document is scrolled to is the entry's it leaves
+    old.scroll = s.ctx.scroll();
     const entry = sessionEntry(url, mode === 'replace' ? old.key : undefined);
     entry.state = state;
     entry.navState = navState;
@@ -14728,7 +14849,7 @@ export function installDom(
 
   /** Scroll to a fragment's element, or to the top for none (HTML
    *  7.4.6.4, "scroll to the fragment"). */
-  const scrollToFragment = (doc: Any, url: string): void => {
+  const scrollToFragment = (doc: Any, url: string): boolean => {
     let name = hashOf(url).slice(1);
     try {
       name = decodeURIComponent(name);
@@ -14740,6 +14861,7 @@ export function installDom(
     else if ((!name || name.toLowerCase() === 'top') && doc === document) {
       G.scrollTo?.(0, 0);
     }
+    return !!el;
   };
   /** `hashchange`, queued, where the fragment changed. */
   const queueHashChange = (
@@ -14809,9 +14931,11 @@ export function installDom(
         sourceElement: options.sourceElement,
         sameDocument: fragment,
       },
-      () => {
+      (intercepted) => {
         commitEntry(s, url, type, null, options.navState, type);
-        if (fragment) {
+        // a page's handler has it, which scrolls where it ends, and an
+        // intercepted navigation is no fragment's to tell `hashchange` of
+        if (fragment && !intercepted) {
           scrollToFragment(s.ctx.doc(), url);
           queueHashChange(s, from, url);
         }
@@ -14878,8 +15002,10 @@ export function installDom(
             tracker,
             sameDocument: true,
           },
-          () => {
-            const from = apiEntryOf(s, currentOf(s));
+          (intercepted) => {
+            const leaving = currentOf(s);
+            const from = apiEntryOf(s, leaving);
+            leaving.scroll = s.ctx.scroll();
             s.index = s.entries.indexOf(target);
             s.ctx.setUrl(target.url);
             entryChanged(s, 'traverse', from);
@@ -14891,6 +15017,11 @@ export function installDom(
                 }),
               ),
             );
+            // where it was scrolled to, as it is restored (HTML 7.4.6.3,
+            // "restore persisted state"), unless a handler has it
+            if (!intercepted && s.restoration === 'auto' && target.scroll) {
+              s.ctx.scrollTo(target.scroll[0], target.scroll[1]);
+            }
             queueHashChange(s, fromUrl, target.url);
           },
         );
@@ -15142,6 +15273,7 @@ export function installDom(
       entries: [sessionEntry(ctx.url())],
       index: 0,
       ongoing: null,
+      restoration: 'auto',
       transition: null,
       activation: null,
       navigation: null,
@@ -15154,7 +15286,13 @@ export function installDom(
       get state(): Any {
         return historyStateOf(currentOf(s));
       },
-      scrollRestoration: 'auto',
+      get scrollRestoration(): string {
+        return s.restoration;
+      },
+      set scrollRestoration(value: Any) {
+        const v = str(value);
+        if (v === 'auto' || v === 'manual') s.restoration = v;
+      },
       back: () => traverseBy(s, -1),
       forward: () => traverseBy(s, 1),
       go: (n: Any = 0) => {
@@ -15185,6 +15323,8 @@ export function installDom(
     tellsFragments: true,
     reload: () => void call('reload'),
     go: (delta) => void call('go', delta),
+    scroll: () => [Number(G.scrollX) || 0, Number(G.scrollY) || 0],
+    scrollTo: (x, y) => G.scrollTo?.(x, y),
   });
   const history = pageSession.history;
   const navigation = pageSession.navigation;

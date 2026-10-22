@@ -2740,6 +2740,36 @@ test('navigation is the page’s entries, and navigate() fires navigate, which a
   );
 });
 
+test('an intercepted navigation scrolls where it ends, a traversal restores where its entry was scrolled to, and the transition lasts through navigatesuccess', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div style="height:3000px"></div><div id="frag">f</div><div style="height:3000px"></div><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  r.push(scrollY);' +
+      '  await navigation.navigate("#frag").finished; var at = scrollY; r.push(at > 0);' +
+      // back, kept in the page: the handler runs before the scroll is
+      // restored, and the transition is there while navigatesuccess is told
+      '  navigation.onnavigate = function (e) { e.intercept({ handler: function () { r.push("handler " + (scrollY === at)); } }); };' +
+      '  navigation.onnavigatesuccess = function () { r.push("success " + !!navigation.transition); };' +
+      '  await navigation.back().finished; r.push(scrollY, navigation.transition);' +
+      '  navigation.onnavigatesuccess = null;' +
+      // a push the page scrolls itself, once and no more
+      '  var ev; navigation.onnavigate = function (e) { ev = e; e.intercept({ scroll: "manual", handler: function () { return new Promise(function (ok) { setTimeout(ok, 10); }); } }); };' +
+      '  var res = navigation.navigate("#frag"); await res.committed; r.push(scrollY);' +
+      '  ev.scroll(); r.push(scrollY === at); await res.finished;' +
+      '  try { ev.scroll(); } catch (e) { r.push(e.name); }' +
+      '  history.scrollRestoration = "manual"; history.scrollRestoration = "x"; r.push(history.scrollRestoration);' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '}, 0); };' +
+      '</script>',
+    { pane: 300 },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0|true|handler true|success true|0||0|true|InvalidStateError|manual',
+  );
+});
+
 test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
