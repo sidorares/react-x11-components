@@ -62,32 +62,33 @@ jobs.
 | 2     | a classic script is a script of its own (#850), `contrast-color()`                                                      | 13.4%     |
 | 3     | `@container` in the CSSOM, IndexedDB's `getAll` options                                                                 | 19.6%     |
 | 4     | popovers, JSPI, custom highlights, fetch bodies                                                                         | 29.9%     |
-| 5     | streams, `clip-path` shapes, `:muted`, implied documents, scoped registries, the Navigation API, `zoom`, typed `attr()` | **47.9%** |
+| 5     | streams, `clip-path` shapes, `:muted`, implied documents, scoped registries, the Navigation API, `zoom`, typed `attr()` | 47.9%     |
+| 6     | `SharedWorker`, the page's selection, scroll snapping, highlight painting, navigation fixes                             | **56.3%** |
 
-By focus area, from the first run to the fifth:
+By focus area, from the first run to the sixth:
 
-| focus area                       | tests | first | now   | what moved it                                                                  |
-| -------------------------------- | ----- | ----- | ----- | ------------------------------------------------------------------------------ |
-| anchor-positioning               | 234   | 16.7% | 36.5% | WPT's helper scripts running at all (#850)                                     |
-| attr                             | 19    | 8.8%  | 81.1% | `attr()` in any property, typed or not, and `CSS.registerProperty` (#866)      |
-| contrast-color                   | 5     | 0.0%  | 76.4% | `contrast-color()` (#851)                                                      |
-| container-style-queries          | 19    | 0.0%  | 58.2% | `CSSContainerRule` (#852), and the helpers running (#850)                      |
-| custom-highlights                | 104   | 8.9%  | 45.7% | `CSS.highlights` and `::highlight()` (#856)                                    |
-| dialogs-and-popovers             | 18    | 27.7% | 67.1% | the Popover API, light dismiss, `closedby` (#854)                              |
-| fetch                            | 23    | 16.9% | 66.6% | bodies as Fetch extracts them (#857), responses that stream (#859)             |
-| indexeddb                        | 24    | 0.0%  | 48.0% | `getAllRecords` and `getAll` options (#853), a worker's `importScripts` (#858) |
-| jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                    |
-| media-pseudo-classes             | 5     | 0.0%  | 16.0% | `:muted` and `:volume-locked` (#861)                                           |
-| navigation                       | 439   | 0.0%  | 35.3% | session history and the Navigation API (#864)                                  |
-| scoped-custom-element-registries | 29    | 0.2%  | 65.2% | scoped registries, `setHTMLUnsafe` (#863)                                      |
-| scroll-driven-animations         | 146   | 4.9%  | 11.4% | the helpers running (#850)                                                     |
-| scroll-snap                      | 39    | 7.6%  | 11.1% | the helpers running (#850)                                                     |
-| shape                            | 24    | 41.6% | 87.5% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860)     |
-| view-transitions                 | 389   | 3.4%  | 5.6%  | the helpers running (#850)                                                     |
-| webcompat                        | 9     | 22.2% | 55.5% | the helpers running (#850), `user-select` (#861)                               |
-| webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                              |
-| webtransport                     | 58    | 0.0%  | 0.0%  | —                                                                              |
-| zoom                             | 33    | 21.2% | 90.9% | CSS `zoom` (#865)                                                              |
+| focus area                       | tests | first | now   | what moved it                                                                              |
+| -------------------------------- | ----- | ----- | ----- | ------------------------------------------------------------------------------------------ |
+| anchor-positioning               | 234   | 16.7% | 36.6% | WPT's helper scripts running at all (#850)                                                 |
+| attr                             | 19    | 8.8%  | 81.1% | `attr()` in any property, typed or not, and `CSS.registerProperty` (#866)                  |
+| contrast-color                   | 5     | 0.0%  | 96.4% | `contrast-color()` (#851, #871)                                                            |
+| container-style-queries          | 19    | 0.0%  | 64.2% | `CSSContainerRule` (#852), the helpers running (#850), `var()` in `style()` (#872)         |
+| custom-highlights                | 104   | 8.9%  | 86.1% | `CSS.highlights` and `::highlight()` (#856), their painting (#877, #878)                   |
+| dialogs-and-popovers             | 18    | 27.7% | 80.7% | the Popover API, light dismiss, `closedby` (#854), the open dialogs (#873)                 |
+| fetch                            | 23    | 16.9% | 79.3% | bodies as Fetch extracts them (#857), responses that stream (#859), `SharedWorker` (#869)  |
+| indexeddb                        | 24    | 0.0%  | 72.1% | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869) |
+| jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                |
+| media-pseudo-classes             | 5     | 0.0%  | 16.0% | `:muted` and `:volume-locked` (#861)                                                       |
+| navigation                       | 439   | 0.0%  | 47.0% | session history and the Navigation API (#864, #867, #874, #875)                            |
+| scoped-custom-element-registries | 29    | 0.2%  | 65.2% | scoped registries, `setHTMLUnsafe` (#863)                                                  |
+| scroll-driven-animations         | 146   | 4.9%  | 11.4% | the helpers running (#850)                                                                 |
+| scroll-snap                      | 39    | 7.6%  | 39.7% | scroll snapping (#876)                                                                     |
+| shape                            | 24    | 41.6% | 87.5% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860)                 |
+| view-transitions                 | 389   | 3.4%  | 5.6%  | the helpers running (#850)                                                                 |
+| webcompat                        | 9     | 22.2% | 66.6% | the helpers running (#850), `user-select` (#861), the page's selection (#870)              |
+| webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                          |
+| webtransport                     | 58    | 0.0%  | 0.0%  | —                                                                                          |
+| zoom                             | 33    | 21.2% | 90.9% | CSS `zoom` (#865)                                                                          |
 
 The second run's jump is the runner's as much as the engine's: WPT's
 helpers — `computed-testcommon.js`, `parsing-testcommon.js` and their kin —
@@ -97,7 +98,7 @@ areas went from a handful of subtests to thousands with that one change.
 
 ## What is not implemented, by area
 
-What each area's remaining failures come down to, from the fifth run's
+What each area's remaining failures come down to, from the sixth run's
 messages, the heaviest first. "Out of reach" means it needs something this
 architecture does not have, rather than more of what it has.
 
@@ -114,30 +115,30 @@ URL, and `background-image` serialized in full, which
 `attr-security.html` needs; `attr()` in an XML namespace; an `attr()` whose
 own name is a `var()`.
 
-**contrast-color (76.4%).** Two parsing tests: arguments beyond the one
-colour (`contrast-color(white max)` and its kin) are kept where they should
-be refused, and a computed value in `color(srgb …)` form.
+**contrast-color (96.4%).** A computed value in `color(srgb …)` form,
+where it is serialized as `rgb()`.
 
-**container-style-queries (58.2%).** Style queries of registered properties
-compared as their type (`style(--x: 10px)` against `calc(5px + 5px)`), range
-syntax in `style()`, and a few serializations.
+**container-style-queries (64.2%).** Range syntax in `style()`
+(`style(5 >= calc(3 + 1))`, `style(1px <= 1em)`), registered properties
+compared as their type, a style query's answer moving when the container's
+custom property changes, conditions that are valid but unknown, and an
+escaped property name serialized.
 
-**custom-highlights (45.7%).** Most of the loss is reftests in
-`painting/`: a highlight's `text-decoration` and its offsets, `text-shadow`,
-highlights across shadow trees and in `::first-line`, and painting order
-between overlapping highlights. Beside them, `highlightsFromPoint()` and a
-few IDL details.
+**custom-highlights (86.1%).** `::target-text`, a highlight a page
+registers in a frame's `CSS.highlights`, a highlight over a replaced
+element, `highlightsFromPoint()`'s details, `getComputedStyle()` for a
+highlight pseudo-element, and a few IDL details.
 
-**dialogs-and-popovers (67.1%).** `requestFullscreen()` on a top-layer
-element, `select.showPicker()`, `:open` on a closed `<details>`, and the
-ordering of nested popovers' light dismiss.
+**dialogs-and-popovers (80.7%).** Light dismiss of popovers inside
+modeless dialogs, `requestFullscreen()` on a top-layer element,
+`select.showPicker()`, and `:open` matching a closed `<dialog>`,
+`<details>` or `<select>`.
 
-**fetch (66.6%).** The service-worker and shared-worker variants of the
-tests (six), and range requests that time out on WPT's slow server
-scripts.
+**fetch (79.3%).** The service-worker variants of the tests, and range
+requests that time out on WPT's slow server scripts.
 
-**indexeddb (48.0%).** The same twelve tests in a `SharedWorker` and a
-service worker, which do not exist here; the other twelve pass.
+**indexeddb (72.1%).** The same tests in a service worker, which does not
+exist here; the rest pass.
 
 **jspi-for-wasm (100%).**
 
@@ -146,12 +147,11 @@ service worker, which do not exist here; the other twelve pass.
 its player has it. A page's `play()` and `pause()` reach core's `<video>`,
 but nothing comes back from the player to the page yet.
 
-**navigation (35.3%).** The `navigate` event for a form's submission, a
+**navigation (47.0%).** The `navigate` event for a form's submission, a
 cross-window navigation and a `window.open`; `navigation.entries()` across
 documents (the host's history is not the page's); `beforeunload`,
-`pagehide` and detached documents in the methods' return values. The
-transition's lifetime and scroll restoration, which this run still failed
-on, are fixed in #867, which takes the area to 44.4% on its own.
+`pagehide` and detached documents in the methods' return values. Most of
+what is left times out waiting for a cross-document navigation.
 
 **scoped-custom-element-registries (65.2%).** `initialize()` on a
 document that is not the window's, `getHTML()`, and registries inherited
@@ -165,9 +165,10 @@ in the area, and out of reach: 59 `html/dom/render-blocking/` tests that
 need rendering held while the parser is still in the document, where
 `<Html>` parses a document whole before its scripts run.
 
-**scroll-snap (11.1%).** Scroll snapping itself: snap points, snapping
-after a scroll ends and after a layout moves its target, and
-`scroll-snap-stop`.
+**scroll-snap (39.7%).** Snapping after a user's scroll — the wheel, a
+key, a drag — where a script's scroll snaps; `scroll-snap-stop`; and the
+choice between several targets that line up, by focus and by the URL's
+fragment, after a layout.
 
 **shape (87.5%).** Two animation reftests that time out and one
 `clip-path` reftest.
@@ -178,8 +179,8 @@ reftests of a transition's frames — and cross-document transitions,
 `pagereveal` and `pageswap`, which need a navigation between documents in
 one renderer.
 
-**webcompat (55.5%).** Text entered by `test_driver` into an element with
-`user-select: none` inside an editable one, and the timing of a `scroll`
+**webcompat (66.6%).** Text entered by `test_driver` into a field or an
+editable element with `user-select: none`, and the timing of a `scroll`
 event against rendering.
 
 **webrtc (0.2%) and webtransport (0.0%).** Out of scope:
@@ -191,8 +192,9 @@ does, and there is none yet.
 
 Across areas, three things recur:
 
-1. **`SharedWorker` and service workers.** IndexedDB and fetch lose a
-   quarter of their tests to the variants that run in them.
+1. **Service workers.** IndexedDB and fetch lose what is left of their
+   tests to the variants that run in one; `SharedWorker` is there since
+   #869.
 2. **A parser that yields.** `<Html>` parses a document whole before its
    first script runs; anything that observes the parser mid-document —
    render blocking, `document.write` timing — fails.
