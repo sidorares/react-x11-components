@@ -91,6 +91,10 @@ parts.
   web-platform-tests reftests run through `<Html>` on X11 and Cocoa: what it
   supports, the hangs and crashes the suite found, what was fixed, and what
   a toolkit's static HTML widget should support next.
+- [`<Html scripts>` against Interop 2026](interop-2026.md) — the twenty
+  focus areas run through `<Html>` with its scripts on, against WPT's own
+  server: the score as wpt.fyi works it out, what moved it, and what each
+  area still needs.
 - [MDX in `<Markdown>`](prd-mdx.md) — block position and expressions
   shipped: the two gates (`components` decides what a document may _reach_,
   `scope` whether it may _compute_), why neither evaluates anything a
