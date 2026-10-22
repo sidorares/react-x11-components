@@ -10,6 +10,7 @@
 // renderer's (`HtmlViewNode._containersMoved`).
 
 import { compare, evaluateCondition, styleQuery } from './conditions.js';
+import { fallbackMatches } from './anchor.js';
 import type { Kleene } from './conditions.js';
 
 /** One query of an `@container` rule's list: the container's name, if it
@@ -25,6 +26,9 @@ export interface ContainerQuery {
   /** Whether it asks `scroll-state()` (CSS Conditional 5, 3.2.6), which
    *  only a scroll-state container answers. */
   scroll?: true;
+  /** Whether it asks `anchored()` (CSS Anchor Positioning 2), which only
+   *  an anchored container answers. */
+  anchored?: true;
 }
 
 /** Edges of a box, as the bits a scroll state is made of. */
@@ -45,6 +49,10 @@ export interface ScrollStates {
   scrollable: number;
   scrolled: number;
   rtl: boolean;
+  /** For an anchored container, the position option it was placed by
+   *  (`ANCHOR_FALLBACK`), null for its own: what `anchored(fallback)`
+   *  asks, which layout answers as it answers the rest. */
+  fallback: string | null;
 }
 
 /** A container no layout has placed, or that is nothing of the three. */
@@ -53,6 +61,7 @@ export const NO_SCROLL_STATES: ScrollStates = Object.freeze({
   scrollable: 0,
   scrolled: 0,
   rtl: false,
+  fallback: null,
 });
 
 /** A size feature of the inline axis: `width`, `inline-size`. */
@@ -96,6 +105,7 @@ export function parseContainerPrelude(
     }
     let axes = 0;
     let scroll = false;
+    let anchored = false;
     let valid = true;
     const read = evaluateCondition(condition, (fn, inner) => {
       if (fn === '') {
@@ -105,13 +115,20 @@ export function parseContainerPrelude(
       } else if (fn === 'scroll-state') {
         scroll = true;
         if (scrollStateHolds(inner, NO_SCROLL_STATES) === null) valid = false;
+      } else if (fn === 'anchored') {
+        anchored = true;
+        if (anchoredHolds(inner, null) === null) valid = false;
       }
       return undefined;
     });
     if (read === null || !valid) return null;
-    out.push(
-      scroll ? { name, condition, axes, scroll } : { name, condition, axes },
-    );
+    out.push({
+      name,
+      condition,
+      axes,
+      ...(scroll ? { scroll: true as const } : null),
+      ...(anchored ? { anchored: true as const } : null),
+    });
   }
   return out.length ? out : null;
 }
@@ -146,6 +163,11 @@ export function containerHolds(
         ? (scrollStateHolds(inner, scroll) ?? undefined)
         : undefined;
     }
+    if (fn === 'anchored') {
+      return scroll
+        ? (anchoredHolds(inner, scroll.fallback) ?? undefined)
+        : undefined;
+    }
     if (fn !== '') return undefined;
     const feature = sizeFeature(inner);
     if (!feature || !size) return undefined;
@@ -177,6 +199,33 @@ export function scrollStateHolds(
       return undefined;
     }
     const held = scrollFeatureHolds(feature, state);
+    if (held === null) valid = false;
+    return held ?? undefined;
+  });
+  return valid && answer !== null ? answer : null;
+}
+
+/**
+ * An `anchored()` query's answer for an anchored container placed by
+ * `applied` — an option's text, null for its own — or null for one that is
+ * none: `fallback`, with a value or without, or a condition of it in
+ * brackets, `not`, `and` and `or` (`fallbackMatches`).
+ */
+export function anchoredHolds(
+  inner: string,
+  applied: string | null,
+): Kleene | null {
+  const text = inner.trim();
+  const wrapped =
+    text.startsWith('(') || /^not\s/i.test(text) ? text : `(${text})`;
+  let valid = true;
+  const answer = evaluateCondition(wrapped, (fn, feature) => {
+    const m = /^\s*fallback\s*(?::\s*([\s\S]+?)\s*)?$/i.exec(feature);
+    if (fn !== '' || !m) {
+      valid = false;
+      return undefined;
+    }
+    const held = fallbackMatches(m[1], applied);
     if (held === null) valid = false;
     return held ?? undefined;
   });

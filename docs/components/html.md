@@ -3544,6 +3544,37 @@ pane's scroll is noticed at the paint that draws it, and the restyle comes
 after that paint. A fragment has no root element for the root's states to
 answer for.
 
+**Anchor positioning** (CSS Anchor Positioning 1 and 2): `anchor-name` on
+any box, and on an absolutely positioned one `position-anchor`, `anchor()`
+in an inset — a name or the default anchor, a side (`top`, `right`,
+`bottom`, `left`, `center`, `start`, `end`, `self-start`, `self-end`,
+`inside`, `outside`) or a percentage across the anchor, and a fallback —
+and `anchor-size()` as a `width` or a `height`. `position-area` places the
+box in the cells of the 3×3 grid the anchor makes of its containing block,
+physical, logical or `span-` keywords, one or two of them; the cells are
+its containing block, and `normal` alignment aligns it towards the anchor,
+or centres it on the anchor where an axis takes all three tracks.
+`position-try-fallbacks`, and the fallbacks of `position-try`, are tried in
+order where the box's margin box overflows its containing block: the
+tactics `flip-block`, `flip-inline` and `flip-start`, alone or combined, a
+`@position-try` rule by its name (its insets, margins, sizes,
+`position-anchor` and `position-area`, worked out as the element's own),
+and a `position-area`. The first option that fits is kept, or the box's own
+position where none does. `container-type: anchored` makes the box answer
+`@container anchored(fallback: …)` for what it holds: the option it took,
+written as in its list and matched word for word (a `position-area` by the
+cells it takes), `none` where it took none, and any option in a boolean
+context. That answer is layout's, so as for a size query, a layout that
+changes it restyles what it holds and lays the document out again. An
+anchor is the last box with the name that is not the positioned box or
+inside it, an inline one by the rectangle around its fragments. Not done:
+`anchor()` inside `calc()` (the declaration is dropped), `anchor-size()`
+in other properties, `position-try-order`, `position-visibility`,
+`anchor-scope`, a popover's implicit anchor, `justify-self` and
+`align-self` in a position area (including `anchor-center`), and
+following an anchor that a scroll moves. A box is placed against where its
+anchor was laid out, before relative offsets and scrolls.
+
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`
 attribute as the conditions of its sheet. Cascade layers are read (CSS

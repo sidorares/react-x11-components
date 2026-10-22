@@ -20,6 +20,19 @@ import {
   resolveOrNull,
 } from '../css/values.js';
 import type { Len } from '../css/values.js';
+import {
+  anchorInset,
+  areaAlignment,
+  areaLines,
+  physicalCols,
+} from '../css/anchor.js';
+import type {
+  AnchorRef,
+  AnchorSide,
+  InsetSide,
+  PositionArea,
+  TryTactic,
+} from '../css/anchor.js';
 import type {
   BorderStyle,
   ComputedStyle,
@@ -156,6 +169,12 @@ export interface LayoutContext {
    *  an absolutely positioned box may be positioned against an ancestor
    *  whose size is not known until its in-flow content has been laid out. */
   positioned: { box: Box; containing: Box }[];
+  /** The boxes each anchor name is on, in the document's order, found the
+   *  first time a positioned box asks (`anchorFor`); null where the tree
+   *  has no `anchor-name`, and undefined until then. */
+  anchors?: Map<string, Box[]> | null;
+  /** The root the anchors are found under. */
+  anchorRoot?: Box | null;
   /**
    * Lay a box and everything under it out at a width, at the origin.
    *
@@ -666,6 +685,7 @@ export function layoutDocument(
     firstLineStyler: tree.firstLineStyler,
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
+    anchorRoot: tree.anchors ? tree.root : null,
     ...(cuts
       ? {
           until,
@@ -4395,25 +4415,399 @@ function isControl(box: Box): boolean {
   }
 }
 
+/** The position option an anchor-positioned box was placed by, by box:
+ *  the option's text, as an anchored container query matches it, where it
+ *  was one of its `position-try-fallbacks`; none where it was its own. */
+export const ANCHOR_FALLBACK = new WeakMap<Box, string>();
+
+/** A `position-area`'s cells, which a box placed in them takes for its
+ *  containing block, and how far along their free room it is aligned
+ *  across and down. */
+interface PlacedArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  across: number;
+  down: number;
+}
+
 /**
- * An absolutely positioned box, against its containing block: a box's
- * padding box, or an inline box's fragments (`inlineContainingBlock`). An
- * axis with neither offset takes the static position, where the box would
- * have been in flow (`placeStatic`, and `staticPositions` in a line).
+ * An absolutely positioned box, against its containing block — and where
+ * it is anchor-positioned (CSS Anchor Positioning 1), against its anchor
+ * as well: its `anchor()` insets and `anchor-size()` sizes come to what the
+ * anchor's box makes of them, and a `position-area` puts it in the cells
+ * of the grid the anchor makes of its containing block. Where it has
+ * `position-try-fallbacks`, a placement that overflows its containing block
+ * is tried again with each option in turn — a `@position-try` rule's
+ * style, its tactics, a `position-area` — and the first that fits is kept,
+ * or its own where none does (4.3). The option it took is noted for an
+ * anchored container query (`ANCHOR_FALLBACK`).
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
+  const style = box.style;
+  if (
+    !style.anchorInsets &&
+    !style.anchorSizes &&
+    !style.positionArea &&
+    !style.positionTryFallbacks
+  ) {
+    positionedIn(box, containing, ctx, null);
+    return;
+  }
+  const cb =
+    containing.kind === 'inline'
+      ? inlineContainingBlock(containing, box, ctx)
+      : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
+  const options = style.positionTryFallbacks ?? [];
+  const place = (index: number): boolean => {
+    const option = index < 0 ? null : options[index];
+    let tried = style;
+    if (option) {
+      if (option.name !== null) {
+        const named = style.positionTryStyles?.[index];
+        // an option naming no rule there is is none
+        if (!named) return false;
+        tried = named;
+      }
+      tried = triedWith(tried, option.tactics, option.area);
+    }
+    const { resolved, placed } = anchoredStyle(box, tried, cb, ctx);
+    box.style = resolved;
+    try {
+      positionedIn(box, containing, ctx, placed);
+    } finally {
+      box.style = style;
+    }
+    return true;
+  };
+  place(-1);
+  ANCHOR_FALLBACK.delete(box);
+  if (!options.length || fitsIn(box, cb)) return;
+  for (let i = 0; i < options.length; i += 1) {
+    if (place(i) && fitsIn(box, cb)) {
+      ANCHOR_FALLBACK.set(box, options[i].text);
+      return;
+    }
+  }
+  place(-1);
+}
+
+/** Whether a box's margin box is inside a rectangle, to within half a
+ *  pixel. */
+function fitsIn(box: Box, cb: CbRect): boolean {
+  return (
+    box.x - box.marginLeft >= cb.x - 0.5 &&
+    box.y - box.marginTop >= cb.y - 0.5 &&
+    box.x + box.width + box.marginRight <= cb.x + cb.width + 0.5 &&
+    box.y + box.height + box.marginBottom <= cb.y + cb.height + 0.5
+  );
+}
+
+/**
+ * A style with its anchor functions worked out for a containing block:
+ * each `anchor()` inset as the distance from the containing block's edge
+ * to the anchor's, and each `anchor-size()` as the anchor's size — or the
+ * fallback each holds already where there is no anchor — and the cells of
+ * its `position-area`, where it has one and an anchor.
+ */
+function anchoredStyle(
+  box: Box,
+  style: ComputedStyle,
+  cb: CbRect,
+  ctx: LayoutContext,
+): { resolved: ComputedStyle; placed: PlacedArea | null } {
+  let resolved = style;
+  const own = (): ComputedStyle =>
+    resolved === style ? (resolved = { ...style }) : resolved;
+  const rtl = style.direction === 'rtl';
+  const insets = style.anchorInsets;
+  if (insets) {
+    for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+      const ref = insets[side];
+      if (!ref) continue;
+      const anchor = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
+      if (!anchor) continue;
+      const across = side === 'left' || side === 'right';
+      own()[side] = anchorInset(
+        side,
+        ref.side,
+        across ? anchor.x : anchor.y,
+        across ? anchor.width : anchor.height,
+        across ? cb.x : cb.y,
+        across ? cb.width : cb.height,
+        rtl,
+      );
+    }
+  }
+  const sizes = style.anchorSizes;
+  if (sizes) {
+    for (const prop of ['width', 'height'] as const) {
+      const ref = sizes[prop];
+      if (!ref) continue;
+      const anchor = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
+      if (!anchor) continue;
+      // the anchor's border box, which a box sized to it takes as its own
+      // border box
+      const extra =
+        prop === 'width'
+          ? box.borderLeft + box.borderRight + box.padLeft + box.padRight
+          : box.borderTop + box.borderBottom + box.padTop + box.padBottom;
+      const size = ref.size === 'width' ? anchor.width : anchor.height;
+      own()[prop] =
+        style.boxSizing === 'border-box' ? size : Math.max(0, size - extra);
+    }
+  }
+  let placed: PlacedArea | null = null;
+  const area = style.positionArea;
+  const anchor = area && anchorFor(box, style.positionAnchor, ctx);
+  if (area && anchor) {
+    const cols = physicalCols(area, rtl);
+    const xs = areaLines(cb.x, cb.width, anchor.x, anchor.width);
+    const ys = areaLines(cb.y, cb.height, anchor.y, anchor.height);
+    // all three tracks of an axis centre the box on the anchor
+    // (`anchor-center`, 3.1.4): in as much of them as is as far on either
+    // side of the anchor's centre
+    const span = (
+      lines: readonly number[],
+      [s, e]: readonly [number, number],
+      start: number,
+      size: number,
+    ): [number, number] => {
+      if (s !== 0 || e !== 2) return [lines[s], lines[e + 1] - lines[s]];
+      const centre = start + size / 2;
+      const half = Math.max(0, Math.min(centre - lines[0], lines[3] - centre));
+      return [centre - half, 2 * half];
+    };
+    const [x, width] = span(xs, cols, anchor.x, anchor.width);
+    const [y, height] = span(ys, area.rows, anchor.y, anchor.height);
+    placed = {
+      x,
+      y,
+      width: Math.max(0, width),
+      height: Math.max(0, height),
+      across: areaAlignment(cols),
+      down: areaAlignment(area.rows),
+    };
+  }
+  return { resolved, placed };
+}
+
+/**
+ * The rectangle of the box an anchor name finds for `box`, in document
+ * coordinates: the last box in the document's order with the name that is
+ * not `box` or inside it (CSS Anchor Positioning 1, 2.2) — an inline box
+ * by the rectangle around its fragments. Null where there is none, or the
+ * name is null.
+ */
+function anchorFor(
+  box: Box,
+  name: string | null,
+  ctx: LayoutContext,
+): CbRect | null {
+  if (name === null || !ctx.anchorRoot) return null;
+  if (ctx.anchors === undefined) {
+    const found = new Map<string, Box[]>();
+    // an element's first box, which is its own: the boxes inside it that
+    // carry its style — a button's label, an anonymous block — are not
+    // the anchor
+    const seen = new Set<object>();
+    const stack: Box[] = [ctx.anchorRoot];
+    while (stack.length) {
+      const at = stack.pop()!;
+      const names = at.style.anchorNames;
+      if (names && at.pseudo === null && at.el && !seen.has(at.el)) {
+        seen.add(at.el);
+        for (const n of names) {
+          let list = found.get(n);
+          if (!list) found.set(n, (list = []));
+          list.push(at);
+        }
+      }
+      for (let i = at.children.length - 1; i >= 0; i -= 1) {
+        stack.push(at.children[i]);
+      }
+    }
+    ctx.anchors = found;
+  }
+  const list = ctx.anchors?.get(name);
+  if (!list) return null;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const anchor = list[i];
+    let inside = false;
+    for (let at: Box | null = anchor; at; at = at.parent) {
+      if (at === box) {
+        inside = true;
+        break;
+      }
+    }
+    if (inside) continue;
+    if (anchor.kind === 'inline') {
+      return inlineContainingBlock(anchor, box, ctx);
+    }
+    return {
+      x: anchor.x,
+      y: anchor.y,
+      width: anchor.width,
+      height: anchor.height,
+    };
+  }
+  return null;
+}
+
+/**
+ * A style tried again by tactics (CSS Anchor Positioning 1, 4.1), and in a
+ * `position-area` that replaces its own where `area` is one: `flip-block`
+ * mirrors it down — its top inset and margin swapped for its bottom ones,
+ * an `anchor()` reading the other side, its area's rows the other way
+ * round — `flip-inline` across, and `flip-start` about the diagonal from
+ * its start, its insets, margins, sizes and area swapped between the axes.
+ */
+function triedWith(
+  style: ComputedStyle,
+  tactics: readonly TryTactic[],
+  area: PositionArea | null,
+): ComputedStyle {
+  if (!tactics.length && !area) return style;
+  const out: ComputedStyle = { ...style };
+  if (area) out.positionArea = area;
+  for (const tactic of tactics) {
+    if (tactic === 'flip-start') flipStart(out);
+    else flipAxis(out, tactic === 'flip-block');
+  }
+  return out;
+}
+
+/** The side an `anchor()`'s side is on mirrored along an axis. */
+function mirroredSide(side: AnchorSide, down: boolean): AnchorSide {
+  if (typeof side === 'number') return 1 - side;
+  const pairs: Record<string, AnchorSide> = down
+    ? { top: 'bottom', bottom: 'top' }
+    : { left: 'right', right: 'left' };
+  const flipped = pairs[side];
+  if (flipped) return flipped;
+  if (side === 'inside' || side === 'outside' || side === 'center') {
+    return side;
+  }
+  // `start` and `end`, which an axis flipped turns about
+  return side === 'start'
+    ? 'end'
+    : side === 'end'
+      ? 'start'
+      : side === 'self-start'
+        ? 'self-end'
+        : 'self-start';
+}
+
+function flipAxis(style: ComputedStyle, down: boolean): void {
+  const [a, b] = down
+    ? (['top', 'bottom'] as const)
+    : (['left', 'right'] as const);
+  const [ma, mb] = down
+    ? (['marginTop', 'marginBottom'] as const)
+    : (['marginLeft', 'marginRight'] as const);
+  [style[a], style[b]] = [style[b], style[a]];
+  [style[ma], style[mb]] = [style[mb], style[ma]];
+  const insets = style.anchorInsets;
+  if (insets) {
+    const out: Partial<Record<InsetSide, AnchorRef>> = { ...insets };
+    delete out[a];
+    delete out[b];
+    const ia = insets[a];
+    const ib = insets[b];
+    if (ia) out[b] = { ...ia, side: mirroredSide(ia.side, down) };
+    if (ib) out[a] = { ...ib, side: mirroredSide(ib.side, down) };
+    style.anchorInsets = out;
+  }
+  const area = style.positionArea;
+  if (area) {
+    const flip = ([s, e]: readonly [number, number]): [number, number] => [
+      2 - e,
+      2 - s,
+    ];
+    style.positionArea = down
+      ? { ...area, rows: flip(area.rows) }
+      : { ...area, cols: flip(area.cols) };
+  }
+}
+
+function flipStart(style: ComputedStyle): void {
+  [style.top, style.left] = [style.left, style.top];
+  [style.bottom, style.right] = [style.right, style.bottom];
+  [style.marginTop, style.marginLeft] = [style.marginLeft, style.marginTop];
+  [style.marginBottom, style.marginRight] = [
+    style.marginRight,
+    style.marginBottom,
+  ];
+  [style.width, style.height] = [style.height, style.width];
+  [style.minWidth, style.minHeight] = [style.minHeight, style.minWidth];
+  [style.maxWidth, style.maxHeight] = [style.maxHeight, style.maxWidth];
+  const swap: Record<string, AnchorSide> = {
+    top: 'left',
+    left: 'top',
+    bottom: 'right',
+    right: 'bottom',
+  };
+  const insets = style.anchorInsets;
+  if (insets) {
+    const out: Partial<Record<InsetSide, AnchorRef>> = {};
+    for (const [side, ref] of Object.entries(insets) as [
+      InsetSide,
+      AnchorRef,
+    ][]) {
+      const to = swap[side] as InsetSide;
+      out[to] =
+        typeof ref.side === 'string' && swap[ref.side]
+          ? { ...ref, side: swap[ref.side] }
+          : ref;
+    }
+    style.anchorInsets = out;
+  }
+  const sizes = style.anchorSizes;
+  if (sizes) {
+    style.anchorSizes = {
+      ...(sizes.width ? { height: sizes.width } : null),
+      ...(sizes.height ? { width: sizes.height } : null),
+    };
+  }
+  const area = style.positionArea;
+  if (area) {
+    style.positionArea = {
+      cols: area.rows,
+      rows: area.cols,
+      logicalCols: false,
+    };
+  }
+}
+
+/**
+ * An absolutely positioned box, against its containing block: a box's
+ * padding box, or an inline box's fragments (`inlineContainingBlock`) —
+ * or the cells of a `position-area`, `placed`. An axis with neither offset
+ * takes the static position, where the box would have been in flow
+ * (`placeStatic`, and `staticPositions` in a line), or is aligned in the
+ * cells.
+ */
+function positionedIn(
+  box: Box,
+  containing: Box,
+  ctx: LayoutContext,
+  placed: PlacedArea | null,
+): void {
   // a grid's is the box's grid area (CSS Grid 1, 9.1), whether the box is
   // the grid's child or deeper in it
   const area =
     containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
+  // and a box in a `position-area` is in the area's cells
   const {
     x: cbX,
     y: cbY,
     width: cbWidth,
     height: cbHeight,
-  } = containing.kind === 'inline'
+  } = placed ??
+  (containing.kind === 'inline'
     ? inlineContainingBlock(containing, box, ctx)
-    : (area ?? containingRect(containing, ctx));
+    : (area ?? containingRect(containing, ctx)));
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
@@ -4435,26 +4829,30 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // grid area instead, where that is its containing block; a box deeper in
   // the grid is where its own flow put it.
   const inArea =
+    !placed &&
     area !== null &&
     box.staticPosition?.inside !== undefined &&
     box.staticPosition.from === containing;
   // one in the top layer is at the start of its containing block, which
-  // is no box's in the flow it was in (CSS Position 4, 3.1)
-  const at = inArea || box.topLayer ? null : box.staticPosition;
+  // is no box's in the flow it was in (CSS Position 4, 3.1), and one in a
+  // `position-area` is aligned in it
+  const at = placed || inArea || box.topLayer ? null : box.staticPosition;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
-  const room = inArea
-    ? {
-        x: cbX,
-        y: cbY,
-        width: cbWidth,
-        height: cbHeight,
-        ...staticAlignment(box, containing, false),
-      }
-    : at?.inside
-      ? { ...insideRect(at.from, at.inside.box), ...at.inside }
-      : null;
+  const room = placed
+    ? placed
+    : inArea
+      ? {
+          x: cbX,
+          y: cbY,
+          width: cbWidth,
+          height: cbHeight,
+          ...staticAlignment(box, containing, false),
+        }
+      : at?.inside
+        ? { ...insideRect(at.from, at.inside.box), ...at.inside }
+        : null;
   // and a shrink-to-fit box's room starts at the offset on the side it has
   // one, or at its static position: `left: 50%` leaves it half the width
   const offset =

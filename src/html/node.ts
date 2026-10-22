@@ -163,6 +163,7 @@ import type {
   TextLayoutLike,
 } from './layout/boxes.js';
 import {
+  ANCHOR_FALLBACK,
   anchorAt,
   containmentApplies,
   containsOutOfFlow,
@@ -5338,6 +5339,10 @@ export class HtmlViewNode extends Node {
       scrollable,
       scrolled: this._scrolledLast.get(el) ?? 0,
       rtl: style.direction === 'rtl',
+      // and the position option an anchored container was placed by
+      fallback: style.anchoredContainer
+        ? (ANCHOR_FALLBACK.get(box) ?? null)
+        : null,
     };
   }
 
