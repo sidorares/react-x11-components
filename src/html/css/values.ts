@@ -479,14 +479,21 @@ export function parseColor(value: string): string | null {
   // three, four, six or eight digits: ntk's context throws from paint on
   // five or seven, and a typo'd `#ff000` took the application down
   if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
-  if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(v)) {
-    // a mix or a relative colour with `currentColor` in it is kept to be
-    // worked out where it is used (`inkColor`), once it is known to be one
+  if (
+    /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|contrast-color)\(/i.test(
+      v,
+    )
+  ) {
+    // a mix, a contrast or a relative colour with `currentColor` in it is
+    // kept to be worked out where it is used (`inkColor`), once it is known
+    // to be one: so it inherits as itself, and an element under one with
+    // another colour works it out again
     if (HAS_CURRENT.test(v)) {
-      if (/^color-mix\(/i.test(v)) {
+      const fn = /^(color-mix|contrast-color)\(/i.exec(v);
+      if (fn) {
         return functionalColor(v.replace(CURRENT, '#000')) === null
           ? null
-          : `color-mix(${v.slice(v.indexOf('(') + 1)}`;
+          : `${fn[1].toLowerCase()}(${v.slice(v.indexOf('(') + 1)}`;
       }
       if (RELATIVE_COLOR.test(v)) {
         return functionalColor(v.replace(CURRENT, '#000')) === null

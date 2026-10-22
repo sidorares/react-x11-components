@@ -3380,13 +3380,18 @@ handed to the drawing context as `#rrggbb` or `rgba()`, which both backends
 read alike, and one outside sRGB is clipped into it. `color-mix()` mixes in
 any of the spaces above but the wide-gamut RGB ones, premultiplied, so a
 colour mixed with `transparent` keeps its hue: Tailwind 4's
-`bg-blue-500/50` is written that way. A relative colour (CSS Color 5) takes
+`bg-blue-500/50` is written that way; with no space named it mixes in
+`oklab`. `contrast-color()` (CSS Color 5) is white or black, whichever has
+the greater WCAG 2.1 contrast against the colour it is given, as Chrome and
+Safari choose. A relative colour (CSS Color 5) takes
 another colour into any of the functions above and reads its channels by
 name, each one kept, swapped, set or worked out with `calc()`: `oklch(from
 var(--brand) calc(l + 0.1) c h / 50%)`. The names are numbers in the
 function's own range (`r` up to 255, `s` and `l` up to 100, a hue in
-degrees), and an alpha left out is the origin's. A mix or a relative colour
-with `currentColor` in it is worked out where the colour is used. A channel
+degrees), and an alpha left out is the origin's. A mix, a contrast or a
+relative colour with `currentColor` in it is worked out where the colour is
+used, so it inherits as itself and an element with another colour works it
+out again. A channel
 of any colour function may be a math function — `calc()`, `min()`, `max()`,
 `clamp()` — of numbers, of percentages or of angles, one of the three
 throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`. A system colour (CSS Color 4) is
