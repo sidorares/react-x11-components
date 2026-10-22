@@ -57,6 +57,7 @@ export function installDom(
   bridge: Bridge,
   webgl: typeof installWebGL,
   raster: typeof installRaster,
+  namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
   // this one's on its way up the stack
@@ -13879,6 +13880,51 @@ export function installDom(
     });
   }
 
+  // Named access on the window (HTML 7.2.2.3): an element is a global by
+  // its `id` — `target`, as WPT's tests and many an old page read it — and
+  // an `embed`, a `form`, an `img` or an `object` by its `name`, and a
+  // frame's window by the frame's. Asked of the host's index of the
+  // document's names (`named`), and only for a name no global has: the
+  // proxy is the next link of the chain under the global, so everything
+  // the window defines, and every `var` and function a page declares,
+  // shadows it, as in a browser. A worker's global has none, and nor does
+  // a window where the runtime refuses the proxy (`namedAccessWorks`).
+  if (namedAccess) {
+    const lookup = (key: string | symbol): Any => {
+      if (typeof key !== 'string' || !key || workerLocation) return undefined;
+      const found = idList(call('named', key, document._id)).map(wrap);
+      if (!found.length) return undefined;
+      for (const el of found) {
+        const tag = el.localName;
+        if (
+          (tag === 'iframe' || tag === 'frame') &&
+          el.getAttribute('name') === key
+        ) {
+          const frame = el.contentWindow;
+          if (frame) return frame;
+        }
+      }
+      return found.length === 1 ? found[0] : collection(found);
+    };
+    const named = new Proxy(Object.create(Object.getPrototypeOf(G)), {
+      has: (target: Any, key: string | symbol) =>
+        Reflect.has(target, key) || lookup(key) !== undefined,
+      get: (target: Any, key: string | symbol, receiver: Any) =>
+        Reflect.has(target, key)
+          ? Reflect.get(target, key, receiver)
+          : lookup(key),
+      getOwnPropertyDescriptor: (target: Any, key: string | symbol) => {
+        const own = Reflect.getOwnPropertyDescriptor(target, key);
+        if (own) return own;
+        const value = lookup(key);
+        return value === undefined
+          ? undefined
+          : { value, writable: true, enumerable: false, configurable: true };
+      },
+    });
+    Object.setPrototypeOf(G, named);
+  }
+
   // What a frame's window shares with this one (`frameWindowOf`): every
   // global defined as a value, as it is before any page code runs.
   realmGlobals = Object.getOwnPropertyNames(G).flatMap((name) => {
@@ -13921,23 +13967,17 @@ export function installDom(
     });
   };
 
-  // a page's script, run as a classic script is: in the global scope, its
-  // declarations the window's
+  // a page's classic script is about to run: the host runs it as a script
+  // of its own (`ScriptEngine.exec`), its declarations the window's
   // `currentScript` stays the script's through the microtasks it queued,
-  // which run as this entry ends (`microtaskMode: 'afterEvaluate'`), and
+  // which run as the script ends (`microtaskMode: 'afterEvaluate'`), and
   // is put back by the entry after (`__ran`): HTML runs the microtask
   // checkpoint inside running the script, before it puts `currentScript`
   // back (8.1.4.6). Turbopack's chunks read it from a promise's callback.
   entry('__exec', () => {
-    const [code, url, script] = input();
+    const [script] = input();
     document._current = script ? wrap(script) : null;
-    try {
-      (0, eval)(`${code}\n//# sourceURL=${String(url).replace(/\s/g, '%20')}`);
-      return true;
-    } catch (error) {
-      report(error);
-      return false;
-    }
+    return true;
   });
   entry('__ran', () => {
     document._current = null;

@@ -43,6 +43,7 @@ import {
   setModal,
   topLayerIn,
   topLayerOf,
+  treeGeneration,
   treesChanged,
 } from '../dom.js';
 import { Cascade } from '../css/cascade.js';
@@ -308,6 +309,25 @@ const FRAME_SIZE = { width: 300, height: 150 };
 
 /** The elements that hold a document of their own: a frame's. */
 const FRAME_TAGS = new Set(['iframe', 'frame', 'object']);
+
+/** The elements a window is reached by the `name` of, as well as by their
+ *  `id` (HTML 7.2.2.3): those four, and a frame, whose name is its child
+ *  navigable's target name. */
+const NAMED_BY_NAME = new Set([
+  'embed',
+  'form',
+  'img',
+  'object',
+  'iframe',
+  'frame',
+]);
+
+/** Bumped at every change a script makes to any tree's children, or to
+ *  an `id` or a `name` (`_tell`), with `treeGeneration` for what the
+ *  parser writes: a window's names hold while neither moves (`_namesOf`).
+ *  One count for every host, since a frame's realm can change its
+ *  parent's tree. */
+let edits = 0;
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 function parserError(): Element {
@@ -1980,6 +2000,14 @@ export class DomHost {
         }
         return 0;
       }
+      case 'named':
+        return (
+          this._namesOf((b ? this._node(b) : this.document) as Document).get(
+            text(a),
+          ) ?? []
+        )
+          .map((el) => this.idOf(el))
+          .join(',');
       case 'byId':
         return this.idOf(
           DomUtils.findOne(
@@ -3092,7 +3120,49 @@ export class DomHost {
     return this._s.drawn.get(at as Document) ?? null;
   }
 
+  /** Each document's names, with where `edits` and the parser were when
+   *  they were found. */
+  private readonly _names = new WeakMap<
+    Document,
+    { at: string; names: Map<string, Element[]> }
+  >();
+
+  /**
+   * What a document's window is reached by the name of (HTML 7.2.2.3), in
+   * tree order: every element by its `id`, and an `embed`, a `form`, an
+   * `img`, an `object` and a frame by its `name`. Asked at every global
+   * name a page reads that is no global — every `typeof require` of a
+   * bundle — so it is found in one walk, and walked again only once a tree
+   * has changed since.
+   */
+  private _namesOf(doc: Document): Map<string, Element[]> {
+    const at = `${edits}:${treeGeneration()}`;
+    const kept = this._names.get(doc);
+    if (kept?.at === at) return kept.names;
+    const names = new Map<string, Element[]>();
+    const add = (key: string | undefined, el: Element): void => {
+      if (!key) return;
+      const list = names.get(key);
+      if (!list) names.set(key, [el]);
+      else if (list[list.length - 1] !== el) list.push(el);
+    };
+    for (const el of DomUtils.findAll(() => true, doc.children)) {
+      add(el.attribs.id, el);
+      if (NAMED_BY_NAME.has(el.name)) add(el.attribs.name, el);
+    }
+    this._names.set(doc, { at, names });
+    return names;
+  }
+
   private _tell(node: AnyNode, change: HtmlChange): void {
+    // what can change a window's names; a text's change cannot
+    if (
+      change.type === 'childList' ||
+      (change.type === 'attributes' &&
+        (change.attributeName === 'id' || change.attributeName === 'name'))
+    ) {
+      edits += 1;
+    }
     let at: AnyNode = node;
     while (at.parent) at = at.parent;
     const doc = at as Document;
