@@ -696,7 +696,10 @@ charset }` — the `<script>` is the request's `element`, and the root
   worker's script — go through `scripts.fetch`, a request of any method and
   the response whatever its status, after the engine has held the page to
   what its origin and CORS let it read. **With none, they fail** as a
-  request with no network does, a `TypeError` in the page.
+  request with no network does, a `TypeError` in the page. A body is
+  handed over as `body`, text, where its bytes are UTF-8, and as `bytes`
+  where they are not — an image a page uploads, a `Uint8Array` — with
+  `body` empty, so a host sends `bytes ?? body`.
 
 `useHtmlNetwork(url)` is both, from one line: `onResource` and a `fetch` for
 the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a

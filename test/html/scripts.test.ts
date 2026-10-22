@@ -953,8 +953,11 @@ test('fetch is the page’s own origin’s, and answers as the network does', as
         'POST',
         'https://example.test/dir/data.json',
         'q=1',
-        // a page sets no cookie of its own
-        [['x-test', 'yes']],
+        // a page sets no cookie of its own; a string's type is implied
+        [
+          ['x-test', 'yes'],
+          ['content-type', 'text/plain;charset=UTF-8'],
+        ],
       ],
     ],
   );
@@ -1233,7 +1236,14 @@ test('XMLHttpRequest is fetch with its states, its events and its headers', asyn
     doc.fetched.slice(0, 2).map((r) => [r.method, r.body, r.headers]),
     [
       ['GET', null, []],
-      ['POST', 'q=1', [['x-test', 'yes']]],
+      [
+        'POST',
+        'q=1',
+        [
+          ['x-test', 'yes'],
+          ['content-type', 'text/plain;charset=UTF-8'],
+        ],
+      ],
     ],
   );
 });
@@ -2531,6 +2541,129 @@ test('CSS.supports answers as an @supports does, an address assigned to location
       `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="f.txt"\r\nContent-Type: text/plain\r\n\r\nx\r\n` +
       `--${boundary}--\r\n`,
   );
+});
+
+test('a body is extracted as Fetch has it: bytes sent as they are, a stream read to its end, its type implied, and read back as a form', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var step = function (p) { return p.then(function (v) { r.push(v); }, function (e) { r.push(typeof e === "string" ? e : e.name + ":" + e.message.slice(0, 12)); }); };' +
+      'var bin = new Uint8Array([0, 255, 128, 10]);' +
+      'var stream = function () { return new ReadableStream({ start: function (c) { c.enqueue(new Uint8Array([104, 105])); c.close(); } }); };' +
+      'r.push(new Response("a").headers.get("content-type"), new Response(new URLSearchParams("a=1")).headers.get("content-type"),' +
+      '  new Response(new Blob(["x"], { type: "text/x" })).headers.get("content-type"), new Response(bin).headers.get("content-type"),' +
+      '  new Request("u", { method: "POST", body: "b" }).headers.get("content-type"));' +
+      'try { new Request("u", { method: "POST", body: stream() }); } catch (e) { r.push(e.name); }' +
+      'var c = new AbortController(); c.abort("mine");' +
+      'step(fetch("bin", { method: "POST", body: bin }).then(function (res) { return res.status; }))' +
+      '.then(function () { return step(fetch("stream", { method: "POST", body: stream(), duplex: "half" }).then(function (res) { return res.status; })); })' +
+      '.then(function () { return step(fetch("get", { body: "b" })); })' +
+      '.then(function () { return step(fetch("aborted", { signal: c.signal })); })' +
+      '.then(function () { var fd = new FormData(); fd.append("a", "1"); fd.append("f", new File(["xy"], "f.txt", { type: "text/plain" }));' +
+      '  return new Response(fd).formData().then(function (back) { return back.get("a") + "," + back.get("f").name + "," + back.get("f").size; }); })' +
+      '.then(function (v) { r.push(v); return new Response(new URLSearchParams("p=1&q=2")).formData(); })' +
+      '.then(function (back) { r.push(back.get("q")); var url = URL.createObjectURL(new Blob(["abcdefgh"], { type: "text/plain" }));' +
+      '  return Promise.all([fetch(url, { headers: { Range: "bytes=2-4" } }), fetch(url, { headers: { Range: "bytes=-3" } }), fetch(url, { headers: { Range: "bytes=9-" } }).catch(function (e) { return e.name; })]); })' +
+      '.then(function (all) { return Promise.all([all[0].text(), all[1].text()]).then(function (texts) {' +
+      '  r.push(all[0].status, all[0].headers.get("content-range"), texts[0], all[1].headers.get("content-range"), texts[1], all[2]); }); })' +
+      ".then(function () { document.getElementById('out').textContent = r.join('|'); });" +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        body: '',
+      }),
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'text/plain;charset=UTF-8',
+      'application/x-www-form-urlencoded;charset=UTF-8',
+      'text/x',
+      // no type for bytes, which join() writes as nothing
+      '',
+      'text/plain;charset=UTF-8',
+      'TypeError',
+      '200',
+      '200',
+      'TypeError:Failed to ex',
+      'mine',
+      '1,f.txt,2',
+      '2',
+      '206',
+      'bytes 2-4/8',
+      'cde',
+      'bytes 5-7/8',
+      'fgh',
+      'TypeError',
+    ].join('|'),
+  );
+  const [bin, stream] = doc.fetched;
+  // bytes that are no UTF-8 cross as they are, and a stream as its bytes
+  assert.deepEqual([...(bin.bytes ?? [])], [0, 255, 128, 10]);
+  assert.equal(bin.body, '');
+  assert.equal(stream.body, 'hi');
+  assert.equal(doc.fetched.length, 2);
+});
+
+test('headers keep to their guard, a response is made as Fetch makes one, and a data: URL is answered in the page', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var t = function (f) { try { r.push(f()); } catch (e) { r.push(e.name); } };' +
+      't(function () { return new Request("u", { headers: { Cookie: "c", "X-A": "1" } }).headers.has("cookie"); });' +
+      't(function () { var h = new Request("u", { mode: "no-cors", headers: { Range: "bytes=0-1", Accept: "a" } }).headers; return h.has("range") + "," + h.get("accept"); });' +
+      't(function () { return new Request("u", { mode: "no-cors", method: "PUT" }); });' +
+      't(function () { var h = new Headers([["b", " 2 "], ["a", "1"]]); return Array.from(h.keys()).join("") + h.get("b"); });' +
+      't(function () { return new Headers({ "bad name": "x" }); });' +
+      't(function () { return Response.error().headers.set("a", "b"); });' +
+      't(function () { var e = Response.error(); return e.type + e.status; });' +
+      't(function () { var x = Response.redirect("/to", 301); return x.status + x.headers.get("location"); });' +
+      't(function () { return Response.redirect("/to", 200); });' +
+      't(function () { return new Response("", { status: 99 }); });' +
+      't(function () { return new Response("x", { status: 204 }); });' +
+      't(function () { return Response.json({ a: 1 }).headers.get("content-type"); });' +
+      't(function () { return new Response("", { headers: { "Set-Cookie": "a=1" } }).headers.has("set-cookie"); });' +
+      'Promise.all([fetch("data:text/plain;charset=US-ASCII,a%2Cb", { headers: { Range: "bytes=0-0" } }), fetch("data:;base64,aGk="), fetch("data:,x%"), fetch("data:;base64,a")["catch"](function (e) { return e.name; })])' +
+      '.then(function (all) { return Promise.all([all[0].text(), all[1].text(), all[2].text()]).then(function (texts) {' +
+      '  r.push(all[0].status, all[0].headers.get("content-type"), texts[0], all[1].headers.get("content-type"), texts[1], texts[2], all[3]); }); })' +
+      '.then(function () { var url = URL.createObjectURL(new Blob(["abc"])); return fetch(url, { headers: { Range: "bytes=1-" } }); })' +
+      ".then(function (res) { r.push(JSON.stringify(res.headers.get('content-type'))); document.getElementById('out').textContent = r.join('|'); });" +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'false',
+      'false,a',
+      'TypeError',
+      'ab2',
+      'TypeError',
+      'TypeError',
+      'error0',
+      `301${new URL('/to', PAGE).href}`,
+      'RangeError',
+      'RangeError',
+      'TypeError',
+      'application/json',
+      'false',
+      '200',
+      'text/plain;charset=US-ASCII',
+      'a,b',
+      // a type of nothing, once its base64 is taken off, is the default
+      'text/plain;charset=US-ASCII',
+      'hi',
+      'x%',
+      'TypeError',
+      '""',
+    ].join('|'),
+  );
+  assert.equal(doc.fetched.length, 0);
 });
 
 test('indexedDB keeps a page’s records for the document: stores, keys, indexes, cursors and transactions', async () => {

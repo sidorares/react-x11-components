@@ -83,7 +83,7 @@ export type HtmlTransport = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body?: string;
+    body?: string | Uint8Array;
     signal: AbortSignalLike;
     redirect: 'follow';
   },
@@ -484,6 +484,7 @@ export class HtmlNetwork {
       method: string;
       headers: [string, string][];
       body: string | null;
+      bytes?: Uint8Array;
     },
     page: string,
     signal: AbortSignalLike,
@@ -518,6 +519,8 @@ export class HtmlNetwork {
     headers['user-agent'] = this._userAgent;
     headers['accept-language'] ??= this._language;
     headers.accept ??= '*/*';
+    // a range of bytes is a range of the bytes as stored (Fetch 4.6)
+    if ('range' in headers) headers['accept-encoding'] = 'identity';
     headers.origin = originOf(page);
     const referrer = referrerFor(page, request.url);
     if (referrer) headers.referer = referrer;
@@ -531,7 +534,7 @@ export class HtmlNetwork {
         body:
           method === 'GET' || method === 'HEAD'
             ? undefined
-            : (request.body ?? undefined),
+            : (request.bytes ?? request.body ?? undefined),
         signal: AbortSignal.any([signal, timer]),
         redirect: 'follow',
       }),
