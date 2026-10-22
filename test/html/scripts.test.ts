@@ -2697,9 +2697,11 @@ test('a page keeps its own session history: pushState and replaceState, a fragme
       '  history.pushState({ a: 1 }, "", "#one"); r.push(history.length, JSON.stringify(history.state), location.hash);' +
       '  history.replaceState({ a: 2 }, "", "#two"); r.push(history.length, JSON.stringify(history.state));' +
       '  try { history.pushState(null, "", "https://other.example/"); } catch (e) { r.push(e.name); }' +
-      '  location.hash = "x"; r.push(history.length);' +
+      // once the document is completely loaded, where a Location
+      // navigation is no longer a replacement (HTML 7.2.4)
+      '  setTimeout(function () { location.hash = "x"; r.push(history.length);' +
       '  setTimeout(function () { history.back(); setTimeout(function () { history.go(-1);' +
-      "    setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 30); }, 30); }, 30);" +
+      "    setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 30); }, 30); }, 30); }, 0);" +
       '};' +
       '</script>',
   );
@@ -2723,6 +2725,53 @@ test('a page keeps its own session history: pushState and replaceState, a fragme
   );
   // a fragment the page navigated to is told to the host, as it was
   assert.deepStrictEqual(doc.links, [`${PAGE}#x`]);
+});
+
+test("a form's submission is planned: navigate fires in a task after it, with the form's entries for a POST, and the host submits only what the page lets go", async () => {
+  // HTML 4.10.21.3: the navigation is planned, so a listener a page adds
+  // after `requestSubmit()` hears it; a GET's URL is the action with the
+  // entries for its query, and a submission made during `load` replaces
+  const doc = await hosted(
+    '<p id="out"></p><form id="f" method="post" action="/target">' +
+      '<input name="a" value="1"><input type="submit" id="s" name="go" value="yes"></form>' +
+      '<form id="g" action="/find#top"><input name="q" value="x y"></form><script>' +
+      'var r = [], f = document.getElementById("f"), g = document.getElementById("g");' +
+      'window.onload = function () {' +
+      '  navigation.onnavigate = function (e) {' +
+      '    r.push(e.navigationType, e.destination.url.replace(location.origin, ""), e.destination.sameDocument,' +
+      '      e.formData ? e.formData.get("a") + "," + e.formData.get("go") : null, e.sourceElement.id);' +
+      '    e.preventDefault(); };' +
+      '  f.requestSubmit(document.getElementById("s")); r.push("planned");' +
+      '  setTimeout(function () {' +
+      '    g.submit();' +
+      '    setTimeout(function () {' +
+      '      navigation.onnavigate = null; f.submit();' +
+      "      setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 20);" +
+      '    }, 20);' +
+      '  }, 20);' +
+      '};' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'planned',
+      'replace',
+      '/target',
+      'false',
+      '1,yes',
+      's',
+      'push',
+      '/find?q=x+y#top',
+      'false',
+      // a GET's formData is null, which join() writes as nothing
+      '',
+      'g',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+  // the two the page canceled went nowhere; the last went to the host
+  assert.strictEqual(doc.submitted.length, 1);
 });
 
 test('navigation is the page’s entries, and navigate() fires navigate, which a listener intercepts, cancels or lets go', async () => {

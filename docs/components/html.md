@@ -771,9 +771,14 @@ to keep the navigation in the document — its URL changes, its entry is
 `committed` and `finished` settle as the handlers do, with `navigatesuccess`
 or `navigateerror`. A link followed and an address assigned to `location`
 fire it first too, so the host's `navigate` and `onLink` hear only of a
-navigation to another document that nothing kept. An address assigned while
-the document still loads replaces its entry, as HTML's Location-object
-navigate has it with no user activation. `navigation.transition` is the
+navigation to another document that nothing kept. A form's submission is
+planned as a task, as a browser plans it, and fires `navigate` there —
+its submitter or the form the `sourceElement`, a POST's entries the
+`formData`, a GET's URL the action with the entries for its query — and
+the host submits it only where the page let it go. An address assigned, or
+a form submitted by a script, while the document is not completely loaded
+— its `load` not yet told — replaces its entry, as HTML's navigate has it
+with no user activation. `navigation.transition` is the
 intercepted navigation's until `navigatesuccess` or `navigateerror` has been
 told, and its `finished` settles after it, as the method's result does.
 Each entry keeps where the document was scrolled to as it left it, which a
@@ -781,9 +786,9 @@ traversal back restores where `history.scrollRestoration` is `auto`; an
 intercepted navigation scrolls once its handlers are done — a traversal to
 where its entry was, anything else to its fragment or the top — unless the
 page asked for `scroll: 'manual'` and calls the event's `scroll()` itself.
-A frame keeps a history of its own over the frame's URL. Not yet: a form's
-submission fires no `navigate`, and
-the host's own entries before and after the page's are not in
+A frame keeps a history of its own over the frame's URL. Not yet: a
+form's submission aimed at another window fires nothing in it, and the
+host's own entries before and after the page's are not in
 `navigation.entries()`.
 
 **A script's animations are drawn where the page's timing has them.**
