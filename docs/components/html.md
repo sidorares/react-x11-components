@@ -832,7 +832,13 @@ as the reader's is. A caret the page puts somewhere draws nothing, and
 leaves the reader's selection none; and the reader's going away — at a
 press, at a key — leaves the page's as it was, so an edit at a caret is
 made where the page has it. A selection's direction is not the reader's to
-tell: one read back is forward.
+tell: one read back is forward. `modify()` moves or extends the focus by a
+character or a word through the text the document draws, past white space
+it collapses and on from one element's text into the next's, as an arrow
+key moves a caret; a line or a coarser step moves nothing yet. A text
+field's selection is the page's alone: `select()` and `setSelectionRange()`
+are read back, and the widget does not show them, since core's
+`<textinput>` and `<textarea>` take no selection from outside.
 
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their

@@ -4007,6 +4007,44 @@ export class HtmlViewNode extends Node {
     );
   }
 
+  /**
+   * Where a DOM boundary point is moved by a character or a word through
+   * the text the document draws, forwards or back (Selection API's
+   * `modify`): in the drawn text, so it steps over white space the
+   * document collapses and on from one text node into the next, wherever
+   * the elements around them begin and end. A word forwards ends where the
+   * next one does, and backwards starts where the one before does. Null
+   * where the document has no text.
+   */
+  movedPoint(
+    node: AnyNode,
+    offset: number,
+    granularity: 'character' | 'word',
+    back: boolean,
+  ): { node: AnyNode; offset: number } | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree?.textNodes?.length) return null;
+    const text = tree.text;
+    let at = unitOfPoint(tree, node, offset);
+    const high = (i: number) => /[\uD800-\uDBFF]/.test(text[i] ?? '');
+    const low = (i: number) => /[\uDC00-\uDFFF]/.test(text[i] ?? '');
+    const step = (): boolean => {
+      if (back ? at <= 0 : at >= text.length) return false;
+      if (back) at -= low(at - 1) && high(at - 2) ? 2 : 1;
+      else at += high(at) && low(at + 1) ? 2 : 1;
+      return true;
+    };
+    if (granularity === 'character') step();
+    else {
+      const word = (i: number) => /[\p{L}\p{N}_]/u.test(text[i] ?? '');
+      const next = () => (back ? at - 1 : at);
+      while (!word(next()) && step());
+      while (word(next()) && step());
+    }
+    return pointOfUnit(tree, at, !back);
+  }
+
   /** A page's custom highlights changed: drawn again with the new ones. */
   setHighlights(highlights: readonly HighlightRanges[]): void {
     if (!this._highlights.length && !highlights.length) return;
