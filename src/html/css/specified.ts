@@ -45,6 +45,11 @@ export function specifiedValue(
     if (CSS_WIDE.test(word)) return undefined;
     return parseZoom(word) === null ? null : word;
   }
+  // `contrast-color()` takes one colour and nothing else (CSS Color 5,
+  // 6.1): a value holding one of anything else is none, in any property
+  if (/contrast-color\(/i.test(value) && !contrastColorsValid(value)) {
+    return null;
+  }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     if (!/\bshape\(/i.test(value)) return undefined;
     // a shape, and a box beside it or none, in either order
@@ -65,4 +70,26 @@ export function specifiedValue(
     return box ? `${shape} ${box}` : shape;
   }
   return undefined;
+}
+
+/** Whether every `contrast-color()` in a value holds one component that
+ *  could be a colour: not none, not two, not a number, and not the `max`
+ *  and `min` an earlier draft of it took. Whether it is a colour is the
+ *  cascade's to say, which knows the system colours and the scheme. */
+function contrastColorsValid(value: string): boolean {
+  const re = /contrast-color\(/gi;
+  for (let m = re.exec(value); m; m = re.exec(value)) {
+    const open = m.index + m[0].length;
+    let depth = 1;
+    let end = open;
+    for (; end < value.length && depth > 0; end += 1) {
+      if (value[end] === '(') depth += 1;
+      else if (value[end] === ')') depth -= 1;
+    }
+    const inner = value.slice(open, depth === 0 ? end - 1 : end).trim();
+    const parts = splitValue(inner);
+    if (parts.length !== 1) return false;
+    if (/^[+-]?[\d.]/.test(inner) || /^(?:max|min)$/i.test(inner)) return false;
+  }
+  return true;
 }

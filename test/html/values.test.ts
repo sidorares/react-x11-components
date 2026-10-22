@@ -670,6 +670,17 @@ test('contrast-color() is white or black, whichever reads better on its colour',
   assert.strictEqual(kept, 'contrast-color(currentcolor)');
   assert.strictEqual(inkColor(kept!, '#000000'), '#ffffff');
   assert.strictEqual(inkColor(kept!, '#ffffff'), '#000000');
+  // and `el.style` sets none of what is no colour, where it keeps any value
+  // of one it has no grammar for as written
+  for (const value of ['contrast-color()', 'contrast-color(white max bar)']) {
+    assert.strictEqual(specifiedValue('background-color', value), null);
+  }
+  for (const value of [
+    'contrast-color(buttonface)',
+    'color-mix(contrast-color(blue) 100%, purple 0%)',
+  ]) {
+    assert.strictEqual(specifiedValue('background-color', value), undefined);
+  }
 });
 
 test('color-mix() with no space named mixes in oklab', () => {
