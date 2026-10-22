@@ -1017,6 +1017,18 @@ the Interop 2026 focus areas through `<Html scripts>`
   headers and hands each chunk to the body's stream (`__fetchChunk`,
   `__fetchEnd`, `_pump`), and a worker's crosses its port the same way.
   The timeout bounds the wait for the headers only.
+- **A page's `load` waits for its frames'** (HTML's "completely loaded"
+  holds the document's load event until every child navigable's has
+  fired). The runner held `load` for the parse and the subresources only,
+  so a test reading a frame's document in the page's `onload` found it at
+  `about:blank`, and WPT's navigation tests navigated a frame that had not
+  loaded yet: its `navigate('#')` resolved against the page and loaded the
+  test page into the frame, which loaded it into its own frame, until the
+  process ran out of memory. The host counts the frames it is loading
+  (`framesLoading`) and the runner completes the page when the count
+  reaches nothing; a frame resolves against its own URL; and a frame
+  whose source is the page's own document, its fragment aside, loads
+  nothing, as a browser refuses a frame nested in itself.
 
 ## What core would be asked
 

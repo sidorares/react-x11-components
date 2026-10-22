@@ -4900,6 +4900,7 @@ export function installDom(
     'document',
     'location',
     'history',
+    'navigation',
     'visualViewport',
     'scrollTo',
     'scroll',
@@ -4917,6 +4918,31 @@ export function installDom(
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
   const frameWindows = new WeakMap<object, Any>();
+  /** Each frame document's session history: its entries are the frame's,
+   *  and what leaves them is the frame's navigation (`frameNavigate`). */
+  const frameSessions = new WeakMap<object, Any>();
+  const frameSessionOf = (frame: Any, doc: Any, target: Any): Any => {
+    let made = frameSessions.get(doc);
+    if (!made) {
+      const at = (): string => String(call('frameLocation', frame._id));
+      made = makeSession({
+        url: at,
+        // a frame's document's address, or for `about:blank` its creator's
+        base: () => (/^about:/.test(at()) ? document.baseURI : at()),
+        // a frame's document the page reaches into is the one it loaded
+        loaded: () => true,
+        setUrl: (url) => void call('setFrameLocation', frame._id, url),
+        doc: () => doc,
+        target,
+        away: (url) => void call('frameNavigate', frame._id, url),
+        tellsFragments: false,
+        reload: () => void call('frameNavigate', frame._id, at()),
+        go: () => {},
+      });
+      frameSessions.set(doc, made);
+    }
+    return made;
+  };
   /** Each frame's WindowProxy, and the frame each is of. */
   const frameProxies = new WeakMap<object, Any>();
   const proxiedFrames = new WeakMap<object, Any>();
@@ -4966,6 +4992,9 @@ export function installDom(
       pageXOffset: () => 0,
       pageYOffset: () => 0,
       devicePixelRatio: () => viewport().dpr,
+      // its own session history (`makeSession`), made as it is asked for
+      history: () => frameSessionOf(frame, doc, target).history,
+      navigation: () => frameSessionOf(frame, doc, target).navigation,
     };
     for (const [name, get] of Object.entries(own)) {
       Object.defineProperty(win, name, {
@@ -5182,8 +5211,19 @@ export function installDom(
       if (!frameDocumentOf(frame)) throw crossOrigin();
       return String(call('frameLocation', frame._id));
     };
-    const go = (url: Any): void => {
-      call('frameNavigate', frame._id, String(call('resolve', str(url))));
+    const go = (url: Any, replace = false): void => {
+      const href = String(call('resolve', str(url)));
+      const doc = frameDocumentOf(frame);
+      const made = doc && frameSessions.get(doc);
+      if (made) {
+        navigateTo(
+          made.session,
+          href,
+          pushOrReplace(made.session, href, replace),
+        );
+      } else {
+        call('frameNavigate', frame._id, href);
+      }
     };
     loc = Object.create(Object.getPrototypeOf(location), {
       href: {
@@ -5197,10 +5237,14 @@ export function installDom(
           go(url);
         },
       },
-      replace: { value: go },
+      replace: {
+        value(url: Any) {
+          go(url, true);
+        },
+      },
       reload: {
         value() {
-          go(at());
+          go(at(), true);
         },
       },
       toString: {
@@ -7664,6 +7708,12 @@ export function installDom(
         }
         break;
       }
+      if (
+        (at instanceof HTMLAnchorElement || at instanceof HTMLAreaElement) &&
+        !followLink(at, false)
+      ) {
+        break;
+      }
       if (call('activate', at._id)) break;
       if (
         at instanceof HTMLAnchorElement ||
@@ -8791,13 +8841,13 @@ export function installDom(
       return String(call('location'));
     },
     set href(v: Any) {
-      call('navigate', String(call('resolve', str(v))), false);
+      navigateDocument(String(call('resolve', str(v))), false);
     },
     assign(url: Any): void {
-      call('navigate', String(call('resolve', str(url))), false);
+      navigateDocument(String(call('resolve', str(url))), false);
     },
     replace(url: Any): void {
-      call('navigate', String(call('resolve', str(url))), true);
+      navigateDocument(String(call('resolve', str(url))), true);
     },
     reload(): void {
       call('reload');
@@ -8814,7 +8864,7 @@ export function installDom(
       set(v: Any) {
         if (part === 'hash') {
           const hash = str(v).replace(/^#?/, '#');
-          call('navigate', this.href.split('#')[0] + hash, false);
+          navigateDocument(this.href.split('#')[0] + hash, false);
         } else {
           const url = new URL(this.href);
           (url as Any)[part] = v;
@@ -11327,6 +11377,7 @@ export function installDom(
     'opener',
     'frameElement',
     'history',
+    'navigation',
     'localStorage',
     'sessionStorage',
     'customElements',
@@ -14091,26 +14142,1000 @@ export function installDom(
     javaEnabled: () => false,
   };
 
-  const history = {
-    get length(): number {
-      return 1;
-    },
-    state: null as Any,
-    scrollRestoration: 'auto',
-    back: () => void call('go', -1),
-    forward: () => void call('go', 1),
-    go: (n = 0) => void (n ? call('go', Number(n)) : call('reload')),
-    // the address the document is at changes; the browser's history and
-    // its address bar do not — a phase 1 limit
-    pushState(state: Any, _title: Any, url?: Any) {
-      this.state = state ?? null;
-      if (url !== undefined && url !== null) {
-        call('setLocation', String(call('resolve', str(url))));
+  // --- session history and the Navigation API (HTML 7.4 and 7.2.6) ------------
+  //
+  // Each window keeps a session history of its own — the page's, and each
+  // frame's whose window is built here: the entries its same-document
+  // navigations make — `pushState`, `replaceState`, a fragment, a
+  // navigation a `navigate` listener intercepts — each with its states and
+  // its key, and the one it is at. Traversing among them is the window's,
+  // with its `popstate` and its `hashchange`; past them, and to another
+  // document, is the host's, as it was. `navigation` is the API over the
+  // same entries. What the host is told is what it was told before: a
+  // fragment as a navigation, and the address the document is at.
+
+  interface SessionEntry {
+    url: string;
+    key: string;
+    id: string;
+    /** `history.state`, serialized (`serializeClone`), or null. */
+    state: string | null;
+    /** The Navigation API's state, serialized, or undefined for none. */
+    navState: string | undefined;
+    /** Its `NavigationHistoryEntry`, made once it is asked for. */
+    api: Any;
+    /** `history.state` read back, once. */
+    read?: { value: Any };
+  }
+  /** What a window's session history stands on. */
+  interface SessionContext {
+    url(): string;
+    /** What a URL a page gives it is resolved against. */
+    base(): string;
+    /** Whether the document has loaded, before which a navigation
+     *  replaces its entry. */
+    loaded(): boolean;
+    /** The document's address, changed with no navigation. */
+    setUrl(url: string): void;
+    doc(): Any;
+    /** Where `popstate` and `hashchange` are told: the window. */
+    target: Any;
+    /** A navigation to another document, the host's. */
+    away(url: string, replace: boolean): void;
+    /** Whether the host hears of a fragment navigation too: the page's
+     *  does, which a browser keeps an entry of its own for and scrolls. */
+    tellsFragments: boolean;
+    reload(): void;
+    go(delta: number): void;
+  }
+  /** A navigation an API method started, and the two promises it hands
+   *  back (HTML 7.2.6.10, "navigation API method tracker"). */
+  interface Tracker {
+    committed: Any;
+    finished: Any;
+    aborted: boolean;
+    commit(entry: Any): void;
+    finish(entry: Any): void;
+    fail(error: Any): void;
+  }
+  interface Session {
+    ctx: SessionContext;
+    entries: SessionEntry[];
+    index: number;
+    /** The navigation whose `navigate` event is running now, which the
+     *  next one aborts (HTML 7.2.6.10, "ongoing navigation"). */
+    ongoing: { controller: Any; tracker: Tracker | null; event: Any } | null;
+    transition: Any;
+    activation: Any;
+    navigation: Any;
+  }
+  const sessionEntry = (url: string, key?: string): SessionEntry => ({
+    url,
+    key: key ?? crypto.randomUUID(),
+    id: crypto.randomUUID(),
+    state: null,
+    navState: undefined,
+    api: null,
+  });
+  const currentOf = (s: Session): SessionEntry => s.entries[s.index];
+
+  /** Whether a URL is a fragment of the document's (HTML 7.4.2.3.3): the
+   *  same but for a fragment it has. */
+  const fragmentOf = (from: string, to: string): boolean =>
+    to.includes('#') && to.split('#')[0] === from.split('#')[0];
+  const hashOf = (url: string): string => {
+    const at = url.indexOf('#');
+    return at < 0 ? '' : url.slice(at);
+  };
+  /** Whether the document's URL may become `to` without a navigation
+   *  (HTML 7.4.4, "can have its URL rewritten"): the same origin, and for
+   *  a URL with no origin the same but for its query and fragment. */
+  const rewritable = (from: string, to: string): boolean => {
+    let a: Any;
+    let b: Any;
+    try {
+      a = new URL(from);
+      b = new URL(to);
+    } catch {
+      return false;
+    }
+    if (a.origin !== b.origin) return false;
+    if (a.origin !== 'null') return true;
+    return from.split(/[?#]/)[0] === to.split(/[?#]/)[0];
+  };
+
+  const makeTracker = (): Tracker => {
+    let commit: Any;
+    let failCommit: Any;
+    let finish: Any;
+    let failFinish: Any;
+    const committed = new Promise((ok, no) => {
+      commit = ok;
+      failCommit = no;
+    });
+    const finished = new Promise((ok, no) => {
+      finish = ok;
+      failFinish = no;
+    });
+    // a page that awaits neither is told of no rejection
+    committed.catch(() => {});
+    finished.catch(() => {});
+    let settled = false;
+    const tracker: Tracker = {
+      committed,
+      finished,
+      aborted: false,
+      commit: (entry) => commit(entry),
+      finish: (entry) => {
+        if (settled) return;
+        settled = true;
+        finish(entry);
+      },
+      fail: (error) => {
+        if (settled) return;
+        settled = true;
+        tracker.aborted = true;
+        failCommit(error);
+        failFinish(error);
+      },
+    };
+    return tracker;
+  };
+  const resultOf = (tracker: Tracker): Any => ({
+    committed: tracker.committed,
+    finished: tracker.finished,
+  });
+  /** An API method's result where it fails before it starts: both
+   *  promises rejected with the error. */
+  const earlyError = (error: Any): Any => {
+    const tracker = makeTracker();
+    tracker.fail(error);
+    return resultOf(tracker);
+  };
+  const asTrusted = <T>(event: T): T => {
+    (event as Any).isTrusted = true;
+    return event;
+  };
+
+  const TOKEN = Symbol('navigation');
+  class NavigationHistoryEntry extends EventTarget {
+    _entry!: SessionEntry;
+    _session!: Session;
+    constructor(token?: Any, entry?: SessionEntry, session?: Session) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      super();
+      this._entry = entry!;
+      this._session = session!;
+    }
+    get url(): string | null {
+      return this._entry.url;
+    }
+    get key(): string {
+      return this.index < 0 ? '' : this._entry.key;
+    }
+    get id(): string {
+      return this.index < 0 ? '' : this._entry.id;
+    }
+    get index(): number {
+      return this._session.entries.indexOf(this._entry);
+    }
+    get sameDocument(): boolean {
+      return this.index >= 0;
+    }
+    getState(): Any {
+      const state = this._entry.navState;
+      return state === undefined ? undefined : deserializeClone(state);
+    }
+  }
+  const apiEntryOf = (s: Session, entry: SessionEntry): Any =>
+    (entry.api ??= new NavigationHistoryEntry(TOKEN, entry, s));
+
+  class NavigationDestination {
+    readonly url: string;
+    readonly key: string;
+    readonly id: string;
+    readonly index: number;
+    readonly sameDocument: boolean;
+    _state: string | undefined;
+    constructor(
+      token: Any,
+      url: string,
+      index: number,
+      entry: SessionEntry | null,
+      sameDocument: boolean,
+      state: string | undefined,
+    ) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      this.url = url;
+      this.key = entry?.key ?? '';
+      this.id = entry?.id ?? '';
+      this.index = index;
+      this.sameDocument = sameDocument;
+      this._state = state;
+    }
+    getState(): Any {
+      return this._state === undefined
+        ? undefined
+        : deserializeClone(this._state);
+    }
+  }
+
+  class NavigateEvent extends Event {
+    readonly navigationType: string;
+    readonly destination: Any;
+    readonly canIntercept: boolean;
+    readonly userInitiated: boolean;
+    readonly hashChange: boolean;
+    readonly signal: Any;
+    readonly formData: Any;
+    readonly downloadRequest: string | null;
+    readonly info: Any;
+    readonly hasUAVisualTransition: boolean;
+    readonly sourceElement: Any;
+    _intercepts: Any[] = [];
+    _precommits: Any[] = [];
+    _intercepted = false;
+    _dispatching = false;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      if (
+        !init ||
+        init.destination === undefined ||
+        init.signal === undefined
+      ) {
+        throw new TypeError(
+          "Failed to construct 'NavigateEvent': required member destination or signal is undefined.",
+        );
       }
+      this.navigationType = str(init.navigationType ?? 'push');
+      this.destination = init.destination;
+      this.canIntercept = !!init.canIntercept;
+      this.userInitiated = !!init.userInitiated;
+      this.hashChange = !!init.hashChange;
+      this.signal = init.signal;
+      this.formData = init.formData ?? null;
+      this.downloadRequest = init.downloadRequest ?? null;
+      this.info = init.info;
+      this.hasUAVisualTransition = !!init.hasUAVisualTransition;
+      this.sourceElement = init.sourceElement ?? null;
+    }
+    /** HTML 7.2.6.9, `intercept()`: the navigation is the page's, done by
+     *  its handler, in the document it is in. */
+    intercept(options: Any = {}): void {
+      const fail = (message: string, name: string): never => {
+        throw new DOMException(
+          `Failed to execute 'intercept' on 'NavigateEvent': ${message}`,
+          name,
+        );
+      };
+      if (!this.isTrusted) fail('The event is not trusted.', 'SecurityError');
+      if (!this._dispatching) {
+        fail('The event is not being dispatched.', 'InvalidStateError');
+      }
+      if (!this.canIntercept) {
+        fail('The navigation cannot be intercepted.', 'SecurityError');
+      }
+      if (this._canceled) fail('The event was canceled.', 'InvalidStateError');
+      if (options?.handler !== undefined) {
+        if (typeof options.handler !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'intercept' on 'NavigateEvent': handler is not a function.",
+          );
+        }
+        this._intercepts.push(options.handler);
+      }
+      if (options?.precommitHandler !== undefined) {
+        if (typeof options.precommitHandler !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'intercept' on 'NavigateEvent': precommitHandler is not a function.",
+          );
+        }
+        if (!this.cancelable) {
+          fail(
+            'A precommit handler needs a navigation that can be canceled.',
+            'InvalidStateError',
+          );
+        }
+        this._precommits.push(options.precommitHandler);
+      }
+      this._intercepted = true;
+    }
+    /** Scrolling is the page's to ask for; nothing here restores one. */
+    scroll(): void {
+      if (!this._intercepted) {
+        throw new DOMException(
+          "Failed to execute 'scroll' on 'NavigateEvent': The navigation was not intercepted.",
+          'InvalidStateError',
+        );
+      }
+    }
+  }
+
+  class NavigationCurrentEntryChangeEvent extends Event {
+    readonly navigationType: string | null;
+    readonly from: Any;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      if (!init || init.from === undefined) {
+        throw new TypeError(
+          "Failed to construct 'NavigationCurrentEntryChangeEvent': required member from is undefined.",
+        );
+      }
+      this.navigationType = init.navigationType ?? null;
+      this.from = init.from;
+    }
+  }
+
+  class NavigationTransition {
+    readonly navigationType: string;
+    readonly from: Any;
+    readonly committed: Any;
+    readonly finished: Any;
+    constructor(token: Any, type: string, from: Any, tracker: Tracker) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      this.navigationType = type;
+      this.from = from;
+      this.committed = tracker.committed;
+      this.finished = tracker.finished;
+    }
+  }
+
+  class NavigationActivation {
+    readonly from: Any;
+    readonly entry: Any;
+    readonly navigationType: string;
+    constructor(token: Any, entry: Any) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      this.from = null;
+      this.entry = entry;
+      this.navigationType = 'push';
+    }
+  }
+
+  /** End a session's ongoing navigation as aborted: its signal,
+   *  `navigateerror`, and its promises rejected. */
+  const abortOngoing = (s: Session, error?: Any): void => {
+    const running = s.ongoing;
+    if (!running) return;
+    s.ongoing = null;
+    const reason =
+      error ?? new DOMException('The navigation was aborted.', 'AbortError');
+    running.controller.abort(reason);
+    s.transition = null;
+    dispatch(
+      s.navigation,
+      asTrusted(
+        new ErrorEvent('navigateerror', {
+          message: reason?.message ?? '',
+          error: reason,
+        }),
+      ),
+    );
+    running.tracker?.fail(reason);
+  };
+
+  interface NavigateParams {
+    url: string;
+    type: 'push' | 'replace' | 'reload' | 'traverse';
+    /** The entry a traversal goes to. */
+    target?: SessionEntry;
+    navState?: string;
+    info?: Any;
+    tracker?: Tracker | null;
+    sameDocument: boolean;
+    /** A user's: a click's, rather than a script's. */
+    userInitiated?: boolean;
+    /** The link or the form that started it. */
+    sourceElement?: Any;
+  }
+
+  /**
+   * Fire `navigate` for a navigation and, where it goes on in the document,
+   * do it (HTML 7.2.6.10, "inner navigate event firing algorithm"): an
+   * intercepted one by its handlers, a same-document one by `apply`. What
+   * came of it: done in the document, canceled, or to another document,
+   * which the caller hands to the host.
+   */
+  const navigateWith = (
+    s: Session,
+    params: NavigateParams,
+    apply: () => void,
+  ): 'same' | 'canceled' | 'other' => {
+    abortOngoing(s);
+    const from = currentOf(s);
+    const fromApi = apiEntryOf(s, from);
+    const controller = new AbortController();
+    const destination = new NavigationDestination(
+      TOKEN,
+      params.url,
+      params.target ? s.entries.indexOf(params.target) : -1,
+      params.target ?? null,
+      params.sameDocument,
+      params.navState ?? params.target?.navState,
+    );
+    const canIntercept =
+      rewritable(from.url, params.url) &&
+      (params.type !== 'traverse' || params.sameDocument);
+    const event = asTrusted(
+      new NavigateEvent('navigate', {
+        cancelable: params.type !== 'traverse' || params.sameDocument,
+        navigationType: params.type,
+        destination,
+        canIntercept,
+        hashChange:
+          params.type !== 'traverse' &&
+          params.sameDocument &&
+          fragmentOf(from.url, params.url) &&
+          hashOf(from.url) !== hashOf(params.url),
+        signal: controller.signal,
+        info: params.info,
+        userInitiated: !!params.userInitiated,
+        sourceElement: params.sourceElement ?? null,
+      }),
+    );
+    const tracker = params.tracker ?? null;
+    s.ongoing = { controller, tracker, event };
+    event._dispatching = true;
+    const go = dispatch(s.navigation, event);
+    event._dispatching = false;
+    if (s.ongoing?.event !== event) return 'canceled';
+    if (!go) {
+      abortOngoing(s);
+      return 'canceled';
+    }
+    if (!event._intercepted && !params.sameDocument) {
+      // another document: the host's, and these promises the old one's
+      s.ongoing = null;
+      return 'other';
+    }
+    if (event._intercepted) {
+      s.transition = new NavigationTransition(
+        TOKEN,
+        params.type,
+        fromApi,
+        tracker ?? makeTracker(),
+      );
+    }
+    apply();
+    const entryNow = apiEntryOf(s, currentOf(s));
+    tracker?.commit(entryNow);
+    // each handler, then the end of all of them (`navigatesuccess`)
+    const results: Any[] = [];
+    for (const handler of event._intercepts) {
+      try {
+        results.push(handler());
+      } catch (error) {
+        results.push(Promise.reject(error));
+      }
+    }
+    Promise.all(results).then(
+      () => {
+        if (s.ongoing?.event !== event) return;
+        s.ongoing = null;
+        s.transition = null;
+        dispatch(s.navigation, asTrusted(new Event('navigatesuccess')));
+        tracker?.finish(entryNow);
+      },
+      (error: Any) => {
+        if (s.ongoing?.event !== event) return;
+        abortOngoing(s, error);
+      },
+    );
+    return 'same';
+  };
+
+  const entryChanged = (s: Session, type: string | null, from: Any): void => {
+    dispatch(
+      s.navigation,
+      asTrusted(
+        new NavigationCurrentEntryChangeEvent('currententrychange', {
+          navigationType: type,
+          from,
+        }),
+      ),
+    );
+  };
+
+  /** The current entry made another, or put in place of it, by a
+   *  same-document navigation (HTML 7.4.6.2, "URL and history update
+   *  steps"), and `currententrychange` told. */
+  const commitEntry = (
+    s: Session,
+    url: string,
+    mode: 'push' | 'replace',
+    state: string | null,
+    navState: string | undefined,
+    type: string,
+  ): void => {
+    const old = currentOf(s);
+    const from = apiEntryOf(s, old);
+    const entry = sessionEntry(url, mode === 'replace' ? old.key : undefined);
+    entry.state = state;
+    entry.navState = navState;
+    let dropped: SessionEntry[];
+    if (mode === 'push') {
+      dropped = s.entries.splice(s.index + 1);
+      s.entries.push(entry);
+      s.index = s.entries.length - 1;
+    } else {
+      dropped = [old];
+      s.entries[s.index] = entry;
+    }
+    s.ctx.setUrl(url);
+    entryChanged(s, type, from);
+    for (const gone of dropped) {
+      if (gone.api) dispatch(gone.api, asTrusted(new Event('dispose')));
+    }
+  };
+
+  /** Scroll to a fragment's element, or to the top for none (HTML
+   *  7.4.6.4, "scroll to the fragment"). */
+  const scrollToFragment = (doc: Any, url: string): void => {
+    let name = hashOf(url).slice(1);
+    try {
+      name = decodeURIComponent(name);
+    } catch {}
+    const el =
+      (name && doc.getElementById(name)) ||
+      (name && doc.querySelector(`a[name="${cssEscape(name)}"]`));
+    if (el) el.scrollIntoView?.();
+    else if ((!name || name.toLowerCase() === 'top') && doc === document) {
+      G.scrollTo?.(0, 0);
+    }
+  };
+  /** `hashchange`, queued, where the fragment changed. */
+  const queueHashChange = (
+    s: Session,
+    oldURL: string,
+    newURL: string,
+  ): void => {
+    if (hashOf(oldURL) === hashOf(newURL)) return;
+    setTimer(
+      () =>
+        dispatch(
+          s.ctx.target,
+          asTrusted(new HashChangeEvent('hashchange', { oldURL, newURL })),
+        ),
+      0,
+      [],
+      false,
+    );
+  };
+  /** An entry's `history.state`, read back once and the same after. */
+  const historyStateOf = (entry: SessionEntry): Any => {
+    if (!entry.read) {
+      entry.read = {
+        value: entry.state === null ? null : deserializeClone(entry.state),
+      };
+    }
+    return entry.read.value;
+  };
+  /** Where a navigation goes: replaced where it is to the URL the document
+   *  is at (HTML 7.4.2.2, "auto"). */
+  const pushOrReplace = (
+    s: Session,
+    url: string,
+    replace: boolean,
+  ): 'push' | 'replace' =>
+    replace || url === currentOf(s).url ? 'replace' : 'push';
+
+  /** A navigation to a URL — `location`'s, `navigate()`'s: a fragment of
+   *  the document is the window's, an intercepted one too, and anything else
+   *  the host's once `navigate` lets it go (HTML 7.4.2.2, "navigate"). */
+  const navigateTo = (
+    s: Session,
+    url: string,
+    type: 'push' | 'replace',
+    options: {
+      navState?: string;
+      info?: Any;
+      tracker?: Tracker | null;
+      userInitiated?: boolean;
+      sourceElement?: Any;
+      /** Where the host goes to another document itself, as it follows a
+       *  link it was told to activate. */
+      hostFollows?: boolean;
+    } = {},
+  ): 'same' | 'canceled' | 'other' => {
+    const from = currentOf(s).url;
+    const fragment = fragmentOf(from, url);
+    const went = navigateWith(
+      s,
+      {
+        url,
+        type,
+        navState: options.navState,
+        info: options.info,
+        tracker: options.tracker,
+        userInitiated: options.userInitiated,
+        sourceElement: options.sourceElement,
+        sameDocument: fragment,
+      },
+      () => {
+        commitEntry(s, url, type, null, options.navState, type);
+        if (fragment) {
+          scrollToFragment(s.ctx.doc(), url);
+          queueHashChange(s, from, url);
+        }
+      },
+    );
+    // the host hears of a fragment as it did, and of another document where
+    // nothing kept the navigation in this one
+    if (
+      (went === 'same' && fragment && s.ctx.tellsFragments) ||
+      (went === 'other' && !options.hostFollows)
+    ) {
+      s.ctx.away(url, type === 'replace');
+    }
+    return went;
+  };
+
+  /** A link's activation, a click's or a script's (HTML 4.6.4, "follow the
+   *  hyperlink"): `navigate` first, and the host follows it only where it
+   *  goes to another document. False where the page kept it. */
+  const followLink = (anchor: Any, userInitiated: boolean): boolean => {
+    if (
+      !anchor.hasAttribute('href') ||
+      anchor.hasAttribute('download') ||
+      !/^(|_self)$/i.test(anchor.getAttribute('target') ?? '')
+    ) {
+      return true;
+    }
+    const s = pageSession.session;
+    const href = anchor.href;
+    const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+      userInitiated,
+      sourceElement: anchor,
+      hostFollows: true,
+    });
+    return went === 'other';
+  };
+
+  /** Go to another of the window's entries (HTML 7.4.6.1, "traverse the
+   *  history by a delta"), as a task: `navigate`, then the entry made the
+   *  current one, `popstate`, and `hashchange` where the fragment differs. */
+  const traverseTo = (
+    s: Session,
+    index: number,
+    info?: Any,
+    tracker?: Tracker | null,
+  ): void => {
+    setTimer(
+      () => {
+        const target = s.entries[index];
+        if (!target) {
+          tracker?.fail(
+            new DOMException('The entry is gone.', 'InvalidStateError'),
+          );
+          return;
+        }
+        const fromUrl = currentOf(s).url;
+        navigateWith(
+          s,
+          {
+            url: target.url,
+            type: 'traverse',
+            target,
+            info,
+            tracker,
+            sameDocument: true,
+          },
+          () => {
+            const from = apiEntryOf(s, currentOf(s));
+            s.index = s.entries.indexOf(target);
+            s.ctx.setUrl(target.url);
+            entryChanged(s, 'traverse', from);
+            dispatch(
+              s.ctx.target,
+              asTrusted(
+                new PopStateEvent('popstate', {
+                  state: historyStateOf(target),
+                }),
+              ),
+            );
+            queueHashChange(s, fromUrl, target.url);
+          },
+        );
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  /** Past the window's own entries, the host's history. */
+  const traverseBy = (s: Session, delta: number): void => {
+    const index = s.index + delta;
+    if (index >= 0 && index < s.entries.length) traverseTo(s, index);
+    else if (index < 0) s.ctx.go(index);
+    else s.ctx.go(index - (s.entries.length - 1));
+  };
+
+  /** HTML 7.4.3, `pushState()` and `replaceState()`: an entry of this
+   *  document's, at a URL it may have, holding the state. */
+  const updateHistory = (
+    s: Session,
+    state: Any,
+    url: Any,
+    mode: 'push' | 'replace',
+    method: string,
+  ): void => {
+    const serialized = serializeClone(state);
+    const from = currentOf(s);
+    let to = from.url;
+    if (url !== undefined && url !== null) {
+      try {
+        to = new URL(str(url), s.ctx.base()).href;
+      } catch {
+        throw new DOMException(
+          `Failed to execute '${method}' on 'History': A history state object with URL '${str(url)}' cannot be created.`,
+          'SecurityError',
+        );
+      }
+      if (!rewritable(from.url, to)) {
+        throw new DOMException(
+          `Failed to execute '${method}' on 'History': A history state object with URL '${to}' cannot be created in a document with URL '${from.url}'.`,
+          'SecurityError',
+        );
+      }
+    }
+    navigateWith(
+      s,
+      { url: to, type: mode, navState: from.navState, sameDocument: true },
+      () => commitEntry(s, to, mode, serialized, from.navState, mode),
+    );
+  };
+
+  /** `navigation` (HTML 7.2.6): the window's entries, and navigations it
+   *  starts and can take over. */
+  class Navigation extends EventTarget {
+    _s!: Session;
+    constructor(token?: Any, session?: Session) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      super();
+      this._s = session!;
+    }
+    entries(): Any[] {
+      const s = this._s;
+      return s.entries.map((e) => apiEntryOf(s, e));
+    }
+    get currentEntry(): Any {
+      return apiEntryOf(this._s, currentOf(this._s));
+    }
+    get transition(): Any {
+      return this._s.transition;
+    }
+    get activation(): Any {
+      const s = this._s;
+      return (s.activation ??= new NavigationActivation(
+        TOKEN,
+        apiEntryOf(s, s.entries[0]),
+      ));
+    }
+    get canGoBack(): boolean {
+      return this._s.index > 0;
+    }
+    get canGoForward(): boolean {
+      return this._s.index < this._s.entries.length - 1;
+    }
+    navigate(url: Any, options: Any = {}): Any {
+      const s = this._s;
+      let href: string;
+      try {
+        href = new URL(str(url), s.ctx.base()).href;
+      } catch {
+        return earlyError(
+          new DOMException(
+            `Failed to execute 'navigate' on 'Navigation': Invalid URL '${str(url)}'.`,
+            'SyntaxError',
+          ),
+        );
+      }
+      let navState: string | undefined;
+      if (options?.state !== undefined) {
+        try {
+          navState = serializeClone(options.state);
+        } catch (error) {
+          return earlyError(error);
+        }
+      }
+      const historyMode = options?.history ?? 'auto';
+      if (historyMode === 'push' && /^javascript:/i.test(href)) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'navigate' on 'Navigation': A javascript: URL cannot be pushed.",
+            'NotSupportedError',
+          ),
+        );
+      }
+      const type =
+        historyMode === 'push'
+          ? 'push'
+          : pushOrReplace(s, href, historyMode === 'replace');
+      const tracker = makeTracker();
+      navigateTo(s, href, type, { navState, info: options?.info, tracker });
+      return resultOf(tracker);
+    }
+    reload(options: Any = {}): Any {
+      const s = this._s;
+      let navState = currentOf(s).navState;
+      if (options?.state !== undefined) {
+        try {
+          navState = serializeClone(options.state);
+        } catch (error) {
+          return earlyError(error);
+        }
+      }
+      const tracker = makeTracker();
+      const url = currentOf(s).url;
+      const went = navigateWith(
+        s,
+        {
+          url,
+          type: 'reload',
+          navState,
+          info: options?.info,
+          tracker,
+          sameDocument: false,
+        },
+        () =>
+          commitEntry(
+            s,
+            url,
+            'replace',
+            currentOf(s).state,
+            navState,
+            'reload',
+          ),
+      );
+      if (went === 'other') s.ctx.reload();
+      return resultOf(tracker);
+    }
+    traverseTo(key: Any, options: Any = {}): Any {
+      const s = this._s;
+      const k = str(key);
+      const index = s.entries.findIndex((e) => e.key === k);
+      if (index < 0) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'traverseTo' on 'Navigation': Invalid key.",
+            'InvalidStateError',
+          ),
+        );
+      }
+      const tracker = makeTracker();
+      if (index === s.index) {
+        const entry = apiEntryOf(s, currentOf(s));
+        tracker.commit(entry);
+        tracker.finish(entry);
+      } else {
+        traverseTo(s, index, options?.info, tracker);
+      }
+      return resultOf(tracker);
+    }
+    back(options: Any = {}): Any {
+      if (!this.canGoBack) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'back' on 'Navigation': Cannot go back.",
+            'InvalidStateError',
+          ),
+        );
+      }
+      return this.traverseTo(this._s.entries[this._s.index - 1].key, options);
+    }
+    forward(options: Any = {}): Any {
+      if (!this.canGoForward) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'forward' on 'Navigation': Cannot go forward.",
+            'InvalidStateError',
+          ),
+        );
+      }
+      return this.traverseTo(this._s.entries[this._s.index + 1].key, options);
+    }
+    /** The current entry's state, set in place (HTML 7.2.6.4). */
+    updateCurrentEntry(options: Any): void {
+      if (!options || !('state' in Object(options))) {
+        throw new TypeError(
+          "Failed to execute 'updateCurrentEntry' on 'Navigation': required member state is undefined.",
+        );
+      }
+      const s = this._s;
+      const serialized = serializeClone(options.state);
+      const entry = currentOf(s);
+      const from = apiEntryOf(s, entry);
+      entry.navState = serialized;
+      entryChanged(s, null, from);
+    }
+  }
+  for (const type of [
+    'navigate',
+    'navigatesuccess',
+    'navigateerror',
+    'currententrychange',
+  ]) {
+    Object.defineProperty(Navigation.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
+  }
+  Object.defineProperty(NavigationHistoryEntry.prototype, 'ondispose', {
+    get(this: Any): Any {
+      return this._handlers.dispose ?? null;
     },
-    replaceState(state: Any, title: Any, url?: Any) {
-      this.pushState(state, title, url);
+    set(this: Any, fn: Any) {
+      this._handlers.dispose = typeof fn === 'function' ? fn : null;
     },
+    configurable: true,
+  });
+
+  /** A window's session history, and its `history` and `navigation`. */
+  const makeSession = (
+    ctx: SessionContext,
+  ): { session: Session; history: Any; navigation: Any } => {
+    const s: Session = {
+      ctx,
+      entries: [sessionEntry(ctx.url())],
+      index: 0,
+      ongoing: null,
+      transition: null,
+      activation: null,
+      navigation: null,
+    };
+    s.navigation = new Navigation(TOKEN, s);
+    const history = {
+      get length(): number {
+        return s.entries.length;
+      },
+      get state(): Any {
+        return historyStateOf(currentOf(s));
+      },
+      scrollRestoration: 'auto',
+      back: () => traverseBy(s, -1),
+      forward: () => traverseBy(s, 1),
+      go: (n: Any = 0) => {
+        const delta = Number(n) || 0;
+        if (delta) traverseBy(s, delta);
+        else ctx.reload();
+      },
+      pushState(state: Any, _title: Any, url?: Any) {
+        updateHistory(s, state, url, 'push', 'pushState');
+      },
+      replaceState(state: Any, _title: Any, url?: Any) {
+        updateHistory(s, state, url, 'replace', 'replaceState');
+      },
+    };
+    return { session: s, history, navigation: s.navigation };
+  };
+
+  const pageSession = makeSession({
+    url: () => String(call('location')),
+    base: () => document.baseURI,
+    loaded: () => document.readyState === 'complete',
+    setUrl: (url) => void call('setLocation', url),
+    doc: () => document,
+    get target() {
+      return windowTarget;
+    },
+    away: (url, replace) => void call('navigate', url, replace),
+    tellsFragments: true,
+    reload: () => void call('reload'),
+    go: (delta) => void call('go', delta),
+  });
+  const history = pageSession.history;
+  const navigation = pageSession.navigation;
+  /** `location`'s navigations: to a URL, or in place of the entry, which
+   *  is where one goes while the document still loads (HTML 7.2.4,
+   *  "Location-object navigate"; nothing here has transient activation). */
+  const navigateDocument = (url: string, replace: boolean): void => {
+    const s = pageSession.session;
+    navigateTo(s, url, pushOrReplace(s, url, replace || !s.ctx.loaded()));
   };
 
   // An accessor of a base interface answers for any node, as a browser's
@@ -15456,6 +16481,13 @@ export function installDom(
     ErrorEvent,
     HashChangeEvent,
     PopStateEvent,
+    Navigation,
+    NavigationHistoryEntry,
+    NavigationDestination,
+    NavigateEvent,
+    NavigationCurrentEntryChangeEvent,
+    NavigationTransition,
+    NavigationActivation,
     ToggleEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
@@ -15663,6 +16695,7 @@ export function installDom(
     enumerable: true,
   });
   define('history', history);
+  define('navigation', navigation);
   define('navigator', navigator);
   // Bun's context has a `console` of its own that no definition on the
   // global replaces — a page reads it whatever this defines — but whose
@@ -16316,9 +17349,11 @@ export function installDom(
           ),
         );
         // the rest of a click's default is the host's, and a popover's
-        // invoker this one's
+        // invoker this one's, and a link's `navigate` the page's first
         if (go && e.type === 'click' && (e.button ?? 0) === 0) {
           popoverActivation(target);
+          const anchor = target.closest?.('a[href], area[href]');
+          if (anchor && !followLink(anchor, true)) return false;
         }
         return go;
       }

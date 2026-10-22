@@ -2635,6 +2635,111 @@ test('a modal dialog with nothing in it to focus keeps the keys in the document,
   assert.equal(doc.text('out'), 'closed');
 });
 
+test('a page keeps its own session history: pushState and replaceState, a fragment, and traversal with popstate and hashchange', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div id="x"></div><script>' +
+      'var r = [];' +
+      'window.addEventListener("popstate", function (e) { r.push("pop " + JSON.stringify(e.state) + " " + location.hash); });' +
+      'window.addEventListener("hashchange", function (e) { r.push("hash " + e.newURL.split("#")[1]); });' +
+      'window.onload = function () {' +
+      '  history.pushState({ a: 1 }, "", "#one"); r.push(history.length, JSON.stringify(history.state), location.hash);' +
+      '  history.replaceState({ a: 2 }, "", "#two"); r.push(history.length, JSON.stringify(history.state));' +
+      '  try { history.pushState(null, "", "https://other.example/"); } catch (e) { r.push(e.name); }' +
+      '  location.hash = "x"; r.push(history.length);' +
+      '  setTimeout(function () { history.back(); setTimeout(function () { history.go(-1);' +
+      "    setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 30); }, 30); }, 30);" +
+      '};' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      '2',
+      '{"a":1}',
+      '#one',
+      '2',
+      '{"a":2}',
+      'SecurityError',
+      '3',
+      'hash x',
+      'pop {"a":2} #two',
+      'hash two',
+      'pop null ',
+      // the first entry's URL has no fragment
+      'hash undefined',
+    ].join('|'),
+  );
+  // a fragment the page navigated to is told to the host, as it was
+  assert.deepStrictEqual(doc.links, [`${PAGE}#x`]);
+});
+
+test('navigation is the page’s entries, and navigate() fires navigate, which a listener intercepts, cancels or lets go', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><a id="link" href="elsewhere">go</a><script>' +
+      'var r = [];' +
+      'navigation.addEventListener("currententrychange", function (e) { r.push("change " + e.navigationType); });' +
+      'navigation.addEventListener("navigatesuccess", function () { r.push("success"); });' +
+      'navigation.addEventListener("navigateerror", function (e) { r.push("error " + e.error.name); });' +
+      'window.onload = async function () {' +
+      '  r.push(navigation.entries().length, navigation.currentEntry.index, navigation.canGoBack);' +
+      // a fragment: navigate, the entry, success
+      '  navigation.onnavigate = function (e) { r.push("navigate " + e.navigationType + " " + e.hashChange + " " + e.canIntercept); };' +
+      '  var res = navigation.navigate("#a", { state: { s: 1 }, info: "i" });' +
+      '  var entry = await res.committed; r.push(entry.index, JSON.stringify(entry.getState()));' +
+      '  await res.finished;' +
+      // another path, kept in the page by its handler
+      '  navigation.onnavigate = function (e) { e.intercept({ handler: function () { return new Promise(function (ok) { setTimeout(ok, 10); }); } }); };' +
+      '  await navigation.navigate("kept").finished; r.push(location.pathname.split("/").pop(), navigation.entries().length);' +
+      // canceled: rejected, and nothing changes
+      '  navigation.onnavigate = function (e) { e.preventDefault(); };' +
+      '  try { await navigation.navigate("#b").committed; } catch (e) { r.push("rejected " + e.name); }' +
+      '  navigation.onnavigate = null;' +
+      '  navigation.updateCurrentEntry({ state: 5 }); r.push(navigation.currentEntry.getState());' +
+      '  await navigation.back().finished; r.push(navigation.currentEntry.index, location.hash);' +
+      // a link a listener intercepts stays in the page, and the host follows none
+      '  navigation.onnavigate = function (e) { r.push("link " + (e.sourceElement && e.sourceElement.id)); e.intercept(); };' +
+      '  document.getElementById("link").click();' +
+      "  setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 30);" +
+      '};' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      '1',
+      '0',
+      'false',
+      'navigate push true true',
+      'change push',
+      // with no handler, success is a microtask queued in navigate() itself
+      // (WebIDL's "wait for all"), ahead of what awaits `committed`
+      'success',
+      '1',
+      '{"s":1}',
+      'change push',
+      'success',
+      'kept',
+      '3',
+      'error AbortError',
+      'rejected AbortError',
+      'change null',
+      '5',
+      'change traverse',
+      'success',
+      '1',
+      '#a',
+      'link link',
+      'change push',
+      'success',
+    ].join('|'),
+  );
+  assert.deepStrictEqual(
+    doc.links,
+    [`${PAGE}#a`],
+    'the host heard of the fragment, and of neither the kept path nor the link',
+  );
+});
+
 test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

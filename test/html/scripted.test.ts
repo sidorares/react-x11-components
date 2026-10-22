@@ -270,8 +270,10 @@ test('what leaves the document is handed to its seams: location, the title, the 
     { scripts },
   );
   await until(page, 'out', (s) => s === 'done');
+  // an address assigned while the document is loading, with no user
+  // activation, replaces its entry (HTML's Location-object navigate)
   assert.deepEqual(went, [
-    'here https://example.test/next.html',
+    'replace https://example.test/next.html',
     'tab https://example.test/other',
   ]);
   assert.deepEqual(titles, ['Named']);

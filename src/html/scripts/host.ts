@@ -1240,6 +1240,24 @@ export class DomHost {
   frameLoaded(frame: Element): void {
     if (this._disposed || !this.entries) return;
     this.entries.call('__fire', [this.idOf(frame), 'load']);
+    this._frameDone(frame);
+  }
+
+  /** The frames whose document is on its way, which hold the page's own
+   *  `load` until theirs (HTML 7.4.5, "delay the load event"). */
+  private _framesLoading = new Set<Element>();
+  /** Told once no frame in the document is loading. */
+  onFramesLoaded: (() => void) | null = null;
+  /** Whether a frame in the document is still loading its document. */
+  get framesLoading(): boolean {
+    for (const frame of this._framesLoading) {
+      if (!this._inDocument(frame)) this._framesLoading.delete(frame);
+    }
+    return this._framesLoading.size > 0;
+  }
+  private _frameDone(frame: Element): void {
+    if (!this._framesLoading.delete(frame)) return;
+    if (!this.framesLoading) this.onFramesLoaded?.();
   }
 
   /** Scroll containers in the document scrolled: each one's `scroll`,
@@ -2325,6 +2343,10 @@ export class DomHost {
       }
       case 'frameNavigate':
         this.navigateFrame(this._element(a), text(b), null);
+        return null;
+      // a frame's address changed by its own history, with no navigation
+      case 'setFrameLocation':
+        this._frameAt.set(this._element(a), text(b));
         return null;
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
@@ -3521,12 +3543,18 @@ export class DomHost {
   ): void {
     const serial = (this._frameLoads.get(frame) ?? 0) + 1;
     this._frameLoads.set(frame, serial);
+    this._framesLoading.add(frame);
     const loaded = (): void => {
       if (this._disposed || !this.entries) return;
       if (this._frameLoads.get(frame) !== serial) return;
       this.entries.call('__fire', [this.idOf(frame), 'load']);
+      this._frameDone(frame);
     };
-    const src = this._frameSrc(frame);
+    let src = this._frameSrc(frame);
+    // a frame is never its own document's address again, which would hold
+    // the page in itself without end (HTML 7.8.1, the iframe's "process the
+    // iframe attributes", an ancestor's URL)
+    if (src && src.split('#')[0] === this.url.split('#')[0]) src = null;
     // another origin's frame is loaded where the browser draws frames, to
     // run in a realm of its own, at its own origin, which reaches this one
     // as one window of another origin reaches another; elsewhere nothing of

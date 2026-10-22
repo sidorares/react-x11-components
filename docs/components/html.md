@@ -744,9 +744,9 @@ since this component navigates nowhere by itself:
 | ----------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `fetch`     | none: every request fails | A page's requests, as above.                                                                                            |
 | `load`      | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                 |
-| `navigate`  | nothing                   | An address assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                        |
+| `navigate`  | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).    |
 | `reload`    | nothing                   | `location.reload()`.                                                                                                    |
-| `go`        | nothing                   | `history.go`, `back` and `forward` past the page's own `pushState` steps.                                               |
+| `go`        | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                         |
 | `title`     | nothing                   | `document.title` was set.                                                                                               |
 | `log`       | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                 |
 | `timeout`   | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                      |
@@ -758,6 +758,25 @@ since this component navigates nowhere by itself:
 | `viewport`  | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                 |
 | `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                       |
 | `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                      |
+
+**A page keeps its own session history** (HTML 7.4). `pushState`,
+`replaceState` and a navigation to a fragment are entries of the
+document's, and `history.back`, `forward` and `go` traverse them as a task
+that tells `popstate`, and `hashchange` where the fragment differs; only a
+step past them is the host's `go`. `navigation` is the same entries through
+the Navigation API: `navigate()`, `reload()`, `traverseTo()`, `back()` and
+`forward()` fire `navigate`, which a listener may cancel, or `intercept()`
+to keep the navigation in the document — its URL changes, its entry is
+`currentEntry` and `currententrychange` is told, and the result's
+`committed` and `finished` settle as the handlers do, with `navigatesuccess`
+or `navigateerror`. A link followed and an address assigned to `location`
+fire it first too, so the host's `navigate` and `onLink` hear only of a
+navigation to another document that nothing kept. An address assigned while
+the document still loads replaces its entry, as HTML's Location-object
+navigate has it with no user activation. A frame keeps a history of its own
+over the frame's URL. Not yet: a form's submission fires no `navigate`, and
+the host's own entries before and after the page's are not in
+`navigation.entries()`.
 
 **A script's animations are drawn where the page's timing has them.**
 `animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's
