@@ -552,6 +552,9 @@ export interface HtmlHandle {
   scrollElementTo(
     element: Element,
     to: { x?: number; y?: number },
+    /** A relative scroll, `scrollBy()`'s, which a snap container snaps
+     *  in the direction it went. */
+    relative?: boolean,
   ): { x: number; y: number } | null;
   /** The document's `<title>`, if it had one. */
   readonly title: string | null;
@@ -1090,8 +1093,11 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         properties: readonly string[],
       ) =>
         nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
-      scrollElementTo: (element: Element, to: { x?: number; y?: number }) =>
-        nodeRef.current?.scrollElementTo(element, to) ?? null,
+      scrollElementTo: (
+        element: Element,
+        to: { x?: number; y?: number },
+        relative?: boolean,
+      ) => nodeRef.current?.scrollElementTo(element, to, relative) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
       customProperty: (

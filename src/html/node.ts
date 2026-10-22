@@ -607,6 +607,10 @@ function containerSizer(
   };
 }
 
+/** How long the wheel rests on a snap container before it snaps: past the
+ *  gap between one notch and the next of a turn. */
+const WHEEL_SNAP_MS = 60;
+
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
   Nothing = 0,
@@ -7293,6 +7297,9 @@ export class HtmlViewNode extends Node {
   scrollElementTo(
     element: Element,
     to: { x?: number; y?: number },
+    /** A relative scroll — `scrollBy()` — which snaps in the direction it
+     *  moved (`snapTo`'s `from`). */
+    relative = false,
   ): ScrollOffset | null {
     this._prepare(this.abs.width || 1);
     const box = this._scrollerOf(element);
@@ -7304,7 +7311,12 @@ export class HtmlViewNode extends Node {
     // where a scroll snap container comes to rest
     const snap = box.style.scrollSnapType && this._snapContainerOf(box);
     if (snap) {
-      const at = snapTo(snap, x * s, y * s);
+      const at = snapTo(
+        snap,
+        x * s,
+        y * s,
+        relative ? { x: state.x, y: state.y } : null,
+      );
       this._snapped.set(element, {
         x: snapKey(at.targetX),
         y: snapKey(at.targetY),
@@ -7320,8 +7332,10 @@ export class HtmlViewNode extends Node {
   // A script's scroll of a snap container — a scroll container in the
   // document, or the viewport — comes to rest where `snapTo` says, and the
   // area it lines up on each axis is noted by its element, so that a layout
-  // that moves it scrolls the container to it again (`_resnap`). What the
-  // reader scrolls with the wheel is not snapped.
+  // that moves it scrolls the container to it again (`_resnap`). A scroll
+  // key snaps as it scrolls, and the wheel once it has rested on a
+  // container for `WHEEL_SNAP_MS`, each in the direction it went from where
+  // it started (`_snapUserScroll`).
 
   /** The area each snap container was last snapped to on each axis, by
    *  the container's element, and the viewport's by the document. */
@@ -7481,11 +7495,58 @@ export class HtmlViewNode extends Node {
     if (!box) return;
     const state = scrollStateOf(box);
     const s = this._scale;
+    // a snap container snaps once the wheel has rested on it, in the
+    // direction it went from where it was when the wheel began
+    if (box.style.scrollSnapType && box.el) {
+      const gesture = this._wheelGesture;
+      if (gesture?.box !== box) {
+        if (gesture) snapClock.disarm(gesture.timer);
+        this._wheelGesture = {
+          box,
+          from: { x: state.x, y: state.y },
+          timer: snapClock.arm(() => this._snapUserScroll(), WHEEL_SNAP_MS),
+        };
+      } else {
+        snapClock.disarm(gesture.timer);
+        gesture.timer = snapClock.arm(
+          () => this._snapUserScroll(),
+          WHEEL_SNAP_MS,
+        );
+      }
+    }
     this._scrollBox(
       box,
       state.x / s + (wheelScrolls(box, 'x') ? (by.x ?? 0) : 0),
       state.y / s + (wheelScrolls(box, 'y') ? (by.y ?? 0) : 0),
     );
+  }
+
+  /** The wheel's scroll of a snap container, until it rests: where the
+   *  container was when it began. */
+  private _wheelGesture: {
+    box: Box;
+    from: { x: number; y: number };
+    timer: unknown;
+  } | null = null;
+
+  /** The wheel rested on a snap container: it comes to rest where the
+   *  snap points ahead of where the gesture began say. */
+  private _snapUserScroll(): void {
+    const gesture = this._wheelGesture;
+    this._wheelGesture = null;
+    if (!gesture || !gesture.box.el) return;
+    const tree = this._tree;
+    if (!tree || this._scrollerOf(gesture.box.el) !== gesture.box) return;
+    const state = scrollStateOf(gesture.box);
+    const s = this._scale;
+    const snap = this._snapContainerOf(gesture.box);
+    if (!snap) return;
+    const at = snapTo(snap, state.x, state.y, gesture.from);
+    this._snapped.set(gesture.box.el, {
+      x: snapKey(at.targetX),
+      y: snapKey(at.targetY),
+    });
+    this._scrollBox(gesture.box, at.x / s, at.y / s);
   }
 
   /** A press at a logical window point: where the scroll keys start from
@@ -7534,6 +7595,15 @@ export class HtmlViewNode extends Node {
         (axis === 'x' ? state.clientWidth : state.clientHeight) / s;
       const to = step(at, max, client);
       if (Math.abs(to - at) < 0.5) continue;
+      // a snap container rests at the next snap point the key's way
+      if (box.style.scrollSnapType && box.el) {
+        this.scrollElementTo(
+          box.el,
+          axis === 'x' ? { x: to, y } : { x, y: to },
+          true,
+        );
+        return true;
+      }
       this._scrollBox(box, axis === 'x' ? to : x, axis === 'y' ? to : y);
       return true;
     }
@@ -10318,6 +10388,22 @@ export const resizeClock = {
   },
 };
 
+/**
+ * The clock the wheel rests on before a snap container snaps
+ * (`_snapUserScroll`), as `hoverClock` is a held hover's: through
+ * `globalThis`, unref'd, and exported for a test to hold.
+ */
+export const snapClock = {
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
 /** How soon after the last a width that moves again is a drag's: a window
  *  edge dragged moves it a frame at a time. */
 const RESIZE_BURST_MS = 200;
@@ -11134,8 +11220,13 @@ function snapAreasIn(
   };
   const walk = (b: Box): void => {
     for (const child of b.children) {
+      // an element's box or a pseudo-element's, and not the text, nor an
+      // anonymous box, which takes its parent's `scroll-snap-align` with
+      // the rest of its style and is no area of its own
       if (
         child.style.scrollSnapAlign !== NO_SNAP_ALIGN &&
+        child.kind !== 'text' &&
+        (child.el !== null || child.pseudo !== null) &&
         hasRect(child) &&
         nearest(child)
       ) {

@@ -2729,10 +2729,11 @@ export class DomHost {
         this.flush();
         const x = typeof b === 'number' && Number.isFinite(b) ? b : undefined;
         const y = typeof c === 'number' && Number.isFinite(c) ? c : undefined;
-        const to = this._seams.handle.scrollElementTo(this._element(a), {
-          x,
-          y,
-        });
+        const to = this._seams.handle.scrollElementTo(
+          this._element(a),
+          { x, y },
+          d === true,
+        );
         return to ? `${to.x},${to.y}` : '';
       }
       case 'scrollTo': {
