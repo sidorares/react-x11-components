@@ -3302,6 +3302,29 @@ test(':muted matches a muted media element, by its attribute or a script’s say
   );
 });
 
+test(':playing and :paused follow a media element’s paused, as play(), pause() and load() set it, and the cascade with them', async () => {
+  const doc = await hosted(
+    '<style>video:playing ~ #s { color: rgb(1, 2, 3) } video:paused ~ #s { color: rgb(4, 5, 6) }</style>' +
+      '<p id="out"></p><video id="v"></video><video id="auto" autoplay></video><p id="s">s</p><script>' +
+      'var v = document.getElementById("v"), s = document.getElementById("s"); var r = [];' +
+      'r.push(CSS.supports("selector(:playing)"), CSS.supports("selector(:paused)"), CSS.supports("selector(:seeking)"), CSS.supports("selector(:buffering)"), CSS.supports("selector(:stalled)"));' +
+      // paused until it is played, but for one the player plays at once
+      'r.push(v.matches(":paused"), v.matches(":playing"), document.getElementById("auto").matches(":playing"), getComputedStyle(s).color);' +
+      // both play now
+      'v.play(); r.push(v.matches(":playing"), document.querySelector("video:paused"), getComputedStyle(s).color);' +
+      'v.pause(); r.push(v.matches(":paused"));' +
+      'v.play(); v.load(); r.push(v.paused, v.matches(":paused"));' +
+      // nothing loads, so nothing seeks, buffers or stalls; and no other element plays
+      'r.push(document.querySelectorAll(":seeking, :buffering, :stalled").length, document.querySelectorAll("p:playing, p:paused").length);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|true|true|true|false|true|rgb(4, 5, 6)|true||rgb(1, 2, 3)|true|true|true|0|0',
+  );
+});
+
 test('the page’s selection is the reader’s: getSelection() answers what the reader selected, and what the page selects is drawn and copied', async () => {
   const doc = await hosted('<p id="out"></p><p id="t">hello world</p>');
   // the reader selects, and the page reads it

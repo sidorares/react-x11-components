@@ -33,6 +33,7 @@ import {
   isModal,
   isPopoverOpen,
   isMuted,
+  isPaused,
   mutationGeneration,
   shadowRootAround,
   shadowRootOf,
@@ -1750,6 +1751,11 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   'popover-open': ['a:popover', 'a:-rx-popover-open'],
   muted: ['a:muted', 'a:-rx-muted'],
   'volume-locked': [],
+  playing: ['a:autoplay', 'a:-rx-paused'],
+  paused: ['a:autoplay', 'a:-rx-paused'],
+  seeking: [],
+  buffering: [],
+  stalled: [],
   'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   empty: ['s'],
@@ -6375,6 +6381,13 @@ const PSEUDOS = {
   // a media element muted, by its attribute or a page's script (`isMuted`)
   muted: (el: Element) => isMuted(el),
   'volume-locked': (_el: Element) => false,
+  // a media element playing or paused, as its `paused` is (`isPaused`);
+  // nothing here seeks, buffers or stalls, since nothing loads
+  playing: (el: Element) => isPaused(el) === false,
+  paused: (el: Element) => isPaused(el) === true,
+  seeking: (_el: Element) => false,
+  buffering: (_el: Element) => false,
+  stalled: (_el: Element) => false,
   // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
   // css-select has neither, and dropped every rule that named one
   open: (el: Element) => opens(el) && el.attribs.open !== undefined,
