@@ -1894,6 +1894,10 @@ export class DomHost {
         return (this._node(a) as ShadowRoot).mode;
       case 'shadowDelegates':
         return (this._node(a) as ShadowRoot).delegatesFocus;
+      // a declarative root whose registry is null, which the page's
+      // registries are kept by
+      case 'shadowRegistryNull':
+        return (this._node(a) as ShadowRoot).registryNull;
 
       // --- custom elements (`_custom…`)
       // a name defined, local name `b` (its own, or the element an `is`
@@ -2011,7 +2015,9 @@ export class DomHost {
       }
       case 'setHtml': {
         const parent = this._parent(a);
-        this._replaceAll(parent, this._parseIn(parent, text(b)));
+        // `setHTMLUnsafe` takes declarative shadow roots, as the document's
+        // parser does (HTML 8.5.1)
+        this._replaceAll(parent, this._parseIn(parent, text(b), c === true));
         return null;
       }
       case 'adjacent': {
@@ -3871,7 +3877,11 @@ export class DomHost {
    * `innerHTML`, and yahoo.com's had `s<e` in it, which parsed as markup
    * cut the script off at a tag.
    */
-  private _parseIn(context: AnyNode | null, markup: string): ChildNode[] {
+  private _parseIn(
+    context: AnyNode | null,
+    markup: string,
+    declarative = false,
+  ): ChildNode[] {
     const name = context instanceof Element ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
     if (name === 'textarea' || name === 'title') {
@@ -3881,12 +3891,13 @@ export class DomHost {
       const data = held ? DomUtils.textContent(held) : '';
       return data ? [new Text(data)] : [];
     }
-    return this._parse(markup);
+    return this._parse(markup, declarative);
   }
 
-  /** Markup as `innerHTML` reads it; its scripts never run. */
-  private _parse(html: string): ChildNode[] {
-    const kids = parseFragment(html);
+  /** Markup as `innerHTML` reads it, or `setHTMLUnsafe` with its
+   *  declarative shadow roots; its scripts never run. */
+  private _parse(html: string, declarative = false): ChildNode[] {
+    const kids = parseFragment(html, declarative);
     for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
       this.inert.add(el);
     }

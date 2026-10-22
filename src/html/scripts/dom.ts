@@ -1608,9 +1608,9 @@ export function installDom(
           ? (ELEMENT_CLASSES[name] ??
             (SVG_TAGS.has(name)
               ? (SVG_CLASSES[name] ?? SVGElement)
-              : HTMLElement))
+              : htmlKind(name)))
           : ns === HTML_NS
-            ? (ELEMENT_CLASSES[name] ?? HTMLElement)
+            ? (ELEMENT_CLASSES[name] ?? htmlKind(name))
             : ns === SVG_NS
               ? (SVG_CLASSES[name.slice(name.indexOf(':') + 1)] ?? SVGElement)
               : Element
@@ -2077,6 +2077,9 @@ export function installDom(
     get delegatesFocus(): boolean {
       return call('shadowDelegates', this._id) === true;
     }
+    get customElementRegistry(): Any {
+      return shadowRegistryOf(this);
+    }
     get slotAssignment(): string {
       return 'named';
     }
@@ -2085,6 +2088,11 @@ export function installDom(
     }
     set innerHTML(v: Any) {
       call('setHtml', this._id, v === null ? '' : str(v));
+      upgradeParsed(this);
+    }
+    setHTMLUnsafe(html: Any): void {
+      call('setHtml', this._id, str(html), true);
+      upgradeParsed(this);
     }
     get activeElement(): Any {
       return null;
@@ -2653,6 +2661,11 @@ export function installDom(
     }
     set innerHTML(v: Any) {
       call('setHtml', this._id, v === null ? '' : str(v));
+      upgradeParsed(this);
+    }
+    setHTMLUnsafe(html: Any): void {
+      call('setHtml', this._id, str(html), true);
+      upgradeParsed(this);
     }
     get outerHTML(): string {
       return String(call('html', this._id, true));
@@ -2881,12 +2894,22 @@ export function installDom(
           `Failed to execute 'attachShadow' on 'Element': The provided value '${String(mode)}' is not a valid enum value of type ShadowRootMode.`,
         );
       }
-      return wrap(
+      // the document's registry, whatever the host's, but where one is
+      // named (HTML 4.13.4, scoped registries)
+      const own = this.ownerDocument === document ? customElements : null;
+      const given = registryGiven(init, own, 'attachShadow');
+      const root = wrap(
         Number(call('attachShadow', this._id, mode, !!init?.delegatesFocus)),
       );
+      shadowRegistries.set(root, given === undefined ? own : given);
+      return root;
     }
     get shadowRoot(): Any {
       return wrap(Number(call('shadowRoot', this._id)));
+    }
+    /** The registry the element was made with (HTML 4.13.4). */
+    get customElementRegistry(): Any {
+      return registryOf(this);
     }
     animate(keyframes: Any, options?: Any): Any {
       const effect = new KeyframeEffect(this, keyframes, options);
@@ -3448,7 +3471,36 @@ export function installDom(
     get content(): Any {
       return wrap(Number(call('content', this._id)));
     }
+    /** `shadowrootmode`, as an enumerated attribute reads (HTML 4.12.3):
+     *  `open` or `closed`, and nothing for anything else. */
+    get shadowRootMode(): string {
+      const mode = (this.getAttribute('shadowrootmode') ?? '').toLowerCase();
+      return mode === 'open' || mode === 'closed' ? mode : '';
+    }
+    set shadowRootMode(v: Any) {
+      this.setAttribute('shadowrootmode', str(v));
+    }
   }
+  Object.defineProperty(
+    HTMLTemplateElement.prototype,
+    'shadowRootDelegatesFocus',
+    flag('shadowrootdelegatesfocus'),
+  );
+  Object.defineProperty(
+    HTMLTemplateElement.prototype,
+    'shadowRootClonable',
+    flag('shadowrootclonable'),
+  );
+  Object.defineProperty(
+    HTMLTemplateElement.prototype,
+    'shadowRootSerializable',
+    flag('shadowrootserializable'),
+  );
+  Object.defineProperty(
+    HTMLTemplateElement.prototype,
+    'shadowRootCustomElementRegistry',
+    reflect('shadowrootcustomelementregistry'),
+  );
 
   class HTMLDetailsElement extends HTMLElement {}
   Object.defineProperty(HTMLDetailsElement.prototype, 'open', flag('open'));
@@ -7402,6 +7454,68 @@ export function installDom(
     Object.defineProperty(HTMLMetaElement.prototype, name, reflect(name));
   }
   class HTMLUnknownElement extends HTMLElement {}
+  /** The HTML elements whose interface is `HTMLElement` itself (HTML 3.2.2,
+   *  "element definitions"), which no class here names. */
+  const PLAIN_HTML = new Set([
+    'abbr',
+    'acronym',
+    'address',
+    'article',
+    'aside',
+    'b',
+    'basefont',
+    'bdi',
+    'bdo',
+    'big',
+    'center',
+    'cite',
+    'code',
+    'dd',
+    'dfn',
+    'dt',
+    'em',
+    'figcaption',
+    'figure',
+    'footer',
+    'header',
+    'hgroup',
+    'i',
+    'kbd',
+    'main',
+    'mark',
+    'nav',
+    'nobr',
+    'noembed',
+    'noframes',
+    'noscript',
+    'plaintext',
+    'rb',
+    'rp',
+    'rt',
+    'rtc',
+    'ruby',
+    's',
+    'samp',
+    'search',
+    'section',
+    'small',
+    'strike',
+    'strong',
+    'sub',
+    'summary',
+    'sup',
+    'tt',
+    'u',
+    'var',
+    'wbr',
+  ]);
+  /** The class of an HTML element no class here names: `HTMLElement` for
+   *  one whose interface it is and for a custom element's name, and
+   *  `HTMLUnknownElement` for any other (HTML 3.2.2). */
+  const htmlKind = (name: string): Any =>
+    PLAIN_HTML.has(name) || name.includes('-')
+      ? HTMLElement
+      : HTMLUnknownElement;
 
   const ELEMENT_CLASSES: Record<string, Any> = {
     a: HTMLAnchorElement,
@@ -7736,11 +7850,23 @@ export function installDom(
         : this._type === 'application/xhtml+xml'
           ? HTML_NS
           : '~';
-      if (ns === '' && this === document && customElementsDefined) {
-        const made = createCustom(name, isOption(options));
+      const own = this === document ? customElements : null;
+      const given = registryGiven(options, own, 'createElement');
+      const registry = given === undefined ? own : given;
+      const is = isOption(options);
+      if (is !== null && registry && stateOf(registry).scoped) {
+        throw new DOMException(
+          "Failed to execute 'createElement' on 'Document': A scoped registry has no customized built-in elements.",
+          'NotSupportedError',
+        );
+      }
+      if (ns === '' && registry && customElementsDefined) {
+        const made = createCustom(name, is, registry);
         if (made) return made;
       }
-      return wrap(Number(call('create', 'element', name, this._id, ns)));
+      const el = wrap(Number(call('create', 'element', name, this._id, ns)));
+      elementRegistries.set(el, registry);
+      return el;
     }
     /** An element in a namespace, its name a qualified one (DOM 4.5,
      *  "validate and extract"). */
@@ -7773,18 +7899,23 @@ export function installDom(
           'NamespaceError',
         );
       }
+      const own = this === document ? customElements : null;
+      const given = registryGiven(options, own, 'createElementNS');
+      const registry = given === undefined ? own : given;
       if (
         ns === HTML_NS &&
         prefix === null &&
-        this === document &&
+        registry &&
         customElementsDefined
       ) {
-        const made = createCustom(local, isOption(options));
+        const made = createCustom(local, isOption(options), registry);
         if (made) return made;
       }
-      return wrap(
+      const el = wrap(
         Number(call('create', 'element', qualified, this._id, ns ?? '~')),
       );
+      elementRegistries.set(el, registry);
+      return el;
     }
     createTextNode(data: Any): Any {
       return wrap(Number(call('create', 'text', str(data), this._id)));
@@ -7838,8 +7969,28 @@ export function installDom(
       );
       return new NodeIterator(root, whatToShow, filter);
     }
-    importNode(node: Any, deep = false): Any {
-      return wrap(Number(call('import', idOf(node), !!deep, this._id)));
+    /** A copy of a node in this document (DOM 4.5): `deep`, or options
+     *  with a registry for the copy's elements and `selfOnly`. */
+    importNode(node: Any, options: Any = false): Any {
+      const dict = options !== null && typeof options === 'object';
+      const deep = dict ? !options.selfOnly : !!options;
+      const own = this === document ? customElements : null;
+      const given = dict
+        ? registryGiven(options, own, 'importNode')
+        : undefined;
+      const copy = wrap(Number(call('import', idOf(node), deep, this._id)));
+      if (given !== undefined && copy instanceof Element) {
+        elementRegistries.set(copy, given);
+        for (const el of copy.querySelectorAll('*')) {
+          elementRegistries.set(el, given);
+        }
+      }
+      return copy;
+    }
+    /** The document's registry: its window's, and none for a document of
+     *  no browsing context's. */
+    get customElementRegistry(): Any {
+      return documentRegistryOf(this);
     }
     adoptNode(node: Any): Any {
       call('adoptNode', idOf(node), this._id);
@@ -8449,6 +8600,24 @@ export function installDom(
   });
   Object.defineProperty(Document.prototype, 'nodeName', {
     get: () => '#document',
+  });
+  /** `new Document()` (DOM 4.5): an XML document no browsing context has,
+   *  of type `application/xml`. Every other interface here is an illegal
+   *  constructor; this one is a page's to call. */
+  const DocumentConstructor = function Document(this: Any): Any {
+    if (!new.target) {
+      throw new TypeError(
+        "Failed to construct 'Document': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+      );
+    }
+    return wrap(Number(call('newXml', 'application/xml')));
+  } as unknown as Any;
+  DocumentConstructor.prototype = Document.prototype;
+  Object.setPrototypeOf(DocumentConstructor, Object.getPrototypeOf(Document));
+  Object.defineProperty(Document.prototype, 'constructor', {
+    value: DocumentConstructor,
+    writable: true,
+    configurable: true,
   });
 
   /** The `on<type>` properties a page sets, for the events it can have. */
@@ -14025,6 +14194,8 @@ export function installDom(
     formAssociated: boolean;
     disableInternals: boolean;
     disableShadow: boolean;
+    /** The registry it was defined in. */
+    registry: Any;
   }
   /** An element's custom element state, definition and reaction queue:
    *  each reaction an upgrade or a callback with its arguments. */
@@ -14043,11 +14214,24 @@ export function installDom(
     }
     return custom;
   };
-  const definitions = new Map<string, CustomDefinition>();
-  const definitionOf = new Map<Any, CustomDefinition>();
-  /** `whenDefined`'s promises, by name, until the name is defined. */
-  const waitingFor = new Map<string, { promise: Any; resolve: Any }>();
-  let defining = false;
+  /** A registry's own (HTML 4.13.4): its definitions by name and by
+   *  constructor, `whenDefined`'s promises until a name is defined, and
+   *  whether it is defining one now. The window's `customElements` is one,
+   *  and a page makes scoped ones (`new CustomElementRegistry`), which an
+   *  element, a shadow root or a document has as its own. */
+  interface RegistryState {
+    definitions: Map<string, CustomDefinition>;
+    byCtor: Map<Any, CustomDefinition>;
+    waiting: Map<string, { promise: Any; resolve: Any }>;
+    defining: boolean;
+    scoped: boolean;
+  }
+  const registryStates = new WeakMap<Any, RegistryState>();
+  const stateOf = (registry: Any): RegistryState => {
+    const state = registryStates.get(registry);
+    if (!state) throw new TypeError('Illegal invocation');
+    return state;
+  };
   const CONSTRUCTED = {};
   const RESERVED_NAMES = new Set([
     'annotation-xml',
@@ -14070,25 +14254,118 @@ export function installDom(
       ? str(options.is)
       : null;
 
-  /** The definition for a local name and an `is` value in this window's
-   *  document (HTML 4.13.4, "look up a custom element definition"). */
+  /** The definition for a local name and an `is` value in a registry
+   *  (HTML 4.13.4, "look up a custom element definition"); none in none. */
   const lookUp = (
+    registry: Any,
     local: string,
     is: string | null,
   ): CustomDefinition | null => {
+    if (!registry) return null;
+    const { definitions } = stateOf(registry);
     const own = definitions.get(local);
     if (own && own.localName === local) return own;
     if (is === null) return null;
     const extending = definitions.get(is);
     return extending?.localName === local ? extending : null;
   };
+
+  /**
+   * Each element's registry (HTML 4.13.4, scoped registries): the one it
+   * was made with, or, for one the parser made, its shadow root's or its
+   * document's — taken the first time it is asked and kept, so that moving
+   * the element changes nothing, as an element's registry is set as it is
+   * made. A shadow root's is the document's, the one `attachShadow` named,
+   * or null for a declarative one written with
+   * `shadowrootcustomelementregistry`, until a page initializes one.
+   */
+  const elementRegistries = new WeakMap<Any, Any>();
+  const shadowRegistries = new WeakMap<Any, Any>();
+  /** A document's registry, where it is not this window's: one a page
+   *  initialized it with, or its own window's. */
+  const documentRegistries = new WeakMap<Any, Any>();
+  const documentRegistryOf = (doc: Any): Any => {
+    if (!doc) return null;
+    if (doc === document) return customElements;
+    if (documentRegistries.has(doc)) return documentRegistries.get(doc);
+    return doc.defaultView?.customElements ?? null;
+  };
+  const shadowRegistryOf = (root: Any): Any => {
+    if (shadowRegistries.has(root)) return shadowRegistries.get(root);
+    const registry =
+      call('shadowRegistryNull', root._id) === true ? null : customElements;
+    shadowRegistries.set(root, registry);
+    return registry;
+  };
+  const registryOf = (el: Any): Any => {
+    const registry = pinnedRegistryOf(el);
+    // one moved into another document trades its old document's own
+    // registry for the new one's, and keeps a scoped one (HTML 4.13.4,
+    // "adopt")
+    return registry === customElements && el.ownerDocument !== document
+      ? documentRegistryOf(el.ownerDocument)
+      : registry;
+  };
+  const pinnedRegistryOf = (el: Any): Any => {
+    if (elementRegistries.has(el)) return elementRegistries.get(el);
+    const root = el.getRootNode();
+    const registry =
+      root instanceof ShadowRoot
+        ? shadowRegistryOf(root)
+        : root === document
+          ? customElements
+          : root !== el && root instanceof Element
+            ? pinnedRegistryOf(root)
+            : documentRegistryOf(el.ownerDocument);
+    elementRegistries.set(el, registry);
+    return registry;
+  };
+  /** A registry an element, a shadow root or an import is given (DOM 4.5,
+   *  4.9): a scoped one, or the document's own, or null; undefined where
+   *  `options` names none. */
+  const registryGiven = (options: Any, own: Any, method: string): Any => {
+    if (!options || typeof options !== 'object') return undefined;
+    const given = options.customElementRegistry;
+    if (given === undefined) return undefined;
+    if (given !== null && !registryStates.has(given)) {
+      throw new TypeError(
+        `Failed to execute '${method}': The provided value is not of type 'CustomElementRegistry'.`,
+      );
+    }
+    if (given && !stateOf(given).scoped && given !== own) {
+      throw new DOMException(
+        `Failed to execute '${method}': The registry is another document's global one.`,
+        'NotSupportedError',
+      );
+    }
+    return given;
+  };
+
   /** The definition an element would be upgraded with: its own name's, or
-   *  its `is`'s, where it is an HTML element of this window's document. */
+   *  its `is`'s, in its registry, where it is an HTML element of this
+   *  window's document. */
   const definitionFor = (el: Any): CustomDefinition | null => {
     if (el.namespaceURI !== HTML_NS || el.ownerDocument !== document) {
       return null;
     }
-    return lookUp(el.localName, el.getAttribute('is'));
+    return lookUp(registryOf(el), el.localName, el.getAttribute('is'));
+  };
+
+  /** Each constructor an upgrade or a `createElement` is running, with the
+   *  registry whose definition it runs: what `super()` looks its definition
+   *  up in (HTML 3.2.3, the active custom element constructor map), and the
+   *  window's where none is. */
+  const activeConstructors = new Map<Any, Any[]>();
+  const runConstructor = (def: CustomDefinition): Any => {
+    let stack = activeConstructors.get(def.ctor);
+    if (!stack) activeConstructors.set(def.ctor, (stack = []));
+    stack.push(def.registry);
+    try {
+      return new def.ctor();
+    } finally {
+      stack.pop();
+      if (!stack.length) activeConstructors.delete(def.ctor);
+    }
   };
 
   // the custom element reactions stack (HTML 4.13.6): an element queue a
@@ -14185,6 +14462,29 @@ export function installDom(
     });
   };
 
+  /** The elements a fragment's parse made in `root`, upgraded where a
+   *  scoped registry is theirs (HTML 13.2.6.1, "create an element for the
+   *  token", which looks a definition up in the context's registry): an
+   *  element `innerHTML` makes in a tree of its own is a custom element at
+   *  once. One whose registry is the window's is upgraded as it is
+   *  connected, as Chrome has it, where the fragment's document has no
+   *  browsing context to look one up in. */
+  const upgradeParsed = (root: Any): void => {
+    if (!customElementsDefined) return;
+    withReactions(() => {
+      for (const el of root.querySelectorAll('*')) {
+        const custom = customOf.get(el);
+        if (custom && custom.state !== 'undefined') continue;
+        const registry = registryOf(el);
+        if (!registry || (!stateOf(registry).scoped && !el.isConnected)) {
+          continue;
+        }
+        const def = definitionFor(el);
+        if (def) enqueueUpgrade(el, def);
+      }
+    });
+  };
+
   /** An element made a custom element by its definition (HTML 4.13.5,
    *  "upgrade an element"): the callbacks for the attributes it observes
    *  and for its being in the document queued, and its constructor run
@@ -14214,7 +14514,7 @@ export function installDom(
         );
       }
       custom.state = 'precustomized';
-      const made = new def.ctor();
+      const made = runConstructor(def);
       if (made !== el) {
         throw new TypeError(
           "Failed to construct 'CustomElement': The result must be the element being upgraded.",
@@ -14238,7 +14538,10 @@ export function installDom(
    *  class, and `createElement`. Null for a constructor with no
    *  definition, whose construction is illegal. */
   const constructCustom = (target: Any): Any => {
-    const def = target ? definitionOf.get(target) : undefined;
+    if (!target) return null;
+    const active = activeConstructors.get(target);
+    const registry = active ? active[active.length - 1] : customElements;
+    const def = registry ? stateOf(registry).byCtor.get(target) : undefined;
     if (!def) return null;
     const stack = def.stack;
     if (!stack.length) {
@@ -14246,6 +14549,7 @@ export function installDom(
         Number(call('create', 'element', def.localName, document._id, '')),
       );
       Object.setPrototypeOf(el, target.prototype);
+      elementRegistries.set(el, registry);
       customOf.set(el, { state: 'custom', def, queue: [], internals: null });
       call('ceDefined', el._id);
       return el;
@@ -14268,12 +14572,16 @@ export function installDom(
    *  make it — no attributes, no children, no parent — or is reported and
    *  an `HTMLUnknownElement` made in its place; a customized built-in made
    *  and upgraded at once. Null where the name has no definition. */
-  const createCustom = (local: string, is: string | null): Any => {
-    const def = lookUp(local, is);
+  const createCustom = (
+    local: string,
+    is: string | null,
+    registry: Any,
+  ): Any => {
+    const def = lookUp(registry, local, is);
     if (!def) return null;
     if (def.localName === def.name) {
       try {
-        const made = new def.ctor();
+        const made = runConstructor(def);
         if (!(made instanceof HTMLElement)) {
           throw new TypeError(
             "Failed to execute 'createElement' on 'Document': The result must implement HTMLElement interface",
@@ -14303,11 +14611,13 @@ export function installDom(
           Number(call('create', 'element', local, document._id, '')),
         );
         Object.setPrototypeOf(el, HTMLUnknownElement.prototype);
+        elementRegistries.set(el, registry);
         customFor(el).state = 'failed';
         return el;
       }
     }
     const el = wrap(Number(call('create', 'element', local, document._id, '')));
+    elementRegistries.set(el, registry);
     try {
       upgrade(el, def);
     } catch (error) {
@@ -14344,11 +14654,21 @@ export function installDom(
     value === undefined || value === null ? [] : Array.from(value, str);
 
   class CustomElementRegistry {
+    /** A scoped registry (HTML 4.13.4): its definitions are its own, for
+     *  the elements and the shadow roots made with it. */
     constructor() {
-      throw new TypeError('Illegal constructor');
+      registryStates.set(this, {
+        definitions: new Map(),
+        byCtor: new Map(),
+        waiting: new Map(),
+        defining: false,
+        scoped: true,
+      });
     }
     /** HTML 4.13.4, `define()`. */
     define(name: Any, ctor: Any, options?: Any): void {
+      const state = stateOf(this);
+      const { definitions } = state;
       const n = str(name);
       const fail = (message: string, kind: string): never => {
         throw new DOMException(
@@ -14370,7 +14690,7 @@ export function installDom(
           'NotSupportedError',
         );
       }
-      if (definitionOf.has(ctor)) {
+      if (state.byCtor.has(ctor)) {
         fail(
           'this constructor has already been used with this registry',
           'NotSupportedError',
@@ -14379,6 +14699,13 @@ export function installDom(
       let local = n;
       const extending = options?.extends;
       if (extending !== undefined && extending !== null) {
+        // a scoped registry defines no customized built-in
+        if (state.scoped) {
+          fail(
+            'a scoped registry cannot define a customized built-in element',
+            'NotSupportedError',
+          );
+        }
         local = str(extending);
         if (customName(local) || !/^[a-z][a-z0-9]*$/.test(local)) {
           fail(
@@ -14387,13 +14714,13 @@ export function installDom(
           );
         }
       }
-      if (defining) {
+      if (state.defining) {
         fail(
           'this registry is already defining an element',
           'NotSupportedError',
         );
       }
-      defining = true;
+      state.defining = true;
       let def: CustomDefinition;
       try {
         const proto = ctor.prototype;
@@ -14439,29 +14766,32 @@ export function installDom(
           formAssociated,
           disableInternals: disabled.has('internals'),
           disableShadow: disabled.has('shadow'),
+          registry: this,
         };
       } finally {
-        defining = false;
+        state.defining = false;
       }
       definitions.set(n, def);
-      definitionOf.set(ctor, def);
+      state.byCtor.set(ctor, def);
       customElementsDefined = true;
       withReactions(() => {
+        // the document's elements of the name whose registry this is
         for (const id of idList(call('ceDefine', n, local))) {
-          enqueueUpgrade(wrap(id), def);
+          const el = wrap(id);
+          if (registryOf(el) === this) enqueueUpgrade(el, def);
         }
-        const waiting = waitingFor.get(n);
+        const waiting = state.waiting.get(n);
         if (waiting) {
-          waitingFor.delete(n);
+          state.waiting.delete(n);
           waiting.resolve(ctor);
         }
       });
     }
     get(name: Any): Any {
-      return definitions.get(str(name))?.ctor;
+      return stateOf(this).definitions.get(str(name))?.ctor;
     }
     getName(ctor: Any): string | null {
-      return definitionOf.get(ctor)?.name ?? null;
+      return stateOf(this).byCtor.get(ctor)?.name ?? null;
     }
     whenDefined(name: Any): Promise<Any> {
       const n = str(name);
@@ -14473,15 +14803,64 @@ export function installDom(
           ),
         );
       }
-      const def = definitions.get(n);
+      const state = stateOf(this);
+      const def = state.definitions.get(n);
       if (def) return Promise.resolve(def.ctor);
-      let waiting = waitingFor.get(n);
+      let waiting = state.waiting.get(n);
       if (!waiting) {
         let resolve: Any;
         const promise = new Promise((ok) => (resolve = ok));
-        waitingFor.set(n, (waiting = { promise, resolve }));
+        state.waiting.set(n, (waiting = { promise, resolve }));
       }
       return waiting.promise;
+    }
+    /**
+     * Make this the registry of a document or a shadow root that has none,
+     * and of every element in it that has none, and upgrade those it has a
+     * definition for (HTML 4.13.4, `initialize()`).
+     */
+    initialize(root: Any): void {
+      if (!root || typeof root.nodeType !== 'number') {
+        throw new TypeError(
+          "Failed to execute 'initialize' on 'CustomElementRegistry': parameter 1 is not of type 'Node'.",
+        );
+      }
+      const fail = (message: string): never => {
+        throw new DOMException(
+          `Failed to execute 'initialize' on 'CustomElementRegistry': ${message}`,
+          'NotSupportedError',
+        );
+      };
+      const isDocument = root.nodeType === 9;
+      if (!isDocument && !(root instanceof ShadowRoot)) {
+        fail('The root is neither a document nor a shadow root.');
+      }
+      // the window's own registry is its document's alone
+      const owner = isDocument ? root : root.ownerDocument;
+      if (!stateOf(this).scoped && owner !== document) {
+        fail("The root is not this registry's document's.");
+      }
+      if (isDocument) {
+        if (documentRegistryOf(root) !== null) {
+          fail('The document has a registry.');
+        }
+        documentRegistries.set(root, this);
+      } else {
+        if (shadowRegistryOf(root) !== null) {
+          fail('The shadow root has a registry.');
+        }
+        shadowRegistries.set(root, this);
+      }
+      withReactions(() => {
+        for (const el of root.querySelectorAll('*')) {
+          if (registryOf(el) !== null) continue;
+          elementRegistries.set(el, this);
+          const custom = customOf.get(el);
+          if (custom && custom.state !== 'undefined') continue;
+          const def = el.isConnected ? definitionFor(el) : null;
+          if (def) enqueueUpgrade(el, def);
+        }
+      });
     }
     /** Every element in `root` that has a definition and was not upgraded,
      *  upgraded, in shadow-including tree order. */
@@ -14499,7 +14878,10 @@ export function installDom(
       });
     }
   }
-  const customElements = Object.create(CustomElementRegistry.prototype);
+  // the window's own, which every element of its document has but where a
+  // scoped one is named
+  const customElements = new CustomElementRegistry();
+  stateOf(customElements).scoped = false;
 
   /** A custom element's states, which `:state()` would read: a set of
    *  strings. */
@@ -15093,7 +15475,7 @@ export function installDom(
     DocumentType,
     DocumentFragment,
     ShadowRoot,
-    Document,
+    Document: DocumentConstructor,
     HTMLDocument: Document,
     XMLDocument,
     AbstractRange,

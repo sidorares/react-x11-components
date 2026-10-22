@@ -2270,6 +2270,59 @@ test('a page with a doctype has the head and the body HTML implies, and a sheet 
   );
 });
 
+test('a scoped registry defines for the elements and shadow roots made with it, and a declarative root with none is initialized by a page', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="host"><template shadowrootmode="open" shadowrootcustomelementregistry><x-a id="inside"></x-a></template></div>' +
+      '<script>' +
+      'var r = []; var scoped = new CustomElementRegistry();' +
+      'class XA extends HTMLElement {} scoped.define("x-a", XA);' +
+      'r.push(customElements.get("x-a") === undefined, scoped.get("x-a") === XA, scoped !== customElements);' +
+      // a constructor with no definition but a scoped one is no element
+      'try { new XA(); } catch (e) { r.push(e.name); }' +
+      'var made = document.createElement("x-a", { customElementRegistry: scoped });' +
+      'r.push(made instanceof XA, made.customElementRegistry === scoped, document.createElement("x-a") instanceof XA);' +
+      // a shadow root made with it upgrades what its markup makes
+      'var root = document.createElement("div").attachShadow({ mode: "open", customElementRegistry: scoped });' +
+      'root.innerHTML = "<x-a></x-a>"; r.push(root.firstChild instanceof XA, root.customElementRegistry === scoped);' +
+      // a declarative root written with no registry has none until one is initialized
+      'var host = document.getElementById("host").shadowRoot; var inside = host.firstChild;' +
+      'r.push(host.customElementRegistry, inside.customElementRegistry, inside instanceof XA);' +
+      'scoped.initialize(host); r.push(host.customElementRegistry === scoped, inside instanceof XA);' +
+      'try { customElements.initialize(document); } catch (e) { r.push(e.name); }' +
+      // an unknown name is an HTMLUnknownElement, and a document a page makes has no registry
+      'r.push(document.createElement("nonexistent") instanceof HTMLUnknownElement, document.createElement("section") instanceof HTMLUnknownElement);' +
+      'var made2 = new Document(); r.push(made2.customElementRegistry, made2.nodeType);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'true|true|true|TypeError|true|true|false|true|true|||false|true|true|NotSupportedError|true|false||9',
+  );
+});
+
+test('setHTMLUnsafe takes a declarative shadow root where innerHTML does not, and a template reflects its shadow root attributes', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var markup = "<span><template shadowrootmode=open><b>in</b></template></span>";' +
+      'var a = document.createElement("div"); a.setHTMLUnsafe(markup);' +
+      'r.push(!!a.firstChild.shadowRoot, a.firstChild.shadowRoot && a.firstChild.shadowRoot.textContent);' +
+      'var b = document.createElement("div"); b.innerHTML = markup;' +
+      'r.push(!!b.firstChild.shadowRoot, b.firstChild.firstChild.localName);' +
+      'var t = document.createElement("template");' +
+      'r.push(JSON.stringify(t.shadowRootMode), t.shadowRootCustomElementRegistry === "");' +
+      't.shadowRootMode = "CLOSED"; t.shadowRootClonable = true; t.shadowRootCustomElementRegistry = "x";' +
+      'r.push(t.shadowRootMode, t.getAttribute("shadowrootclonable"), t.getAttribute("shadowrootcustomelementregistry"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'true|in|false|template|""|true|closed||x',
+  );
+});
+
 test('a customized built-in is upgraded from its is, and attachInternals is a custom element’s once', async () => {
   const doc = await hosted(
     '<button is="x-press" id="b">b</button><p id="out"></p><script>' +
