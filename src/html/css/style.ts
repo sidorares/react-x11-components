@@ -838,6 +838,11 @@ export interface ComputedStyle {
   anchorScope: string;
   /** `position-try-order`. */
   positionTryOrder: string;
+  /** `position-visibility` (CSS Anchor Positioning 1, 5.4): when the box
+   *  is strongly hidden, as bits — `anchors-visible` (1) where its default
+   *  anchor is clipped away, `no-overflow` (2) where it overflows its
+   *  containing block, `anchors-valid` (4) — 0 for `always`. */
+  positionVisibility: number;
   /** The insets written as an `anchor()`, by side: what each comes to is
    *  layout's, and the inset itself holds the function's fallback, or
    *  `auto`. Null where none is. */
@@ -1623,6 +1628,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     positionAnchorText: 'normal',
     anchorScope: 'none',
     positionTryOrder: 'normal',
+    positionVisibility: 1,
     anchorInsets: null,
     anchorSizes: null,
     positionArea: null,
@@ -2638,6 +2644,28 @@ export function applyDeclaration(
         const names = dashedList(v, false);
         if (names) style.anchorScope = names;
       }
+      return;
+    }
+    case 'position-visibility': {
+      const words = value.trim().toLowerCase().split(/\s+/);
+      if (words.length === 1 && words[0] === 'always') {
+        style.positionVisibility = 0;
+        return;
+      }
+      let bits = 0;
+      for (const w of words) {
+        const bit =
+          w === 'anchors-visible'
+            ? 1
+            : w === 'no-overflow'
+              ? 2
+              : w === 'anchors-valid'
+                ? 4
+                : 0;
+        if (!bit || bits & bit) return;
+        bits |= bit;
+      }
+      style.positionVisibility = bits;
       return;
     }
     case 'position-try-order': {
@@ -8253,6 +8281,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'position-anchor': ['positionAnchor', 'positionAnchorText'],
   'anchor-scope': ['anchorScope'],
   'position-try-order': ['positionTryOrder'],
+  'position-visibility': ['positionVisibility'],
   'position-area': ['positionArea'],
   'position-try-fallbacks': ['positionTryFallbacks', 'positionTryStyles'],
   'position-try': [

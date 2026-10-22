@@ -185,7 +185,10 @@ import {
   isScroller,
   scrollBarHit,
   scrollBarsOf,
+  anchoredAcross,
+  positionVisibilityBoxes,
   scrollContent,
+  updatePositionVisibility,
   scrolledBy,
   scrollMoves,
   scrollStateOf,
@@ -7811,7 +7814,19 @@ export class HtmlViewNode extends Node {
   private _scrollBox(box: Box, x: number, y: number): ScrollOffset {
     const s = this._scale;
     const was = scrollStateOf(box);
+    // what is anchored to something it scrolls moves with it, and may be
+    // hidden or shown by `position-visibility`: drawn again where it was
+    let root = box;
+    while (root.parent) root = root.parent;
+    const anchored = [
+      ...anchoredAcross(box).map((a) => a.box),
+      ...positionVisibilityBoxes(root),
+    ];
+    const before = anchored.map((b) => this._inkOf(b));
     const to = scrollContent(box, x * s, y * s, translate);
+    // a box `position-visibility` hides or shows now leaves its
+    // stacking context's layers, or joins them, with what it holds
+    if (updatePositionVisibility(root).length) stackLayers(root);
     // its sticky boxes where it is scrolled to now
     if (to.x !== was.x || to.y !== was.y) restickWithin(box);
     const offset = { x: to.x / s, y: to.y / s };
@@ -7826,6 +7841,7 @@ export class HtmlViewNode extends Node {
     this._filtered?.staleAll();
     this._spriteGen += 1;
     this.spritesChanged();
+    const after = anchored.map((b) => this._inkOf(b));
     this._repaintInk([
       {
         x: box.x + box.borderLeft,
@@ -7833,6 +7849,7 @@ export class HtmlViewNode extends Node {
         width: was.clientWidth,
         height: was.clientHeight,
       },
+      ...[...before, ...after].filter((r): r is Rect => r !== null),
     ]);
     this._reportControls();
     this._reportMedia();

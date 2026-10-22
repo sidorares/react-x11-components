@@ -3857,9 +3857,14 @@ through an absolutely positioned one, that one before the box in the
 tree; an inline one by the rectangle around its fragments. A scroll
 container that scrolls a box's default anchor, and not the box, moves the
 box with it (6.2), on each axis it is placed against an anchor in that
-scroll container. Not done: `anchor()` inside `calc()` (the declaration
-is dropped), `anchor-size()` in other properties, `position-try-order`,
-`position-visibility`, `anchor-scope`, a popover's implicit anchor,
+scroll container. `position-visibility` hides such a box, with all it
+holds, where its default anchor is cut away entirely by a box that clips
+between the two (`anchors-visible`, the initial value) and where it
+overflows its containing block (`no-overflow`); a scroll that changes
+either hides or shows it in the frame it scrolls. Not done: `anchor()`
+inside `calc()` (the declaration is dropped), `anchor-size()` in other
+properties, `position-try-order`, `anchors-valid`, `anchor-scope`, a
+popover's implicit anchor,
 `justify-self` and `align-self` in a position area (including
 `anchor-center`), a fixed box following an anchor the pane scrolls, and
 trying the fallbacks again after a scroll. A box is placed against where

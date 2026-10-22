@@ -69,6 +69,8 @@ import {
   escapes as positionedOutside,
   isScroller,
   noteDefaultAnchor,
+  noteVisibility,
+  updatePositionVisibility,
   scrollStateOf,
 } from './scroll.js';
 import type { Placed } from '../css/transform.js';
@@ -806,6 +808,9 @@ export function layoutDocument(
   // and a scroll container moves what it holds by where it is scrolled to,
   // the same way: everything else reads the boxes where they are drawn
   applyScrollOffsets(tree, translate);
+  // and `position-visibility` hides what it hides where all of that left
+  // the boxes
+  updatePositionVisibility(root);
   // and a sticky box keeps to the scroll container it is in where it is
   // scrolled to, which it was placed in as though it were scrolled to its
   // start; the ones the viewport keeps are the element's to place again
@@ -4487,16 +4492,28 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     }
     return true;
   };
+  // whether `position-visibility` may hide it, and whether it overflows
+  // where it ends up (5.4)
+  const visibility = (): void => {
+    if (ctx.anchorRoot && style.positionVisibility & 3) {
+      noteVisibility(ctx.anchorRoot, box, !fitsIn(box, cb));
+    }
+  };
   place(-1);
   ANCHOR_FALLBACK.delete(box);
-  if (!options.length || fitsIn(box, cb)) return;
+  if (!options.length || fitsIn(box, cb)) {
+    visibility();
+    return;
+  }
   for (let i = 0; i < options.length; i += 1) {
     if (place(i) && fitsIn(box, cb)) {
       ANCHOR_FALLBACK.set(box, options[i].text);
+      visibility();
       return;
     }
   }
   place(-1);
+  visibility();
 }
 
 /** Whether a box's margin box is inside a rectangle, to within half a
