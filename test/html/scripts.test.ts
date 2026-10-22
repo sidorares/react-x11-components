@@ -806,8 +806,15 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
   );
 });
 
-// JavaScriptCore has no JSPI, so Bun runs none
-const jspi = SCRIPTS_CONTAINED && !('Bun' in globalThis) ? test : nodeTest.skip;
+// where the engine could turn JSPI on: Node 24's V8 and later, and not
+// Bun's JavaScriptCore or Node 20's and 22's V8, which have only an
+// earlier proposal
+const jspi =
+  SCRIPTS_CONTAINED &&
+  (await import('node:vm')).runInNewContext('typeof WebAssembly.Suspending') ===
+    'function'
+    ? test
+    : nodeTest.skip;
 
 jspi(
   'a page suspends WebAssembly on a promise with JSPI, WebAssembly.Suspending and WebAssembly.promising',
