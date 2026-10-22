@@ -10,7 +10,9 @@
 // padding — are the used values a layout came to, where the element has a
 // box, and the computed ones where it has none; and a colour is `rgb()` or
 // `rgba()`, as a browser serializes every one.
-import type { ComputedStyle } from './css/style.js';
+import type { BasicShape } from './css/basic-shape.js';
+import type { Coord, ShapeFunction } from './css/shape-function.js';
+import type { ClipPath, ComputedStyle } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
 import { inkColor } from './css/values.js';
@@ -160,6 +162,104 @@ function shortest(parts: readonly string[]): string {
 }
 
 /**
+ * A computed `clip-path` (CSS Masking 1, 5.1): `none`, a box, a shape with
+ * its box where that is not the border box, or the `url()` it names. A
+ * shape's positions are its lengths and percentages from the box's corner,
+ * as CSS Shapes 2 computes them.
+ */
+function clipPathText(path: ClipPath | null, scale: number): string {
+  if (!path) return 'none';
+  if (path.shape === 'url' && path.url) return `url("#${path.url.id}")`;
+  const L = (v: Len) => len(v, scale);
+  let shape: string | null = null;
+  if (path.shape === 'basic' && path.basic) {
+    shape = basicShapeText(path.basic, scale);
+  } else if (path.shape === 'polygon' && path.points) {
+    const points: string[] = [];
+    for (let i = 0; i + 1 < path.points.length; i += 2) {
+      points.push(`${L(path.points[i])} ${L(path.points[i + 1])}`);
+    }
+    const rule = path.fillRule === 'evenodd' ? 'evenodd, ' : '';
+    shape = `polygon(${rule}${points.join(', ')})`;
+  } else if (path.shape === 'inset') {
+    shape = `inset(${shortest(path.lengths.map(L))})`;
+  } else if (path.shape) {
+    shape = `${path.shape}(${path.lengths.map(L).join(' ')})`;
+  }
+  if (!shape) return path.box;
+  return path.box === 'border-box' ? shape : `${shape} ${path.box}`;
+}
+
+/** A basic shape's computed value: `shape()` command by command, the rest
+ *  by their lengths and positions. */
+function basicShapeText(basic: BasicShape, scale: number): string | null {
+  const L = (v: Len) => len(v, scale);
+  const at = (c: Coord) => `${L(c[0])} ${L(c[1])}`;
+  const radius = (r: Len | 'closest-side' | 'farthest-side') =>
+    r === 'closest-side' || r === 'farthest-side' ? r : L(r);
+  switch (basic.kind) {
+    case 'shape':
+      return shapeText(basic.shape, scale);
+    case 'path':
+      return `path(${basic.rule === 'evenodd' ? 'evenodd, ' : ''}${JSON.stringify(basic.d)})`;
+    case 'circle':
+      return `circle(${radius(basic.r)} at ${at(basic.at)})`;
+    case 'ellipse':
+      return `ellipse(${radius(basic.rx)} ${radius(basic.ry)} at ${at(basic.at)})`;
+    default:
+      return null;
+  }
+}
+
+/** `shape()`'s computed value (CSS Shapes 2, 4.2): its commands with their
+ *  lengths and percentages, a control point's anchor where it is not the
+ *  command's own, and an arc's defaults left out. */
+function shapeText(fn: ShapeFunction, scale: number): string {
+  const L = (v: Len) => len(v, scale);
+  const pair = (c: Coord) => `${L(c[0])} ${L(c[1])}`;
+  const parts = [
+    `${fn.rule === 'evenodd' ? 'evenodd ' : ''}from ${pair(fn.from)}`,
+  ];
+  for (const c of fn.commands) {
+    if (c.op === 'close') {
+      parts.push('close');
+      continue;
+    }
+    const how = c.by ? 'by' : 'to';
+    switch (c.op) {
+      case 'move':
+      case 'line':
+        parts.push(`${c.op} ${how} ${pair(c.to)}`);
+        break;
+      case 'hline':
+      case 'vline':
+        parts.push(`${c.op} ${how} ${L(c.to)}`);
+        break;
+      case 'curve':
+      case 'smooth': {
+        const own = c.by ? 'start' : 'origin';
+        const controls = c.with.map(
+          (p) => `${pair(p.at)}${p.from === own ? '' : ` from ${p.from}`}`,
+        );
+        parts.push(
+          `${c.op} ${how} ${pair(c.to)}${controls.length ? ` with ${controls.join(' / ')}` : ''}`,
+        );
+        break;
+      }
+      case 'arc':
+        parts.push(
+          `arc ${how} ${pair(c.to)} of ${c.radii.map(L).join(' ')}` +
+            (c.cw ? ' cw' : '') +
+            (c.large ? ' large' : '') +
+            (c.rotate ? ` rotate ${num(c.rotate)}deg` : ''),
+        );
+        break;
+    }
+  }
+  return `shape(${parts.join(', ')})`;
+}
+
+/**
  * A property's computed value as a declaration reads it back, for
  * `inherit()` (CSS Values 5, 7.6): what `cssomStyle` answers, with no box
  * and so its computed sizes, and the shorthands of four sides, the border
@@ -219,6 +319,7 @@ export function cssomStyle(
     visibility: style.visibility,
     opacity: num(style.opacity),
     'z-index': String(style.zIndex),
+    'clip-path': clipPathText(style.clipPath, scale),
     'box-sizing': style.boxSizing,
     'overflow-x': style.overflowX,
     'overflow-y': style.overflowY,

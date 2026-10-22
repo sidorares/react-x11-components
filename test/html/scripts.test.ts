@@ -2741,6 +2741,24 @@ test('headers keep to their guard, a response is made as Fetch makes one, and a 
   assert.equal(doc.fetched.length, 0);
 });
 
+test('el.style keeps a clip-path shape() in its canonical form, and does not set one the property does not take', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div id="t"></div><script>' +
+      'var t = document.getElementById("t"); var r = [];' +
+      't.style.clipPath = "shape(from top left, line to 0 1px)"; r.push(t.style.clipPath);' +
+      't.style.clipPath = "shape(from 0 0 line to 1px 1px)"; r.push(t.style.clipPath);' +
+      't.style.setProperty("clip-path", "shape(from 0 0)"); r.push(t.style.getPropertyValue("clip-path"));' +
+      'r.push(CSS.supports("clip-path", "shape(from 0 0, close)"), CSS.supports("clip-path: shape(from 0 0)"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'shape(from left top, line to 0px 1px)|shape(from left top, line to 0px 1px)|' +
+      'shape(from left top, line to 0px 1px)|true|false',
+  );
+});
+
 test('indexedDB keeps a page’s records for the document: stores, keys, indexes, cursors and transactions', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

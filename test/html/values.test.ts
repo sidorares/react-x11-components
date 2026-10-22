@@ -12,7 +12,15 @@ import {
   resolveOrNull,
   splitValue,
 } from '../../src/html/css/values.js';
-import { parseStylesheet } from '../../src/html/css/parse.js';
+import {
+  parseStylesheet,
+  supportsCondition,
+} from '../../src/html/css/parse.js';
+import { parseShapeFunction } from '../../src/html/css/shape-function.js';
+import { specifiedValue } from '../../src/html/css/specified.js';
+import { interpolateField } from '../../src/html/css/interpolate.js';
+import { cssomStyle } from '../../src/html/computed.js';
+import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
 import {
   boxOf,
@@ -897,5 +905,93 @@ test("a rem is the root element's font size, and the initial one in the root's o
   assert.ok(
     near(boxOf(el, 's').width, 3 * root),
     `and 3rem three times it, however deep: ${boxOf(el, 's').width}`,
+  );
+});
+
+test('shape() is read as CSS Shapes 2 has it, and written back as its specified value', () => {
+  const ctx = { em: 16, rem: 16, vw: 8, vh: 6, scale: 1 };
+  const text = (value: string) => parseShapeFunction(value, ctx)?.text ?? null;
+  // positions across first, a zero with a unit, the defaults left out
+  assert.strictEqual(
+    text(
+      'shape(from top left, curve to center with 0 1px from origin / 2px 3px from end)',
+    ),
+    'shape(from left top, curve to center center with 0px 1px / 2px 3px from end)',
+  );
+  assert.strictEqual(
+    text(
+      'shape(from 1px 2px, curve by 3px 4px with 5px 6px from start, smooth by 1px 1px)',
+    ),
+    'shape(from 1px 2px, curve by 3px 4px with 5px 6px, smooth by 1px 1px)',
+  );
+  assert.strictEqual(
+    text(
+      'shape(evenodd from 0 0, arc by 1px 1px of 10% rotate 0deg large cw, close)',
+    ),
+    'shape(evenodd from 0px 0px, arc by 1px 1px of 10% cw large, close)',
+  );
+  for (const invalid of [
+    'shape(from 0 0)',
+    'shape(from 0 0 line to 1px 1px)',
+    'shape(from 0 0, line to 1px 1px,)',
+    'shape(from 0 0, hline to top)',
+    'shape(from 0 0, curve by top left with 1px 1px)',
+    'shape(from 0 0, curve to 1px 1px with 1px 2px 3px 4px)',
+    'shape(from 0 0, arc by 1px 1px of 1px small large)',
+  ]) {
+    assert.strictEqual(text(invalid), null, invalid);
+  }
+});
+
+test('a value el.style keeps is checked where its grammar is read, and kept as written where it is not', () => {
+  // CSSOM 6.7: a value the property does not take is not set
+  assert.strictEqual(
+    specifiedValue('clip-path', 'shape(from 0 0, line to 1px 1px) content-box'),
+    'shape(from 0px 0px, line to 1px 1px) content-box',
+  );
+  assert.strictEqual(specifiedValue('clip-path', 'shape(from 0 0)'), null);
+  // what is only known once substituted, and what has no grammar here
+  assert.strictEqual(
+    specifiedValue('clip-path', 'shape(from var(--x) 0, close)'),
+    undefined,
+  );
+  assert.strictEqual(specifiedValue('clip-path', 'circle(10px)'), undefined);
+  assert.strictEqual(specifiedValue('mask-type', 'luminance'), undefined);
+  // and @supports, and CSS.supports, ask the same
+  assert.strictEqual(
+    supportsCondition('(clip-path: shape(from 0 0, line to 1px 1px))'),
+    true,
+  );
+  assert.strictEqual(supportsCondition('(clip-path: shape(from 0 0))'), false);
+});
+
+test("clip-path's computed value is its shape's lengths and percentages, and a path() interpolates with a shape() command by command", async () => {
+  const { node } = await render(
+    '<style>div{width:100px;height:100px;font-size:16px}</style>' +
+      '<div id="a" style="clip-path:shape(from center, hline to right, ' +
+      'curve to top right with 10px 30px from origin / 1em 2px, arc by 1px 1px of 10% rotate 3.14159265rad)"></div>' +
+      '<div id="b" style="clip-path:shape(from 0 0, hline by 50%, vline by 20px, close)"></div>' +
+      '<div id="c" style="clip-path:path(&quot;M10 10 h50 v40 z&quot;)"></div>' +
+      '<div id="d" style="clip-path:url(#c) "></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  assert.strictEqual(
+    cssomStyle(style('a'), 1, null)['clip-path'],
+    'shape(from 50% 50%, hline to 100%, curve to 100% 0% with 10px 30px / 16px 2px, ' +
+      'arc by 1px 1px of 10% rotate 180deg)',
+  );
+  assert.strictEqual(cssomStyle(style('d'), 1, null)['clip-path'], 'url("#c")');
+  // half way from a shape to a path read as the shape it is
+  const half = interpolateField(
+    'clipPath',
+    style('b').clipPath,
+    style('c').clipPath,
+    0.5,
+  ) as ComputedStyle['clipPath'];
+  assert.strictEqual(
+    cssomStyle({ ...style('b'), clipPath: half }, 1, null)['clip-path'],
+    'shape(from 5px 5px, hline by calc(25% + 25px), vline by 30px, close)',
   );
 });

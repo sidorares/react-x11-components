@@ -21,7 +21,13 @@
 import { blend, rgbaOf } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
-import type { BoxShadow, ComputedStyle, CornerShapes } from './style.js';
+import type {
+  BoxShadow,
+  ClipPath,
+  ComputedStyle,
+  CornerShapes,
+} from './style.js';
+import type { ShapeFunction } from './shape-function.js';
 import { halfCorner, shapeAtHalfCorner } from './corner-shape.js';
 import {
   IDENTITY,
@@ -103,6 +109,12 @@ export function interpolateField(
       );
     case 'cornerShape':
       return interpolateCornerShapes(a as CornerShapes, b as CornerShapes, q);
+    case 'clipPath':
+      return interpolateClipPaths(
+        a as ClipPath | null,
+        b as ClipPath | null,
+        q,
+      );
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the
@@ -114,6 +126,34 @@ export function interpolateField(
   if (typeof value !== 'number') return value;
   if (INTEGERS.has(key)) return Math.round(value);
   return NOT_NEGATIVE.has(key) ? Math.max(0, value) : value;
+}
+
+/**
+ * Two `clip-path`s `q` of the way between (CSS Shapes 2, 4.3): a `shape()`
+ * and a `path()`, or two of either, command by command where their
+ * commands are alike — a `path()` read as the `shape()` it is — and as one
+ * record of lengths where both are another shape of one kind. Undefined
+ * where they cannot be, and the value goes over at the half-way point.
+ */
+function interpolateClipPaths(
+  a: ClipPath | null,
+  b: ClipPath | null,
+  q: number,
+): unknown {
+  const asShape = (c: ClipPath | null): ShapeFunction | null => {
+    const basic = c?.shape === 'basic' ? c.basic : null;
+    if (basic?.kind === 'shape') return basic.shape;
+    if (basic?.kind === 'path') return basic.asShape;
+    return null;
+  };
+  const x = asShape(a);
+  const y = asShape(b);
+  if (x && y && a!.box === b!.box) {
+    const shape = mix(x, y, q) as ShapeFunction | undefined;
+    if (shape === undefined) return undefined;
+    return { ...a!, basic: { kind: 'shape', shape } };
+  }
+  return mix(a, b, q);
 }
 
 /**

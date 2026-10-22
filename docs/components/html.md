@@ -2271,9 +2271,18 @@ context, painted whole among the positioned boxes as one under full
 opacity is, and its scrollable overflow is what it was, as a browser has
 it: a box hidden by a
 path alone still makes the page as long as it reaches. `circle()`,
-`ellipse()`, `path()`, `shape()` and a `url()` naming an SVG `<clipPath>`
-are read and cut nothing, and an inline box that is not atomic is not
-cut. Inline elements
+`ellipse()`, `path()` and `shape()` (CSS Shapes 2, 4.2) are laid down as
+polygons in the box, curves cut into chords a tenth of a pixel from them,
+a shape's subpaths filled together by its rule; and a `url()` naming an
+SVG `<clipPath>` cuts to its paths, rectangles, circles, ellipses and
+polygons, in CSS pixels from the box's corner or in fractions of the box
+under `clipPathUnits="objectBoundingBox"`. A `url()` naming nothing that
+is a `<clipPath>` cuts nothing, and an inline box that is not atomic is
+not cut. A `shape()` is written back as CSS Shapes 2 has it — through
+`el.style`, which keeps it canonical and does not set one the property
+does not take, and through `getComputedStyle`, its positions percentages
+— and two of the same commands interpolate command by command, a `path()`
+read as the `shape()` it is. Inline elements
 have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on

@@ -14,6 +14,7 @@
 // Selector *matching* is still `css-select`'s (see cascade.ts). Parsing a
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
+import { specifiedValue } from './specified.js';
 import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
 import type { ContainerQuery } from './containers.js';
@@ -3104,6 +3105,9 @@ export function supportsCondition(prelude: string): boolean | null {
   const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
   if (!declaration) return null;
   const property = declaration[1].toLowerCase();
+  // a property whose grammar is read answers by it
+  const specified = specifiedValue(property, declaration[2].trim());
+  if (specified !== undefined) return specified !== null;
   if (ANSWERED.has(property)) return true;
   return ANSWERED_VALUES[property]?.test(declaration[2].trim()) ? true : null;
 }

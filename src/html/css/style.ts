@@ -292,7 +292,7 @@ export interface ClipPath {
    *  and top from the box's, and its width and height. Null for a box
    *  named alone, which is the shape: the whole of it, rounded as the
    *  element's corners are. */
-  shape: 'inset' | 'rect' | 'xywh' | 'polygon' | null;
+  shape: 'inset' | 'rect' | 'xywh' | 'polygon' | 'basic' | 'url' | null;
   lengths: readonly [Len, Len, Len, Len];
   /** `polygon()`'s vertices, across and down from the box's top left by
    *  turns, a percentage of its width or its height; null for any other
@@ -305,6 +305,12 @@ export interface ClipPath {
    *  rectangle in it. Null for square corners. */
   radii: readonly [Len, Len, Len, Len] | null;
   radiiY: readonly [Len, Len, Len, Len] | null;
+  /** `circle()`, `ellipse()`, `path()` or `shape()`, laid down as polygons
+   *  in the box (`shapePolygons`); null for any other shape. */
+  basic?: BasicShape | null;
+  /** A `<clipPath>` element by its id, `url(#id)`, and the device pixels
+   *  to its user unit; null for any other shape. */
+  url?: { id: string; scale: number } | null;
 }
 
 /** The box a `border-shape`'s shape is laid down in: a `<geometry-box>`,
@@ -333,7 +339,6 @@ const SHAPE_BOXES: Record<string, ShapeBox> = {
 /**
  * `none`, or one or two basic shapes, each with the box it is laid down in
  * after it; undefined for anything else, which leaves the value as it was.
- * `shape()` is not read, and a value with one is none.
  */
 function parseBorderShape(
   value: string,
@@ -380,12 +385,20 @@ const CLIP_BOXES: Record<string, ClipBox> = {
   'view-box': 'border-box',
 };
 
-/** The shapes that are neither a rectangle nor a polygon, and a reference
- *  to a `<clipPath>` element: a value, which sets the property, and none
- *  this draws. */
-const UNDRAWN_CLIPS = /^(circle|ellipse|path|shape|url)\(/i;
+/** The shapes that are neither a rectangle nor a polygon, each laid down
+ *  as polygons (`parseBasicShape`). */
+const BASIC_CLIPS = /^(circle|ellipse|path|shape)\(/i;
 
 const NO_LENGTHS = [0, 0, 0, 0] as const;
+
+/** A clip's fields that a shape of another kind leaves empty. */
+const NO_SHAPE = {
+  lengths: NO_LENGTHS,
+  radii: null,
+  radiiY: null,
+  points: null,
+  fillRule: 'nonzero',
+} as const;
 
 /**
  * `none`; a rectangle's function, a box, or the two in either order; or a
@@ -408,8 +421,25 @@ function parseClipPath(
       continue;
     }
     if (shape !== undefined) return undefined;
-    if (UNDRAWN_CLIPS.test(part) && part.endsWith(')')) shape = null;
-    else if (/^polygon\(/i.test(part)) shape = polygonShape(part, ctx);
+    if (BASIC_CLIPS.test(part) && part.endsWith(')')) {
+      const basic = parseBasicShape(part, ctx, (radii) =>
+        parseRadii(radii, ctx),
+      );
+      if (!basic) return undefined;
+      shape = { ...NO_SHAPE, shape: 'basic', basic };
+    } else if (/^url\(/i.test(part)) {
+      // a reference is the whole value, with no box beside it; one into
+      // another document is a value, and clips nothing here
+      if (box || splitValue(v).length > 1) return undefined;
+      const id = /^url\(\s*(["']?)#([^"')\s]+)\1\s*\)$/i.exec(part)?.[2];
+      if (!id) return null;
+      return {
+        box: 'border-box',
+        ...NO_SHAPE,
+        shape: 'url',
+        url: { id, scale: ctx.scale },
+      };
+    } else if (/^polygon\(/i.test(part)) shape = polygonShape(part, ctx);
     else shape = rectShape(part, ctx);
     if (shape === undefined) return undefined;
   }
