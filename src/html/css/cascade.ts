@@ -31,6 +31,7 @@ import {
   isElement,
   isInputButton,
   isModal,
+  isPopoverOpen,
   mutationGeneration,
   shadowRootAround,
   shadowRootOf,
@@ -1717,7 +1718,7 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   visited: ['a:href'],
   open: ['a:open'],
   closed: ['a:open'],
-  'popover-open': ['a:popover'],
+  'popover-open': ['a:popover', 'a:-rx-popover-open'],
   'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   empty: ['s'],
@@ -5168,9 +5169,9 @@ export class Cascade {
     // (`overlay`), positioned against the initial containing block or the
     // viewport whatever is around it, and out of the flow whatever it was
     // given: `static`, `relative` and `sticky` are `absolute` (CSS Position
-    // 4, 3.1), as Chrome computes them. Only a dialog `showModal()` opened
-    // is in one here.
-    if (own && el.name.length === 6 && isModal(el)) {
+    // 4, 3.1), as Chrome computes them. A dialog `showModal()` opened is in
+    // one here, and a popover shown.
+    if (own && ((el.name.length === 6 && isModal(el)) || isPopoverOpen(el))) {
       style.overlay = 'auto';
       if (style.position !== 'absolute' && style.position !== 'fixed') {
         style.position = 'absolute';
@@ -6093,6 +6094,8 @@ const PSEUDOS = {
   // a dialog in its document's top layer, which only a page's scripts put
   // one in (`isModal`)
   modal: (el: Element) => isModal(el),
+  // a popover a page's scripts showed (`isPopoverOpen`)
+  'popover-open': (el: Element) => isPopoverOpen(el),
   // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
   // css-select has neither, and dropped every rule that named one
   open: (el: Element) => opens(el) && el.attribs.open !== undefined,

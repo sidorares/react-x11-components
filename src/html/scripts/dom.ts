@@ -3464,19 +3464,41 @@ export function installDom(
     previous: Any;
     /** The state its pending `toggle` started from, while one is. */
     toggleFrom: string | null;
+    /** When it was opened, counted with the popovers shown (`opened`):
+     *  Escape is a close request at the last of either. */
+    openedAt: number;
   }
   const dialogStates = new WeakMap<Any, DialogState>();
   const dialogState = (el: Any): DialogState => {
     let state = dialogStates.get(el);
     if (!state) {
-      state = { returnValue: '', previous: null, toggleFrom: null };
+      state = {
+        returnValue: '',
+        previous: null,
+        toggleFrom: null,
+        openedAt: 0,
+      };
       dialogStates.set(el, state);
     }
     return state;
   };
+  /** How many dialogs have been opened and popovers shown: the order of
+   *  their close watchers (HTML 7.7.1). */
+  let opened = 0;
   /** The modal dialogs, in the order they were opened: the last one the
    *  host still says is modal is the top layer's top. */
   const modalDialogs: Any[] = [];
+  /** Every dialog open, modal or not, in the order opened (HTML 4.11.4,
+   *  the document's open dialogs list). */
+  const openDialogs: Any[] = [];
+  /** `closedby`'s state (HTML 4.11.4): `any`, `closerequest` or `none`
+   *  as the attribute says, and where it says none of them, `closerequest`
+   *  for a modal dialog and `none` for another. */
+  const closedByOf = (el: Any): string => {
+    const v = (el.getAttribute('closedby') ?? '').toLowerCase();
+    if (v === 'any' || v === 'closerequest' || v === 'none') return v;
+    return isModalDialog(el) ? 'closerequest' : 'none';
+  };
   const isModalDialog = (el: Any): boolean => call('modal', el._id) === true;
   /** `beforetoggle`, as it opens (cancelable) or closes (not). Whether it
    *  was not cancelled. */
@@ -3533,6 +3555,8 @@ export function installDom(
     if (!el.hasAttribute('open')) return;
     queueToggle(el, 'open');
     el.removeAttribute('open');
+    const open = openDialogs.indexOf(el);
+    if (open >= 0) openDialogs.splice(open, 1);
     const wasModal = isModalDialog(el);
     if (wasModal) {
       call('modal', el._id, false);
@@ -3558,19 +3582,36 @@ export function installDom(
       false,
     );
   };
-  /** A close request (HTML 7.7.2) — Escape, not cancelled — at the top
-   *  modal dialog: `cancel`, which a page may cancel, and then closed. A
-   *  browser groups the dialogs opened with no press between them, and one
-   *  Escape closes them all; this closes one at a time. */
+  /** A close request (HTML 7.7.2) — Escape, not cancelled — at the last
+   *  of the open dialogs and the showing auto and hint popovers to have
+   *  opened: a popover hidden, or a dialog's `cancel`, which a page may
+   *  cancel, and then the dialog closed, where its `closedby` lets a close
+   *  request close it. A browser groups the dialogs opened with no press
+   *  between them, and one Escape closes them all; this closes one at a
+   *  time. */
   const closeRequest = (): void => {
-    while (modalDialogs.length) {
-      const top = modalDialogs[modalDialogs.length - 1];
-      if (isModalDialog(top)) {
-        requestClose(top, null);
-        return;
-      }
-      modalDialogs.pop();
+    let dialog: Any = null;
+    while (openDialogs.length && !dialog) {
+      const last = openDialogs[openDialogs.length - 1];
+      if (last.hasAttribute('open') && last.isConnected) dialog = last;
+      else openDialogs.pop();
     }
+    const popover = topPopover();
+    if (
+      popover &&
+      (!dialog || popoverState(popover).openedAt > dialogState(dialog).openedAt)
+    ) {
+      hidePopoverOf(popover, true, true, false);
+      return;
+    }
+    if (dialog && closedByOf(dialog) !== 'none') requestClose(dialog, null);
+  };
+  /** A dialog opened: last of the open dialogs, and of the close watchers. */
+  const dialogOpened = (el: Any): void => {
+    const was = openDialogs.indexOf(el);
+    if (was >= 0) openDialogs.splice(was, 1);
+    openDialogs.push(el);
+    dialogState(el).openedAt = opened += 1;
   };
   const requestClose = (el: Any, result: string | null): void => {
     if (!el.hasAttribute('open')) return;
@@ -3598,6 +3639,7 @@ export function installDom(
       if (this.hasAttribute('open')) return;
       queueToggle(this, 'closed');
       this.setAttribute('open', '');
+      dialogOpened(this);
       dialogState(this).previous = document.activeElement;
       focusDialog(this);
     }
@@ -3624,6 +3666,7 @@ export function installDom(
       const was = modalDialogs.indexOf(this);
       if (was >= 0) modalDialogs.splice(was, 1);
       modalDialogs.push(this);
+      dialogOpened(this);
       dialogState(this).previous = document.activeElement;
       focusDialog(this);
     }
@@ -3635,6 +3678,15 @@ export function installDom(
     }
   }
   Object.defineProperty(HTMLDialogElement.prototype, 'open', flag('open'));
+  Object.defineProperty(HTMLDialogElement.prototype, 'closedBy', {
+    get(this: Any): string {
+      return closedByOf(this);
+    },
+    set(this: Any, v: Any) {
+      this.setAttribute('closedby', str(v));
+    },
+    configurable: true,
+  });
 
   class HTMLLabelElement extends HTMLElement {
     get htmlFor(): string {
@@ -4005,6 +4057,582 @@ export function installDom(
     set value(v: Any) {
       this.setAttribute('value', v);
     }
+  }
+
+  // --- popovers (HTML 6.12) ----------------------------------------------------------
+  //
+  // An element with a `popover` attribute is shown and hidden by the page:
+  // `showPopover()`, `hidePopover()`, `togglePopover()`, or a button whose
+  // `popovertarget` names it. Whether one is showing is the host's
+  // (`popoverOpen`), which puts it in the top layer, makes it
+  // `:popover-open`, and hides it as it is taken out of the document. What
+  // is the page's is here: the stacks an auto and a hint popover go on,
+  // `beforetoggle` and `toggle`, the focus, and the light dismiss a press
+  // outside them or Escape makes.
+
+  interface PopoverState {
+    /** Being hidden, while its events run (HTML's popover hiding). */
+    hiding: boolean;
+    /** The mode it is showing in, `auto`, `hint` or `manual`, and null
+     *  while it is hidden (HTML's opened in popover mode). */
+    mode: string | null;
+    /** What showed it: a button, or the `source` a script named. */
+    trigger: Any;
+    /** What had the focus as the first popover of a stack was shown,
+     *  given back as it is hidden. */
+    previous: Any;
+    /** The state its pending `toggle` started from, while one is. */
+    toggleFrom: string | null;
+    /** When it was shown, counted with the dialogs opened (`opened`). */
+    openedAt: number;
+  }
+  const popoverStates = new WeakMap<Any, PopoverState>();
+  const popoverState = (el: Any): PopoverState => {
+    let state = popoverStates.get(el);
+    if (!state) {
+      state = {
+        hiding: false,
+        mode: null,
+        trigger: null,
+        previous: null,
+        toggleFrom: null,
+        openedAt: 0,
+      };
+      popoverStates.set(el, state);
+    }
+    return state;
+  };
+  /** The document's showing auto and hint popovers, in the order they went
+   *  into the top layer. */
+  const autoPopovers: Any[] = [];
+  const hintPopovers: Any[] = [];
+  /** The auto popover the showing hints hang off, where they do (HTML's
+   *  hint stack parent). */
+  let hintStackParent: Any = null;
+  /** A popover being shown, and how many are being hidden: no popover is
+   *  shown meanwhile. */
+  let showingPopover = false;
+  let hidingPopovers = 0;
+  /** `popover`'s state: `auto` for an empty or `auto` value, `hint`, and
+   *  `manual` for any other; null for none. */
+  const popoverType = (el: Any): string | null => {
+    const v = el?.getAttribute?.('popover');
+    if (v === null || v === undefined) return null;
+    const lower = String(v).toLowerCase();
+    if (lower === '' || lower === 'auto') return 'auto';
+    return lower === 'hint' ? 'hint' : 'manual';
+  };
+  const popoverShowing = (el: Any): boolean =>
+    call('popoverOpen', el._id) === true;
+  /** A stack with what the host has hidden since — taken out of the
+   *  document — left out. */
+  const prune = (stack: Any[]): Any[] => {
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      if (!popoverShowing(stack[i])) stack.splice(i, 1);
+    }
+    if (hintStackParent && !popoverShowing(hintStackParent)) {
+      hintStackParent = null;
+    }
+    return stack;
+  };
+  /** HTML's "topmost auto or hint popover": the last hint showing, or the
+   *  last auto popover. */
+  const topPopover = (): Any => {
+    prune(autoPopovers);
+    prune(hintPopovers);
+    return hintPopovers.at(-1) ?? autoPopovers.at(-1) ?? null;
+  };
+  /** HTML's "check popover validity": whether `el` can be shown, or
+   *  hidden, now — throwing for a page's call where it never could. */
+  const popoverValid = (
+    el: Any,
+    expectShowing: boolean,
+    raise: boolean,
+  ): boolean => {
+    if (popoverType(el) === null) {
+      if (!raise) return false;
+      throw new DOMException(
+        "Not supported on elements that do not have a valid value for the 'popover' attribute.",
+        'NotSupportedError',
+      );
+    }
+    if (popoverShowing(el) !== expectShowing) return false;
+    const fail = (message: string): boolean => {
+      if (raise) throw new DOMException(message, 'InvalidStateError');
+      return false;
+    };
+    // one being hidden may be out of the document already
+    if (!expectShowing && !el.isConnected) {
+      return fail('Invalid on disconnected popover elements.');
+    }
+    if (el instanceof HTMLDialogElement && isModalDialog(el)) {
+      return fail('Invalid on popover elements that are modal dialogs.');
+    }
+    return true;
+  };
+  /** A node's parent in the flat tree: its slot, or a shadow root's host. */
+  const flatParentNode = (node: Any): Any =>
+    node?.assignedSlot ??
+    (node?.parentNode instanceof ShadowRoot
+      ? node.parentNode.host
+      : (node?.parentNode ?? null));
+  /** Whether `node` is in `outer` in the flat tree, and not it. */
+  const flatlyIn = (outer: Any, node: Any): boolean => {
+    for (let at = flatParentNode(node); at; at = flatParentNode(at)) {
+      if (at === outer) return true;
+    }
+    return false;
+  };
+  /** HTML's "nearest inclusive open popover": the showing auto or hint
+   *  popover around a node, itself included. */
+  const nearestOpenPopover = (node: Any): Any => {
+    for (let at = node; at; at = flatParentNode(at)) {
+      if (!(at instanceof Element)) continue;
+      const mode = popoverStates.get(at)?.mode;
+      if ((mode === 'auto' || mode === 'hint') && popoverShowing(at)) {
+        return at;
+      }
+    }
+    return null;
+  };
+  /** HTML's "nearest inclusive target popover": the showing auto or hint
+   *  popover a button around a node targets. */
+  const nearestTargetPopover = (node: Any): Any => {
+    for (let at = node; at; at = flatParentNode(at)) {
+      const target = at instanceof Element ? popoverTargetOf(at) : null;
+      const type = popoverType(target);
+      if ((type === 'auto' || type === 'hint') && popoverShowing(target)) {
+        return target;
+      }
+    }
+    return null;
+  };
+  /** HTML's "topmost popover ancestor": the last of the showing auto
+   *  popovers, then hints, that `el`, or what showed it, is in. */
+  const topmostPopoverAncestor = (el: Any, source: Any): Any => {
+    const combined = [...prune(autoPopovers), ...prune(hintPopovers)];
+    let at = -1;
+    for (let i = combined.length - 1; i >= 0 && at < 0; i -= 1) {
+      if (flatlyIn(combined[i], el)) at = i;
+    }
+    if (source) {
+      for (let i = combined.length - 1; i > at; i -= 1) {
+        if (flatlyIn(combined[i], source)) {
+          at = i;
+          break;
+        }
+      }
+    }
+    return at < 0 ? null : combined[at];
+  };
+  /** HTML's "hide popover stack until": the popovers of one stack above
+   *  `endpoint`, or all of them for none, the last first — and any shown
+   *  meanwhile, by a page's handler, after them. */
+  const hideStackUntil = (
+    endpoint: Any,
+    kind: 'auto' | 'hint',
+    focusPrevious: boolean,
+    fireEvents: boolean,
+  ): void => {
+    const stack = (): Any[] =>
+      prune(kind === 'auto' ? autoPopovers : hintPopovers);
+    const before = stack();
+    const at = endpoint ? before.indexOf(endpoint) : -1;
+    const keep = before.slice(0, at + 1);
+    for (const popover of before.slice(at + 1).reverse()) {
+      hidePopoverOf(popover, focusPrevious, fireEvents, false);
+    }
+    for (const popover of stack().slice().reverse()) {
+      if (!keep.includes(popover)) {
+        hidePopoverOf(popover, focusPrevious, false, false);
+      }
+    }
+  };
+  /** HTML's "hide popovers until": the hints above `endpoint`, and the
+   *  auto popovers above it — above the auto one its hint stack hangs off,
+   *  where it is a hint — or every popover, for none. */
+  const hidePopoversUntil = (
+    endpoint: Any,
+    focusPrevious: boolean,
+    fireEvents: boolean,
+  ): void => {
+    const isHint = !!endpoint && prune(hintPopovers).includes(endpoint);
+    hideStackUntil(endpoint, 'hint', focusPrevious, fireEvents);
+    hideStackUntil(
+      isHint ? hintStackParent : endpoint,
+      'auto',
+      focusPrevious,
+      fireEvents,
+    );
+  };
+  /** `toggle`, in a task of its own, one for any number of changes before
+   *  it runs, from the state the first started from. */
+  const queuePopoverToggle = (el: Any, from: string): void => {
+    const state = popoverState(el);
+    if (state.toggleFrom !== null) return;
+    state.toggleFrom = from;
+    setTimer(
+      () => {
+        const old = state.toggleFrom ?? from;
+        state.toggleFrom = null;
+        const now = popoverShowing(el) ? 'open' : 'closed';
+        const ev = new ToggleEvent('toggle', { oldState: old, newState: now });
+        ev.isTrusted = true;
+        dispatch(el, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  /** HTML's "show popover": the popovers it is not nested in hidden, an
+   *  auto popover in a hint made a hint, the popover put in the top layer
+   *  and on its stack, and the focus given to what in it is `autofocus`. */
+  const showPopoverOf = (el: Any, raise: boolean, source: Any): void => {
+    if (showingPopover || hidingPopovers) {
+      if (raise) {
+        throw new DOMException(
+          'A popover cannot be shown while another is being shown or hidden.',
+          'InvalidStateError',
+        );
+      }
+      return;
+    }
+    if (!popoverValid(el, false, raise)) return;
+    showingPopover = true;
+    try {
+      if (!beforeToggle(el, 'closed', 'open')) return;
+      if (!popoverValid(el, false, raise)) return;
+      const original = popoverType(el);
+      let effective = original;
+      let ancestor: Any = null;
+      if (original === 'auto' || original === 'hint') {
+        ancestor = topmostPopoverAncestor(el, source);
+        if (
+          ancestor &&
+          popoverState(ancestor).mode === 'hint' &&
+          effective === 'auto'
+        ) {
+          effective = 'hint';
+        }
+        hideStackUntil(ancestor, 'hint', false, true);
+        if (effective === 'auto') hideStackUntil(ancestor, 'auto', false, true);
+      }
+      // the events may have changed what it is, or hidden it, or shown it
+      if (original !== popoverType(el)) {
+        if (raise) {
+          throw new DOMException(
+            "The popover's type changed while it was being shown.",
+            'InvalidStateError',
+          );
+        }
+        return;
+      }
+      if (!popoverValid(el, false, raise)) return;
+      const restore = topPopover() === null;
+      const focused = document.activeElement;
+      call('popoverOpen', el._id, true);
+      if (!popoverShowing(el)) return;
+      const state = popoverState(el);
+      state.mode = effective;
+      if (effective === 'auto') autoPopovers.push(el);
+      else if (effective === 'hint') {
+        hintPopovers.push(el);
+        if (ancestor && popoverState(ancestor).mode === 'auto') {
+          hintStackParent = ancestor;
+        }
+      }
+      state.trigger = source ?? null;
+      state.openedAt = opened += 1;
+      // HTML's "popover focusing steps": a dialog's own, or what in it is
+      // `autofocus`, and nothing where nothing is
+      if (el instanceof HTMLDialogElement) focusDialog(el);
+      else {
+        const control = el.hasAttribute('autofocus')
+          ? el
+          : el.querySelector('[autofocus]');
+        control?.focus();
+      }
+      state.previous = restore ? focused : null;
+      queuePopoverToggle(el, 'closed');
+    } finally {
+      showingPopover = false;
+    }
+  };
+  /** HTML's "hide popover": the popovers above it hidden first, out of the
+   *  top layer and off its stack, and the focus given back where it was
+   *  in it. */
+  const hidePopoverOf = (
+    el: Any,
+    focusPrevious: boolean,
+    fireEvents: boolean,
+    raise: boolean,
+  ): void => {
+    if (!popoverValid(el, true, raise)) return;
+    const state = popoverState(el);
+    const nested = state.hiding;
+    state.hiding = true;
+    if (nested) fireEvents = false;
+    hidingPopovers += 1;
+    try {
+      const inAuto = prune(autoPopovers).includes(el);
+      const inHint = prune(hintPopovers).includes(el);
+      if (state.mode === 'auto' || state.mode === 'hint') {
+        if (inHint) hideStackUntil(el, 'hint', focusPrevious, fireEvents);
+        if (el === hintStackParent) {
+          hideStackUntil(null, 'hint', focusPrevious, fireEvents);
+        }
+        if (inAuto) hideStackUntil(el, 'auto', focusPrevious, fireEvents);
+        if (!popoverValid(el, true, raise)) return;
+      }
+      if (fireEvents) {
+        beforeToggle(el, 'open', 'closed');
+        if (!popoverValid(el, true, raise)) return;
+      }
+      call('popoverOpen', el._id, false);
+      for (const stack of [autoPopovers, hintPopovers]) {
+        const i = stack.indexOf(el);
+        if (i >= 0) stack.splice(i, 1);
+      }
+      state.trigger = null;
+      state.mode = null;
+      if (el === hintStackParent || !prune(hintPopovers).length) {
+        hintStackParent = null;
+      }
+      if (fireEvents) queuePopoverToggle(el, 'open');
+      const previous = state.previous;
+      if (previous) {
+        state.previous = null;
+        const active = document.activeElement;
+        if (focusPrevious && active && el.contains(active)) previous.focus();
+      }
+    } finally {
+      if (!nested) state.hiding = false;
+      hidingPopovers -= 1;
+    }
+  };
+  /** The element a button's `popovertarget` names: the one a script set,
+   *  while it is in the button's tree, or the one with the id there. */
+  const explicitPopoverTargets = new WeakMap<Any, Any>();
+  const popoverTargetAttribute = (el: Any): Any => {
+    const id = el.getAttribute('popovertarget');
+    if (id === null) return null;
+    const set = explicitPopoverTargets.get(el);
+    if (set && id === '') {
+      return set.getRootNode() === el.getRootNode() ? set : null;
+    }
+    if (!id) return null;
+    const root = el.getRootNode();
+    return root.getElementById
+      ? root.getElementById(id)
+      : (root.querySelector?.(`#${cssEscape(id)}`) ?? null);
+  };
+  /** HTML's "popover target element": the popover a button that is not
+   *  disabled, nor a form's submit button, shows and hides. */
+  const popoverTargetOf = (el: Any): Any => {
+    const button =
+      el instanceof HTMLButtonElement ||
+      (el instanceof HTMLInputElement &&
+        ['submit', 'reset', 'image', 'button'].includes(el.type));
+    if (!button || isDisabled(el)) return null;
+    const submits =
+      el instanceof HTMLButtonElement
+        ? el.type === 'submit'
+        : el.type === 'submit' || el.type === 'image';
+    if (submits && el.form) return null;
+    const target = popoverTargetAttribute(el);
+    return popoverType(target) === null ? null : target;
+  };
+  /** HTML's "popover target attribute activation behavior". */
+  const popoverTargetActivate = (
+    button: Any,
+    popover: Any,
+    eventTarget: Any,
+  ): void => {
+    if (
+      popover.contains(eventTarget) &&
+      button !== popover &&
+      button.contains(popover)
+    ) {
+      return;
+    }
+    const action = button.popoverTargetAction;
+    const showing = popoverShowing(popover);
+    if (action === 'show' && showing) return;
+    if (action === 'hide' && !showing) return;
+    if (showing) hidePopoverOf(popover, true, true, false);
+    else if (popoverValid(popover, false, false)) {
+      showPopoverOf(popover, false, button);
+    }
+  };
+  /** A click not cancelled, at a button whose `popovertarget` names a
+   *  popover, or in one: the popover shown, hidden or toggled (HTML 6.12,
+   *  the popover target attribute activation behavior). A form's submit
+   *  button has none, and submits. */
+  const popoverActivation = (target: Any): void => {
+    for (let at: Any = target; at instanceof Element; at = at.parentNode) {
+      if (at instanceof HTMLButtonElement || at instanceof HTMLInputElement) {
+        const popover = popoverTargetOf(at);
+        if (popover) popoverTargetActivate(at, popover, target);
+        return;
+      }
+    }
+  };
+  /** The press a light dismiss started at (HTML 6.12, the document's
+   *  popover pointerdown target and its dialog pointerdown target). */
+  let pressedPopover: Any = null;
+  let pressedDialog: Any = null;
+  /** A popover's place in the stacks, from 1, hints after the auto
+   *  popovers; 0 for none (HTML's "popover stack position"). */
+  const stackPosition = (popover: Any): number => {
+    if (!popover) return 0;
+    const autos = prune(autoPopovers);
+    const hint = prune(hintPopovers).indexOf(popover);
+    if (hint >= 0) return autos.length + hint + 1;
+    return autos.indexOf(popover) + 1;
+  };
+  /** HTML's "topmost clicked popover": the later in the stacks of the
+   *  popover a node is in and the one a button around it targets. */
+  const topmostClickedPopover = (node: Any): Any => {
+    const inside = nearestOpenPopover(node);
+    const targeted = nearestTargetPopover(node);
+    return stackPosition(inside) > stackPosition(targeted) ? inside : targeted;
+  };
+  /** HTML's "nearest clicked dialog": the open dialog a press is in — not a
+   *  modal one's backdrop, outside its box. */
+  const nearestClickedDialog = (node: Any, x: number, y: number): Any => {
+    if (node instanceof HTMLDialogElement && isModalDialog(node)) {
+      const box = node.getBoundingClientRect();
+      if (x < box.left || x > box.right || y < box.top || y > box.bottom) {
+        return null;
+      }
+    }
+    for (let at = node; at; at = flatParentNode(at)) {
+      if (at instanceof HTMLDialogElement && at.hasAttribute('open')) {
+        return at;
+      }
+    }
+    return null;
+  };
+  /** HTML's light dismiss of the open popovers and dialogs, at a press and
+   *  its release: a release where the press was, outside them, hides the
+   *  popovers it is not in, and closes the last dialog where its
+   *  `closedby` is `any`. */
+  const lightDismiss = (
+    type: string,
+    target: Any,
+    x: number,
+    y: number,
+  ): void => {
+    if (topPopover()) {
+      const ancestor = topmostClickedPopover(target);
+      if (type === 'pointerdown') pressedPopover = ancestor;
+      else {
+        const same = ancestor === pressedPopover;
+        pressedPopover = null;
+        if (same) hidePopoversUntil(ancestor, false, true);
+      }
+    }
+    while (
+      openDialogs.length &&
+      !openDialogs[openDialogs.length - 1].hasAttribute('open')
+    ) {
+      openDialogs.pop();
+    }
+    if (!openDialogs.length) return;
+    const clicked = nearestClickedDialog(target, x, y);
+    if (type === 'pointerdown') {
+      pressedDialog = clicked;
+      return;
+    }
+    const same = clicked === pressedDialog;
+    pressedDialog = null;
+    const top = openDialogs[openDialogs.length - 1];
+    if (!same || clicked === top || closedByOf(top) !== 'any') return;
+    requestClose(top, null);
+  };
+  Object.defineProperties(HTMLElement.prototype, {
+    popover: {
+      get(this: Any): string | null {
+        return popoverType(this);
+      },
+      set(this: Any, v: Any) {
+        if (v === null) this.removeAttribute('popover');
+        else this.setAttribute('popover', str(v));
+      },
+      configurable: true,
+    },
+    showPopover: {
+      value(this: Any, options?: Any): void {
+        const source =
+          options && typeof options === 'object'
+            ? (options.source ?? null)
+            : null;
+        showPopoverOf(this, true, source);
+      },
+      writable: true,
+      configurable: true,
+    },
+    hidePopover: {
+      value(this: Any): void {
+        hidePopoverOf(this, true, true, true);
+      },
+      writable: true,
+      configurable: true,
+    },
+    togglePopover: {
+      value(this: Any, options?: Any): boolean {
+        let force: Any;
+        let source: Any = null;
+        if (typeof options === 'boolean') force = options;
+        else if (options && typeof options === 'object') {
+          force = options.force;
+          source = options.source ?? null;
+        }
+        const showing = popoverShowing(this);
+        if (showing && force !== true) hidePopoverOf(this, true, true, true);
+        else if (!showing && force !== false) {
+          showPopoverOf(this, true, source);
+        } else popoverValid(this, showing, true);
+        return popoverShowing(this);
+      },
+      writable: true,
+      configurable: true,
+    },
+  });
+  for (const Kind of [HTMLButtonElement, HTMLInputElement]) {
+    Object.defineProperty(Kind.prototype, 'popoverTargetElement', {
+      get(this: Any): Any {
+        return popoverTargetAttribute(this);
+      },
+      set(this: Any, v: Any) {
+        if (v === null || v === undefined) {
+          explicitPopoverTargets.delete(this);
+          this.removeAttribute('popovertarget');
+          return;
+        }
+        if (!(v instanceof Element)) {
+          throw new TypeError(
+            "Failed to set the 'popoverTargetElement' property: The provided value is not of type 'Element'.",
+          );
+        }
+        explicitPopoverTargets.set(this, v);
+        this.setAttribute('popovertarget', '');
+      },
+      configurable: true,
+    });
+    Object.defineProperty(Kind.prototype, 'popoverTargetAction', {
+      get(this: Any): string {
+        const v = (
+          this.getAttribute('popovertargetaction') ?? ''
+        ).toLowerCase();
+        return v === 'show' || v === 'hide' ? v : 'toggle';
+      },
+      set(this: Any, v: Any) {
+        this.setAttribute('popovertargetaction', str(v));
+      },
+      configurable: true,
+    });
   }
 
   class HTMLFieldSetElement extends FormControl {
@@ -6786,6 +7414,7 @@ export function installDom(
       return go;
     }
     if (!go) return false;
+    popoverActivation(target);
     // a submit button submits its form and a reset button resets it
     // (HTML 4.10.6, 4.10.5.1.19): here, since a button the page made a
     // moment ago is none `<Html>` has drawn yet
@@ -14243,7 +14872,7 @@ export function installDom(
       case 'click':
       case 'dblclick': {
         const Kind = e.type === 'click' ? PointerEvent : MouseEvent;
-        return dispatch(
+        const go = dispatch(
           target,
           trusted(
             new Kind(e.type, {
@@ -14260,6 +14889,12 @@ export function installDom(
             }),
           ),
         );
+        // the rest of a click's default is the host's, and a popover's
+        // invoker this one's
+        if (go && e.type === 'click' && (e.button ?? 0) === 0) {
+          popoverActivation(target);
+        }
+        return go;
       }
       case 'mousedown':
       case 'mouseup': {
@@ -14322,6 +14957,11 @@ export function installDom(
           pointer.quiet = false;
           pointer.pending = null;
           takeCapture(at);
+        }
+        // a press and its release outside the open popovers and dialogs
+        // dismiss them (HTML 6.12, 4.11.4)
+        if (type === 'pointerdown' || type === 'pointerup') {
+          lightDismiss(type, to, at.clientX, at.clientY);
         }
         // a press in an editing host focuses it and puts the caret there,
         // which leaves nothing for the document's own selection to do
@@ -14473,8 +15113,8 @@ export function installDom(
             }),
           ),
         );
-        // Escape the page let be is a close request, at the top modal
-        // dialog (HTML 7.7.2)
+        // Escape the page let be is a close request, at the last popover or
+        // dialog to have opened (HTML 7.7.2)
         if (go && e.type === 'keydown' && e.key === 'Escape') closeRequest();
         // a key typed in an editing host is an edit of it, and its own
         if (go && e.type === 'keydown' && editForKey(target, e)) return false;

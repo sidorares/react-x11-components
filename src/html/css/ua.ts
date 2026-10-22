@@ -412,6 +412,27 @@ dialog:modal {
   max-width: calc(100% - 6px - 2em);
   max-height: calc(100% - 6px - 2em);
 }
+/* HTML's rendering section (15.3.3): a popover is a framed box fixed in
+   the middle of the viewport while it shows, in the top layer, and not
+   drawn while it is hidden, a dialog the page opened as a dialog apart */
+[popover] {
+  position: fixed;
+  inset: 0;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  border: solid;
+  padding: 0.25em;
+  overflow: auto;
+  color: CanvasText;
+  background-color: Canvas;
+}
+dialog:popover-open { display: block; }
+[popover]:not(:popover-open):not(dialog[open]) { display: none; }
+:popover-open::backdrop {
+  pointer-events: none !important;
+  background-color: transparent;
+}
 /* what is under an element in the top layer, the whole viewport (CSS
    Position 4, 3.2), and a dialog's dimmed */
 ::backdrop { display: block; position: fixed; inset: 0; }
