@@ -806,6 +806,28 @@ between them and one Escape closes them all, where here each takes an
 Escape of its own and each `cancel` may be cancelled; and a
 `::backdrop`'s animations are drawn at rest.
 
+**`closedby` says what closes a dialog** (HTML 4.11.4), and `closedBy`
+reads it: `any` is closed by a press outside it, as well as by Escape;
+`closerequest`, the default for a modal dialog, by Escape alone; `none`,
+the default for a dialog `show()` opened, by neither. Escape goes to
+whichever dialog or popover opened last.
+
+**A popover is shown and hidden by the page** (HTML 6.12): an element with
+a `popover` attribute, by `showPopover()`, `hidePopover()` and
+`togglePopover()`, or by a button whose `popovertarget` names it, which
+`popovertargetaction` makes show, hide or toggle it. A showing one is
+`:popover-open`, and in the top layer as a modal dialog is, centred in the
+viewport by HTML's `[popover]` rule, but it blocks nothing around it.
+Showing an `auto` popover hides the other `auto` popovers, except those
+it is nested in, in the tree or through the button that showed it; a
+`hint` popover hides only other hints, and an `auto` popover nested in a
+hint becomes one; a `manual` popover hides nothing and is hidden by
+nothing but the page. A press and release outside the `auto` and `hint`
+popovers hides those it is not in, and Escape hides the last one.
+`beforetoggle`, which can cancel a show, comes first, and one `toggle`
+comes in a task of its own for any number of changes before it runs.
+Taking a popover out of the document hides it.
+
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with
 scripts on are told a link or a form only once the page's own `click` and

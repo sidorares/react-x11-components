@@ -2233,6 +2233,134 @@ test('Escape the page lets be closes the last modal dialog opened, after a cance
   );
 });
 
+test('popovers show and hide as their kind has them: auto ones nested or closing the others, manual ones alone, hints under them, with beforetoggle and toggle', async () => {
+  const doc = await hosted(
+    '<div id="a" popover>A<div id="a-child" popover>child</div></div>' +
+      '<div id="b" popover>B</div><div id="m" popover="manual">M</div>' +
+      '<div id="h" popover="hint">H</div><div id="x" popover="bogus"></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function log(e) { r.push(e.type + ":" + e.target.id + ":" + e.oldState + ">" + e.newState); }' +
+      'var ids = ["a", "a-child", "b", "m", "h"];' +
+      'var els = ids.map(function (id) { var el = document.getElementById(id);' +
+      '  el.addEventListener("beforetoggle", log); el.addEventListener("toggle", log); return el; });' +
+      'var a = els[0], child = els[1], b = els[2], m = els[3], h = els[4];' +
+      'r.push([a.popover, m.popover, h.popover, document.getElementById("x").popover, String(document.getElementById("out").popover)].join(","));' +
+      'a.showPopover(); child.showPopover();' +
+      'r.push(a.matches(":popover-open") + "," + child.matches(":popover-open"));' +
+      'm.showPopover(); h.showPopover(); b.showPopover();' +
+      'r.push(els.map(function (e) { return e.matches(":popover-open") ? 1 : 0; }).join(""));' +
+      'r.push(b.togglePopover(), b.togglePopover(true));' +
+      'try { document.createElement("div").showPopover(); } catch (e) { r.push(e.name); }' +
+      'try { var d = document.createElement("div"); d.popover = "auto"; d.showPopover(); } catch (e) { r.push(e.name); }' +
+      'r.push([getComputedStyle(m).display, getComputedStyle(a).display, getComputedStyle(m).position].join(","));' +
+      // a hint nested in nothing outlives the auto popover hidden after it
+      'h.showPopover(); b.hidePopover(); r.push(h.matches(":popover-open"));' +
+      'setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 20);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'auto,manual,hint,manual,null',
+      'beforetoggle:a:closed>open',
+      // nested in `a`, which stays
+      'beforetoggle:a-child:closed>open',
+      'true,true',
+      'beforetoggle:m:closed>open',
+      'beforetoggle:h:closed>open',
+      // an auto popover nested in nothing, once its own beforetoggle is not
+      // cancelled, closes the hint and the other auto ones, the last
+      // first, and leaves the manual one
+      'beforetoggle:b:closed>open',
+      'beforetoggle:h:open>closed',
+      'beforetoggle:a-child:open>closed',
+      'beforetoggle:a:open>closed',
+      '00110',
+      'beforetoggle:b:open>closed',
+      'beforetoggle:b:closed>open',
+      'false',
+      'true',
+      'NotSupportedError',
+      'InvalidStateError',
+      'block,none,fixed',
+      'beforetoggle:h:closed>open',
+      'beforetoggle:b:open>closed',
+      'true',
+      // one `toggle` a popover, from where it was before its first change
+      'toggle:a:closed>closed',
+      'toggle:a-child:closed>closed',
+      'toggle:m:closed>open',
+      'toggle:h:closed>open',
+      'toggle:b:closed>closed',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  'a popovertarget button toggles its popover, a press outside dismisses it, Escape hides it, and a dialog closes as its closedby has it',
+  async () => {
+    const doc = await hosted(
+      '<style>body{margin:0}</style>' +
+        '<button id="t" popovertarget="p" style="display:block;width:80px;height:20px">toggle</button>' +
+        '<div id="p" popover>popover</div>' +
+        '<p id="far" style="margin-top:150px">far</p>' +
+        '<dialog id="d" closedby="any">any</dialog><dialog id="n">none</dialog>' +
+        '<p id="out"></p><script>' +
+        'var r = [], d = document.getElementById("d"), n = document.getElementById("n");' +
+        'r.push(document.getElementById("t").popoverTargetElement.id, document.getElementById("t").popoverTargetAction, d.closedBy, n.closedBy);' +
+        'document.getElementById("out").textContent = r.join("|");' +
+        '</script>',
+    );
+    const node = doc.view as unknown as DrawnNode;
+    const press = async (id: string) => {
+      const rect = doc.view.elementRect(doc.byId(id))!;
+      await act(async () => {
+        const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+        const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+        fireEvent.mouseDown(node, { dx, dy });
+        fireEvent.mouseUp(node, { dx, dy });
+      });
+      await settle();
+    };
+    const open = (id: string) =>
+      doc.view.computedStyle(doc.byId(id))?.display !== 'none';
+    assert.equal(doc.text('out'), 'p|toggle|any|none');
+    await press('t');
+    assert.ok(open('p'), 'the button showed it');
+    // a press on the button is no press outside the popover it targets
+    await press('t');
+    assert.ok(!open('p'), 'the button hid it');
+    await press('t');
+    await press('far');
+    assert.ok(!open('p'), 'a press outside dismissed it');
+    await press('t');
+    await userEvent.key(XK_ESCAPE);
+    await settle();
+    assert.ok(!open('p'), 'Escape hid it');
+    // a modeless dialog closed by any press outside it, and one closed by
+    // nothing; shown modal, a dialog is closed by a close request
+    await act(() => doc.run('document.getElementById("d").show()'));
+    await press('far');
+    assert.equal(doc.byId('d').attribs.open, undefined, 'closedby=any');
+    await act(() => doc.run('document.getElementById("n").show()'));
+    await userEvent.key(XK_ESCAPE);
+    await settle();
+    assert.equal(doc.byId('n').attribs.open, '', 'closedby=none');
+    await act(() =>
+      doc.run(
+        'n.close(); n.showModal(); document.getElementById("out").textContent = n.closedBy;',
+      ),
+    );
+    assert.equal(doc.text('out'), 'closerequest');
+    await userEvent.key(XK_ESCAPE);
+    await settle();
+    assert.equal(doc.byId('n').attribs.open, undefined, 'a modal one');
+  },
+);
+
 test('a modal dialog with nothing in it to focus keeps the keys in the document, and Escape closes it', async () => {
   const doc = await hosted(
     '<input type="button" id="opener" value="open">' +

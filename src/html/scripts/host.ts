@@ -39,8 +39,10 @@ import {
   isCustomized,
   isDefinedElement,
   isModal,
+  isPopoverOpen,
   markCustomized,
   setModal,
+  setPopoverOpen,
   topLayerIn,
   topLayerOf,
   treeGeneration,
@@ -1895,6 +1897,25 @@ export class DomHost {
         }
         return isModal(el);
       }
+      // a popover shown or hidden (HTML 6.12), told as a change of an
+      // attribute nothing has, which only `:popover-open` reads; given no
+      // `b`, whether it is showing — taken out of the document, it is not
+      case 'popoverOpen': {
+        const el = this._element(a);
+        if (
+          typeof b === 'boolean' &&
+          (!b || this._inDocument(el)) &&
+          setPopoverOpen(el, b) &&
+          this._inDocument(el)
+        ) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-popover-open',
+          });
+        }
+        return isPopoverOpen(el);
+      }
 
       // `document.write` from a script the parser met: the markup goes into
       // the document after the script and after what it wrote before, as
@@ -2931,7 +2952,12 @@ export class DomHost {
       const layer = topLayerOf(parent);
       if (layer.length) {
         for (const node of removed) {
-          for (const el of topLayerIn(node, layer)) setModal(el, false);
+          // and a popover taken out is hidden (HTML 6.12, the popover
+          // removing steps)
+          for (const el of topLayerIn(node, layer)) {
+            setModal(el, false);
+            setPopoverOpen(el, false);
+          }
         }
       }
     }
@@ -3077,7 +3103,7 @@ export class DomHost {
       // counts them
       state: (_el, _name) => false,
       modal: (el) => isModal(el),
-      'popover-open': nothing,
+      'popover-open': (el) => isPopoverOpen(el),
       fullscreen: nothing,
       autofill: nothing,
       '-webkit-autofill': nothing,

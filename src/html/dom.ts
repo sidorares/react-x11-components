@@ -536,18 +536,24 @@ export function isCustomized(el: Element): boolean {
 // A dialog a page's scripts opened with `showModal()` is modal (HTML
 // 4.11.4.2) and in its document's top layer (CSS Position 4, 3.1): drawn
 // over every stacking context, with a `::backdrop` under it, and the rest of
-// the document inert. Which elements those are is the script engine's to
-// say (`scripts/dom.ts`, the `modal` op); what reads it is `:modal`, the
-// cascade's top-layer style (`overlay`), the box tree's order and the
-// focus. A document with no scripts opens no dialog that way.
+// the document inert. A popover its scripts showed (HTML 6.12) is in the
+// top layer too, and blocks nothing. Which elements those are is the script
+// engine's to say (`scripts/dom.ts`, the `modal` and `popoverOpen` ops);
+// what reads it is `:modal` and `:popover-open`, the cascade's top-layer
+// style (`overlay`), the box tree's order and the focus. A document with no
+// scripts opens no dialog or popover that way.
 
 /** Each document's top layer, in the order its elements went in: by the
  *  node at the top of the document, which a shadow tree's host leads up
  *  to. */
 const TOP_LAYERS = new WeakMap<AnyNode, Element[]>();
 /** Each element in a top layer: when it went in, counted across
- *  documents, and the top of the document whose layer it is in. */
-const IN_TOP_LAYER = new WeakMap<Element, { order: number; top: AnyNode }>();
+ *  documents, the top of the document whose layer it is in, and whether it
+ *  is there as a modal dialog rather than as a popover. */
+const IN_TOP_LAYER = new WeakMap<
+  Element,
+  { order: number; top: AnyNode; modal: boolean }
+>();
 let topLayerCount = 0;
 const NO_ELEMENTS: readonly Element[] = [];
 
@@ -568,27 +574,53 @@ function topOf(node: AnyNode): AnyNode {
  *  removal from the document). False where nothing changed. */
 export function setModal(el: Element, modal: boolean): boolean {
   const was = IN_TOP_LAYER.get(el);
-  if (!!was === modal) return false;
-  if (modal) {
-    const top = topOf(el);
-    let layer = TOP_LAYERS.get(top);
-    if (!layer) TOP_LAYERS.set(top, (layer = []));
-    layer.push(el);
-    IN_TOP_LAYER.set(el, { order: (topLayerCount += 1), top });
-    return true;
-  }
+  if (modal) return !was && enterTopLayer(el, true);
+  return !!was?.modal && leaveTopLayer(el);
+}
+
+/** Show an element as a popover, last of its document's top layer, or hide
+ *  one (HTML 6.12, "show popover" and "hide popover", and its removal from
+ *  the document). False where nothing changed. */
+export function setPopoverOpen(el: Element, open: boolean): boolean {
+  const was = IN_TOP_LAYER.get(el);
+  if (open) return !was && enterTopLayer(el, false);
+  return !!was && !was.modal && leaveTopLayer(el);
+}
+
+function enterTopLayer(el: Element, modal: boolean): boolean {
+  const top = topOf(el);
+  let layer = TOP_LAYERS.get(top);
+  if (!layer) TOP_LAYERS.set(top, (layer = []));
+  layer.push(el);
+  IN_TOP_LAYER.set(el, { order: (topLayerCount += 1), top, modal });
+  return true;
+}
+
+function leaveTopLayer(el: Element): boolean {
+  const was = IN_TOP_LAYER.get(el)!;
   IN_TOP_LAYER.delete(el);
   // the document's layer, wherever the element is now
-  const layer = TOP_LAYERS.get(was!.top);
+  const layer = TOP_LAYERS.get(was.top);
   const i = layer ? layer.indexOf(el) : -1;
   if (i >= 0) layer!.splice(i, 1);
-  if (layer && !layer.length) TOP_LAYERS.delete(was!.top);
+  if (layer && !layer.length) TOP_LAYERS.delete(was.top);
   return true;
 }
 
 /** Whether `:modal` matches an element: a dialog `showModal()` opened and
  *  nothing has closed or taken out of the document since. */
 export function isModal(el: Element): boolean {
+  return IN_TOP_LAYER.get(el)?.modal === true;
+}
+
+/** Whether `:popover-open` matches an element: one shown as a popover and
+ *  not hidden or taken out of the document since. */
+export function isPopoverOpen(el: Element): boolean {
+  return IN_TOP_LAYER.get(el)?.modal === false;
+}
+
+/** Whether an element is in its document's top layer, as either. */
+export function inTopLayer(el: Element): boolean {
   return IN_TOP_LAYER.has(el);
 }
 
@@ -613,7 +645,12 @@ export function topLayerOf(node: AnyNode): readonly Element[] {
 export function blockedByModal(el: Element): boolean {
   const layer = topLayerOf(el);
   if (!layer.length) return false;
-  const blocker = layer[layer.length - 1];
+  // the last modal dialog: a popover in the layer blocks nothing
+  let blocker: Element | null = null;
+  for (let i = layer.length - 1; i >= 0 && !blocker; i -= 1) {
+    if (isModal(layer[i])) blocker = layer[i];
+  }
+  if (!blocker) return false;
   for (let at: Element | null = el; at; at = flatParentOf(at)) {
     if (at === blocker) return false;
   }
