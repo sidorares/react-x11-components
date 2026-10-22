@@ -2094,6 +2094,17 @@ closes a way out a DOM binding opens by accident:
   `onfinish` was never called, so a menu that hid a panel at the end of its
   fade drew every panel it had opened. An `Animation` keeps its timing and
   its promises and tells `finish` when the timing ends (`liveAnimations`).
+- **An animation's state is the spec's, and so is the clock it reads.**
+  `Animation` keeps Web Animations' start time, hold time, pending rate
+  and pending tasks and runs its procedures step by step, and
+  `document.timeline` is read once a task (`taskNow`): WPT's
+  `waitForNextFrame` asks for frames until the time moves, and a clock
+  read live answered it with no frame at all. A frame updates the
+  scroll-driven animations, then runs `requestAnimationFrame`'s callbacks
+  in a task after its microtasks, which is where a browser's checkpoint
+  puts a finished promise. **Anything new that reads the document's time
+  reads `taskNow`**, and anything a frame must do before the page's
+  callbacks goes in `runFrame`'s first half.
 - **What an animation draws follows the timing the page reads, never
   beside it.** The realm keeps the timing, and tells the host the effect
   and where the animation's time is, as a JSON string and a time, a rate
