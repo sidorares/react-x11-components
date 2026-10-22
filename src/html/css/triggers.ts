@@ -114,8 +114,10 @@ export interface RangeEdge {
   offset: Len;
 }
 
-const START: RangeEdge = { name: null, offset: 0 };
-const END: RangeEdge = { name: null, offset: { pct: 100 } };
+export const RANGE_START: RangeEdge = { name: null, offset: 0 };
+export const RANGE_END: RangeEdge = { name: null, offset: { pct: 100 } };
+const START = RANGE_START;
+const END = RANGE_END;
 
 /**
  * An element's timeline triggers, each longhand's list as computed: as many
@@ -311,8 +313,23 @@ function parseRange(
   ];
 }
 
+/** `animation-range` (Scroll-driven Animations 1, 5.1): a list of ranges,
+ *  each a start and an end; undefined for anything else. */
+export function parseAnimationRanges(
+  value: string,
+  ctx: UnitContext,
+): [RangeEdge, RangeEdge][] | undefined {
+  const out: [RangeEdge, RangeEdge][] = [];
+  for (const item of splitCommas(value)) {
+    const range = parseRange(item, ctx);
+    if (!range) return undefined;
+    out.push(range);
+  }
+  return out;
+}
+
 /** A list of one end of a range (`…-range-start`, `…-range-end`). */
-function parseEdges(
+export function parseEdges(
   value: string,
   end: boolean,
   ctx: UnitContext,

@@ -25,7 +25,11 @@ import {
   same,
 } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
-import type { AnimationAction, AnimationTrigger } from './triggers.js';
+import type {
+  AnimationAction,
+  AnimationTrigger,
+  RangeEdge,
+} from './triggers.js';
 import type { ScriptSampling } from './scripted.js';
 import {
   INHERITED,
@@ -92,16 +96,24 @@ export interface TriggerRun {
 export interface ScrollProgress {
   at: number;
   edge: boolean;
+  /** Where an edge of an attachment range is, on the same scale: `cover`'s
+   *  for a view timeline, the scroll's for a scroll timeline. */
+  edgeAt?: (edge: RangeEdge) => number;
 }
 
 interface Target {
   /** By the element's `animation-name` list, null where an entry is
    *  `none`. */
   running: (Running | null)[];
-  /** The scroll-driven timelines its animations run on, and where each
-   *  was when it was last sampled: what a scroll or a layout compares
+  /** The scroll-driven timelines its animations run on, their ranges,
+   *  and where each was when it was last sampled — the timeline and the
+   *  range's edges — what a scroll or a layout compares
    *  (`restyleScrolled`). */
-  scrolled?: { refs: TimelineRef[]; at: (number | null)[] };
+  scrolled?: {
+    refs: TimelineRef[];
+    ranges: [RangeEdge | null, RangeEdge | null][];
+    at: string[];
+  };
   /** When it next changes: a frame from now while one is under way, the
    *  end of a delay before one starts, and never once each is over or
    *  paused. */
@@ -203,6 +215,9 @@ export class AnimationTimeline {
     keyframesOf: (name: string) => KeyframesRule | null,
     /** `animation-timeline`, by the same index: `auto` is the clock's. */
     timelines: readonly TimelineRef[] = [],
+    /** `animation-range-start` and `-end`, by the same index. */
+    rangeStarts: readonly RangeEdge[] = [],
+    rangeEnds: readonly RangeEdge[] = [],
   ): Sample[] | null {
     let targets = this._targets.get(el);
     const was = targets?.get(pseudo)?.running ?? [];
@@ -234,15 +249,29 @@ export class AnimationTimeline {
           ref.kind === 'none'
             ? null
             : (this.scrollProgress?.(el, pseudo, ref) ?? null);
+        // where its range starts and ends on the timeline (5.1)
+        const rangeStart = rangeStarts.length
+          ? rangeStarts[i % rangeStarts.length]
+          : null;
+        const rangeEnd = rangeEnds.length
+          ? rangeEnds[i % rangeEnds.length]
+          : null;
+        const from = p && rangeStart && p.edgeAt ? p.edgeAt(rangeStart) : 0;
+        const to = p && rangeEnd && p.edgeAt ? p.edgeAt(rangeEnd) : 100;
         if (ref.kind !== 'none') {
-          scrolled ??= { refs: [], at: [] };
+          scrolled ??= { refs: [], ranges: [], at: [] };
           scrolled.refs.push(ref);
-          scrolled.at.push(p?.at ?? null);
+          scrolled.ranges.push([rangeStart, rangeEnd]);
+          scrolled.at.push(p ? `${p.at},${from},${to}` : '');
         }
         const rule = keyframesOf(name);
         if (!rule || !p) continue;
         if (!inherits) inherits = animatesInherited(rule);
-        const timing = proportional(timingAt(animations, i));
+        const timing = proportional(
+          timingAt(animations, i),
+          Math.max(to - from, 0),
+        );
+        const local = p.at - from;
         const active =
           timing.duration === 0 || timing.iterations === 0
             ? 0
@@ -252,14 +281,14 @@ export class AnimationTimeline {
         // at its scroller's end, the end of the active phase is in it:
         // it holds its end there as one that fills forwards would
         const boundary =
-          p.edge && activeAfter > 0 && Math.abs(p.at - activeAfter) < 1e-9;
+          p.edge && activeAfter > 0 && Math.abs(local - activeAfter) < 1e-9;
         const fill =
           boundary && (timing.fill === 'none' || timing.fill === 'backwards')
             ? timing.fill === 'none'
               ? 'forwards'
               : 'both'
             : timing.fill;
-        const at = progressAt({ ...timing, fill }, p.at);
+        const at = progressAt({ ...timing, fill }, local);
         if (at.phase !== 'after' || at.progress !== null) {
           willChange |= animatedWillChange(rule);
         }
@@ -391,8 +420,11 @@ export class AnimationTimeline {
         const scrolled = target.scrolled;
         if (!scrolled || target.next === 0) continue;
         const moved = scrolled.refs.some((ref, i) => {
-          const at = progress(el, pseudo, ref)?.at ?? null;
-          return at !== scrolled.at[i];
+          const p = progress(el, pseudo, ref);
+          const [start, end] = scrolled.ranges[i];
+          const from = start && p?.edgeAt ? p.edgeAt(start) : 0;
+          const to = end && p?.edgeAt ? p.edgeAt(end) : 100;
+          return (p ? `${p.at},${from},${to}` : '') !== scrolled.at[i];
         });
         if (moved) {
           target.next = 0;
@@ -1174,13 +1206,13 @@ export function noteAnimated(
  * time a percentage of the timeline, an `auto` duration — 0 — and no delay
  * filling it.
  */
-function proportional(timing: ReturnType<typeof timingAt>) {
+function proportional(timing: ReturnType<typeof timingAt>, span = 100) {
   const { duration, delay, iterations } = timing;
   if (duration === 0 && delay === 0) {
     return {
       ...timing,
       duration:
-        iterations > 0 && iterations !== Infinity ? 100 / iterations : 0,
+        iterations > 0 && iterations !== Infinity ? span / iterations : 0,
     };
   }
   const total = Math.max(
@@ -1190,6 +1222,6 @@ function proportional(timing: ReturnType<typeof timingAt>) {
   if (!(total > 0) || total === Infinity) {
     return { ...timing, delay: 0, duration: 0 };
   }
-  const k = 100 / total;
+  const k = span / total;
   return { ...timing, delay: delay * k, duration: duration * k };
 }

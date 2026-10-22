@@ -88,10 +88,14 @@ import type {
 } from './anchor.js';
 import {
   NO_TIMELINE_TRIGGERS,
+  RANGE_END,
+  RANGE_START,
   applyTimelineTrigger,
+  parseAnimationRanges,
+  parseEdges,
   parseTriggerScope,
 } from './triggers.js';
-import type { TimelineTriggers, TriggerScope } from './triggers.js';
+import type { RangeEdge, TimelineTriggers, TriggerScope } from './triggers.js';
 import { viewTransitionClass, viewTransitionName } from './specified.js';
 import type { BasicShape } from './basic-shape.js';
 
@@ -1014,6 +1018,11 @@ export interface ComputedStyle {
   /** `animation-timeline` (CSS Animations 2, Scroll-driven Animations 1):
    *  each animation's timeline, as its computed value is serialized. */
   animationTimeline: readonly TimelineRef[];
+  /** `animation-range-start` and `-end` (Scroll-driven Animations 1, 5.1):
+   *  where on its timeline each animation's active range starts and ends,
+   *  by the same index as its name. */
+  animationRangeStart: readonly RangeEdge[];
+  animationRangeEnd: readonly RangeEdge[];
   /** `timeline-scope`: `none`, `all`, or the names, as written. */
   timelineScope: string;
   /** `scroll-timeline-name` and `-axis`, `view-timeline-name` and `-axis`:
@@ -1679,6 +1688,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clipPath: null,
     opacity: 1,
     animationTimeline: AUTO_TIMELINES,
+    animationRangeStart: [RANGE_START],
+    animationRangeEnd: [RANGE_END],
     timelineScope: 'none',
     scrollTimelineName: 'none',
     scrollTimelineAxis: 'block',
@@ -2904,6 +2915,21 @@ export function applyDeclaration(
     case 'animation-timeline': {
       const timelines = timelinesOf(value, ctx);
       if (timelines) style.animationTimeline = timelines;
+      return;
+    }
+    case 'animation-range': {
+      const ranges = parseAnimationRanges(value, ctx);
+      if (!ranges) return;
+      style.animationRangeStart = ranges.map((r) => r[0]);
+      style.animationRangeEnd = ranges.map((r) => r[1]);
+      return;
+    }
+    case 'animation-range-start':
+    case 'animation-range-end': {
+      const edges = parseEdges(value, written === 'animation-range-end', ctx);
+      if (!edges) return;
+      if (written === 'animation-range-end') style.animationRangeEnd = edges;
+      else style.animationRangeStart = edges;
       return;
     }
     case 'timeline-scope': {
@@ -8345,6 +8371,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   zoom: ['zoom'],
   filter: ['filter'],
   'animation-timeline': ['animationTimeline'],
+  'animation-range': ['animationRangeStart', 'animationRangeEnd'],
+  'animation-range-start': ['animationRangeStart'],
+  'animation-range-end': ['animationRangeEnd'],
   'timeline-scope': ['timelineScope'],
   'scroll-timeline-name': ['scrollTimelineName'],
   'scroll-timeline-axis': ['scrollTimelineAxis'],
