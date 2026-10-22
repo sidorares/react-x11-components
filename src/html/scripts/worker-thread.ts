@@ -199,7 +199,11 @@ const engine = new ScriptEngine(host.bridge, {
   base: () => host.url,
 });
 host.entries = engine;
-engine.call('__becomeWorker', { url: init.url, name: init.name });
+engine.call('__becomeWorker', {
+  url: init.url,
+  name: init.name,
+  shared: !!init.shared,
+});
 
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {

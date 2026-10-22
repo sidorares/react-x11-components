@@ -11462,6 +11462,7 @@ export function installDom(
     'DocumentType',
     'ShadowRoot',
     'Window',
+    'SharedWorker',
   ]);
 
   /** The blob URLs this realm made (`URL.createObjectURL`), to what they
@@ -11477,32 +11478,40 @@ export function installDom(
    * serialized (`serializeClone`), since only a string reaches the thread.
    */
   const workers = new Map<number, Any>();
+  /** A worker's script: a URL of the page's origin, which the host fetches,
+   *  or a blob URL this realm made, whose script is handed over. */
+  const workerScript = (
+    url: Any,
+    made: string,
+  ): { resolved: string; source: string | null } => {
+    const href = str(url);
+    if (href.startsWith('blob:')) {
+      const blob = blobUrls.get(href);
+      if (!blob) {
+        throw new DOMException(
+          `Failed to construct '${made}': Script at '${href}' cannot be accessed from origin '${location.origin}'.`,
+          'SecurityError',
+        );
+      }
+      return {
+        resolved: href,
+        source: new TextDecoder().decode(blob._bytes),
+      };
+    }
+    const resolved = new URL(href, location.href).href;
+    if (new URL(resolved).origin !== location.origin) {
+      throw new DOMException(
+        `Failed to construct '${made}': Script at '${resolved}' cannot be accessed from origin '${location.origin}'.`,
+        'SecurityError',
+      );
+    }
+    return { resolved, source: null };
+  };
   class Worker extends EventTarget {
     _id = 0;
     constructor(url: Any, options: Any = {}) {
       super();
-      const href = str(url);
-      let source: string | null = null;
-      let resolved: string;
-      if (href.startsWith('blob:')) {
-        const blob = blobUrls.get(href);
-        if (!blob) {
-          throw new DOMException(
-            `Failed to construct 'Worker': Script at '${href}' cannot be accessed from origin '${location.origin}'.`,
-            'SecurityError',
-          );
-        }
-        source = new TextDecoder().decode(blob._bytes);
-        resolved = href;
-      } else {
-        resolved = new URL(href, location.href).href;
-        if (new URL(resolved).origin !== location.origin) {
-          throw new DOMException(
-            `Failed to construct 'Worker': Script at '${resolved}' cannot be accessed from origin '${location.origin}'.`,
-            'SecurityError',
-          );
-        }
-      }
+      const { resolved, source } = workerScript(url, 'Worker');
       const id = call(
         'workerStart',
         JSON.stringify({
@@ -11538,6 +11547,120 @@ export function installDom(
       configurable: true,
     });
   }
+
+  /**
+   * A shared worker (HTML 10.2.6.4): one thread for a script and a name,
+   * however many `SharedWorker`s this realm makes of them, each connected
+   * to it through a port of its own. A connection's messages cross the
+   * thread's one channel tagged with the connection they are of, `{ c, d }`,
+   * and its first is `{ c, connect }`, which the worker's global hears as a
+   * `connect` event (`__workerMessage`).
+   */
+  const sharedThreads = new Map<string, number>();
+  /** The `SharedWorker`s of each thread, which its errors are told to. */
+  const sharedWorkersOf = new Map<number, Set<Any>>();
+  /** Each connection's end in this realm, page or worker. */
+  const sharedPorts = new Map<number, Any>();
+  let connections = 0;
+  /** A port whose other end is in another thread: what it posts crosses
+   *  serialized, through `send`. */
+  const wirePort = (send: (text: string) => void): Any => {
+    const port = new MessagePort();
+    port._other = {
+      _closed: false,
+      _deliver: (data: Any) => send(serializeClone(data)),
+    };
+    return port;
+  };
+  class SharedWorker extends EventTarget {
+    readonly port: Any;
+    constructor(url: Any, options: Any = {}) {
+      super();
+      const named =
+        typeof options === 'string' || options === undefined
+          ? { name: options ?? '' }
+          : (options ?? {});
+      const name = str(named.name ?? '');
+      const { resolved, source } = workerScript(url, 'SharedWorker');
+      const key = `${resolved}\u0000${name}`;
+      let id = sharedThreads.get(key);
+      if (id === undefined) {
+        id = Number(
+          call(
+            'workerStart',
+            JSON.stringify({
+              url: resolved,
+              type: named.type === 'module' ? 'module' : 'classic',
+              name,
+              shared: true,
+            }),
+            source,
+          ),
+        );
+        sharedThreads.set(key, id);
+        sharedWorkersOf.set(id, new Set());
+      }
+      sharedWorkersOf.get(id)!.add(this);
+      const c = ++connections;
+      const thread = id;
+      this.port = wirePort((d) =>
+        call('workerPost', thread, JSON.stringify({ c, d })),
+      );
+      sharedPorts.set(c, this.port);
+      call('workerPost', thread, JSON.stringify({ c, connect: true }));
+    }
+  }
+  Object.defineProperty(SharedWorker.prototype, 'onerror', {
+    get(this: Any): Any {
+      return this._handlers?.error ?? null;
+    },
+    set(this: Any, fn: Any) {
+      this._handlers ??= {};
+      this._handlers.error = typeof fn === 'function' ? fn : null;
+    },
+    configurable: true,
+  });
+  /** Whether this realm is a shared worker's (`__becomeWorker`). */
+  let sharedRealm = false;
+  /** A message on a shared worker's channel, to the port of the
+   *  connection it is of, or the connection made. False where it is none. */
+  const sharedMessage = (text: string): boolean => {
+    let wrapper: Any;
+    try {
+      wrapper = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    const c = Number(wrapper?.c);
+    if (!c) return false;
+    if (wrapper.connect && sharedRealm) {
+      const port = wirePort((d) =>
+        call('workerPostOut', JSON.stringify({ c, d })),
+      );
+      sharedPorts.set(c, port);
+      const ev = new MessageEvent('connect', {
+        data: '',
+        source: port,
+        ports: [port],
+      });
+      ev.isTrusted = true;
+      dispatch(windowTarget, ev);
+      return true;
+    }
+    const port = sharedPorts.get(c);
+    if (!port) return false;
+    let data: Any;
+    try {
+      data = deserializeClone(str(wrapper.d));
+    } catch {
+      const ev = new MessageEvent('messageerror', {});
+      ev.isTrusted = true;
+      dispatch(port, ev);
+      return true;
+    }
+    port._deliver(data);
+    return true;
+  };
   class File extends Blob {
     readonly name: string;
     readonly lastModified: number;
@@ -16798,6 +16921,7 @@ export function installDom(
     Headers,
     WheelEvent,
     Worker,
+    SharedWorker,
     ImageData,
     CanvasRenderingContext2D,
     ...RASTER.classes,
@@ -17860,6 +17984,10 @@ export function installDom(
   // the page posted to it, to the worker's global (id 0)
   entry('__workerMessage', () => {
     const [id, text] = input();
+    // a shared worker's, to the port of its connection
+    if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
+      return sharedMessage(str(text));
+    }
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
     let data: Any;
@@ -17880,18 +18008,22 @@ export function installDom(
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
     const [id, message, filename, lineno, colno] = input();
-    const target = workers.get(id);
-    if (!target) return false;
-    const ev = new ErrorEvent('error', {
-      message: str(message),
-      filename: str(filename),
-      lineno: Number(lineno) || 0,
-      colno: Number(colno) || 0,
-      cancelable: true,
-    });
-    ev.isTrusted = true;
-    dispatch(target, ev);
-    return true;
+    const targets = sharedWorkersOf.get(id) ?? [workers.get(id)];
+    let told = false;
+    for (const target of targets) {
+      if (!target) continue;
+      const ev = new ErrorEvent('error', {
+        message: str(message),
+        filename: str(filename),
+        lineno: Number(lineno) || 0,
+        colno: Number(colno) || 0,
+        cancelable: true,
+      });
+      ev.isTrusted = true;
+      dispatch(target, ev);
+      told = true;
+    }
+    return told;
   });
 
   /**
@@ -17903,7 +18035,7 @@ export function installDom(
    * its location and its name.
    */
   entry('__becomeWorker', () => {
-    const { url, name } = input();
+    const { url, name, shared } = input();
     for (const key of Object.getOwnPropertyNames(G)) {
       if (
         /^(HTML|SVG)/.test(key) ||
@@ -17939,11 +18071,29 @@ export function installDom(
       return fn;
     };
     define('WorkerGlobalScope', scope('WorkerGlobalScope'));
-    define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
     define('name', str(name));
-    define('postMessage', function postMessage(message: Any): void {
-      call('workerPostOut', serializeClone(message));
-    });
+    if (shared) {
+      // a shared worker's global hears connections, and posts on their
+      // ports alone (HTML 10.2.1.3)
+      sharedRealm = true;
+      try {
+        delete (G as Any).postMessage;
+      } catch {}
+      define('SharedWorkerGlobalScope', scope('SharedWorkerGlobalScope'));
+      Object.defineProperty(G, 'onconnect', {
+        get: () => windowTarget._handlers?.connect ?? null,
+        set: (fn: Any) => {
+          windowTarget._handlers ??= {};
+          windowTarget._handlers.connect = typeof fn === 'function' ? fn : null;
+        },
+        configurable: true,
+      });
+    } else {
+      define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
+      define('postMessage', function postMessage(message: Any): void {
+        call('workerPostOut', serializeClone(message));
+      });
+    }
     define('close', function close(): void {
       call('workerClose');
     });

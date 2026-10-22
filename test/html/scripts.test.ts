@@ -806,6 +806,32 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
   );
 });
 
+test('a shared worker is one thread for a script and a name, which each SharedWorker connects to through a port of its own', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "var seen = 0; onconnect = function (e) { var port = e.source; seen += 1;" +' +
+      '  "port.postMessage({ n: seen, same: e.ports[0] === port, scope: self instanceof SharedWorkerGlobalScope, post: typeof postMessage, name: name });" +' +
+      '  "port.onmessage = function (m) { port.postMessage({ echo: m.data.x * 2 }); }; };";' +
+      'var url = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));' +
+      'var r = [];' +
+      'function done() { if (r.length === 3) document.getElementById("out").textContent = r.sort().join("|"); }' +
+      'var a = new SharedWorker(url, "w"), b = new SharedWorker(url, { name: "w" });' +
+      'a.port.onmessage = function (e) { var d = e.data;' +
+      '  r.push(d.echo !== undefined ? "a echo " + d.echo : ["a", d.n, d.same, d.scope, d.post, d.name].join(" "));' +
+      '  if (d.n) a.port.postMessage({ x: 21 }); done(); };' +
+      // a port listened to with addEventListener is started by hand
+      'b.port.addEventListener("message", function (e) { r.push("b " + e.data.n); done(); }); b.port.start();' +
+      '</script>',
+  );
+  // one thread, which counted both connections, in the order made; and a
+  // shared worker's global posts on its ports alone
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'a 1 true true undefined w|a echo 42|b 2',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a worker’s imported script is a script of its own: a strict one’s declarations are the worker’s, and what one throws is thrown to its caller', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
