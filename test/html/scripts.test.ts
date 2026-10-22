@@ -5021,6 +5021,45 @@ test('a form whose target names a frame posts into the frame, and the tab stays 
   );
 });
 
+test('a link and window.open aimed at a frame are the frame’s navigations, which its window hears from before its first document loads', async () => {
+  const doc = await hosted(
+    '<iframe name="side" src="blank.html"></iframe>' +
+      '<a id="l" href="blank.html#x" target="side">l</a><p id="out"></p><script>' +
+      'var f = document.getElementsByName("side")[0], r = [];' +
+      // set on the initial about:blank's window, which the frame's first
+      // document keeps
+      'f.contentWindow.navigation.onnavigate = function (e) {' +
+      '  r.push(e.navigationType + ":" + e.destination.url.split("/").pop() + ":" + e.hashChange); };' +
+      'navigation.onnavigate = function () { r.push("not here"); };' +
+      'f.onload = function () { f.onload = null;' +
+      '  document.getElementById("l").click();' +
+      '  setTimeout(function () {' +
+      '    var hash = f.contentWindow.location.hash;' +
+      '    var opened = window.open("blank.html#y", "side");' +
+      '    r.push(hash, opened === f.contentWindow);' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 20);' +
+      '  }, 20); };' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'text/html']],
+        body: '<title>t</title>',
+      }),
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'push:blank.html#x:true|push:blank.html#y:true|#x|true',
+    doc.logs.join('\n'),
+  );
+  // and the tab went nowhere
+  assert.deepEqual(doc.links, []);
+});
+
 test('a target is a keyword, a frame’s name, or a new tab; window.open goes where its name says', async () => {
   const doc = await hosted(
     '<base target="_top"><iframe name="side"></iframe><iframe name="Side"></iframe>' +

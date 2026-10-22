@@ -7095,7 +7095,9 @@ export function installDom(
         // a frame's document the page reaches into is the one it loaded
         loaded: () => true,
         setUrl: (url) => void call('setFrameLocation', frame._id, url),
-        doc: () => doc,
+        // the frame's document now: a window kept from its initial
+        // `about:blank` keeps its session too (`frameWindowOf`)
+        doc: () => frameDocumentOf(frame) ?? doc,
         target,
         away: (url) => void call('frameNavigate', frame._id, url),
         tellsFragments: false,
@@ -7111,6 +7113,12 @@ export function installDom(
     }
     return made;
   };
+  /** The window each frame's document was handed last, and whether that
+   *  document is the frame's initial `about:blank` (`frameWindowOf`). */
+  const keptFrameWindows = new WeakMap<
+    object,
+    { win: Any; doc: Any; initial: boolean; setDoc: (doc: Any) => void }
+  >();
   /** Each frame's WindowProxy, and the frame each is of. */
   const frameProxies = new WeakMap<object, Any>();
   const proxiedFrames = new WeakMap<object, Any>();
@@ -7126,6 +7134,27 @@ export function installDom(
   const frameWindowOf = (doc: Any, frame: Any): Any => {
     let win = frameWindows.get(doc);
     if (win) return win;
+    // the first document a frame loads after its initial `about:blank`
+    // keeps that one's window, and with it what the page set on it — a
+    // handler on its `navigation` among them (HTML 7.4.6.2, "initialize the
+    // document object")
+    const last = keptFrameWindows.get(frame);
+    if (last?.initial && last.doc !== doc) {
+      last.setDoc(doc);
+      last.initial = call('frameInitialBlank', frame._id) === true;
+      const made = frameSessions.get(last.doc);
+      if (made) {
+        made.session.entries = [
+          sessionEntry(String(call('frameLocation', frame._id))),
+        ];
+        made.session.index = 0;
+        frameSessions.set(doc, made);
+      }
+      last.doc = doc;
+      frameWindows.set(doc, last.win);
+      return last.win;
+    }
+    let current = doc;
     const proxy = frameProxyOf(frame);
     const target = new EventTarget();
     win = Object.create(Window.prototype);
@@ -7138,7 +7167,7 @@ export function installDom(
       });
     }
     const size = (): number[] =>
-      String(call('frameSize', doc._id)).split(' ').map(Number);
+      String(call('frameSize', current._id)).split(' ').map(Number);
     const own: Record<string, () => Any> = {
       window: () => proxy,
       self: () => proxy,
@@ -7148,7 +7177,7 @@ export function installDom(
       top: () => G,
       opener: () => null,
       frameElement: () => frame,
-      document: () => doc,
+      document: () => current,
       closed: () => false,
       length: () => 0,
       innerWidth: () => size()[0],
@@ -7161,8 +7190,8 @@ export function installDom(
       pageYOffset: () => 0,
       devicePixelRatio: () => viewport().dpr,
       // its own session history (`makeSession`), made as it is asked for
-      history: () => frameSessionOf(frame, doc, target).history,
-      navigation: () => frameSessionOf(frame, doc, target).navigation,
+      history: () => frameSessionOf(frame, current, target).history,
+      navigation: () => frameSessionOf(frame, current, target).navigation,
     };
     for (const [name, get] of Object.entries(own)) {
       Object.defineProperty(win, name, {
@@ -7225,6 +7254,14 @@ export function installDom(
       configurable: true,
     });
     frameWindows.set(doc, win);
+    keptFrameWindows.set(frame, {
+      win,
+      doc,
+      initial: call('frameInitialBlank', frame._id) === true,
+      setDoc: (d: Any) => {
+        current = d;
+      },
+    });
     return win;
   };
   /** What a page may reach of another origin's window (HTML 7.2.3.1,
@@ -17569,16 +17606,56 @@ export function installDom(
     return went;
   };
 
+  /**
+   * The frame of this document a target names, and its session (HTML
+   * 7.3.1.7, "the rules for choosing a navigable"): a frame whose window
+   * has the name, where its document is this realm's — one with a realm
+   * of its own navigates in that realm. Null for a keyword, or a name no
+   * frame here has.
+   */
+  const namedFrame = (name: string): { frame: Any; session: Any } | null => {
+    if (!name || name.startsWith('_')) return null;
+    for (const frame of Array.from(
+      document.querySelectorAll('iframe, frame'),
+    ) as Any[]) {
+      if (crossLinked.has(frame._id) || linkedFrames.get(frame._id)) continue;
+      const doc = frameDocumentOf(frame);
+      if (!doc) continue;
+      const win = frameWindowOf(doc, frame);
+      if (win.name !== name) continue;
+      // its session, made as its window's `navigation` is asked for
+      void win.navigation;
+      const session = frameSessions.get(doc)?.session;
+      return session ? { frame, session } : null;
+    }
+    return null;
+  };
+
   /** A link's activation, a click's or a script's (HTML 4.6.4, "follow the
    *  hyperlink"): `navigate` first, and the host follows it only where it
    *  goes to another document. False where the page kept it. */
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
-    if (
-      !anchor.hasAttribute('href') ||
-      anchor.hasAttribute('download') ||
-      !/^(|_self)$/i.test(anchor.getAttribute('target') ?? '')
-    ) {
+    if (!anchor.hasAttribute('href') || anchor.hasAttribute('download')) {
       return true;
+    }
+    const target = anchor.getAttribute('target') ?? '';
+    if (!/^(|_self)$/i.test(target)) {
+      // a frame of this document's that the target names hears it as its
+      // own navigation; any other window is the host's to choose
+      const framed = namedFrame(target);
+      if (!framed) return true;
+      const href = anchor.href;
+      navigateTo(
+        framed.session,
+        href,
+        pushOrReplace(framed.session, href, false),
+        {
+          userInitiated,
+          sourceElement: anchor,
+          hostFollows: false,
+        },
+      );
+      return false;
     }
     const s = pageSession.session;
     const href = anchor.href;
@@ -17614,8 +17691,11 @@ export function installDom(
     let url = action
       ? String(call('resolve', action))
       : String(call('location'));
+    // a frame of this document's that the target names is navigated as
+    // its own session has it, as the page's is
+    const framed = /^(|_self)$/i.test(target) ? null : namedFrame(target);
     if (
-      !/^(|_self)$/i.test(target) ||
+      (!/^(|_self)$/i.test(target) && !framed) ||
       method === 'dialog' ||
       /^javascript:/i.test(url)
     ) {
@@ -17640,16 +17720,19 @@ export function installDom(
     const loading = !userInitiated && !pageSession.session.ctx.loaded();
     setTimer(
       () => {
-        const s = pageSession.session;
+        const s = framed ? framed.session : pageSession.session;
         const type =
-          loading || (!post && url === currentOf(s).url) ? 'replace' : 'push';
+          (!framed && loading) || (!post && url === currentOf(s).url)
+            ? 'replace'
+            : 'push';
         const went = navigateTo(s, url, type, {
           userInitiated,
           sourceElement: submitter ?? form,
-          hostFollows: true,
+          // a GET into a frame its session sends there; a POST, the host
+          hostFollows: !framed || post,
           form: { formData: post ? formData : null },
         });
-        if (went === 'other') submit();
+        if (went === 'other' && (!framed || post)) submit();
       },
       0,
       [],
@@ -20057,6 +20140,37 @@ export function installDom(
   // to where its name says, a new tab where it names none (HTML 7.2.2.1)
   define('open', (url?: Any, target?: Any) => {
     const name = target === undefined || target === '' ? '_blank' : str(target);
+    // a frame of this document's that the name names: navigated as its own
+    // session has it, and its window handed back (HTML 7.2.2.1)
+    const framed = namedFrame(name);
+    if (framed) {
+      if (url) {
+        const href = String(call('resolve', str(url)));
+        navigateTo(
+          framed.session,
+          href,
+          pushOrReplace(framed.session, href, false),
+          {
+            userInitiated: false,
+            sourceElement: null,
+            hostFollows: false,
+          },
+        );
+      }
+      return frameProxyOf(framed.frame);
+    }
+    // this window: a navigation of its own, which the page hears first
+    if (/^_self$/i.test(name) && url) {
+      const s = pageSession.session;
+      const href = String(call('resolve', str(url)));
+      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+        userInitiated: false,
+        sourceElement: null,
+        hostFollows: true,
+      });
+      if (went === 'other') call('open', href, name);
+      return G;
+    }
     if (url) call('open', String(call('resolve', str(url))), name);
     return null;
   });

@@ -786,10 +786,15 @@ traversal back restores where `history.scrollRestoration` is `auto`; an
 intercepted navigation scrolls once its handlers are done — a traversal to
 where its entry was, anything else to its fragment or the top — unless the
 page asked for `scroll: 'manual'` and calls the event's `scroll()` itself.
-A frame keeps a history of its own over the frame's URL. Not yet: a
-form's submission aimed at another window fires nothing in it, and the
-host's own entries before and after the page's are not in
-`navigation.entries()`.
+A frame keeps a history of its own over the frame's URL, and a link, a
+form or `window.open()` aimed at a frame by its window's name is the
+frame's navigation, which the frame's `navigation` hears and the page's
+does not. The frame's first document keeps the window of its initial
+`about:blank`, as HTML has it, so what the page set on that window before
+the frame loaded — a handler on its `navigation` — is still there. Not
+yet: a frame of another origin, which runs in a realm of its own, hears
+nothing of the page's navigations of it, and the host's own entries
+before and after the page's are not in `navigation.entries()`.
 
 **A script's animations are drawn where the page's timing has them.**
 `animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's
