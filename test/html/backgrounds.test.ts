@@ -112,6 +112,27 @@ metric(
   },
 );
 
+metric(
+  'a repeated background image is tiled on a context that answers createPattern with null',
+  async (t) => {
+    // The Wayland backend's 2d context has no patterns yet and answers
+    // null, as canvas does for a source it cannot use; set as the fill, it
+    // painted the tiles' whole area black there, and threw on X11.
+    const proto = Object.getPrototypeOf(
+      (await render('<div></div>')).result.ctx,
+    ) as { createPattern(image: unknown, repetition: string): unknown };
+    await cleanup();
+    t.mock.method(proto, 'createPattern', () => null);
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}div{width:60px;height:30px;' +
+        'background:#00ff00 url(red.png) repeat-x 0 0}</style><div></div>',
+    );
+    await expectPixel(ctx, 5, 5, '#ff0000', { message: 'the first tile' });
+    await expectPixel(ctx, 55, 5, '#ff0000', { message: 'repeated across' });
+    await expectPixel(ctx, 55, 25, '#00ff00', { message: 'one row only' });
+  },
+);
+
 metric("the root's background covers the whole canvas", async () => {
   // CSS 2.1 14.2: <body>'s background, where <html> has none, is the
   // canvas's — the margin round the body included — as an email's
