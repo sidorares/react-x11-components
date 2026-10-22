@@ -119,6 +119,7 @@ import { ScriptAnimations } from './css/scripted.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
   CONTAIN_INLINE_SIZE,
+  inherit,
   sameValue,
   scrolls,
   urlOf,
@@ -1474,8 +1475,7 @@ export class HtmlViewNode extends Node {
       if (own.length && !shadowRead.has(key)) shadowRead.set(key, own);
       if (own.length) shadowOwn.push([key, own]);
     }
-    const extra = props.stylesheet;
-    const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
+    const extras = this._extraSheets(props.stylesheet);
     const fonts = this._fonts();
     // Sheets that read as they did last time are the same rules: an append
     // to a streamed document, or a width across a `@media` breakpoint,
@@ -3909,6 +3909,17 @@ export class HtmlViewNode extends Node {
   private _highlights: readonly HighlightRanges[] = [];
 
   /** A page's custom highlights changed: drawn again with the new ones. */
+  /** What a page's `CSS.registerProperty` registered, as the `@property`
+   *  rules it amounts to, applied after every other sheet: told at once,
+   *  where an adopted sheet waits for a render, since a page reads what it
+   *  registered straight after. */
+  private _registeredProperties = '';
+  setRegisteredProperties(rules: string): void {
+    if (rules === this._registeredProperties) return;
+    this._registeredProperties = rules;
+    this._invalidate(Stale.Style);
+  }
+
   setHighlights(highlights: readonly HighlightRanges[]): void {
     if (!this._highlights.length && !highlights.length) return;
     this._highlights = highlights;
@@ -4113,7 +4124,13 @@ export class HtmlViewNode extends Node {
       const own = this._atNow(element, () =>
         cascade.pseudoStyleFor(element, pseudo, style),
       );
-      return own ? cssomStyle(own, this._scale, null) : null;
+      // one no rule styles has the style it would be made with all the
+      // same, its element's inherited, as a browser answers for it
+      return cssomStyle(
+        own ?? inherit(style, cascade.initial),
+        this._scale,
+        null,
+      );
     }
     const box = boxFor(tree.root, element);
     if (!box) return cssomStyle(style, this._scale, null);
@@ -6860,6 +6877,11 @@ export class HtmlViewNode extends Node {
       );
       if (!reach) return false;
       let bits = reach.bits;
+      // an `attr()` in its own `style` reads any of its attributes, which
+      // no rule says (`MutationRules` notes a rule's)
+      if (name !== 'style' && attr(el, 'style')?.includes('attr(')) {
+        bits |= CHANGES_SELF;
+      }
       const anchors = reach.anchors;
       // Something the boxes read of the element besides its style — a
       // source, a value, a span, a label — or a hint its style takes, or
@@ -6957,13 +6979,21 @@ export class HtmlViewNode extends Node {
     return scope.sheetsAsRead;
   }
 
+  /** The sheets applied after the document's: the host's, and what the
+   *  page registered (`setRegisteredProperties`). */
+  private _extraSheets(extra: string | string[] | undefined): string[] {
+    const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
+    return this._registeredProperties
+      ? [...extras, this._registeredProperties]
+      : extras;
+  }
+
   /** Whether the document's sheets read as the cascade's were read
    *  (`_sheetsKept`). */
   private _sheetsAsRead(): boolean {
     const kept = this._sheetsRead;
     if (!kept || kept.cascade !== this._cascade) return false;
-    const extra = this._props().stylesheet;
-    const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
+    const extras = this._extraSheets(this._props().stylesheet);
     return this._sameSheets(
       kept,
       this._readSheets(this._source.facts().sheets),
