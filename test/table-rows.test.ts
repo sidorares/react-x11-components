@@ -12,6 +12,7 @@ import {
   columnValue,
   defaultCompare,
   orderRows,
+  orderedRows,
   resolveGetId,
   resolveWidths,
 } from '../src/table/rows.js';
@@ -151,6 +152,96 @@ test('the sort is stable, so equal rows keep the given order', () => {
   assert.deepStrictEqual(
     ordered.map((r) => r.id),
     ['b', 'd', 'a', 'c'],
+  );
+});
+
+// --- the order the component holds ----------------------------------------
+//
+// `<Table>` holds its rows as `orderedRows`, which makes an entry only for a
+// row something asks for; `orderRows` makes them all. The two have to be the
+// same order and the same entries, whatever the sort.
+
+test('orderedRows is orderRows, entry for entry, under every sort', () => {
+  // a corpus with ties, missing values and both kinds of id
+  let seed = 7;
+  const next = (): number => (seed = (seed * 16807) % 2147483647);
+  const rows = Array.from({ length: 300 }, (_, i) => ({
+    id: i % 3 === 0 ? `r${i}` : i,
+    v: next() % 5 === 0 ? undefined : next() % 40,
+    w: `w${next() % 9}`,
+  }));
+  type R = (typeof rows)[number];
+  const columns: TableColumn<R>[] = [
+    { id: 'v' },
+    { id: 'w', compare: (a, b) => a.w.localeCompare(b.w) },
+  ];
+  const getId = resolveGetId<R>(undefined);
+  const sorts: Array<TableSort | null> = [
+    null,
+    { column: 'v', direction: 'asc' },
+    { column: 'v', direction: 'desc' },
+    { column: 'w', direction: 'asc' },
+    { column: 'w', direction: 'desc' },
+    { column: 'nope', direction: 'asc' },
+  ];
+  for (const sort of sorts) {
+    for (const presorted of [false, true]) {
+      const lazy = orderedRows(rows, columns, getId, sort, presorted);
+      const eager = orderRows(rows, columns, getId, sort, presorted);
+      const what = `${JSON.stringify(sort)}, presorted ${presorted}`;
+      assert.strictEqual(lazy.length, eager.length, what);
+      for (let i = 0; i < eager.length; i++) {
+        assert.deepStrictEqual(lazy.at(i), eager[i], `${what}, at ${i}`);
+        assert.strictEqual(lazy.keyAt(i), eager[i].id, `${what}, at ${i}`);
+      }
+      assert.deepStrictEqual(lazy.toArray(), eager, what);
+      const id = eager[123].id;
+      assert.strictEqual(lazy.indexOf(id), 123, what);
+      assert.deepStrictEqual(
+        lazy.idsBetween(10, 14),
+        eager.slice(10, 14).map((r) => r.id),
+        what,
+      );
+    }
+  }
+});
+
+test('orderedRows makes an entry when asked, and the same one after', () => {
+  // Read through a proxy that counts every row it hands out: resolving the
+  // ids reads each row once, as `orderRows` does, and then nothing more is
+  // read until an entry is asked for.
+  const source = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+  let reads = 0;
+  const rows = new Proxy(source, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const ordered = orderedRows(rows, [], resolveGetId(undefined), null, true);
+  assert.strictEqual(reads, 1000, 'the ids are read once a row');
+  const entry = ordered.at(500);
+  assert.deepStrictEqual(entry, { id: 500, row: source[500], index: 500 });
+  assert.strictEqual(reads, 1001, 'one entry, one row read');
+  assert.strictEqual(ordered.at(500), entry, 'the same entry, read once');
+  assert.strictEqual(reads, 1001);
+  assert.strictEqual(ordered.at(1000), undefined);
+  assert.strictEqual(ordered.at(-1), undefined);
+  assert.strictEqual(ordered.keyAt(1000), undefined);
+  const all = ordered.toArray();
+  assert.strictEqual(all[500], entry, 'the whole list keeps it');
+  assert.strictEqual(ordered.at(500), entry);
+  assert.strictEqual(ordered.toArray(), all, 'made once');
+});
+
+test('orderedRows checks every id up front, as orderRows does', () => {
+  // a row with no id still throws in the render that brought it, wherever
+  // it is in the list and whether or not it is ever drawn
+  const rows = [{ id: 1 }, { id: 2 }, {}, { id: 4 }] as Array<{ id: number }>;
+  assert.throws(
+    () => orderedRows(rows, [], resolveGetId(undefined), null, true),
+    (err: unknown) =>
+      err instanceof TypeError && /row 2 has no id/.test(err.message),
   );
 });
 

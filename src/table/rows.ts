@@ -8,6 +8,7 @@
 
 import type { ReactNode } from 'react';
 import { compareText } from '../internal/collate.js';
+import type { RowKeys } from '../internal/heights.js';
 
 /** What a row is keyed by. Numbers are allowed because a row often comes
  *  from a database, and stringifying an id is a chance to lose one. */
@@ -185,6 +186,128 @@ export function orderRows<Row>(
     });
   }
   return entries;
+}
+
+/**
+ * `orderRows`, as the component holds it: the same order and the same
+ * entries — `test/table-rows.test.ts` holds the two to each other — with an
+ * entry made only for a row something asks for.
+ *
+ * Every id is resolved up front — that is what checks them, so a row with
+ * none still throws in the render that brought it — and kept in one array,
+ * which is all the height index, the window and the reveal read. What is
+ * deferred is the `{ id, row, index }` per row: the table draws a screenful
+ * of them, and a million made at once, for an app handing over a new array
+ * of rows already in order, were most of a 60-80 ms render and the
+ * collection after it.
+ */
+export function orderedRows<Row>(
+  rows: readonly Row[],
+  columns: readonly TableColumn<Row>[],
+  getId: (row: Row, index: number) => TableRowId,
+  sort: TableSort | null,
+  presorted: boolean,
+): OrderedRows<Row> {
+  const ids: TableRowId[] = [];
+  for (let i = 0; i < rows.length; i++) ids.push(getId(rows[i], i));
+  const column =
+    sort && !presorted ? columns.find((c) => c.id === sort.column) : undefined;
+  if (!sort || !column) return new OrderedRows(rows, ids, null);
+  // The positions sorted, rather than the rows: the comparator sees the
+  // rows in the order the entries used to be in, so it is asked the same
+  // questions in the same order, and the sort is as stable as it was.
+  const sign = sort.direction === 'desc' ? -1 : 1;
+  const order: number[] = [];
+  for (let i = 0; i < rows.length; i++) order.push(i);
+  const compare = column.compare;
+  if (compare) {
+    order.sort((a, b) => sign * compare(rows[a], rows[b]));
+  } else {
+    // each row's value read once rather than twice a comparison: a sort
+    // asks for about 17 of them a row at 100,000 rows
+    const keys = rows.map((row) => columnValue(row, column));
+    order.sort((a, b) => sign * defaultCompare(keys[a], keys[b]));
+  }
+  return new OrderedRows(
+    rows,
+    order.map((i) => ids[i]),
+    order,
+  );
+}
+
+/**
+ * The rows in display order, read by position: how many, each one's id,
+ * and its entry — made the first time it is asked for and the same object
+ * every time after, which the row elements' cache keys on.
+ */
+export class OrderedRows<Row> implements RowKeys {
+  readonly length: number;
+  private readonly rows: readonly Row[];
+  /** Each position's id. */
+  private readonly ids: readonly TableRowId[];
+  /** Where each position's row is in `rows`; null when it is the same. */
+  private readonly order: readonly number[] | null;
+  private readonly made = new Map<number, TableRow<Row>>();
+  private all: TableRow<Row>[] | null = null;
+
+  constructor(
+    rows: readonly Row[],
+    ids: readonly TableRowId[],
+    order: readonly number[] | null,
+  ) {
+    this.rows = rows;
+    this.ids = ids;
+    this.order = order;
+    this.length = ids.length;
+  }
+
+  /** The id at `index`, or undefined outside the list. */
+  keyAt(index: number): TableRowId | undefined {
+    return this.ids[index];
+  }
+
+  /** The entry at `index`, or undefined outside the list. */
+  at(index: number): TableRow<Row> | undefined {
+    if (!(index >= 0 && index < this.length)) return undefined;
+    if (this.all !== null) return this.all[index];
+    let entry = this.made.get(index);
+    if (entry === undefined) {
+      entry = this.entry(index);
+      this.made.set(index, entry);
+    }
+    return entry;
+  }
+
+  private entry(index: number): TableRow<Row> {
+    return {
+      id: this.ids[index],
+      row: this.rows[this.order === null ? index : this.order[index]],
+      index,
+    };
+  }
+
+  /** Where the row with this id is, or -1. */
+  indexOf(id: TableRowId | null): number {
+    return id === null ? -1 : this.ids.indexOf(id);
+  }
+
+  /** The ids from `start` up to, not including, `end` — a new array. */
+  idsBetween(start = 0, end = this.length): TableRowId[] {
+    return this.ids.slice(start, end);
+  }
+
+  /** Every entry, as `orderRows` hands them back — made once, on demand. */
+  toArray(): TableRow<Row>[] {
+    if (this.all === null) {
+      const all: TableRow<Row>[] = [];
+      for (let i = 0; i < this.length; i++) all.push(this.entry(i));
+      // …keeping the ones already handed out, which something may hold
+      for (const [index, entry] of this.made) all[index] = entry;
+      this.made.clear();
+      this.all = all;
+    }
+    return this.all;
+  }
 }
 
 /** Core's resize floor, and the sized-column default for `minWidth`. */

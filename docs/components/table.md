@@ -117,6 +117,17 @@ the type as the controlled "cleared" state. Uncontrolled sorting is one
 `Array.prototype.sort` per toggle — fine into the hundreds of thousands, and
 `presorted` is the documented path beyond that.
 
+The rows are ordered again only when what orders them changes: the `rows`
+array, the sort's column and direction, and the `columns` only while the
+table sorts by one of them. A table handed its `columns` or its `sort`
+inline — a new object every render — orders nothing on a re-render. A new
+`rows` array is read once a row, for its id, and nothing more: the
+`{ id, row, index }` a seam is handed is made for a row when it is drawn or
+asked for — the handle's `rows()` asks for all of them, once for each order.
+So a million rows handed over already in order, with `presorted`, cost a
+million id reads rather than a million objects, which had made that
+hand-over a render of 60-80 ms.
+
 ## Selection
 
 Three modes, and the props are a discriminated union on `selectionMode` —

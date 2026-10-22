@@ -86,7 +86,7 @@ import type { VirtualViewport } from '../internal/window.js';
 import {
   MIN_COLUMN,
   columnValue,
-  orderRows,
+  orderedRows,
   resolveGetId,
   resolveWidths,
 } from './rows.js';
@@ -817,9 +817,27 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const readId = useMemo(() => resolveGetId<Row>(getId), [getId]);
   const activeSort = sort === undefined ? ownSort : sort;
 
+  // Keyed on what orders the rows and nothing else: the sort's column and
+  // direction, and the columns only when the table sorts by one of them.
+  // Keyed on the objects, a table handed its columns or its sort inline — a
+  // new object every render, and `presorted` changes nothing about that —
+  // ordered every row again on every render, and rebuilt the height index
+  // behind it.
+  const sortColumn = presorted ? undefined : activeSort?.column;
+  const sortDirection = presorted ? undefined : activeSort?.direction;
+  const sortColumns = sortColumn === undefined ? null : columns;
   const ordered = useMemo(
-    () => orderRows(rows, columns, readId, activeSort, presorted),
-    [rows, columns, readId, activeSort, presorted],
+    () =>
+      orderedRows(
+        rows,
+        sortColumns ?? [],
+        readId,
+        sortColumn === undefined || sortDirection === undefined
+          ? null
+          : { column: sortColumn, direction: sortDirection },
+        false,
+      ),
+    [rows, sortColumns, readId, sortColumn, sortDirection],
   );
 
   const selectedIds: ReadonlySet<TableRowId> = useMemo(() => {
@@ -1029,7 +1047,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     let shift = 0;
     let changed = false;
     for (const [id, { node, at }] of rowNodes.current) {
-      if (rows[at]?.id !== id) continue; // drawn against a list that moved
+      if (rows.keyAt(at) !== id) continue; // drawn against a list that moved
       // `abs` is device; the resolved widths and the height index are
       // logical. Within a pixel rather than exact: a fractional scale
       // rounds the device width to the pixel grid, and the stale-width
@@ -1091,7 +1109,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     if (uniform) return false;
     const rows = orderedRef.current;
     for (const [id, { node, at }] of rowNodes.current) {
-      if (rows[at]?.id === id && !(node.abs.height > 0)) return true;
+      if (rows.keyAt(at) === id && !(node.abs.height > 0)) return true;
     }
     return false;
   }, [uniform]);
@@ -1128,8 +1146,8 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   /** Put a row in view, by the index its call site already has. */
   const revealAt = useCallback(
     (at: number): void => {
-      const row = orderedRef.current[at];
-      if (row) reveal.to(row.id);
+      const id = orderedRef.current.keyAt(at);
+      if (id !== undefined) reveal.to(id);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- `reveal` is a
       // stable handle
     },
@@ -1174,14 +1192,15 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       const anchor = anchorRef.current;
       if (mods.shift && anchor !== null) {
         const all = orderedRef.current;
-        let a = all.findIndex((r) => r.id === anchor);
+        let a = all.indexOf(anchor);
         let b = row.index;
         if (a < 0) a = b;
         const [lo, hi] = a <= b ? [a, b] : [b, a];
-        commitMulti(
-          all.slice(lo, hi + 1).map((r) => r.id),
-          { type: 'range', id: row.id, row: row.row },
-        );
+        commitMulti(all.idsBetween(lo, hi + 1), {
+          type: 'range',
+          id: row.id,
+          row: row.row,
+        });
       } else if (mods.ctrl) {
         const next = new Set(selectedRef.current);
         if (next.has(row.id)) next.delete(row.id);
@@ -1255,11 +1274,11 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     (ev: KeyboardEvent): boolean => {
       const rows = orderedRef.current;
       if (!rows.length || selectionMode === 'none') return false;
-      const at = rows.findIndex((r) => r.id === cursorRef.current);
+      const at = rows.indexOf(cursorRef.current);
       const clamp = (i: number): number =>
         Math.max(0, Math.min(rows.length - 1, i));
       const move = (to: number): void => {
-        const row = rows[clamp(to)];
+        const row = rows.at(clamp(to));
         if (row) {
           tap(row, {
             ctrl: false,
@@ -1303,7 +1322,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           move(rows.length - 1);
           return true;
         case XK_RETURN: {
-          const row = rows[at];
+          const row = rows.at(at);
           if (row) activate(row);
           return true;
         }
@@ -1311,7 +1330,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           break;
       }
       if (ev.codepoint === 32) {
-        const row = rows[at];
+        const row = rows.at(at);
         if (!row) return false;
         if (selectionMode === 'multiple')
           tap(row, { ctrl: true, shift: false });
@@ -1323,10 +1342,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         ev.ctrlKey &&
         (ev.key === 'a' || ev.key === 'A')
       ) {
-        commitMulti(
-          rows.map((r) => r.id),
-          { type: 'all' },
-        );
+        commitMulti(rows.idsBetween(), { type: 'all' });
         return true;
       }
       return false;
@@ -1352,17 +1368,18 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           else setOwnSingle(null);
           return;
         }
-        const row = orderedRef.current.find((r) => r.id === id);
+        const all = orderedRef.current;
+        const row = all.at(all.indexOf(id));
         if (row) tap(row, { ctrl: false, shift: false });
       },
       scrollToRow: (id) => {
-        const row = orderedRef.current.find((r) => r.id === id);
-        if (!row) return false;
-        revealAt(row.index);
+        const at = orderedRef.current.indexOf(id);
+        if (at < 0) return false;
+        revealAt(at);
         return true;
       },
       handleKey,
-      rows: () => orderedRef.current,
+      rows: () => orderedRef.current.toArray(),
     }),
     [tap, handleKey, revealAt, selectionMode, selected],
   );
@@ -1637,7 +1654,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       );
     }
     for (let i = first; i < last; i++) {
-      const entry = ordered[i];
+      const entry = ordered.at(i)!;
       bodyChildren.push(
         win.skeletons.has(entry.id)
           ? renderSkeletonRow(entry)
@@ -1696,7 +1713,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     hintShown.current = show;
     if (show) {
       const hintState: TableScrollHintState<Row> = {
-        row: ordered[vFirst],
+        row: ordered.at(vFirst)!,
         from: vFirst + 1,
         to: vLast + 1,
         count: ordered.length,

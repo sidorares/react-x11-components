@@ -346,6 +346,65 @@ test('the default sort reads a row once, and orders as localeCompare did', () =>
   }
 });
 
+test('the rows are ordered when what orders them changes, and nothing else', async () => {
+  // A new array of rows is read once a row, for its id, and drawn a
+  // screenful at a time: no entry is made for a row nobody draws, which at
+  // a million rows was most of a 60-80 ms render. And a re-render that
+  // hands over the same rows with its columns and its sort written inline —
+  // new objects every time — orders nothing: keyed on the objects, every
+  // render ordered every row again, `presorted` or not.
+  let reads = 0;
+  const getId = (f: File): number => {
+    reads += 1;
+    return f.id;
+  };
+  const rows = many(5000);
+  const table = React.createRef<TableHandle<File>>();
+  const hooks: { set?: (next: File[]) => void; bump?: () => void } = {};
+  function Inline(): ReturnType<typeof h> {
+    const [list, setList] = React.useState(rows);
+    const [, setTick] = React.useState(0);
+    hooks.set = setList;
+    hooks.bump = () => setTick((n) => n + 1);
+    return h(
+      'box',
+      { style: { width: 400, height: 220, minHeight: 0 } },
+      h(Table<File>, {
+        ref: table,
+        rows: list,
+        columns: [
+          { id: 'name', label: 'Name' },
+          { id: 'bytes', label: 'Size' },
+        ],
+        sort: { column: 'bytes', direction: 'desc' },
+        presorted: true,
+        getId,
+        rowHeight: 24,
+      }),
+    );
+  }
+  await renderX11(h(Inline));
+  await settle();
+  assert.ok(reads >= rows.length, `the mount read ${reads} ids`);
+
+  const mounted = reads;
+  await act(() => hooks.bump?.());
+  await settle();
+  assert.strictEqual(reads, mounted, 'a re-render ordered the rows again');
+
+  // the same rows in a new array: read again, and drawn as they were
+  await act(() => hooks.set?.([...rows]));
+  await settle();
+  assert.ok(
+    reads > mounted && reads - mounted <= 2 * rows.length,
+    `a new array read ${reads - mounted} ids`,
+  );
+  assert.deepStrictEqual(firstCells().slice(0, 3), ['row 0', 'row 1', 'row 2']);
+  const all = table.current?.rows() ?? [];
+  assert.strictEqual(all.length, rows.length);
+  assert.deepStrictEqual(all[4321], { id: 4321, row: rows[4321], index: 4321 });
+});
+
 // --- selection: single -----------------------------------------------------
 
 test('click selects, double-click activates, and the keyboard walks', async () => {

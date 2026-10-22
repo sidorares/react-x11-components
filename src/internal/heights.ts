@@ -48,9 +48,59 @@ export type RowKey = string | number;
 /** All this needs of a row. Taking the rows themselves rather than an array
  *  of ids is what keeps `sync` free on a re-render: the component already
  *  memoizes the row list, so identity alone says "nothing moved". */
-interface Keyed {
+export interface Keyed {
   id: RowKey;
 }
+
+/**
+ * A list of rows as the machinery here reads one: how many there are, and
+ * the key of each — `undefined` past either end, as an array's `[i]?.id`.
+ *
+ * An array of keyed rows is the common shape, and `keysOf` reads one this
+ * way. The other is `<Table>`'s display order (`../table/rows.ts`), which
+ * answers both questions from an array of ids and makes no object per row:
+ * at a million rows those objects were most of what a new row array cost.
+ */
+export interface RowKeys {
+  readonly length: number;
+  keyAt(index: number): RowKey | undefined;
+}
+
+/** What the height index, the window and the reveal take as their rows. */
+export type KeyedRows = readonly Keyed[] | RowKeys;
+
+/** Each array's reader, made once per array: the window and the reveal ask
+ *  for it on every render and every retry, and the list is the same one. */
+const ARRAY_KEYS = new WeakMap<readonly Keyed[], RowKeys>();
+
+/** `rows` read as a `RowKeys`: itself, or the array's reader. */
+export function keysOf(rows: KeyedRows): RowKeys {
+  if (!Array.isArray(rows)) return rows as RowKeys;
+  const list = rows as readonly Keyed[];
+  let keys = ARRAY_KEYS.get(list);
+  if (keys === undefined) {
+    keys = {
+      // read through, so a list a caller fills after handing it over is
+      // still read whole
+      get length() {
+        return list.length;
+      },
+      keyAt: (index) => list[index]?.id,
+    };
+    ARRAY_KEYS.set(list, keys);
+  }
+  return keys;
+}
+
+/** Where `key` is in `rows`, or -1 — a scan, as `findIndex` was. */
+export function indexOfKey(rows: RowKeys, key: RowKey): number {
+  for (let i = 0, n = rows.length; i < n; i++) {
+    if (rows.keyAt(i) === key) return i;
+  }
+  return -1;
+}
+
+const NO_ROWS: RowKeys = { length: 0, keyAt: () => undefined };
 
 /**
  * The heights of the rows, and where each one starts.
@@ -64,8 +114,15 @@ interface Keyed {
 export class RowHeights {
   /** Measured heights, by row id. Survives `sync`. */
   private readonly measured = new Map<RowKey, number>();
-  /** The rows currently indexed, in draw order. */
-  private rows: readonly Keyed[] = [];
+  /** The rows currently indexed, in draw order: what `sync` was handed, for
+   *  its identity check, and then either the array it is — read straight
+   *  off, since the rebuild asks for every key and an array is the common
+   *  case — or the `RowKeys` it is. */
+  private source: KeyedRows = [];
+  private list: readonly Keyed[] | null = [];
+  private rows: RowKeys = NO_ROWS;
+  /** How many rows the tree was built for. */
+  private count = 0;
   /** Fenwick tree over the heights, 1-based. */
   private tree: number[] = [0];
   /** What an unmeasured row is assumed to be, effectively: the caller's
@@ -87,8 +144,12 @@ export class RowHeights {
     this.estimate = this.base;
   }
 
+  private keyAt(index: number): RowKey | undefined {
+    return this.list !== null ? this.list[index]?.id : this.rows.keyAt(index);
+  }
+
   private heightOf(index: number): number {
-    const measured = this.measured.get(this.rows[index].id);
+    const measured = this.measured.get(this.keyAt(index) as RowKey);
     return measured === undefined ? this.estimate : measured;
   }
 
@@ -100,7 +161,7 @@ export class RowHeights {
    * rebuild it is O(n) — the rows change when a branch opens, when items
    * arrive, when a sort flips, when a filter runs, all O(n) events already.
    */
-  sync(rows: readonly Keyed[], estimate: number): void {
+  sync(rows: KeyedRows, estimate: number): void {
     const next = Math.max(1, estimate);
     if (next !== this.base) {
       // The caller changed their declared estimate: that wins back over
@@ -110,15 +171,23 @@ export class RowHeights {
       this.estimate = next;
       this.dirty = true;
     }
-    if (!this.dirty && this.rows === rows) return;
-    this.rows = rows;
+    if (!this.dirty && this.source === rows) return;
+    this.source = rows;
+    if (Array.isArray(rows)) {
+      this.list = rows as readonly Keyed[];
+      this.rows = NO_ROWS;
+    } else {
+      this.list = null;
+      this.rows = rows as RowKeys;
+    }
     this.rebuild();
   }
 
   /** Rebuild the tree from the measured map and the current estimate. */
   private rebuild(): void {
     this.dirty = false;
-    const n = this.rows.length;
+    const n = this.list !== null ? this.list.length : this.rows.length;
+    this.count = n;
     // Build in O(n): write each height at its own slot, then push every slot
     // into its parent. The textbook loop of point-updates is O(n log n) and
     // arrives at the same tree.
@@ -143,7 +212,7 @@ export class RowHeights {
     if (before === height) return false;
     this.measured.set(id, height);
     this.sum += height - (before ?? 0);
-    if (this.rows[index]?.id !== id) {
+    if (this.keyAt(index) !== id) {
       // The caller's index is stale — the rows moved under a measurement
       // that was already in flight. Applying a delta at the wrong slot would
       // corrupt every offset after it, so the tree is rebuilt instead.
@@ -160,23 +229,19 @@ export class RowHeights {
 
   /** What a row measured, or the estimate if it has not been seen. */
   heightAt(index: number): number {
-    return index >= 0 && index < this.rows.length ? this.heightOf(index) : 0;
+    return index >= 0 && index < this.count ? this.heightOf(index) : 0;
   }
 
   /** Whether this row has a real measurement rather than an estimate. */
   isMeasured(index: number): boolean {
-    const row = this.rows[index];
-    return row !== undefined && this.measured.has(row.id);
+    const key = this.keyAt(index);
+    return key !== undefined && this.measured.has(key);
   }
 
   /** Where row `index` starts. `offsetAt(rowCount)` is the total. */
   offsetAt(index: number): number {
     let sum = 0;
-    for (
-      let i = Math.max(0, Math.min(index, this.rows.length));
-      i > 0;
-      i -= i & -i
-    ) {
+    for (let i = Math.max(0, Math.min(index, this.count)); i > 0; i -= i & -i) {
       sum += this.tree[i];
     }
     return sum;
@@ -184,7 +249,7 @@ export class RowHeights {
 
   /** How tall the whole list is — what the scrollbar measures. */
   total(): number {
-    return this.offsetAt(this.rows.length);
+    return this.offsetAt(this.count);
   }
 
   /**
@@ -195,7 +260,7 @@ export class RowHeights {
    * twice.
    */
   indexAt(offset: number): number {
-    const n = this.rows.length;
+    const n = this.count;
     if (n === 0) return 0;
     let index = 0;
     let remaining = offset;
@@ -222,7 +287,9 @@ export class RowHeights {
   /** How many of the current rows have a real measurement. */
   measuredCount(): number {
     let count = 0;
-    for (const row of this.rows) if (this.measured.has(row.id)) count++;
+    for (let i = 0; i < this.count; i++) {
+      if (this.measured.has(this.keyAt(i) as RowKey)) count++;
+    }
     return count;
   }
 
