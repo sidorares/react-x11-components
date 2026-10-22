@@ -109,7 +109,10 @@ const telemetry = new ChartData({
   maxAge: { key: 't', ms: 60_000 },
 });
 let phase = 0;
-setInterval(() => {
+// Unref'd: the feed is the app's for as long as it runs, and closing the
+// window ends it. Held, this module-level timer kept the process running
+// after the window was gone.
+const feed = setInterval(() => {
   const now = Date.now();
   for (let i = 0; i < 3; i++) {
     phase += 0.02;
@@ -120,6 +123,7 @@ setInterval(() => {
     });
   }
 }, 50);
+feed.unref?.();
 
 const telemetryConfig = {
   cpu: { label: 'CPU %', color: '$accent' },
