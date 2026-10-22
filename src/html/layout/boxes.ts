@@ -924,7 +924,8 @@ export function containerBoxes(root: Box): Map<Element, Box> {
     const box = stack.pop()!;
     if (
       box.el &&
-      box.style.containerType !== 'normal' &&
+      (box.style.containerType !== 'normal' ||
+        box.style.scrollStateContainer) &&
       box.pseudo === null &&
       !out.has(box.el)
     ) {

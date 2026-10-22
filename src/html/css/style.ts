@@ -687,6 +687,10 @@ export interface ComputedStyle {
    *  makes it a formatting context of its own (`settleContainer`). Every
    *  element is one for `style()` queries, whatever this says. */
   containerType: 'normal' | 'size' | 'inline-size';
+  /** Whether `container-type` names `scroll-state` too: the element answers
+   *  `scroll-state()` queries (CSS Conditional 5, 3.2.6), which takes no
+   *  containment. */
+  scrollStateContainer: boolean;
   /** `container-name`: the names an `@container` rule finds the element by,
    *  each with one space between, or '' for `none`. */
   containerName: string;
@@ -1383,6 +1387,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     contentVisibility: 'visible',
     containFromVisibility: 0,
     containerType: 'normal',
+    scrollStateContainer: false,
     containerName: '',
     overflowClipBox: 'padding-box',
     overflowClipMargin: 0,
@@ -2248,7 +2253,10 @@ export function applyDeclaration(
     }
     case 'container-type': {
       const type = containerTypeOf(value);
-      if (type !== null) style.containerType = type;
+      if (type !== null) {
+        style.containerType = type.type;
+        style.scrollStateContainer = type.scroll;
+      }
       return;
     }
     case 'container-name': {
@@ -2262,10 +2270,13 @@ export function applyDeclaration(
       const slash = value.indexOf('/');
       const names = containerNamesOf(slash < 0 ? value : value.slice(0, slash));
       const type =
-        slash < 0 ? 'normal' : containerTypeOf(value.slice(slash + 1));
+        slash < 0
+          ? { type: 'normal' as const, scroll: false }
+          : containerTypeOf(value.slice(slash + 1));
       if (names === null || type === null) return;
       style.containerName = names;
-      style.containerType = type;
+      style.containerType = type.type;
+      style.scrollStateContainer = type.scroll;
       return;
     }
     case 'contain-intrinsic-size':
@@ -4072,9 +4083,13 @@ function overflowKeyword(
 /** A `container-type` value as the type it computes to, or null where it
  *  is none: `normal`, or `size` or `inline-size` — either beside
  *  `scroll-state`, which no query here reads. */
-function containerTypeOf(value: string): ComputedStyle['containerType'] | null {
+function containerTypeOf(
+  value: string,
+): { type: ComputedStyle['containerType']; scroll: boolean } | null {
   const words = value.trim().toLowerCase().split(/\s+/);
-  if (words.length === 1 && words[0] === 'normal') return 'normal';
+  if (words.length === 1 && words[0] === 'normal') {
+    return { type: 'normal', scroll: false };
+  }
   let type: ComputedStyle['containerType'] = 'normal';
   let scroll = false;
   for (const word of words) {
@@ -4083,7 +4098,7 @@ function containerTypeOf(value: string): ComputedStyle['containerType'] | null {
       type = word;
     } else return null;
   }
-  return type;
+  return { type, scroll };
 }
 
 /** A `container-name` value as the names it gives, one space between, ''
@@ -7525,9 +7540,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-moz-appearance': ['appearance'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
-  'container-type': ['containerType'],
+  'container-type': ['containerType', 'scrollStateContainer'],
   'container-name': ['containerName'],
-  container: ['containerName', 'containerType'],
+  container: ['containerName', 'containerType', 'scrollStateContainer'],
   'overflow-clip-margin': ['overflowClipBox', 'overflowClipMargin'],
   'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
   'contain-intrinsic-width': ['containIntrinsicWidth'],
