@@ -3918,7 +3918,7 @@ export class Cascade {
       query.scroll || query.anchored
         ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
         : null;
-    const answer = this._ask(query, size, style, scroll);
+    const answer = this._ask(query, size, style, scroll, container);
     if (query.axes || query.scroll || query.anchored) {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
@@ -3934,6 +3934,8 @@ export class Cascade {
     size: ContainerSize | null,
     style: ComputedStyle,
     scroll: ScrollStates | null = null,
+    /** The container, whose attributes an `attr()` in a feature reads. */
+    container: Element | null = null,
   ): boolean {
     return containerHolds(
       query,
@@ -3958,11 +3960,24 @@ export class Cascade {
         return typeof len === 'number' ? len : null;
       },
       scroll,
-      // a `var()` in what a feature compares with is the container's
-      (text) =>
-        hasVar(text)
-          ? substitute(text, style.custom ?? this._registeredBase)
-          : text,
+      // a `var()` in what a feature compares with is the container's,
+      // and so is an attribute an `attr()` reads (CSS Values 5, 7.7)
+      (text) => {
+        const attr = !!container && ATTR_IN.test(text);
+        if (!attr && !hasVar(text)) return text;
+        const attribs = container?.attribs;
+        return substitute(
+          text,
+          style.custom ?? this._registeredBase,
+          attr
+            ? {
+                ...this._ifEnv,
+                attribute: (name) =>
+                  attribs?.[name] ?? attribs?.[name.toLowerCase()],
+              }
+            : null,
+        );
+      },
     );
   }
 
@@ -4101,6 +4116,7 @@ export class Cascade {
                       this._scrollStates.get(read.container) ??
                       NO_SCROLL_STATES)
                   : null,
+                read.container,
               );
         if (now !== read.answer) {
           moved.add(el);
