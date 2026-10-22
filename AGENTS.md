@@ -2965,7 +2965,10 @@ box's bounds by three deviations a `blur()`, before its clip path and its
 transform cut and move them, so the damage of the strip a glow falls in
 reaches the box and the group is painted on a surface that holds the
 glow; the blur is canvas's `filter` where a context runs one and
-`blurPixels` over the read elsewhere. **Anything new a filter draws past
+`blurPixels` over the read elsewhere. A list with a `drop-shadow()` is
+run in its steps, in the order written (`ColourFilter.steps`): a shadow
+is cast from what the functions before it made, and the ones after run
+over it, so its matrices and its blur no longer say what it does. **Anything new a filter draws past
 the box joins `filterOutsets`**, or it is cut at the box's ink.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame

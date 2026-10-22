@@ -27,8 +27,8 @@
 // build makes every box again, and what was read for an element is what is
 // drawn for it until a read under its new boxes arrives.
 
-import { applyMatrices, blurPixels } from './css/filter.js';
-import type { ColourMatrix } from './css/filter.js';
+import { applyMatrices, blurPixels, runSteps } from './css/filter.js';
+import type { ColourMatrix, FilterStep } from './css/filter.js';
 import { newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
 
@@ -113,6 +113,9 @@ interface Filtering {
   restore(): void;
   clearRect(x: number, y: number, width: number, height: number): void;
   drawImage(image: unknown, x: number, y: number): void;
+  globalCompositeOperation: string;
+  fillStyle: string;
+  fillRect(x: number, y: number, width: number, height: number): void;
 }
 
 /** A timer, as the element's animation clock arms one: what a test holds. */
@@ -398,11 +401,18 @@ export class FilterStore {
    * surface's context has no `filter`, or the list does not stick on it,
    * which is remembered: every box is drawn from a read from then on.
    */
-  through(kept: Filtered, filter: string): SurfaceLike | null {
+  through(
+    kept: Filtered,
+    filter: string,
+    /** A list with a `drop-shadow()` in it, as its steps, each shadow's
+     *  colour resolved; `filter` is then their key. */
+    steps: readonly FilterStep[] | null = null,
+  ): SurfaceLike | null {
     if (this.unfiltered || !kept.group) return null;
     const { width, height } = kept;
     const want = `css ${kept.groupSerial} ${filter}`;
     if (kept.out && kept.outFor === want) return kept.out;
+    if (steps) return this._throughSteps(kept, steps, want);
     if (!kept.out || kept.outWidth !== width || kept.outHeight !== height) {
       dropOut(kept);
       kept.out = this.make(width, height);
@@ -441,6 +451,103 @@ export class FilterStore {
   unfiltered = false;
 
   /**
+   * `through` for a list with a `drop-shadow()` in it: the group drawn onto
+   * a surface a step at a time, each surface the next is drawn from. A run
+   * of colour functions and blurs is drawn through them as canvas's
+   * `filter`; a shadow is what is there so far kept where it covers
+   * (`source-in`) and filled with the shadow's colour, drawn at its offset
+   * through `blur()`, and what is there so far drawn over it. A context
+   * whose `filter` does not stick for one is remembered, as `through`
+   * remembers it, and every box is drawn from a read from then on.
+   */
+  private _throughSteps(
+    kept: Filtered,
+    steps: readonly FilterStep[],
+    want: string,
+  ): SurfaceLike | null {
+    const { width, height } = kept;
+    type Made = { surface: SurfaceLike; ctx: Partial<Filtering> };
+    const made: Made[] = [];
+    const fresh = (): Made | null => {
+      const surface = this.make(width, height);
+      if (!surface) return null;
+      const one = {
+        surface,
+        ctx: surface.getContext('2d') as Partial<Filtering>,
+      };
+      made.push(one);
+      return one;
+    };
+    const runs = (ctx: Partial<Filtering>, filter: string): boolean => {
+      if (!('filter' in ctx)) return false;
+      ctx.filter = filter;
+      return ctx.filter === filter;
+    };
+    let from: SurfaceLike = kept.group!;
+    let last: Made | null = null;
+    let took = true;
+    for (const step of steps) {
+      const to = fresh();
+      if (!to || typeof to.ctx.drawImage !== 'function') {
+        took = false;
+        break;
+      }
+      const ctx = to.ctx as Filtering;
+      ctx.save();
+      try {
+        if (step.kind === 'colour') {
+          took = runs(ctx, step.css || 'none');
+          if (took) ctx.drawImage(from, 0, 0);
+        } else {
+          const cast = fresh();
+          if (!cast || typeof cast.ctx.fillRect !== 'function') {
+            took = false;
+          } else {
+            const tint = cast.ctx as Filtering;
+            tint.save();
+            tint.drawImage(from, 0, 0);
+            tint.globalCompositeOperation = 'source-in';
+            tint.fillStyle = step.color;
+            tint.fillRect(0, 0, width, height);
+            tint.restore();
+            took = runs(ctx, step.blur > 0 ? `blur(${step.blur}px)` : 'none');
+            if (took) {
+              ctx.drawImage(cast.surface, step.x, step.y);
+              ctx.filter = 'none';
+              ctx.drawImage(from, 0, 0);
+            }
+          }
+        }
+      } finally {
+        ctx.restore();
+      }
+      if (!took) break;
+      from = to.surface;
+      last = to;
+    }
+    // each context is the caller's to destroy, as `dropOut` destroys the
+    // one kept
+    for (const one of made) {
+      if (took && one === last) continue;
+      (one.ctx as { destroy?(): void }).destroy?.();
+      one.surface.destroy?.();
+    }
+    if (!took || !last) {
+      this.unfiltered = true;
+      // what is fresh is a group painted, and no read: one is asked for
+      kept.fresh = false;
+      return null;
+    }
+    dropOut(kept);
+    kept.out = last.surface;
+    kept.outCtx = last.ctx as Partial<Writable>;
+    kept.outWidth = width;
+    kept.outHeight = height;
+    kept.outFor = want;
+    return kept.out;
+  }
+
+  /**
    * The surface the matrices and the blur make of the pixels read for
    * `kept`, made again only where they or the pixels are other ones than
    * it holds: null where none can be made, or nothing read is the box's
@@ -452,6 +559,9 @@ export class FilterStore {
     matricesKey: string,
     /** The blur's standard deviation, in the pixels read; 0 for none. */
     blur = 0,
+    /** A list with a `drop-shadow()` in it, as its steps, each shadow's
+     *  colour resolved: run in place of the matrices and the blur. */
+    steps: readonly FilterStep[] | null = null,
   ): SurfaceLike | null {
     const raw = kept.raw;
     if (!raw || raw.width !== kept.width || raw.height !== kept.height) {
@@ -478,8 +588,13 @@ export class FilterStore {
     }
     const ctx = kept.outCtx;
     if (typeof ctx?.putImageData !== 'function') return null;
-    applyMatrices(raw.data, scratch.data, matrices);
-    if (blur > 0) blurPixels(scratch.data, width, height, blur);
+    if (steps) {
+      scratch.data.set(raw.data);
+      runSteps(scratch.data, width, height, steps);
+    } else {
+      applyMatrices(raw.data, scratch.data, matrices);
+      if (blur > 0) blurPixels(scratch.data, width, height, blur);
+    }
     ctx.putImageData(scratch, 0, 0);
     kept.outFor = want;
     return kept.out;

@@ -2205,7 +2205,13 @@ them, run over the box and all it draws in the order written, and
 `opacity()` as more of the box's opacity; and `blur()` as a Gaussian of
 the standard deviation it names, which draws the box and all it holds past
 where they are by three deviations, ink a repaint of the strip it falls in
-reaches, as a shadow's is, and no overflow. The box is painted unfiltered on
+reaches, as a shadow's is, and no overflow; and `drop-shadow()` as what
+the functions before it made, its alpha moved by the offset, blurred by the
+third length as a standard deviation — Chrome's reading, where a
+`box-shadow`'s blur is twice the deviation — filled with the shadow's
+colour, `currentColor` the box's, and drawn under it, with the functions
+after it run over the shadow too; its ink is as far as the shadow reaches.
+The box is painted unfiltered on
 a surface of its own as large as that ink, kept for the element. Where the context runs a
 filter itself — react-x11's native one on macOS and Windows takes the
 colour functions as canvas's `filter` — the surface is drawn through it in
@@ -2220,8 +2226,8 @@ each frame at the amount it has then, from what was read once. A box that
 moves a fraction of a pixel at a time — under a transform, a hover lifting
 a card — is drawn from what was read, moved with it and resampled, and
 read again where it is once it has been still for a moment.
-An inline box's filter is not drawn, nor are `drop-shadow()` and a `url()`
-to an SVG `<filter>`, which has the whole list ignored, as a
+An inline box's filter is not drawn, nor is a `url()` to an SVG
+`<filter>`, which has the whole list ignored, as a
 reference to a filter that is not there has (Filter Effects 1, 4). A
 filtered element is never lifted onto a layer of its own on macOS, nor is
 anything in it, and a `<video>` in one shows its poster, filtered, rather
