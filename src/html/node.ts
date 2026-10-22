@@ -1313,7 +1313,7 @@ export class HtmlViewNode extends Node {
       const el = box.el!;
       const size = this._imageSize(el);
       if (!size || this._imagePending(el)) return false;
-      const next = intrinsicsOf(size, s);
+      const next = intrinsicsOf(size, s * box.style.effectiveZoom);
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
         moves = true;
       }

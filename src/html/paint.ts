@@ -9784,7 +9784,13 @@ function paintBackgroundImage(
   const scale = options.scale ?? 1;
   const repeat = style.backgroundRepeat;
   const natural = atDensity(loaded, densityOf(style.backgroundImage));
-  let tile = sizedTile(style.backgroundSize, natural, at, scale);
+  // and zoomed as the box's lengths are (CSS Viewport 1, 5)
+  let tile = sizedTile(
+    style.backgroundSize,
+    natural,
+    at,
+    scale * style.effectiveZoom,
+  );
   const drag = options.drag;
   const stepped =
     drag && steppedTile(style.backgroundSize, tile, natural.ratio);
@@ -12012,7 +12018,8 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
     value === null || value === 'currentColor' || value === 'none'
       ? value
       : inkColor(value, style.color);
-  const scale = options.scale ?? 1;
+  // a user unit is a CSS pixel, zoomed as the box's lengths are
+  const scale = (options.scale ?? 1) * style.effectiveZoom;
   inlineDrawing(box.el).draw(
     ctx,
     x,

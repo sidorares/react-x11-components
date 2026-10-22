@@ -6,7 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { parseShapeFunction } from './shape-function.js';
-import { splitValue } from './values.js';
+import { parseZoom, splitValue } from './values.js';
 import type { UnitContext } from './values.js';
 
 /** What a value is read against where it is only checked: its lengths
@@ -37,6 +37,13 @@ export function specifiedValue(
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;
     return /^(auto|text|none|contain|all)$/.test(word) ? word : null;
+  }
+  // a number or a percentage, neither below nought, or `normal` (CSS
+  // Viewport 1, 5)
+  if (name === 'zoom') {
+    const word = value.trim().toLowerCase();
+    if (CSS_WIDE.test(word)) return undefined;
+    return parseZoom(word) === null ? null : word;
   }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     if (!/\bshape\(/i.test(value)) return undefined;

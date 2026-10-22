@@ -114,8 +114,13 @@ export interface UnitContext {
    *  in device pixels, for `cqw`, `cqh` and their kin (CSS Conditional 5,
    *  3.4) — the viewport's where there is none. Absent, the viewport's. */
   cq?: (axis: 'inline' | 'block') => number;
-  /** Device pixels per CSS pixel — the display scale. */
+  /** Device pixels per CSS pixel — the display scale, times the
+   *  element's `zoom`s (`zoom`). */
   scale: number;
+  /** The element's effective zoom, the `zoom`s from the root down to it
+   *  multiplied, which `scale` and the viewport carry already; read where a
+   *  length comes of something unzoomed, as `font-size: medium` does. */
+  zoom?: number;
   /** The x-height of the font the lengths are in, asked only for a length
    *  in `ex`; half an em where it is missing. */
   ex?: () => number;
@@ -333,6 +338,18 @@ export function parseAlpha(value: string): number | null {
   const n = parseNumber(pct ? v.slice(0, -1) : v);
   if (n === null) return null;
   return Math.max(0, Math.min(1, pct ? n / 100 : n));
+}
+
+/** `zoom` (CSS Viewport 1, 5): a number or a percentage, neither below
+ *  nought, or `normal`; and 0 is 1, as a zoom that drew nothing would. */
+export function parseZoom(value: string): number | null {
+  const v = value.trim().toLowerCase();
+  if (v === 'normal') return 1;
+  const pct = v.endsWith('%');
+  const n = parseNumber(pct ? v.slice(0, -1) : v);
+  if (n === null || n < 0) return null;
+  const z = pct ? n / 100 : n;
+  return z === 0 ? 1 : z;
 }
 
 /** What may follow a function's `)` in the part it ends (`splitValue`). */

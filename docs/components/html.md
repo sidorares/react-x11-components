@@ -3375,7 +3375,8 @@ viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
-font's own, and an `rlh` the root's. A `rem` is the root element's font
+font's own — in `line-height` itself its parent's, as an `em` in
+`font-size` is — and an `rlh` the root's. A `rem` is the root element's font
 size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
 own `font-size` the initial size, as CSS has both. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
@@ -3385,6 +3386,18 @@ a plain percentage would be, so `calc(40px + 10%)` against a height nothing
 sets is no height. The constants `pi`, `e`, `infinity` and `NaN` are read,
 and a calculation that comes to no finite number is what a browser makes
 of it: NaN is nought, and an infinity the largest length there is.
+
+**`zoom`** (CSS Viewport 1, 5) scales every length under the element, a
+number or a percentage, and nested ones multiply. It is kept as Blink keeps
+it: a style's lengths are at its effective zoom, the zooms from the root
+down multiplied, so layout and paint read zoomed values and know nothing of
+it. A child sees its parent's lengths at its own zoom, so what it inherits,
+an `inherit`, an `em` in its `font-size` and a `rem` are zoomed where it
+is; an image's, an SVG's, a canvas's and a frame's natural size are zoomed
+with it, and a frame's document is laid out at its CSS size and drawn
+zoomed. `getComputedStyle` answers as an unzoomed element's, as Chrome
+does, while `getBoundingClientRect` answers what is drawn; and a container
+query reads its container in the container's CSS pixels.
 
 **Logical properties:** `margin-inline`, `padding-block`, `inset-inline`,
 `border-inline-start`, `inline-size`, `border-start-end-radius` and the

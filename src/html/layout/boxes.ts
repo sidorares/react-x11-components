@@ -1878,8 +1878,9 @@ class Builder {
 
     if (replaced === 'image') {
       // Both sources are CSS pixels — an image pixel is one, and so is an
-      // attribute — and the box is device.
-      const scale = this._options.scale ?? 1;
+      // attribute — and the box is device, and zoomed as its lengths are
+      // (CSS Viewport 1, 5).
+      const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       const loaded = this._options.imageSize(el);
       if (loaded) {
         setIntrinsics(box, loaded, scale);
@@ -1911,12 +1912,12 @@ class Builder {
     if (replaced === 'hr') return;
     if (replaced === 'svg') {
       // its `em` is its own font size, in CSS pixels like the rest of it
-      const scale = this._options.scale ?? 1;
+      const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       setIntrinsics(box, svgIntrinsics(el, style.fontSize / scale), scale);
       return;
     }
     if (replaced === 'frame') {
-      const scale = this._options.scale ?? 1;
+      const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       if (tag === 'canvas') {
         // A canvas is the size of its bitmap, which its `width` and
         // `height` attributes give, 300 by 150 where they do not, and
@@ -2369,7 +2370,11 @@ class Builder {
       const ratio = width > 0 && height > 0 ? width / height : 0;
       box.intrinsic = { width, height, missing: 0, ratio };
     } else if (size) {
-      setIntrinsics(box, atDensity(size, density), this._options.scale ?? 1);
+      setIntrinsics(
+        box,
+        atDensity(size, density),
+        (this._options.scale ?? 1) * style.effectiveZoom,
+      );
     } else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
     this._ws = after('atomic', this._ws, this._ws);
     this._lettered = false;

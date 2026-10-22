@@ -1827,6 +1827,19 @@ and its negation took one for a gradient. `decodesImageType` is in
 `image-types.ts`, a module that imports nothing, because the cascade asks
 it and `resources.ts` reaches the cascade through `svg.ts`.
 
+**`zoom` is in every length a style holds, as Blink keeps it.** The
+cascade sees the parent at the element's own zoom (`zoomedBy`) and resolves
+its units at the display scale times the effective zoom
+(`ComputedStyle.effectiveZoom`), so layout and paint read zoomed values and
+never ask. Two things are load-bearing. **Anything that turns a CSS pixel
+into a device one outside a style's lengths multiplies by the box's
+`effectiveZoom` as well as the scale** — an image's natural size, an SVG's
+user unit, a frame's mount, a container query's lengths — and anything that
+answers a page in CSS pixels from a style divides by both, as
+`cssomStyle` does. And **a length a child inherits is rescaled by its own
+zoom**: one added to `INHERITED` that holds a length joins `zoomedBy`, or a
+zoomed child inherits it at its parent's size.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
