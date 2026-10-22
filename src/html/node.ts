@@ -197,7 +197,7 @@ import {
   wheelScrolls,
 } from './layout/scroll.js';
 import type { ScrollBar, ScrollOffset, ScrollState } from './layout/scroll.js';
-import { resnap, snapTo } from './layout/snap.js';
+import { linesUp, resnap, snapTo } from './layout/snap.js';
 import type { SnapArea, SnapContainer } from './layout/snap.js';
 
 /** Both of a scroll container's bars, hidden by nothing. */
@@ -5476,6 +5476,10 @@ export class HtmlViewNode extends Node {
       if (ink) inks.push(ink);
     }
     this._repaintInk(inks);
+    // a snap area's alignment, or its container's type, that changed
+    // without a layout: what a container was snapped to may be no snap
+    // position now (CSS Scroll Snap 1, 5.4)
+    if (cascade.snaps) this._resnap(true);
     return true;
   }
 
@@ -7522,7 +7526,11 @@ export class HtmlViewNode extends Node {
   private _viewportSnap(): SnapContainer | null {
     const tree = this._tree;
     const root = tree?.root;
-    const style = root?.style;
+    // the root element's box, under the tree's anonymous root
+    const html = root?.el
+      ? root
+      : root?.children.find((c) => c.el && tagOf(c.el) === 'html');
+    const style = html?.style;
     const port = this._viewport();
     if (!tree || !root || !style?.scrollSnapType || !port) return null;
     return {
@@ -7559,15 +7567,28 @@ export class HtmlViewNode extends Node {
   /** After a layout: each snap container snapped to an area lined up with
    *  it again where the layout moved it, and a `mandatory` one no script
    *  has scrolled snapped where it is. */
-  private _resnap(): void {
+  private _resnap(lostOnly = false): void {
     const tree = this._tree;
     if (!tree || !this._cascade?.snaps) return;
     const s = this._scale;
+    // after a restyle that laid nothing out, only a container whose area
+    // is no snap position now moves
+    const lost = (
+      snap: SnapContainer,
+      keys: { x: SnapKey | null; y: SnapKey | null },
+    ): boolean =>
+      (['x', 'y'] as const).some((axis) => {
+        const key = keys[axis];
+        if (!key) return false;
+        const box = snapBox(snap, key);
+        return !box || !linesUp(snap, box, axis);
+      });
     for (const [el, keys] of this._snapped) {
       if (el === this._source.document) {
         const snap = this._viewportSnap();
         const pane = this._pane();
         if (!snap || !pane) continue;
+        if (lostOnly && !lost(snap, keys)) continue;
         // the pane's offsets are device pixels, as the boxes are
         const at = resnap(snap, pane.scrollX, pane.scrollY, {
           x: snapBox(snap, keys.x),
@@ -7584,6 +7605,7 @@ export class HtmlViewNode extends Node {
       const box = this._scrollerOf(el as Element);
       const snap = box && this._snapContainerOf(box);
       if (!box || !snap) continue;
+      if (lostOnly && !lost(snap, keys)) continue;
       const state = scrollStateOf(box);
       const at = resnap(snap, state.x, state.y, {
         x: snapBox(snap, keys.x),
@@ -7596,6 +7618,7 @@ export class HtmlViewNode extends Node {
     }
     // a mandatory container must be at rest at a snap position, whether or
     // not a script scrolled it
+    if (lostOnly) return;
     for (const box of snapContainersIn(tree.root)) {
       const el = box.el!;
       if (this._snapped.has(el) || !box.style.scrollSnapType!.mandatory) {
