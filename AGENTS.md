@@ -3606,8 +3606,8 @@ keep:
   `src/maps/gl/earstrip.d.ts`: TypeScript reads that, and Node, tsx and
   esbuild, which never read `types`, load the package. `paths` was tried
   first and is wrong — tsx honours it at run time and loaded the `.d.ts`.
-  When earstrip's declaration compiles, delete the copy and import
-  `earstrip` directly.
+  When a release fixes the declaration (GLMap/earstrip#1), delete the copy
+  and import `earstrip` directly.
 
 ## A rich text editor over ProseMirror
 

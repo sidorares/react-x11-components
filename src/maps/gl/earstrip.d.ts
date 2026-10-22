@@ -2,8 +2,9 @@
 // (package.json's `imports`): TypeScript reads this through the `types`
 // condition, and Node, tsx and esbuild load the package itself. The
 // package's own `earstrip.d.ts` has an extensionless relative `import()`,
-// which `nodenext` rejects and `skipLibCheck: false` reports. When it
-// compiles, delete this file and import `earstrip` directly.
+// which `nodenext` rejects and `skipLibCheck: false` reports
+// (GLMap/earstrip#1). When a release fixes it, delete this file, drop the
+// `imports` entry and import `earstrip` directly.
 
 /**
  * Many polygons in one call. Polygon `k` is the vertices
