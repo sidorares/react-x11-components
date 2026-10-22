@@ -2977,6 +2977,34 @@ test('el.style keeps a clip-path shape() in its canonical form, and does not set
   );
 });
 
+test('CSS.registerProperty registers as @property does, checking what it is given; an attr() in a style reads the attribute as it changes', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div id="t" data-w="12"></div><script>' +
+      'var t = document.getElementById("t"); var r = [];' +
+      'function fails(d) { try { CSS.registerProperty(d); return "ok"; } catch (e) { return e.name; } }' +
+      'r.push(fails({ name: "--a", syntax: "<length>", inherits: false, initialValue: "3px" }));' +
+      'r.push(fails({ name: "--a", syntax: "<length>", inherits: false, initialValue: "3px" }));' +
+      'r.push(fails({ name: "b", inherits: false }), fails({ name: "--c", syntax: "<length", inherits: false, initialValue: "1px" }));' +
+      'r.push(fails({ name: "--d", syntax: "<length>", inherits: false }), fails({ name: "--e", syntax: "<length>", inherits: false, initialValue: "1em" }));' +
+      'r.push(fails({ name: "--f", syntax: "<length>", inherits: false, initialValue: "red" }), fails({ name: "--g" }));' +
+      'r.push(getComputedStyle(t).getPropertyValue("--a"));' +
+      // an attr() in the style attribute reads the attribute each time it
+      // changes, with the style text as it was
+      't.style.width = "attr(data-w px)"; r.push(getComputedStyle(t).width);' +
+      't.setAttribute("data-w", "30"); r.push(getComputedStyle(t).width);' +
+      't.style.width = ""; t.setAttribute("data-w", "7"); t.style.width = "attr(data-w px"; r.push(t.style.width, getComputedStyle(t).width);' +
+      // a pseudo-element no rule styles has its element's inherited style
+      't.style.fontSize = "20px"; r.push(getComputedStyle(t, "::after").fontSize);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'ok|InvalidModificationError|SyntaxError|SyntaxError|SyntaxError|SyntaxError|SyntaxError|TypeError|' +
+      '3px|12px|30px|attr(data-w px)|7px|20px',
+  );
+});
+
 test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {
   const doc = await hosted(
     '<p id="out"></p><video id="v"></video><audio id="a" muted></audio><script>' +

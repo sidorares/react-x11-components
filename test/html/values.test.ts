@@ -24,6 +24,7 @@ import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
 import {
   boxOf,
+  drawnText,
   findById,
   metric,
   render,
@@ -857,6 +858,38 @@ test("calc()'s constants: infinity, NaN, pi and e", () => {
   assert.strictEqual(len('calc(ex * 1px)'), null);
   assert.strictEqual(len('calc(infinityx * 1px)'), null);
   assert.strictEqual(parseNumber('calc(infinity)'), 33554428);
+});
+
+test('attr() reads an attribute into any property: as a string, a number with a unit, or a value of a type, with its fallback', async () => {
+  // CSS Values 5, 7.7: a substitution as var() is, of the element's
+  // attribute. Untyped it is a string; a unit makes a number a dimension;
+  // type() parses it, var()s in it and all, and holds it to the syntax.
+  // What it is not, or an attribute it does not have, is the fallback, and
+  // a typed one with none leaves the property as though unset
+  const { node } = await render(
+    '<body style="margin:0"><style>@property --w {syntax: "<length>"; inherits: false; initial-value: 21px}' +
+      ' div{height:5px} #s::before{content:"(" attr(data-x) ")"}</style>' +
+      '<div id="u" data-w="12" style="width:attr(data-w px)"></div>' +
+      '<div id="t" data-w="calc(10px + 3px)" style="width:attr(data-w type(<length>))"></div>' +
+      '<div id="v" data-w="var(--w)" style="width:attr(data-w type(<length>), 1px)"></div>' +
+      '<div id="f" data-w="red" style="width:attr(data-w type(<length>), 9px)"></div>' +
+      '<div id="m" style="width:attr(gone px, 11px)"></div>' +
+      '<div id="n" data-w="red" style="width:50px;width:attr(data-w type(<length>))"></div>' +
+      '<p id="s" data-x="hi" style="margin:0"></p></body>',
+  );
+  const el = view(node);
+  const width = (id: string) => boxOf(el, id).width;
+  assert.strictEqual(width('u'), 12, 'a unit');
+  assert.strictEqual(width('t'), 13, 'a type, its calc() computed');
+  assert.strictEqual(width('v'), 21, 'a var() in the attribute');
+  assert.strictEqual(width('f'), 9, 'not of the type: the fallback');
+  assert.strictEqual(width('m'), 11, 'no attribute: the fallback');
+  assert.strictEqual(width('n'), 400, 'none of either: as though unset');
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 's')!, 'before')?.['font-size'],
+    el.computedStyle(findById(el.document, 's')!)?.['font-size'],
+  );
+  assert.match(drawnText(el), /\(hi\)/, 'a string in content');
 });
 
 test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {

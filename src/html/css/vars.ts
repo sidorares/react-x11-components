@@ -19,6 +19,7 @@
 // some declaration has one (`Declaration.custom`, `Declaration.vars`).
 
 import { evaluateCondition, styleQuery } from './conditions.js';
+import { matchesSyntax, validSyntax } from './syntax.js';
 
 /**
  * An element's custom properties: its own over those it inherits, with
@@ -169,11 +170,13 @@ export function substituteIn(
   // what a `media()` answers is the viewport's, which the properties do
   // not say
   // nor what an `inherit()` finds, which is the parent's
+  // nor what an `attr()` reads, which is the element's
   if (
     !props ||
     (env &&
       (MEDIA.test(value) ||
         INHERIT_CALL.test(value) ||
+        (env.attribute && ATTR_CALL.test(value)) ||
         (env.functionsReadMedia && DASHED_CALL.test(value))))
   ) {
     return substitute(value, props, env);
@@ -255,6 +258,10 @@ export interface IfEnvironment {
   /** The property the value is the declaration of, which an `inherit()`
    *  with no name inherits. */
   property?: string;
+  /** The element's attribute of a name, which an `attr()` reads (CSS
+   *  Values 5, 7.7), undefined where it has none. Absent, an `attr()` is
+   *  left as it is written, for what reads it to answer (`content`'s). */
+  attribute?(name: string): string | undefined;
 }
 
 /**
@@ -299,9 +306,26 @@ export function validVars(value: string): boolean {
     const found = findVar(value, i);
     if (!found) return true;
     const { open, kind } = found;
-    const close = closingParen(value, open);
-    if (close < 0) return false;
+    let close = closingParen(value, open);
+    // the value's end closes what it ends inside
+    if (close < 0) {
+      if (unbalanced(value.slice(open))) return false;
+      close = value.length;
+    }
     const inner = value.slice(open, close);
+    if (kind === 'attr') {
+      const comma = topLevelComma(inner);
+      if (!attrHead(comma < 0 ? inner : inner.slice(0, comma))) return false;
+      if (comma >= 0) {
+        const fallback = inner.slice(comma + 1);
+        if (topLevel(fallback, ';') >= 0 || topLevel(fallback, '!') >= 0) {
+          return false;
+        }
+        if (hasVar(fallback) && !validVars(fallback)) return false;
+      }
+      i = close + 1;
+      continue;
+    }
     if (kind === 'if' || kind === 'fn') {
       if (!(kind === 'if' ? validIf(inner) : validArguments(inner))) {
         return false;
@@ -347,7 +371,10 @@ function unescapeName(name: string): string {
   );
 }
 
-const VAR = /(?:^|[^\w-])(?:var|if|inherit)\(/i;
+const VAR = /(?:^|[^\w-])(?:var|if|inherit|attr)\(/i;
+
+/** An `attr()`, which reads the element and not its custom properties. */
+const ATTR_CALL = /(?:^|[^\w-])attr\(/i;
 
 const INHERIT_CALL = /(?:^|[^\w-])inherit\(/i;
 
@@ -380,11 +407,21 @@ export function substitute(
     const found = findVar(value, i);
     if (!found) break;
     const { at, open, kind } = found;
-    const close = closingParen(value, open);
-    if (close < 0) return null;
+    let close = closingParen(value, open);
+    // a function the value ends inside is closed by its end, as CSS's
+    // tokenizer closes it (CSS Syntax 3, 5.4.9)
+    if (close < 0) {
+      if (unbalanced(value.slice(open))) return null;
+      close = value.length;
+    }
     const inner = value.slice(open, close);
     let replacement: string | undefined | null;
-    if (kind === 'if') {
+    if (kind === 'attr') {
+      replacement = env?.attribute
+        ? attrValue(inner, get, env, calls)
+        : value.slice(at, close + 1);
+      if (replacement === null) return null;
+    } else if (kind === 'if') {
       replacement = chooseBranch(inner, get, env, calls);
       if (replacement === null) return null;
     } else if (kind === 'fn') {
@@ -414,10 +451,112 @@ export function substitute(
         replacement = resolved;
       }
     }
-    out += `${value.slice(i, at)} ${replacement.trim()} `;
+    // a space either side, where nothing parts it from what is around it
+    // already, so the tokenizer joins nothing that was apart
+    out += value.slice(i, at);
+    if (out && !/[\s(,]$/.test(out)) out += ' ';
+    out += replacement.trim();
+    const next = value[close + 1];
+    if (next !== undefined && !/[\s),]/.test(next)) out += ' ';
     i = close + 1;
   }
   return (out + value.slice(i)).trim();
+}
+
+/** The units a number in an attribute may be given by an `attr()`'s type
+ *  (CSS Values 5, 7.7.1, `<attr-unit>`). */
+const ATTR_UNIT =
+  /^(?:%|px|em|rem|ex|rex|cap|rcap|ch|rch|ic|ric|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|cm|mm|q|in|pt|pc|deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|x|fr)$/i;
+
+const ATTR_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i;
+
+/**
+ * What an `attr()` comes to (CSS Values 5, 7.7): the element's attribute,
+ * as a string where it gives no type, parsed as its type where it does —
+ * `type(<syntax>)`, `number` or a unit, which a number becomes a dimension
+ * of. An attribute it does not have, or that is not of its type, is its
+ * fallback; with none, a typed one has no value and an untyped one is the
+ * empty string. Null for a call that is no `attr()` at all.
+ */
+function attrValue(
+  inner: string,
+  get: (name: string) => string | undefined,
+  env: IfEnvironment,
+  calls: readonly string[],
+): string | null {
+  const comma = topLevelComma(inner);
+  const head = attrHead(comma < 0 ? inner : inner.slice(0, comma));
+  if (!head) return null;
+  const { name, syntax, unit, number } = head;
+  const typed = syntax !== null || number || unit !== null;
+  const fallback = (): string | null => {
+    if (comma < 0) return typed ? null : '""';
+    const text = inner.slice(comma + 1);
+    return hasVar(text) ? substitute(text, get, env, calls) : text.trim();
+  };
+  const raw = env.attribute!(unescapeName(name));
+  if (raw === undefined) return fallback();
+  // an attribute whose value reads itself, through others or not, has none
+  const key = `attr ${name.toLowerCase()}`;
+  if (calls.includes(key)) return null;
+  if (!typed) return cssString(raw);
+  if (unit !== null || number) {
+    const n = raw.trim();
+    if (!ATTR_NUMBER.test(n)) return fallback();
+    if (number) return n;
+    if (!ATTR_UNIT.test(unit!)) return fallback();
+    return `${n}${unit!.toLowerCase()}`;
+  }
+  // the attribute is read as a value, what it substitutes in it too
+  const parsed = hasVar(raw)
+    ? substitute(raw, get, env, [...calls, key])
+    : raw.trim();
+  if (parsed === null || !parsed) return fallback();
+  return matchesSyntax(parsed, syntax!) ? parsed : fallback();
+}
+
+/** An `attr()`'s name and type, before its fallback: null where it is
+ *  none, which makes its declaration none as it is parsed. */
+function attrHead(text: string): {
+  name: string;
+  syntax: string | null;
+  unit: string | null;
+  number: boolean;
+} | null {
+  const m =
+    /^\s*(?:((?:[\w-]|[^\x00-\x7f]|\\.)+|\*)?\|)?((?:[\w-]|[^\x00-\x7f]|\\.)+)\s*([\s\S]*)$/.exec(
+      text,
+    );
+  if (!m) return null;
+  // a namespace prefix: an HTML element's attributes are in none, which
+  // only `*` and no prefix at all name
+  if (m[1] !== undefined && m[1] !== '*') return null;
+  const name = m[2];
+  const typeText = m[3].trim();
+  if (/^type\(/i.test(typeText)) {
+    let end = closingParen(typeText, 5);
+    if (end >= 0 && typeText.slice(end + 1).trim()) return null;
+    if (end < 0) end = typeText.length;
+    const syntax = typeText.slice(5, end).trim();
+    if (!validSyntax(syntax)) return null;
+    return { name, syntax, unit: null, number: false };
+  }
+  if (/^number$/i.test(typeText)) {
+    return { name, syntax: null, unit: null, number: true };
+  }
+  if (!typeText || /^raw-string$/i.test(typeText)) {
+    return { name, syntax: null, unit: null, number: false };
+  }
+  // an ident is a unit, which only a unit's name is the type of; and
+  // anything else is no type
+  if (!/^(?:%|-?[a-z_][\w-]*)$/i.test(typeText)) return null;
+  return { name, syntax: null, unit: typeText, number: false };
+}
+
+/** `text` as a CSS string, quoted and escaped (CSSOM, "serialize a
+ *  string"). */
+function cssString(text: string): string {
+  return `"${text.replace(/[\\"]/g, '\\$&').replace(/[\n\r\f]/g, '\\a ')}"`;
 }
 
 /**
@@ -660,7 +799,7 @@ function topLevelSplit(value: string, sep: string): string[] {
 interface Found {
   at: number;
   open: number;
-  kind: 'var' | 'if' | 'inherit' | 'fn';
+  kind: 'var' | 'if' | 'inherit' | 'fn' | 'attr';
 }
 
 /** The next `var(`, `if(`, `inherit(` or `--name(` from `from` that is a
@@ -690,6 +829,10 @@ function findVar(value: string, from: number): Found | null {
       }
       if (value.slice(i, i + 8).toLowerCase() === 'inherit(') {
         return { at: i, open: i + 8, kind: 'inherit' };
+      }
+    } else if (c === 'a' || c === 'A') {
+      if (value.slice(i, i + 5).toLowerCase() === 'attr(') {
+        return { at: i, open: i + 5, kind: 'attr' };
       }
     } else if (c === '-' && value[i + 1] === '-') {
       let end = i + 2;
@@ -743,6 +886,29 @@ function stringEnd(value: string, at: number): number {
     else if (c === '\n' || c === '\r' || c === '\f') return -1;
   }
   return value.length;
+}
+
+/** `value` with the brackets it ends inside closed, as CSS's tokenizer
+ *  closes them at the end of what it reads (CSS Syntax 3, 5.4.9): a value
+ *  set on its own, written into a list of declarations, where the `;`
+ *  after it would be read inside them. */
+export function closeBrackets(value: string): string {
+  const open: string[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    if (c === '\\') {
+      i += 1;
+    } else if (c === '"' || c === "'") {
+      const end = stringEnd(value, i);
+      if (end < 0) return value;
+      i = end;
+    } else if (c === '(' || c === '[' || c === '{') {
+      open.push(c === '(' ? ')' : c === '[' ? ']' : '}');
+    } else if (c === ')' || c === ']' || c === '}') {
+      if (open.pop() !== c) return value;
+    }
+  }
+  return open.length ? value + open.reverse().join('') : value;
 }
 
 /** Whether a bracket closes that nothing opened, which no value holds. */

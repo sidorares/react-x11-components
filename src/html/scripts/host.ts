@@ -61,6 +61,8 @@ import {
   parseStylesheet,
   supportsCondition,
 } from '../css/parse.js';
+import { closeBrackets, hasVar } from '../css/vars.js';
+import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { isDisabled, validationMessage } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
@@ -244,6 +246,9 @@ export interface HandleInternals {
   /** The custom highlights a page's `CSS.highlights` holds, to draw
    *  (`HtmlViewNode.setHighlights`). */
   setHighlights(highlights: readonly HighlightRanges[]): void;
+  /** What the page's `CSS.registerProperty` registered, as `@property`
+   *  rules (`HtmlViewNode.setRegisteredProperties`). */
+  setRegisteredProperties(rules: string): void;
 }
 
 /** A custom highlight as a page's `CSS.highlights` holds it: a live
@@ -1861,13 +1866,14 @@ export class DomHost {
         const name = text(b);
         // a value the property does not take leaves the declaration as it
         // was; one it does is kept in its canonical form (CSSOM 6.7)
-        const value = text(c) && specifiedValue(name, text(c));
+        const raw = closeBrackets(text(c));
+        const value = raw && specifiedValue(name, raw);
         if (value === null) return null;
         const kept = this._declarations(el).filter((d) => d.prop !== name);
-        if (text(c)) {
+        if (raw) {
           kept.push({
             prop: name,
-            value: value || text(c),
+            value: value || raw,
             important: d === 'important',
           });
         }
@@ -2289,6 +2295,32 @@ export class DomHost {
           return answer !== false;
         return supportsCondition(`(${condition})`) !== false;
       }
+      // what is wrong with a property a page registers, CSS Properties
+      // and Values 1, 4.1's checks of its syntax and initial value: '' for
+      // nothing
+      case 'propertyRegistration': {
+        const syntax = text(a);
+        const initial = text(b);
+        if (!validSyntax(syntax)) {
+          return 'The syntax provided is not a valid custom property syntax.';
+        }
+        if (c !== true) {
+          return syntax.trim() === '*'
+            ? ''
+            : "An initial value must be provided if the syntax is not '*'";
+        }
+        if (syntax.trim() !== '*' && !matchesSyntax(initial, syntax)) {
+          return 'The initial value provided does not parse for the given syntax.';
+        }
+        if (hasVar(initial) || RELATIVE_LENGTH.test(initial)) {
+          return 'The initial value provided is not computationally independent.';
+        }
+        return '';
+      }
+      // what the page registered, as `@property` rules, told at once
+      case 'registeredProperties':
+        this._seams.handle.setRegisteredProperties?.(text(a));
+        return null;
       // the sheets the document adopted, each its text, in order
       case 'adopt': {
         const sheets: unknown = JSON.parse(text(a) || '[]');
@@ -4326,3 +4358,9 @@ function urlJson(href: string, base: string): string {
     return '';
   }
 }
+
+/** A length in a unit that reads an element — its font, its line, the
+ *  viewport, its container — which no initial value may hold, since it is
+ *  every element's alike (CSS Properties and Values 1, 2.5). */
+const RELATIVE_LENGTH =
+  /\d(?:em|rem|ex|rex|cap|rcap|ch|rch|ic|ric|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max))\b/i;

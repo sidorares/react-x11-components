@@ -7431,6 +7431,64 @@ export function installDom(
     return sheet;
   };
 
+  /** `CSS.registerProperty()`'s registrations (CSS Properties and Values
+   *  1, 4.1), each as the `@property` rule it amounts to, which the host
+   *  applies after every sheet, since a registration wins over a sheet's
+   *  `@property`, and at once, since a page reads it straight after. */
+  const registeredProperties = new Map<string, string>();
+  const registerProperty = (definition: Any): void => {
+    const fail = (message: string, name: string): never => {
+      throw new DOMException(
+        `Failed to execute 'registerProperty' on 'CSS': ${message}`,
+        name,
+      );
+    };
+    const required = (member: string): never => {
+      throw new TypeError(
+        `Failed to execute 'registerProperty' on 'CSS': Failed to read the '${member}' property from 'PropertyDefinition': Required member is undefined.`,
+      );
+    };
+    if (definition === null || typeof definition !== 'object') {
+      throw new TypeError(
+        "Failed to execute 'registerProperty' on 'CSS': parameter 1 is not of type 'PropertyDefinition'.",
+      );
+    }
+    // read as IDL reads a dictionary: its members in order, once each
+    const inherits = definition.inherits;
+    const initialValue = definition.initialValue;
+    const nameValue = definition.name;
+    const syntaxValue = definition.syntax;
+    if (inherits === undefined) required('inherits');
+    if (nameValue === undefined) required('name');
+    const name = str(nameValue);
+    const syntax = syntaxValue === undefined ? '*' : str(syntaxValue);
+    const initial = initialValue === undefined ? null : str(initialValue);
+    if (!/^--/.test(name)) {
+      fail(
+        `The name provided is not a valid custom property name.`,
+        'SyntaxError',
+      );
+    }
+    const answer = str(
+      call('propertyRegistration', syntax, initial ?? '', initial !== null),
+    );
+    if (answer) fail(answer, 'SyntaxError');
+    if (registeredProperties.has(name)) {
+      fail(
+        'The name provided has already been registered.',
+        'InvalidModificationError',
+      );
+    }
+    registeredProperties.set(
+      name,
+      `@property ${cssEscape(name)} { syntax: ${JSON.stringify(syntax)}; ` +
+        `inherits: ${inherits ? 'true' : 'false'};` +
+        (initial === null ? '' : ` initial-value: ${initial};`) +
+        ' }',
+    );
+    call('registeredProperties', [...registeredProperties.values()].join('\n'));
+  };
+
   /** `document.adoptedStyleSheets`: the sheets, and the array a page
    *  edits them in, which tells the host as it changes. */
   const adoptedSheets: Any[] = [];
@@ -16801,6 +16859,7 @@ export function installDom(
   define('CSS', {
     escape: (v: Any) => cssEscape(str(v)),
     highlights: highlightRegistry,
+    registerProperty,
     // what `<Html>` answers an `@supports` with: false only where it knows
     // a property it does not draw, and true for the rest, as the modern
     // engine a page tests for. vercel.com sent an engine that answered

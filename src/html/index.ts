@@ -1065,6 +1065,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       ) =>
         nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
       setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
+      setRegisteredProperties: (rules) =>
+        nodeRef.current?.setRegisteredProperties(rules),
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>

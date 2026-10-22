@@ -3429,7 +3429,26 @@ where it is computed is as though `unset`. A rule with no `syntax` or no
 `inherits`, or with no `initial-value` and a syntax other than `*`,
 registers nothing. The `syntax` is read and not checked: a value is the one
 written, not computed to its type, and a registered property does not
-animate between values. `CSS.registerProperty` is not there.
+animate between values. A page's `CSS.registerProperty` registers one as a
+rule does, ahead of any rule's, and at once: it throws a `SyntaxError`
+for a name that is no custom property's, a syntax that is none, or an
+initial value that is missing, not of the syntax, or not computationally
+independent (an `em`, a `vw`, a `var()`), and an
+`InvalidModificationError` for a name it registered already.
+
+**`attr()`** (CSS Values 5, 7.7) is replaced as a `var()` is, in any
+property, a custom property's included, by the element's attribute. With no
+type it is the attribute as a string; with a unit — `attr(data-w px)`,
+`attr(data-p %)` — a number becomes that dimension, and with `number` a
+number; with `type(<syntax>)` the attribute is read as a value, any `var()`
+in it replaced, and held to the syntax, so `attr(data-c type(<color>))`
+is a colour. An attribute the element does not have, or one that is not of
+the type, is the fallback; a typed one with none leaves its property as
+though `unset`, and an untyped one is the empty string. One that reads
+itself, through others or not, has no value. A change to an attribute an
+`attr()` reads restyles the element, whether a rule or its own `style`
+reads it. Not done: what CSS Values 5 calls attr-tainting, which keeps an
+attribute's value out of a URL.
 
 **`if()`** (CSS Values 5): a value chosen by the first branch whose
 condition holds, `if(style(--size: big): 2rem; media(width < 40rem): 1rem;

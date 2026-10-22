@@ -2539,6 +2539,15 @@ export class Cascade {
   private _mapFamilies: ((list: string) => string) | undefined;
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
+  /** The element whose style is being computed (`_cascadeStyle`). */
+  private _styling: Element | null = null;
+  /** Its attribute of a name, for an `attr()` (`IfEnvironment.attribute`):
+   *  HTML's names are its lowercase ones. */
+  private _attributeOf = (name: string): string | undefined => {
+    const attribs = this._styling?.attribs;
+    if (!attribs) return undefined;
+    return attribs[name] ?? attribs[name.toLowerCase()];
+  };
   private _lh = false;
   /** Whether a declaration anywhere sets `zoom`, which only then is looked
    *  for ahead of an element's other declarations (`_ownZoom`). */
@@ -2680,6 +2689,8 @@ export class Cascade {
       // `--blob-core`, registered at `0%` and set only on some elements,
       // drew no gradient on the rest.
       this._registeredBase = new CustomProps(null);
+      // which every element has, whether or not anything sets one
+      this._vars = true;
       for (const [name, { inherits, initial }] of this._registered) {
         if (initial !== null) this._registeredBase.own.set(name, initial);
         if (!inherits) (this._nonInherited ??= new Map()).set(name, initial);
@@ -4056,10 +4067,17 @@ export class Cascade {
   ): CustomProps | null {
     let key = '';
     let inherits = false;
+    // a set that reads the element's attributes is the element's alone
+    let attributes = false;
     for (const c of candidates) {
       if (!this._hasCustom(c)) continue;
       key += `${this._idOf(c.declarations)}:${c.only},`;
       if (!inherits && customInherits(c)) inherits = true;
+      if (!attributes) {
+        for (const d of pick(c)) {
+          if (d.custom && ATTR_IN.test(d.value)) attributes = true;
+        }
+      }
     }
     // what an `inherit()` of a property finds is the parent's style, not
     // only its custom properties, so the set is the parent's style's own
@@ -4071,7 +4089,7 @@ export class Cascade {
       parent && this._nonInherited ? this._resetsUnder(parent) : null;
     if (!key && !resets) return parent;
     key = `${parent ? this._idOf(parent) : 0}|${key}`;
-    const hit = this._customs.get(key);
+    const hit = attributes ? undefined : this._customs.get(key);
     if (hit) return hit;
     const own = new Map<string, string>();
     if (resets) {
@@ -4080,13 +4098,14 @@ export class Cascade {
     for (const c of candidates) {
       for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
     }
+    const env = inherits ? this._inheritEnv(parentStyle, '') : this._ifEnv;
     const made = customProperties(
       own,
       parent,
-      inherits ? this._inheritEnv(parentStyle, '') : this._ifEnv,
+      attributes ? { ...env, attribute: this._attributeOf } : env,
       this._registered,
     );
-    this._customs.set(key, made);
+    if (!attributes) this._customs.set(key, made);
     return made;
   }
 
@@ -5054,6 +5073,8 @@ export class Cascade {
     candidates: Candidate[],
     own: boolean,
   ): ComputedStyle {
+    // whose attributes an `attr()` in any declaration reads
+    this._styling = el;
     let style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
     // declarations below finds the one that wins
@@ -5375,9 +5396,10 @@ export class Cascade {
     } else {
       initialOne(style, this.initial, d.prop);
     }
-    const env = hasInherit(d.value)
+    let env = hasInherit(d.value)
       ? this._inheritEnv(parentStyle, d.prop)
       : this._ifEnv;
+    if (ATTR_IN.test(d.value)) env = { ...env, attribute: this._attributeOf };
     const value = substituteIn(d.value, style.custom, env);
     if (value !== null)
       applyDeclaration(style, parentStyle, d.prop, value, ctx);
@@ -6433,6 +6455,9 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 }
 
 /** Whether any of the declarations has a length in `lh` or `rlh`. */
+/** An `attr()` in a value (`IfEnvironment.attribute`). */
+const ATTR_IN = /(?:^|[^\w-])attr\(/i;
+
 function usesLh(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (LH.test(d.value)) return true;
   return false;
