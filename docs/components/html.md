@@ -2600,6 +2600,13 @@ box was laid out, as it is: a widget is a node of its own, which no matrix
 of the document's reaches. `background-attachment: fixed` in a transformed
 box is still fixed, where CSS has it scroll.
 
+**Scroll-driven timelines** are read and serialized and drive nothing
+yet: `animation-timeline` — `auto`, `none`, a name, `scroll()` and
+`view()` — `scroll-timeline-name` and `-axis`, `view-timeline-name`,
+`-axis` and `-inset`, and `timeline-scope` answer `getComputedStyle` as
+Scroll-driven Animations 1 computes them, and every animation runs on the
+document's timeline.
+
 **Animations:** `@keyframes`, and `@-webkit-keyframes`, which never takes
 the place of an `@keyframes` of the same name, as in Chrome; `animation`
 and its eight longhands, under their `-webkit-` names too. They run on the
@@ -3573,9 +3580,11 @@ and `all`, which sets every property but `direction`, `unicode-bidi` and
 the custom properties to one of them at its place in the cascade (CSS
 Cascade 4, 3.2). `button { all: unset }`, the first line of many a reset,
 takes the UA sheet's ground, border and control font off a button, as it
-does in a browser, and the button is the page's to draw. `revert` leaves a
-property as the declarations before it had it, where a browser would take
-it back to the UA sheet's.
+does in a browser, and the button is the page's to draw. `revert` on a
+property the UA sheet never sets is `unset`, which is what the UA origin
+has for it; on one the UA sheet sets anywhere it leaves the property as
+the declarations before it had it, where a browser would take it back to
+the UA sheet's for that element.
 
 **Colours:** the named colours, hex with three, four, six or eight digits,
 the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in

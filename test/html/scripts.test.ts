@@ -5506,6 +5506,22 @@ test("a view transition's pseudo-elements are selectors that match nothing, and 
   );
 });
 
+test('a computed style is a list of its property names, by index and in a for-of', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var cs = getComputedStyle(document.getElementById("out"));' +
+      'var all = Array.from(cs), it = [];' +
+      'for (var n of cs) it.push(n);' +
+      'document.getElementById("out").textContent = [all.length === cs.length, all[0] === cs.item(0),' +
+      '  cs[1] === cs.item(1), it.length === cs.length, all.indexOf("display") >= 0].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|true|true',
+  );
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

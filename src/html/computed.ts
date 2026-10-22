@@ -12,7 +12,7 @@
 // `rgba()`, as a browser serializes every one.
 import type { BasicShape } from './css/basic-shape.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
-import type { ClipPath, ComputedStyle } from './css/style.js';
+import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import type { Len } from './css/values.js';
 import { inkColor } from './css/values.js';
@@ -50,6 +50,32 @@ function len(value: Len | 'none', scale: number): string {
   if (!value.px) return pct;
   const sign = value.px < 0 ? '-' : '+';
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
+}
+
+/** An inset pair, the end left out where it is the start; null where
+ *  both are `auto`. */
+function insetText(inset: readonly [Len, Len], scale: number): string | null {
+  const [a, b] = inset.map((v) => len(v, scale));
+  if (a === 'auto' && b === 'auto') return null;
+  return a === b ? a : `${a} ${b}`;
+}
+
+/** An `animation-timeline` value as it is serialized, its defaults left
+ *  out: `scroll()` names its scroller before its axis. */
+function timelineText(t: TimelineRef, scale: number): string {
+  if (t.kind === 'auto' || t.kind === 'none') return t.kind;
+  if (t.kind === 'name') return t.name;
+  const parts: string[] = [];
+  if (t.kind === 'scroll') {
+    if (t.scroller !== 'nearest') parts.push(t.scroller);
+    if (t.axis !== 'block') parts.push(t.axis);
+    return `scroll(${parts.join(' ')})`;
+  }
+  const view = t as Extract<TimelineRef, { kind: 'view' }>;
+  if (view.axis !== 'block') parts.push(view.axis);
+  const inset = insetText(view.inset, scale);
+  if (inset) parts.push(inset);
+  return `view(${parts.join(' ')})`;
 }
 
 /**
@@ -345,6 +371,17 @@ function cssomAt(
     'user-select': style.userSelect,
     isolation: style.isolation,
     'will-change': style.willChangeNames,
+    'animation-timeline': style.animationTimeline
+      .map((t) => timelineText(t, scale))
+      .join(', '),
+    'timeline-scope': style.timelineScope,
+    'scroll-timeline-name': style.scrollTimelineName,
+    'scroll-timeline-axis': style.scrollTimelineAxis,
+    'view-timeline-name': style.viewTimelineName,
+    'view-timeline-axis': style.viewTimelineAxis,
+    'view-timeline-inset': style.viewTimelineInset
+      .map((inset) => insetText(inset, scale) ?? 'auto')
+      .join(', '),
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, color),
