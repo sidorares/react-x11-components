@@ -10923,13 +10923,16 @@ export function installDom(
         return record ? copyKey(record.key) : undefined;
       });
     }
-    getAll(query?: Any, count?: Any): Any {
-      return readAll(this, query, count, (e) =>
+    getAll(queryOrOptions?: Any, count?: Any): Any {
+      return readAll(this, queryOrOptions, count, (e) =>
         structuredCopy(e.value, new Map()),
       );
     }
-    getAllKeys(query?: Any, count?: Any): Any {
-      return readAll(this, query, count, (e) => copyKey(e.primaryKey));
+    getAllKeys(queryOrOptions?: Any, count?: Any): Any {
+      return readAll(this, queryOrOptions, count, (e) => copyKey(e.primaryKey));
+    }
+    getAllRecords(options?: Any): Any {
+      return readAll(this, options ?? {}, undefined, recordOf, true);
     }
     count(query?: Any): Any {
       const range = rangeOf(query);
@@ -11066,13 +11069,16 @@ export function installDom(
         return entry ? copyKey(entry.primaryKey) : undefined;
       });
     }
-    getAll(query?: Any, count?: Any): Any {
-      return readAll(this, query, count, (e) =>
+    getAll(queryOrOptions?: Any, count?: Any): Any {
+      return readAll(this, queryOrOptions, count, (e) =>
         structuredCopy(e.value, new Map()),
       );
     }
-    getAllKeys(query?: Any, count?: Any): Any {
-      return readAll(this, query, count, (e) => copyKey(e.primaryKey));
+    getAllKeys(queryOrOptions?: Any, count?: Any): Any {
+      return readAll(this, queryOrOptions, count, (e) => copyKey(e.primaryKey));
+    }
+    getAllRecords(options?: Any): Any {
+      return readAll(this, options ?? {}, undefined, recordOf, true);
     }
     count(query?: Any): Any {
       const range = rangeOf(query);
@@ -11089,24 +11095,101 @@ export function installDom(
     }
   }
 
-  /** `getAll` and `getAllKeys`, of a store or an index. */
+  /** A record `getAllRecords` answers with (IndexedDB 3, `IDBRecord`): its
+   *  key, its primary key and its value, which for a store's record are
+   *  its key twice. */
+  class IDBRecord {
+    readonly _key: Any;
+    readonly _primaryKey: Any;
+    readonly _value: Any;
+    constructor(key: Any, primaryKey: Any, value: Any) {
+      this._key = key;
+      this._primaryKey = primaryKey;
+      this._value = value;
+    }
+    get key(): Any {
+      return this._key;
+    }
+    get primaryKey(): Any {
+      return this._primaryKey;
+    }
+    get value(): Any {
+      return this._value;
+    }
+    get [Symbol.toStringTag](): string {
+      return 'IDBRecord';
+    }
+  }
+  const recordOf = (e: Any): Any =>
+    new IDBRecord(
+      copyKey(e.key),
+      copyKey(e.primaryKey),
+      structuredCopy(e.value, new Map()),
+    );
+
+  /** Whether `getAll`'s first argument is an `IDBGetAllOptions`
+   *  dictionary rather than a query: an object that is no key range and
+   *  could be no key — an array, a date or a buffer is a key, or an
+   *  invalid one, and a `DataError`. */
+  const isGetAllOptions = (value: Any): boolean =>
+    value !== null &&
+    typeof value === 'object' &&
+    !(value instanceof IDBKeyRange) &&
+    !Array.isArray(value) &&
+    !(value instanceof Date) &&
+    !(value instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(value);
+
+  /** `getAll`, `getAllKeys` and `getAllRecords`, of a store or an index
+   *  (IndexedDB 3, "retrieve multiple items"): the records in the query,
+   *  in the direction asked — a unique one the first record of each key,
+   *  `prev` and `prevunique` from the last key back — and no more of them
+   *  than `count`, where 0 is all. A dictionary in place of the query is
+   *  read for all three, and then the count after it is not. */
   const readAll = (
     source: Any,
-    query: Any,
+    queryOrOptions: Any,
     count: Any,
     out: (e: Any) => Any,
+    dictionary = false,
   ): Any => {
+    let query = queryOrOptions;
+    let direction = 'next';
+    if (dictionary || isGetAllOptions(queryOrOptions)) {
+      // a dictionary's members are read in their names' order (WebIDL)
+      const options = queryOrOptions ?? {};
+      count = options.count;
+      const asked = options.direction;
+      direction = asked === undefined ? 'next' : str(asked);
+      if (!DIRECTIONS.includes(direction)) {
+        throw new TypeError(
+          `The provided value '${direction}' is not a valid enum value of type IDBCursorDirection.`,
+        );
+      }
+      query = options.query;
+    }
     const range = rangeOf(query);
-    const most =
-      count === undefined || Number(count) === 0
-        ? Infinity
-        : Number(count) >>> 0;
-    return source._tx._request(source, () =>
-      sourceEntries(source)
-        .filter((e) => inRange(range, e.key))
-        .slice(0, most)
-        .map(out),
-    );
+    let most = Infinity;
+    if (count !== undefined) {
+      // [EnforceRange] unsigned long
+      const n = Number(count);
+      if (!Number.isFinite(n) || n < 0 || n > 0xffffffff) {
+        throw new TypeError(
+          "Value is outside the 'unsigned long' value range.",
+        );
+      }
+      if (Math.trunc(n) > 0) most = Math.trunc(n);
+    }
+    return source._tx._request(source, () => {
+      let entries = sourceEntries(source).filter((e) => inRange(range, e.key));
+      if (direction.endsWith('unique')) {
+        entries = entries.filter(
+          (e, i) => i === 0 || cmpKey(e.key, entries[i - 1].key) !== 0,
+        );
+      }
+      if (direction.startsWith('prev')) entries = entries.reverse();
+      return entries.slice(0, most).map(out);
+    });
   };
 
   const DIRECTIONS = ['next', 'nextunique', 'prev', 'prevunique'];
@@ -13355,6 +13438,7 @@ export function installDom(
     IDBIndex,
     IDBCursor,
     IDBCursorWithValue,
+    IDBRecord,
     IDBKeyRange,
     IDBRequest,
     IDBOpenDBRequest,

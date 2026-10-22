@@ -2279,6 +2279,56 @@ test('indexedDB keeps a page’s records for the document: stores, keys, indexes
   );
 });
 
+test('getAll, getAllKeys and getAllRecords take a query, a count and a direction, as arguments or as a dictionary', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'var open = indexedDB.open("all", 1);' +
+      'open.onupgradeneeded = function () {' +
+      '  var s = open.result.createObjectStore("s"); s.createIndex("by-v", "v");' +
+      '  ["a", "b", "c", "d"].forEach(function (k, i) { s.put({ v: i < 2 ? 1 : 2 }, k); });' +
+      '};' +
+      'open.onsuccess = function () {' +
+      '  var s = open.result.transaction("s").objectStore("s"); var ix = s.index("by-v");' +
+      '  function keys(req, label) { req.onsuccess = function () { r.push(label + "=" + req.result.join(",")); }; }' +
+      '  keys(s.getAllKeys(IDBKeyRange.bound("b", "d"), 2), "args");' +
+      '  keys(s.getAllKeys({ direction: "prev", count: 3 }, 1), "dict");' +
+      '  keys(ix.getAllKeys({ direction: "nextunique" }), "nextunique");' +
+      '  keys(ix.getAllKeys({ direction: "prevunique" }), "prevunique");' +
+      '  try { s.getAll({ direction: "sideways" }); } catch (e) { r.push(e.name); }' +
+      '  try { s.getAll(undefined, -1); } catch (e) { r.push(e.name); }' +
+      '  try { s.getAll({ query: [{}] }); } catch (e) { r.push(e.name); }' +
+      '  var req = ix.getAllRecords({ query: 2, direction: "prev" });' +
+      '  req.onsuccess = function () {' +
+      '    var rec = req.result[0];' +
+      '    r.push(Object.prototype.toString.call(rec), rec.key + "/" + rec.primaryKey + "/" + rec.value.v, req.result.length, "key" in rec);' +
+      '    out.textContent = r.join("|");' +
+      '  };' +
+      '};' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'TypeError',
+      'TypeError',
+      'DataError',
+      'args=b,c',
+      // the dictionary's count, and the one after it ignored
+      'dict=d,c,b',
+      // the first record of each key, and from the last key back
+      'nextunique=a,c',
+      'prevunique=c,a',
+      '[object IDBRecord]',
+      '2/d/2',
+      '2',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test('markup set inside a script, a style or a textarea is its text, as HTML parses it there', async () => {
   const doc = await hosted(
     '<p id="out"></p><textarea id="t"></textarea><script>' +
