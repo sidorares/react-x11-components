@@ -1273,6 +1273,12 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     this._endLine();
+    // the initial containing block's direction is the root element's (CSS
+    // 2.1 10.1), which puts an `<html>` narrower than it at its right end
+    if (body && html) {
+      const top = rootBox.children.find((b) => b.el && tagOf(b.el) === 'html');
+      if (top) rootStyle.direction = top.style.direction;
+    }
     cascade.endSharing();
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);

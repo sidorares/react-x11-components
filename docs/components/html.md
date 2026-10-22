@@ -246,6 +246,18 @@ stay hidden, and the rest of what it holds is drawn, where HTML's parser
 would have taken it into the body. `@media (scripting: none)` matches, to
 agree.
 
+**A source that starts with a doctype is a document**, and gets the tree
+HTML's parser builds for one: an `<html>`, a head and a body, each as
+written or implied where the markup leaves it out (HTML 13.2.6.4.1 to
+13.2.6.4.6). An empty document has all three. So a page that starts
+`<!doctype html><title>` has a `document.head` for its scripts and the
+body's UA margin, and its `:root` is the `<html>`. A source with no doctype
+is a fragment and is left as written, with the root box standing in for
+the body it would have had. That is how an application's snippet of HTML
+is drawn. The initial containing block takes the root element's
+`direction` (CSS 2.1 10.1), so an `<html>` narrower than the viewport in
+`rtl` stands at its right.
+
 A `<template>`'s content is inert, as in a browser (HTML 4.12.3): no box is
 made in it, a `<style>` or `<link rel=stylesheet>` in it styles nothing, an
 image or a sheet in it is not asked for through `onResource`, a `<script>`

@@ -1111,6 +1111,11 @@ class Handler extends DomHandler {
    *  here, before whatever comes that is not head content. */
   private _impliedHead: Element | null = null;
   private _headSeen = false;
+  /** Whether the source declares itself a document, with a doctype at its
+   *  start: one is parsed as HTML's parser parses every document, into an
+   *  `<html>` with its head and its body, written or implied (13.2.6.4.1,
+   *  "initial", and "before html"). A source with none is a fragment. */
+  private _document = false;
   /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
    *  does in a document a browser's parser builds, and not in a fragment
    *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
@@ -1160,6 +1165,7 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    if (name !== 'html') this._impliedHtml();
     if (this._ignored(name, attribs)) return;
     this._closeImpliedHead(name);
     this._openImpliedHead(name);
@@ -1234,7 +1240,7 @@ class Handler extends DomHandler {
 
   /** A doctype past the start of the document, which HTML's parser leaves
    *  out (13.2.6.4.7, "a DOCTYPE token"): it is the document's only where
-   *  no element has been opened before it. */
+   *  no element has been opened before it, and makes the source one. */
   override onprocessinginstruction(name: string, data: string): void {
     if (
       name === '!doctype' &&
@@ -1242,7 +1248,35 @@ class Handler extends DomHandler {
     ) {
       return;
     }
+    if (name === '!doctype') this._document = true;
     super.onprocessinginstruction(name, data);
+  }
+
+  /**
+   * The `<html>` HTML's parser implies in a document that does not write
+   * one, before its first element or text (13.2.6.4.2, "before html"),
+   * which the head and the body are then implied in as in a written one.
+   * Without it a WPT test that starts `<!doctype html><title>` had no
+   * `<head>` for `document.head` to answer, no `<body>`, and a `:root`
+   * that was the `<title>`.
+   */
+  private _impliedHtml(): void {
+    if (!this._document || this._html || this._body) return;
+    if (this.tagStack[this.tagStack.length - 1] !== this.root) return;
+    super.onopentag('html', {});
+    this._html = this.tagStack[this.tagStack.length - 1] as Element;
+  }
+
+  /** A document ends with its `<html>`, head and body, however little it
+   *  wrote of them: an empty one has all three. */
+  override onend(): void {
+    if (this._document) {
+      this._impliedHtml();
+      this._openImpliedHead(null);
+      this._closeImpliedHead(null);
+      if (this._html && !this._body) this._reopen();
+    }
+    super.onend();
   }
 
   /**
@@ -1379,6 +1413,7 @@ class Handler extends DomHandler {
 
   override ontext(data: string): void {
     if (NOT_SPACE.test(data)) {
+      this._impliedHtml();
       this._openImpliedHead(null);
       this._closeImpliedHead(null);
     }
