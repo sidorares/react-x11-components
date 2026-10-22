@@ -255,7 +255,11 @@ const s = createStyles({
   scrollHintHidden: { display: 'none' },
   /** The pill. Absolute, because that is what measures it at the width its
    *  content wants: an item of a lane no wider than a point is laid out in
-   *  no room, and its text broke at every space it had. */
+   *  no room, and its text broke at every space it had. And an absolute box
+   *  its content sizes, hung from a row, is one core's content floors lay
+   *  out alone when what it holds changes (react-x11#969): a new count is a
+   *  measure of the pill, where it was one of the whole table, 7-8 ms of a
+   *  frame at a million rows. Keep the lane a row. */
   scrollHint: {
     position: 'absolute',
     paddingStart: 10,

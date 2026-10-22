@@ -1290,6 +1290,61 @@ test('a scroll under the pill still moves the pane’s pixels', async (t) => {
   );
 });
 
+test('a new count in the pill measures the pill, not the table', async (t) => {
+  // The pill's count moves every few steps of a slow scroll, and core's
+  // content floors measured a change with no box around it that sizes
+  // itself with the whole tree: on a Mac at 2x, a million rows, 7-8 ms of
+  // every frame the count moved. The pill is absolute and hangs from a row,
+  // so its size is its content's in every pass, which core takes as such a
+  // box (react-x11#969): the pill is measured alone, and the window laid
+  // out once. Its content is whatever `renderScrollHint` returns, so the
+  // size is not the table's to name.
+  const clock = holdClock(t, windowClock);
+  await mount({ rows: many(400), rowHeight: 24, scrollHintDelay: 0 }, 400, 640);
+  await settle();
+  await clock.finish();
+  const count = (): string | undefined => {
+    const text = screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    )[0];
+    return text && String(retained(text).props.children);
+  };
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  bodyPane().scrollTo({ y: 6008 });
+  await settle();
+  assert.ok(count(), 'the pill never showed for the jump');
+
+  const root = retained(bodyPane()).root as unknown as {
+    _layoutPasses: number;
+    _scopedFloorPasses: number;
+  };
+  let moved = 0;
+  for (let step = 1; step <= 9; step++) {
+    const was = count();
+    const passes = root._layoutPasses;
+    const scoped = root._scopedFloorPasses;
+    bodyPane().scrollTo({ y: 6008 + step * 8 });
+    await act();
+    assert.ok(count(), `the pill went at step ${step}`);
+    if (count() === was) continue;
+    moved++;
+    assert.strictEqual(
+      root._layoutPasses - passes,
+      1,
+      `step ${step}, ${was} → ${count()}: the tree's floors were measured`,
+    );
+    assert.ok(
+      root._scopedFloorPasses > scoped,
+      `step ${step}: the pill was not measured`,
+    );
+  }
+  assert.ok(moved >= 2, `the count moved ${moved} times in 9 steps`);
+  await clock.finish();
+});
+
 test('the idle band grows without moving what is on screen', async () => {
   // The band works while the user is not looking, and nothing it does —
   // building rows, measuring them, re-learning the estimate — may move the

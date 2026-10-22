@@ -228,9 +228,10 @@ virtualization window works toward exactly that:
   up through any scroll that follows a fast one. Laid over the pane, every
   frame of a slow scroll after a fling repainted the whole table — 9-14 ms
   at 2x on a Mac, where the copy and its strip are 3.5. Inside it, a frame
-  copies and repaints the strip and the pill. What `renderScrollHint` returns is laid
-  out at the width its content asks for; it takes no pointer events and is
-  `aria-hidden`.
+  copies and repaints the strip and the pill, and a new count in the pill is
+  laid out alone rather than with the whole table. What `renderScrollHint`
+  returns is laid out at the width its content asks for; it takes no pointer
+  events and is `aria-hidden`.
 
 None of this needs configuring; `prefetch={0}` turns the band off and
 returns the slice to exactly viewport-plus-overscan.
