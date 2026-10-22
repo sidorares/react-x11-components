@@ -128,6 +128,9 @@ export interface Stylesheet {
   properties?: PropertyRule[];
   /** Its `@function` rules, in order. */
   functions?: FunctionRule[];
+  /** Its `@position-try` rules (CSS Anchor Positioning 1, 4.2), in order:
+   *  a name, and the declarations of the properties such a rule may set. */
+  positionTries?: { name: string; declarations: Declaration[] }[];
 }
 
 /**
@@ -266,7 +269,14 @@ const BLOCK_AT_RULES = new Set([
   'property',
   'font-feature-values',
   'function',
+  'position-try',
 ]);
+
+/** The properties a `@position-try` rule may set (CSS Anchor Positioning
+ *  1, 4.2): the insets, the margins, the sizes, the self-alignment, and
+ *  `position-anchor` and `position-area`. */
+const POSITION_TRY_PROPS =
+  /^(?:top|right|bottom|left|inset(?:-(?:block|inline)(?:-(?:start|end))?)?|margin(?:-(?:top|right|bottom|left|(?:block|inline)(?:-(?:start|end))?))?|(?:min-|max-)?(?:width|height|block-size|inline-size)|(?:align|justify|place)-self|position-anchor|position-area)$/;
 
 /**
  * Parse a stylesheet. `order` continues across sheets, so the caller passes
@@ -446,6 +456,18 @@ export function parseStylesheet(
         } else if (name === 'property' && at.block !== null) {
           const registered = parseProperty(at.prelude, at.block);
           if (registered) (sheet.properties ??= []).push(registered);
+        } else if (name === 'position-try' && at.block !== null) {
+          // a dashed name, and of its declarations those of the properties
+          // a position option sets, without `!important`
+          const named = at.prelude.trim();
+          if (/^--\S+$/.test(named)) {
+            (sheet.positionTries ??= []).push({
+              name: named,
+              declarations: parseDeclarations(at.block).filter(
+                (d) => !d.important && POSITION_TRY_PROPS.test(d.prop),
+              ),
+            });
+          }
         } else if (name === 'function' && at.block !== null) {
           const fn = parseFunction(at.prelude, at.block, note);
           if (fn) (sheet.functions ??= []).push({ ...fn, media, layer });

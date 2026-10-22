@@ -2511,6 +2511,8 @@ export class Cascade {
   /** The document's `@function` rules by name, in the order written; null
    *  for a document with none. */
   private _functions: Map<string, FunctionRule[]> | null = null;
+  /** Each `@position-try` rule's declarations, by its name. */
+  private _positionTries: Map<string, Declaration[]> | null = null;
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -2635,6 +2637,10 @@ export class Cascade {
       // and a registration, so: the last valid one for a name
       for (const { name, inherits, initial } of sheet.properties ?? []) {
         (this._registered ??= new Map()).set(name, { inherits, initial });
+      }
+      // and a position option, the last of a name
+      for (const { name, declarations } of sheet.positionTries ?? []) {
+        (this._positionTries ??= new Map()).set(name, declarations);
       }
       // and the functions, every one of a name: which one a call finds is
       // asked as it is made (`_functionNamed`)
@@ -3845,11 +3851,12 @@ export class Cascade {
     const size = query.axes
       ? (this._containerSizes.get(container) ?? null)
       : null;
-    const scroll = query.scroll
-      ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
-      : null;
+    const scroll =
+      query.scroll || query.anchored
+        ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
+        : null;
     const answer = this._ask(query, size, style, scroll);
-    if (query.axes || query.scroll) {
+    if (query.axes || query.scroll || query.anchored) {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
@@ -3911,8 +3918,10 @@ export class Cascade {
         if (type === 'normal' || style.display === 'inline') continue;
         if (query.axes & BLOCK_AXIS && type !== 'size') continue;
       }
-      // a scroll-state query, of a scroll-state container
+      // a scroll-state query, of a scroll-state container, and an anchored
+      // one of an anchored container
       if (query.scroll && !style.scrollStateContainer) continue;
+      if (query.anchored && !style.anchoredContainer) continue;
       return [at, style];
     }
     return null;
@@ -3959,7 +3968,7 @@ export class Cascade {
           }
         } else size = this._containerSizes.get(read.container) ?? null;
         let scroll: ScrollStates | undefined;
-        if (query.scroll) {
+        if (query.scroll || query.anchored) {
           if (!scrolls.has(read.container)) {
             scrolls.set(read.container, scrollOf?.(read.container));
           }
@@ -3979,7 +3988,7 @@ export class Cascade {
                 query,
                 size ?? null,
                 style,
-                query.scroll
+                query.scroll || query.anchored
                   ? (scroll ??
                       this._scrollStates.get(read.container) ??
                       NO_SCROLL_STATES)
@@ -5187,6 +5196,20 @@ export class Cascade {
         (style.styledControl && isInputButton(el)))
     ) {
       settleButton(style);
+    }
+    // each `@position-try` rule its fallbacks name, its declarations over
+    // the style as though they were the element's own, for layout to try
+    // in turn (`positionTryStyles`); an option naming no rule is none
+    const tries = this._positionTries;
+    if (tries && style.positionTryFallbacks) {
+      style.positionTryStyles = style.positionTryFallbacks.map((option) => {
+        const rule = option.name === null ? undefined : tries.get(option.name);
+        if (!rule) return null;
+        const tried = copyStyle(style);
+        for (const d of rule) this._apply(tried, parentStyle, d, ctx);
+        tried.positionTryStyles = null;
+        return tried;
+      });
     }
     decorate(style);
     return style;

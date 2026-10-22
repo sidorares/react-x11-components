@@ -4,6 +4,15 @@ import assert from 'node:assert';
 import { cleanup, pixelAt } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import {
+  parsePositionArea,
+  parseTryFallbacks,
+  physicalCols,
+} from '../../src/html/css/anchor.js';
+import {
+  anchoredHolds,
+  parseContainerPrelude,
+} from '../../src/html/css/containers.js';
+import {
   boxOf,
   clipsAround,
   fillsOf,
@@ -1404,4 +1413,229 @@ test('a sticky box is where a browser starts it, not moved by its insets', async
   // no further down than its containing block lets it: 196 + 25 - 10,
   // short of the 196 + 30 its `top` asks for
   assert.strictEqual(boxOf(el, 'lim').y, 211);
+});
+
+/** A box 300 by 200 positioned relative, with an anchor `--b` 60 by 30 at
+ *  100, `top` down it, and what `css` and `more` say. */
+function anchored(css: string, more: string, top = 20): string {
+  return (
+    '<style>body{margin:0}#wrap{position:relative;width:300px;height:200px}' +
+    `#btn{position:absolute;left:100px;top:${top}px;width:60px;height:30px;` +
+    `anchor-name:--b}${css}</style>` +
+    `<div id="wrap"><div id="btn"></div>${more}</div>`
+  );
+}
+
+test('anchor() and anchor-size() place a box against its anchor', async () => {
+  const { node } = await render(
+    anchored(
+      '.t{position:absolute;width:20px;height:10px}' +
+        '#below{top:anchor(--b bottom);left:anchor(--b left)}' +
+        '#right{position-anchor:--b;left:anchor(right);top:anchor(center)}' +
+        '#above{position-anchor:--b;bottom:anchor(top);right:anchor(right)}' +
+        '#mid{position-anchor:--b;left:anchor(50%);top:anchor(outside)}' +
+        '#sized{position-anchor:--b;width:anchor-size(width);' +
+        'height:anchor-size(height);top:0;left:0}' +
+        // no anchor of the name: the fallback, or `auto`
+        '#lost{top:anchor(--nobody bottom, 7px);left:anchor(--nobody left)}',
+      '<div class="t" id="below"></div><div class="t" id="right"></div>' +
+        '<div class="t" id="above"></div><div class="t" id="mid"></div>' +
+        '<div id="sized" style="position:absolute"></div>' +
+        '<div class="t" id="lost"></div>',
+    ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height];
+  };
+  assert.deepStrictEqual(at('below'), [100, 50, 20, 10]);
+  assert.deepStrictEqual(at('right'), [160, 35, 20, 10]);
+  // `bottom` and `right` from the containing block's far edges
+  assert.deepStrictEqual(at('above'), [140, 10, 20, 10]);
+  // a percentage across the anchor, and `outside` the side opposite
+  assert.deepStrictEqual(at('mid'), [130, 50, 20, 10]);
+  assert.deepStrictEqual(at('sized'), [0, 0, 60, 30]);
+  assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
+});
+
+test("an anchor is its element's own box, not the label inside it", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}#wrap{position:relative;width:300px;height:200px}' +
+      'button{position:absolute;left:100px;top:40px;width:80px;height:30px;' +
+      'anchor-name:--b}' +
+      '#tip{position:absolute;position-anchor:--b;position-area:bottom;' +
+      'width:20px;height:10px}</style>' +
+      '<div id="wrap"><button>Go</button><div id="tip"></div></div>',
+  );
+  const tip = boxOf(view(node), 'tip');
+  // below the button's border box, centred on it
+  assert.deepStrictEqual([tip.x, tip.y], [130, 70]);
+});
+
+test('position-area places a box in the cells around its anchor, aligned towards it', async () => {
+  const { node } = await render(
+    anchored(
+      '.t{position:absolute;position-anchor:--b;width:20px;height:10px}' +
+        '#top{position-area:top}' +
+        '#br{position-area:bottom right}' +
+        '#sl{position-area:span-left top}' +
+        '#center{position-area:center}' +
+        '#end{position-area:end}' +
+        '#fit{position:absolute;position-anchor:--b;position-area:right}',
+      '<div class="t" id="top"></div><div class="t" id="br"></div>' +
+        '<div class="t" id="sl"></div><div class="t" id="center"></div>' +
+        '<div class="t" id="end"></div>' +
+        '<div id="fit"><span style="display:inline-block;width:30px;height:5px">' +
+        '</span></div>',
+    ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  // above the anchor, centred on it: the end of the row before it
+  assert.deepStrictEqual(at('top'), [120, 10]);
+  // below and right of it: the start of the cells after it
+  assert.deepStrictEqual(at('br'), [160, 50]);
+  // the left and the anchor's columns, at their end: the anchor's right
+  assert.deepStrictEqual(at('sl'), [140, 10]);
+  assert.deepStrictEqual(at('center'), [120, 30]);
+  // `end` both ways, a block axis first: below and right
+  assert.deepStrictEqual(at('end'), [160, 50]);
+  // sized to its content in its cells, centred down the anchor's row
+  const fit = boxOf(el, 'fit');
+  assert.deepStrictEqual(
+    [fit.x, fit.width, fit.y + fit.height / 2],
+    [160, 30, 35],
+  );
+});
+
+test('position-try-fallbacks places a box that overflows by the first option that fits, which anchored() asks', async () => {
+  const blue = parseColor('#0000ff');
+  const doc = (top: number, fallbacks: string) =>
+    render(
+      anchored(
+        '#tip{position:absolute;position-anchor:--b;position-area:top;' +
+          `width:80px;height:20px;position-try-fallbacks:${fallbacks};` +
+          'container-type:anchored}' +
+          '#arrow{color:#000000}' +
+          '@container anchored(fallback: flip-block) { #arrow{color:#0000ff} }' +
+          '@container anchored(fallback) { #any{color:#0000ff} }' +
+          '@container anchored(fallback: none) { #none{color:#0000ff} }',
+        '<div id="tip"><span id="arrow">v</span><span id="any">a</span>' +
+          '<span id="none">n</span></div>',
+        top,
+      ),
+    );
+  const colour = (node: Parameters<typeof view>[0], id: string) =>
+    (boxOf(view(node), id) as unknown as { style: { color: string } }).style
+      .color;
+  // room above the anchor: its own position
+  const fits = await doc(30, 'flip-block');
+  assert.deepStrictEqual(
+    [boxOf(view(fits.node), 'tip').x, boxOf(view(fits.node), 'tip').y],
+    [90, 10],
+  );
+  assert.notStrictEqual(colour(fits.node, 'arrow'), blue);
+  assert.notStrictEqual(colour(fits.node, 'any'), blue);
+  assert.strictEqual(colour(fits.node, 'none'), blue);
+  // 10px above it: over the top of the containing block, so flipped below
+  const flipped = await doc(10, 'flip-block');
+  assert.deepStrictEqual(
+    [boxOf(view(flipped.node), 'tip').x, boxOf(view(flipped.node), 'tip').y],
+    [90, 40],
+  );
+  assert.strictEqual(colour(flipped.node, 'arrow'), blue);
+  assert.strictEqual(colour(flipped.node, 'any'), blue);
+  assert.notStrictEqual(colour(flipped.node, 'none'), blue);
+  // the first option that fits: a position area to the right, after one
+  // that does not fit either
+  const area = await doc(10, 'flip-inline, right');
+  assert.deepStrictEqual(
+    [boxOf(view(area.node), 'tip').x, boxOf(view(area.node), 'tip').y],
+    [160, 15],
+  );
+  assert.notStrictEqual(colour(area.node, 'arrow'), blue);
+  assert.strictEqual(colour(area.node, 'any'), blue);
+});
+
+test('a @position-try rule is an option of its own', async () => {
+  const { node } = await render(
+    anchored(
+      '@position-try --under { top: anchor(bottom); left: anchor(left);' +
+        ' position-area: none; color: red }' +
+        '#tip{position:absolute;position-anchor:--b;bottom:anchor(top);' +
+        'left:anchor(left);width:40px;height:20px;' +
+        'position-try-fallbacks:--missing, --under}',
+      '<div id="tip"></div>',
+      10,
+    ),
+  );
+  const tip = boxOf(view(node), 'tip');
+  // above would be at -10: the rule's position under the anchor instead,
+  // past one naming no rule
+  assert.deepStrictEqual([tip.x, tip.y], [100, 40]);
+});
+
+test('position-area, position-try-fallbacks and anchored() are read', () => {
+  assert.deepStrictEqual(parsePositionArea('top'), {
+    cols: [0, 2],
+    rows: [0, 0],
+    logicalCols: false,
+  });
+  // either order, and a logical keyword across reads right to left
+  assert.deepStrictEqual(parsePositionArea('span-right bottom'), {
+    cols: [1, 2],
+    rows: [2, 2],
+    logicalCols: false,
+  });
+  const start = parsePositionArea('block-end inline-start')!;
+  assert.deepStrictEqual(start.rows, [2, 2]);
+  assert.deepStrictEqual(physicalCols(start, false), [0, 0]);
+  assert.deepStrictEqual(physicalCols(start, true), [2, 2]);
+  assert.strictEqual(parsePositionArea('none'), null);
+  assert.strictEqual(parsePositionArea('top bottom'), undefined);
+  assert.strictEqual(parsePositionArea('left nowhere'), undefined);
+  assert.deepStrictEqual(
+    parseTryFallbacks(
+      'flip-block, --a flip-inline, flip-start flip-block, top left',
+    )!.map((o) => [o.name, o.tactics, o.area !== null, o.text]),
+    [
+      [null, ['flip-block'], false, 'flip-block'],
+      ['--a', ['flip-inline'], false, '--a flip-inline'],
+      [null, ['flip-start', 'flip-block'], false, 'flip-start flip-block'],
+      [null, [], true, 'top left'],
+    ],
+  );
+  assert.strictEqual(parseTryFallbacks('none'), null);
+  assert.strictEqual(parseTryFallbacks('flip-block flip-block'), undefined);
+  assert.deepStrictEqual(
+    parseContainerPrelude('anchored(fallback: flip-block)'),
+    [
+      {
+        name: null,
+        condition: 'anchored(fallback: flip-block)',
+        axes: 0,
+        anchored: true,
+      },
+    ],
+  );
+  // what each answers, for an option applied and for none
+  assert.strictEqual(anchoredHolds('fallback: flip-block', 'flip-block'), true);
+  assert.strictEqual(
+    anchoredHolds('fallback: flip-inline', 'flip-block'),
+    false,
+  );
+  assert.strictEqual(anchoredHolds('fallback', 'flip-block'), true);
+  assert.strictEqual(anchoredHolds('fallback: none', null), true);
+  assert.strictEqual(anchoredHolds('not (fallback)', null), true);
+  // order counts, and an area matches the cells it takes
+  assert.strictEqual(
+    anchoredHolds('fallback: flip-block flip-start', 'flip-start flip-block'),
+    false,
+  );
+  assert.strictEqual(anchoredHolds('fallback: left top', 'top left'), true);
+  assert.strictEqual(anchoredHolds('fallback: sideways', null), null);
 });

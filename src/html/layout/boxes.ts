@@ -925,7 +925,8 @@ export function containerBoxes(root: Box): Map<Element, Box> {
     if (
       box.el &&
       (box.style.containerType !== 'normal' ||
-        box.style.scrollStateContainer) &&
+        box.style.scrollStateContainer ||
+        box.style.anchoredContainer) &&
       box.pseudo === null &&
       !out.has(box.el)
     ) {
@@ -1022,6 +1023,9 @@ export interface BoxTree {
   /** Whether any box has a `reading-flow`: where none has, Tab goes in the
    *  document's order and nothing asks the boxes (`inReadingOrder`). */
   readingFlow: boolean;
+  /** Whether any box has an `anchor-name`: where none has, no positioned
+   *  box looks for an anchor (`layoutPositioned`). */
+  anchors: boolean;
   /** Whether any positioned box has a negative `z-index`: where none has,
    *  paint has no layer below the flow to find. */
   negative: boolean;
@@ -1206,6 +1210,7 @@ class Builder {
   private _relative = false;
   private _tilted = false;
   private _readingFlow = false;
+  private _anchors = false;
   private _negative = false;
   private _firstLine = false;
   private _nestedOutOfLine = false;
@@ -1294,6 +1299,7 @@ class Builder {
       relative: this._relative || isRelative(rootStyle),
       tilted: this._tilted || outOfPlane(rootStyle),
       readingFlow: this._readingFlow || rootStyle.readingFlow !== 'normal',
+      anchors: this._anchors || rootStyle.anchorNames !== null,
       negative: this._negative,
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
@@ -1563,6 +1569,7 @@ class Builder {
     if (style.translate || style.transform) this._relative = true;
     if (outOfPlane(style)) this._tilted = true;
     if (style.readingFlow !== 'normal') this._readingFlow = true;
+    if (style.anchorNames !== null) this._anchors = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

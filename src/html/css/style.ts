@@ -72,6 +72,20 @@ import {
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import {
+  parseAnchor,
+  parseAnchorSize,
+  parsePositionArea,
+  parseTryFallbacks,
+  readsAnchor,
+} from './anchor.js';
+import type {
+  AnchorRef,
+  AnchorSizeRef,
+  InsetSide,
+  PositionArea,
+  TryOption,
+} from './anchor.js';
+import {
   NO_TIMELINE_TRIGGERS,
   applyTimelineTrigger,
   parseTriggerScope,
@@ -760,6 +774,35 @@ export interface ComputedStyle {
    *  `scroll-state()` queries (CSS Conditional 5, 3.2.6), which takes no
    *  containment. */
   scrollStateContainer: boolean;
+  /** Whether `container-type` names `anchored` (CSS Anchor Positioning
+   *  2): an anchored container, which `@container anchored()` asks which
+   *  of its position options it is placed by. */
+  anchoredContainer: boolean;
+  /** `anchor-name`: the names an anchor-positioned box finds the element
+   *  by (CSS Anchor Positioning 1, 2.1); null for `none`. */
+  anchorNames: readonly string[] | null;
+  /** `position-anchor`: the anchor an `anchor()` that names none, and a
+   *  `position-area`, are of; null for `auto` and `none`. */
+  positionAnchor: string | null;
+  /** The insets written as an `anchor()`, by side: what each comes to is
+   *  layout's, and the inset itself holds the function's fallback, or
+   *  `auto`. Null where none is. */
+  anchorInsets: Readonly<Partial<Record<InsetSide, AnchorRef>>> | null;
+  /** A `width` or a `height` written as an `anchor-size()`, as the insets
+   *  are. */
+  anchorSizes: Readonly<
+    Partial<Record<'width' | 'height', AnchorSizeRef>>
+  > | null;
+  /** `position-area`: the cells of the grid its anchor makes of its
+   *  containing block that it is placed in; null for `none`. */
+  positionArea: PositionArea | null;
+  /** `position-try-fallbacks`: the options it is placed by in turn where
+   *  it overflows its containing block; null for `none`. */
+  positionTryFallbacks: readonly TryOption[] | null;
+  /** For each of those options, the style a `@position-try` rule it names
+   *  makes of this one, which the cascade works out (`_cascadeStyle`);
+   *  null for one that names none, or a rule there is none of. */
+  positionTryStyles: readonly (ComputedStyle | null)[] | null;
   /** `container-name`: the names an `@container` rule finds the element by,
    *  each with one space between, or '' for `none`. */
   containerName: string;
@@ -1468,6 +1511,14 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     containFromVisibility: 0,
     containerType: 'normal',
     scrollStateContainer: false,
+    anchoredContainer: false,
+    anchorNames: null,
+    positionAnchor: null,
+    anchorInsets: null,
+    anchorSizes: null,
+    positionArea: null,
+    positionTryFallbacks: null,
+    positionTryStyles: null,
     containerName: '',
     overflowClipBox: 'padding-box',
     overflowClipMargin: 0,
@@ -2339,6 +2390,45 @@ export function applyDeclaration(
       if (type !== null) {
         style.containerType = type.type;
         style.scrollStateContainer = type.scroll;
+        style.anchoredContainer = type.anchored;
+      }
+      return;
+    }
+    case 'anchor-name': {
+      if (/^\s*none\s*$/i.test(value)) {
+        style.anchorNames = null;
+        return;
+      }
+      const names = splitCommas(value).map((n) => n.trim());
+      if (names.every((n) => /^--\S+$/.test(n))) style.anchorNames = names;
+      return;
+    }
+    case 'position-anchor': {
+      const v = value.trim();
+      if (/^(?:auto|none)$/i.test(v)) style.positionAnchor = null;
+      else if (/^--\S+$/.test(v)) style.positionAnchor = v;
+      return;
+    }
+    case 'position-area': {
+      const area = parsePositionArea(value);
+      if (area !== undefined) style.positionArea = area;
+      return;
+    }
+    case 'position-try':
+    case 'position-try-fallbacks': {
+      // the shorthand's order, which comes first, is not read: the options
+      // are tried in the order they are written
+      const list =
+        name === 'position-try'
+          ? value.replace(
+              /^\s*(?:normal|most-width|most-height|most-block-size|most-inline-size)\b\s*/i,
+              '',
+            )
+          : value;
+      const fallbacks = parseTryFallbacks(list || 'none');
+      if (fallbacks !== undefined) {
+        style.positionTryFallbacks = fallbacks;
+        style.positionTryStyles = null;
       }
       return;
     }
@@ -2354,12 +2444,13 @@ export function applyDeclaration(
       const names = containerNamesOf(slash < 0 ? value : value.slice(0, slash));
       const type =
         slash < 0
-          ? { type: 'normal' as const, scroll: false }
+          ? { type: 'normal' as const, scroll: false, anchored: false }
           : containerTypeOf(value.slice(slash + 1));
       if (names === null || type === null) return;
       style.containerName = names;
       style.containerType = type.type;
       style.scrollStateContainer = type.scroll;
+      style.anchoredContainer = type.anchored;
       return;
     }
     case 'contain-intrinsic-size':
@@ -2667,6 +2758,28 @@ export function applyDeclaration(
           return;
         }
       }
+      // the anchor's size, kept beside the size, which takes the fallback
+      if ((name === 'width' || name === 'height') && readsAnchor(value)) {
+        const ref = parseAnchorSize(value, name, ctx);
+        if (!ref) return;
+        style[name] = ref.fallback ?? AUTO;
+        if (name === 'width') {
+          style.widthKeyword = null;
+          style.widthSize = null;
+        } else {
+          style.heightKeyword = null;
+          style.heightSize = null;
+        }
+        style.anchorSizes = { ...style.anchorSizes, [name]: ref };
+        return;
+      }
+      if (
+        (name === 'width' || name === 'height') &&
+        style.anchorSizes?.[name]
+      ) {
+        const { [name]: _gone, ...rest } = style.anchorSizes;
+        style.anchorSizes = Object.keys(rest).length ? rest : null;
+      }
       if (name === 'width') style.widthSize = null;
       else if (name === 'height') style.heightSize = null;
       const keyword = calc ? null : contentSizeOf(value, ctx, across);
@@ -2731,12 +2844,29 @@ export function applyDeclaration(
     case 'right':
     case 'bottom':
     case 'left': {
-      const len = parseLength(value, ctx);
-      if (len !== null)
-        (style as unknown as Record<string, unknown>)[name] = len;
+      setInset(style, name, value, ctx);
       return;
     }
-    case 'inset':
+    case 'inset': {
+      const parts = splitValue(value);
+      if (!parts.length || parts.length > 4) return;
+      if (!parts.some(readsAnchor)) {
+        const lens = parts.map((p) => parseLength(p, ctx));
+        if (lens.some((p) => p === null)) return;
+      } else if (
+        parts.some((p) =>
+          readsAnchor(p) ? !parseAnchor(p, ctx) : parseLength(p, ctx) === null,
+        )
+      ) {
+        return;
+      }
+      const [t, r = t, b = t, l = r] = parts;
+      setInset(style, 'top', t, ctx);
+      setInset(style, 'right', r, ctx);
+      setInset(style, 'bottom', b, ctx);
+      setInset(style, 'left', l, ctx);
+      return;
+    }
     case 'margin':
     case 'padding': {
       const keys = SIDE_PROPS[name];
@@ -4196,22 +4326,53 @@ function overflowKeyword(
 /** A `container-type` value as the type it computes to, or null where it
  *  is none: `normal`, or `size` or `inline-size` — either beside
  *  `scroll-state`, which no query here reads. */
-function containerTypeOf(
-  value: string,
-): { type: ComputedStyle['containerType']; scroll: boolean } | null {
+function containerTypeOf(value: string): {
+  type: ComputedStyle['containerType'];
+  scroll: boolean;
+  anchored: boolean;
+} | null {
   const words = value.trim().toLowerCase().split(/\s+/);
   if (words.length === 1 && words[0] === 'normal') {
-    return { type: 'normal', scroll: false };
+    return { type: 'normal', scroll: false, anchored: false };
   }
   let type: ComputedStyle['containerType'] = 'normal';
   let scroll = false;
+  let anchored = false;
   for (const word of words) {
     if (word === 'scroll-state' && !scroll) scroll = true;
+    else if (word === 'anchored' && !anchored) anchored = true;
     else if ((word === 'size' || word === 'inline-size') && type === 'normal') {
       type = word;
     } else return null;
   }
-  return { type, scroll };
+  return { type, scroll, anchored };
+}
+
+/**
+ * One inset from a value: a length, or an `anchor()`, which is kept by
+ * side (`anchorInsets`) with the inset its fallback — `auto` where it has
+ * none. A value that is neither leaves the inset as it was.
+ */
+function setInset(
+  style: ComputedStyle,
+  side: InsetSide,
+  value: string,
+  ctx: UnitContext,
+): void {
+  if (readsAnchor(value)) {
+    const ref = parseAnchor(value, ctx);
+    if (!ref) return;
+    style[side] = ref.fallback ?? AUTO;
+    style.anchorInsets = { ...style.anchorInsets, [side]: ref };
+    return;
+  }
+  const len = parseLength(value, ctx);
+  if (len === null) return;
+  style[side] = len;
+  if (style.anchorInsets?.[side]) {
+    const { [side]: _gone, ...rest } = style.anchorInsets;
+    style.anchorInsets = Object.keys(rest).length ? rest : null;
+  }
 }
 
 /** A `container-name` value as the names it gives, one space between, ''
@@ -7665,9 +7826,23 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-moz-appearance': ['appearance'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
-  'container-type': ['containerType', 'scrollStateContainer'],
+  'container-type': [
+    'containerType',
+    'scrollStateContainer',
+    'anchoredContainer',
+  ],
+  'anchor-name': ['anchorNames'],
+  'position-anchor': ['positionAnchor'],
+  'position-area': ['positionArea'],
+  'position-try-fallbacks': ['positionTryFallbacks', 'positionTryStyles'],
+  'position-try': ['positionTryFallbacks', 'positionTryStyles'],
   'container-name': ['containerName'],
-  container: ['containerName', 'containerType', 'scrollStateContainer'],
+  container: [
+    'containerName',
+    'containerType',
+    'scrollStateContainer',
+    'anchoredContainer',
+  ],
   'overflow-clip-margin': ['overflowClipBox', 'overflowClipMargin'],
   'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
   'contain-intrinsic-width': ['containIntrinsicWidth'],
