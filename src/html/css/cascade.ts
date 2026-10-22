@@ -52,10 +52,12 @@ import {
 import type { MediaCondition } from './parse.js';
 import type {
   Declaration,
+  FunctionRule,
   KeyframesRule,
   StyleRule,
   Stylesheet,
 } from './parse.js';
+import { matchesSyntax } from './syntax.js';
 import {
   NO_ANIMATIONS,
   restingFrames,
@@ -2484,8 +2486,13 @@ export class Cascade {
       );
     },
     supports: (condition) => supportsCondition(condition) !== false,
+    fn: (name) => this._functionNamed(name),
+    matches: matchesSyntax,
   };
   private _ifMedia = new Map<string, MediaCondition[]>();
+  /** The document's `@function` rules by name, in the order written; null
+   *  for a document with none. */
+  private _functions: Map<string, FunctionRule[]> | null = null;
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -2610,6 +2617,16 @@ export class Cascade {
       // and a registration, so: the last valid one for a name
       for (const { name, inherits, initial } of sheet.properties ?? []) {
         (this._registered ??= new Map()).set(name, { inherits, initial });
+      }
+      // and the functions, every one of a name: which one a call finds is
+      // asked as it is made (`_functionNamed`)
+      for (const rule of sheet.functions ?? []) {
+        this._functions ??= new Map();
+        let named = this._functions.get(rule.name);
+        if (!named) this._functions.set(rule.name, (named = []));
+        named.push(rule);
+        if (rule.media || rule.readsMedia)
+          this._ifEnv.functionsReadMedia = true;
       }
       this._addSheet(sheet, this._document, breakpoints);
     }
@@ -3143,6 +3160,40 @@ export class Cascade {
           continue;
         }
       }
+      found = rule;
+    }
+    return found;
+  }
+
+  /**
+   * The `@function` a call of `name` finds, or null (CSS Mixins 1, 2.1): of
+   * the document's rules of the name whose media hold, the one in the
+   * latest layer — no layer outranking any, as for a style rule — and the
+   * last of those. A rule under a media query is read as a `vmin` is, so a
+   * style that called it is computed again when the viewport moves.
+   */
+  private _functionNamed(name: string): FunctionRule | null {
+    const named = this._functions?.get(name);
+    if (!named) return null;
+    let found: FunctionRule | null = null;
+    for (const rule of named) {
+      if (rule.media) {
+        this._viewportRead('vmin');
+        if (
+          !mediaMatches(
+            rule.media,
+            this.viewportWidth / this.scale,
+            this.look.colorScheme,
+            this.viewportHeight / this.scale,
+            this.scale,
+            this.reducedMotion,
+            this.scripting,
+          )
+        ) {
+          continue;
+        }
+      }
+      if (found && compareLayers(rule.layer, found.layer) < 0) continue;
       found = rule;
     }
     return found;

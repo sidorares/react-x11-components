@@ -3157,6 +3157,42 @@ a `vw` in it is; `supports()` as a `@supports` block's condition is. A
 branch that is no condition, or has no `:`, makes the declaration none as
 it is parsed, and the one before it stands.
 
+**Custom functions** (CSS Mixins 1): an `@function` rule declares one, and
+`--name(…)` calls it anywhere a `var()` may be, replaced when a `var()` is
+and with the same consequences — a call with no value leaves its property
+`unset`.
+
+```css
+@function --fade(--color, --to: transparent) {
+  result: linear-gradient(to bottom, var(--color), var(--to));
+}
+.card {
+  background: --fade(var(--brand));
+}
+```
+
+A parameter may have a type, `--x <length>` or `--x type(<number> |
+auto)`, and a default after a `:`; an argument that is missing, or not of
+its type, is the default, and is no value where there is none. An argument
+with a comma in it is wrapped in braces, `--first({a, b})`. The body's
+descriptors are `result` and custom properties, which are the function's
+locals, read in the order written with the last of each standing; an
+`@media` block in the body holds more of them, and a `@supports` block is
+read as the sheet's are. In the body a `var()` finds a local, then a
+parameter, then what the caller sees — the element's custom properties, or
+the locals of the function whose body made the call — and a default reads
+the other parameters and what the caller sees. A `returns` type holds the
+result to it. A call with more arguments than parameters, of a function
+nobody declared, of itself however far round, or whose function has no
+`result`, has no value. Where two `@function` rules have one name, the one
+in the stronger layer wins, and the later of two in one; one under an
+`@media` block counts where its query holds. A function whose body, or
+whose rule, reads a media query makes a document that calls it restyle when
+the viewport moves, as `media()` in an `if()` does. Types are checked and
+not computed: an argument is handed on as written, so `1em` is resolved
+where the result is used, against the element's own font. A shadow tree's
+`@function` rules are not read: the document's are what a call finds.
+
 **CSS-wide keywords:** `inherit`, `initial` and `unset` on any property,
 and `all`, which sets every property but `direction`, `unicode-bidi` and
 the custom properties to one of them at its place in the cascade (CSS
