@@ -797,6 +797,23 @@ async function mountVt(
   return { pty, ref };
 }
 
+test('unmounting hangs up the program under the pty, as closing a terminal does', async () => {
+  // The program is the shell itself, and an interactive bash ignores
+  // SIGTERM: sent that, it outlived the pane, and the app holding its pty
+  // could not exit.
+  const { pty } = await mountVt();
+  const session = pty.last!;
+  await cleanup();
+  assert.deepStrictEqual(session.signals, ['SIGHUP']);
+});
+
+test('a stopSignal of its own is what a vt terminal sends', async () => {
+  const { pty } = await mountVt({ stopSignal: 'SIGKILL' });
+  const session = pty.last!;
+  await cleanup();
+  assert.deepStrictEqual(session.signals, ['SIGKILL']);
+});
+
 test('the cursor blinks as the desktop says while the terminal has focus, and an app that says otherwise is heard', async (t) => {
   // `<Terminal>` hands the vt element `useDesktopSettings()`'s caret:
   // whether it blinks, unless `cursorBlink` says, and at what rate — a VTE
