@@ -4975,6 +4975,8 @@ export function installDom(
         // a frame's scroll is its own document's, which no entry keeps
         scroll: () => [0, 0],
         scrollTo: () => {},
+        // its initial `about:blank` keeps no entries the API shows
+        disabled: () => call('frameInitialBlank', frame._id) === true,
       });
       frameSessions.set(doc, made);
     }
@@ -14411,6 +14413,10 @@ export function installDom(
     /** Where the document is scrolled to, and a scroll of it. */
     scroll(): [number, number];
     scrollTo(x: number, y: number): void;
+    /** HTML 7.2.6.1, "has entries and events disabled": a document that is
+     *  its frame's initial `about:blank`, or of an opaque origin, has no
+     *  entries and tells no navigation of its. Absent, false. */
+    disabled?(): boolean;
   }
   /** A navigation an API method started, and the two promises it hands
    *  back (HTML 7.2.6.10, "navigation API method tracker"). */
@@ -14807,6 +14813,13 @@ export function installDom(
      *  where it ends, not where it commits. */
     apply: (intercepted: boolean) => void,
   ): 'same' | 'canceled' | 'other' => {
+    // a document whose navigations go untold: done, with no event, and
+    // nothing settled of what a method handed back
+    if (s.ctx.disabled?.()) {
+      if (!params.sameDocument) return 'other';
+      apply(false);
+      return 'same';
+    }
     abortOngoing(s);
     // a `navigateerror` listener may start a navigation of its own, which
     // this one aborts in turn before it goes on; bounded, since each may
@@ -15253,9 +15266,11 @@ export function installDom(
     }
     entries(): Any[] {
       const s = this._s;
+      if (s.ctx.disabled?.()) return [];
       return s.entries.map((e) => apiEntryOf(s, e));
     }
     get currentEntry(): Any {
+      if (this._s.ctx.disabled?.()) return null;
       return apiEntryOf(this._s, currentOf(this._s));
     }
     get transition(): Any {
@@ -15269,10 +15284,12 @@ export function installDom(
       ));
     }
     get canGoBack(): boolean {
-      return this._s.index > 0;
+      return !this._s.ctx.disabled?.() && this._s.index > 0;
     }
     get canGoForward(): boolean {
-      return this._s.index < this._s.entries.length - 1;
+      return (
+        !this._s.ctx.disabled?.() && this._s.index < this._s.entries.length - 1
+      );
     }
     navigate(url: Any, options: Any = {}): Any {
       const s = this._s;
@@ -15296,6 +15313,20 @@ export function installDom(
         }
       }
       const historyMode = options?.history ?? 'auto';
+      // a navigation from an `about:blank` document, or to one, can only
+      // replace it (HTML 7.4.2.2, "the navigation must be a replace")
+      if (
+        historyMode === 'push' &&
+        (/^about:blank(?:[?#]|$)/i.test(currentOf(s).url) ||
+          /^about:blank(?:[?#]|$)/i.test(href))
+      ) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'navigate' on 'Navigation': A push navigation must be a replace here.",
+            'NotSupportedError',
+          ),
+        );
+      }
       if (historyMode === 'push' && /^javascript:/i.test(href)) {
         return earlyError(
           new DOMException(
@@ -15314,6 +15345,9 @@ export function installDom(
     }
     reload(options: Any = {}): Any {
       const s = this._s;
+      // nothing is told of a reload of a document whose navigations go
+      // untold, and what it hands back never settles
+      if (s.ctx.disabled?.()) return resultOf(makeTracker());
       let navState = currentOf(s).navState;
       if (options?.state !== undefined) {
         try {
@@ -15350,7 +15384,9 @@ export function installDom(
     traverseTo(key: Any, options: Any = {}): Any {
       const s = this._s;
       const k = str(key);
-      const index = s.entries.findIndex((e) => e.key === k);
+      const index = s.ctx.disabled?.()
+        ? -1
+        : s.entries.findIndex((e) => e.key === k);
       if (index < 0) {
         return earlyError(
           new DOMException(

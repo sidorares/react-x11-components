@@ -2410,6 +2410,19 @@ export class DomHost {
         );
 
       // --- frames
+      // whether a frame's document is its initial `about:blank`: one a
+      // `javascript:` URL made is a new one, as HTML makes it
+      case 'frameInitialBlank': {
+        const frame = this._element(a);
+        const doc = this._frames.get(frame);
+        const src = (frame.attribs.src ?? '').trim();
+        return (
+          !!doc &&
+          this._initialBlank.has(doc) &&
+          !this._frameSent.has(frame) &&
+          !/^javascript:/i.test(src)
+        );
+      }
       case 'frameDocument': {
         const doc = this._frameDocument(this._element(a));
         return doc ? this.idOf(doc) : 0;
@@ -3576,10 +3589,15 @@ export class DomHost {
     if (!doc) {
       // `about:blank`'s, until what it loads is in
       doc = this._blankFrame(frame);
+      this._initialBlank.add(doc);
       this._loadFrame(frame);
     }
     return this._sameOrigin(this._frameAt.get(frame)!) ? doc : null;
   }
+
+  /** Each frame's first `about:blank` document, its initial one (HTML
+   *  7.3.1), whose navigations a page's `navigation` tells nothing of. */
+  private _initialBlank = new WeakSet<Document>();
 
   /** A frame given a new `about:blank` document: its first, or where it
    *  is sent to that address. */

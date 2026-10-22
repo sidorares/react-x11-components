@@ -2792,6 +2792,25 @@ test('navigation is the page’s entries, and navigate() fires navigate, which a
   );
 });
 
+test('a frame’s initial about:blank has no entries and tells no navigation, and a push from it is refused', async () => {
+  // HTML 7.2.6.1, "has entries and events disabled"
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var i = document.createElement("iframe"); document.body.append(i);' +
+      'var w = i.contentWindow, r = [];' +
+      'w.navigation.onnavigate = function () { r.push("navigate"); };' +
+      'r.push(w.navigation.entries().length, String(w.navigation.currentEntry), w.navigation.canGoBack);' +
+      'w.navigation.navigate("#1");' +
+      'w.navigation.navigate("#2", { history: "push" }).committed.catch(function (e) {' +
+      '  r.push(e.name); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0|null|false|NotSupportedError',
+  );
+});
+
 test('navigateerror says where a handler threw, pushState is no hash change, and a navigation started from navigateerror is aborted in turn', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
