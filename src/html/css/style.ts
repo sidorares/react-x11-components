@@ -995,6 +995,10 @@ export interface ComputedStyle {
    *  its running animations set make of it, which act as named there
    *  (Web Animations 1, 5.6). 0 for `auto`. */
   willChange: number;
+  /** And the names it lists, as its computed value is serialized: `auto`,
+   *  or the names, lowercased, in the order written. What an animation
+   *  makes of the element is none of them. */
+  willChangeNames: string;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down, and a
    *  depth toward the viewer in device pixels, 0 where none is written;
@@ -1644,6 +1648,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     filter: null,
     backdropFilter: null,
     isolation: 'auto',
+    willChangeNames: 'auto',
     willChange: 0,
     translate: null,
     rotate: null,
@@ -2795,7 +2800,16 @@ export function applyDeclaration(
     }
     case 'will-change': {
       const bits = parseWillChange(value);
-      if (bits !== null) style.willChange = bits;
+      if (bits === null) return;
+      style.willChange = bits;
+      const v = value.trim().toLowerCase();
+      style.willChangeNames =
+        v === 'auto'
+          ? 'auto'
+          : v
+              .split(',')
+              .map((name) => name.trim())
+              .join(', ');
       return;
     }
     case 'animation': {
@@ -7570,6 +7584,7 @@ let TRANSITIONABLE: ReadonlySet<keyof ComputedStyle> | null = null;
 const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'contain',
   'willChange',
+  'willChangeNames',
   'animations',
   'transitions',
   'mask',
@@ -8130,7 +8145,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   filter: ['filter'],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
-  'will-change': ['willChange'],
+  'will-change': ['willChange', 'willChangeNames'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],

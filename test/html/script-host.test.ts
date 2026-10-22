@@ -840,6 +840,29 @@ test('computedStyle reads color-scheme as Chrome does: the schemes as written, i
   assert.strictEqual(scheme('n'), 'normal');
 });
 
+test('computedStyle reads will-change as the names it lists, and isolation, neither inherited', async () => {
+  // CSS Will Change 1: as specified, the names lowercased in order; not
+  // what an animation makes of the element
+  const { node } = await render(
+    '<style>#a { will-change: Transform ,  OPACITY; isolation: isolate }' +
+      ' #b { will-change: scroll-position } #c { will-change: inherit }' +
+      ' #d { will-change: auto } #e { will-change: all }</style>' +
+      '<div id="a"><span id="in">x</span><p id="c"></p></div>' +
+      '<div id="b"></div><div id="d"></div><div id="e"></div>',
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    el.computedStyle(findById(el.document, id) as DocElement)!;
+  assert.strictEqual(of('a')['will-change'], 'transform, opacity');
+  assert.strictEqual(of('a').isolation, 'isolate');
+  assert.strictEqual(of('in')['will-change'], 'auto', 'not inherited');
+  assert.strictEqual(of('in').isolation, 'auto');
+  assert.strictEqual(of('b')['will-change'], 'scroll-position');
+  assert.strictEqual(of('c')['will-change'], 'transform, opacity', 'inherit');
+  assert.strictEqual(of('d')['will-change'], 'auto');
+  assert.strictEqual(of('e')['will-change'], 'auto', '`all` is no value');
+});
+
 test("a <meta name=color-scheme> draws the page in its scheme and leaves the root's color-scheme normal", async () => {
   const { node } = await render(
     '<html><head><meta name="color-scheme" content="dark">' +
