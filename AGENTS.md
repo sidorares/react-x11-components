@@ -3170,6 +3170,19 @@ inside a lifted part claims nothing of the document's — its ink is a hole
 records it the same way**, or every part on a layer is painted again with
 each build.
 
+**A custom highlight's style is worked out as it is painted, and on ntk
+its text is drawn again, never cast.** `BoxTree.highlightStyler` asks the
+cascade for an element's `::highlight()` when a paint first lights it, so
+what that style reads — a container's size, a rule a told change turns on
+— is no element's, and nothing restyles for it: the paint sizes every
+container first (`Cascade.sizeContainers`), and both move
+`highlightGeneration`, which drops what the styler kept. **Anything new a
+highlight's style comes to read moves it too.** Its colour, and its
+shadow, are drawn from a copy of ntk's layout whose runs are cut at the
+highlight's characters (`cutRun`, `inColours`, `onlyOf`), since ntk's text
+shadow sets each run on a whole pixel and a cast glyph came out a pixel
+aside; other engines cast, clipped to the bands.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run

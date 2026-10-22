@@ -135,7 +135,7 @@ import {
   RIGHT_EDGE,
   TOP_EDGE,
 } from './css/containers.js';
-import type { ScrollStates } from './css/containers.js';
+import type { ContainerSize, ScrollStates } from './css/containers.js';
 import {
   BOX_RAISES,
   buildBoxes,
@@ -589,6 +589,22 @@ interface PlacedAt {
   scrollY: number;
   x: number;
   y: number;
+}
+
+/** A size container's content box as a layout left it, in device pixels:
+ *  null where it has none, and undefined where the layout set it aside and
+ *  its size stands (`Cascade.containersMoved`). */
+function containerSizer(
+  tree: BoxTree,
+  boxes: Map<Element, Box>,
+): (el: Element) => ContainerSize | null | undefined {
+  return (el) => {
+    const box = boxes.get(el);
+    if (!box) return null;
+    if (heldBack(tree, box)) return undefined;
+    if (!containmentApplies(box, CONTAIN_INLINE_SIZE)) return null;
+    return { width: box.contentWidth, height: box.contentHeight };
+  };
 }
 
 /** What changed, and therefore how far back up the pipeline to go. */
@@ -4007,6 +4023,13 @@ export class HtmlViewNode extends Node {
     if (!this._highlights.length || !styler || !tree.textNodes?.length) {
       return undefined;
     }
+    // a highlight's style is worked out here, after every layout, and its
+    // `@container` rules and container units read the containers as the
+    // last one left them, whether or not an element's style read them
+    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    if (boxes.size) {
+      this._cascade?.sizeContainers(boxes.keys(), containerSizer(tree, boxes));
+    }
     const out: NonNullable<PaintOptions['highlights']>[number][] = [];
     const ordered = this._highlights
       .map((h, i) => ({ h, i }))
@@ -5415,15 +5438,8 @@ export class HtmlViewNode extends Node {
     // a tree built before any style read one — a restyle in place read the
     // first — has none taken, and takes them now
     const boxes = (tree.containers ??= containerBoxes(tree.root));
-    return cascade.containersMoved(
-      (el) => {
-        const box = boxes.get(el);
-        if (!box) return null;
-        if (heldBack(tree, box)) return undefined;
-        if (!containmentApplies(box, CONTAIN_INLINE_SIZE)) return null;
-        return { width: box.contentWidth, height: box.contentHeight };
-      },
-      (el) => this._scrollStatesOf(boxes.get(el)),
+    return cascade.containersMoved(containerSizer(tree, boxes), (el) =>
+      this._scrollStatesOf(boxes.get(el)),
     );
   }
 
@@ -6896,6 +6912,12 @@ export class HtmlViewNode extends Node {
     this._source.touch();
     this._updateBase();
     this._sweep();
+    // a rule a change turns on or off for a custom highlight restyles no
+    // element of its own, and its text is painted again in the new look
+    if (this._highlights.length && this._cascade?.hasHighlights) {
+      this._cascade.highlightGeneration += 1;
+      this.invalidate();
+    }
     const scope = changes ? this._changeScope(changes) : null;
     if (!scope) {
       this._invalidate(Stale.Style);

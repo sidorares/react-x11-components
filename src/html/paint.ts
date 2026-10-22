@@ -26,7 +26,8 @@ import {
   paintRunBackgrounds,
   paintRunRules,
 } from '../richtext/runs.js';
-import type { FillContext } from '../richtext/runs.js';
+import type { FillContext, LaidLine, LaidRun } from '../richtext/runs.js';
+import type { TextRun } from '../richtext/index.js';
 import {
   AUTO,
   alphaOf,
@@ -148,9 +149,11 @@ import {
   CLIPPED_TEXT,
   clipBoxOf,
   depthOf,
+  fadeRun,
   inklessLayout,
   layoutOffsetOf,
   layoutOffsets,
+  ruleRun,
 } from './layout/inline.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
@@ -12368,10 +12371,12 @@ function paintLinePart(
   }
 
   if (SHADOWED_TEXT.has(box)) paintTextShadows(ctx, visible, options, skip);
+  paintHighlightShadows(ctx, visible, options, skip);
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under', skip);
+  paintHighlightRules(ctx, visible, options, dx, dy, 'under', skip);
 
   if (CLIPPED_TEXT.has(box)) {
     paintClippedText(ctx, box, visible, options, skip);
@@ -12415,6 +12420,7 @@ function paintLinePart(
   }
 
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over', skip);
+  paintHighlightRules(ctx, visible, options, dx, dy, 'over', skip);
   if (bleeds.length) paintBleeds(ctx, bleeds, options);
   // One painted with the positioned boxes is its stacking context's to
   // paint, there (`layered`) — one set below the flow with a negative
@@ -13133,6 +13139,263 @@ function paintRules(
       }
     }
   }
+}
+
+/**
+ * The lines a custom highlight's `text-decoration` draws (CSS Pseudo 4,
+ * 3.6), over the stretch of each run it lights, the lowest priority's
+ * first: its underline under the glyphs and its line through over them,
+ * as the element's own are (`paintRules`), each where the element's would
+ * be with the same style.
+ */
+function paintHighlightRules(
+  ctx: PaintContext,
+  lines: LineBox[],
+  options: PaintOptions,
+  dx: number,
+  dy: number,
+  rules: 'under' | 'over',
+  skip?: ReadonlySet<unknown>,
+): void {
+  const lit = highlightOptions(options);
+  if (!lit.length) return;
+  const scale = options.scale ?? 1;
+  for (const each of lit) {
+    for (const line of lines) {
+      for (const { text, laid } of highlightRuled(line, each, skip)) {
+        paintRunRules(
+          ctx,
+          laid,
+          text.drawX + dx,
+          text.drawY + dy,
+          scale,
+          rules,
+        );
+      }
+    }
+  }
+}
+
+/** A highlight's decoration as a run's rules, faded as the text under it
+ *  is: kept by the decoration's style, for each fade. */
+const HIGHLIGHT_RULES = new WeakMap<ComputedStyle, Map<number, TextRun>>();
+function highlightRun(style: ComputedStyle, fade: number): TextRun {
+  let byFade = HIGHLIGHT_RULES.get(style);
+  if (!byFade) HIGHLIGHT_RULES.set(style, (byFade = new Map()));
+  let run = byFade.get(fade);
+  if (!run) {
+    run = {} as TextRun;
+    ruleRun(run, style);
+    byFade.set(fade, fadeRun(run, fade));
+  }
+  return run;
+}
+
+/** A stretch of a line's text a highlight lights, in its layout's code
+ *  units, in the style it lights it in, faded as the boxes around it fade
+ *  it (`selectionPieces`). */
+interface LitPiece {
+  text: LineText;
+  natural: LineText['layout']['lines'][number];
+  from: number;
+  to: number;
+  style: SelectionStyle;
+  fade: number;
+}
+
+/** The stretches of a line's text a highlight lights, each in the style it
+ *  lights it in, cut where it lights them as its band is
+ *  (`selectedBands`). */
+function litPieces(
+  line: LineBox,
+  options: PaintOptions,
+  skip?: ReadonlySet<unknown>,
+): LitPiece[] {
+  const range = options.selection;
+  if (!range || range.end <= range.start) return [];
+  if (line.textEnd <= range.start || line.textStart >= range.end) return [];
+  const out: LitPiece[] = [];
+  for (const text of line.texts) {
+    if (skip?.has(text)) continue;
+    const natural = text.layout.lines[text.layoutLine];
+    if (!natural) continue;
+    const from = Math.max(range.start, text.textStart);
+    const to = Math.min(range.end, text.textEnd);
+    if (to <= from) continue;
+    const pieces = range.skip?.length
+      ? selectedPieces(from, to, range.skip)
+      : [[from, to] as const];
+    for (const [a, b] of pieces) {
+      const lit = selectionPieces(
+        text,
+        natural,
+        layoutOffsetOf(text, a),
+        layoutOffsetOf(text, b, true),
+        options.selectionStyler ?? null,
+      );
+      for (const piece of lit ?? []) {
+        if (!piece.style || piece.fade <= 0) continue;
+        out.push({
+          text,
+          natural,
+          from: piece.from,
+          to: piece.to,
+          style: piece.style,
+          fade: piece.fade,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The texts of a line a highlight decorates, each as its laid-out line
+ * with only the stretches of its runs the highlight lights, carrying the
+ * highlight's rules for their span.
+ */
+function highlightRuled(
+  line: LineBox,
+  options: PaintOptions,
+  skip?: ReadonlySet<unknown>,
+): { text: LineText; laid: LaidLine }[] {
+  const byText = new Map<LineText, LaidRun[]>();
+  for (const piece of litPieces(line, options, skip)) {
+    const decoration = piece.style.decoration;
+    if (!decoration) continue;
+    const { text, natural } = piece;
+    const span = highlightRun(decoration, piece.fade);
+    const offsets = layoutOffsets(text.layout);
+    let runs = byText.get(text);
+    if (!runs) byText.set(text, (runs = []));
+    for (const r of natural.runs) {
+      const start = Math.max(piece.from, r.start);
+      const end = Math.min(piece.to, r.end);
+      if (end <= start) continue;
+      const one = { ...natural, runs: [r] };
+      for (const band of lineBands(text.layout, one, offsets, start, end)) {
+        runs.push({
+          ...r,
+          x: band.x - natural.x,
+          width: band.width,
+          start,
+          end,
+          span,
+        });
+      }
+    }
+  }
+  const out: { text: LineText; laid: LaidLine }[] = [];
+  for (const [text, runs] of byText) {
+    if (runs.length) {
+      out.push({ text, laid: { ...text.layout.lines[text.layoutLine], runs } });
+    }
+  }
+  return out;
+}
+
+/**
+ * The shadows a custom highlight's `text-shadow` casts (CSS Pseudo 4,
+ * 3.6), from the text it lights and under every glyph, the lowest
+ * priority's first: on ntk from a copy of the layout with only that text
+ * in it (`onlyOf`), so a glyph beside it casts none; anywhere else from the
+ * layout, clipped to each band as far as its shadow falls, as a paragraph
+ * whose runs cast unlike shadows is (`castShadows`).
+ */
+function paintHighlightShadows(
+  ctx: PaintContext,
+  lines: LineBox[],
+  options: PaintOptions,
+  skip?: ReadonlySet<unknown>,
+): void {
+  const lit = highlightOptions(options);
+  if (!lit.length || !('shadowBlur' in ctx) || !ctx.save || !ctx.restore) {
+    return;
+  }
+  const dx = options.originX;
+  const dy = options.originY;
+  for (const each of lit) {
+    // each layout's pieces, by what they cast
+    const casts = new Map<
+      LineText['layout'],
+      Map<string, { cast: Cast; text: LineText; pieces: LitPiece[] }>
+    >();
+    for (const line of lines) {
+      for (const piece of litPieces(line, each, skip)) {
+        const shadow = piece.style.shadow;
+        if (!shadow) continue;
+        const layout = piece.text.layout;
+        let byCast = casts.get(layout);
+        if (!byCast) casts.set(layout, (byCast = new Map()));
+        const key = `${castKey(shadow)}|${piece.fade}`;
+        let entry = byCast.get(key);
+        if (!entry) {
+          entry = {
+            cast: {
+              shadows: shadow.shadows,
+              color: shadow.color,
+              fade: piece.fade,
+            },
+            text: piece.text,
+            pieces: [],
+          };
+          byCast.set(key, entry);
+        }
+        entry.pieces.push(piece);
+      }
+    }
+    for (const [layout, byCast] of casts) {
+      for (const { cast, text, pieces } of byCast.values()) {
+        const left = text.drawX + dx;
+        const top = text.drawY + dy;
+        if (top < -COORD_LIMIT || top + layout.height > COORD_LIMIT) continue;
+        if (ownLayout(layout)) {
+          const only = { ...text, layout: onlyOf(layout, pieces) };
+          castShadows(ctx, options, only, left, top, cast, null);
+          continue;
+        }
+        for (const piece of pieces) {
+          const natural = piece.natural;
+          const offsets = layoutOffsets(layout);
+          const each = piece.text;
+          for (const band of lineBands(
+            layout,
+            natural,
+            offsets,
+            piece.from,
+            piece.to,
+          )) {
+            castShadows(
+              ctx,
+              options,
+              each,
+              each.drawX + dx,
+              each.drawY + dy,
+              cast,
+              {
+                x: each.drawX + dx + band.x,
+                y: each.drawY + dy + natural.y,
+                width: band.width,
+                height: natural.height,
+              },
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+/** What a highlight's shadows are, as a key: two styles of the same
+ *  shadows cast them once. */
+const CAST_KEYS = new WeakMap<object, string>();
+function castKey(shadow: { shadows: BoxShadow[]; color: string }): string {
+  let key = CAST_KEYS.get(shadow);
+  if (key === undefined) {
+    key = `${JSON.stringify(shadow.shadows)}|${shadow.color}`;
+    CAST_KEYS.set(shadow, key);
+  }
+  return key;
 }
 
 /**
@@ -14226,76 +14489,121 @@ function ownLayout(layout: LineText['layout']): boolean {
   return typeof NtkLayout === 'function' && layout instanceof NtkLayout;
 }
 
-/** A glyph of ntk's, as much of it as `inColours` reads. */
+/** A glyph of ntk's, as much of it as `cutRun` reads. */
 interface NtkGlyph {
   ax: number;
   codePoints: readonly number[];
 }
 
+type LaidOutRun = LineText['layout']['lines'][number]['runs'][number];
+
+/**
+ * A run of ntk's layout cut where `keyAt` changes, by the first code unit
+ * of each glyph's cluster — in logical order from the run's start, or from
+ * its end where the glyphs are in visual order right to left — each piece
+ * the run's glyphs from one to the next, from where its first glyph is in
+ * the run, with the key it is cut for. A run with no glyphs to cut is one
+ * piece, of its start's key.
+ */
+function cutRun<K>(
+  r: LaidOutRun,
+  keyAt: (at: number) => K | null,
+): { run: LaidOutRun; key: K | null }[] {
+  const glyphs = (r.run as { glyphs?: readonly NtkGlyph[] } | undefined)
+    ?.glyphs;
+  if (!glyphs) return [{ run: r, key: keyAt(r.start) }];
+  const rtl = r.run!.direction === 'rtl';
+  let at = rtl ? r.end : r.start;
+  let last: K | null = null;
+  const of = glyphs.map((g) => {
+    let units = 0;
+    for (const cp of g.codePoints) units += cp > 0xffff ? 2 : 1;
+    if (!units) return last;
+    if (rtl) at -= units;
+    last = keyAt(at);
+    if (!rtl) at += units;
+    return last;
+  });
+  const out: { run: LaidOutRun; key: K | null }[] = [];
+  let from = 0;
+  let x = r.x;
+  for (let i = 1; i <= glyphs.length; i += 1) {
+    if (i < glyphs.length && of[i] === of[from]) continue;
+    let width = 0;
+    for (let k = from; k < i; k += 1) width += glyphs[k].ax;
+    out.push({
+      run: {
+        ...r,
+        x,
+        width,
+        run: { ...r.run!, glyphs: glyphs.slice(from, i) } as typeof r.run,
+      },
+      key: of[from],
+    });
+    x += width;
+    from = i;
+  }
+  return out;
+}
+
+/** The last of some stretches of a layout's text over a code unit. */
+function lastOver<T extends { from: number; to: number }>(
+  stretches: readonly T[],
+  at: number,
+): T | null {
+  for (let i = stretches.length - 1; i >= 0; i -= 1) {
+    if (stretches[i].from <= at && at < stretches[i].to) return stretches[i];
+  }
+  return null;
+}
+
 /**
  * ntk's layout with its lit text in the colour of the band over it, the
  * last band over a character the one it takes: the same lines and glyphs,
- * a run a band lights only some of cut where the colour changes, each piece
- * from where its first glyph is in the run. So the layout is drawn once,
- * and a glyph where it is drawn unlit — clipped to the bands instead, a
- * pixel two glyphs share took one colour for both.
+ * a run a band lights only some of cut where the colour changes
+ * (`cutRun`). So the layout is drawn once, and a glyph where it is drawn
+ * unlit — clipped to the bands instead, a pixel two glyphs share took one
+ * colour for both.
  */
 function inColours(
   layout: LineText['layout'],
   bands: readonly SelectedBand[],
 ): LineText['layout'] {
-  const colours = bands.map((b) => fadeColor(b.style!.color!, b.fade));
-  const colourAt = (at: number): string | null => {
-    for (let i = bands.length - 1; i >= 0; i -= 1) {
-      if (bands[i].from <= at && at < bands[i].to) return colours[i];
-    }
-    return null;
-  };
+  const colours = new Map(
+    bands.map((b) => [b, fadeColor(b.style!.color!, b.fade)]),
+  );
   const lines = layout.lines.map((line) => {
-    const runs: (typeof line.runs)[number][] = [];
+    const runs: LaidOutRun[] = [];
     for (const r of line.runs) {
       if (!bands.some((b) => b.from < r.end && b.to > r.start)) {
         runs.push(r);
         continue;
       }
-      const glyphs = (r.run as { glyphs?: readonly NtkGlyph[] } | undefined)
-        ?.glyphs;
-      if (!glyphs) {
-        const colour = colourAt(r.start);
-        runs.push(colour ? { ...r, span: { ...r.span!, color: colour } } : r);
-        continue;
+      for (const { run, key } of cutRun(r, (at) => lastOver(bands, at))) {
+        runs.push(
+          key
+            ? { ...run, span: { ...run.span!, color: colours.get(key)! } }
+            : run,
+        );
       }
-      // each glyph's colour, by the first code unit of its cluster: in
-      // logical order from the start, or from the end where the glyphs
-      // are in visual order right to left
-      const rtl = r.run!.direction === 'rtl';
-      let at = rtl ? r.end : r.start;
-      let last: string | null = null;
-      const of = glyphs.map((g) => {
-        let units = 0;
-        for (const cp of g.codePoints) units += cp > 0xffff ? 2 : 1;
-        if (!units) return last;
-        if (rtl) at -= units;
-        last = colourAt(at);
-        if (!rtl) at += units;
-        return last;
-      });
-      let from = 0;
-      let x = r.x;
-      for (let i = 1; i <= glyphs.length; i += 1) {
-        if (i < glyphs.length && of[i] === of[from]) continue;
-        let width = 0;
-        for (let k = from; k < i; k += 1) width += glyphs[k].ax;
-        const colour = of[from];
-        runs.push({
-          ...r,
-          x,
-          width,
-          run: { ...r.run!, glyphs: glyphs.slice(from, i) } as typeof r.run,
-          span: colour ? { ...r.span!, color: colour } : r.span,
-        });
-        x += width;
-        from = i;
+    }
+    return { ...line, runs };
+  });
+  return Object.create(layout, { lines: { value: lines } });
+}
+
+/** ntk's layout with only the text of some stretches of it: the glyphs
+ *  where the layout has them, for a highlight's shadow to be cast from. */
+function onlyOf(
+  layout: LineText['layout'],
+  stretches: readonly { from: number; to: number }[],
+): LineText['layout'] {
+  const lines = layout.lines.map((line) => {
+    const runs: LaidOutRun[] = [];
+    for (const r of line.runs) {
+      if (!stretches.some((p) => p.from < r.end && p.to > r.start)) continue;
+      for (const { run, key } of cutRun(r, (at) => lastOver(stretches, at))) {
+        if (key) runs.push(run);
       }
     }
     return { ...line, runs };

@@ -5045,6 +5045,15 @@ export function runFor(text: string, style: ComputedStyle): DocumentRun {
   // out to its padding (`paintInlineBoxes`).
   // the element's own decorations and the ones propagated to it, in the
   // colours of the elements that set them (`decorate`)
+  ruleRun(run, style);
+  return run;
+}
+
+/** A run's rules, as `style` draws its text with them: an underline and a
+ *  line through, each with its colour, style, thickness and place. A
+ *  custom highlight's lines are drawn from them too, over the text it
+ *  lights (`paintHighlightRules`). */
+export function ruleRun(run: TextRun, style: ComputedStyle): void {
   if (style.underline) {
     run.underline = style.underline;
     run.underlineStyle = ruleStyle(style.underlineStyle);
@@ -5086,7 +5095,6 @@ export function runFor(text: string, style: ComputedStyle): DocumentRun {
         ? Math.round(band)
         : Math.floor(band);
   }
-  return run;
 }
 
 /**

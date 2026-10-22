@@ -1317,7 +1317,9 @@ handed over, and what changes in it is told through the handle's `refresh`,
 as a script's changes are. `scripts` draws a page's frames so, each running
 its scripts in a realm of its own (`src/html/scripts/frames.ts`): a host
 that turns scripts on gets them with no `renderEmbedded` of its own, and
-one that has one is asked first.
+one that has one is asked first. An `<iframe srcdoc>` shows the markup its
+attribute holds, ahead of any `src`, as a document at `about:srcdoc` of the
+page's origin, with the page's base.
 
 ## Focus and the keyboard
 
@@ -3384,7 +3386,14 @@ once, in the colour of the topmost that gives one. A `StaticRange` that is
 no range — reversed, or past its node's end — lights nothing. A live range
 follows the tree as it changes; a highlight with no rule is not drawn,
 since a custom highlight has no look of its own. `highlightsFromPoint()` answers which are
-under a point. A highlight's decorations and shadows are not drawn yet.
+under a point. A highlight's `text-decoration` — its underline and its
+line through, with their style, colour, thickness and
+`text-underline-offset` — and its `text-shadow` are drawn from the text it
+lights as the element's own would be, its lengths in the element's font
+and in its container's units: the shadow under every glyph, the underline
+under the text and the line through over it. Its style is worked out as it
+is painted, so a change that turns one of its rules on or off paints the
+text again.
 
 **Placeholders:** `::placeholder` (and `::-webkit-input-placeholder`) gives
 a text field's hint its colour and its opacity, which its widget draws:
