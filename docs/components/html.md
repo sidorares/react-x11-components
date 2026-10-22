@@ -840,6 +840,19 @@ field's selection is the page's alone: `select()` and `setSelectionRange()`
 are read back, and the widget does not show them, since core's
 `<textinput>` and `<textarea>` take no selection from outside.
 
+**A view transition runs and draws as none** (CSS View Transitions 1).
+`document.startViewTransition()` calls its update at the next frame, and
+once what the update returns settles, the transition is ready and then
+finished, its animations nothing: `updateCallbackDone`, `ready` and
+`finished` settle in the specification's order, a transition started
+while one is active skips it, two elements of one `view-transition-name`
+skip it, an update that throws or never settles — after four seconds —
+skips it, and `skipTransition()` does. `types` is a set of strings and
+`document.activeViewTransition` the one running. `view-transition-name`
+and `view-transition-class` are read and serialized, and the
+`::view-transition` pseudo-elements are selectors that match nothing; the
+pseudo-element tree, its styles and its animations are not made.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another

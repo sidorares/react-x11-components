@@ -929,6 +929,26 @@ test("a typed attr()'s units are lowercase, and an attr() in a container's style
   assert.notStrictEqual(style('f').color, 'rgb(0, 128, 0)', "another's");
 });
 
+test('view-transition-name takes none, match-element, auto or a name, and view-transition-class names, none of them a keyword', () => {
+  assert.strictEqual(specifiedValue('view-transition-name', 'Foo'), 'Foo');
+  assert.strictEqual(
+    specifiedValue('view-transition-name', 'maTch-element'),
+    'match-element',
+  );
+  for (const bad of ['default', 'none none', '"foo"', '#fff', '12px']) {
+    assert.strictEqual(specifiedValue('view-transition-name', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('view-transition-class', 'a  b'), 'a b');
+  assert.strictEqual(specifiedValue('view-transition-class', 'NONE'), 'none');
+  for (const bad of ['default', 'foo none', 'foo 12px']) {
+    assert.strictEqual(specifiedValue('view-transition-class', bad), null, bad);
+  }
+  assert.strictEqual(
+    specifiedValue('view-transition-name', 'inherit'),
+    undefined,
+  );
+});
+
 test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {
   // `lh` is read against the element's line height as the cascade settles
   // it, not as it stands when the rule holding the length is reached: a

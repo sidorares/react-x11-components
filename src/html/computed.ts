@@ -345,6 +345,8 @@ function cssomAt(
     'user-select': style.userSelect,
     isolation: style.isolation,
     'will-change': style.willChangeNames,
+    'view-transition-name': style.viewTransitionName,
+    'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, color),
     'color-scheme': style.colorSchemeKeywords,
     'background-color': cssomColor(style.backgroundColor, color),

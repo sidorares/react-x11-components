@@ -7932,6 +7932,12 @@ export function installDom(
     getAnimations(): Any[] {
       return animationsOf(this, true);
     }
+    startViewTransition(options?: Any): Any {
+      return startViewTransition(options);
+    }
+    get activeViewTransition(): Any {
+      return activeTransition;
+    }
     get activeElement(): Any {
       return wrap(Number(call('active'))) ?? this.body;
     }
@@ -8686,6 +8692,262 @@ export function installDom(
       return false;
     }
   };
+  // --- view transitions -------------------------------------------------
+  //
+  // `document.startViewTransition()` as CSS View Transitions 1, 7 runs it,
+  // drawn as no transition: the update callback is called at the next
+  // frame, and once what it returns settles the transition is ready and,
+  // its animations nothing, finished. What it asks of the page — the order
+  // of the callback and the promises, one transition skipping another, a
+  // name two elements share skipping it, a callback that never settles
+  // timing out — is the specification's, so a page that waits on one
+  // goes on.
+
+  /** A transition's types (CSS View Transitions 2, 3.4.2): a set of
+   *  strings, worked through the built-ins as a highlight's ranges are. */
+  class ViewTransitionTypeSet {
+    _set = new Set<string>();
+    add(v: Any): Any {
+      setAdd.call(this._set, str(v));
+      return this;
+    }
+    delete(v: Any): boolean {
+      return setDelete.call(this._set, str(v));
+    }
+    has(v: Any): boolean {
+      return setHas.call(this._set, str(v));
+    }
+    clear(): void {
+      setClear.call(this._set);
+    }
+    get size(): number {
+      return setSize.call(this._set);
+    }
+    forEach(fn: Any, thisArg?: Any): void {
+      for (const v of setValues.call(this._set)) fn.call(thisArg, v, v, this);
+    }
+    values(): Any {
+      return setValues.call(this._set);
+    }
+    keys(): Any {
+      return setValues.call(this._set);
+    }
+    entries(): Any {
+      return setEntries.call(this._set);
+    }
+    [Symbol.iterator](): Any {
+      return setValues.call(this._set);
+    }
+    get [Symbol.toStringTag](): string {
+      return 'ViewTransitionTypeSet';
+    }
+  }
+
+  /** How long an update callback may take before the transition is
+   *  skipped (7.4, "implementation-defined"): Chrome's four seconds. */
+  const TRANSITION_TIMEOUT = 4000;
+  let activeTransition: Any = null;
+
+  class ViewTransition {
+    _phase: 'pending' | 'update-callback-called' | 'animating' | 'done' =
+      'pending';
+    _callback: Any;
+    _types = new ViewTransitionTypeSet();
+    _done: Any;
+    _ready: Any;
+    _finished: Any;
+    _resolveDone!: (v?: Any) => void;
+    _rejectDone!: (e: Any) => void;
+    _resolveReady!: (v?: Any) => void;
+    _rejectReady!: (e: Any) => void;
+    _resolveFinished!: (v?: Any) => void;
+    _rejectFinished!: (e: Any) => void;
+    constructor(callback: Any, key: Any) {
+      if (key !== TRANSITION_KEY) throw new TypeError('Illegal constructor');
+      this._callback = callback;
+      this._done = new Promise((ok, fail) => {
+        this._resolveDone = ok;
+        this._rejectDone = fail;
+      });
+      this._ready = new Promise((ok, fail) => {
+        this._resolveReady = ok;
+        this._rejectReady = fail;
+      });
+      this._finished = new Promise((ok, fail) => {
+        this._resolveFinished = ok;
+        this._rejectFinished = fail;
+      });
+      // `ready` rejected and unread is no unhandled rejection (7.1)
+      this._ready.catch(() => {});
+    }
+    get updateCallbackDone(): Any {
+      return this._done;
+    }
+    get ready(): Any {
+      return this._ready;
+    }
+    get finished(): Any {
+      return this._finished;
+    }
+    get types(): Any {
+      return this._types;
+    }
+    set types(v: Any) {
+      const set = new ViewTransitionTypeSet();
+      for (const t of v ?? []) set.add(t);
+      this._types = set;
+    }
+    skipTransition(): void {
+      if (this._phase !== 'done') {
+        skipTransition(
+          this,
+          new DOMException('Transition was skipped', 'AbortError'),
+        );
+      }
+    }
+    get [Symbol.toStringTag](): string {
+      return 'ViewTransition';
+    }
+  }
+  const TRANSITION_KEY = {};
+
+  /** Call a transition's update callback, once (7.5): what it returns
+   *  settles `updateCallbackDone`, and a fulfilment activates the
+   *  transition where nothing skipped it since. */
+  const callUpdate = (vt: Any): void => {
+    if (vt._called) return;
+    vt._called = true;
+    if (vt._phase !== 'done') vt._phase = 'update-callback-called';
+    let promise: Any;
+    try {
+      promise = Promise.resolve(vt._callback ? vt._callback() : undefined);
+    } catch (error) {
+      promise = Promise.reject(error);
+    }
+    const timer = setTimer(
+      () =>
+        skipTransition(
+          vt,
+          new DOMException(
+            'Transition update callback timed out',
+            'TimeoutError',
+          ),
+        ),
+      TRANSITION_TIMEOUT,
+      [],
+      false,
+    );
+    promise.then(
+      () => {
+        clearTimer(timer);
+        vt._resolveDone();
+        activateTransition(vt);
+      },
+      (error: Any) => {
+        clearTimer(timer);
+        vt._rejectDone(error);
+        skipTransition(vt, error);
+      },
+    );
+  };
+
+  /** The new state captured (7.4, "activate"): skipped where two elements
+   *  share a name, and otherwise ready, and over at the next frame. */
+  const activateTransition = (vt: Any): void => {
+    if (vt._phase === 'done') return;
+    const shared = str(call('transitionNames'));
+    if (shared) {
+      skipTransition(
+        vt,
+        new DOMException(
+          `Unexpected duplicate view-transition-name: ${shared}`,
+          'InvalidStateError',
+        ),
+      );
+      return;
+    }
+    vt._phase = 'animating';
+    vt._resolveReady();
+    setTimer(
+      () => {
+        if (vt._phase !== 'animating') return;
+        vt._phase = 'done';
+        if (activeTransition === vt) activeTransition = null;
+        vt._resolveFinished();
+      },
+      16,
+      [],
+      false,
+    );
+  };
+
+  /** Skip a transition (7.6): it is no longer the active one, its update
+   *  is still called, `ready` is rejected, and `finished` settles as the
+   *  update does. */
+  const skipTransition = (vt: Any, reason: Any): void => {
+    if (vt._phase === 'done') return;
+    if (activeTransition === vt) activeTransition = null;
+    const called = vt._called;
+    vt._phase = 'done';
+    if (!called) setTimer(() => callUpdate(vt), 0, [], false);
+    vt._rejectReady(reason);
+    vt._done.then(
+      () => vt._resolveFinished(),
+      (error: Any) => vt._rejectFinished(error),
+    );
+  };
+
+  /** `document.startViewTransition()` (7.2). */
+  const startViewTransition = (options: Any): Any => {
+    const callback =
+      typeof options === 'function'
+        ? options
+        : options && typeof options === 'object'
+          ? (options.update ?? null)
+          : null;
+    const vt = new ViewTransition(callback, TRANSITION_KEY);
+    if (options && typeof options === 'object' && options.types) {
+      for (const t of options.types) vt._types.add(t);
+    }
+    if (document.visibilityState === 'hidden') {
+      skipTransition(
+        vt,
+        new DOMException('The document is hidden', 'InvalidStateError'),
+      );
+      return vt;
+    }
+    if (activeTransition) {
+      skipTransition(
+        activeTransition,
+        new DOMException('Skipped by a new transition', 'AbortError'),
+      );
+    }
+    activeTransition = vt;
+    // the old state is captured at the next frame, and the update called
+    // straight after (7.4, "capture the old state")
+    setTimer(
+      () => {
+        if (vt._phase === 'done') return;
+        const shared = str(call('transitionNames'));
+        if (shared) {
+          skipTransition(
+            vt,
+            new DOMException(
+              `Unexpected duplicate view-transition-name: ${shared}`,
+              'InvalidStateError',
+            ),
+          );
+          return;
+        }
+        callUpdate(vt);
+      },
+      16,
+      [],
+      false,
+    );
+    return vt;
+  };
+
   const highlightRegistry = new HighlightRegistry();
   /** Tell the host what the registry holds now. */
   const highlightsChanged = (): void => {
@@ -16986,6 +17248,8 @@ export function installDom(
     StaticRange,
     Highlight,
     HighlightRegistry,
+    ViewTransition,
+    ViewTransitionTypeSet,
     Element,
     HTMLElement,
     CustomElementRegistry,

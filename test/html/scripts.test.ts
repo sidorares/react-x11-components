@@ -5441,6 +5441,71 @@ metric(
   },
 );
 
+test('document.startViewTransition calls its update at the next frame, and settles updateCallbackDone, ready and finished in order; a new one, a shared name and a throw skip it', async () => {
+  // CSS View Transitions 1, 7: drawn as no transition, but run as the
+  // specification has it, which is what a page waits on
+  const doc = await hosted(
+    '<p id="out"></p><div id="a"></div><div id="b"></div><script>' +
+      'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      'function name(p, n) { return p.then(function () { r.push(n + ":ok"); }, function (e) { r.push(n + ":" + e.name); }); }' +
+      'r.push(document.activeViewTransition === null, typeof ViewTransition);' +
+      'var t1 = document.startViewTransition(function () { r.push("cb1"); });' +
+      'var t2 = document.startViewTransition({ update: function () { r.push("cb2"); }, types: ["x"] });' +
+      'r.push(document.activeViewTransition === t2, Array.from(t2.types).join());' +
+      'Promise.all([name(t1.ready, "r1"), name(t1.finished, "f1"), name(t2.updateCallbackDone, "d2"),' +
+      '  name(t2.ready, "r2"), name(t2.finished, "f2")]).then(function () {' +
+      '  r.push(document.activeViewTransition === null);' +
+      '  a.style.viewTransitionName = "same"; b.style.viewTransitionName = "same";' +
+      '  var t3 = document.startViewTransition(function () {});' +
+      '  return Promise.all([name(t3.ready, "r3"), name(t3.finished, "f3")]);' +
+      '}).then(function () {' +
+      '  a.style.viewTransitionName = ""; b.style.viewTransitionName = "";' +
+      '  var t4 = document.startViewTransition(function () { throw new TypeError("no"); });' +
+      '  return Promise.all([name(t4.ready, "r4"), name(t4.finished, "f4")]);' +
+      '}).then(function () {' +
+      '  var t5 = document.startViewTransition(function () { r.push("cb5"); }); t5.skipTransition();' +
+      '  return Promise.all([name(t5.ready, "r5"), name(t5.finished, "f5")]);' +
+      '}).then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'true|function|true|x',
+      // a new transition skips the one it finds, whose update still runs,
+      // and whose finished is its update's
+      'r1:AbortError|cb1|f1:ok|cb2|d2:ok|r2:ok|f2:ok|true',
+      // two elements of one name
+      'r3:InvalidStateError|f3:ok',
+      // a callback that throws rejects all three with what it threw
+      'r4:TypeError|f4:TypeError',
+      // skipped before its update ran: the update still runs
+      'r5:AbortError|cb5|f5:ok',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><style id="s"></style><script>' +
+      'var r = [], sheet = document.getElementById("s").sheet;' +
+      'function q(sel) { try { return String(document.querySelector(sel)); } catch (e) { return e.name; } }' +
+      'function rule(sel) { try { sheet.insertRule(sel + " {}", 0); return sheet.cssRules[0].selectorText; } catch (e) { return e.name; } }' +
+      'r.push(q("::view-transition"), q(":root::view-transition-group(*)"), q("::view-transition-old(a.b):only-child"));' +
+      'r.push(q("::view-transition div"), q(":not(::view-transition)"), q("::view-transition-new(default)"), q("::view-transition-group(*.*)"));' +
+      'r.push(rule(".a::view-transition-image-pair(\\\\*.c)"), rule("::view-transition-group"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'null|null|null|SyntaxError|SyntaxError|SyntaxError|SyntaxError|' +
+      '.a::view-transition-image-pair(\\*.c)|SyntaxError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
