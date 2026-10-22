@@ -407,6 +407,44 @@ const NAMED_BY_NAME = new Set([
   'frame',
 ]);
 
+/** Whether a node is a `<template>`, whose children are its content's
+ *  and no part of the tree a page walks (HTML 4.12.3). */
+function isTemplate(node: AnyNode): boolean {
+  return node instanceof Element && node.name === 'template';
+}
+
+/**
+ * The elements under `root` that pass `test`, in tree order — or the
+ * first, for `one` — leaving out what a `<template>` holds, which is its
+ * content's: `getElementById`, `getElementsByTagName` and a window's names
+ * find none of it, as a browser's walk of the tree finds none.
+ */
+function elementsIn(
+  root: ParentNode,
+  test: (el: Element) => boolean,
+  one = false,
+): Element[] {
+  const out: Element[] = [];
+  if (isTemplate(root)) return out;
+  const stack: AnyNode[] = [];
+  for (let i = root.children.length - 1; i >= 0; i -= 1) {
+    stack.push(root.children[i]);
+  }
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (!(at instanceof Element)) continue;
+    if (test(at)) {
+      out.push(at);
+      if (one) break;
+    }
+    if (at.name === 'template') continue;
+    for (let i = at.children.length - 1; i >= 0; i -= 1) {
+      stack.push(at.children[i]);
+    }
+  }
+  return out;
+}
+
 /** Bumped at every change a script makes to any tree's children, or to
  *  an `id` or a `name` (`_tell`), with `treeGeneration` for what the
  *  parser writes: a window's names hold while neither moves (`_namesOf`).
@@ -1573,7 +1611,7 @@ export class DomHost {
         return this._doctypeOf(this._node(a)).join('\u0000');
       case 'kids': {
         const node = this._node(a);
-        if (!('children' in node)) return '';
+        if (!('children' in node) || isTemplate(node)) return '';
         const kids =
           b === 'elements'
             ? node.children.filter((k) => k instanceof Element)
@@ -1584,6 +1622,7 @@ export class DomHost {
       case 'last': {
         const node = this._node(a);
         if (!('children' in node) || !node.children.length) return 0;
+        if (isTemplate(node)) return 0;
         return this.idOf(
           op === 'first' ? node.children[0] : node.children.at(-1),
         );
@@ -2282,19 +2321,16 @@ export class DomHost {
           .join(',');
       case 'byId':
         return this.idOf(
-          DomUtils.findOne(
+          elementsIn(
+            b ? (this._node(b) as ParentNode) : this.document,
             (el) => el.attribs.id === text(a),
-            (b ? (this._node(b) as ParentNode) : this.document).children,
             true,
-          ),
+          )[0],
         );
       case 'byTag': {
         const tag = text(b).toLowerCase();
         const root = this._node(a) as ParentNode;
-        return DomUtils.findAll(
-          (el) => tag === '*' || el.name === tag,
-          root.children,
-        )
+        return elementsIn(root, (el) => tag === '*' || el.name === tag)
           .map((el) => this.idOf(el))
           .join(',');
       }
@@ -2304,10 +2340,10 @@ export class DomHost {
           .filter(Boolean);
         const root = this._node(a) as ParentNode;
         if (!wanted.length) return '';
-        return DomUtils.findAll((el) => {
+        return elementsIn(root, (el) => {
           const has = (el.attribs.class ?? '').split(/[\t\n\f\r ]+/);
           return wanted.every((w) => has.includes(w));
-        }, root.children)
+        })
           .map((el) => this.idOf(el))
           .join(',');
       }
@@ -3663,7 +3699,7 @@ export class DomHost {
       if (!list) names.set(key, [el]);
       else if (list[list.length - 1] !== el) list.push(el);
     };
-    for (const el of DomUtils.findAll(() => true, doc.children)) {
+    for (const el of elementsIn(doc, () => true)) {
       add(el.attribs.id, el);
       if (NAMED_BY_NAME.has(el.name)) add(el.attribs.name, el);
     }
