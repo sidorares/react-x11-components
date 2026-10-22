@@ -89,7 +89,9 @@ export function parseContainerPrelude(
   for (const part of splitTopLevel(prelude, ',')) {
     const text = part.trim();
     if (!text) return null;
-    const m = /^(-?[_a-zA-Z\u0080-￿][\w\u0080-￿-]*)(?![\w(-])\s*/.exec(text);
+    const m = /^((?:--|-?[_a-zA-Z\u0080-￿])[\w\u0080-￿-]*)(?![\w(-])\s*/.exec(
+      text,
+    );
     let name: string | null = null;
     let condition = text;
     if (m && !/^(?:not|and|or)$/i.test(m[1])) {

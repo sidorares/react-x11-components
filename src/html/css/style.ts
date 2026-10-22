@@ -4631,7 +4631,8 @@ function containerNamesOf(value: string): string | null {
   const words = value.trim().split(/\s+/);
   if (words.length === 1 && words[0].toLowerCase() === 'none') return '';
   for (const word of words) {
-    if (!/^-?[_a-zA-Z\u0080-\uffff][\w\u0080-\uffff-]*$/.test(word)) {
+    // an identifier, a dashed one among them (CSS Values 4, 4.2)
+    if (!/^(?:--|-?[_a-zA-Z\u0080-\uffff])[\w\u0080-\uffff-]*$/.test(word)) {
       return null;
     }
     if (!validName(word)) return null;

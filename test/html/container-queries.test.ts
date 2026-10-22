@@ -201,6 +201,10 @@ test('an @container prelude is a name, a condition, or both, and a list of them'
   assert.deepStrictEqual(parseContainerPrelude('card'), [
     { name: 'card', condition: '', axes: 0 },
   ]);
+  // a dashed identifier is a name too
+  assert.deepStrictEqual(parseContainerPrelude('--root style(--foo: 1)'), [
+    { name: '--root', condition: 'style(--foo: 1)', axes: 0 },
+  ]);
   // `not` is no name, and a feature nothing knows is no condition
   assert.strictEqual(parseContainerPrelude('not (width < 1px)')![0].name, null);
   assert.strictEqual(parseContainerPrelude('(colour: red)'), null);
@@ -222,6 +226,27 @@ test('an @container prelude is a name, a condition, or both, and a list of them'
       ['.x', 1],
     ],
   );
+});
+
+test('a container of no box is still one, its size features unknown; and a dashed name names one', async () => {
+  // CSS Conditional 5, 3.1: `display: contents` leaves the element a
+  // container whose size is unknown, so a style feature beside a size one
+  // in an `or` answers for it; and `container-name: --root` is a name
+  const { node } = await render(
+    '<style>#c { container-type: inline-size; display: contents; --foo: bar }' +
+      '@container (width >= 0px) or style(--foo: bar) { #t { color: #008000 } }' +
+      '@container (width >= 0px) and style(--foo: bar) { #u { color: #ff0000 } }' +
+      '#n { container-name: --n }' +
+      '@container --n style(--nope: unset) { #r { color: #008000 } }</style>' +
+      '<div id="c"><p id="t">t</p><p id="u">u</p></div>' +
+      '<div id="n"><p id="r">r</p></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color;
+  assert.strictEqual(color('t'), 'rgb(0, 128, 0)', 'unknown or true');
+  assert.notStrictEqual(color('u'), 'rgb(255, 0, 0)', 'unknown and true');
+  assert.strictEqual(color('r'), 'rgb(0, 128, 0)', 'by its dashed name');
 });
 
 metric(
