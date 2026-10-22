@@ -49,6 +49,13 @@ export function specifiedValue(
         : viewTransitionClass(word);
     return out;
   }
+  // what scroll-driven animations name and take (Scroll Animations 1)
+  const timeline = TIMELINE_GRAMMARS[name];
+  if (timeline) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return timeline(word);
+  }
   // a number or a percentage, neither below nought, or `normal` (CSS
   // Viewport 1, 5)
   if (name === 'zoom') {
@@ -222,4 +229,217 @@ function depthAt(text: string, at: number): number {
     else if (c === ')' || c === ']') depth -= 1;
   }
   return depth;
+}
+
+// --- scroll-driven animations (Scroll Animations 1) -------------------------
+
+/** A `<dashed-ident>`, kept as written. */
+const DASHED_IDENT = /^--(?:[\w\u0080-\uffff-]|\\.)+$/;
+const SCROLL_AXIS = /^(?:block|inline|x|y)$/i;
+
+/** A comma-separated list, each item read by `item`; null where one is
+ *  empty or no value of it. */
+function listOf(
+  value: string,
+  item: (part: string) => string | null,
+): string | null {
+  const out: string[] = [];
+  for (const part of splitTopLevel(value)) {
+    const text = part.trim();
+    if (!text) return null;
+    const read = item(text);
+    if (read === null) return null;
+    out.push(read);
+  }
+  return out.join(', ');
+}
+
+/** A timeline's name: `none` or a `<dashed-ident>`. */
+function timelineName(word: string): string | null {
+  if (/^none$/i.test(word)) return 'none';
+  return DASHED_IDENT.test(word) ? word : null;
+}
+
+/** A `<length-percentage>` as far as a check of it goes. */
+function lengthPercentage(word: string): boolean {
+  if (/^(?:calc|min|max|clamp)\(/i.test(word)) return /\)$/.test(word);
+  const m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(%|[a-z]+)?$/i.exec(word);
+  if (!m) return false;
+  if (!m[1]) return /^[+-]?0*\.?0*$/.test(word);
+  return m[1] === '%' || LENGTH_UNIT.test(m[1]);
+}
+const LENGTH_UNIT =
+  /^(?:px|cm|mm|q|in|pt|pc|r?em|r?ex|r?ch|r?ic|r?lh|r?cap|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max))$/i;
+
+/** One or two of `auto` or a `<length-percentage>`, the second left out
+ *  where it is the first (Scroll Animations 1, 3.4.3): a list of none, or
+ *  the words. */
+function insetWords(words: string[]): string[] | null {
+  if (words.length < 1 || words.length > 2) return null;
+  const read = words.map((w) =>
+    /^auto$/i.test(w) ? 'auto' : lengthPercentage(w) ? w : null,
+  );
+  if (read.some((w) => w === null)) return null;
+  if (read.length === 2 && read[0] === read[1]) read.pop();
+  return read as string[];
+}
+
+/** `scroll(<scroller>? <axis>?)`, defaults left out: `nearest`, `block`. */
+function scrollFunction(args: string): string | null {
+  const words = splitValue(args.trim()).filter(Boolean);
+  let scroller: string | null = null;
+  let axis: string | null = null;
+  for (const w of words) {
+    const lower = w.toLowerCase();
+    if (/^(?:root|nearest|self)$/.test(lower) && scroller === null) {
+      scroller = lower;
+    } else if (SCROLL_AXIS.test(lower) && axis === null) axis = lower;
+    else return null;
+  }
+  const parts: string[] = [];
+  if (scroller && scroller !== 'nearest') parts.push(scroller);
+  if (axis && axis !== 'block') parts.push(axis);
+  return `scroll(${parts.join(' ')})`;
+}
+
+/** `view(<axis>? <inset>?)`, either order, defaults left out. */
+function viewFunction(args: string): string | null {
+  const words = splitValue(args.trim()).filter(Boolean);
+  let axis: string | null = null;
+  if (words.length && SCROLL_AXIS.test(words[0])) {
+    axis = words.shift()!.toLowerCase();
+  } else if (words.length && SCROLL_AXIS.test(words[words.length - 1])) {
+    axis = words.pop()!.toLowerCase();
+  }
+  let inset: string[] = [];
+  if (words.length) {
+    const read = insetWords(words);
+    if (!read) return null;
+    inset = read.length === 1 && read[0] === 'auto' ? [] : read;
+  }
+  const parts: string[] = [];
+  if (axis && axis !== 'block') parts.push(axis);
+  parts.push(...inset);
+  return `view(${parts.join(' ')})`;
+}
+
+/** `scroll-timeline`'s or `view-timeline`'s item: a name, then an axis
+ *  and, for a view timeline, an inset, in either order — each left out
+ *  where it is its initial value. */
+function timelineItem(text: string, view: boolean): string | null {
+  const words = splitValue(text).filter(Boolean);
+  const name = words.length ? timelineName(words.shift()!) : null;
+  if (name === null) return null;
+  let axis: string | null = null;
+  if (words.length && SCROLL_AXIS.test(words[0])) {
+    axis = words.shift()!.toLowerCase();
+  } else if (words.length && SCROLL_AXIS.test(words[words.length - 1])) {
+    axis = words.pop()!.toLowerCase();
+  }
+  let inset: string[] = [];
+  if (words.length) {
+    if (!view) return null;
+    const read = insetWords(words);
+    if (!read) return null;
+    inset = read.length === 1 && read[0] === 'auto' ? [] : read;
+  }
+  return [name, axis && axis !== 'block' ? axis : '', ...inset]
+    .filter(Boolean)
+    .join(' ');
+}
+
+const TIMELINE_GRAMMARS: Record<string, (value: string) => string | null> = {
+  'animation-timeline': (value) =>
+    listOf(value, (item) => {
+      const lower = item.toLowerCase();
+      if (lower === 'auto' || lower === 'none') return lower;
+      if (DASHED_IDENT.test(item)) return item;
+      const fn = /^(scroll|view)\(([\s\S]*)\)$/i.exec(item);
+      if (!fn) return null;
+      return fn[1].toLowerCase() === 'scroll'
+        ? scrollFunction(fn[2])
+        : viewFunction(fn[2]);
+    }),
+  'scroll-timeline-name': (value) => listOf(value, timelineName),
+  'view-timeline-name': (value) => listOf(value, timelineName),
+  'scroll-timeline-axis': (value) =>
+    listOf(value, (item) =>
+      SCROLL_AXIS.test(item) ? item.toLowerCase() : null,
+    ),
+  'view-timeline-axis': (value) =>
+    listOf(value, (item) =>
+      SCROLL_AXIS.test(item) ? item.toLowerCase() : null,
+    ),
+  'view-timeline-inset': (value) =>
+    listOf(
+      value,
+      (item) => insetWords(splitValue(item).filter(Boolean))?.join(' ') ?? null,
+    ),
+  'timeline-scope': (value) => {
+    const lower = value.toLowerCase();
+    if (lower === 'none' || lower === 'all') return lower;
+    return listOf(value, (item) => (DASHED_IDENT.test(item) ? item : null));
+  },
+  'scroll-timeline': (value) =>
+    listOf(value, (item) => timelineItem(item, false)),
+  'view-timeline': (value) => listOf(value, (item) => timelineItem(item, true)),
+};
+
+/** What `el.style` keeps for a shorthand it expands (CSSOM 6.7, "set a
+ *  CSS declaration" of a shorthand): each longhand and its value, from
+ *  the shorthand's canonical value; null for one this does not expand. */
+export function expandShorthand(
+  prop: string,
+  value: string,
+): [string, string][] | null {
+  const name = prop.toLowerCase();
+  if (name !== 'scroll-timeline' && name !== 'view-timeline') return null;
+  const view = name === 'view-timeline';
+  const names: string[] = [];
+  const axes: string[] = [];
+  const insets: string[] = [];
+  for (const part of splitTopLevel(value)) {
+    const words = splitValue(part.trim()).filter(Boolean);
+    names.push(words.shift() ?? 'none');
+    let axis = 'block';
+    if (words.length && SCROLL_AXIS.test(words[0])) {
+      axis = words.shift()!.toLowerCase();
+    }
+    axes.push(axis);
+    insets.push(words.length ? words.join(' ') : 'auto');
+  }
+  const out: [string, string][] = [
+    [`${name}-name`, names.join(', ')],
+    [`${name}-axis`, axes.join(', ')],
+  ];
+  if (view) out.push([`${name}-inset`, insets.join(', ')]);
+  return out;
+}
+
+/** A shorthand `el.style` expanded, read back from its longhands, or ''
+ *  where they do not make one (CSSOM 6.7, "serialize a CSS value" of a
+ *  shorthand): their lists the same length. */
+export function composeShorthand(
+  prop: string,
+  longhand: (name: string) => string | null,
+): string | null {
+  const name = prop.toLowerCase();
+  if (name !== 'scroll-timeline' && name !== 'view-timeline') return null;
+  const view = name === 'view-timeline';
+  const names = longhand(`${name}-name`);
+  const axes = longhand(`${name}-axis`);
+  const insets = view ? longhand(`${name}-inset`) : 'auto';
+  if (names === null || axes === null || insets === null) return '';
+  const a = splitTopLevel(names).map((v) => v.trim());
+  const b = splitTopLevel(axes).map((v) => v.trim());
+  const c = splitTopLevel(insets).map((v) => v.trim());
+  if (b.length !== a.length || (view && c.length !== a.length)) return '';
+  return a
+    .map((n, i) => {
+      const inset = view ? c[i] : 'auto';
+      return [n, b[i] === 'block' ? '' : b[i], inset === 'auto' ? '' : inset]
+        .filter(Boolean)
+        .join(' ');
+    })
+    .join(', ');
 }

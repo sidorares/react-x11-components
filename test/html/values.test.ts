@@ -17,7 +17,11 @@ import {
   supportsCondition,
 } from '../../src/html/css/parse.js';
 import { parseShapeFunction } from '../../src/html/css/shape-function.js';
-import { specifiedValue } from '../../src/html/css/specified.js';
+import {
+  composeShorthand,
+  expandShorthand,
+  specifiedValue,
+} from '../../src/html/css/specified.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
 import { cssomStyle } from '../../src/html/computed.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -947,6 +951,85 @@ test('view-transition-name takes none, match-element, auto or a name, and view-t
     specifiedValue('view-transition-name', 'inherit'),
     undefined,
   );
+});
+
+test('the scroll-driven animation properties take their grammars, and are kept with their defaults left out', () => {
+  const v = specifiedValue;
+  assert.strictEqual(
+    v('animation-timeline', 'scroll(y root)'),
+    'scroll(root y)',
+  );
+  assert.strictEqual(
+    v('animation-timeline', 'scroll(nearest block)'),
+    'scroll()',
+  );
+  assert.strictEqual(
+    v('animation-timeline', 'view(1px 2px y)'),
+    'view(y 1px 2px)',
+  );
+  assert.strictEqual(v('animation-timeline', 'view(1px 1px)'), 'view(1px)');
+  assert.strictEqual(
+    v('animation-timeline', '--a, none, AUTO'),
+    '--a, none, auto',
+  );
+  for (const bad of ['test1', 'auto auto', 'scroll(abc)', 'view(1px y 3px)']) {
+    assert.strictEqual(v('animation-timeline', bad), null, bad);
+  }
+  assert.strictEqual(v('scroll-timeline-name', '--a, none'), '--a, none');
+  assert.strictEqual(v('scroll-timeline-name', 'abc'), null);
+  assert.strictEqual(
+    v('view-timeline-inset', '1px 1px, auto auto'),
+    '1px, auto',
+  );
+  assert.strictEqual(v('view-timeline-inset', '1px 2px 3px'), null);
+  assert.strictEqual(v('timeline-scope', 'ALL'), 'all');
+  assert.strictEqual(v('timeline-scope', 'none, --a'), null);
+  assert.strictEqual(
+    v('scroll-timeline', '--a inline, --b block'),
+    '--a inline, --b',
+  );
+  assert.strictEqual(
+    v('view-timeline', '--a 1px 2px inline'),
+    '--a inline 1px 2px',
+  );
+  for (const bad of ['block none', '--a --a', '--a 500kg']) {
+    assert.strictEqual(v('view-timeline', bad), null, bad);
+  }
+  // `el.style` keeps a shorthand as its longhands, and reads it back
+  const longhands = expandShorthand('view-timeline', '--a inline 1px, --b')!;
+  assert.deepStrictEqual(longhands, [
+    ['view-timeline-name', '--a, --b'],
+    ['view-timeline-axis', 'inline, block'],
+    ['view-timeline-inset', '1px, auto'],
+  ]);
+  const kept = new Map(longhands);
+  assert.strictEqual(
+    composeShorthand('view-timeline', (n) => kept.get(n) ?? null),
+    '--a inline 1px, --b',
+  );
+  kept.set('view-timeline-axis', 'inline');
+  assert.strictEqual(
+    composeShorthand('view-timeline', (n) => kept.get(n) ?? null),
+    '',
+    'lists of other lengths make none',
+  );
+});
+
+test('the scroll-timeline and view-timeline shorthands set their longhands, and getComputedStyle reads them back', async () => {
+  const { node } = await render(
+    '<div id="a" style="scroll-timeline: --s inline"></div>' +
+      '<div id="b" style="view-timeline: --v x 1px 2px, --w"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  const a = cssomStyle(style('a'), 1, null);
+  assert.strictEqual(a['scroll-timeline-name'], '--s');
+  assert.strictEqual(a['scroll-timeline-axis'], 'inline');
+  assert.strictEqual(a['scroll-timeline'], '--s inline');
+  const b = cssomStyle(style('b'), 1, null);
+  assert.strictEqual(b['view-timeline'], '--v x 1px 2px, --w');
+  assert.strictEqual(b['view-timeline-inset'], '1px 2px, auto');
 });
 
 test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {
