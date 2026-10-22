@@ -3861,6 +3861,27 @@ layout and build: a resize lays the content out again and moves it by
 where its container is scrolled to, and a restyle that builds the boxes
 again keeps it. A new document starts at none.
 
+**A snap container comes to rest where an area lines up** (CSS Scroll
+Snap 1, `layout/snap.ts`). `scroll-snap-type` makes a scroll container, or
+the viewport by the root's, snap on an axis, and `scroll-snap-align` makes a
+box in it an area, its border box outset by `scroll-margin` lined up at the
+start, the end or the centre of the snapport, the scrollport inset by
+`scroll-padding`. A script's scroll — `scrollTo`, `scrollTop`,
+`scrollBy`, `scrollIntoView` — comes to rest at the place nearest where it
+asked, where `mandatory` says it must and within a third of the snapport
+where `proximity` says it may, or anywhere inside an area larger than the
+snapport. Where several areas line up at that place, the focused element or
+the URL's target is the one snapped to, then one that lines up on both
+axes, then one inside another, then the first in tree order. The area each
+axis lined up is kept by its element, and a layout that moves it scrolls
+the container with it; a `mandatory` container no script has scrolled is
+snapped where it is after a layout. An area is the nearest scroll container
+on its containing blocks', so a box positioned past a scroll container
+inside the snap container is the snap container's. What the reader scrolls
+with the wheel, and `scroll-snap-stop`, are not snapped yet. A container's
+`scrollend` is told a frame after its last `scroll`, at the element, and the
+viewport's at the document, bubbling to the window.
+
 **The wheel goes to the innermost scroll container under the pointer
 that can move the way it turns**, and on out: one scrolled to its end
 hands the wheel on to the next around it, and then to the box around the

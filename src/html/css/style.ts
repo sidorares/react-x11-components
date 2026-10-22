@@ -162,6 +162,21 @@ export interface GridAreas {
 }
 
 /** One of a `box-shadow`'s shadows, in device pixels. */
+/** `scroll-snap-type`'s axes and strictness, `mandatory` or not. */
+export interface ScrollSnapType {
+  axis: 'x' | 'y' | 'block' | 'inline' | 'both';
+  mandatory: boolean;
+}
+
+/** One axis of `scroll-snap-align`. */
+export type SnapAlign = 'none' | 'start' | 'end' | 'center';
+
+/** Every axis `none`: no snap area. */
+export const NO_SNAP_ALIGN: readonly [SnapAlign, SnapAlign] = Object.freeze([
+  'none',
+  'none',
+]);
+
 export interface BoxShadow {
   x: number;
   y: number;
@@ -1157,6 +1172,27 @@ export interface ComputedStyle {
   bottom: Len;
   left: Len;
 
+  /** `scroll-snap-type` (CSS Scroll Snap 1, 5.1): the axes a scroll
+   *  container snaps on and whether it must, or null for `none`. */
+  scrollSnapType: ScrollSnapType | null;
+  /** `scroll-snap-align`: where a snap area lines up in the block axis
+   *  and in the inline axis. */
+  scrollSnapAlign: readonly [SnapAlign, SnapAlign];
+  /** `scroll-snap-stop`. */
+  scrollSnapStop: 'normal' | 'always';
+  /** `scroll-padding`, top, right, bottom and left: what a scroll
+   *  container's snapport is inset by, `auto` being none. */
+  scrollPaddingTop: Len;
+  scrollPaddingRight: Len;
+  scrollPaddingBottom: Len;
+  scrollPaddingLeft: Len;
+  /** `scroll-margin`, top, right, bottom and left: what a snap area's
+   *  border box is outset by. */
+  scrollMarginTop: number;
+  scrollMarginRight: number;
+  scrollMarginBottom: number;
+  scrollMarginLeft: number;
+
   backgroundColor: string | null;
   /** The first layer's url, at the density an `image-set()` chose it at
    *  where that is not 1x. */
@@ -1689,6 +1725,17 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     bottom: AUTO,
     left: AUTO,
 
+    scrollSnapType: null,
+    scrollSnapAlign: NO_SNAP_ALIGN,
+    scrollSnapStop: 'normal',
+    scrollPaddingTop: AUTO,
+    scrollPaddingRight: AUTO,
+    scrollPaddingBottom: AUTO,
+    scrollPaddingLeft: AUTO,
+    scrollMarginTop: 0,
+    scrollMarginRight: 0,
+    scrollMarginBottom: 0,
+    scrollMarginLeft: 0,
     backgroundColor: null,
     backgroundImage: null,
     backgroundGradient: null,
@@ -2657,6 +2704,68 @@ export function applyDeclaration(
     case '-webkit-clip-path': {
       const path = parseClipPath(value, ctx);
       if (path !== undefined) style.clipPath = path;
+      return;
+    }
+    case 'scroll-snap-type': {
+      const t = parseSnapType(value);
+      if (t !== undefined) style.scrollSnapType = t;
+      return;
+    }
+    case 'scroll-snap-align': {
+      const a = parseSnapAlign(value);
+      if (a) style.scrollSnapAlign = a;
+      return;
+    }
+    case 'scroll-snap-stop': {
+      const v = value.trim().toLowerCase();
+      if (v === 'normal' || v === 'always') style.scrollSnapStop = v;
+      return;
+    }
+    case 'scroll-padding':
+    case 'scroll-padding-top':
+    case 'scroll-padding-right':
+    case 'scroll-padding-bottom':
+    case 'scroll-padding-left':
+    case 'scroll-padding-block':
+    case 'scroll-padding-inline':
+    case 'scroll-padding-block-start':
+    case 'scroll-padding-block-end':
+    case 'scroll-padding-inline-start':
+    case 'scroll-padding-inline-end': {
+      // `auto` or a length or a percentage of the scrollport, none below
+      // nought (CSS Scroll Snap 1, 6.1)
+      const parts = splitValue(value).map((p) =>
+        p.toLowerCase() === 'auto' ? AUTO : parseLength(p, ctx),
+      );
+      if (
+        !parts.length ||
+        parts.some(
+          (p) =>
+            p === null ||
+            (typeof p === 'number' && p < 0) ||
+            (isPct(p) && p.pct < 0),
+        )
+      ) {
+        return;
+      }
+      setScrollSides(style, 'scrollPadding', name.slice(14), parts as Len[]);
+      return;
+    }
+    case 'scroll-margin':
+    case 'scroll-margin-top':
+    case 'scroll-margin-right':
+    case 'scroll-margin-bottom':
+    case 'scroll-margin-left':
+    case 'scroll-margin-block':
+    case 'scroll-margin-inline':
+    case 'scroll-margin-block-start':
+    case 'scroll-margin-block-end':
+    case 'scroll-margin-inline-start':
+    case 'scroll-margin-inline-end': {
+      // lengths alone, which may be negative (6.2)
+      const parts = splitValue(value).map((p) => parseLength(p, ctx));
+      if (!parts.length || parts.some((p) => typeof p !== 'number')) return;
+      setScrollSides(style, 'scrollMargin', name.slice(13), parts as number[]);
       return;
     }
     case 'opacity': {
@@ -7994,6 +8103,29 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'scrollbar-width': ['scrollbarWidth'],
   'scrollbar-color': ['scrollbarThumbColor'],
   opacity: ['opacity'],
+  'scroll-snap-type': ['scrollSnapType'],
+  'scroll-snap-align': ['scrollSnapAlign'],
+  'scroll-snap-stop': ['scrollSnapStop'],
+  'scroll-padding': [
+    'scrollPaddingTop',
+    'scrollPaddingRight',
+    'scrollPaddingBottom',
+    'scrollPaddingLeft',
+  ],
+  'scroll-padding-top': ['scrollPaddingTop'],
+  'scroll-padding-right': ['scrollPaddingRight'],
+  'scroll-padding-bottom': ['scrollPaddingBottom'],
+  'scroll-padding-left': ['scrollPaddingLeft'],
+  'scroll-margin': [
+    'scrollMarginTop',
+    'scrollMarginRight',
+    'scrollMarginBottom',
+    'scrollMarginLeft',
+  ],
+  'scroll-margin-top': ['scrollMarginTop'],
+  'scroll-margin-right': ['scrollMarginRight'],
+  'scroll-margin-bottom': ['scrollMarginBottom'],
+  'scroll-margin-left': ['scrollMarginLeft'],
   zoom: ['zoom'],
   filter: ['filter'],
   'backdrop-filter': ['backdropFilter'],
@@ -8318,4 +8450,88 @@ export function sameStyle(a: ComputedStyle, b: ComputedStyle): boolean {
     if (key !== 'custom' && !sameValue(x[key], y[key])) return false;
   }
   return true;
+}
+
+/** `scroll-snap-type`: `none`, or an axis and maybe a strictness;
+ *  undefined for no value of it. */
+function parseSnapType(value: string): ScrollSnapType | null | undefined {
+  const parts = splitValue(value.trim().toLowerCase());
+  if (parts.length === 1 && parts[0] === 'none') return null;
+  if (!parts.length || parts.length > 2) return undefined;
+  const axis = parts[0];
+  if (
+    axis !== 'x' &&
+    axis !== 'y' &&
+    axis !== 'block' &&
+    axis !== 'inline' &&
+    axis !== 'both'
+  ) {
+    return undefined;
+  }
+  const strict = parts[1] ?? 'proximity';
+  if (strict !== 'mandatory' && strict !== 'proximity') return undefined;
+  return { axis, mandatory: strict === 'mandatory' };
+}
+
+/** `scroll-snap-align`: one alignment for both axes, or the block axis's
+ *  then the inline axis's. */
+function parseSnapAlign(value: string): readonly [SnapAlign, SnapAlign] | null {
+  const parts = splitValue(value.trim().toLowerCase());
+  const ok = (v: string): v is SnapAlign =>
+    v === 'none' || v === 'start' || v === 'end' || v === 'center';
+  if (!parts.length || parts.length > 2 || !parts.every(ok)) return null;
+  const block = parts[0] as SnapAlign;
+  const inline = (parts[1] ?? parts[0]) as SnapAlign;
+  return block === 'none' && inline === 'none'
+    ? NO_SNAP_ALIGN
+    : Object.freeze([block, inline] as [SnapAlign, SnapAlign]);
+}
+
+/** A `scroll-padding` or `scroll-margin` shorthand or longhand's values set
+ *  on its sides: the physical ones as they are named, and a logical one as
+ *  the horizontal, left-to-right writing mode every document here is laid
+ *  out in has it. */
+function setScrollSides<T extends Len>(
+  style: ComputedStyle,
+  prefix: 'scrollPadding' | 'scrollMargin',
+  side: string,
+  parts: T[],
+): void {
+  const set = (name: string, v: T): void => {
+    (style as unknown as Record<string, unknown>)[prefix + name] = v;
+  };
+  switch (side) {
+    case '': {
+      const [t, r, b, l] = fourSides(parts);
+      set('Top', t as T);
+      set('Right', r as T);
+      set('Bottom', b as T);
+      set('Left', l as T);
+      return;
+    }
+    case '-block':
+      set('Top', parts[0]);
+      set('Bottom', parts[1] ?? parts[0]);
+      return;
+    case '-inline':
+      set('Left', parts[0]);
+      set('Right', parts[1] ?? parts[0]);
+      return;
+    case '-top':
+    case '-block-start':
+      set('Top', parts[0]);
+      return;
+    case '-bottom':
+    case '-block-end':
+      set('Bottom', parts[0]);
+      return;
+    case '-left':
+    case '-inline-start':
+      set('Left', parts[0]);
+      return;
+    case '-right':
+    case '-inline-end':
+      set('Right', parts[0]);
+      return;
+  }
 }
