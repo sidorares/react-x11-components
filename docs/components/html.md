@@ -740,24 +740,25 @@ page measures what it reads.
 **What leaves the document is handed back**, and goes nowhere by default,
 since this component navigates nowhere by itself:
 
-| Seam        | Default                   | What it is                                                                                                                                                      |
-| ----------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch`     | none: every request fails | A page's requests, as above.                                                                                                                                    |
-| `load`      | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                         |
-| `navigate`  | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                            |
-| `reload`    | nothing                   | `location.reload()`.                                                                                                                                            |
-| `go`        | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                 |
-| `title`     | nothing                   | `document.title` was set.                                                                                                                                       |
-| `log`       | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                         |
-| `timeout`   | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                              |
-| `onTimeout` | nothing                   | One was.                                                                                                                                                        |
-| `userAgent` | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends.                                                                                                                |
-| `language`  | the runtime's locale      | `navigator.language`.                                                                                                                                           |
-| `frames`    | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                         |
-| `workers`   | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`. |
-| `viewport`  | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                         |
-| `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                               |
-| `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                              |
+| Seam          | Default                   | What it is                                                                                                                                                      |
+| ------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`       | none: every request fails | A page's requests, as above.                                                                                                                                    |
+| `load`        | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                         |
+| `navigate`    | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                            |
+| `reload`      | nothing                   | `location.reload()`.                                                                                                                                            |
+| `go`          | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                 |
+| `title`       | nothing                   | `document.title` was set.                                                                                                                                       |
+| `log`         | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                         |
+| `timeout`     | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                              |
+| `onTimeout`   | nothing                   | One was.                                                                                                                                                        |
+| `userAgent`   | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends.                                                                                                                |
+| `language`    | the runtime's locale      | `navigator.language`.                                                                                                                                           |
+| `canPlayType` | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.      |
+| `frames`      | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                         |
+| `workers`     | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`. |
+| `viewport`    | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                         |
+| `scrollTo`    | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                               |
+| `reserved`    | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                              |
 
 **A page keeps its own session history** (HTML 7.4). `pushState`,
 `replaceState` and a navigation to a fragment are entries of the
@@ -1211,6 +1212,15 @@ it gives — and the answer is one of
 | `{ kind: 'video', src }`    | `src`, a path or a URL, opened by the platform's player itself. Ask `useSupports('mediaPlayback')` first: false on X11 and Wayland, where core refuses a `src` — and the document goes on to its next source, and then to its poster. |
 | `{ kind: 'video', frames }` | A `VideoFrames` sink (core's `useVideoFrames`, `createVideoFrames`) the host decodes the video into, an `ffmpeg` pipe or a decoder of its own. Shows on every backend.                                                                |
 | `null`                      | Nothing: the next `<source>` is asked for, and with none left the video is its poster.                                                                                                                                                |
+
+A page that scripts its player asks first, with `canPlayType`, which is
+the host's to answer too (`scripts.canPlayType`): an HLS player with no
+`MediaSource` to feed — there is none in a page's realm — sets the
+playlist as the `src` only where the answer for
+`application/vnd.apple.mpegurl` is not `''`, as on Safari, and AVFoundation
+plays a playlist from its URL. `canPlayMedia` answers for the platform's
+player, where `useSupports('mediaPlayback')` says there is one; the example
+browser hands it on.
 
 A `src` the player then fails on — a container it has no reader for, a URL
 that does not answer — is the next source's turn too, as HTML's `<source>`

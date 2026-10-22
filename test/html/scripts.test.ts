@@ -24,7 +24,12 @@ import {
 } from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
-import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
+import {
+  Html,
+  canPlayMedia,
+  shadowRootOf,
+  useHtmlHandle,
+} from '../../src/html/index.js';
 import type {
   FormSubmission,
   HtmlHandle,
@@ -90,6 +95,8 @@ interface Hosted {
   submitted: FormSubmission[];
   timeouts: number;
   fetched: FetchRequest[];
+  /** The URLs the page's videos asked the host for, in turn. */
+  videos: string[];
   byId(id: string): DocElement;
   text(id: string): string;
   /** The pane the page is in scrolled, as the browser's tells it. */
@@ -123,6 +130,7 @@ async function hosted(
     sheets?: Record<string, string>;
     held?: HeldSheets;
     videos?: boolean;
+    canPlayType?: (type: string) => '' | 'maybe' | 'probably';
     scheme?: 'light' | 'dark';
     pane?: number;
     scale?: number;
@@ -136,6 +144,7 @@ async function hosted(
     submitted: [] as FormSubmission[],
     timeouts: 0,
     fetched: [] as FetchRequest[],
+    videos: [] as string[],
     pane: null,
   } as Hosted;
   const seams: ScriptsOptions = {
@@ -168,6 +177,7 @@ async function hosted(
     onTimeout: () => {
       out.timeouts += 1;
     },
+    canPlayType: options.canPlayType,
   };
   function Page() {
     const app = useApp();
@@ -198,6 +208,7 @@ async function hosted(
         }
       },
       onResource: ({ url, kind }: ResourceRequest) => {
+        if (kind === 'video') out.videos.push(url);
         if (options.videos && kind === 'video') {
           return {
             kind,
@@ -1753,6 +1764,48 @@ test('blobs, files, form data and the media a page reads at rest', async () => {
       'aé!',
     ].join('|'),
   );
+});
+
+test("a media element's canPlayType is the host's, and an HLS player with no MediaSource hands the playlist to the element's player", async () => {
+  // diabrowser.com's hero: hls.js where `MediaSource` is, the playlist as
+  // the `src` where the element says it plays one, and the poster else
+  const page =
+    '<video id="v" muted autoplay ' +
+    'style="display:block;width:60px;height:30px"></video>' +
+    '<p id="out"></p><script>' +
+    'var v = document.getElementById("v");' +
+    'var r = [typeof MediaSource, v.canPlayType("application/vnd.apple.mpegurl"),' +
+    '  v.canPlayType("video/webm; codecs=vp9"), v.canPlayType("video/MP4; codecs=avc1"),' +
+    '  v.canPlayType("bogus/type")];' +
+    'if (typeof MediaSource === "undefined" &&' +
+    '    v.canPlayType("application/vnd.apple.mpegurl")) {' +
+    '  v.src = "https://stream.example/hero.m3u8";' +
+    '}' +
+    'document.getElementById("out").textContent = r.join(",");' +
+    '</script>';
+  const doc = await hosted(page, {
+    videos: true,
+    // an answer HTML has no word for is none
+    canPlayType: (type) =>
+      type === 'bogus/type' ? ('yes' as 'maybe') : canPlayMedia(type),
+  });
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'undefined,maybe,,maybe,',
+  );
+  const end = Date.now() + 3000;
+  while (!doc.videos.length && Date.now() < end) await settle();
+  assert.deepEqual(
+    doc.videos,
+    ['https://stream.example/hero.m3u8'],
+    'the playlist, asked of the host as the video',
+  );
+  cleanup();
+  // with no answer from the host, nothing plays anything, as before
+  const none = await hosted(page, { videos: true });
+  assert.equal(await settled(none, 'out', (t) => t !== ''), 'undefined,,,,');
+  await settle();
+  assert.deepEqual(none.videos, [], 'and the page asks for nothing');
 });
 
 test("a video's play() and pause() are its player's, and paused, the events and the promise are what the page asked", async () => {
