@@ -13,6 +13,7 @@ import {
   metric,
   render,
   renderWithBytes,
+  rulesIn,
   svgBytes,
   view,
 } from './harness.js';
@@ -250,6 +251,151 @@ metric(
     assert.ok(w.width > 50, `as wide as its word: ${w.width}`);
   },
 );
+
+/** A grid of three 100px columns and two 50px rows, 20px apart, with its
+ *  rules and its items. */
+const RULED_GRID = (rules: string, items = '') =>
+  '<div style="display:grid;grid-template-columns:repeat(3,100px);' +
+  `grid-template-rows:50px 50px;gap:20px;${rules}">` +
+  (items ||
+    '<div></div><div></div><div></div><div></div><div></div><div></div>') +
+  '</div>';
+
+test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
+  // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
+  // to 70; each rule on its gap's middle, the grid's length, through the
+  // gap that crosses it
+  const rules = 'column-rule:4px solid #ff0000;row-rule:2px solid #0000ff';
+  assert.deepStrictEqual(await rulesIn(RULED_GRID(rules), '#ff0000'), [
+    [108, 0, 4, 120],
+    [228, 0, 4, 120],
+  ]);
+  assert.deepStrictEqual(await rulesIn(RULED_GRID(rules), '#0000ff'), [
+    [0, 59, 340, 2],
+  ]);
+  // `rule` sets both, and a style that draws nothing draws no rule
+  assert.strictEqual(
+    (await rulesIn(RULED_GRID('rule:1px solid #ff0000'), '#ff0000')).length,
+    3,
+  );
+  assert.deepStrictEqual(
+    await rulesIn(RULED_GRID('rule:1px none #ff0000'), '#ff0000'),
+    [],
+  );
+  // the longhands, and a list of rules, which is not read and leaves the
+  // declaration before it
+  assert.deepStrictEqual(
+    await rulesIn(
+      RULED_GRID(
+        'column-rule-style:solid;column-rule-width:2px;column-rule-color:#ff0000;' +
+          'column-rule-color:#0000ff, #00ff00',
+      ),
+      '#ff0000',
+    ),
+    [
+      [109, 0, 2, 120],
+      [229, 0, 2, 120],
+    ],
+  );
+});
+
+test("a grid's rule is broken where an item spans its gap, as its rule-break says", async () => {
+  // the first item spans the first two columns of the first row: the
+  // first column gap's rule is broken there, the second's is not
+  const spanning =
+    '<div style="grid-column:span 2"></div><div></div>' +
+    '<div></div><div></div><div></div>';
+  const rule = 'column-rule:4px solid #ff0000';
+  assert.deepStrictEqual(await rulesIn(RULED_GRID(rule, spanning), '#ff0000'), [
+    // from where the row gap below the item ends
+    [108, 70, 4, 50],
+    [228, 0, 4, 120],
+  ]);
+  // none: the grid's length, behind the item
+  assert.deepStrictEqual(
+    await rulesIn(
+      RULED_GRID(`${rule};column-rule-break:none`, spanning),
+      '#ff0000',
+    ),
+    [
+      [108, 0, 4, 120],
+      [228, 0, 4, 120],
+    ],
+  );
+  // intersection: broken at the row gap it crosses as well
+  assert.deepStrictEqual(
+    await rulesIn(RULED_GRID(`${rule};rule-break:intersection`), '#ff0000'),
+    [
+      [108, 0, 4, 50],
+      [108, 70, 4, 50],
+      [228, 0, 4, 50],
+      [228, 70, 4, 50],
+    ],
+  );
+  // and an inset shortens each piece at either end, a percentage of the
+  // gap it stops at — none at the grid's edge
+  assert.deepStrictEqual(
+    await rulesIn(
+      RULED_GRID(`${rule};rule-break:intersection;column-rule-inset:3px 25%`),
+      '#ff0000',
+    ),
+    [
+      [108, 3, 4, 42],
+      [108, 73, 4, 47],
+      [228, 3, 4, 42],
+      [228, 73, 4, 47],
+    ],
+  );
+  // a row gap that goes on to one side of a column gap and not the other
+  // is a T, which breaks the column gap's rule under `normal`: the item
+  // spans both rows of the first column
+  const tall =
+    '<div style="grid-row:span 2"></div><div></div><div></div>' +
+    '<div></div><div></div>';
+  assert.deepStrictEqual(await rulesIn(RULED_GRID(rule, tall), '#ff0000'), [
+    [108, 0, 4, 50],
+    [108, 70, 4, 50],
+    [228, 0, 4, 120],
+  ]);
+});
+
+test('a gap rule is drawn in its style, and the row rules go over the column rules', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      RULED_GRID('column-rule:3px dashed #ff0000;row-rule:6px double #0000ff'),
+    700,
+  );
+  const fills = await fillsOf(view(node));
+  const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+  // dashes twice as long as the rule is wide, as a border's are
+  assert.ok(red.length > 10, `dashes: ${red.length}`);
+  assert.ok(
+    red.every((f) => f.w === 3 && f.h <= 6),
+    'each a dash',
+  );
+  // a double rule is two lines a third of its width
+  const blue = fills.filter((f) => f.style === parseColor('#0000ff'));
+  assert.deepStrictEqual(
+    blue.map((f) => [f.y, f.h]),
+    [
+      [57, 2],
+      [61, 2],
+    ],
+  );
+  // drawn after the column rules
+  assert.ok(fills.indexOf(blue[0]) > fills.indexOf(red[red.length - 1]));
+  const swapped = await render(
+    '<style>body{margin:0}</style>' +
+      RULED_GRID(
+        'rule:2px solid #ff0000;row-rule-color:#0000ff;rule-overlap:column-over-row',
+      ),
+    700,
+  );
+  const under = await fillsOf(view(swapped.node));
+  const firstRed = under.findIndex((f) => f.style === parseColor('#ff0000'));
+  const firstBlue = under.findIndex((f) => f.style === parseColor('#0000ff'));
+  assert.ok(firstBlue < firstRed, 'the row rules first, under');
+});
 
 test('grid tracks are sized as CSS Grid 11.5 to 11.8 has it', () => {
   const item = (

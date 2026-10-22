@@ -428,6 +428,23 @@ function rectShape(
   };
 }
 
+/**
+ * The rule one axis's gaps are drawn with (CSS Gap Decorations 1): its
+ * width, in device pixels, its style and colour, as a border side's; where
+ * a rule is broken (`*-rule-break`) — `none` one rule the gap's length,
+ * `normal` broken only where an item spans the gap, `intersection` at every
+ * gap it crosses too; and how far in each end of a piece of it stands
+ * (`*-rule-inset`), a percentage of the gap it ends at. Shared, as nearly
+ * every box has `NO_RULE`.
+ */
+export interface GapRule {
+  width: number;
+  style: BorderStyle;
+  color: string;
+  break: 'none' | 'normal' | 'intersection';
+  inset: readonly [Len, Len];
+}
+
 /** Each corner's superellipse parameter (`ComputedStyle.cornerShape`). */
 export type CornerShapes = readonly [number, number, number, number];
 
@@ -923,6 +940,14 @@ export interface ComputedStyle {
   outlineWidth: number;
   outlineColor: string;
   outlineOffset: number;
+  /** The rules drawn in a multicol, flex or grid container's gaps (CSS
+   *  Gap Decorations 1): down the column gaps and across the row gaps,
+   *  each a width, a border style and a colour, as an outline is. */
+  columnRule: GapRule;
+  rowRule: GapRule;
+  /** Which is drawn over the other where they cross: `row-over-column`,
+   *  the initial value, draws the row rules last. */
+  ruleOverlap: 'row-over-column' | 'column-over-row';
 
   top: Len;
   right: Len;
@@ -1430,6 +1455,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     outlineWidth: medium,
     outlineColor: 'currentColor',
     outlineOffset: 0,
+    columnRule: noRule(medium),
+    rowRule: noRule(medium),
+    ruleOverlap: 'row-over-column',
 
     top: AUTO,
     right: AUTO,
@@ -1686,7 +1714,7 @@ export function firstLineParent(
 /** The properties a colour is written in, alone or in a shorthand, a
  *  shadow, a gradient or an image's mask. */
 const TAKES_COLOR =
-  /^(?:color|background|border|outline|box-shadow|text-shadow|text-decoration|text-emphasis|column-rule|fill|stroke|stop-color|flood-color|lighting-color|caret-color|accent-color|scrollbar-color|filter|mask|list-style|-webkit-text-(?:fill|stroke))/;
+  /^(?:color|background|border|outline|box-shadow|text-shadow|text-decoration|text-emphasis|column-rule|row-rule|rule|fill|stroke|stop-color|flood-color|lighting-color|caret-color|accent-color|scrollbar-color|filter|mask|list-style|-webkit-text-(?:fill|stroke))/;
 
 const COLOR_PROPS: Record<string, keyof ComputedStyle> = {
   color: 'color',
@@ -2659,6 +2687,34 @@ export function applyDeclaration(
     case 'outline-offset': {
       const len = parseLength(value, ctx);
       if (typeof len === 'number') style.outlineOffset = len;
+      return;
+    }
+    case 'column-rule':
+    case 'row-rule':
+    case 'rule':
+    case 'column-rule-width':
+    case 'row-rule-width':
+    case 'rule-width':
+    case 'column-rule-style':
+    case 'row-rule-style':
+    case 'rule-style':
+    case 'column-rule-color':
+    case 'row-rule-color':
+    case 'rule-color':
+    case 'column-rule-break':
+    case 'row-rule-break':
+    case 'rule-break':
+    case 'column-rule-inset':
+    case 'row-rule-inset':
+    case 'rule-inset': {
+      applyGapRule(style, name, value, ctx);
+      return;
+    }
+    case 'rule-overlap': {
+      const v = value.trim().toLowerCase();
+      if (v === 'row-over-column' || v === 'column-over-row') {
+        style.ruleOverlap = v;
+      }
       return;
     }
     case 'box-shadow': {
@@ -6369,6 +6425,101 @@ function sameRadii(a: readonly Len[], b: readonly Len[]): boolean {
   return true;
 }
 
+/** A gap's rule where none is drawn: `medium`, `none`, `currentcolor`,
+ *  broken where an item spans the gap, and no inset. */
+function noRule(medium: number): GapRule {
+  return {
+    width: medium,
+    style: 'none',
+    color: 'currentColor',
+    break: 'normal',
+    inset: NO_INSET,
+  };
+}
+
+const NO_INSET: readonly [Len, Len] = Object.freeze([0, 0]) as readonly [
+  Len,
+  Len,
+];
+
+/**
+ * A declaration of a gap's rule (CSS Gap Decorations 1): `column-rule`,
+ * `row-rule` or `rule` for both axes, and each one's `-width`, `-style`,
+ * `-color`, `-break` and `-inset`. The shorthand takes a width, a style
+ * and a colour in any order, each reset where it is left out, as
+ * `outline` does. A list of rules — a comma, `repeat()` — is not read, and
+ * leaves the declaration none.
+ */
+function applyGapRule(
+  style: ComputedStyle,
+  name: string,
+  value: string,
+  ctx: UnitContext,
+): void {
+  if (splitCommas(value).length > 1 || /(?:^|\s)repeat\(/i.test(value)) return;
+  const axes: ('columnRule' | 'rowRule')[] = name.startsWith('column-')
+    ? ['columnRule']
+    : name.startsWith('row-')
+      ? ['rowRule']
+      : ['columnRule', 'rowRule'];
+  const part = name.replace(/^(?:column-|row-)?rule-?/, '');
+  const v = value.trim().toLowerCase();
+  let change: Partial<GapRule> | null = null;
+  switch (part) {
+    case '': {
+      let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
+      let kind: BorderStyle = 'none';
+      let color = 'currentColor';
+      for (const p of splitValue(value)) {
+        const lower = p.toLowerCase();
+        if (BORDER_STYLES.has(lower)) {
+          kind = lower as BorderStyle;
+          continue;
+        }
+        const w = borderWidth(p, ctx);
+        if (w !== null) {
+          width = w;
+          continue;
+        }
+        const c = parseColor(p);
+        if (c === null) return;
+        color = c;
+      }
+      change = { width, style: kind, color };
+      break;
+    }
+    case 'width': {
+      const w = borderWidth(value, ctx);
+      if (w !== null) change = { width: w };
+      break;
+    }
+    case 'style':
+      if (BORDER_STYLES.has(v)) change = { style: v as BorderStyle };
+      break;
+    case 'color': {
+      const c = parseColor(value);
+      if (c !== null) change = { color: c };
+      break;
+    }
+    case 'break':
+      // `spanning-item` is the name an earlier draft gave `normal`
+      if (v === 'none' || v === 'normal' || v === 'intersection') {
+        change = { break: v };
+      } else if (v === 'spanning-item') change = { break: 'normal' };
+      break;
+    case 'inset': {
+      const parts = splitValue(value).map((p) => parseLength(p, ctx));
+      if (!parts.length || parts.length > 2) return;
+      if (parts.some((p) => p === null || p === AUTO)) return;
+      const [start, end = start] = parts as Len[];
+      change = { inset: [start, end] };
+      break;
+    }
+  }
+  if (!change) return;
+  for (const axis of axes) style[axis] = { ...style[axis], ...change };
+}
+
 /** What each `corner-shape` keyword is as a superellipse's parameter (CSS
  *  Borders 4, 3.9.1). */
 const CORNER_KEYWORDS: Record<string, number> = {
@@ -7064,6 +7215,27 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'outline-width': ['outlineWidth'],
   'outline-color': ['outlineColor'],
   'outline-offset': ['outlineOffset'],
+  // a rule's parts are one field an axis, so `inherit` and `initial` of
+  // any of them are of the whole rule
+  'column-rule': ['columnRule'],
+  'column-rule-width': ['columnRule'],
+  'column-rule-style': ['columnRule'],
+  'column-rule-color': ['columnRule'],
+  'column-rule-break': ['columnRule'],
+  'column-rule-inset': ['columnRule'],
+  'row-rule': ['rowRule'],
+  'row-rule-width': ['rowRule'],
+  'row-rule-style': ['rowRule'],
+  'row-rule-color': ['rowRule'],
+  'row-rule-break': ['rowRule'],
+  'row-rule-inset': ['rowRule'],
+  rule: ['columnRule', 'rowRule'],
+  'rule-width': ['columnRule', 'rowRule'],
+  'rule-style': ['columnRule', 'rowRule'],
+  'rule-color': ['columnRule', 'rowRule'],
+  'rule-break': ['columnRule', 'rowRule'],
+  'rule-inset': ['columnRule', 'rowRule'],
+  'rule-overlap': ['ruleOverlap'],
   'text-shadow': ['textShadow'],
   'line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],
   '-webkit-line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],

@@ -14,6 +14,7 @@ import {
   linesOf,
   metric,
   render,
+  rulesIn,
   view,
 } from './harness.js';
 import type { PaintOp } from './harness.js';
@@ -86,6 +87,56 @@ test('the blocks of a multicol container are set in its columns, as tall as bala
   assert.deepStrictEqual(at(el, 'd', 'm'), [320, 30, 280, 20], 'the fourth');
   assert.deepStrictEqual(at(el, 'e', 'm'), [320, 60, 280, 20], 'the last');
   assert.strictEqual(at(el, 'after', 'm')[1], 110, 'what follows it');
+});
+
+test('column-rule is drawn down the gaps between the columns that hold something', async () => {
+  // two columns of 80px, 40px apart: the rule on the gap's middle, 300,
+  // as tall as the columns
+  const blocks = (n: number) => '<div class="u"></div>'.repeat(n);
+  assert.deepStrictEqual(
+    await rulesIn(
+      SHEET +
+        `<div class="m" style="column-rule:2px solid #ff0000">${blocks(5)}</div>`,
+      '#ff0000',
+    ),
+    [[299, 0, 2, 80]],
+  );
+  // three columns of 173⅓px, and only two of them with anything in: one
+  // rule, on the first gap's middle at 193⅓
+  assert.deepStrictEqual(
+    await rulesIn(
+      SHEET +
+        '<div class="m" style="column-count:3;column-fill:auto;height:80px;' +
+        `column-rule:2px solid #ff0000">${blocks(3)}</div>`,
+      '#ff0000',
+    ),
+    [[192, 0, 2, 80]],
+  );
+  // a box that spans the columns breaks the rule: a piece above it and a
+  // piece below, each as tall as its row of columns
+  const spanned = await rulesIn(
+    SHEET +
+      '<div class="m" style="column-rule:4px solid #ff0000">' +
+      blocks(4) +
+      '<div style="column-span:all;height:30px"></div>' +
+      blocks(4) +
+      '</div>',
+    '#ff0000',
+  );
+  assert.strictEqual(spanned.length, 2, JSON.stringify(spanned));
+  assert.ok(
+    spanned[0][1] + spanned[0][3] <= spanned[1][1] - 30,
+    `the spanner between them: ${JSON.stringify(spanned)}`,
+  );
+  // nothing where the style draws nothing
+  assert.deepStrictEqual(
+    await rulesIn(
+      SHEET +
+        `<div class="m" style="column-rule:2px #ff0000">${blocks(5)}</div>`,
+      '#ff0000',
+    ),
+    [],
+  );
 });
 
 test('column-width, the columns shorthand and the gap say how many columns there are and how wide', async () => {

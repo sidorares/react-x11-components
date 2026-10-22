@@ -48,6 +48,7 @@ import type {
   ClipPath,
   ComputedStyle,
   CornerShapes,
+  GapRule,
   Gradient,
   GradientStop,
   ImageRepeat,
@@ -107,12 +108,14 @@ import {
   CLAMPED,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
+  COLUMN_BOXES,
   COLUMN_LINES,
   COLUMN_PIECES,
   COLUMN_ROWS,
   columned,
   FADED_BLOCKS,
   GENERATED_FROM,
+  GRID_TRACKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
@@ -3985,7 +3988,326 @@ function paintBackgroundOf(
   if (!box.bordersCollapsed && !paintBorderImage(ctx, box, options)) {
     paintBorders(ctx, box, options);
   }
+  // just above the border, under everything the box holds
+  if (ruled(style.columnRule) || ruled(style.rowRule)) {
+    paintGapRules(ctx, box, options);
+  }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
+}
+
+/** Whether a gap's rule draws anything: a style that is drawn, and a
+ *  width. */
+function ruled(rule: GapRule): boolean {
+  return rule.style !== 'none' && rule.style !== 'hidden' && rule.width > 0;
+}
+
+/** A piece of a gap's rule: along its gap's middle, `at` across, from
+ *  `from` to `to`, in document coordinates; and how wide the gap is that
+ *  each end stops at, which a percentage inset is of — none at the
+ *  container's edge. */
+interface RuleSegment {
+  at: number;
+  from: number;
+  to: number;
+  fromGap: number;
+  toGap: number;
+}
+
+/**
+ * The rules in a container's gaps (CSS Gap Decorations 1), painted just
+ * above its border and under what it holds: down a multicol container's
+ * gaps, between the columns that hold something, and broken at a box that
+ * spans them; along a grid's column and row gaps, broken as each rule's
+ * `*-rule-break` says (`gridRuleSegments`); and between a flex container's
+ * items along each of its lines, and between its lines. Each piece is a
+ * band of the rule's width on the gap's middle, drawn as a border side of
+ * its style is, and drawn in its axis's turn: the row rules over the
+ * column rules, or under them for `column-over-row`.
+ */
+function paintGapRules(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const s = box.style;
+  const pieces = gapSegments(box);
+  if (!pieces) return;
+  const draw = (rule: GapRule, segments: RuleSegment[], down: boolean) => {
+    if (!ruled(rule) || isTransparent(rule.color)) return;
+    ctx.fillStyle = inkColor(rule.color, s.color);
+    for (const seg of segments) {
+      const from = seg.from + resolve(rule.inset[0], seg.fromGap);
+      const to = seg.to - resolve(rule.inset[1], seg.toGap);
+      if (!(to > from)) continue;
+      // on whole pixels, as a border's edges are, and a pixel at least
+      const near = Math.round(seg.at - rule.width / 2);
+      const thick = Math.max(1, Math.round(seg.at + rule.width / 2) - near);
+      const a = Math.round(from);
+      const length = Math.round(to) - a;
+      if (length <= 0) continue;
+      if (down) {
+        fillEdge(
+          ctx as Pick<FillContext, 'fillRect'>,
+          options,
+          near + options.originX,
+          a + options.originY,
+          thick,
+          length,
+          rule.style,
+          false,
+        );
+      } else {
+        fillEdge(
+          ctx as Pick<FillContext, 'fillRect'>,
+          options,
+          a + options.originX,
+          near + options.originY,
+          length,
+          thick,
+          rule.style,
+          true,
+        );
+      }
+    }
+  };
+  if (s.ruleOverlap === 'column-over-row') {
+    draw(s.rowRule, pieces.rows, false);
+    draw(s.columnRule, pieces.columns, true);
+  } else {
+    draw(s.columnRule, pieces.columns, true);
+    draw(s.rowRule, pieces.rows, false);
+  }
+}
+
+/** The pieces of a container's column rules, down its column gaps, and of
+ *  its row rules, across its row gaps; null for a box with no gaps. */
+function gapSegments(
+  box: Box,
+): { columns: RuleSegment[]; rows: RuleSegment[] } | null {
+  // a grid reads as `flex` and says it is a grid
+  const grid = box.style.grid ? GRID_TRACKS.get(box) : undefined;
+  if (grid) {
+    const { cols, rows, areas } = grid.lanes;
+    return {
+      columns: gridRuleSegments(
+        cols,
+        rows,
+        areas,
+        box.style.columnRule.break,
+        box.contentX,
+        box.contentY,
+      ),
+      rows: gridRuleSegments(
+        rows,
+        cols,
+        areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
+        box.style.rowRule.break,
+        box.contentY,
+        box.contentX,
+      ),
+    };
+  }
+  if (box.style.columns) {
+    const columns: RuleSegment[] = [];
+    for (const row of COLUMN_BOXES.get(box) ?? []) {
+      const lefts = row.lefts.slice().sort((a, b) => a - b);
+      for (let c = 0; c + 1 < lefts.length; c += 1) {
+        const top = box.contentY + row.top;
+        columns.push({
+          at: box.contentX + (lefts[c] + row.width + lefts[c + 1]) / 2,
+          from: top,
+          to: top + row.height,
+          fromGap: 0,
+          toGap: 0,
+        });
+      }
+    }
+    return { columns, rows: [] };
+  }
+  if (isFlex(box.style.display)) return flexRuleSegments(box);
+  return null;
+}
+
+function isFlex(display: string): boolean {
+  return display === 'flex' || display === 'inline-flex';
+}
+
+/**
+ * The pieces of a grid's rules down the gaps between `lanes` — its columns
+ * for its column rules, and its rows, the two axes swapped, for its row
+ * rules — over `across`, the tracks the other way; `areas` are its items',
+ * each its first lane, how many, its first track across and how many.
+ * Under `none` a gap's rule is one piece the grid's length. Under
+ * `normal` it is broken where an item spans the gap, and where it meets a
+ * gap the other way that goes on to one side of it and not the other — a
+ * T — and goes on through a gap that crosses it, a +. Under
+ * `intersection` it is broken at every gap it meets, but one items span
+ * on both sides of. A piece broken at a gap stops where the gap starts
+ * and the next starts where it ends.
+ */
+function gridRuleSegments(
+  lanes: readonly [number, number][],
+  across: readonly [number, number][],
+  areas: readonly (readonly [number, number, number, number])[],
+  rule: GapRule['break'],
+  laneOrigin: number,
+  acrossOrigin: number,
+): RuleSegment[] {
+  const out: RuleSegment[] = [];
+  const n = across.length;
+  if (!n) return out;
+  /** Whether an item covers lanes `a` and `a + 1` across track `t`, and
+   *  track `t + 1` too where `both`. */
+  const spans = (lane: number, t: number, both: boolean): boolean =>
+    areas.some(
+      ([l, ls, r, rs]) =>
+        l <= lane &&
+        l + ls - 1 >= lane + 1 &&
+        r <= t &&
+        r + rs - 1 >= t + (both ? 1 : 0),
+    );
+  /** Whether the gap across, between tracks `t` and `t + 1`, is there in
+   *  lane `lane`: not where an item spans both tracks in it. */
+  const crossing = (lane: number, t: number): boolean =>
+    !areas.some(
+      ([l, ls, r, rs]) =>
+        l <= lane && l + ls - 1 >= lane && r <= t && r + rs - 1 >= t + 1,
+    );
+  for (let lane = 0; lane + 1 < lanes.length; lane += 1) {
+    const at = laneOrigin + (lanes[lane][1] + lanes[lane + 1][0]) / 2;
+    if (rule === 'none') {
+      out.push({
+        at,
+        from: acrossOrigin + across[0][0],
+        to: acrossOrigin + across[n - 1][1],
+        fromGap: 0,
+        toGap: 0,
+      });
+      continue;
+    }
+    let start: number | null = null;
+    let startGap = 0;
+    for (let t = 0; t < n; t += 1) {
+      const covered = spans(lane, t, false);
+      if (covered) {
+        start = null;
+        continue;
+      }
+      if (start === null) {
+        start = t;
+        startGap = t > 0 ? across[t][0] - across[t - 1][1] : 0;
+      }
+      // where the piece goes on to the next track, or stops
+      const last = t === n - 1;
+      let goesOn = false;
+      if (!last && !spans(lane, t + 1, false)) {
+        const before = crossing(lane, t);
+        const after = crossing(lane + 1, t);
+        goesOn = rule === 'normal' ? before === after : !before && !after;
+      }
+      if (!goesOn) {
+        out.push({
+          at,
+          from: acrossOrigin + across[start][0],
+          to: acrossOrigin + across[t][1],
+          fromGap: startGap,
+          toGap: last ? 0 : across[t + 1][0] - across[t][1],
+        });
+        start = null;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The pieces of a flex container's rules (CSS Gap Decorations 1, 3): its
+ * lines found from where its items are — a new one where an item starts
+ * past every item of the one before across the main axis — a rule between
+ * each two items on a line, as tall as the line, and one between each two
+ * lines, as long as the container's content box. In a row the rules
+ * between items are its column rules and those between lines its row
+ * rules; in a column, the other way round. A container of one line has
+ * that line as tall as its content box.
+ */
+function flexRuleSegments(box: Box): {
+  columns: RuleSegment[];
+  rows: RuleSegment[];
+} {
+  const row = !box.style.flexDirection.startsWith('column');
+  const items = box.children.filter(
+    (child) => !child.outOfFlow && child.kind !== 'text',
+  );
+  type Span = {
+    start: number;
+    end: number;
+    crossStart: number;
+    crossEnd: number;
+  };
+  const spanOf = (b: Box): Span =>
+    row
+      ? {
+          start: b.x - b.marginLeft,
+          end: b.x + b.width + b.marginRight,
+          crossStart: b.y - b.marginTop,
+          crossEnd: b.y + b.height + b.marginBottom,
+        }
+      : {
+          start: b.y - b.marginTop,
+          end: b.y + b.height + b.marginBottom,
+          crossStart: b.x - b.marginLeft,
+          crossEnd: b.x + b.width + b.marginRight,
+        };
+  const spans = items.map(spanOf).sort((a, b) => a.crossStart - b.crossStart);
+  const lines: { items: Span[]; crossStart: number; crossEnd: number }[] = [];
+  for (const span of spans) {
+    const line = lines[lines.length - 1];
+    if (line && span.crossStart < line.crossEnd - 0.01) {
+      line.items.push(span);
+      line.crossStart = Math.min(line.crossStart, span.crossStart);
+      line.crossEnd = Math.max(line.crossEnd, span.crossEnd);
+    } else {
+      lines.push({
+        items: [span],
+        crossStart: span.crossStart,
+        crossEnd: span.crossEnd,
+      });
+    }
+  }
+  const mainStart = row ? box.contentX : box.contentY;
+  const mainEnd = mainStart + (row ? box.contentWidth : box.contentHeight);
+  if (lines.length === 1) {
+    lines[0].crossStart = row ? box.contentY : box.contentX;
+    lines[0].crossEnd =
+      lines[0].crossStart + (row ? box.contentHeight : box.contentWidth);
+  }
+  const between: RuleSegment[] = [];
+  const across: RuleSegment[] = [];
+  lines.forEach((line, i) => {
+    const sorted = line.items.slice().sort((a, b) => a.start - b.start);
+    for (let k = 0; k + 1 < sorted.length; k += 1) {
+      between.push({
+        at: (sorted[k].end + sorted[k + 1].start) / 2,
+        from: line.crossStart,
+        to: line.crossEnd,
+        fromGap: 0,
+        toGap: 0,
+      });
+    }
+    const next = lines[i + 1];
+    if (next) {
+      across.push({
+        at: (line.crossEnd + next.crossStart) / 2,
+        from: mainStart,
+        to: mainEnd,
+        fromGap: 0,
+        toGap: 0,
+      });
+    }
+  });
+  return row
+    ? { columns: between, rows: across }
+    : { columns: across, rows: between };
 }
 
 /**

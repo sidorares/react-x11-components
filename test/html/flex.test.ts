@@ -14,6 +14,7 @@ import {
   metric,
   render,
   renderWithBytes,
+  rulesIn,
   svgBytes,
   view,
 } from './harness.js';
@@ -114,6 +115,59 @@ test('every node a flex layout makes in the engine is freed', async () => {
   }
   assert.ok(made > 0, 'the layout made nodes');
   assert.strictEqual(freed, made, 'and freed every one');
+});
+
+test("a flex container's rules are drawn between the items of each line and between its lines", async () => {
+  // 100px items in a row 250px wide that wraps: two on the first line,
+  // one on the second, 20px apart across and 10px down
+  const items = '<div class="i"></div>'.repeat(3);
+  const sheet =
+    '<style>.i{width:100px;height:40px}' +
+    '.f{display:flex;flex-wrap:wrap;width:250px;column-gap:20px;row-gap:10px}</style>';
+  assert.deepStrictEqual(
+    await rulesIn(
+      sheet +
+        `<div class="f" style="column-rule:2px solid #ff0000">${items}</div>`,
+      '#ff0000',
+    ),
+    // between the first two, on the first line alone
+    [[109, 0, 2, 40]],
+  );
+  assert.deepStrictEqual(
+    await rulesIn(
+      sheet +
+        `<div class="f" style="row-rule:2px solid #0000ff">${items}</div>`,
+      '#0000ff',
+    ),
+    // between the lines, the container's width
+    [[0, 44, 250, 2]],
+  );
+  // a line of one container is as tall as the container
+  assert.deepStrictEqual(
+    await rulesIn(
+      '<style>.i{width:100px;height:40px}</style>' +
+        '<div style="display:flex;height:80px;gap:20px;column-rule:2px solid #ff0000">' +
+        `${items}</div>`,
+      '#ff0000',
+    ),
+    [
+      [109, 0, 2, 80],
+      [229, 0, 2, 80],
+    ],
+  );
+  // in a column, the rules between items run across, and are its row rules
+  assert.deepStrictEqual(
+    await rulesIn(
+      '<style>.i{width:100px;height:40px}</style>' +
+        '<div style="display:flex;flex-direction:column;width:300px;row-gap:20px;' +
+        `row-rule:2px solid #0000ff">${items}</div>`,
+      '#0000ff',
+    ),
+    [
+      [0, 49, 300, 2],
+      [0, 109, 300, 2],
+    ],
+  );
 });
 
 test('a flex item as wide as its content keeps it on one line', async () => {
