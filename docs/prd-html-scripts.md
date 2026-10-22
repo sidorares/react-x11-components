@@ -981,6 +981,12 @@ the Interop 2026 focus areas through `<Html scripts>`
   `typeof require` a bundle tests — so the host answers from an index of
   the document's names, walked again only once a tree has changed since
   (`DomHost._namesOf`).
+- **JSPI is on where the runtime has it behind a flag.** Chrome and
+  Firefox ship `WebAssembly.Suspending` and `WebAssembly.promising`; Node
+  24's V8 has them behind `--experimental-wasm-jspi`, which the engine sets
+  with `v8.setFlagsFromString` as it loads, before any page's context is
+  made. It is a flag of the process's, and adds the two to every context
+  made after it and nothing else. Bun's JavaScriptCore has neither.
 
 ## What core would be asked
 
