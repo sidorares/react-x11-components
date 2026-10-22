@@ -1072,6 +1072,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       setRegisteredProperties: (rules) =>
         nodeRef.current?.setRegisteredProperties(rules),
       snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
+      cssAnimations: (element, subtree) =>
+        nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
       movedPoint: (node, offset, granularity, back) =>

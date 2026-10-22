@@ -3640,26 +3640,158 @@ export function installDom(
       configurable: true,
     });
   }
-  /** An attachment range's end as `rangeStart` and `rangeEnd` read it. */
+  /** An attachment range's end as `rangeStart` and `rangeEnd` read it:
+   *  `normal`, or a `TimelineRangeOffset`, its name left out where it has
+   *  none. */
   const rangeOut = (edge: RangeEdge): Any =>
     edge === 'normal'
       ? 'normal'
       : edge.name === null
-        ? edge.offset
+        ? { offset: edge.offset }
         : { rangeName: edge.name, offset: edge.offset };
+  /**
+   * A CSS animation as a page sees it (CSS Animations 2, 4.1): an
+   * `Animation` whose state is the document's — what its cascade runs —
+   * read again each time `getAnimations()` lists it, by its run's key, so a
+   * page holds one object for as long as the run lasts. Its effect's
+   * timing is the animation's longhands', and its timeline the clock's, a
+   * scroll's or a view's. What a page does to it changes it here, and not
+   * what is drawn, which is the cascade's.
+   */
+  class CSSAnimation extends Animation {
+    _name = '';
+    get animationName(): string {
+      return this._name;
+    }
+    // drawn by the document's cascade, and brought up to date by it
+    override _report(): void {}
+    override _watch(): void {}
+    override _reschedule(): void {}
+  }
+  /** Each CSS animation's object, by its run's key. */
+  const cssAnimationObjects = new Map<number, Any>();
+  /** The timeline objects a CSS animation runs on, by what they are, so a
+   *  page reads one object for one timeline. */
+  const cssTimelines = new Map<string, Any>();
+  const cssTimelineOf = (t: Any): Any => {
+    if (t.kind === 'document') return documentTimeline;
+    if (t.kind === 'none') return null;
+    const key =
+      t.kind === 'scroll'
+        ? `s${t.source}:${t.axis}`
+        : `v${t.subject}:${t.axis}:${t.inset.join(' ')}`;
+    let tl = cssTimelines.get(key);
+    if (!tl) {
+      tl =
+        t.kind === 'scroll'
+          ? new ScrollTimeline({
+              source: t.source ? wrap(t.source) : document.scrollingElement,
+              axis: t.axis,
+            })
+          : new ViewTimeline({
+              subject: wrap(t.subject),
+              axis: t.axis,
+              inset: t.inset.join(' '),
+            });
+      cssTimelines.set(key, tl);
+    }
+    return tl;
+  };
+  /** The CSS animations under way on `target`, or on what it holds, or in
+   *  the document for null, in tree order and then their order in
+   *  `animation-name` (CSS Animations 2, 4.1, "the composite order"). */
+  const cssAnimationsOf = (target: Any, subtree: boolean): Any[] => {
+    const raw = call(
+      'cssAnimations',
+      target && target !== document ? target._id : 0,
+      subtree,
+    );
+    const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
+    const out: Any[] = [];
+    for (const info of list) {
+      let a = cssAnimationObjects.get(info.key);
+      const el = wrap(info.element);
+      if (!a) {
+        const effect = new KeyframeEffect(el, null, {
+          duration: info.duration,
+          delay: info.delay,
+          iterations: info.iterations,
+          direction: info.direction,
+          fill: info.fill,
+          easing: info.easing,
+          pseudoElement: info.pseudo || null,
+        });
+        a = new CSSAnimation(effect, cssTimelineOf(info.timeline));
+        a._name = info.name;
+        cssAnimationObjects.set(info.key, a);
+      } else {
+        a._timeline = cssTimelineOf(info.timeline);
+      }
+      a._effect._timing = timingOf(
+        {
+          duration: info.duration,
+          delay: info.delay,
+          iterations: info.iterations,
+          direction: info.direction,
+          fill: info.fill,
+          easing: info.easing,
+        },
+        null,
+      );
+      a._rangeStart = rangeEdgeOf(info.rangeStart, false);
+      a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+      a._pendingPlay = false;
+      a._pendingPause = false;
+      if (!a._timeline) {
+        a._start = null;
+        a._hold = null;
+      } else if (a._finite()) {
+        // on a scroll's timeline, where its range starts
+        a._autoAlign = true;
+        a._start = a._range()[0];
+        a._hold = null;
+        if (info.paused) {
+          a._hold = a._cur();
+          a._start = null;
+        }
+      } else if (info.paused) {
+        a._start = null;
+        a._hold = info.currentTime;
+      } else {
+        a._hold = null;
+        a._start = a._timeline._time() - info.currentTime;
+      }
+      out.push(a);
+    }
+    // what the cascade no longer runs is no one's
+    const keys = new Set(list.map((info: Any) => info.key));
+    if (!target || target === document) {
+      for (const key of [...cssAnimationObjects.keys()]) {
+        if (!keys.has(key)) cssAnimationObjects.delete(key);
+      }
+    }
+    return out;
+  };
+
   /** The animations running on `target`, or on what it holds as well, in
-   *  their composite order. */
-  const animationsOf = (target: Any, subtree: boolean): Any[] =>
-    [...liveAnimations]
+   *  their composite order: the CSS animations first, then a script's. */
+  const animationsOf = (target: Any, subtree: boolean): Any[] => [
+    ...cssAnimationsOf(target, subtree),
+    ...[...liveAnimations]
       .filter((a) => {
         const on = a.effect?.target;
         if (!on || a.replaceState === 'removed') return false;
         if (a.playState === 'finished' && a._effect._state().active === null) {
           return false;
         }
-        return on === target || (subtree && target.contains?.(on));
+        return (
+          target === document ||
+          on === target ||
+          (subtree && target.contains?.(on))
+        );
       })
-      .sort((a, b) => a._hostId - b._hostId);
+      .sort((a, b) => a._hostId - b._hostId),
+  ];
 
   /** The mouse, the one pointer there is (Pointer Events 3): the buttons
    *  held, as the DOM's mask, kept from the presses and releases told
@@ -19554,6 +19686,7 @@ export function installDom(
     ScrollTimeline,
     ViewTimeline,
     Animation,
+    CSSAnimation,
     CSSStyleValue,
     CSSNumericValue,
     CSSUnitValue,

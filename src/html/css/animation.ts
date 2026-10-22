@@ -45,6 +45,9 @@ export type FillMode = 'none' | 'forwards' | 'backwards' | 'both';
 
 export type PlayState = 'running' | 'paused';
 
+/** An `animation-duration`: milliseconds, or `auto`. */
+export type AnimationDuration = number | 'auto';
+
 /**
  * An element's animations: each longhand's list as computed. There are as
  * many animations as `names` has entries; a shorter list of another
@@ -53,8 +56,10 @@ export type PlayState = 'running' | 'paused';
 export interface Animations {
   /** `animation-name`: the `@keyframes` each runs, null for `none`. */
   readonly names: readonly (string | null)[];
-  /** `animation-duration`, in milliseconds: `auto` is 0. */
-  readonly durations: readonly number[];
+  /** `animation-duration`, in milliseconds, or `auto`: none on the
+   *  clock's timeline, and all of its range on a scroll's (CSS Animations 2,
+   *  3.2). `timingAt` reads it as a number. */
+  readonly durations: readonly AnimationDuration[];
   /** `animation-timing-function`. */
   readonly easings: readonly Easing[];
   /** `animation-delay`, in milliseconds, before the first iteration. */
@@ -88,7 +93,7 @@ const EASINGS: Record<string, Easing> = {
  *  element without one shares it, which is how the cascade tells. */
 export const NO_ANIMATIONS: Animations = {
   names: [null],
-  durations: [0],
+  durations: ['auto'],
   easings: [EASE],
   delays: [0],
   iterations: [1],
@@ -128,7 +133,7 @@ const ONE: {
   ) => Animations[K][number] | null | undefined;
 } = {
   names: animationName,
-  durations: (v) => (v.toLowerCase() === 'auto' ? 0 : duration(v)),
+  durations: (v) => (v.toLowerCase() === 'auto' ? 'auto' : duration(v)),
   easings: parseEasing,
   delays: parseTime,
   iterations: iterationCount,
@@ -174,7 +179,7 @@ export function animationLonghand(
  */
 export function parseAnimation(value: string): Animations | null {
   const names: (string | null)[] = [];
-  const durations: number[] = [];
+  const durations: AnimationDuration[] = [];
   const easings: Easing[] = [];
   const delays: number[] = [];
   const iterations: number[] = [];
@@ -186,7 +191,7 @@ export function parseAnimation(value: string): Animations | null {
     if (!tokens.length) return null;
     let name: string | null | undefined;
     let time = 0;
-    let dur: number | undefined;
+    let dur: AnimationDuration | undefined;
     let del: number | undefined;
     let easing: Easing | undefined;
     let count: number | undefined;
@@ -195,6 +200,12 @@ export function parseAnimation(value: string): Animations | null {
     let play: PlayState | undefined;
     for (const token of tokens) {
       const lower = token.toLowerCase();
+      // `auto` is the duration, the first of the two times
+      if (lower === 'auto' && time === 0) {
+        dur = 'auto';
+        time = 1;
+        continue;
+      }
       const t = parseTime(token);
       if (t !== null) {
         if (time === 0) {
@@ -237,7 +248,7 @@ export function parseAnimation(value: string): Animations | null {
       }
     }
     names.push(name ?? null);
-    durations.push(dur ?? 0);
+    durations.push(dur ?? 'auto');
     easings.push(easing ?? EASE);
     delays.push(del ?? 0);
     iterations.push(count ?? 1);
@@ -803,10 +814,102 @@ function pointsAt(
   return points[points.length - 1].output;
 }
 
+/** An easing as CSS serializes it. */
+export function easingText(e: Easing): string {
+  switch (e.type) {
+    case 'linear':
+      return 'linear';
+    case 'cubic': {
+      const k = `${e.x1},${e.y1},${e.x2},${e.y2}`;
+      const named: Record<string, string> = {
+        '0.25,0.1,0.25,1': 'ease',
+        '0.42,0,1,1': 'ease-in',
+        '0,0,0.58,1': 'ease-out',
+        '0.42,0,0.58,1': 'ease-in-out',
+      };
+      return named[k] ?? `cubic-bezier(${e.x1}, ${e.y1}, ${e.x2}, ${e.y2})`;
+    }
+    case 'steps':
+      return e.position === 'jump-end'
+        ? `steps(${e.count})`
+        : e.position === 'jump-start'
+          ? `steps(${e.count}, start)`
+          : `steps(${e.count}, ${e.position})`;
+    case 'points':
+      return `linear(${e.points.map((p) => `${p.output} ${p.input * 100}%`).join(', ')})`;
+  }
+}
+
+/**
+ * One animation of the `animation` shorthand from its longhands' values —
+ * duration, easing, delay, iteration count, direction, fill mode, play
+ * state and name — each left out where it is the initial one, but the
+ * duration where a delay follows it, and `none` where all of them are.
+ */
+export function animationItemText(parts: readonly string[]): string {
+  const [duration, easing, delay, count, direction, fill, play, name] = parts;
+  const delayed = delay !== '0s';
+  const out: string[] = [];
+  if ((duration !== '0s' && duration !== 'auto') || delayed) {
+    out.push(duration);
+  }
+  if (easing !== 'ease') out.push(easing);
+  if (delayed) out.push(delay);
+  if (count !== '1') out.push(count);
+  if (direction !== 'normal') out.push(direction);
+  if (fill !== 'none') out.push(fill);
+  if (play !== 'running') out.push(play);
+  if (name !== 'none') out.push(name);
+  return out.length ? out.join(' ') : 'none';
+}
+
+/** A time as CSSOM writes it, in seconds. */
+export function secondsText(ms: number): string {
+  const r = Math.round(ms) / 1000;
+  return `${Object.is(r, -0) ? 0 : r}s`;
+}
+
+/**
+ * The `animation` shorthand as `el.style` keeps it: each longhand it sets,
+ * with its value — the eight it is written with, and the timeline and the
+ * range it sets back (CSS Animations 2, 4) — or null for a value that is
+ * none.
+ */
+export function animationLonghandsOf(value: string): [string, string][] | null {
+  const a = parseAnimation(value);
+  if (!a) return null;
+  return [
+    [
+      'animation-duration',
+      a.durations
+        .map((d) => (d === 'auto' ? 'auto' : secondsText(d)))
+        .join(', '),
+    ],
+    ['animation-timing-function', a.easings.map(easingText).join(', ')],
+    ['animation-delay', a.delays.map(secondsText).join(', ')],
+    [
+      'animation-iteration-count',
+      a.iterations
+        .map((n) => (n === Infinity ? 'infinite' : String(n)))
+        .join(', '),
+    ],
+    ['animation-direction', a.directions.join(', ')],
+    ['animation-fill-mode', a.fillModes.join(', ')],
+    ['animation-play-state', a.playStates.join(', ')],
+    ['animation-name', a.names.map((n) => n ?? 'none').join(', ')],
+    ['animation-timeline', 'auto'],
+    ['animation-range-start', 'normal'],
+    ['animation-range-end', 'normal'],
+  ];
+}
+
 /** One animation's timing, from its longhands. */
 export interface Timing {
   /** Milliseconds an iteration takes. */
   duration: number;
+  /** Whether that was `auto`, which on a scroll's timeline is all of its
+   *  range. */
+  auto?: boolean;
   /** Milliseconds before the first starts; less than none starts it part
    *  of the way through. */
   delay: number;
@@ -821,8 +924,10 @@ export interface Timing {
  *  list repeating as it does (CSS Animations 1, 4). */
 export function timingAt(animations: Animations, index: number): Timing {
   const at = <T>(list: readonly T[]): T => list[index % list.length];
+  const duration = at(animations.durations);
   return {
-    duration: at(animations.durations),
+    duration: duration === 'auto' ? 0 : duration,
+    auto: duration === 'auto',
     delay: at(animations.delays),
     iterations: at(animations.iterations),
     direction: at(animations.directions),

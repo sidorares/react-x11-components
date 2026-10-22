@@ -6,6 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { positionAreaText } from './anchor.js';
+import { animationItemText, animationLonghandsOf } from './animation.js';
 import { parseShapeFunction } from './shape-function.js';
 import { parseZoom, splitValue } from './values.js';
 import type { UnitContext } from './values.js';
@@ -68,6 +69,13 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return timeline(word);
+  }
+  // the `animation` shorthand, which takes no timeline and no range (CSS
+  // Animations 2, 4)
+  if (name === 'animation') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return animationLonghandsOf(word) ? word : null;
   }
   // a number or a percentage, neither below nought, or `normal` (CSS
   // Viewport 1, 5)
@@ -406,6 +414,7 @@ export function expandShorthand(
   value: string,
 ): [string, string][] | null {
   const name = prop.toLowerCase();
+  if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'position-try') {
     const order =
       /^(most-width|most-height|most-block-size|most-inline-size)\s+/.exec(
@@ -439,6 +448,19 @@ export function expandShorthand(
   return out;
 }
 
+/** The longhands an `animation` is read back from, in the order its
+ *  items are written. */
+const ANIMATION_PARTS = [
+  'animation-duration',
+  'animation-timing-function',
+  'animation-delay',
+  'animation-iteration-count',
+  'animation-direction',
+  'animation-fill-mode',
+  'animation-play-state',
+  'animation-name',
+];
+
 /** A shorthand `el.style` expanded, read back from its longhands, or ''
  *  where they do not make one (CSSOM 6.7, "serialize a CSS value" of a
  *  shorthand): their lists the same length. */
@@ -452,6 +474,26 @@ export function composeShorthand(
     const fallbacks = longhand('position-try-fallbacks');
     if (order === null || fallbacks === null) return '';
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
+  }
+  if (name === 'animation') {
+    if (
+      longhand('animation-timeline') !== 'auto' ||
+      longhand('animation-range-start') !== 'normal' ||
+      longhand('animation-range-end') !== 'normal'
+    ) {
+      return '';
+    }
+    const lists: string[][] = [];
+    for (const part of ANIMATION_PARTS) {
+      const v = longhand(part);
+      if (v === null) return '';
+      lists.push(splitTopLevel(v).map((x) => x.trim()));
+    }
+    const count = lists[0].length;
+    if (lists.some((l) => l.length !== count)) return '';
+    return lists[0]
+      .map((_, i) => animationItemText(lists.map((l) => l[i])))
+      .join(', ');
   }
   if (name !== 'scroll-timeline' && name !== 'view-timeline') return null;
   const view = name === 'view-timeline';
