@@ -142,6 +142,9 @@ export interface WorkerInit {
   name: string;
   source: string | null;
   origin: string;
+  /** A shared worker's (HTML 10.2.6.4), whose global takes connections
+   *  rather than messages of its own. */
+  shared?: boolean;
 }
 
 /** Where a page's workers run (`workers.ts`): each started, posted to and

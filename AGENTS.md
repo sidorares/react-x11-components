@@ -2182,7 +2182,13 @@ closes a way out a DOM binding opens by accident:
   (`serializeClone`) and made again where it lands. The thread's network
   is the page process's, and `importScripts` waits for its answer on a
   shared word (`Atomics.wait`, `receiveMessageOnPort`), which blocks the
-  worker and never the page.
+  worker and never the page. A `SharedWorker` is the same thread, one for
+  a script and a name, and each connection to it a `MessagePort` at
+  either end whose other side is a stand-in that sends across
+  (`wirePort`): its messages share the thread's one channel tagged with
+  the connection, `{ c, d }`, and the first is `{ c, connect }`. **Anything
+  new that crosses to a worker goes over that channel**, tagged where it
+  is a shared worker's, or a connection hears another's messages.
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins
