@@ -50,7 +50,7 @@ import {
   treeGeneration,
   treesChanged,
 } from '../dom.js';
-import { specifiedValue } from '../css/specified.js';
+import { specifiedValue, transitionSelectorValid } from '../css/specified.js';
 import { Cascade } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
@@ -2120,6 +2120,8 @@ export class DomHost {
       case 'query': {
         const root = this._node(a);
         const options = this._selectOptions();
+        // a view transition's pseudo-element is no element
+        if (this._transitionSelector(text(b))) return c ? '' : 0;
         try {
           if (c) {
             return selectAll(text(b), root as Element, options)
@@ -2135,6 +2137,7 @@ export class DomHost {
         }
       }
       case 'matches':
+        if (this._transitionSelector(text(b))) return false;
         try {
           return is(this._element(a), text(b), this._selectOptions());
         } catch {
@@ -2145,6 +2148,7 @@ export class DomHost {
         }
       case 'closest': {
         const options = this._selectOptions();
+        if (this._transitionSelector(text(b))) return 0;
         try {
           for (let at: AnyNode | null = this._element(a); at; at = at.parent) {
             if (at instanceof Element && is(at, text(b), options)) {
@@ -2211,7 +2215,13 @@ export class DomHost {
         const el = this._element(a);
         const state = this._sheetOf(el);
         const rules = cssRulesOf(text(b));
-        if (rules.length !== 1) {
+        const brace = rules.length === 1 ? rules[0].indexOf('{') : -1;
+        if (
+          rules.length !== 1 ||
+          (brace > 0 &&
+            !rules[0].startsWith('@') &&
+            transitionSelectorValid(rules[0].slice(0, brace)) === false)
+        ) {
           throw new DomError(
             'SyntaxError',
             `Failed to parse the rule '${text(b)}'.`,
@@ -2543,6 +2553,25 @@ export class DomHost {
       }
       case 'disabled':
         return isDisabled(this._element(a));
+
+      // the names a view transition would capture elements by, where two
+      // elements have one: what skips it (CSS View Transitions 1, 7.3)
+      case 'transitionNames': {
+        this.flush();
+        const seen = new Set<string>();
+        for (const el of DomUtils.findAll(() => true, this.document.children)) {
+          const name =
+            this._seams.handle.computedStyle(el, null)?.[
+              'view-transition-name'
+            ] ?? 'none';
+          if (name === 'none' || name === 'auto' || name === 'match-element') {
+            continue;
+          }
+          if (seen.has(name)) return name;
+          seen.add(name);
+        }
+        return '';
+      }
 
       // --- layout, which answers from the tree as the page left it
       // an element's padding and border widths, top, right, bottom, left
@@ -3302,6 +3331,20 @@ export class DomHost {
    * they load. One answered from something no script can see here — the
    * pointer's history, a popover, a full screen — matches nothing.
    */
+  /** Whether a selector is one of a view transition's pseudo-elements,
+   *  which match nothing; one written as no selector takes it is a
+   *  syntax error (`transitionSelectorValid`). */
+  private _transitionSelector(selector: string): boolean {
+    const valid = transitionSelectorValid(selector);
+    if (valid === false) {
+      throw new DomError(
+        'SyntaxError',
+        `'${selector}' is not a valid selector.`,
+      );
+    }
+    return valid === true;
+  }
+
   private _selectOptions(): {
     pseudos: Record<string, (el: Element, arg?: string | null) => boolean>;
   } {

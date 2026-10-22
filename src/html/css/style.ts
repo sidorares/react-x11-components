@@ -92,6 +92,7 @@ import {
   parseTriggerScope,
 } from './triggers.js';
 import type { TimelineTriggers, TriggerScope } from './triggers.js';
+import { viewTransitionClass, viewTransitionName } from './specified.js';
 import type { BasicShape } from './basic-shape.js';
 
 export type Display =
@@ -999,6 +1000,11 @@ export interface ComputedStyle {
    *  or the names, lowercased, in the order written. What an animation
    *  makes of the element is none of them. */
   willChangeNames: string;
+  /** `view-transition-name` and `view-transition-class` (CSS View
+   *  Transitions), as they are serialized: `none`, a keyword or the names
+   *  as written. What a transition captures the element by. */
+  viewTransitionName: string;
+  viewTransitionClass: string;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down, and a
    *  depth toward the viewer in device pixels, 0 where none is written;
@@ -1649,6 +1655,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backdropFilter: null,
     isolation: 'auto',
     willChangeNames: 'auto',
+    viewTransitionName: 'none',
+    viewTransitionClass: 'none',
     willChange: 0,
     translate: null,
     rotate: null,
@@ -2796,6 +2804,16 @@ export function applyDeclaration(
     case 'isolation': {
       const v = value.trim().toLowerCase();
       if (v === 'auto' || v === 'isolate') style.isolation = v;
+      return;
+    }
+    case 'view-transition-name': {
+      const name = viewTransitionName(value);
+      if (name !== null) style.viewTransitionName = name;
+      return;
+    }
+    case 'view-transition-class': {
+      const names = viewTransitionClass(value);
+      if (names !== null) style.viewTransitionClass = names;
       return;
     }
     case 'will-change': {
@@ -7586,6 +7604,8 @@ const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'contain',
   'willChange',
   'willChangeNames',
+  'viewTransitionName',
+  'viewTransitionClass',
   'animations',
   'transitions',
   'mask',
@@ -8147,6 +8167,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
   'will-change': ['willChange', 'willChangeNames'],
+  'view-transition-name': ['viewTransitionName'],
+  'view-transition-class': ['viewTransitionClass'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],
