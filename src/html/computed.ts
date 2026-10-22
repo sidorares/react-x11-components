@@ -68,6 +68,34 @@ function insetText(inset: readonly [Len, Len], scale: number): string | null {
   return a === b ? a : `${a} ${b}`;
 }
 
+/** `scroll-timeline` or `view-timeline` from its longhands: each name,
+ *  with its axis and inset where they are not the initial ones. */
+function timelineShorthand(
+  names: string,
+  axes: string,
+  insets: readonly (readonly [Len, Len])[] | null,
+  scale: number,
+): string {
+  const axisList = axes.split(', ');
+  const nameList = names.split(', ');
+  // lists of other lengths make no shorthand (CSSOM 6.7.2)
+  if (
+    axisList.length !== nameList.length ||
+    (insets && insets.length !== nameList.length)
+  ) {
+    return '';
+  }
+  return nameList
+    .map((name, i) => {
+      const axis = axisList[i % axisList.length];
+      const inset = insets ? insetText(insets[i % insets.length], scale) : null;
+      return [name, axis === 'block' ? '' : axis, inset ?? '']
+        .filter(Boolean)
+        .join(' ');
+    })
+    .join(', ');
+}
+
 /** An `animation-timeline` value as it is serialized, its defaults left
  *  out: `scroll()` names its scroller before its axis. */
 function timelineText(t: TimelineRef, scale: number): string {
@@ -390,6 +418,18 @@ function cssomAt(
     'view-timeline-inset': style.viewTimelineInset
       .map((inset) => insetText(inset, scale) ?? 'auto')
       .join(', '),
+    'scroll-timeline': timelineShorthand(
+      style.scrollTimelineName,
+      style.scrollTimelineAxis,
+      null,
+      scale,
+    ),
+    'view-timeline': timelineShorthand(
+      style.viewTimelineName,
+      style.viewTimelineAxis,
+      style.viewTimelineInset,
+      scale,
+    ),
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, color),

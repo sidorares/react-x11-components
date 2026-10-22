@@ -54,7 +54,12 @@ import {
   treeGeneration,
   treesChanged,
 } from '../dom.js';
-import { specifiedValue, transitionSelectorValid } from '../css/specified.js';
+import {
+  composeShorthand,
+  expandShorthand,
+  specifiedValue,
+  transitionSelectorValid,
+} from '../css/specified.js';
 import { Cascade } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
@@ -1923,6 +1928,16 @@ export class DomHost {
           .filter((d) => d.prop === text(b))
           .at(-1);
         if (op === 'stylePriority') return found?.important ? 'important' : '';
+        if (!found) {
+          // a shorthand kept as its longhands, read back from them
+          const decls = this._declarations(this._element(a));
+          const composed = composeShorthand(
+            text(b),
+            (name) =>
+              decls.filter((d) => d.prop === name).at(-1)?.value ?? null,
+          );
+          if (composed !== null) return composed;
+        }
         return found?.value ?? '';
       }
       case 'styleNames':
@@ -1941,8 +1956,18 @@ export class DomHost {
         const raw = closeBrackets(text(c));
         const value = raw && specifiedValue(name, raw);
         if (value === null) return null;
-        const kept = this._declarations(el).filter((d) => d.prop !== name);
-        if (raw) {
+        // a shorthand this expands is kept as its longhands
+        const longhands = raw && value ? expandShorthand(name, value) : null;
+        const names = new Set([
+          name,
+          ...(expandShorthand(name, 'none') ?? []).map(([n]) => n),
+        ]);
+        const kept = this._declarations(el).filter((x) => !names.has(x.prop));
+        if (longhands) {
+          for (const [prop, v] of longhands) {
+            kept.push({ prop, value: v, important: d === 'important' });
+          }
+        } else if (raw) {
           kept.push({
             prop: name,
             value: value || raw,

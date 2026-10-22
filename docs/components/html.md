@@ -2648,9 +2648,13 @@ box is still fixed, where CSS has it scroll.
 **Scroll-driven timelines** are read and serialized and drive nothing
 yet: `animation-timeline` — `auto`, `none`, a name, `scroll()` and
 `view()` — `scroll-timeline-name` and `-axis`, `view-timeline-name`,
-`-axis` and `-inset`, and `timeline-scope` answer `getComputedStyle` as
+`-axis` and `-inset`, the `scroll-timeline` and `view-timeline`
+shorthands, and `timeline-scope` answer `getComputedStyle` as
 Scroll-driven Animations 1 computes them, and every animation runs on the
-document's timeline.
+document's timeline. A script's `el.style` takes each of them only as its
+grammar has it, keeps it with its defaults left out, and keeps either
+shorthand as its longhands, which it reads back as the shorthand where
+their lists are as long as each other.
 
 **Animations:** `@keyframes`, and `@-webkit-keyframes`, which never takes
 the place of an `@keyframes` of the same name, as in Chrome; `animation`

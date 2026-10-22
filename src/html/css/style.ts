@@ -2871,6 +2871,47 @@ export function applyDeclaration(
       else style.viewTimelineAxis = axes;
       return;
     }
+    // the shorthands: each item a name, then an axis and, for a view
+    // timeline, an inset, in either order (Scroll Animations 1, 2.4.3)
+    case 'scroll-timeline':
+    case 'view-timeline': {
+      const view = written === 'view-timeline';
+      const names: string[] = [];
+      const axes: string[] = [];
+      const insets: [Len, Len][] = [];
+      for (const part of splitCommas(value)) {
+        const words = splitValue(part.trim()).filter(Boolean);
+        const name = words.shift();
+        if (!name) return;
+        if (/^none$/i.test(name)) names.push('none');
+        else if (DASHED.test(name)) names.push(name);
+        else return;
+        let axis = 'block';
+        if (words.length && AXES.test(words[0])) {
+          axis = words.shift()!.toLowerCase();
+        } else if (words.length && AXES.test(words[words.length - 1])) {
+          axis = words.pop()!.toLowerCase();
+        }
+        axes.push(axis);
+        let inset: [Len, Len] = ['auto', 'auto'];
+        if (words.length) {
+          const read = view ? insetOf(words, ctx) : null;
+          if (!read) return;
+          inset = read;
+        }
+        insets.push(inset);
+      }
+      if (!names.length) return;
+      if (view) {
+        style.viewTimelineName = names.join(', ');
+        style.viewTimelineAxis = axes.join(', ');
+        style.viewTimelineInset = insets;
+      } else {
+        style.scrollTimelineName = names.join(', ');
+        style.scrollTimelineAxis = axes.join(', ');
+      }
+      return;
+    }
     case 'view-timeline-inset': {
       const insets: [Len, Len][] = [];
       for (const part of splitCommas(value)) {
@@ -8243,6 +8284,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'view-timeline-name': ['viewTimelineName'],
   'view-timeline-axis': ['viewTimelineAxis'],
   'view-timeline-inset': ['viewTimelineInset'],
+  'scroll-timeline': ['scrollTimelineName', 'scrollTimelineAxis'],
+  'view-timeline': [
+    'viewTimelineName',
+    'viewTimelineAxis',
+    'viewTimelineInset',
+  ],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
   'will-change': ['willChange', 'willChangeNames'],
