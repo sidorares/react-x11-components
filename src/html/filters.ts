@@ -1,14 +1,15 @@
-// The pixels of a box a `filter`'s colour functions are run over, kept
-// between paints (`paintFiltered`).
+// The pixels of a box a `filter`'s colour functions and blur are run over,
+// kept between paints (`paintFiltered`).
 //
 // No context this draws on has a filter of its own, and none hands a
 // surface's pixels over as it is asked: ntk's are the X server's, a round
 // trip away, and the native contexts keep the canvas contract and resolve a
 // read a tick later. So a filtered box's group is painted on a surface,
 // unfiltered, and read back, and the box is drawn from the newest pixels
-// read for it: the matrices it has now are run over them at every paint
-// that needs other ones — each frame of a transition of the filter, as a
-// hover runs one — and the result put on a surface kept for it.
+// read for it: the matrices and the blur it has now are run over them at
+// every paint that needs other ones — each frame of a transition of the
+// filter, as a hover runs one — and the result put on a surface kept for
+// it.
 //
 // What the box draws changing makes what was read no longer fresh
 // (`stale`), as it makes the element forget the surfaces kept for boxes,
@@ -26,7 +27,7 @@
 // build makes every box again, and what was read for an element is what is
 // drawn for it until a read under its new boxes arrives.
 
-import { applyMatrices } from './css/filter.js';
+import { applyMatrices, blurPixels } from './css/filter.js';
 import type { ColourMatrix } from './css/filter.js';
 import { newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -440,14 +441,17 @@ export class FilterStore {
   unfiltered = false;
 
   /**
-   * The surface the matrices make of the pixels read for `kept`, made again
-   * only where they or the pixels are other ones than it holds: null where
-   * none can be made, or nothing read is the box's size.
+   * The surface the matrices and the blur make of the pixels read for
+   * `kept`, made again only where they or the pixels are other ones than
+   * it holds: null where none can be made, or nothing read is the box's
+   * size.
    */
   filtered(
     kept: Filtered,
     matrices: readonly ColourMatrix[],
     matricesKey: string,
+    /** The blur's standard deviation, in the pixels read; 0 for none. */
+    blur = 0,
   ): SurfaceLike | null {
     const raw = kept.raw;
     if (!raw || raw.width !== kept.width || raw.height !== kept.height) {
@@ -475,6 +479,7 @@ export class FilterStore {
     const ctx = kept.outCtx;
     if (typeof ctx?.putImageData !== 'function') return null;
     applyMatrices(raw.data, scratch.data, matrices);
+    if (blur > 0) blurPixels(scratch.data, width, height, blur);
     ctx.putImageData(scratch, 0, 0);
     kept.outFor = want;
     return kept.out;

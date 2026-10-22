@@ -11,9 +11,11 @@
 // `brightness()`, `contrast()` and `invert()`. `opacity()` is the one that
 // changes alpha, and a scale of it commutes with every other function here,
 // so it is taken out and multiplied into the group's opacity
-// (`colourFilter`). `blur()` and `drop-shadow()` are read and computed, so a
-// list with them in it interpolates and makes the box what any filter
-// makes it, and are not drawn yet.
+// (`colourFilter`). `blur()` is a Gaussian over the group's pixels
+// (`blurPixels`), and reaches past what the box draws by three of its
+// standard deviations (`filterOutsets`). `drop-shadow()` is read and
+// computed, so a list with it in it interpolates and makes the box what any
+// filter makes it, and is not drawn yet.
 
 import { parseAngle, parseFactor } from './transform.js';
 import { parseColor, parseLength } from './values.js';
@@ -207,27 +209,35 @@ export function interpolateFilters(
  *  as it is. */
 export type ColourMatrix = Float64Array;
 
-/** What a `filter` list does that a colour pass can do: its colour
- *  matrices in the order written, each one's result clamped before the
- *  next, as each function's is; and what alpha is multiplied by. */
+/** What a `filter` list does that the pass can do: its colour matrices in
+ *  the order written, each one's result clamped before the next, as each
+ *  function's is; the blur; and what alpha is multiplied by. */
 export interface ColourFilter {
   matrices: ColourMatrix[];
-  /** What two filters with one key do the same (`matricesKey`). */
+  /** The standard deviation of the blur its `blur()`s come to, in device
+   *  pixels: the root of the sum of their squares, as two Gaussians make
+   *  one. 0 for none. Each colour function is a linear map on
+   *  premultiplied colour, which a blur, a weighted sum of premultiplied
+   *  pixels, commutes with, so where in the list a blur is written changes
+   *  nothing but where the clamps fall, and it is run after them. */
+  blur: number;
+  /** What two filters with one key do the same (`matricesKey`, and the
+   *  blur). */
   key: string;
-  /** The colour functions as a filter list a 2d context takes — canvas's
-   *  `filter`, which react-x11's native context runs (`FilterStore`'s
-   *  `through`) — without `opacity()`, which is the box's opacity. */
+  /** The colour functions and the blur as a filter list a 2d context takes
+   *  — canvas's `filter`, which react-x11's native context runs
+   *  (`FilterStore`'s `through`) — without `opacity()`, which is the box's
+   *  opacity. */
   css: string;
   alpha: number;
-  /** Whether the list has a function the pass does not do — `blur()`,
-   *  `drop-shadow()`, a `url()` — which is drawn as though it were not
-   *  there. */
+  /** Whether the list has a function the pass does not do — a
+   *  `drop-shadow()` — which is drawn as though it were not there. */
   partial: boolean;
 }
 
-/** The colour functions of a `filter` list (`ColourFilter`); null where
- *  there are none and alpha is left as it is, and only what the colour
- *  functions leave as they are is in the list. */
+/** The colour functions and the blur of a `filter` list (`ColourFilter`);
+ *  null where there are none and alpha is left as it is, and only what the
+ *  colour functions leave as they are is in the list. */
 export function colourFilter(
   list: readonly FilterFunction[] | null,
 ): ColourFilter | null {
@@ -235,6 +245,7 @@ export function colourFilter(
   const matrices: ColourMatrix[] = [];
   const css: string[] = [];
   let alpha = 1;
+  let blur2 = 0;
   let partial = false;
   for (const f of list) {
     if (f.fn === 'url') {
@@ -246,7 +257,11 @@ export function colourFilter(
       alpha *= unit(f.amount);
       continue;
     }
-    if (f.fn === 'blur' || f.fn === 'drop-shadow') {
+    if (f.fn === 'blur') {
+      blur2 += f.radius * f.radius;
+      continue;
+    }
+    if (f.fn === 'drop-shadow') {
       partial = true;
       continue;
     }
@@ -259,14 +274,56 @@ export function colourFilter(
         : `${f.fn}(${f.amount})`,
     );
   }
-  if (!matrices.length && alpha === 1) return null;
+  const blur = Math.sqrt(blur2);
+  if (!matrices.length && alpha === 1 && !(blur > 0)) return null;
+  if (blur > 0) css.push(`blur(${blur}px)`);
   return {
     matrices,
-    key: matricesKey(matrices),
+    blur,
+    key:
+      blur > 0
+        ? `${matricesKey(matrices)} blur ${blur}`
+        : matricesKey(matrices),
     css: css.join(' '),
     alpha,
     partial,
   };
+}
+
+/** Whether a filter has anything the pass runs over a group's pixels: a
+ *  colour matrix or a blur. */
+export function runsOverPixels(colour: ColourFilter | null): boolean {
+  return !!colour && (colour.matrices.length > 0 || colour.blur > 0);
+}
+
+/** How far past what a box draws its filter's output reaches, each side. */
+export interface FilterOutsets {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * How far past what a box and all it holds draw a `filter` list draws:
+ * each `blur()` three of its standard deviations further, as far as a
+ * Gaussian shows (Skia's blur, and so Chrome's ink overflow, is outset by
+ * 3σ), in the order written. Null where it reaches no further — no blur,
+ * or a `url()`, which has the whole list ignored (Filter Effects 1, 4).
+ * It is ink, and no scrollable overflow.
+ */
+export function filterOutsets(
+  list: readonly FilterFunction[] | null,
+): FilterOutsets | null {
+  if (!list) return null;
+  let reach = 0;
+  for (const f of list) {
+    if (f.fn === 'url') return null;
+    if (f.fn === 'blur' && f.radius > 0) reach += Math.ceil(3 * f.radius);
+  }
+  return reach > 0
+    ? { left: reach, top: reach, right: reach, bottom: reach }
+    : null;
 }
 
 /**
@@ -452,5 +509,152 @@ export function applyMatrices(
     dst[i] = r;
     dst[i + 1] = g;
     dst[i + 2] = b;
+  }
+}
+
+/**
+ * A Gaussian of standard deviation `sigma` run over straight RGBA pixels in
+ * place — on premultiplied colour, as a filter primitive works, with
+ * nothing past the edges — the way `feGaussianBlur` has it (Filter Effects
+ * 1, 9.15): from a deviation of 2 up, three box blurs one after the other
+ * across and three down, which come to within a few percent of the
+ * Gaussian; under it, the Gaussian itself, a kernel three deviations each
+ * side. Run where no context runs a filter itself, over the pixels read
+ * back for a box (`FilterStore.filtered`).
+ */
+export function blurPixels(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  sigma: number,
+): void {
+  if (!(sigma > 0) || width <= 0 || height <= 0) return;
+  const n = width * height;
+  const planes = [
+    new Float32Array(n),
+    new Float32Array(n),
+    new Float32Array(n),
+    new Float32Array(n),
+  ];
+  const [r, g, b, alpha] = planes;
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const a = data[i + 3];
+    if (a === 0) continue;
+    const k = a / 255;
+    r[p] = data[i] * k;
+    g[p] = data[i + 1] * k;
+    b[p] = data[i + 2] * k;
+    alpha[p] = a;
+  }
+  const pass = blurPass(sigma);
+  const long = Math.max(width, height);
+  const line = new Float64Array(long);
+  const spare = new Float64Array(long);
+  for (const plane of planes) {
+    for (let y = 0; y < height; y += 1) {
+      const at = y * width;
+      for (let x = 0; x < width; x += 1) line[x] = plane[at + x];
+      const out = pass(line, spare, width);
+      for (let x = 0; x < width; x += 1) plane[at + x] = out[x];
+    }
+    for (let x = 0; x < width; x += 1) {
+      for (let y = 0; y < height; y += 1) line[y] = plane[y * width + x];
+      const out = pass(line, spare, height);
+      for (let y = 0; y < height; y += 1) plane[y * width + x] = out[y];
+    }
+  }
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const a = alpha[p];
+    if (!(a > 0.5)) {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 0;
+      continue;
+    }
+    const k = 255 / a;
+    data[i] = r[p] * k;
+    data[i + 1] = g[p] * k;
+    data[i + 2] = b[p] * k;
+    data[i + 3] = a;
+  }
+}
+
+/**
+ * One line's blur, `feGaussianBlur`'s: `line` and `spare` the two buffers
+ * it moves between, the result in whichever it ends in. Three box blurs of
+ * `d` where `d` is odd, each centred on the pixel; where it is even, two of
+ * `d` centred on the boundaries either side of the pixel and one of `d + 1`
+ * centred on it.
+ */
+function blurPass(
+  sigma: number,
+): (line: Float64Array, spare: Float64Array, len: number) => Float64Array {
+  if (sigma >= 2) {
+    const d = Math.floor((sigma * 3 * Math.sqrt(2 * Math.PI)) / 4 + 0.5);
+    const half = d >> 1;
+    const windows: [number, number][] =
+      d % 2 === 1
+        ? [
+            [-half, half],
+            [-half, half],
+            [-half, half],
+          ]
+        : [
+            [-half, half - 1],
+            [-half + 1, half],
+            [-half, half],
+          ];
+    return (line, spare, len) => {
+      let from = line;
+      let to = spare;
+      for (const [lo, hi] of windows) {
+        boxBlur(from, to, len, lo, hi);
+        [from, to] = [to, from];
+      }
+      return from;
+    };
+  }
+  const reach = Math.ceil(3 * sigma);
+  const weights = new Float64Array(2 * reach + 1);
+  let total = 0;
+  for (let k = -reach; k <= reach; k += 1) {
+    const w = Math.exp(-(k * k) / (2 * sigma * sigma));
+    weights[k + reach] = w;
+    total += w;
+  }
+  for (let k = 0; k < weights.length; k += 1) weights[k] /= total;
+  return (line, spare, len) => {
+    for (let i = 0; i < len; i += 1) {
+      let sum = 0;
+      const lo = Math.max(0, i - reach);
+      const hi = Math.min(len - 1, i + reach);
+      for (let j = lo; j <= hi; j += 1) sum += line[j] * weights[j - i + reach];
+      spare[i] = sum;
+    }
+    return spare;
+  };
+}
+
+/** The mean of `src` over the window from `i + lo` to `i + hi` into each
+ *  `dst[i]`, what is past either end counting as nothing. */
+function boxBlur(
+  src: Float64Array,
+  dst: Float64Array,
+  len: number,
+  lo: number,
+  hi: number,
+): void {
+  const size = hi - lo + 1;
+  let sum = 0;
+  for (let k = Math.max(0, lo); k <= Math.min(len - 1, hi); k += 1) {
+    sum += src[k];
+  }
+  for (let i = 0; i < len; i += 1) {
+    dst[i] = sum / size;
+    const enter = i + hi + 1;
+    const leave = i + lo;
+    if (enter < len) sum += src[enter];
+    if (leave >= 0 && leave < len) sum -= src[leave];
   }
 }

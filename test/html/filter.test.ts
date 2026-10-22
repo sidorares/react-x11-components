@@ -20,7 +20,9 @@ import { animationClock } from '../../src/html/node.js';
 import { FilterStore } from '../../src/html/filters.js';
 import {
   applyMatrices,
+  blurPixels,
   colourFilter,
+  filterOutsets,
   interpolateFilters,
 } from '../../src/html/css/filter.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
@@ -196,11 +198,93 @@ test('the colour functions come to the matrices Filter Effects 1 gives them, opa
     ]),
     null,
   );
-  assert.strictEqual(
-    colourFilter([{ fn: 'blur', radius: 4 }])?.partial ?? null,
-    null,
-    'a blur alone is nothing the colour pass does',
+  const blurred = colourFilter([
+    { fn: 'grayscale', amount: 1 },
+    { fn: 'blur', radius: 3 },
+    { fn: 'blur', radius: 4 },
+  ])!;
+  assert.deepStrictEqual(
+    [blurred.matrices.length, blurred.blur, blurred.css, blurred.partial],
+    [1, 5, 'grayscale(1) blur(5px)', false],
+    'two blurs are one, the root of the sum of their squares',
   );
+  assert.notStrictEqual(
+    colourFilter([{ fn: 'blur', radius: 4 }]),
+    null,
+    'a blur alone is something the pass does',
+  );
+  assert.strictEqual(
+    colourFilter([{ fn: 'blur', radius: 4 }])!.key ===
+      colourFilter([{ fn: 'blur', radius: 2 }])!.key,
+    false,
+    'two blurs of other deviations are told apart',
+  );
+  assert.deepStrictEqual(
+    filterOutsets([
+      { fn: 'blur', radius: 4 },
+      { fn: 'invert', amount: 1 },
+      { fn: 'blur', radius: 0.5 },
+    ]),
+    { left: 14, top: 14, right: 14, bottom: 14 },
+    'three deviations a blur, rounded up, one after the other',
+  );
+  assert.strictEqual(filterOutsets([{ fn: 'invert', amount: 1 }]), null);
+  assert.strictEqual(
+    filterOutsets([
+      { fn: 'blur', radius: 4 },
+      { fn: 'url', url: '#missing' },
+    ]),
+    null,
+    'a list with a url() in it is ignored',
+  );
+});
+
+test("blur() is feGaussianBlur's: a Gaussian of the deviation it names over premultiplied colour, with nothing past the edges", () => {
+  // the left half of a square opaque red, the right half nothing: across
+  // the middle row, a Gaussian's edge at x = 32
+  const size = 64;
+  const edge = (sigma: number) => {
+    const data = new Uint8ClampedArray(size * size * 4);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size / 2; x += 1) {
+        data.set([255, 0, 0, 255], (y * size + x) * 4);
+      }
+    }
+    blurPixels(data, size, size, sigma);
+    const row = (size / 2) * size * 4;
+    return (x: number) =>
+      Array.from(data.subarray(row + x * 4, row + x * 4 + 4));
+  };
+  // how opaque a pixel whose middle is `d` past the edge is: 1 - Φ(d / σ)
+  const phi = (z: number) => {
+    // Abramowitz and Stegun 7.1.26, to well under a level of 255
+    const t = 1 / (1 + 0.3275911 * (Math.abs(z) / Math.SQRT2));
+    const erf =
+      1 -
+      ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) *
+        t +
+        0.254829592) *
+        t *
+        Math.exp(-(z * z) / 2);
+    return z < 0 ? (1 - erf) / 2 : (1 + erf) / 2;
+  };
+  for (const sigma of [1, 4, 10]) {
+    const at = edge(sigma);
+    for (const x of [28, 30, 31, 32, 33, 35]) {
+      const want = 255 * (1 - phi((x + 0.5 - 32) / sigma));
+      const [r, g, b, a] = at(x);
+      assert.ok(
+        Math.abs(a - want) <= 5,
+        `σ ${sigma}, x ${x}: alpha ${a}, a Gaussian's ${want.toFixed(1)}`,
+      );
+      // premultiplied: red fades into nothing, never into black
+      if (a > 2)
+        assert.deepStrictEqual([r, g, b], [255, 0, 0], `σ ${sigma}, x ${x}`);
+    }
+  }
+  const at = edge(4);
+  assert.deepStrictEqual(at(16), [255, 0, 0, 255], 'far inside, as it was');
+  assert.deepStrictEqual(at(63), [0, 0, 0, 0], 'far outside, nothing');
 });
 
 test('two filter lists interpolate function by function, `none` and a shorter list filled out with functions at nothing, and lists not alike go over at half-way', () => {
@@ -352,6 +436,61 @@ test('a filter at 2x is run over the device pixels the box covers, and no more',
   });
   await expectPixel(result.ctx, 40 + 82, 40 + 38, '#ffffff', {
     message: 'past its right edge, 80 device pixels in',
+  });
+});
+
+test('blur() draws the box past where it is by three deviations, its ink reaching as far, at any scale', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  const black =
+    '<div id="b" style="margin:40px 0 0 40px;width:40px;height:40px;' +
+    'background:#000000;filter:blur(4px)"></div>';
+  const result = await drawn(black);
+  // the box is at 40 to 80 each way, and a black edge blurred by a
+  // deviation of 4 is a fifth dark 3.5 pixels out and a fifth light 3.5 in
+  await waitForPixel(result.ctx, 36, 60, '#cecece', {
+    tolerance: 6,
+    message: 'past the left edge',
+  });
+  await expectPixel(result.ctx, 43, 60, '#313131', {
+    tolerance: 6,
+    message: 'inside it',
+  });
+  await expectPixel(result.ctx, 60, 60, '#000000', { message: 'its middle' });
+  await expectPixel(result.ctx, 60, 83, '#cecece', {
+    tolerance: 6,
+    message: 'past its foot',
+  });
+  await expectPixel(result.ctx, 26, 60, '#ffffff', {
+    message: 'past three deviations',
+  });
+  const box = boxOf(
+    view(screen.getByTestName('doc') as DrawnNode),
+    'b',
+  ) as unknown as {
+    boundsX: number;
+    boundsY: number;
+    boundsWidth: number;
+    boundsHeight: number;
+  };
+  assert.deepStrictEqual(
+    [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight],
+    [40 - 12, 40 - 12, 40 + 24, 40 + 24],
+    'the ink the blur reaches, which a repaint of the strip it falls in meets',
+  );
+  cleanup();
+  // a deviation of 4 CSS pixels is 8 device ones at 2x: 7.5 device
+  // pixels from the edge, 1 - Φ(7.5 / 8) of the way to black outside it,
+  // and Φ(7.5 / 8) inside
+  const { result: big } = await render2x(
+    '<body style="margin:0;background:#ffffff">' + black,
+  );
+  await waitForPixel(big.ctx, 40 + 80 - 8, 40 + 120, '#d3d3d3', {
+    tolerance: 4,
+    message: 'past the left edge at 2x',
+  });
+  await expectPixel(big.ctx, 40 + 80 + 7, 40 + 120, '#2c2c2c', {
+    tolerance: 4,
+    message: 'inside it at 2x',
   });
 });
 
