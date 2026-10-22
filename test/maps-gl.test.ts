@@ -3991,6 +3991,126 @@ test('a GL frame draws the markers in one draw, each where the hit test finds it
   assert.strictEqual(renderers.at(-1), 'gl');
 });
 
+/**
+ * `recordingGl`, as the surface core destroys with its `<glarea>`: every
+ * call after `destroy()` throws what x11-dri throws with nothing current.
+ */
+function dyingGl() {
+  const { gl, calls } = recordingGl(true);
+  let dead = false;
+  return {
+    calls,
+    gl: new Proxy(gl, {
+      get(obj, name: string) {
+        if (name === 'destroy') {
+          return () => {
+            dead = true;
+            calls.push('destroy');
+          };
+        }
+        const value = (obj as Record<string, unknown>)[name];
+        if (dead && typeof value === 'function') {
+          return () => {
+            throw new Error('no current GL context (call makeCurrent first)');
+          };
+        }
+        return value;
+      },
+    }),
+  };
+}
+
+test('a GL map unmounted lets go of its buffers before core destroys the surface', async () => {
+  await loadGlRenderer();
+  const result = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 640,
+    height: 480,
+  });
+  Object.defineProperty(result.app, 'chooseGLConfig', {
+    value: () => new Promise(() => {}),
+    configurable: true,
+  });
+  await result.rerender(
+    React.createElement(MapView, {
+      renderer: 'gl',
+      sources: [
+        {
+          id: 'fixture',
+          minZoom: 0,
+          maxZoom: 14,
+          tileSize: 512,
+          load: () => ({ kind: 'vector' as const, data: fixtureBytes() }),
+        },
+      ],
+      mapStyle: { layers: STYLE },
+      defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
+      'data-testname': 'map',
+    }),
+  );
+  const pane = result.getByTestName('map') as unknown as {
+    abs: { width: number; height: number };
+    children: { kind: string; props: Record<string, unknown> }[];
+  };
+  const area = pane.children.find((child) => child.kind === 'glarea')!;
+  const { gl, calls } = dyingGl();
+  // The context core hands `onDraw`, and destroys with the node.
+  (area as unknown as { gl: unknown }).gl = gl;
+  const draw = area.props.onDraw as (gl: unknown, info: object) => void;
+  const info = { width: pane.abs.width, height: pane.abs.height, node: area };
+  for (let i = 0; i < 6; i++) {
+    await act(async () => {
+      draw(gl, info);
+      for (let j = 0; j < 3; j++) await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+  assert.ok(calls.includes('bufferData'), 'tiles were uploaded');
+  await result.rerender(React.createElement('box'));
+  const destroyed = calls.indexOf('destroy');
+  assert.ok(destroyed >= 0, 'core destroyed the surface');
+  const deleted = calls.indexOf('deleteBuffer');
+  assert.ok(
+    deleted >= 0 && deleted < destroyed,
+    `the buffers went while the context was there: ${calls.slice(-8).join(', ')}`,
+  );
+  result.unmount();
+});
+
+test('a GL map whose context went first still lets go of everything else', async () => {
+  const controller = new MapController({
+    center: { lon: -0.1281, lat: 51.508 },
+    zoom: 12,
+  });
+  const driver = new GlMapDriver(controller, {
+    controller,
+    map: {
+      sources: [
+        {
+          id: 'fixture',
+          minZoom: 0,
+          maxZoom: 14,
+          tileSize: 512,
+          load: () => ({ kind: 'vector' as const, data: fixtureBytes() }),
+        },
+      ],
+      mapStyle: { layers: STYLE },
+      adaptive: false,
+    },
+    onFailure: (error: Error) => {
+      throw error;
+    },
+  });
+  const { gl, calls } = dyingGl();
+  const info = { width: 512, height: 512, node: { scale: 1 } };
+  for (let i = 0; i < 6; i++) {
+    driver.draw(gl, info);
+    for (let j = 0; j < 3; j++) await new Promise((r) => setTimeout(r, 0));
+  }
+  assert.ok(calls.includes('bufferData'), 'tiles were uploaded');
+  (gl as unknown as { destroy(): void }).destroy();
+  assert.doesNotThrow(() => driver.dispose());
+});
+
 // --- overlays ----------------------------------------------------------------------
 
 /** A 2D context that records every call it is given. */

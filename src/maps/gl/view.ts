@@ -21,7 +21,7 @@
 // throw from a frame: each is reported once through `onFailure`, and `<Map>`
 // moves an `'auto'` map to the retained renderer or tells a `'gl'` one
 // through `onError`. Nothing here falls back on its own.
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useTheme } from 'react-x11';
 import type { Style } from 'react-x11/style';
@@ -72,6 +72,7 @@ import type {
   RenderTile,
 } from './renderer.js';
 import { GlTileStore } from './store.js';
+import type { GlTileData } from './buckets.js';
 import { LabelAtlas, SurfaceTextEngine, fieldBase } from './text.js';
 
 const h = React.createElement;
@@ -1424,15 +1425,24 @@ export class GlMapDriver implements MapView {
     this._atlas?.dispose();
     this._atlas = null;
     this._atlasKey = '';
-    for (const store of this._stores.values()) {
-      store.dispose((data) => this._renderer?.release(data));
-    }
+    // A context that has failed takes no more calls, and the first one it
+    // refuses says so for the rest: the stores still let go of their loads
+    // and their workers, which a throw out of the first tile used to skip.
+    let renderer = this._renderer;
+    const release = (data: GlTileData): void => {
+      try {
+        renderer?.release(data);
+      } catch {
+        renderer = null;
+      }
+    };
+    for (const store of this._stores.values()) store.dispose(release);
     this._stores.clear();
     this._inactive = [];
     // Its buffers go with the renderer's.
     this._overlay = null;
     try {
-      this._renderer?.dispose();
+      renderer?.dispose();
     } catch {
       // The surface may be gone already, and its context with it.
     }
@@ -1454,7 +1464,11 @@ export function GlMapPane(props: GlMapPaneProps): ReactElement {
   );
   driver.props = props;
   driver.theme = theme;
-  useEffect(() => {
+  // A layout effect, so the teardown runs in the commit that takes the pane
+  // away and before core destroys the <glarea> — and its context with it.
+  // A passive one ran after, and every buffer it let go of was a call into
+  // a context that was no longer there.
+  useLayoutEffect(() => {
     driver.attach();
     return () => driver.dispose();
   }, [driver]);
