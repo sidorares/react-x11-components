@@ -154,10 +154,14 @@ export function containerHolds(
   custom: (name: string) => string | undefined,
   length: (value: string) => number | null,
   scroll: ScrollStates | null = null,
+  /** What a style feature compares with, its `var()`s substituted from
+   *  the container's custom properties (CSS Conditional 5, 3.3); absent,
+   *  as written. */
+  value?: (text: string) => string | null,
 ): boolean {
   if (!query.condition) return true;
   const answer = evaluateCondition(query.condition, (fn, inner) => {
-    if (fn === 'style') return styleQuery(inner, custom);
+    if (fn === 'style') return styleQuery(inner, custom, value);
     if (fn === 'scroll-state') {
       return scroll
         ? (scrollStateHolds(inner, scroll) ?? undefined)

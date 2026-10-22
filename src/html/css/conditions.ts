@@ -156,14 +156,24 @@ export function styleQuery(
   value: (text: string) => string | null = (text) => text,
 ): Kleene {
   const text = inner.trim();
-  const feature = (f: string): Kleene => styleFeature(f, get, value);
+  // a feature of what is no custom property makes the whole query none,
+  // not one term of it unknown: `style((--a: b) or (unknown))` holds
+  // nowhere, as no engine answers a standard property yet
+  let invalid = false;
+  const feature = (f: string): Kleene => {
+    const answer = styleFeature(f, get, value);
+    if (answer === undefined) invalid = true;
+    return answer;
+  };
   if (text.startsWith('(') || /^not\s/i.test(text)) {
-    const answer = evaluateCondition(text, (name, test) =>
-      name === '' ? feature(test) : undefined,
-    );
-    return answer === null ? false : answer;
+    const answer = evaluateCondition(text, (name, test) => {
+      if (name !== '') invalid = true;
+      return name === '' ? feature(test) : undefined;
+    });
+    return answer === null || invalid ? false : answer;
   }
-  return feature(text);
+  const answer = feature(text);
+  return invalid ? false : answer;
 }
 
 function styleFeature(
@@ -179,7 +189,9 @@ function styleFeature(
     if (colon[2] === undefined) return has !== undefined;
     const want = value(colon[2]);
     if (want === null) return false;
-    if (has === undefined) return /^\s*initial\s*$/i.test(want);
+    // a property nothing set is at its initial value, which `unset` is
+    // as well, a custom property's being its parent's
+    if (has === undefined) return /^\s*(?:initial|unset)\s*$/i.test(want);
     return has.trim() === want.trim();
   }
   return styleRange(text, get, value);
