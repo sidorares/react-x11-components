@@ -218,6 +218,13 @@ function isInside(box: Box, outer: Box): boolean {
   return false;
 }
 
+/** Whether an area still lines up on an axis in a container: a snap
+ *  position a container snapped to it may stay at. */
+export function linesUp(c: SnapContainer, box: Box, axis: 'x' | 'y'): boolean {
+  const area = c.areas.find((a) => a.box === box);
+  return !!area && placeOf(c, area, axis) !== null;
+}
+
 /**
  * Where a container that was snapped to an area comes to rest after a
  * layout (5.4, "re-snapping after layout changes"): lined up with that

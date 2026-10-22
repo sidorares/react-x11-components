@@ -5746,6 +5746,27 @@ test('focus() brings the element into view through the scroll containers around 
   assert.strictEqual(doc.text('out'), 'true|0|0', doc.logs.join('\n'));
 });
 
+test('the viewport snaps where the root makes it a snap container, and again where the area it was snapped to stops being one', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>html { scroll-snap-type: y mandatory }' +
+      ' body { margin: 0 } .c { height: 300px; scroll-snap-align: start }</style></head><body>' +
+      '<div class="c" id="c1"></div><div class="c" id="c2"></div><div class="c" id="c3"></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.scrollingElement; s.scrollTo(0, 560); var r = [s.scrollTop];' +
+      // its area is no snap position now: the nearest that is
+      'document.getElementById("c3").style.scrollSnapAlign = "none";' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  r.push(s.scrollTop); document.getElementById("out").textContent = r.join("|"); }); });' +
+      '</script>',
+    { pane: 300 },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '600|300',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
