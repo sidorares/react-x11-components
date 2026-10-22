@@ -44,6 +44,7 @@ import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
   BackgroundRepeat,
+  BorderShape,
   BoxShadow,
   ClipPath,
   ComputedStyle,
@@ -76,6 +77,8 @@ import {
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
 import { cornerInset, cornerReach } from './css/corner-shape.js';
+import { shapePolygons, strokeBands } from './css/basic-shape.js';
+import type { FillRule } from './css/basic-shape.js';
 import {
   drawnThrough,
   invert,
@@ -584,6 +587,16 @@ export function computePaintBounds(box: Box, moved = false): number {
     y1 = Math.min(y1, box.y - reach);
     x2 = Math.max(x2, box.x + box.width + reach);
     y2 = Math.max(y2, box.y + box.height + reach);
+  }
+  // and a border drawn as a shape, which may reach past the border box,
+  // with the shadows cast from it
+  if (own && box.style.borderShape) {
+    const b = shapedBorder(box, DOCUMENT).bounds;
+    const out = shadows ? shadowOutsets(shadows) : null;
+    x1 = Math.min(x1, b.x - (out?.left ?? 0));
+    y1 = Math.min(y1, b.y - (out?.top ?? 0));
+    x2 = Math.max(x2, b.x + b.width + (out?.right ?? 0));
+    y2 = Math.max(y2, b.y + b.height + (out?.bottom ?? 0));
   }
   // An inline box's fragments are boxes on the lines they are on, and its
   // padding and border reach above and below those lines: they count in
@@ -3787,7 +3800,8 @@ function paintContent(
   const table = clips && box.kind === 'table';
   if (table) paintFlow(ctx, box, options, CAPTIONS);
   if (clips) {
-    const { rect, radii } = clipEdge(box, options);
+    const edge = clipEdge(box, options);
+    const rect = edge.rect;
     // Clipped to no area, nothing in the box shows but an absolute box
     // whose containing block is outside it, and where it holds none what it
     // holds is not painted at all: a menu at `max-height: 0`. Clipped to an
@@ -3800,7 +3814,7 @@ function paintContent(
       }
       return;
     }
-    if (pushClip(ctx, rect, radii)) {
+    if (pushEdgeClip(ctx, edge)) {
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
     }
@@ -3980,19 +3994,325 @@ function paintBackgroundOf(
       return;
     }
   }
-  if (style.boxShadow) paintShadows(ctx, box, options, false);
-  if (box !== options.canvasSource) {
-    paintLayers(ctx, box, options, frameImages(ctx, box, options));
-  }
-  if (style.boxShadow) paintShadows(ctx, box, options, true);
-  if (!box.bordersCollapsed && !paintBorderImage(ctx, box, options)) {
-    paintBorders(ctx, box, options);
+  if (style.borderShape && !box.bordersCollapsed) {
+    paintShapedBorder(ctx, box, options);
+  } else {
+    if (style.boxShadow) paintShadows(ctx, box, options, false);
+    if (box !== options.canvasSource) {
+      paintLayers(ctx, box, options, frameImages(ctx, box, options));
+    }
+    if (style.boxShadow) paintShadows(ctx, box, options, true);
+    if (!box.bordersCollapsed && !paintBorderImage(ctx, box, options)) {
+      paintBorders(ctx, box, options);
+    }
   }
   // just above the border, under everything the box holds
   if (ruled(style.columnRule) || ruled(style.rowRule)) {
     paintGapRules(ctx, box, options);
   }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
+}
+
+/** A shape's outline as a context traces it: its polygons, each `x, y`
+ *  by turns, and the rule they are filled by. */
+interface ShapeOutline {
+  polys: number[][];
+  rule: FillRule;
+}
+
+/**
+ * A `border-shape` laid down for a box (CSS Borders 4, 7), in the
+ * coordinates `options` places the box in: the outer shape, and the inner
+ * one where two were given; the width a single shape is stroked at, which
+ * is none for two; the colour either is drawn in; and the rectangle around
+ * what the outer shape and its stroke cover. The width and the colour are
+ * the relevant side's (7.6): the first of the block-start, inline-start,
+ * block-end and inline-end sides whose style is not `none`, or the
+ * block-start side where every one's is — whose width is then none.
+ */
+interface ShapedBorder {
+  outer: ShapeOutline;
+  inner: ShapeOutline | null;
+  stroke: number;
+  color: string;
+  bounds: Rect;
+}
+
+function shapedBorder(box: Box, options: ClipSpace): ShapedBorder {
+  const style = box.style;
+  const shape = style.borderShape!;
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  const lay = (part: BorderShape['outer']): ShapeOutline => {
+    const [t, r, b, l] = shapeInsets(box, part.box);
+    const w = Math.max(0, box.width - l - r);
+    const h = Math.max(0, frameHeight(box) - t - b);
+    const out = shapePolygons(part.shape, w, h);
+    for (const p of out.polys) {
+      for (let i = 0; i < p.length; i += 2) {
+        p[i] += x0 + l;
+        p[i + 1] += y0 + t;
+      }
+    }
+    return out;
+  };
+  const outer = lay(shape.outer);
+  const inner = shape.inner ? lay(shape.inner) : null;
+  // top, right, bottom, left, read from block-start round to inline-end
+  const order = style.direction === 'rtl' ? [0, 1, 2, 3] : [0, 3, 2, 1];
+  const styles = [
+    style.borderTopStyle,
+    style.borderRightStyle,
+    style.borderBottomStyle,
+    style.borderLeftStyle,
+  ];
+  const side = order.find((i) => styles[i] !== 'none') ?? 0;
+  const widths = [
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  ];
+  const colors = [
+    style.borderTopColor,
+    style.borderRightColor,
+    style.borderBottomColor,
+    style.borderLeftColor,
+  ];
+  const stroke = inner ? 0 : widths[side];
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const p of outer.polys) {
+    for (let i = 0; i < p.length; i += 2) {
+      x1 = Math.min(x1, p[i]);
+      y1 = Math.min(y1, p[i + 1]);
+      x2 = Math.max(x2, p[i]);
+      y2 = Math.max(y2, p[i + 1]);
+    }
+  }
+  const half = stroke / 2;
+  const bounds =
+    x1 <= x2
+      ? {
+          x: x1 - half,
+          y: y1 - half,
+          width: x2 - x1 + stroke,
+          height: y2 - y1 + stroke,
+        }
+      : { x: x0, y: y0, width: 0, height: 0 };
+  return {
+    outer,
+    inner,
+    stroke,
+    color: inkColor(colors[side], style.color),
+    bounds,
+  };
+}
+
+/** How far in from a box's border box the box a `border-shape` is laid
+ *  down in is: top, right, bottom and left, out where it is the margin
+ *  box, and half the borders for the half-border box. */
+function shapeInsets(
+  box: Box,
+  within: BorderShape['outer']['box'],
+): readonly [number, number, number, number] {
+  if (within === 'margin-box') {
+    return [
+      -box.marginTop,
+      -box.marginRight,
+      -box.marginBottom,
+      -box.marginLeft,
+    ];
+  }
+  if (within === 'half-border-box') {
+    return [
+      box.borderTop / 2,
+      box.borderRight / 2,
+      box.borderBottom / 2,
+      box.borderLeft / 2,
+    ];
+  }
+  return edgeInsets(box, within);
+}
+
+/** Trace polygons, moved by `dx, dy`, on the context's path. */
+function traceOutline(
+  ctx: PaintContext,
+  polys: readonly (readonly number[])[],
+  dx = 0,
+  dy = 0,
+): void {
+  for (const p of polys) {
+    if (p.length < 6) continue;
+    ctx.moveTo!(p[0] + dx, p[1] + dy);
+    for (let i = 2; i < p.length; i += 2) {
+      ctx.lineTo!(p[i] + dx, p[i + 1] + dy);
+    }
+    ctx.closePath?.();
+  }
+}
+
+/** Polygons wound the way one with a positive area in a y-down space is,
+ *  so that filled together with `strokeBands`' under the non-zero rule they
+ *  make one shape. */
+function woundClockwise(polys: readonly number[][]): number[][] {
+  return polys.map((p) => {
+    let area = 0;
+    for (let i = 0; i < p.length; i += 2) {
+      const j = (i + 2) % p.length;
+      area += p[i] * p[j + 1] - p[j] * p[i + 1];
+    }
+    if (area >= 0) return p;
+    const out: number[] = [];
+    for (let i = p.length - 2; i >= 0; i -= 2) out.push(p[i], p[i + 1]);
+    return out;
+  });
+}
+
+/**
+ * A box whose border is a shape (CSS Borders 4, 7): its outer shadows cast
+ * as though the outer shape were opaque, grown by their spread and by half
+ * the stroke, and cut away inside it; its background cut to the outer
+ * shape, or to the inner one where its `background-clip` stops at the
+ * padding box or in from it; its inset shadows cast inside the inner
+ * shape, as though all outside it were opaque; and the border, the band a
+ * single shape's stroke covers or the area between two shapes, in the
+ * relevant side's colour. Its radii and corner shapes draw nothing
+ * (`cornersOf`), and its layout is what it was.
+ */
+function paintShapedBorder(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const style = box.style;
+  if (!ctx.beginPath || !ctx.fill || !ctx.moveTo || !ctx.lineTo) return;
+  const sb = shapedBorder(box, options);
+  const { outer, inner, stroke } = sb;
+  // what is inside the border, which a single shape's own outline is
+  const within = inner ?? outer;
+  const canClip = !!(ctx.clip && ctx.rect);
+  const canShadow = 'shadowBlur' in ctx;
+  const shadows = style.boxShadow;
+  if (shadows && !options.shadowless?.has(box as Box)) {
+    for (let i = shadows.length - 1; i >= 0; i -= 1) {
+      const s = shadows[i];
+      if (s.inset || (s.blur > 0 && !canShadow)) continue;
+      // grown by the spread, and the stroke's outer half: a band that wide
+      // round the outline, where it is any
+      const spread = Math.max(0, s.spread);
+      const grow = spread + stroke / 2;
+      const polys = grow > 0 ? woundClockwise(outer.polys) : outer.polys;
+      const bands = grow > 0 ? strokeBands(outer.polys, 2 * grow) : [];
+      const rule = grow > 0 ? 'nonzero' : outer.rule;
+      const b = sb.bounds;
+      const bounds = {
+        x: b.x + s.x - spread,
+        y: b.y + s.y - spread,
+        width: b.width + 2 * spread,
+        height: b.height + 2 * spread,
+      };
+      const reach = shadowReach(s.blur) + 1;
+      if (
+        !clampRect(
+          options,
+          bounds.x - reach,
+          bounds.y - reach,
+          bounds.width + 2 * reach,
+          bounds.height + 2 * reach,
+        )
+      ) {
+        continue;
+      }
+      const color = inkColor(s.color, style.color);
+      // what falls inside the shape is not drawn (7.5.2)
+      if (canClip) {
+        const x = Math.min(bounds.x, b.x) - reach;
+        const y = Math.min(bounds.y, b.y) - reach;
+        ctx.save();
+        ctx.beginPath!();
+        ctx.rect!(
+          x,
+          y,
+          Math.max(bounds.x + bounds.width, b.x + b.width) + reach - x,
+          Math.max(bounds.y + bounds.height, b.y + b.height) + reach - y,
+        );
+        traceOutline(ctx, outer.polys);
+        ctx.clip!('evenodd');
+      }
+      fillShadow(
+        ctx,
+        options,
+        s,
+        color,
+        (mx, my) => {
+          traceOutline(ctx, polys, s.x + mx, s.y + my);
+          traceOutline(ctx, bands, s.x + mx, s.y + my);
+        },
+        bounds,
+        rule,
+      );
+      if (canClip) ctx.restore();
+    }
+  }
+  if (box !== options.canvasSource) {
+    const clip = style.backgroundClip;
+    const to =
+      inner && clip !== 'border-box' && clip !== 'border-area' ? inner : outer;
+    if (canClip) {
+      ctx.save();
+      ctx.beginPath!();
+      traceOutline(ctx, to.polys);
+      ctx.clip!(to.rule);
+    }
+    paintLayers(ctx, box, options, frameImages(ctx, box, options));
+    if (canClip) ctx.restore();
+  }
+  if (shadows && canClip) {
+    for (let i = shadows.length - 1; i >= 0; i -= 1) {
+      const s = shadows[i];
+      if (!s.inset || (s.blur > 0 && !canShadow)) continue;
+      const b = sb.bounds;
+      const reach = shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1;
+      const frame = {
+        x: b.x - reach,
+        y: b.y - reach,
+        width: b.width + 2 * reach,
+        height: b.height + 2 * reach,
+      };
+      ctx.save();
+      ctx.beginPath!();
+      traceOutline(ctx, within.polys);
+      ctx.clip!(within.rule);
+      fillShadow(
+        ctx,
+        options,
+        s,
+        inkColor(s.color, style.color),
+        (mx, my) => {
+          ctx.rect!(frame.x + mx, frame.y + my, frame.width, frame.height);
+          traceOutline(ctx, within.polys, s.x + mx, s.y + my);
+        },
+        frame,
+        'evenodd',
+      );
+      ctx.restore();
+    }
+  }
+  if (isTransparent(sb.color)) return;
+  ctx.fillStyle = sb.color;
+  ctx.beginPath!();
+  if (inner) {
+    // between the two: the outer shape less the inner
+    traceOutline(ctx, outer.polys);
+    traceOutline(ctx, inner.polys);
+    ctx.fill('evenodd');
+  } else if (stroke > 0) {
+    traceOutline(ctx, strokeBands(outer.polys, stroke));
+    ctx.fill();
+  }
 }
 
 /** Whether a gap's rule draws anything: a style that is drawn, and a
@@ -5454,7 +5774,7 @@ function pushFlowClip(
   options: PaintOptions,
   levels: boolean,
 ): void {
-  if (!pushClip(ctx, clip.rect, clip.radii)) return;
+  if (!pushEdgeClip(ctx, clip)) return;
   if (levels) (options.clips ??= []).push({ box, deferred: [] });
 }
 
@@ -5525,6 +5845,24 @@ function overflowClip(
 interface ClipEdge {
   rect: { x: number; y: number; w: number; h: number };
   radii: Corners | null;
+  /** The shape a `border-shape` cuts it to as well, inside the
+   *  rectangle; null for none. */
+  shape: ShapeOutline | null;
+}
+
+/** Push a box's clip (`clipEdge`): its rectangle, rounded where it is,
+ *  and its border's shape inside it, where it has one and the context
+ *  traces one. False where the context cannot clip, and nothing was
+ *  pushed. */
+function pushEdgeClip(ctx: PaintContext, edge: ClipEdge): boolean {
+  if (!pushClip(ctx, edge.rect, edge.radii)) return false;
+  const shape = edge.shape;
+  if (shape && ctx.moveTo && ctx.lineTo) {
+    ctx.beginPath!();
+    traceOutline(ctx, shape.polys);
+    ctx.clip!(shape.rule);
+  }
+  return true;
 }
 
 /**
@@ -5537,13 +5875,28 @@ interface ClipEdge {
  * overflow show, nothing is cut.
  */
 function clipEdge(box: Box, options: ClipSpace): ClipEdge {
+  const edge = rectClipEdge(box, options);
+  // and a border drawn as a shape cuts it to the inner shape, as its
+  // radii would have (CSS Borders 4, 7.5.3) — a single shape's own
+  if (box.style.borderShape && edge.rect.w > 0 && edge.rect.h > 0) {
+    const sb = shapedBorder(box, options);
+    edge.shape = sb.inner ?? sb.outer;
+  }
+  return edge;
+}
+
+function rectClipEdge(box: Box, options: ClipSpace): ClipEdge {
   const style = box.style;
   const painted = contained(box, CONTAIN_PAINT);
   if (
     scrolls(style) ||
     (!painted && style.overflowX !== 'clip' && style.overflowY !== 'clip')
   ) {
-    return { rect: overflowClip(box, options), radii: innerRadii(box) };
+    return {
+      rect: overflowClip(box, options),
+      radii: innerRadii(box),
+      shape: null,
+    };
   }
   // From the padding box, as a browser draws it: out to the box the
   // margin is from and then by the margin, its rounded corners moving out
@@ -5593,7 +5946,7 @@ function clipEdge(box: Box, options: ClipSpace): ClipEdge {
       h = damage ? damage.height + 2 * CLAMP_PAD : 2 * COORD_LIMIT;
     }
   }
-  return { rect: { x, y, w, h }, radii };
+  return { rect: { x, y, w, h }, radii, shape: null };
 }
 
 /**
@@ -5866,6 +6219,8 @@ export function opaqueWithin(root: Box, extent: Rect): Rect[] {
     if (
       style.visibility === 'visible' &&
       hasRect(at) &&
+      // a background cut to a border's shape fills no rectangle
+      !style.borderShape &&
       style.backgroundColor !== null &&
       !isTransparent(style.backgroundColor) &&
       alphaOf(inkColor(style.backgroundColor, style.color)) === 1
@@ -6216,6 +6571,8 @@ export function clipFor(
     if (applies) {
       if (clipsOverflow(at)) {
         const edge = clipEdge(at, space);
+        // a border's shape is no rectangle, nor a circle's corners
+        if (edge.shape) return null;
         const rect = drawn(edge.rect, at);
         const radii = edge.radii;
         if (radii) {
@@ -6757,6 +7114,9 @@ export function cornersOf(
   w: number,
   h: number,
 ): Corners | null {
+  // a border drawn as a shape takes the corners as square, whatever its
+  // radii (CSS Borders 4, 7.5.1)
+  if (style.borderShape) return null;
   const across = style.borderRadius;
   const down = style.borderRadiusY;
   if (
@@ -7633,9 +7993,10 @@ function paintStacked(
       // it, a stacking context and no containing block, which was cut off
       // with the box once the box was painted here rather than in its
       // place. And a clip of no area is pushed where that may be so.
-      const { rect, radii } = clipEdge(clipper, options);
+      const edge = clipEdge(clipper, options);
+      const rect = edge.rect;
       if ((rect.w <= 0 || rect.h <= 0) && !holdsAbsolute(box)) empty = true;
-      else if (pushClip(ctx, rect, radii)) {
+      else if (pushEdgeClip(ctx, edge)) {
         const level: ClipLevel = { box: clipper, deferred: [] };
         (options.clips ??= []).push(level);
         pushed.push(level);

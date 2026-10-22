@@ -70,6 +70,8 @@ import {
   usedColorScheme,
 } from './color.js';
 import { svgPaint } from './shapes.js';
+import { parseBasicShape } from './basic-shape.js';
+import type { BasicShape } from './basic-shape.js';
 
 export type Display =
   | 'none'
@@ -283,6 +285,67 @@ export interface ClipPath {
    *  rectangle in it. Null for square corners. */
   radii: readonly [Len, Len, Len, Len] | null;
   radiiY: readonly [Len, Len, Len, Len] | null;
+}
+
+/** The box a `border-shape`'s shape is laid down in: a `<geometry-box>`,
+ *  or the one half way between the border box's edge and the padding
+ *  box's (CSS Borders 4, 7.3). */
+export type ShapeBox = ClipBox | 'half-border-box';
+
+/**
+ * `border-shape` (CSS Borders 4, 7): the border drawn as a shape rather
+ * than along the box's edges. One shape is a stroke along it, as wide as
+ * the relevant side's border, in its colour; two are the area between
+ * them, `outer` and `inner`, filled in that colour. Each is laid down in a
+ * box of the element's (`ShapeBox`), defaulting to the half-border box for
+ * one shape, and to the border box and the padding box for two.
+ */
+export interface BorderShape {
+  outer: { shape: BasicShape; box: ShapeBox };
+  inner: { shape: BasicShape; box: ShapeBox } | null;
+}
+
+/** The boxes `border-shape` names. */
+const SHAPE_BOXES: Record<string, ShapeBox> = {
+  'half-border-box': 'half-border-box',
+};
+
+/**
+ * `none`, or one or two basic shapes, each with the box it is laid down in
+ * after it; undefined for anything else, which leaves the value as it was.
+ * `shape()` is not read, and a value with one is none.
+ */
+function parseBorderShape(
+  value: string,
+  ctx: UnitContext,
+): BorderShape | null | undefined {
+  const v = value.trim();
+  if (/^none$/i.test(v)) return null;
+  const read: { shape: BasicShape; box: ShapeBox | null }[] = [];
+  for (const part of splitValue(v)) {
+    const word = part.toLowerCase();
+    const box = SHAPE_BOXES[word] ?? CLIP_BOXES[word];
+    if (box) {
+      const last = read[read.length - 1];
+      if (!last || last.box) return undefined;
+      last.box = box;
+      continue;
+    }
+    const shape = parseBasicShape(part, ctx, (radii) => parseRadii(radii, ctx));
+    if (!shape || read.length === 2) return undefined;
+    read.push({ shape, box: null });
+  }
+  if (!read.length) return undefined;
+  if (read.length === 1) {
+    return {
+      outer: { shape: read[0].shape, box: read[0].box ?? 'half-border-box' },
+      inner: null,
+    };
+  }
+  return {
+    outer: { shape: read[0].shape, box: read[0].box ?? 'border-box' },
+    inner: { shape: read[1].shape, box: read[1].box ?? 'padding-box' },
+  };
 }
 
 /** The boxes `clip-path` names; an SVG one is the CSS box that stands for
@@ -972,6 +1035,9 @@ export interface ComputedStyle {
    *  `squircle`, 0 for `bevel`, -1 for `scoop`, and the infinities for
    *  `square` and `notch`. `ROUND_CORNERS` where all four are round. */
   cornerShape: CornerShapes;
+  /** The shape its border is drawn as (`BorderShape`), which its radii
+   *  and corner shapes then draw nothing of; null for `none`. */
+  borderShape: BorderShape | null;
   /** Its shadows front to back, the ones that can be seen; null for none. */
   boxShadow: BoxShadow[] | null;
   /** Its outline (CSS 2.1 18.4, CSS UI 4): drawn around the border box,
@@ -1499,6 +1565,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderRadius: [0, 0, 0, 0],
     borderRadiusY: null,
     cornerShape: ROUND_CORNERS,
+    borderShape: null,
     boxShadow: null,
     outlineStyle: 'none',
     outlineWidth: medium,
@@ -2836,6 +2903,11 @@ export function applyDeclaration(
     case 'corner-left-shape': {
       const shapes = cornerShapesOf(name, value, style.cornerShape);
       if (shapes) style.cornerShape = shapes;
+      return;
+    }
+    case 'border-shape': {
+      const shape = parseBorderShape(value, ctx);
+      if (shape !== undefined) style.borderShape = shape;
       return;
     }
 
@@ -7498,6 +7570,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'corner-right-shape': ['cornerShape'],
   'corner-bottom-shape': ['cornerShape'],
   'corner-left-shape': ['cornerShape'],
+  'border-shape': ['borderShape'],
   inset: ['top', 'right', 'bottom', 'left'],
   background: [
     'backgroundColor',

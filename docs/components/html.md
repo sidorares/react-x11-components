@@ -2143,6 +2143,32 @@ poster — since a layer's clip and a mount's corners are circles; and a
 dotted, dashed or double side on one is drawn straight, as on a rounded
 box.
 
+**`border-shape`** (CSS Borders 4) draws the border as a shape instead of
+along the box's edges: `circle()`, `ellipse()`, `polygon()`, `inset()`,
+`rect()`, `xywh()` (with `round` and its radii) or `path()`, each followed
+by the box it is laid down in — a `<geometry-box>`, or `half-border-box`,
+half way through the border. One shape is a stroke along it, centred on the
+half-border box unless another box is named, as wide as the relevant
+side's border and in its colour: the first of the block-start,
+inline-start, block-end and inline-end sides whose style is not `none`,
+the inline sides following `direction`. Two shapes are the area between
+them, filled in that colour, the first on the border box and the second
+on the padding box unless named. The background is cut to the outer shape,
+or to the inner one under `background-clip: padding-box` or
+`content-box`; outer shadows are cast from the outer edge, grown by their
+spread and by half a stroke, and drawn only outside the shape; inset
+shadows are cast inside the inner shape; and a box that clips its overflow
+clips it to the inner shape — a single shape's own path — as its radii
+would have. `border-radius` and `corner-shape` draw nothing while a shape
+is set, and layout is as it was: the border still takes its widths. A
+shape that reaches past the border box is ink there. Curves are cut into
+chords within a quarter of a device pixel, and the stroke has round joins.
+Not done: `shape()`, which makes the value none; a negative spread, which
+is cast as none; hit testing and the outline, which are the border box's,
+as the specification leaves them; a stroke's style, which is always solid;
+and a box with a shaped border is not cut by a layer's clip, so what
+animates inside one that clips is not lifted.
+
 Two solid
 sides of different colours share their corner on its diagonal, from its
 outer point to its inner one (CSS Backgrounds 3, 4.4), so each is a
