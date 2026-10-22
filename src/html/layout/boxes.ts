@@ -1039,6 +1039,10 @@ export interface BoxTree {
    *  one: worked out as a selection is first painted over it, not as the
    *  tree is built, since most builds are never selected in. */
   selectionStyler: SelectionStyler | null;
+  /** Each custom highlight's `::highlight()` styler, by its name, as
+   *  `selectionStyler` is the selection's: null where no rule styles any
+   *  (`Cascade.highlightStyle`). */
+  highlightStyler: ((name: string) => SelectionStyler) | null;
   /** What the rules give the elements in each inline `<svg>`
    *  (`ShapeStyler`), which have no boxes and no styles, and what the
    *  `var()`s in their attributes come to: worked out as a drawing is
@@ -1304,6 +1308,7 @@ class Builder {
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
+      highlightStyler: cascade.hasHighlights ? this._highlightStyler() : null,
       shapeStyler: this._shapeStyler(copies),
       shapeCopies: copies,
       nestedOutOfLine: this._nestedOutOfLine,
@@ -1341,6 +1346,35 @@ class Builder {
       let at = box;
       while (at && !at.el) at = at.parent;
       return at?.el ? of(at.el) : null;
+    };
+  }
+
+  /** `BoxTree.highlightStyler`, over this build's cascade: a styler for
+   *  each name, made once, each element's over its parent's. */
+  private _highlightStyler(): (name: string) => SelectionStyler {
+    const cascade = this._options.cascade;
+    const styles = this._styles;
+    const byName = new Map<string, SelectionStyler>();
+    return (name) => {
+      let styler = byName.get(name);
+      if (styler) return styler;
+      const known = new Map<Element, SelectionStyle | null>();
+      const of = (el: Element): SelectionStyle | null => {
+        let found = known.get(el);
+        if (found !== undefined) return found;
+        const parent = isElement(el.parent) ? of(el.parent) : null;
+        const own = styles.get(el)?.style;
+        found = own ? cascade.highlightStyle(el, own, name, parent) : parent;
+        known.set(el, found);
+        return found;
+      };
+      styler = (box) => {
+        let at = box;
+        while (at && !at.el) at = at.parent;
+        return at?.el ? of(at.el) : null;
+      };
+      byName.set(name, styler);
+      return styler;
     };
   }
 

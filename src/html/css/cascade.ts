@@ -546,7 +546,7 @@ type PseudoElement =
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|-webkit-input-placeholder|-webkit-scrollbar)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*(-?[_a-zA-Z\u0080-\uffff][-\w\u0080-\uffff]*)\s*\)$/i;
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -565,9 +565,11 @@ export interface SelectionStyle {
  * matches `p`; `p ::before` and `p > ::before` have nothing left of their
  * last compound and match any child, `p *` and `p > *`.
  */
-function splitPseudoElement(
-  rule: StyleRule,
-): { which: PseudoElement; rule: StyleRule } | null {
+function splitPseudoElement(rule: StyleRule): {
+  which: PseudoElement | 'highlight';
+  rule: StyleRule;
+  name?: string;
+} | null {
   const m = PSEUDO_ELEMENT.exec(rule.selector);
   if (!m) return null;
   const head = rule.selector.slice(0, m.index);
@@ -577,6 +579,10 @@ function splitPseudoElement(
     : head !== trimmed || /[>+~]$/.test(trimmed)
       ? `${trimmed} *`
       : trimmed;
+  // a custom highlight's, by its name, which is case-sensitive
+  if (m[3] !== undefined) {
+    return { which: 'highlight', rule: { ...rule, selector }, name: m[3] };
+  }
   const name = (m[1] ?? m[2]).toLowerCase();
   return {
     which: (name === '-webkit-input-placeholder'
@@ -2331,6 +2337,9 @@ export class Cascade {
     backdrop: new RuleIndex(true),
     'details-content': new RuleIndex(true),
   };
+  /** The rules for each custom highlight's `::highlight()`, by its name
+   *  (CSS Highlight API 1, 3): a document with none asks nothing. */
+  private _highlights = new Map<string, RuleIndex>();
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
    *  is no element of HTML's alone. They are in `_index` too, for the
@@ -2715,8 +2724,14 @@ export class Cascade {
         continue;
       }
       const pseudo = splitPseudoElement(rule);
-      if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule, undefined, scope);
-      else {
+      if (pseudo?.which === 'highlight') {
+        let index = this._highlights.get(pseudo.name!);
+        if (!index)
+          this._highlights.set(pseudo.name!, (index = new RuleIndex(true)));
+        index.add(pseudo.rule, undefined, scope);
+      } else if (pseudo) {
+        this._pseudo[pseudo.which].add(pseudo.rule, undefined, scope);
+      } else {
         const key = rightmostKey(rule.selector);
         this._index.add(rule, key, scope);
         if (
@@ -3484,6 +3499,8 @@ export class Cascade {
    */
   private _addScoped(rule: StyleRule, rules: TreeRules): boolean {
     const pseudo = splitPseudoElement(rule);
+    // a custom highlight's is the document's, by its name, wherever it is
+    if (pseudo?.which === 'highlight') return false;
     const which: PseudoTarget = pseudo?.which ?? '';
     const subject = pseudo?.rule ?? rule;
     const selector = subject.selector;
@@ -4513,6 +4530,49 @@ export class Cascade {
   ): SelectionStyle | null {
     const index = this._pseudo.selection;
     if (!index.size || !index.reaches(el)) return parent;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    let color = false;
+    let background = false;
+    for (const candidate of candidates) {
+      for (const d of candidate.declarations) {
+        if (d.prop === 'color') color = true;
+        else if (d.prop === 'background' || d.prop === 'background-color') {
+          background = true;
+        }
+      }
+    }
+    if (!color && !background) return parent;
+    candidates.sort(byCascade);
+    const own = this._computeStyle(el, style, false, candidates);
+    return {
+      color: color ? own.color : (parent?.color ?? null),
+      background: background
+        ? own.backgroundColor
+        : (parent?.background ?? null),
+    };
+  }
+
+  /** Whether any rule styles a custom highlight (`highlightStyle`). */
+  get hasHighlights(): boolean {
+    return this._highlights.size > 0;
+  }
+
+  /**
+   * An element's `::highlight(name)`, over its parent's: the colour and
+   * the background the rules for that highlight set, and its parent's for
+   * either they leave alone, inherited along the chain of that highlight as
+   * `::selection`'s is (CSS Pseudo 4, 3.5). A custom highlight has no
+   * default look: text no rule reaches is drawn as it was.
+   */
+  highlightStyle(
+    el: Element,
+    style: ComputedStyle,
+    name: string,
+    parent: SelectionStyle | null,
+  ): SelectionStyle | null {
+    const index = this._highlights.get(name);
+    if (!index || !index.size || !index.reaches(el)) return parent;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     let color = false;
