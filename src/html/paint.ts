@@ -316,6 +316,33 @@ export interface SpriteSource {
     key: string,
     animated: boolean,
   ): Offscreen | null;
+  /** The context a kept surface is drawn through, held for its life
+   *  (`SpriteStore.context`). Absent, one is made for each draw and
+   *  destroyed after it. */
+  context?(surface: Offscreen): unknown;
+}
+
+/**
+ * Draw on a surface kept for a box: through the context its source holds
+ * for it, else through one made for this draw and destroyed after it, each
+ * draw starting from that context's state as it was. A context made per
+ * draw and left — one at each frame of an animation inside the box —
+ * stayed on the surface's pixmap for as long as the surface did.
+ */
+function drawOnKept(
+  sprites: SpriteSource,
+  surface: Offscreen,
+  draw: (ctx: PaintContext) => void,
+): void {
+  const held = sprites.context?.(surface) as PaintContext | undefined;
+  const ctx = held ?? (surface.getContext('2d') as PaintContext);
+  ctx.save();
+  try {
+    draw(ctx);
+  } finally {
+    ctx.restore();
+    if (!held) (ctx as { destroy?(): void }).destroy?.();
+  }
 }
 
 /**
@@ -2454,7 +2481,9 @@ function spriteFor(
   if (surface) {
     const stale = sprites.stale?.(box);
     if (stale?.length) {
-      repaintStale(surface, box, on(), options, x0, y0, w, h, stale);
+      drawOnKept(sprites, surface, (ctx) =>
+        repaintStale(ctx, box, on(), options, x0, y0, w, h, stale),
+      );
     }
   } else {
     // A box painted again at every frame of an animation inside it keeps
@@ -2466,7 +2495,7 @@ function spriteFor(
     if (drawsAgainstViewport(box)) return null;
     surface = sprites.keep(box, w, h, key, animated);
     if (!surface) return null;
-    paintUnfaded(surface.getContext('2d') as PaintContext, box, on());
+    drawOnKept(sprites, surface, (ctx) => paintUnfaded(ctx, box, on()));
   }
   return { surface, x: x0, y: y0, width: w, height: h };
 }
@@ -2479,7 +2508,7 @@ function spriteFor(
  * outside it is clipped away.
  */
 function repaintStale(
-  surface: Offscreen,
+  ctx: PaintContext,
   box: Box,
   on: PaintOptions,
   options: PaintOptions,
@@ -2489,7 +2518,6 @@ function repaintStale(
   height: number,
   stale: Rect[],
 ): void {
-  const ctx = surface.getContext('2d') as PaintContext;
   if (!ctx.clearRect || !ctx.beginPath || !ctx.rect || !ctx.clip) return;
   let x1 = Infinity;
   let y1 = Infinity;
@@ -2894,23 +2922,22 @@ function groupKept(
   if (!surface) {
     surface = sprites.keep(box, w, h, key, animated);
     if (!surface) return false;
-    const on = surface.getContext('2d') as PaintContext;
-    on.save();
-    on.translate!(-x0, -y0);
-    on.transform!(
-      through[0],
-      through[1],
-      through[2],
-      through[3],
-      through[4],
-      through[5],
-    );
-    paintUnfaded(on, box, {
-      ...inside,
-      damage: null,
-      matrix: multiply([1, 0, 0, 1, -x0, -y0], through),
+    drawOnKept(sprites, surface, (on) => {
+      on.translate!(-x0, -y0);
+      on.transform!(
+        through[0],
+        through[1],
+        through[2],
+        through[3],
+        through[4],
+        through[5],
+      );
+      paintUnfaded(on, box, {
+        ...inside,
+        damage: null,
+        matrix: multiply([1, 0, 0, 1, -x0, -y0], through),
+      });
     });
-    on.restore();
   }
   drawThrough(ctx, surface, null, x0, y0, opacity);
   return true;
