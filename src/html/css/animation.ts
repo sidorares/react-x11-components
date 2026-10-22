@@ -21,6 +21,8 @@
 import { parseMath } from './calc.js';
 import type { Declaration, Keyframe, KeyframesRule } from './parse.js';
 import { parseNumber, splitCommas, splitValue } from './values.js';
+import { parseAnimationTrigger } from './triggers.js';
+import type { AnimationTrigger } from './triggers.js';
 
 /**
  * An easing function (CSS Easing 2), as an animation's timing function or
@@ -62,6 +64,10 @@ export interface Animations {
   readonly directions: readonly AnimationDirection[];
   readonly fillModes: readonly FillMode[];
   readonly playStates: readonly PlayState[];
+  /** `animation-trigger` (CSS Animation Triggers 1): the triggers each
+   *  waits for and what each does to it, null for one that runs as it is
+   *  styled. The `animation` shorthand sets it back to that. */
+  readonly triggers: readonly (readonly AnimationTrigger[] | null)[];
 }
 
 const LINEAR: Easing = { type: 'linear' };
@@ -89,6 +95,7 @@ export const NO_ANIMATIONS: Animations = {
   directions: ['normal'],
   fillModes: ['none'],
   playStates: ['running'],
+  triggers: [null],
 };
 
 /** The longhands, by property name, and the list each is. */
@@ -101,6 +108,7 @@ export const ANIMATION_LONGHANDS: Record<string, keyof Animations> = {
   'animation-direction': 'directions',
   'animation-fill-mode': 'fillModes',
   'animation-play-state': 'playStates',
+  'animation-trigger': 'triggers',
 };
 
 const DIRECTIONS = new Set<string>([
@@ -127,6 +135,7 @@ const ONE: {
   directions: (v) => keyword(v, DIRECTIONS) as AnimationDirection | null,
   fillModes: (v) => keyword(v, FILL_MODES) as FillMode | null,
   playStates: (v) => keyword(v, PLAY_STATES) as PlayState | null,
+  triggers: parseAnimationTrigger,
 };
 
 /**
@@ -143,7 +152,12 @@ export function animationLonghand(
   const list: unknown[] = [];
   for (const item of splitCommas(value)) {
     const one = read(item.trim());
-    if (one === undefined || (one === null && key !== 'names')) return null;
+    if (
+      one === undefined ||
+      (one === null && key !== 'names' && key !== 'triggers')
+    ) {
+      return null;
+    }
     list.push(one);
   }
   return { ...animations, [key]: list };
@@ -240,6 +254,7 @@ export function parseAnimation(value: string): Animations | null {
     directions,
     fillModes,
     playStates,
+    triggers: [null],
   };
 }
 

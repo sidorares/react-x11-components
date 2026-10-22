@@ -25,6 +25,7 @@ import {
   same,
 } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
+import type { AnimationAction, AnimationTrigger } from './triggers.js';
 import type { ScriptSampling } from './scripted.js';
 import {
   INHERITED,
@@ -57,11 +58,31 @@ export interface Sample {
 
 export interface Running {
   name: string;
-  /** When it started, on the timeline. */
+  /** When it started, on the timeline: its time is the time since, or
+   *  the time until where it plays backwards (`TriggerRun.rate`). */
   start: number;
   /** The time it is held at while paused, from its start; null while it
    *  plays. */
   hold: number | null;
+  /** Where it waits for a trigger (`animation-trigger`): what the
+   *  triggers it hears have made of it. */
+  trig?: TriggerRun;
+}
+
+/**
+ * A triggered animation's play state (CSS Animation Triggers 1): held at
+ * its start until a trigger it hears first does something to it
+ * (`initial`), and then playing — forwards, or backwards at `rate` -1 —
+ * paused, or finished at one end. `seen` is whether each trigger it hears
+ * was active when it last heard, so that a change of it is an action.
+ */
+export interface TriggerRun {
+  state: 'initial' | 'playing' | 'paused' | 'finished';
+  rate: 1 | -1;
+  /** Where it ends, from its start: its delay and its iterations. */
+  end: number;
+  triggers: readonly AnimationTrigger[];
+  seen: Map<string, boolean>;
 }
 
 interface Target {
@@ -171,7 +192,7 @@ export class AnimationTimeline {
     let inherits = false;
     let willChange = 0;
     let out: Sample[] | null = null;
-    const { names, easings, playStates } = animations;
+    const { names, easings, playStates, triggers } = animations;
     for (let i = 0; i < names.length; i += 1) {
       const name = names[i];
       if (name === null) {
@@ -182,30 +203,75 @@ export class AnimationTimeline {
       if (!run) run = { name, start: now, hold: null };
       taken.add(run);
       running.push(run);
-      const paused = playStates[i % playStates.length] === 'paused';
+      const timing = timingAt(animations, i);
+      // one that waits for a trigger is held at its start until one does
+      // something to it, and plays as its triggers have it after that
+      const heard = triggers[i % triggers.length];
+      if (heard && !run.trig) {
+        run.trig = {
+          state: 'initial',
+          rate: 1,
+          end: 0,
+          triggers: heard,
+          seen: new Map(),
+        };
+        run.hold = 0;
+      } else if (!heard && run.trig) {
+        if (run.trig.rate < 0 && run.hold === null) {
+          run.hold = run.start - now;
+        }
+        delete run.trig;
+      }
+      const trig = run.trig;
+      const rate = trig?.rate ?? 1;
+      if (trig) {
+        trig.triggers = heard!;
+        trig.end = Math.max(
+          0,
+          timing.delay + timing.duration * timing.iterations,
+        );
+      }
+      const paused =
+        playStates[i % playStates.length] === 'paused' ||
+        (!!trig && trig.state !== 'playing');
       if (paused && run.hold === null) {
-        run.hold = now - run.start;
+        run.hold = rate * (now - run.start);
       } else if (!paused && run.hold !== null) {
-        run.start = now - run.hold;
+        run.start = now - rate * run.hold;
         run.hold = null;
       }
+      // played to one end, it is finished there
+      if (trig?.state === 'playing') {
+        const t = rate * (now - run.start);
+        if (rate > 0 ? t >= trig.end : t <= 0) {
+          trig.state = 'finished';
+          run.hold = rate > 0 ? trig.end : 0;
+        }
+      }
+      const held = paused || trig?.state === 'finished';
       const rule = keyframesOf(name);
       if (!rule) continue;
       if (!inherits) inherits = animatesInherited(rule);
-      const timing = timingAt(animations, i);
-      const { progress, phase, forwards, left } = progressAt(
-        timing,
-        run.hold ?? now - run.start,
-      );
+      const time = run.hold ?? rate * (now - run.start);
+      const at = progressAt(timing, time);
+      const { progress, phase } = at;
+      // played backwards, it changes the other way, and goes on until its
+      // start
+      const forwards = rate > 0 ? at.forwards : !at.forwards;
+      const left = rate > 0 ? at.left : Math.max(0, time - timing.delay);
       // in its delay, under way, or filling forwards: what it sets acts as
       // named in `will-change` (Web Animations 1, 5.6)
       if (phase !== 'after' || progress !== null) {
         willChange |= animatedWillChange(rule);
       }
-      if (!paused) {
+      if (!held) {
         if (phase === 'active') active = true;
         else if (phase === 'before') {
-          timed = Math.min(timed, run.start + timing.delay);
+          // backwards through its delay, it finishes at its start
+          timed = Math.min(
+            timed,
+            rate > 0 ? run.start + timing.delay : run.start,
+          );
         }
       }
       if (progress === null) continue;
@@ -216,7 +282,7 @@ export class AnimationTimeline {
         duration: timing.duration,
         forwards,
         // a paused one, or one before or after its active phase, holds
-        left: !paused && phase === 'active' ? left : 0,
+        left: !held && phase === 'active' ? left : 0,
       });
     }
     if (!taken.size) {
@@ -236,6 +302,125 @@ export class AnimationTimeline {
     targets.set(pseudo, target);
     this._seen?.add(target);
     return out;
+  }
+
+  /** Whether an animation waits for a trigger, or did. */
+  get triggered(): boolean {
+    for (const targets of this._targets.values()) {
+      for (const target of targets.values()) {
+        if (target.running.some((run) => run?.trig)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * What the triggers the animations hear make of them now: each run of an
+   * animation that waits for a trigger takes the action its
+   * `animation-trigger` names for a trigger that activated — `stateOf`
+   * answering true — or deactivated since it last heard, and is restyled
+   * at the next frame. A trigger `stateOf` finds none of, undefined, does
+   * nothing: an animation that waits for one no element defines never
+   * plays. The elements whose animations changed, which the caller asks a
+   * frame for.
+   */
+  applyTriggers(
+    stateOf: (el: object, name: string) => boolean | undefined,
+  ): object[] {
+    const out: object[] = [];
+    for (const [el, targets] of this._targets) {
+      let changed = false;
+      for (const target of targets.values()) {
+        let acted = false;
+        for (const run of target.running) {
+          const trig = run?.trig;
+          if (!trig) continue;
+          for (const { name, actions } of trig.triggers) {
+            const state = stateOf(el, name);
+            if (state === undefined) continue;
+            if (state === (trig.seen.get(name) ?? false)) continue;
+            trig.seen.set(name, state);
+            const action = state ? actions[0] : actions[1];
+            if (action && this._act(run!, trig, action)) acted = true;
+          }
+        }
+        if (acted) {
+          target.next = 0;
+          changed = true;
+        }
+      }
+      if (changed) out.push(el);
+    }
+    return out;
+  }
+
+  /**
+   * An action on a triggered animation (CSS Animation Triggers 1,
+   * `<animation-action>`), as Web Animations' methods are: `play` plays one
+   * not playing — from its start again where it is finished at its end,
+   * and from its end where it plays backwards and is finished at its start
+   * — `play-once` only where it has not played or is paused, the two
+   * directed ones set the way it plays first and play it, `pause` holds one
+   * playing, and `reset` and `replay` take it to its start, the one held
+   * there unless it never played and the other playing. Whether it changed.
+   */
+  private _act(
+    run: Running,
+    trig: TriggerRun,
+    action: AnimationAction,
+  ): boolean {
+    const now = this.now;
+    const time = () => run.hold ?? trig.rate * (now - run.start);
+    const play = (): boolean => {
+      if (trig.state === 'playing') return false;
+      let t = time();
+      if (trig.rate > 0 && t >= trig.end) t = 0;
+      else if (trig.rate < 0 && t <= 0 && trig.end !== Infinity) t = trig.end;
+      run.hold = null;
+      run.start = now - trig.rate * t;
+      trig.state = 'playing';
+      return true;
+    };
+    const direct = (rate: 1 | -1): boolean => {
+      if (trig.rate === rate) return play();
+      const t = time();
+      trig.rate = rate;
+      if (run.hold === null) run.start = now - rate * t;
+      play();
+      return true;
+    };
+    const toStart = (): void => {
+      if (run.hold !== null) run.hold = 0;
+      else run.start = now;
+    };
+    switch (action) {
+      case 'play':
+        return play();
+      case 'play-once':
+        return (trig.state === 'initial' || trig.state === 'paused') && play();
+      case 'play-forwards':
+        return direct(1);
+      case 'play-backwards':
+        return direct(-1);
+      case 'pause':
+        if (trig.state !== 'playing') return false;
+        run.hold = time();
+        trig.state = 'paused';
+        return true;
+      case 'reset':
+        toStart();
+        if (trig.state !== 'initial') {
+          run.hold = 0;
+          trig.state = 'paused';
+        }
+        return true;
+      case 'replay':
+        toStart();
+        play();
+        return true;
+      default:
+        return false;
+    }
   }
 
   /**
@@ -344,7 +529,13 @@ export class AnimationTimeline {
     if (targets) {
       const copy = new Map<string, Target>();
       for (const [pseudo, target] of targets) {
-        const running = target.running.map((run) => run && { ...run });
+        const running = target.running.map(
+          (run) =>
+            run && {
+              ...run,
+              trig: run.trig && { ...run.trig, seen: new Map(run.trig.seen) },
+            },
+        );
         copy.set(pseudo, { ...target, running });
       }
       fork._targets.set(el, copy);
