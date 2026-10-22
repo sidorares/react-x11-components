@@ -806,6 +806,43 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
   );
 });
 
+// where the engine could turn JSPI on: Node 24's V8 and later, and not
+// Bun's JavaScriptCore or Node 20's and 22's V8, which have only an
+// earlier proposal
+const jspi =
+  SCRIPTS_CONTAINED &&
+  (await import('node:vm')).runInNewContext('typeof WebAssembly.Suspending') ===
+    'function'
+    ? test
+    : nodeTest.skip;
+
+jspi(
+  'a page suspends WebAssembly on a promise with JSPI, WebAssembly.Suspending and WebAssembly.promising',
+  async () => {
+    // (module (import "m" "f" (func (result i32)))
+    //         (func (export "g") (result i32) call 0))
+    const bytes = [
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+      0x00, 0x01, 0x7f, 0x02, 0x07, 0x01, 0x01, 0x6d, 0x01, 0x66, 0x00, 0x00,
+      0x03, 0x02, 0x01, 0x00, 0x07, 0x05, 0x01, 0x01, 0x67, 0x00, 0x01, 0x0a,
+      0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b,
+    ];
+    const doc = await hosted(
+      '<p id="out">-</p><script>' +
+        `var bytes = new Uint8Array(${JSON.stringify(bytes)});` +
+        'var f = new WebAssembly.Suspending(function () {' +
+        '  return new Promise(function (resolve) { setTimeout(function () { resolve(42); }, 0); }); });' +
+        'WebAssembly.instantiate(bytes, { m: { f: f } }).then(function (made) {' +
+        '  var g = WebAssembly.promising(made.instance.exports.g); var p = g();' +
+        '  return Promise.all([p instanceof Promise, p]); }).then(function (r) {' +
+        '  document.getElementById("out").textContent = r.join(" "); });' +
+        '</script>',
+    );
+    const text = await settled(doc, 'out', (t) => t !== '-');
+    assert.equal(text, 'true 42', doc.logs.join('\n'));
+  },
+);
+
 test('a WebAssembly module that runs away is stopped as a script is, and the page goes on', async () => {
   // Node's timeout reaches into the module; Bun's does not, and there the
   // pane's watchdog ends the tab

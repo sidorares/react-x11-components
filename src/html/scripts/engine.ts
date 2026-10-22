@@ -36,7 +36,7 @@
 // PRD's threat model says what is: the process, which is a weak one today.
 // This is why scripts are off unless a switch turns them on.
 import { installDom } from './dom.js';
-import { nodeModule, runtimeProcess } from './platform.js';
+import { isBun, nodeModule, runtimeProcess } from './platform.js';
 import type {
   SetTimeout,
   UrlClass,
@@ -57,6 +57,40 @@ declare const URL: UrlClass;
 // only once a document's scripts are turned on (`./load.ts`).
 const vm = await nodeModule<VmModule>('vm');
 const { types } = await nodeModule<UtilModule>('util');
+
+/**
+ * WebAssembly's JavaScript Promise Integration (`WebAssembly.Suspending`
+ * and `WebAssembly.promising`), which Chrome and Firefox ship and Interop
+ * 2026 tests. Node 24's V8 has it behind a flag, so the flag is set as
+ * this module loads, before any page's context is made: a flag of the
+ * process's, which adds the two to every context made after it and changes
+ * nothing else. Only where the runtime has the flag and not the API; Bun's
+ * JavaScriptCore has neither.
+ */
+async function enableJspi(): Promise<void> {
+  const wasm = (globalThis as { WebAssembly?: { Suspending?: unknown } })
+    .WebAssembly;
+  if (!wasm || typeof wasm.Suspending === 'function' || isBun()) return;
+  try {
+    const v8 = await nodeModule<{ setFlagsFromString(flags: string): void }>(
+      'v8',
+    );
+    v8.setFlagsFromString('--experimental-wasm-jspi');
+    // Node 20's and 22's V8 have an earlier proposal behind the flag —
+    // `WebAssembly.Function` and a `Suspender` — which no browser ships and
+    // a page should not find: taken back off where the standard API did
+    // not come with it
+    const found = new vm.Script('typeof WebAssembly.Suspending').runInContext(
+      vm.createContext(Object.create(null) as never),
+    );
+    if (found !== 'function') {
+      v8.setFlagsFromString('--no-experimental-wasm-jspi');
+    }
+  } catch {
+    // a runtime with no such flag runs pages without it
+  }
+}
+await enableJspi();
 
 export interface EngineOptions {
   /** How long any one entry may run, in milliseconds. */
