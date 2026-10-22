@@ -2660,8 +2660,12 @@ or its nearest ancestor declares with `scroll-timeline-name` or
 is a proportion of the timeline, an `auto` duration filling it, and at
 the end of its scroller's scroll its end is held, as Web Animations 2's
 timeline boundary has it. It is styled again when a scroll or a layout
-moves its timeline, and asks for no frame of the clock's. Not yet:
-`animation-range`, `timeline-scope` and a vertical writing mode's axes.
+moves its timeline, and asks for no frame of the clock's.
+`animation-range`, and its `-start` and `-end`, narrow the part of the
+timeline it runs over: a percentage or a length into the whole timeline,
+or into a named range of a view timeline (`cover`, `contain`, `entry`,
+`exit`, `entry-crossing`, `exit-crossing`). Not yet: `timeline-scope` and
+a vertical writing mode's axes.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer

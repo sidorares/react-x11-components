@@ -4969,6 +4969,8 @@ export class Cascade {
         style.animations,
         keyframesOf,
         style.animationTimeline,
+        style.animationRangeStart,
+        style.animationRangeEnd,
       );
       animated = fieldsAnimatedBy(samples);
       if (samples) {

@@ -6003,13 +6003,31 @@ export class HtmlViewNode extends Node {
     const port = this._scrollportOf(scroller, down);
     if (!(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
-    if (!view) return { at: (port.offset / port.max) * 100, edge };
+    if (!view) {
+      return {
+        at: (port.offset / port.max) * 100,
+        edge,
+        edgeAt: (e) => (scrollEdgeAt(e, port.max) / port.max) * 100,
+      };
+    }
+    // where the subject is in the scrollport, less its insets; and each
+    // edge of a range as how far the scroll is from it (`viewEdgeAt`), on
+    // the scale of `cover`
     const start = (down ? box.y : box.x) - port.start;
-    const end = start + (down ? box.height : box.width);
-    const from = start - (port.size - resolveLen(inset[1], port.size));
-    const to = end - resolveLen(inset[0], port.size);
+    const place = {
+      start,
+      end: start + (down ? box.height : box.width),
+      portStart: resolveLen(inset[0], port.size),
+      portEnd: port.size - resolveLen(inset[1], port.size),
+    };
+    const from = viewEdgeAt({ name: 'cover', offset: 0 }, place);
+    const to = viewEdgeAt({ name: 'cover', offset: { pct: 100 } }, place);
     if (!(to - from > 0)) return null;
-    return { at: (-from / (to - from)) * 100, edge };
+    return {
+      at: (-from / (to - from)) * 100,
+      edge,
+      edgeAt: (e) => ((viewEdgeAt(e, place) - from) / (to - from)) * 100,
+    };
   };
 
   /** A scrollport, in document coordinates — a scroll container's or,

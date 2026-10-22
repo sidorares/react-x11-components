@@ -3659,6 +3659,34 @@ test('an animation on a scroll() timeline is where its scroller is scrolled, and
   assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
 });
 
+test('an animation-range narrows the part of a scroll timeline an animation runs over, a named range of a view timeline among them', async (t) => {
+  const doc = await triggering(
+    t,
+    '#bar{animation:fade linear both;animation-timeline:scroll();' +
+      'animation-range:20% 60%}' +
+      '#card{animation:fade linear both;animation-timeline:view();' +
+      'animation-range:contain}',
+    '<div id="bar" style="height:10px"></div>' +
+      '<div style="height:290px"></div><div id="card" style="height:40px"></div>' +
+      '<div style="height:260px"></div>',
+  );
+  await doc.frames(2);
+  // the list scrolls 500; 20% to 60% is 100 to 300
+  assert.strictEqual(doc.opacity('bar'), 0, 'before its range, filling back');
+  await doc.scroll(200);
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('bar'), 0.5);
+  // the card, 40 tall at 300 in a 100 tall scrollport, is contained from
+  // 240 to 300 of the scroll
+  await doc.scroll(270);
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('card'), 0.5);
+  await doc.scroll(400);
+  await doc.frames(2);
+  assert.strictEqual(doc.opacity('bar'), 1, 'past its range, filling on');
+  assert.strictEqual(doc.opacity('card'), 1);
+});
+
 test('a triggered animation waits at its start, plays forwards as its subject comes into view and backwards as it leaves', async (t) => {
   const doc = await triggering(
     t,
