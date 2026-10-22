@@ -57,7 +57,58 @@ const fetches = new Map<
   number,
   { resolve: (r: FetchResponse) => void; reject: (e: Error) => void }
 >();
+/** The bodies still arriving from the page process, by request. */
+const bodies = new Map<number, ChunkQueue>();
 let fetchSeq = 0;
+
+/** A body the page process hands on a chunk at a time (`chunk`,
+ *  `fetchEnd`), read as the host reads a network's. */
+class ChunkQueue implements AsyncIterable<Uint8Array> {
+  private _chunks: Uint8Array[] = [];
+  private _waiting: ((r: IteratorResult<Uint8Array>) => void) | null = null;
+  private _failing: ((e: Error) => void) | null = null;
+  private _ended = false;
+  private _error: Error | null = null;
+  constructor(private readonly _id: number) {}
+  push(bytes: Uint8Array): void {
+    if (this._waiting) {
+      const resolve = this._waiting;
+      this._waiting = this._failing = null;
+      resolve({ done: false, value: bytes });
+    } else this._chunks.push(bytes);
+  }
+  end(error: string | null): void {
+    this._ended = true;
+    if (error) this._error = new TypeError(error);
+    const resolve = this._waiting;
+    const reject = this._failing;
+    this._waiting = this._failing = null;
+    if (this._error) reject?.(this._error);
+    else resolve?.({ done: true, value: undefined });
+  }
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    return {
+      next: () => {
+        const chunk = this._chunks.shift();
+        if (chunk) return Promise.resolve({ done: false, value: chunk });
+        if (this._error) return Promise.reject(this._error);
+        if (this._ended) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+        return new Promise((resolve, reject) => {
+          this._waiting = resolve;
+          this._failing = reject;
+        });
+      },
+      return: () => {
+        if (bodies.delete(this._id)) tell({ kind: 'abort', id: this._id });
+        this.end(null);
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+  }
+}
+
 const fetchThrough = (
   request: FetchRequest,
   signal: AbortSignalLike,
@@ -69,6 +120,13 @@ const fetchThrough = (
     signal.addEventListener(
       'abort',
       () => {
+        const body = bodies.get(id);
+        if (body) {
+          bodies.delete(id);
+          tell({ kind: 'abort', id });
+          body.end('The fetch was aborted.');
+          return;
+        }
         if (!fetches.delete(id)) return;
         tell({ kind: 'abort', id });
         reject(new TypeError('The fetch was aborted.'));
@@ -150,8 +208,22 @@ port.on('message', (m: ToWorker) => {
     const pending = fetches.get(m.id);
     if (!pending) return;
     fetches.delete(m.id);
-    if (m.response) pending.resolve(m.response);
-    else pending.reject(new TypeError(m.error ?? 'Failed to fetch'));
+    if (!m.response) {
+      pending.reject(new TypeError(m.error ?? 'Failed to fetch'));
+      return;
+    }
+    const { streaming, ...response } = m.response;
+    if (streaming) {
+      const chunks = new ChunkQueue(m.id);
+      bodies.set(m.id, chunks);
+      pending.resolve({ ...response, chunks });
+    } else pending.resolve(response);
+  } else if (m.kind === 'chunk') {
+    bodies.get(m.id)?.push(m.bytes);
+  } else if (m.kind === 'fetchEnd') {
+    const body = bodies.get(m.id);
+    bodies.delete(m.id);
+    body?.end(m.error);
   }
 });
 

@@ -847,6 +847,50 @@ test('a worker’s imported script is a script of its own: a strict one’s decl
   );
 });
 
+test('a worker’s fetch resolves at its headers too, its body handed across from the page process as it arrives', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const text = (t: string) => new TextEncoder().encode(t);
+  const doc = await hosted(
+    '<p id="out"></p><script type="text/worker" id="src">' +
+      'fetch(slow).then(function (res) { var reader = res.body.getReader(); var dec = new TextDecoder(); var got = "";' +
+      '  var pump = function () { return reader.read().then(function (r) { if (r.done) { postMessage("done:" + got); return; }' +
+      '    got += dec.decode(r.value); postMessage("chunk:" + got); return pump(); }); }; return pump(); });' +
+      '</script><script>' +
+      // a blob URL's worker has no base to resolve `slow` against
+      'var src = "var slow = " + JSON.stringify(new URL("slow", location.href).href) + ";" + document.getElementById("src").textContent;' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { var out = document.getElementById("out"); out.textContent += (out.textContent ? "|" : "") + e.data; };' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        body: '',
+        chunks: (async function* () {
+          yield text('one ');
+          await held;
+          yield text('two');
+        })(),
+      }),
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'chunk:one ',
+    doc.logs.join('\n'),
+  );
+  release();
+  assert.equal(
+    await settled(doc, 'out', (t) => t.includes('done'), 15000),
+    'chunk:one |chunk:one two|done:one two',
+    doc.logs.join('\n'),
+  );
+});
+
 // where the engine could turn JSPI on: Node 24's V8 and later, and not
 // Bun's JavaScriptCore or Node 20's and 22's V8, which have only an
 // earlier proposal
@@ -2800,6 +2844,78 @@ test('a text field’s selection is what a script set, kept to its value, and to
     await settled(doc, 'out', (t) => t !== ''),
     '0|5|none|2|2|backward|5|2|2|b||InvalidStateError|true',
   );
+});
+
+test('a response resolves at its headers and its body arrives as the network hands it on, and an abort or a cancel lets the network go', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const letGo: string[] = [];
+  const text = (t: string) => new TextEncoder().encode(t);
+  // a body of two chunks, the second waiting on `held`, or on nothing ever
+  const chunks = (name: string, second: Promise<void> | null) => ({
+    [Symbol.asyncIterator]() {
+      let step = 0;
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          step += 1;
+          if (step === 1) return { done: false, value: text('one ') };
+          if (step === 2) {
+            await (second ?? new Promise(() => {}));
+            return { done: false, value: text('two') };
+          }
+          return { done: true, value: undefined };
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          letGo.push(name);
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      "var log = []; var show = function () { document.getElementById('out').textContent = log.join('|'); };" +
+      'var dec = new TextDecoder();' +
+      'fetch("slow").then(function (res) { log.push("headers " + res.status); show();' +
+      '  var reader = res.body.getReader();' +
+      '  var pump = function () { return reader.read().then(function (r) { if (r.done) { log.push("done"); show(); return; } log.push(dec.decode(r.value)); show(); return pump(); }); };' +
+      '  return pump(); });' +
+      'var c = new AbortController();' +
+      'fetch("hang", { signal: c.signal }).then(function (res) { var reader = res.body.getReader();' +
+      '  return reader.read().then(function (r) { log.push("first " + dec.decode(r.value)); c.abort("stop"); return reader.read(); }); })' +
+      '.then(null, function (e) { log.push("aborted " + e); show(); });' +
+      'fetch("cancel").then(function (res) { return res.body.cancel(); }).then(function () { log.push("cancelled"); show(); });' +
+      '</script>',
+    {
+      answer: (request) => {
+        const name = new URL(request.url).pathname.split('/').pop()!;
+        assert.equal(request.stream, true);
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [],
+          body: '',
+          chunks: chunks(name, name === 'slow' ? held : null),
+        };
+      },
+    },
+  );
+  const before = await settled(
+    doc,
+    'out',
+    (t) =>
+      t.includes('one ') && t.includes('aborted') && t.includes('cancelled'),
+  );
+  // the first chunk is read while the second is still to come
+  assert.ok(before.includes('headers 200'), before);
+  assert.ok(!before.includes('two'), before);
+  assert.ok(before.includes('first one |aborted stop'), before);
+  release();
+  const after = await settled(doc, 'out', (t) => t.includes('done'));
+  assert.ok(after.endsWith('|two|done'), after);
+  assert.deepEqual(letGo.sort(), ['cancel', 'hang']);
 });
 
 test('indexedDB keeps a page’s records for the document: stores, keys, indexes, cursors and transactions', async () => {
