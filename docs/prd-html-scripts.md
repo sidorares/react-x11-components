@@ -1040,7 +1040,17 @@ the Interop 2026 focus areas through `<Html scripts>`
    for the next frame. Until then, rAF is a 16 ms timer, the clock
    `<Html>`'s own animations run on.
 
-None of the three is needed for a first script to run. The first and the
+4. **A text field's caret and selection, read and set.** A `<textinput>`
+   keeps its caret and its selection to itself (`_caret`, `_anchor`), and
+   `setSelection`, a selection surface's, does not reach a field's own.
+   So `input.select()` and `setSelectionRange()` set what a script reads
+   back, and the widget neither shows it nor deletes it on Backspace, and
+   `selectionStart` cannot say where a user's caret is. What is wanted is
+   the DOM's shape on the node: `selectionStart`, `selectionEnd`,
+   `selectionDirection` and `setSelectionRange()` (WPT's
+   `user-select-none-on-input` stops there).
+
+None of the four is needed for a first script to run. The first and the
 second are what makes "a page costs its own tab" true for a page that
 runs code.
 

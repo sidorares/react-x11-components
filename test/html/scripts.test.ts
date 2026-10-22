@@ -2759,6 +2759,49 @@ test('el.style keeps a clip-path shape() in its canonical form, and does not set
   );
 });
 
+test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><video id="v"></video><audio id="a" muted></audio><script>' +
+      'var v = document.getElementById("v"), a = document.getElementById("a"); var r = [];' +
+      'r.push(CSS.supports("selector(:muted)"), CSS.supports("selector(:volume-locked)"));' +
+      'r.push(v.matches(":muted"), a.matches(":muted"), document.querySelectorAll(":volume-locked").length);' +
+      'v.muted = true; a.muted = false;' +
+      'r.push(v.matches(":muted"), a.matches(":muted"), document.querySelector("video:not(:muted)"));' +
+      // the page's say holds whatever the attribute comes to
+      'v.removeAttribute("muted"); r.push(v.matches(":muted"));' +
+      'var made = document.createElement("video"); made.setAttribute("muted", ""); r.push(made.muted, made.matches(":muted"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|true|0|true|false||true|true|true',
+  );
+});
+
+test('a text field’s selection is what a script set, kept to its value, and told as select; a type with none says null and refuses one', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><input id="i" value="hello"><textarea id="t">abc</textarea><input id="n" type="number" value="5">' +
+      '<script>' +
+      'var i = document.getElementById("i"), t = document.getElementById("t"), n = document.getElementById("n"); var r = []; var told = 0;' +
+      'i.addEventListener("select", function () { told += 1; });' +
+      'i.select(); r.push(i.selectionStart, i.selectionEnd, i.selectionDirection);' +
+      'i.setSelectionRange(4, 2, "backward"); r.push(i.selectionStart, i.selectionEnd, i.selectionDirection);' +
+      'i.setSelectionRange(1, 99); r.push(i.selectionEnd);' +
+      'i.value = "hi"; r.push(i.selectionStart, i.selectionEnd);' +
+      't.setSelectionRange(1, 2); r.push(t.value.substring(t.selectionStart, t.selectionEnd));' +
+      'r.push(n.selectionStart);' +
+      'try { n.setSelectionRange(0, 1); } catch (e) { r.push(e.name); }' +
+      'setTimeout(function () { r.push(told > 0); ' +
+      "  document.getElementById('out').textContent = r.join('|'); }, 20);" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0|5|none|2|2|backward|5|2|2|b||InvalidStateError|true',
+  );
+});
+
 test('indexedDB keeps a page’s records for the document: stores, keys, indexes, cursors and transactions', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

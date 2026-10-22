@@ -13,6 +13,9 @@ import type { UnitContext } from './values.js';
  *  are any lengths. */
 const CHECK: UnitContext = { em: 16, rem: 16, vw: 1, vh: 1, scale: 1 };
 
+/** What every property takes. */
+const CSS_WIDE = /^(inherit|initial|unset|revert|revert-layer)$/;
+
 const GEOMETRY_BOXES =
   /^(margin-box|border-box|padding-box|content-box|fill-box|stroke-box|view-box)$/i;
 
@@ -29,6 +32,12 @@ export function specifiedValue(
   // every property takes, is kept as written
   if (/\b(?:var|env|attr)\(/i.test(value)) return undefined;
   const name = prop.toLowerCase();
+  // one keyword (CSS UI 4, 6.1)
+  if (name === 'user-select' || name === '-webkit-user-select') {
+    const word = value.trim().toLowerCase();
+    if (CSS_WIDE.test(word)) return undefined;
+    return /^(auto|text|none|contain|all)$/.test(word) ? word : null;
+  }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     if (!/\bshape\(/i.test(value)) return undefined;
     // a shape, and a box beside it or none, in either order

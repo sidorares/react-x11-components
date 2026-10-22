@@ -3757,6 +3757,56 @@ export function installDom(
   /** A control's value, as the widget holds it. */
   const controlValue = (el: Any): Any => call('value', el._id);
 
+  /**
+   * A text field's selection as a script reads and sets it (HTML
+   * 4.10.5.2.10): what a script last set, each end no further than the
+   * value goes, and the value's end where nothing was. The widget's own
+   * caret and selection are core's, which says neither, so a selection set
+   * here is the script's to read and tells the field `select`, and the
+   * widget does not show it.
+   */
+  const fieldSelections = new WeakMap<
+    Any,
+    { start: number; end: number; dir: string }
+  >();
+  const fieldSelectionOf = (
+    el: Any,
+  ): { start: number; end: number; dir: string } => {
+    const length = el.value.length;
+    const kept = fieldSelections.get(el);
+    if (!kept) return { start: length, end: length, dir: 'none' };
+    return {
+      start: Math.min(kept.start, length),
+      end: Math.min(kept.end, length),
+      dir: kept.dir,
+    };
+  };
+  const selectField = (el: Any, start: Any, end: Any, dir: Any): void => {
+    const length = el.value.length;
+    const to = Math.min(Number(end) >>> 0, length);
+    let from = Math.min(Number(start) >>> 0, length);
+    if (from > to) from = to;
+    const direction = dir === 'forward' || dir === 'backward' ? dir : 'none';
+    const was = fieldSelectionOf(el);
+    fieldSelections.set(el, { start: from, end: to, dir: direction });
+    if (was.start === from && was.end === to) return;
+    setTimer(
+      () => dispatch(el, new Event('select', { bubbles: true })),
+      0,
+      [],
+      false,
+    );
+  };
+  /** The input types a selection is part of (HTML 4.10.5.1, the table of
+   *  the APIs each type has). */
+  const selects = (el: Any): boolean =>
+    /^(text|search|url|tel|password)$/.test(el.type);
+  const notSelectable = (el: Any, name: string): Any =>
+    new DOMException(
+      `Failed to set the '${name}' property on 'HTMLInputElement': The input element's type ('${el.type}') does not support selection.`,
+      'InvalidStateError',
+    );
+
   class HTMLInputElement extends FormControl {
     get type(): string {
       const t = (this.getAttribute('type') ?? '').toLowerCase();
@@ -3784,6 +3834,8 @@ export function installDom(
         this.setAttribute('value', v === null ? '' : v);
       } else if (type !== 'file') {
         call('setValue', this._id, v === null ? '' : str(v));
+        // a value set puts the selection at its end (HTML 4.10.5.4)
+        fieldSelections.delete(this);
       }
     }
     get valueAsNumber(): number {
@@ -3817,18 +3869,38 @@ export function installDom(
     get files(): Any {
       return list([]);
     }
-    select(): void {}
-    setSelectionRange(): void {}
+    select(): void {
+      if (selects(this)) selectField(this, 0, this.value.length, 'none');
+    }
+    setSelectionRange(start: Any, end: Any, direction?: Any): void {
+      if (!selects(this)) throw notSelectable(this, 'setSelectionRange');
+      selectField(this, start, end, direction);
+    }
     setRangeText(): void {}
-    // the caret is the widget's, as `setSelectionRange` leaves it
-    get selectionStart(): number {
-      return this.value.length;
+    get selectionStart(): number | null {
+      return selects(this) ? fieldSelectionOf(this).start : null;
     }
-    set selectionStart(_v: Any) {}
-    get selectionEnd(): number {
-      return this.value.length;
+    set selectionStart(v: Any) {
+      if (!selects(this)) throw notSelectable(this, 'selectionStart');
+      const now = fieldSelectionOf(this);
+      selectField(this, v, Math.max(Number(v) >>> 0, now.end), now.dir);
     }
-    set selectionEnd(_v: Any) {}
+    get selectionEnd(): number | null {
+      return selects(this) ? fieldSelectionOf(this).end : null;
+    }
+    set selectionEnd(v: Any) {
+      if (!selects(this)) throw notSelectable(this, 'selectionEnd');
+      const now = fieldSelectionOf(this);
+      selectField(this, now.start, v, now.dir);
+    }
+    get selectionDirection(): string | null {
+      return selects(this) ? fieldSelectionOf(this).dir : null;
+    }
+    set selectionDirection(v: Any) {
+      if (!selects(this)) throw notSelectable(this, 'selectionDirection');
+      const now = fieldSelectionOf(this);
+      selectField(this, now.start, now.end, v);
+    }
     stepUp(): void {}
     stepDown(): void {}
     showPicker(): void {}
@@ -3908,6 +3980,8 @@ export function installDom(
     }
     set value(v: Any) {
       call('setValue', this._id, v === null ? '' : str(v));
+      // a value set puts the selection at its end (HTML 4.10.5.4)
+      fieldSelections.delete(this);
     }
     get defaultValue(): string {
       return this.textContent;
@@ -3918,8 +3992,33 @@ export function installDom(
     get textLength(): number {
       return this.value.length;
     }
-    select(): void {}
-    setSelectionRange(): void {}
+    select(): void {
+      selectField(this, 0, this.value.length, 'none');
+    }
+    setSelectionRange(start: Any, end: Any, direction?: Any): void {
+      selectField(this, start, end, direction);
+    }
+    get selectionStart(): number {
+      return fieldSelectionOf(this).start;
+    }
+    set selectionStart(v: Any) {
+      const now = fieldSelectionOf(this);
+      selectField(this, v, Math.max(Number(v) >>> 0, now.end), now.dir);
+    }
+    get selectionEnd(): number {
+      return fieldSelectionOf(this).end;
+    }
+    set selectionEnd(v: Any) {
+      const now = fieldSelectionOf(this);
+      selectField(this, now.start, v, now.dir);
+    }
+    get selectionDirection(): string {
+      return fieldSelectionOf(this).dir;
+    }
+    set selectionDirection(v: Any) {
+      const now = fieldSelectionOf(this);
+      selectField(this, now.start, now.end, v);
+    }
   }
   for (const name of ['placeholder', 'rows', 'cols', 'wrap']) {
     Object.defineProperty(HTMLTextAreaElement.prototype, name, reflect(name));

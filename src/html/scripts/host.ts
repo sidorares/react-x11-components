@@ -40,6 +40,8 @@ import {
   isDefinedElement,
   isModal,
   isPopoverOpen,
+  isMuted,
+  setMuted,
   markCustomized,
   setModal,
   setPopoverOpen,
@@ -2500,6 +2502,14 @@ export class DomHost {
         const name = text(b);
         if (name === 'paused' || name === 'muted') {
           this._seams.handle.setMediaState(el, { [name]: c === true });
+          // `:muted` reads it, told as an attribute nothing has
+          if (name === 'muted' && setMuted(el, c === true)) {
+            this._tell(el, {
+              type: 'attributes',
+              target: el,
+              attributeName: '-rx-muted',
+            });
+          }
         } else if (
           (name === 'volume' ||
             name === 'playbackRate' ||
@@ -3151,6 +3161,9 @@ export class DomHost {
       state: (_el, _name) => false,
       modal: (el) => isModal(el),
       'popover-open': (el) => isPopoverOpen(el),
+      muted: (el) => isMuted(el),
+      // a page cannot lock a volume, and nothing here does
+      'volume-locked': nothing,
       fullscreen: nothing,
       autofill: nothing,
       '-webkit-autofill': nothing,

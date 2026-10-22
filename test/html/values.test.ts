@@ -957,6 +957,11 @@ test('a value el.style keeps is checked where its grammar is read, and kept as w
   );
   assert.strictEqual(specifiedValue('clip-path', 'circle(10px)'), undefined);
   assert.strictEqual(specifiedValue('mask-type', 'luminance'), undefined);
+  // `user-select` is one keyword (CSS UI 4, 6.1)
+  assert.strictEqual(specifiedValue('user-select', ' NONE '), 'none');
+  assert.strictEqual(specifiedValue('user-select', 'visible'), null);
+  assert.strictEqual(specifiedValue('user-select', 'text contain'), null);
+  assert.strictEqual(specifiedValue('user-select', 'inherit'), undefined);
   // and @supports, and CSS.supports, ask the same
   assert.strictEqual(
     supportsCondition('(clip-path: shape(from 0 0, line to 1px 1px))'),
