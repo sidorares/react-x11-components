@@ -4374,9 +4374,12 @@ export function installDom(
     }
     return true;
   };
-  /** A node's parent in the flat tree: its slot, or a shadow root's host. */
+  /** A node's parent in the flat tree: its slot, closed tree or open, or
+   *  a shadow root's host. */
   const flatParentNode = (node: Any): Any =>
-    node?.assignedSlot ??
+    (node && (node.nodeType === 1 || node.nodeType === 3)
+      ? wrap(Number(call('assignedSlot', node._id, true)))
+      : null) ??
     (node?.parentNode instanceof ShadowRoot
       ? node.parentNode.host
       : (node?.parentNode ?? null));
@@ -6709,12 +6712,27 @@ export function installDom(
   }
   class HTMLEmbedElement extends HTMLElement {}
   class HTMLSlotElement extends HTMLElement {
-    assignedNodes(): Any[] {
-      return [];
+    /** What the slot is assigned (DOM 4.2.2.3), or with `flatten`, its
+     *  fallback where it is assigned nothing and the slots in what it has,
+     *  theirs. */
+    assignedNodes(options?: Any): Any[] {
+      const ids = str(call('assignedNodes', this._id, !!options?.flatten));
+      return ids ? ids.split(',').map((id) => wrap(Number(id))) : [];
     }
-    assignedElements(): Any[] {
-      return [];
+    assignedElements(options?: Any): Any[] {
+      return this.assignedNodes(options).filter((n) => n.nodeType === 1);
     }
+  }
+  // an element's or a text's slot (DOM 4.2.9, `Slottable`), where it is in
+  // an open tree
+  for (const proto of [Element.prototype, Text.prototype]) {
+    Object.defineProperty(proto, 'assignedSlot', {
+      get(this: Any) {
+        return wrap(Number(call('assignedSlot', this._id, false)));
+      },
+      enumerable: true,
+      configurable: true,
+    });
   }
   class HTMLBodyElement extends HTMLElement {}
   // `document.body.onload` is the window's `onload`, and so are its kin

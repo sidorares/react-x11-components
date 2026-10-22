@@ -2570,6 +2570,37 @@ test('Escape the page lets be closes the last modal dialog opened, after a cance
   );
 });
 
+test('a slotted node knows its slot, a slot what it is assigned, and a popover in a slot is in the popover around the slot', async () => {
+  // DOM 4.2.2.3: `assignedSlot` where the tree is open, `assignedNodes()`
+  // and its fallback with `flatten`; and HTML's popover ancestry is the
+  // flat tree's, so a popover slotted into another is not light dismissed
+  // as that one's sibling
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="h"><template shadowrootmode="open"><slot name="a"></slot><slot id="fb">fallback</slot></template>' +
+      '<b id="x" slot="a">x</b></div>' +
+      '<div id="c"><template shadowrootmode="closed"><slot></slot></template><i id="y">y</i></div>' +
+      '<div id="outer"><template shadowrootmode="open"><div id="pa" popover>A<slot></slot></div></template>' +
+      '<div id="pb" popover>B</div></div>' +
+      '<script>' +
+      'var r = [], h = document.getElementById("h"), x = document.getElementById("x");' +
+      'var slotA = h.shadowRoot.querySelector("slot[name=a]"), fb = h.shadowRoot.getElementById("fb");' +
+      'r.push(x.assignedSlot === slotA, document.getElementById("y").assignedSlot);' +
+      'r.push(slotA.assignedNodes().length, slotA.assignedElements()[0] === x, fb.assignedNodes().length,' +
+      '  fb.assignedNodes({ flatten: true })[0].data);' +
+      'var outer = document.getElementById("outer"), pa = outer.shadowRoot.getElementById("pa"), pb = document.getElementById("pb");' +
+      'pa.showPopover(); pb.showPopover();' +
+      'r.push(pa.matches(":popover-open"), pb.matches(":popover-open"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'true||1|true|0|fallback|true|true',
+    doc.logs.join('\n'),
+  );
+});
+
 test('popovers show and hide as their kind has them: auto ones nested or closing the others, manual ones alone, hints under them, with beforetoggle and toggle', async () => {
   const doc = await hosted(
     '<div id="a" popover>A<div id="a-child" popover>child</div></div>' +

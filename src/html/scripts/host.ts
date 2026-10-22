@@ -37,6 +37,7 @@ import {
   ShadowRoot,
   indicatedElement,
   isCustomized,
+  assignedSlot,
   isDefinedElement,
   isModal,
   isPopoverOpen,
@@ -45,6 +46,7 @@ import {
   markCustomized,
   setModal,
   setPopoverOpen,
+  shadowRootAround,
   topLayerIn,
   topLayerOf,
   treeGeneration,
@@ -1992,6 +1994,36 @@ export class DomHost {
       case 'shadowFlags': {
         const root = this._node(a) as ShadowRoot;
         return `${root.clonable ? 1 : 0}${root.serializable ? 1 : 0}`;
+      }
+      // the slot a node is assigned to (DOM 4.2.2.3), where its tree is
+      // open, or whatever its tree where the flat tree is asked for
+      case 'assignedSlot': {
+        const slot = assignedSlot(this._node(a) as ChildNode);
+        if (!slot) return 0;
+        if (b !== true && shadowRootAround(slot)?.mode !== 'open') return 0;
+        return this.idOf(slot);
+      }
+      // what a slot is assigned, its own children for a fallback where it
+      // is asked to flatten, and the slots in that, theirs
+      case 'assignedNodes': {
+        const out: ChildNode[] = [];
+        const add = (slot: Element, flatten: boolean): void => {
+          const root = shadowRootAround(slot);
+          const assigned = root ? root.assignedTo(slot) : [];
+          const nodes = assigned.length || !flatten ? assigned : slot.children;
+          for (const node of nodes) {
+            if (
+              flatten &&
+              node instanceof Element &&
+              node.name === 'slot' &&
+              shadowRootAround(node)
+            ) {
+              add(node, true);
+            } else out.push(node);
+          }
+        };
+        add(this._element(a), b === true);
+        return out.map((n) => this.idOf(n)).join(',');
       }
       case 'shadowMode':
         return (this._node(a) as ShadowRoot).mode;

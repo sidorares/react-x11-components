@@ -4017,6 +4017,11 @@ that `name`, and an element with none and every text node, white space
 included, to the first slot with no name — in the order they are in,
 whichever slot comes first. A slot nothing is assigned to draws its own
 children, its fallback; a light child no slot takes is drawn nowhere. A
+page's script reads the same assignment: a node's `assignedSlot`, where
+its slot's tree is open, and a slot's `assignedNodes()` and
+`assignedElements()`, the fallback and nested slots' nodes in their place
+with `{ flatten: true }`; and a popover in a slot is in the popover around
+the slot, as HTML walks the flat tree for a popover's ancestors. A
 slot is `display: contents` by the user-agent sheet, so it makes no box
 until a sheet gives it one. Inheritance, counters, `:hover`,
 `:focus-within`, the Tab order and a link around a slot go by the flat tree:
