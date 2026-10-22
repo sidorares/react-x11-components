@@ -2328,6 +2328,65 @@ test('a scoped registry defines for the elements and shadow roots made with it, 
   );
 });
 
+test("a clone of a clonable shadow host takes a copy of its tree, and initialize() gives a registry to what has none in any node's tree", async () => {
+  // DOM 4.4, "clone a node": a host whose root is clonable gives its copy
+  // a root of its kind and a copy of the tree in it, shallow clone or
+  // deep; and HTML 4.13.4's initialize() takes any node, leaves what has a
+  // registry its own, and the window's registry is no document's
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="c"><template shadowrootmode="open" shadowrootclonable shadowrootcustomelementregistry><x-b id="in"></x-b></template></div>' +
+      '<div id="n"><template shadowrootmode="open"><i></i></template></div>' +
+      '<script>' +
+      'var r = [], c = document.getElementById("c");' +
+      'var deep = c.cloneNode(true), shallow = c.cloneNode(false);' +
+      'r.push(!!deep.shadowRoot, deep.shadowRoot && deep.shadowRoot.clonable, deep.shadowRoot.firstElementChild.id,' +
+      '  shallow.shadowRoot.childElementCount, deep.shadowRoot !== c.shadowRoot);' +
+      'r.push(document.getElementById("n").cloneNode(true).shadowRoot);' +
+      'var root = deep.shadowRoot, xb = root.firstElementChild, scoped = new CustomElementRegistry();' +
+      'r.push(root.customElementRegistry, xb.customElementRegistry);' +
+      'scoped.initialize(root); r.push(root.customElementRegistry === scoped, xb.customElementRegistry === scoped);' +
+      'customElements.initialize(root); r.push(root.customElementRegistry === scoped);' +
+      'var frag = document.createDocumentFragment(); frag.append(document.createElement("y-y"));' +
+      'scoped.initialize(frag.firstChild); r.push(frag.firstChild.customElementRegistry === customElements);' +
+      'try { customElements.initialize(new Document()); } catch (e) { r.push(e.name); }' +
+      'var host = document.createElement("div"); host.attachShadow({ mode: "closed", clonable: true });' +
+      'r.push(host.shadowRoot, !!host.cloneNode().attachShadow);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    [
+      'true|true|in|1|true',
+      // a root that is not clonable stays with its host
+      '',
+      // a declarative root with no registry, and what is in it: none
+      '|',
+      'true|true',
+      // initialize() leaves a registry where there is one
+      'true',
+      // an element made with the window's registry keeps it
+      'true',
+      'NotSupportedError',
+      // closed is closed to the page, clonable or not
+      '|true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +
+      'customElements.define("x-h", class extends HTMLElement { constructor() { super(); this.i = this.attachInternals(); } });' +
+      'var h = document.getElementById("h");' +
+      'document.getElementById("out").textContent = [h.shadowRoot, h.i.shadowRoot && h.i.shadowRoot.textContent].join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '|in', doc.logs.join('\n'));
+});
+
 test('setHTMLUnsafe takes a declarative shadow root where innerHTML does not, and a template reflects its shadow root attributes', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

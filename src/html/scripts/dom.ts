@@ -2087,6 +2087,12 @@ export function installDom(
     get delegatesFocus(): boolean {
       return call('shadowDelegates', this._id) === true;
     }
+    get clonable(): boolean {
+      return str(call('shadowFlags', this._id))[0] === '1';
+    }
+    get serializable(): boolean {
+      return str(call('shadowFlags', this._id))[1] === '1';
+    }
     get customElementRegistry(): Any {
       return shadowRegistryOf(this);
     }
@@ -2909,7 +2915,15 @@ export function installDom(
       const own = this.ownerDocument === document ? customElements : null;
       const given = registryGiven(init, own, 'attachShadow');
       const root = wrap(
-        Number(call('attachShadow', this._id, mode, !!init?.delegatesFocus)),
+        Number(
+          call(
+            'attachShadow',
+            this._id,
+            mode,
+            !!init?.delegatesFocus,
+            `${init?.clonable ? 1 : 0},${init?.serializable ? 1 : 0}`,
+          ),
+        ),
       );
       shadowRegistries.set(root, given === undefined ? own : given);
       return root;
@@ -16621,28 +16635,29 @@ export function installDom(
           'NotSupportedError',
         );
       };
+      // the window's own registry is its document's alone, and is never a
+      // document's by initializing (HTML 4.13.4)
       const isDocument = root.nodeType === 9;
-      if (!isDocument && !(root instanceof ShadowRoot)) {
-        fail('The root is neither a document nor a shadow root.');
-      }
-      // the window's own registry is its document's alone
+      const scoped = stateOf(this).scoped;
+      if (!scoped && isDocument) fail('The registry is not scoped.');
       const owner = isDocument ? root : root.ownerDocument;
-      if (!stateOf(this).scoped && owner !== document) {
+      if (!scoped && owner !== document) {
         fail("The root is not this registry's document's.");
       }
+      // what has no registry takes this one, and what has one keeps it:
+      // the root, where it is a document or a shadow root, and every
+      // element in its tree, itself among them
       if (isDocument) {
-        if (documentRegistryOf(root) !== null) {
-          fail('The document has a registry.');
+        if (documentRegistryOf(root) === null) {
+          documentRegistries.set(root, this);
         }
-        documentRegistries.set(root, this);
-      } else {
-        if (shadowRegistryOf(root) !== null) {
-          fail('The shadow root has a registry.');
-        }
-        shadowRegistries.set(root, this);
+      } else if (root instanceof ShadowRoot) {
+        if (shadowRegistryOf(root) === null) shadowRegistries.set(root, this);
       }
+      const elements = Array.from(root.querySelectorAll?.('*') ?? []) as Any[];
+      if (root.nodeType === 1) elements.unshift(root);
       withReactions(() => {
-        for (const el of root.querySelectorAll('*')) {
+        for (const el of elements) {
           if (registryOf(el) !== null) continue;
           elementRegistries.set(el, this);
           const custom = customOf.get(el);
@@ -16692,8 +16707,9 @@ export function installDom(
     constructor() {
       throw new TypeError('Illegal constructor');
     }
+    // the element's own, closed or open (HTML 4.13.7.4)
     get shadowRoot(): Any {
-      return this._el.shadowRoot;
+      return wrap(Number(call('shadowRoot', this._el._id, true)));
     }
     get states(): Any {
       return this._states;

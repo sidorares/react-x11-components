@@ -875,7 +875,15 @@ HTML 4.13.4).
   - A shadow root has its document's registry by default, whatever its
     host's.
   - A declarative one written with `shadowrootcustomelementregistry` has
-    none until a page's `initialize()` gives it one.
+    none until a page's `initialize()` gives it one. `initialize()` takes
+    any node, and gives its registry to the document or shadow root it is
+    and to every element in its tree that has none, leaving one that has a
+    registry its own; the window's own registry is never a document's by
+    it.
+  - A clone of a host whose shadow root is clonable — `shadowrootclonable`,
+    or `clonable` in `attachShadow`'s init — takes a root of its kind with
+    a copy of the tree in it, a shallow clone too. An element's
+    `ElementInternals` reach its shadow root closed or open.
   - An element keeps the registry it was made with wherever it moves. One
     that moves into another document trades its old document's own registry
     for the new one's.
