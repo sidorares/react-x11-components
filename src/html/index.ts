@@ -1136,6 +1136,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
       focus: (element: Element) =>
         nodeRef.current?.interactive?.focus(element) ?? false,
+      toldFocus: (element: Element) =>
+        nodeRef.current?.interactive?.told(element),
       blur: () => nodeRef.current?.interactive?.blur(),
       get activeElement() {
         return nodeRef.current?.interactive?.activeElement() ?? null;
@@ -1220,10 +1222,14 @@ function documentInteraction(
       // Escape, which closes the dialog — still reach it.
       if (!took && isModal(el) && root.current) {
         root.current.focus();
+        // and what had it hears it go now, so that its getting it back
+        // when the dialog closes, in the same task, is news to it
+        now.forms.letGo();
         return true;
       }
       return took;
     },
+    told: (el) => live.current?.forms.focused(el, true),
     blur: () => {
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();

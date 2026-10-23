@@ -284,9 +284,17 @@ export function useFocusStops(options: StopsOptions): Stops {
     hasStops,
     focus: (el) => {
       const stop = stops[index.get(el) ?? -1];
-      if (!stop) return false;
-      go(stop);
-      return true;
+      if (stop) {
+        // a stop whose box is still to be mounted has the document told
+        // now, as a browser's `focus()` tells it before it returns; core's
+        // focus follows the box, and tells it nothing new
+        if (!stop.widget && !boxes.node(stop.element)) {
+          forms.focused(el, true);
+        }
+        go(stop);
+        return true;
+      }
+      return false;
     },
     elementOf: (node) => boxes.elementOf(node),
   };

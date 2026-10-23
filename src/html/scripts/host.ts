@@ -253,6 +253,9 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** The document told an element has the focus before anything is there
+   *  to take core's (`DocumentInteraction.told`). */
+  toldFocus(element: Element): void;
   /** The document styled and laid out as it stands now, and what that
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
@@ -3290,7 +3293,11 @@ export class DomHost {
         this._focusing = null;
         if (!this._seams.handle.focus(el)) {
           const pending = focusableElement(el);
-          if (pending) this._focusing = el;
+          if (pending) {
+            this._focusing = el;
+            // and its focus events now, as a browser's are
+            this._seams.handle.toldFocus?.(el);
+          }
           setTimeout(() => {
             if (this._disposed) return;
             // focused elsewhere since

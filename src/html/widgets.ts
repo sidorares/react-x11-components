@@ -120,6 +120,11 @@ export interface Forms {
    * change to the document.
    */
   focused(el: Element, on: boolean): void;
+  /** What has the document's focus loses it now, told at once where a blur
+   *  is told a microtask later: core's focus went to what is no element of
+   *  the document's, as a modal dialog with nothing to focus gives it to
+   *  the document, and a focus given back in the same task is news. */
+  letGo(): void;
   /** What the user last did in the document, heard before anything else
    *  hears it: a press, or a key that is not a modifier's or a chord's. */
   userInput(kind: 'pointer' | 'keyboard'): void;
@@ -242,6 +247,16 @@ export function useForms(options: FormsOptions): Forms {
       const node = view.current;
       if (node?.focusedElement === el) node.setFocus(null);
     });
+  };
+
+  const letGo = () => {
+    const el = holder.current;
+    if (!el) return;
+    blurred.current = null;
+    holder.current = null;
+    leave(el, null);
+    const node = view.current;
+    if (node?.focusedElement === el) node.setFocus(null);
   };
 
   // What each text field held when it took the focus, or at its last
@@ -592,6 +607,7 @@ export function useForms(options: FormsOptions): Forms {
       return false;
     },
     focused,
+    letGo,
     userInput: (kind) => {
       lastInput.current = kind;
     },
