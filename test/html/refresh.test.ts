@@ -699,6 +699,66 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
   assert.notStrictEqual(el.computedStyle(q)?.['font-style'], 'italic');
 });
 
+test("a child put in reaches the later siblings of its new siblings, and its holder's own only where a rule asks what the holder holds before a sibling combinator", async () => {
+  // The Guardian's ad scripts put a <script> in its <head> and take it out
+  // some thirty times a load, and with a `+` anywhere in a sheet each one
+  // restyled the whole <body>, as though the <head>'s own later siblings
+  // were what a sibling combinator reaches
+  const page = (rule: string) =>
+    '<html><head><script></script></head><body><p id="a" class="a">a</p>' +
+    `<p id="b" class="b">b</p></body></html><style>.a + .b { color: #ff0000 } ${rule}</style>`;
+  const { node } = await render(page(''), 300);
+  const el = view(node);
+  await act();
+  const head = byId(el, 'a').parent!.parent!.children.find(
+    (n) => (n as Element).name === 'head',
+  ) as Element;
+  const script = createElement('script', {});
+  appendChild(head as never, script);
+  const putIn: HtmlChange = {
+    type: 'childList',
+    target: head as never,
+    addedNodes: [script],
+    removedNodes: [],
+  };
+  const own = scopeOf(el, [putIn]);
+  assert.ok(own, 'a script in the <head> restyled everything');
+  assert.ok(!own.has(byId(el, 'a')), 'the <body> was reached');
+  el.touchDocument([putIn]);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 'b'))?.color, 'rgb(255, 0, 0)');
+
+  // and where a rule asks whether the <head> is empty before a `+`, what it
+  // holds reaches the <body> after it
+  const { node: other } = await render(
+    page('head:empty + body p { color: #0000ff }').replace(
+      '<script></script>',
+      '',
+    ),
+    300,
+  );
+  const el2 = view(other);
+  await act();
+  const p2 = byId(el2, 'a');
+  assert.strictEqual(el2.computedStyle(p2)?.color, 'rgb(0, 0, 255)');
+  const head2 = p2.parent!.parent!.children.find(
+    (n) => (n as Element).name === 'head',
+  ) as Element;
+  const script2 = createElement('script', {});
+  appendChild(head2 as never, script2);
+  const filled: HtmlChange = {
+    type: 'childList',
+    target: head2 as never,
+    addedNodes: [script2],
+    removedNodes: [],
+  };
+  const reached = scopeOf(el2, [filled]);
+  assert.ok(reached?.has(p2), 'what follows an emptied <head> was not reached');
+  el2.touchDocument([filled]);
+  await act();
+  assert.notStrictEqual(el2.computedStyle(p2)?.color, 'rgb(0, 0, 255)');
+});
+
 test('a class that an attribute selector answers alike for before and after restyles nothing it tests, and one it answers otherwise for restyles what it reaches', async () => {
   // Primer's pricing rules: a `[class*=]` in a `:has()` that starts at a
   // sibling made every class change on github.com/features a refresh of
@@ -852,6 +912,12 @@ function rulesFor(
     () => `:not(.${c()}) > .${c()}:first-child`,
     () => `${pick(TAGS)}:last-child`,
     () => `div:empty`,
+    // what a holder holds before a sibling combinator reaches its own
+    // later siblings, where a sibling combinator alone reaches its
+    // children's
+    () => `div:empty + .${c()}`,
+    () => `.${c()}:empty ~ *`,
+    () => `:not(:empty) + .${c()}`,
     () => `.${c()}:nth-child(2n+1)`,
     () => `[data-x] .${c()}`,
     () => `[data-x=y]`,

@@ -2216,9 +2216,11 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   stalled: ['a:-rx-stalled'],
   'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
   'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
-  empty: ['s'],
-  blank: ['s'],
-  parent: ['s'],
+  // what an element holds, and so where its own later siblings are
+  // reached from (`treeChange`), beside where it sits
+  empty: ['s', 'h'],
+  blank: ['s', 'h'],
+  parent: ['s', 'h'],
   'first-child': ['s'],
   'last-child': ['s'],
   'only-child': ['s'],
@@ -2729,6 +2731,10 @@ export interface AttributeReach {
  *  (`Cascade.treeChange`). */
 export interface TreeReach {
   bits: number;
+  /** Whether what came or went reaches the holder's children and what is
+   *  in them, past `bits`: a sibling combinator, or a test of where an
+   *  element sits that one follows, which ask how the children line up. */
+  kidsLater: boolean;
   anchors: ChangeAnchors | null;
 }
 
@@ -3703,11 +3709,25 @@ export class Cascade {
   treeChange(text = false): TreeReach | null {
     const rules = this._changeRules;
     if (rules.hasAnywhere) return null;
-    let bits = rules.bits('s');
+    // A child coming or going changes where its siblings sit and how they
+    // line up, which a sibling combinator reaches past: the holder's
+    // children and what is in them. Its own later siblings only a test of
+    // what it holds before one reaches (`'h'`), and a text's change only
+    // that and a test of text: a script a page puts in its `<head>`
+    // restyled the whole `<body>` wherever a page had a `+`.
+    const sits = text ? 0 : rules.bits('s');
+    let bits = sits | rules.bits('h');
     if (text) bits |= rules.bits('t');
-    if (rules.siblings) bits |= CHANGES_LATER;
-    if (bits & CHANGES_ANYWHERE) return null;
-    return { bits, anchors: this._changeAnchors([rules.everyAnchor]) };
+    if ((bits | rules.bits('s')) & CHANGES_ANYWHERE) return null;
+    const kidsLater = !text && (rules.siblings || (sits & CHANGES_LATER) !== 0);
+    let later = rules.bits('h') & CHANGES_LATER;
+    if (text) later |= rules.bits('t') & CHANGES_LATER;
+    bits = (bits & ~CHANGES_LATER) | later;
+    return {
+      bits,
+      kidsLater,
+      anchors: this._changeAnchors([rules.everyAnchor]),
+    };
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses

@@ -1759,7 +1759,14 @@ goes down**: a key read inside its element too (`PSEUDO_INHERITED`,
 `:lang()`, `:dir()`) is the attribute of none that is style-only, so a
 change of it restyles the element and everything in it, wherever the
 element whose `:has()` it changed is. Make one style-only and that walk is
-owed. **An attribute selector is a key of its own** (`v:`), asked of the
+owed. **What a holder holds and where its children sit are two keys**
+(`'h'`, `'s'`): a child coming or going reaches its holder's own later
+siblings only through a test of what the holder holds before a sibling
+combinator (`:empty + x`), and a sibling combinator alone reaches the
+holder's children and what is in them (`TreeReach.kidsLater`); the
+Guardian's ad scripts put a `<script>` in its `<head>` some thirty times a
+load, and each restyled the whole `<body>`. A holder nothing draws still
+reaches its later siblings, which are not under it. **An attribute selector is a key of its own** (`v:`), asked of the
 value its attribute had and has by css-select itself (`Cascade._flips`),
 which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
 class on github.com/features. **A sheet's element is a change to the

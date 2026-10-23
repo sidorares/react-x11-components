@@ -7733,10 +7733,16 @@ export class HtmlViewNode extends Node {
     } else drawn = true;
     const reach = cascade.treeChange(change.type === 'characterData');
     if (!reach) return false;
-    const { bits, anchors } = reach;
-    if (!drawn && !bits && !anchors) return true;
+    const { bits, kidsLater, anchors } = reach;
+    if (!drawn && !bits && !kidsLater && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
-    if (!anchors && undrawn(holder, tree)) return true;
+    // under a holder nothing draws nothing it reaches is drawn — but its
+    // own later siblings, which a test of what it holds before a sibling
+    // combinator reaches, are not under it: `.panel:empty ~ .hint` with the
+    // panel hidden kept its hint as the panel was
+    if (!anchors && !(bits & CHANGES_LATER) && undrawn(holder, tree)) {
+      return true;
+    }
     if (drawn) scope.boxes = true;
     const crossing = cascade.changesCrossTrees;
     if (change.type === 'childList') {
@@ -7746,8 +7752,17 @@ export class HtmlViewNode extends Node {
         if (isElement(node)) addSubtree(node, scope.own, crossing);
       }
     }
-    if (root) spreadRootChange(root, bits, scope.own, crossing);
-    else spreadChange(parent as Element, bits, true, scope.own, crossing);
+    if (root) spreadRootChange(root, bits, scope.own, crossing, kidsLater);
+    else {
+      spreadChange(
+        parent as Element,
+        bits,
+        true,
+        scope.own,
+        crossing,
+        kidsLater,
+      );
+    }
     return (
       !anchors ||
       spreadAnchors(root ?? (parent as Element), true, anchors, scope, crossing)
@@ -12151,6 +12166,10 @@ function spreadChange(
   holder: boolean,
   own: Set<Element>,
   crossing = false,
+  /** For a holder, whether its children and what is in them are reached
+   *  as later siblings of what came or went (`TreeReach.kidsLater`), apart
+   *  from its own later siblings (`CHANGES_LATER`). */
+  kidsLater = holder && (bits & CHANGES_LATER) !== 0,
 ): void {
   if (bits & CHANGES_SELF) {
     own.add(el);
@@ -12159,12 +12178,12 @@ function spreadChange(
     }
   }
   if (bits & CHANGES_BELOW) addSubtree(el, own, crossing);
-  if (bits & CHANGES_LATER) {
-    if (holder) {
-      for (const child of el.children) {
-        if (isElement(child)) addSubtree(child, own, crossing);
-      }
+  if (holder && kidsLater && !(bits & CHANGES_BELOW)) {
+    for (const child of el.children) {
+      if (isElement(child)) addSubtree(child, own, crossing);
     }
+  }
+  if (bits & CHANGES_LATER) {
     for (let s = el.next; s; s = s.next) {
       if (isElement(s)) addSubtree(s, own, crossing);
     }
@@ -12178,10 +12197,11 @@ function spreadRootChange(
   bits: number,
   own: Set<Element>,
   crossing = false,
+  kidsLater = (bits & CHANGES_LATER) !== 0,
 ): void {
   for (const child of root.children) {
     if (!isElement(child)) continue;
-    if (bits & (CHANGES_BELOW | CHANGES_LATER)) {
+    if (bits & (CHANGES_BELOW | CHANGES_LATER) || kidsLater) {
       addSubtree(child, own, crossing);
     } else if (bits & CHANGES_SELF) own.add(child);
   }
