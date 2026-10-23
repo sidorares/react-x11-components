@@ -1143,6 +1143,59 @@ metric(
   },
 );
 
+test('a small gradient tiled many times is copied from a block of its tiles, pixel for pixel as a tile at a time', async () => {
+  // Tailwind's docs hatch their gutters with a repeating-linear-gradient
+  // ten pixels a side, and each tile a paint reached was shaded again:
+  // most of a frame of a scroll on a Mac. One tile is shaded on a raster
+  // and its block copied, and has to draw what the tiles drew: a hatch, a
+  // hard stop from a position that is no multiple of the tile, and a
+  // radial one along one axis — and one cut to a rounded box, whose edge
+  // takes a copied pixel a level apart from a shaded one
+  const drawn = async (
+    divs: string,
+    gradients: number,
+  ): Promise<[Uint8ClampedArray, Uint8ClampedArray]> => {
+    const { result, el } = await renderWithBytes(
+      `<style>body{margin:0}div{width:200px;height:60px}</style>${divs}`,
+      {},
+      240,
+      2,
+    );
+    const blocks = await snapshot(result, el);
+    const kept = (
+      el as unknown as { _tileBlocks: { kept: Map<string, unknown> } }
+    )._tileBlocks;
+    const shaded = [...(kept?.kept.keys() ?? [])].filter((k) =>
+      k.startsWith('gradient '),
+    );
+    assert.strictEqual(shaded.length, gradients, 'each shaded once');
+    withoutTileBlocks(el);
+    const tiles = await rebuilt(result, el);
+    await cleanup();
+    return [blocks, tiles];
+  };
+  const [blocks, tiles] = await drawn(
+    '<div style="background:repeating-linear-gradient(315deg,#c03 0,' +
+      '#c03 1px,#fff 0,#fff 50%) 0 0/10px 10px"></div>' +
+      '<div style="background:linear-gradient(to right,#06c 50%,#fc0 50%)' +
+      ' 3px 7px/12px 12px"></div>' +
+      '<div style="background:radial-gradient(#0a0,#00f) 0 0/8px 8px ' +
+      'repeat-x"></div>',
+    3,
+  );
+  assert.strictEqual(bytesApart(blocks, tiles), 0);
+  const [cut, uncut] = await drawn(
+    '<div style="background:linear-gradient(#f00,#00f) 1px 1px/9px 9px;' +
+      'border:3px solid;border-radius:9px"></div>',
+    1,
+  );
+  let most = 0;
+  for (let i = 0; i < cut.length; i += 1) {
+    most = Math.max(most, Math.abs(cut[i] - uncut[i]));
+  }
+  assert.ok(most <= 1, `${most} levels apart`);
+});
+
 metric(
   'a large image drawn at another size is copied from tiles of a raster kept at it, pixel for pixel as the image drawn there',
   async () => {

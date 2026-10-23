@@ -8934,6 +8934,25 @@ function paintGradient(
     gradientTile(ctx, gradient, x0, y0, w, h, style.color, area, options);
     return;
   }
+  if (
+    stepX === w &&
+    stepY === h &&
+    Math.ceil((toX - fromX) / w) * Math.ceil((toY - fromY) / h) > BLOCK_FROM &&
+    gradientBlocks(
+      ctx,
+      gradient,
+      w,
+      h,
+      style.color,
+      { fromX, toX, fromY, toY },
+      repeats(repeat[0], toX - fromX, w),
+      repeats(repeat[1], toY - fromY, h),
+      area,
+      options,
+    )
+  ) {
+    return;
+  }
   for (let y = fromY; y < toY; y += stepY) {
     const top = Math.max(y, area.y);
     const bottom = Math.min(y + h, area.y + area.h);
@@ -8946,6 +8965,97 @@ function paintGradient(
       gradientTile(ctx, gradient, x, y, w, h, style.color, tile, options);
     }
   }
+}
+
+/**
+ * A gradient's tiles copied from a block of them, as a small image's are
+ * (`tileBlock`): one tile shaded on a raster kept for it, `w` by `h` at its
+ * corner, and the block made of it drawn across the tiles, cut to `area`.
+ * Tailwind's docs hatch their gutters with a `repeating-linear-gradient`
+ * ten pixels a side, and each of the hundreds of tiles a paint reached was
+ * the gradient's stops laid down again, their colours read again and the
+ * tile shaded again: most of a frame of a scroll on a Mac. Only where the
+ * context draws in whole pixels of its own and every tile's corner and the
+ * area's edges are whole pixels, so a tile copied is the tile shaded there,
+ * pixel for pixel — a translucent one may come out a level apart, the
+ * store-and-composite rounding a kept raster has, and so may the edge a
+ * rounded box cuts it at. False where it is not drawn so, and the tiles
+ * are shaded one by one.
+ */
+function gradientBlocks(
+  ctx: PaintContext,
+  gradient: Gradient,
+  w: number,
+  h: number,
+  currentColor: string,
+  run: { fromX: number; toX: number; fromY: number; toY: number },
+  across: boolean,
+  down: boolean,
+  area: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): boolean {
+  const keep = options.tilesKept;
+  if (!keep || !ctx.drawImage || !ctx.getTransform || options.matrix) {
+    return false;
+  }
+  const { fromX, toX, fromY, toY } = run;
+  if (
+    ![w, h, fromX, fromY, area.x, area.y, area.w, area.h].every(
+      Number.isInteger,
+    )
+  ) {
+    return false;
+  }
+  const m = ctx.getTransform();
+  if (m.a !== 1 || m.b !== 0 || m.c !== 0 || m.d !== 1) return false;
+  if (!Number.isInteger(m.e) || !Number.isInteger(m.f)) return false;
+  const tile = keep(
+    `gradient ${JSON.stringify(gradient)} ${currentColor} ${w}x${h}`,
+    w,
+    h,
+    (sctx) => {
+      const whole = { x: 0, y: 0, w, h };
+      gradientTile(sctx, gradient, 0, 0, w, h, currentColor, whole, options);
+    },
+  );
+  if (!tile) return false;
+  const block = tileBlock(tile, w, h, across, down, options) ?? {
+    surface: tile,
+    width: w,
+    height: h,
+  };
+  const bw = block.width;
+  const bh = block.height;
+  if (
+    Math.ceil((toX - fromX) / bw) * Math.ceil((toY - fromY) / bh) >
+    MAX_TILES
+  ) {
+    return false;
+  }
+  const right = area.x + area.w;
+  const bottom = area.y + area.h;
+  for (let y = fromY; y < toY; y += bh) {
+    const top = Math.max(y, area.y);
+    const end = Math.min(y + bh, bottom);
+    if (end <= top) continue;
+    for (let x = fromX; x < toX; x += bw) {
+      const left = Math.max(x, area.x);
+      const far = Math.min(x + bw, right);
+      if (far <= left) continue;
+      ctx.drawImage(
+        block.surface,
+        left - x,
+        top - y,
+        far - left,
+        end - top,
+        left,
+        top,
+        far - left,
+        end - top,
+      );
+    }
+  }
+  return true;
 }
 
 /** A gradient `w` by `h` at (`x`, `y`), filled in `part` of it. */
