@@ -6421,6 +6421,22 @@ test('a root made a mandatory snap container snaps at once, read straight after,
   assert.strictEqual(doc.text('out'), '300|150|150|190', doc.logs.join('\n'));
 });
 
+test('a point in the viewport past what the document lays out is the root element, and one outside it nothing', async () => {
+  // CSSOM View 5: the root paints the canvas, all of the viewport, so
+  // elementFromPoint answers it there — and a press there is outside every
+  // dialog and popover, which HTML's light dismiss asks
+  const doc = await hosted(
+    '<!DOCTYPE html><html><body style="margin:0">' +
+      '<p id="out" style="margin:0"></p><script>' +
+      'var r = [], at = document.elementFromPoint(200, 250);' +
+      'r.push(String(at && at.tagName), String(document.elementFromPoint(-5, -5)));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+    { pane: 300 },
+  );
+  assert.strictEqual(doc.text('out'), 'HTML|null', doc.logs.join('\n'));
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
