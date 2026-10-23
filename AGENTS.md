@@ -4033,7 +4033,7 @@ CommonMark and not MDX — these docs are full of bare element names like
 - When a PR contains changes that can be detected by eye (rendering, widgets,
   layout, the docs site), include screenshots **rendered by the PR's own
   code** in the description. Headless recipe: render into node-x11's
-  in-process X server, read back with `getImageData` (BGRA byte order), save
+  in-process X server, read back with `getImageData` (RGBA, as a canvas's is: core's readback was BGRA once, and a PNG written from it as though it still were has red and blue swapped), save
   with `pngjs`. Everything here is testable without a `$DISPLAY` for exactly
   this reason. For the docs site, `npm run docs:build` and then a headless
   browser against `website/build`.

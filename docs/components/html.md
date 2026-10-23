@@ -4229,7 +4229,12 @@ where a fixed box is, so its copy of a step does not drag the box with the
 text. What a sticky box holds goes with it but for a box fixed to the
 viewport, which stays where the viewport has it; a relative box's offset
 moves one only along an axis it has no inset on, where it is at its static
-position, as Chrome has both.
+position, as Chrome has both. A step of the pane's scroll that moves one
+works out the ink of that box and what it holds, and grows the boxes around
+it only as far as it reaches past them, which its container, holding it,
+never needs: the whole document's was worked out again at every step, and
+a scroll of Wikipedia's article on the United States, with its contents list
+held beside it, went from 9 ms a frame to 1.8 on X11.
 
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
