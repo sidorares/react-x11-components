@@ -246,6 +246,10 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** The document styled and laid out as it stands now, and what that
+   *  moves — a snap container re-snapped — done, for a page that reads
+   *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
+  layoutNow(): void;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -2908,6 +2912,12 @@ export class DomHost {
         );
       }
       case 'viewport': {
+        // where it is scrolled, read after what the page changed is laid
+        // out, which can scroll it: a root that became a snap container
+        if (a === true) {
+          this.flush();
+          this._seams.handle.layoutNow?.();
+        }
         const v = this._seams.viewport();
         return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr}`;
       }
@@ -2947,6 +2957,9 @@ export class DomHost {
         // scroll comes to rest (`HtmlViewNode.snapViewport`)
         const x = Math.max(0, Number(a) || 0);
         const y = Math.max(0, Number(b) || 0);
+        // against the style the page has now, as a scroll is (CSSOM View
+        // 4, "perform a scroll" runs after the style is up to date)
+        this.flush();
         const to = this._seams.handle.snapViewport?.(x, y) ?? { x, y };
         this._seams.scrollTo(to.x, to.y);
         return null;

@@ -1074,6 +1074,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       setRegisteredProperties: (rules) =>
         nodeRef.current?.setRegisteredProperties(rules),
       snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
+      layoutNow: () => nodeRef.current?.layoutNow(),
       cssAnimations: (element, subtree) =>
         nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
       cssKeyframes: (element, pseudo, name) =>

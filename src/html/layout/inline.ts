@@ -1173,8 +1173,15 @@ function linesOf(
       const roomWidth = room.right - room.left;
       // a line with nothing on it keeps what comes first, indent or not:
       // there is no break before it (a first line's `text-indent` is room
-      // taken, and no content)
-      if (open.x !== open.indent && open.x + pendingWidth + outer > roomWidth) {
+      // taken, and no content); nor is there one in an element that does
+      // not wrap, whose `white-space` decides the break between two
+      // things in it (CSS Text 3, 5.1): a `nowrap` row of inline-blocks
+      // overflows, as a carousel's does, and does not wrap
+      if (
+        open.x !== open.indent &&
+        open.x + pendingWidth + outer > roomWidth &&
+        wraps((box.parent ?? block).style)
+      ) {
         close();
         continue;
       }
