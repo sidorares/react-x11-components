@@ -743,25 +743,41 @@ page measures what it reads.
 **What leaves the document is handed back**, and goes nowhere by default,
 since this component navigates nowhere by itself:
 
-| Seam          | Default                   | What it is                                                                                                                                                                   |
-| ------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch`       | none: every request fails | A page's requests, as above.                                                                                                                                                 |
-| `load`        | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
-| `navigate`    | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
-| `reload`      | nothing                   | `location.reload()`.                                                                                                                                                         |
-| `go`          | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                              |
-| `title`       | nothing                   | `document.title` was set.                                                                                                                                                    |
-| `log`         | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
-| `timeout`     | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                                           |
-| `onTimeout`   | nothing                   | One was.                                                                                                                                                                     |
-| `userAgent`   | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
-| `language`    | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
-| `canPlayType` | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                   |
-| `frames`      | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
-| `workers`     | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
-| `viewport`    | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
-| `scrollTo`    | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
-| `reserved`    | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+| Seam             | Default                   | What it is                                                                                                                                                                   |
+| ---------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                 |
+| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
+| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
+| `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
+| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                              |
+| `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
+| `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
+| `timeout`        | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                                           |
+| `onTimeout`      | nothing                   | One was.                                                                                                                                                                     |
+| `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
+| `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
+| `canPlayType`    | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                   |
+| `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
+| `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
+| `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
+| `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
+| `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
+| `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+
+**A service worker is a worker that is installed, and nothing more**
+(Service Workers 1), where `serviceWorkers` is on and the page is a secure
+context. `register()` checks the script's and the scope's origin and that
+the scope is under the script's directory, starts the script in a thread
+of its own, and resolves once it has run, with the registration whose
+`installing` it is; its global is a `ServiceWorkerGlobalScope` that hears
+`install` and `activate`, each kept alive by `waitUntil`, and messages
+from its page, whose `source` is the page's `Client`, and what it posts
+there arrives on `navigator.serviceWorker`. `getRegistration()`,
+`getRegistrations()`, `ready` and `unregister()` are the spec's, by scope.
+It intercepts none of the page's requests — there is no `fetch` event and
+no `caches`, and `controller` is null — which is why it is off by
+default: a site that finds `serviceWorker` in `navigator` registers one to
+work offline or to be pushed to, and is better served by finding none.
 
 **A page keeps its own session history** (HTML 7.4). `pushState`,
 `replaceState` and a navigation to a fragment are entries of the

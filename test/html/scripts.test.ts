@@ -133,6 +133,8 @@ async function hosted(
     canPlayType?: (type: string) => '' | 'maybe' | 'probably';
     /** Whether `fetch` is a network, which a media element loads from. */
     network?: boolean;
+    /** Whether the page may register service workers. */
+    serviceWorkers?: boolean;
     userAgent?: string;
     scheme?: 'light' | 'dark';
     pane?: number;
@@ -182,6 +184,7 @@ async function hosted(
     },
     canPlayType: options.canPlayType,
     network: options.network,
+    serviceWorkers: options.serviceWorkers,
   };
   function Page() {
     const app = useApp();
@@ -933,6 +936,82 @@ test('a shared worker is one thread for a script and a name, which each SharedWo
     'a 1 true true undefined w|a echo 42|b 2',
     doc.logs.join('\n'),
   );
+});
+
+test('a service worker is registered for a scope, installed and activated in a thread of its own, and hears its page and answers it', async () => {
+  const sw =
+    'self.addEventListener("install", function (e) {' +
+    '  e.waitUntil(new Promise(function (r) { setTimeout(r, 10); })); });' +
+    'self.addEventListener("message", function (e) {' +
+    '  e.source.postMessage({ got: e.data.hi, scope: self instanceof ServiceWorkerGlobalScope,' +
+    '    reg: registration.scope.slice(-5), post: typeof postMessage, from: e.source.url.slice(-9) }); });';
+  const page =
+    '<p id="out"></p><script>' +
+    'var r = [("serviceWorker" in navigator), typeof ServiceWorker];' +
+    'function activated(w) { return w.state === "activated" ? Promise.resolve() : new Promise(function (res) {' +
+    '  w.addEventListener("statechange", function () { if (w.state === "activated") res(); }); }); }' +
+    'navigator.serviceWorker.getRegistration("here/").then(function (none) {' +
+    '  r.push(none === undefined);' +
+    '  return navigator.serviceWorker.register("sw.js", { scope: "here/" });' +
+    '}).then(function (reg) {' +
+    '  var w = reg.installing;' +
+    '  r.push(reg.scope, Object.prototype.toString.call(w), w.state);' +
+    '  var heard = new Promise(function (res) { navigator.serviceWorker.addEventListener("message", function (e) {' +
+    '    r.push(e.source === w, JSON.stringify(e.data)); res(); }); });' +
+    '  w.postMessage({ hi: 1 });' +
+    '  return Promise.all([heard, activated(w)]).then(function () {' +
+    '    return navigator.serviceWorker.ready; }).then(function (ready) {' +
+    '    r.push(ready === reg, reg.active === w, reg.installing);' +
+    '    return navigator.serviceWorker.getRegistration("here/deeper");' +
+    '  }).then(function (found) {' +
+    '    r.push(found === reg);' +
+    '    return reg.unregister();' +
+    '  }).then(function (gone) {' +
+    '    r.push(gone, w.state);' +
+    '    return navigator.serviceWorker.register("sw.js", { scope: "../" }).catch(function (e) { r.push(e.name); });' +
+    '  });' +
+    '}).then(function () { document.getElementById("out").textContent = JSON.stringify(r); });' +
+    '</script>';
+  const answer = (request: FetchRequest) =>
+    request.url.endsWith('/dir/sw.js')
+      ? {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', 'text/javascript']] as [string, string][],
+          body: sw,
+        }
+      : null;
+  const doc = await hosted(page, { serviceWorkers: true, answer });
+  assert.deepEqual(
+    JSON.parse(await settled(doc, 'out', (t) => t !== '', 15000)),
+    [
+      true,
+      'function',
+      true,
+      'https://example.test/dir/here/',
+      '[object ServiceWorker]',
+      'installing',
+      true,
+      '{"got":1,"scope":true,"reg":"here/","post":"undefined","from":"page.html"}',
+      true,
+      true,
+      null,
+      true,
+      true,
+      'redundant',
+      'SecurityError',
+    ],
+    doc.logs.join('\n'),
+  );
+  cleanup();
+  // and none where the host does not let the page have them
+  const off = await hosted(
+    '<p id="out"></p><script>document.getElementById("out").textContent =' +
+      ' String("serviceWorker" in navigator) + typeof ServiceWorker;</script>',
+  );
+  assert.equal(off.text('out'), 'falseundefined');
 });
 
 test('navigator.platform is the one the user agent names, in a worker as on the page', async () => {

@@ -15367,6 +15367,454 @@ export function installDom(
     port._deliver(data);
     return true;
   };
+  // --- service workers -------------------------------------------------------------
+  //
+  // Service Workers 1, where the host lets a page have them (`serviceWorkers`)
+  // and the page is a secure context: a registration a scope, and its worker
+  // a thread of its own (`workers.ts`, `service`) whose global is a
+  // `ServiceWorkerGlobalScope`. Its lifecycle is the spec's — installing
+  // once its script has run, `install`, installed, `activate`, activated —
+  // told back as messages of its own (`{ sw }`), and what it posts to the
+  // page arrives on `navigator.serviceWorker` from it. It intercepts none
+  // of the page's requests: nothing controls the page, `controller` is null.
+
+  /** The page's registrations, by scope. */
+  const swRegistrations = new Map<string, Any>();
+  /** The page's service workers, by the thread each runs in. */
+  const swWorkers = new Map<number, Any>();
+  /** `ready`'s, kept until a registration has an active worker. */
+  let swReady: { promise: Promise<Any>; resolve: (r: Any) => void } | null =
+    null;
+  const handlerProperty = (proto: Any, type: string): void => {
+    Object.defineProperty(proto, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers?.[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers ??= {};
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  };
+  class ServiceWorker extends EventTarget {
+    _id = 0;
+    _url = '';
+    _state = 'parsed';
+    _registration: Any = null;
+    /** `register()`'s promise, until the worker's script has run. */
+    _settle: { resolve(r: Any): void; reject(e: Any): void } | null = null;
+    get scriptURL(): string {
+      return this._url;
+    }
+    get state(): string {
+      return this._state;
+    }
+    postMessage(message: Any, transfer?: Any): void {
+      const data = serializeClone(message);
+      giveUp(transfer);
+      if (this._state === 'redundant') return;
+      call('workerPost', this._id, data);
+    }
+  }
+  handlerProperty(ServiceWorker.prototype, 'statechange');
+  handlerProperty(ServiceWorker.prototype, 'error');
+  class ServiceWorkerRegistration extends EventTarget {
+    _scope = '';
+    _installing: Any = null;
+    _waiting: Any = null;
+    _active: Any = null;
+    get scope(): string {
+      return this._scope;
+    }
+    get installing(): Any {
+      return this._installing;
+    }
+    get waiting(): Any {
+      return this._waiting;
+    }
+    get active(): Any {
+      return this._active;
+    }
+    get updateViaCache(): string {
+      return 'imports';
+    }
+    get navigationPreload(): Any {
+      return {
+        enable: () => Promise.resolve(),
+        disable: () => Promise.resolve(),
+        setHeaderValue: () => Promise.resolve(),
+        getState: () =>
+          Promise.resolve({ enabled: false, headerValue: 'true' }),
+      };
+    }
+    update(): Promise<Any> {
+      return Promise.resolve(this);
+    }
+    /** Service Workers 1, "Unregister": gone from the page's, and its
+     *  workers ended. */
+    unregister(): Promise<boolean> {
+      if (swRegistrations.get(this._scope) !== this) {
+        return Promise.resolve(false);
+      }
+      swRegistrations.delete(this._scope);
+      for (const worker of [this._installing, this._waiting, this._active]) {
+        if (worker) swRedundant(worker);
+      }
+      return Promise.resolve(true);
+    }
+  }
+  handlerProperty(ServiceWorkerRegistration.prototype, 'updatefound');
+  /** A worker that will do nothing more: its thread ended, its state
+   *  `redundant`, and it is no registration's. */
+  const swRedundant = (worker: Any): void => {
+    if (worker._state === 'redundant') return;
+    call('workerEnd', worker._id);
+    swWorkers.delete(worker._id);
+    const reg = worker._registration;
+    if (reg) {
+      if (reg._installing === worker) reg._installing = null;
+      if (reg._waiting === worker) reg._waiting = null;
+      if (reg._active === worker) reg._active = null;
+    }
+    swState(worker, 'redundant');
+  };
+  const swState = (worker: Any, state: string): void => {
+    worker._state = state;
+    const ev = new Event('statechange');
+    ev.isTrusted = true;
+    dispatch(worker, ev);
+  };
+  /** Where a URL's path is a scope's: the longest scope it starts with. */
+  const swMatch = (url: string): Any => {
+    let best: Any;
+    for (const [scope, reg] of swRegistrations) {
+      if (
+        url.startsWith(scope) &&
+        (!best || scope.length > best._scope.length)
+      ) {
+        best = reg;
+      }
+    }
+    return best;
+  };
+  class ServiceWorkerContainer extends EventTarget {
+    get controller(): Any {
+      return null;
+    }
+    get ready(): Promise<Any> {
+      const active = [...swRegistrations.values()].find((r) => r._active);
+      if (active) return Promise.resolve(active);
+      if (!swReady) {
+        let resolve!: (r: Any) => void;
+        const promise = new Promise<Any>((r) => (resolve = r));
+        swReady = { promise, resolve };
+      }
+      return swReady.promise;
+    }
+    /** Service Workers 1, "Start Register": the script and the scope the
+     *  page's origin's, the scope under the script's directory, and a
+     *  worker started for it — the promise kept once its script has run,
+     *  with the registration whose `installing` it is. */
+    register(url: Any, options: Any = {}): Promise<Any> {
+      let script: URL;
+      let scope: URL;
+      try {
+        script = new URL(str(url), location.href);
+        scope = new URL(
+          options?.scope === undefined ? './' : str(options.scope),
+          options?.scope === undefined ? script.href : location.href,
+        );
+      } catch {
+        return Promise.reject(
+          new TypeError(
+            "Failed to execute 'register' on 'ServiceWorkerContainer': Invalid URL",
+          ),
+        );
+      }
+      if (!/^https?:$/.test(script.protocol)) {
+        return Promise.reject(
+          new TypeError(
+            `Failed to register a ServiceWorker: The URL protocol of the script ('${script.href}') is not supported.`,
+          ),
+        );
+      }
+      if (
+        script.origin !== location.origin ||
+        scope.origin !== location.origin
+      ) {
+        return Promise.reject(
+          new DOMException(
+            `Failed to register a ServiceWorker: The origin of the provided scriptURL ('${script.origin}') does not match the current origin ('${location.origin}').`,
+            'SecurityError',
+          ),
+        );
+      }
+      const directory = script.pathname.replace(/[^/]*$/, '');
+      if (!scope.pathname.startsWith(directory)) {
+        return Promise.reject(
+          new DOMException(
+            `Failed to register a ServiceWorker: The path of the provided scope ('${scope.pathname}') is not under the max scope allowed ('${directory}').`,
+            'SecurityError',
+          ),
+        );
+      }
+      scope.hash = '';
+      const key = scope.href;
+      const had = swRegistrations.get(key);
+      const current = had?._active ?? had?._waiting ?? had?._installing;
+      if (current && current._url === script.href) {
+        return Promise.resolve(had);
+      }
+      const reg = had ?? new ServiceWorkerRegistration();
+      reg._scope = key;
+      swRegistrations.set(key, reg);
+      const worker = new ServiceWorker();
+      worker._url = script.href;
+      worker._registration = reg;
+      try {
+        worker._id = Number(
+          call(
+            'workerStart',
+            JSON.stringify({
+              url: script.href,
+              type: options?.type === 'module' ? 'module' : 'classic',
+              name: '',
+              service: { scope: key, client: location.href },
+            }),
+            null,
+          ),
+        );
+      } catch (e) {
+        if (!had) swRegistrations.delete(key);
+        return Promise.reject(e);
+      }
+      swWorkers.set(worker._id, worker);
+      return new Promise((resolve, reject) => {
+        worker._settle = { resolve, reject };
+      });
+    }
+    getRegistration(url: Any = ''): Promise<Any> {
+      return Promise.resolve(swMatch(new URL(str(url), location.href).href));
+    }
+    getRegistrations(): Promise<Any[]> {
+      return Promise.resolve([...swRegistrations.values()]);
+    }
+    startMessages(): void {}
+  }
+  handlerProperty(ServiceWorkerContainer.prototype, 'controllerchange');
+  handlerProperty(ServiceWorkerContainer.prototype, 'message');
+  handlerProperty(ServiceWorkerContainer.prototype, 'messageerror');
+  const serviceWorkerContainer = new ServiceWorkerContainer();
+  /**
+   * What a page's service worker said: a step of its lifecycle, or a
+   * message, which arrives on `navigator.serviceWorker` from it (Service
+   * Workers 1, "Client.postMessage"). False where it is none of the page's.
+   */
+  const swHeard = (id: number, text: string): boolean => {
+    const worker = swWorkers.get(id);
+    if (!worker) return false;
+    let wrapper: Any;
+    try {
+      wrapper = JSON.parse(text);
+    } catch {
+      return true;
+    }
+    const reg = worker._registration;
+    if (typeof wrapper?.sw === 'string') {
+      const state = wrapper.sw;
+      if (state === 'failed') {
+        worker._settle?.reject(
+          new TypeError(
+            `Failed to register a ServiceWorker for scope ('${reg._scope}') with script ('${worker._url}'): ServiceWorker script evaluation failed`,
+          ),
+        );
+        worker._settle = null;
+        if (swRegistrations.get(reg._scope) === reg && !reg._active) {
+          swRegistrations.delete(reg._scope);
+        }
+        swRedundant(worker);
+        return true;
+      }
+      if (state === 'installing') {
+        // the one it replaces gives way
+        const was = reg._installing;
+        if (was && was !== worker) swRedundant(was);
+        reg._installing = worker;
+        worker._state = 'installing';
+        const found = new Event('updatefound');
+        found.isTrusted = true;
+        dispatch(reg, found);
+        worker._settle?.resolve(reg);
+        worker._settle = null;
+        return true;
+      }
+      if (state === 'installed') {
+        if (reg._installing === worker) reg._installing = null;
+        const was = reg._waiting;
+        if (was && was !== worker) swRedundant(was);
+        reg._waiting = worker;
+      } else if (state === 'activating') {
+        if (reg._waiting === worker) reg._waiting = null;
+        const was = reg._active;
+        if (was && was !== worker) swRedundant(was);
+        reg._active = worker;
+      } else if (state === 'activated' && swReady) {
+        swReady.resolve(reg);
+        swReady = null;
+      } else if (state === 'redundant') {
+        swRedundant(worker);
+        return true;
+      }
+      swState(worker, state);
+      return true;
+    }
+    let data: Any;
+    try {
+      data = deserializeClone(str(wrapper?.d));
+    } catch {
+      const ev = new MessageEvent('messageerror', { source: worker });
+      ev.isTrusted = true;
+      dispatch(serviceWorkerContainer, ev);
+      return true;
+    }
+    const ev = new MessageEvent('message', {
+      data,
+      origin: location.origin,
+      source: worker,
+    });
+    ev.isTrusted = true;
+    dispatch(serviceWorkerContainer, ev);
+    return true;
+  };
+  // a service worker's global (`__becomeWorker`): what it is installed and
+  // messaged with, and the one client it has, the page that registered it
+  /** Where this realm is a service worker's: its scope and its client's
+   *  address. */
+  let serviceRealm: { scope: string; client: string } | null = null;
+  /** Service Workers 1, 4.4: an event a worker may keep alive with
+   *  `waitUntil`, until whatever it was handed settles. */
+  class ExtendableEvent extends Event {
+    _waits: Promise<Any>[] = [];
+    _open = true;
+    waitUntil(promise: Any): void {
+      if (!this.isTrusted || !this._open) {
+        throw new DOMException(
+          "Failed to execute 'waitUntil' on 'ExtendableEvent': The event handler is already finished.",
+          'InvalidStateError',
+        );
+      }
+      this._waits.push(Promise.resolve(promise));
+    }
+  }
+  class ExtendableMessageEvent extends ExtendableEvent {
+    _data: Any;
+    _origin: string;
+    _lastEventId: string;
+    _source: Any;
+    _ports: readonly Any[];
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._data = init?.data ?? null;
+      this._origin = str(init?.origin ?? '');
+      this._lastEventId = str(init?.lastEventId ?? '');
+      this._source = init?.source ?? null;
+      this._ports = Object.freeze([...(init?.ports ?? [])]);
+    }
+    get data(): Any {
+      return this._data;
+    }
+    get origin(): string {
+      return this._origin;
+    }
+    get lastEventId(): string {
+      return this._lastEventId;
+    }
+    get source(): Any {
+      return this._source;
+    }
+    get ports(): readonly Any[] {
+      return this._ports;
+    }
+  }
+  /** Service Workers 1, 4.2: the page a worker hears from, which it posts
+   *  to. */
+  class Client {
+    _url = '';
+    _id = '';
+    get url(): string {
+      return this._url;
+    }
+    get id(): string {
+      return this._id;
+    }
+    get type(): string {
+      return 'window';
+    }
+    get frameType(): string {
+      return 'top-level';
+    }
+    postMessage(message: Any, transfer?: Any): void {
+      const d = serializeClone(message);
+      giveUp(transfer);
+      call('workerPostOut', JSON.stringify({ d }));
+    }
+  }
+  class WindowClient extends Client {
+    get focused(): boolean {
+      return false;
+    }
+    get visibilityState(): string {
+      return 'visible';
+    }
+    focus(): Promise<Any> {
+      return Promise.reject(
+        new DOMException(
+          'Not allowed to focus a window.',
+          'InvalidAccessError',
+        ),
+      );
+    }
+    navigate(): Promise<Any> {
+      return Promise.reject(
+        new TypeError('Cannot navigate a client this worker does not control.'),
+      );
+    }
+  }
+  let theClient: Any = null;
+  const clientOf = (): Any => {
+    if (!theClient && serviceRealm) {
+      theClient = new WindowClient();
+      theClient._url = serviceRealm.client;
+      theClient._id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+    return theClient;
+  };
+  /** Service Workers 1, 4.3: the worker's clients — the page, which it
+   *  does not control, so only `includeUncontrolled` lists it. */
+  class Clients {
+    get(id: Any): Promise<Any> {
+      const client = clientOf();
+      return Promise.resolve(
+        client && client.id === str(id) ? client : undefined,
+      );
+    }
+    matchAll(options: Any = {}): Promise<Any[]> {
+      const client = clientOf();
+      return Promise.resolve(
+        options?.includeUncontrolled && client ? [client] : [],
+      );
+    }
+    openWindow(): Promise<Any> {
+      return Promise.reject(
+        new DOMException('Not allowed to open a window.', 'InvalidAccessError'),
+      );
+    }
+    claim(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
   class File extends Blob {
     readonly name: string;
     readonly lastModified: number;
@@ -18052,6 +18500,17 @@ export function installDom(
     sendBeacon: () => false,
     javaEnabled: () => false,
   };
+  // a page's service workers, where the host lets it have them and it is a
+  // secure context; left out otherwise, as `clipboard` is
+  const serviceWorkersOn =
+    location.protocol === 'https:' && call('serviceWorkers') === true;
+  if (serviceWorkersOn) {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      get: () => serviceWorkerContainer,
+      enumerable: true,
+      configurable: true,
+    });
+  }
 
   // --- session history and the Navigation API (HTML 7.4 and 7.2.6) ------------
   //
@@ -20966,6 +21425,14 @@ export function installDom(
     CSSKeyframesRule,
     CSSViewTransitionRule,
   };
+  // and their interfaces with it, which a page tells a service worker by
+  if (serviceWorkersOn) {
+    Object.assign(classes, {
+      ServiceWorker,
+      ServiceWorkerRegistration,
+      ServiceWorkerContainer,
+    });
+  }
   for (const [name, value] of Object.entries(classes)) {
     // an interface's prototype says its name to `Object.prototype.toString`
     // (Web IDL 3.7.3), so a `<div>` is `[object HTMLDivElement]`
@@ -22023,6 +22490,31 @@ export function installDom(
     if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
       return sharedMessage(str(text));
     }
+    // a service worker's, its lifecycle or to the page's container
+    if (swWorkers.has(id)) return swHeard(id, str(text));
+    // and in a service worker, from its client (Service Workers 1, 4.2.7)
+    if (id === 0 && serviceRealm) {
+      let data: Any;
+      try {
+        data = deserializeClone(str(text));
+      } catch {
+        const ev = new ExtendableMessageEvent('messageerror', {
+          source: clientOf(),
+        });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+        return true;
+      }
+      const ev = new ExtendableMessageEvent('message', {
+        data,
+        origin: new URL(serviceRealm.client).origin,
+        source: clientOf(),
+      });
+      ev.isTrusted = true;
+      dispatch(windowTarget, ev);
+      ev._open = false;
+      return true;
+    }
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
     let data: Any;
@@ -22040,10 +22532,53 @@ export function installDom(
     return true;
   });
 
+  // a service worker's script has run, or failed to (Service Workers 1,
+  // "Install"): the page told it is installing, `install`, and once what
+  // it waited on settles, installed, activating, `activate` and activated
+  entry('__serviceInstall', () => {
+    const [ran] = input();
+    if (!serviceRealm) return false;
+    const tell = (sw: string): void => {
+      call('workerPostOut', JSON.stringify({ sw }));
+    };
+    if (!ran) {
+      tell('failed');
+      return true;
+    }
+    tell('installing');
+    const lifetime = (type: string): Promise<boolean> => {
+      const ev = new ExtendableEvent(type);
+      ev.isTrusted = true;
+      dispatch(windowTarget, ev);
+      return Promise.all(ev._waits).then(
+        () => {
+          ev._open = false;
+          return true;
+        },
+        () => {
+          ev._open = false;
+          return false;
+        },
+      );
+    };
+    void lifetime('install').then((installed) => {
+      if (!installed) {
+        tell('redundant');
+        return undefined;
+      }
+      tell('installed');
+      tell('activating');
+      return lifetime('activate').then(() => tell('activated'));
+    });
+    return true;
+  });
+
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
     const [id, message, filename, lineno, colno] = input();
-    const targets = sharedWorkersOf.get(id) ?? [workers.get(id)];
+    const targets = sharedWorkersOf.get(id) ?? [
+      workers.get(id) ?? swWorkers.get(id),
+    ];
     let told = false;
     for (const target of targets) {
       if (!target) continue;
@@ -22070,7 +22605,9 @@ export function installDom(
    * its location and its name.
    */
   entry('__becomeWorker', () => {
-    const { url, name, shared } = input();
+    const { url, name, shared, service } = input();
+    // a worker's navigator has no container of the page's
+    delete (navigator as Any).serviceWorker;
     for (const key of Object.getOwnPropertyNames(G)) {
       if (
         /^(HTML|SVG)/.test(key) ||
@@ -22123,6 +22660,49 @@ export function installDom(
         },
         configurable: true,
       });
+    } else if (service) {
+      // a service worker's global is installed and activated, hears its
+      // client, and posts to it alone (Service Workers 1, 4.1)
+      serviceRealm = { scope: str(service.scope), client: str(service.client) };
+      try {
+        delete (G as Any).postMessage;
+      } catch {}
+      define('ServiceWorkerGlobalScope', scope('ServiceWorkerGlobalScope'));
+      define('ExtendableEvent', ExtendableEvent);
+      define('ExtendableMessageEvent', ExtendableMessageEvent);
+      define('Client', Client);
+      define('WindowClient', WindowClient);
+      define('Clients', Clients);
+      define('clients', new Clients());
+      define('skipWaiting', () => Promise.resolve());
+      const own = serviceRealm.scope;
+      define('registration', {
+        scope: own,
+        installing: null,
+        waiting: null,
+        active: null,
+        updateViaCache: 'imports',
+        update: () => Promise.resolve(),
+        unregister: () => Promise.resolve(true),
+        addEventListener() {},
+        removeEventListener() {},
+      });
+      for (const type of [
+        'install',
+        'activate',
+        'message',
+        'messageerror',
+        'fetch',
+      ]) {
+        Object.defineProperty(G, `on${type}`, {
+          get: () => windowTarget._handlers?.[type] ?? null,
+          set: (fn: Any) => {
+            windowTarget._handlers ??= {};
+            windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
+          },
+          configurable: true,
+        });
+      }
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
       define('postMessage', function postMessage(message: Any): void {
