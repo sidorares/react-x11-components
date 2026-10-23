@@ -4837,13 +4837,31 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return null;
     const local = this._toDocument(x, y, origin);
-    return deepestAt(
+    const hit = deepestAt(
       tree,
       local.x,
       local.y,
       undefined,
       this._fixedShift(origin),
     );
+    if (hit) return hit;
+    // past what the document lays out, but inside the element, the root
+    // element's: it paints the canvas, which is all of the viewport
+    // (CSSOM View 5, `elementFromPoint`) — a press there is outside every
+    // dialog and popover, which a light dismiss asks
+    const s = this._scale;
+    const inside = (r: Rect | null): boolean =>
+      !!r &&
+      x * s >= r.x &&
+      y * s >= r.y &&
+      x * s <= r.x + r.width &&
+      y * s <= r.y + r.height;
+    if (!inside(this.abs) && !inside(this._viewport())) return null;
+    const root = tree.root;
+    const html = root.el
+      ? root
+      : root.children.find((c) => c.el && tagOf(c.el) === 'html');
+    return html?.el ?? null;
   }
 
   /**
