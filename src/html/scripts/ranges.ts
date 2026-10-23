@@ -120,6 +120,11 @@ export class Ranges {
 
   constructor(private readonly _host: RangeHost) {}
 
+  /** Whether a range is live, for a change to the tree to move. */
+  get watching(): boolean {
+    return this._live.size > 0;
+  }
+
   /** A new range, collapsed at the start of `doc`. */
   make(doc: AnyNode): number {
     this._seq += 1;
@@ -154,7 +159,7 @@ export class Ranges {
   /** `node` about to leave its parent (DOM 4.2.3, "remove", step 4–7). */
   removing(node: AnyNode): void {
     const parent = node.parent;
-    if (!parent) return;
+    if (!parent || !this._live.size) return;
     const index = indexOf(node);
     for (const r of this._live.values()) {
       if (inclusiveAncestor(node, r.sc)) {
@@ -631,6 +636,11 @@ const isDescendant = (node: AnyNode, of: AnyNode): boolean =>
 export class NodeIterators {
   private _live = new Map<number, LiveIterator>();
   private _seq = 0;
+
+  /** Whether an iterator is live, for a change to the tree to move. */
+  get watching(): boolean {
+    return this._live.size > 0;
+  }
 
   make(root: AnyNode): number {
     this._seq += 1;

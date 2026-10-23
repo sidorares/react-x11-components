@@ -1372,8 +1372,11 @@ function compileSelector(
   cache = true,
 ): (el: Element) => boolean {
   const keep = cache && !STATE_PSEUDO.test(selector);
+  // where the siblings are the tree's own: a `<use>`'s copy has its own
+  const kept =
+    adapter.getSiblings === DomUtils.getSiblings ? nthKept : (s: string) => s;
   const make = () =>
-    compile(classesBeyondAscii(noEmptyWords(selector)), {
+    compile(kept(classesBeyondAscii(noEmptyWords(selector))), {
       adapter,
       xmlMode: false,
       pseudos,
@@ -1393,6 +1396,113 @@ function compileSelector(
     }
     return match(el);
   };
+}
+
+/**
+ * Where an element is among its parent's element children: how many come
+ * before it and after it, of all and of its own name — as css-select
+ * counts them for `:nth-child()` and its kin, each sibling by name
+ * (`getName`'s, an XHTML `<svg:svg>` an `svg`). Worked out for every child
+ * of the parent at once and kept by the element until a tree changes
+ * (`treeGeneration`): css-select counts the siblings before an element
+ * every time it is asked, so a table of 10,000 rows under
+ * `tr:nth-child(odd)` was 50 million steps to style.
+ */
+interface Place {
+  gen: number;
+  index: number;
+  fromEnd: number;
+  ofType: number;
+  ofTypeFromEnd: number;
+}
+const PLACES = new WeakMap<Element, Place>();
+
+const nameOf = (el: Element): string =>
+  el.name.endsWith(':svg') ? tagOf(el) : el.name;
+
+function placeOf(el: Element): Place {
+  const gen = treeGeneration();
+  const kept = PLACES.get(el);
+  if (kept !== undefined && kept.gen === gen) return kept;
+  const siblings = DomUtils.getSiblings(el);
+  const elements: Element[] = [];
+  const ofName = new Map<string, number>();
+  for (const sibling of siblings) {
+    if (!isTag(sibling as Element)) continue;
+    const element = sibling as Element;
+    elements.push(element);
+    const name = nameOf(element);
+    ofName.set(name, (ofName.get(name) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  for (let i = 0; i < elements.length; i += 1) {
+    const element = elements[i];
+    const name = nameOf(element);
+    const before = seen.get(name) ?? 0;
+    seen.set(name, before + 1);
+    PLACES.set(element, {
+      gen,
+      index: i,
+      fromEnd: elements.length - 1 - i,
+      ofType: before,
+      ofTypeFromEnd: ofName.get(name)! - 1 - before,
+    });
+  }
+  return (
+    PLACES.get(el) ?? { gen, index: 0, fromEnd: 0, ofType: 0, ofTypeFromEnd: 0 }
+  );
+}
+
+/** An `An+B`, read as Selectors 3 has it (6.6.5.2) — `odd`, `even`, `3`,
+ *  `-n+3`, `2n + 1` — as the A and the B; null for anything else, which is
+ *  left to css-select. */
+function nthOf(arg: string): [number, number] | null {
+  const text = arg.trim().toLowerCase();
+  if (text === 'odd') return [2, 1];
+  if (text === 'even') return [2, 0];
+  const m = /^([+-]?\d*)n\s*(?:([+-])\s*(\d+))?$|^([+-]?\d+)$/.exec(text);
+  if (!m) return null;
+  if (m[4] !== undefined) return [0, Number(m[4])];
+  const a = m[1] === '' || m[1] === '+' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+  const b = m[3] !== undefined ? Number(m[3]) * (m[2] === '-' ? -1 : 1) : 0;
+  return [a, b];
+}
+
+const NTH_CHECKS = new Map<string, [number, number] | null>();
+
+/** Whether an element matches an `An+B` counted from `from`. One every
+ *  position matches, `n`, is css-select's "has an element for a parent". */
+function nthHolds(
+  arg: string | null,
+  el: Element,
+  from: 'index' | 'fromEnd' | 'ofType' | 'ofTypeFromEnd',
+): boolean {
+  let ab = NTH_CHECKS.get(arg ?? '');
+  if (ab === undefined) {
+    ab = nthOf(arg ?? '');
+    NTH_CHECKS.set(arg ?? '', ab);
+  }
+  if (!ab) return false;
+  const [a, b] = ab;
+  if (a === 1 && b <= 0) {
+    const parent = el.parent;
+    return !!parent && isTag(parent as Element);
+  }
+  const i = placeOf(el)[from] + 1;
+  if (a === 0) return i === b;
+  const n = (i - b) / a;
+  return Number.isInteger(n) && n >= 0;
+}
+
+/** `:nth-child()` and its kin, where their argument is a plain `An+B`, as
+ *  the pseudo-classes that answer them from `placeOf`. */
+function nthKept(selector: string): string {
+  if (!/:nth-/i.test(selector)) return selector;
+  return selector.replace(
+    /(?<!\\):nth-(child|last-child|of-type|last-of-type)\(([^()]*)\)/gi,
+    (whole, kind: string, arg: string) =>
+      nthOf(arg) ? `:-rx-nth-${kind.toLowerCase()}(${arg})` : whole,
+  );
 }
 
 function mapBucket(
@@ -6933,6 +7043,17 @@ const PSEUDOS = {
   // a custom element's to be that no definition has made one yet: a
   // page's scripts upgrade it (`isDefinedElement`)
   defined: (el: Element) => isDefinedElement(el),
+  // `:nth-child()` and its three kin, without `of`, from where each
+  // element is among its siblings, worked out once a parent and a tree
+  // (`placeOf`, `nthKept`)
+  '-rx-nth-child': (el: Element, arg: string | null) =>
+    nthHolds(arg, el, 'index'),
+  '-rx-nth-last-child': (el: Element, arg: string | null) =>
+    nthHolds(arg, el, 'fromEnd'),
+  '-rx-nth-of-type': (el: Element, arg: string | null) =>
+    nthHolds(arg, el, 'ofType'),
+  '-rx-nth-last-of-type': (el: Element, arg: string | null) =>
+    nthHolds(arg, el, 'ofTypeFromEnd'),
   // a dialog in its document's top layer, which only a page's scripts put
   // one in (`isModal`)
   modal: (el: Element) => isModal(el),

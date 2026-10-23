@@ -8101,3 +8101,65 @@ metric(
     );
   },
 );
+
+test('children replaced all at once leave the tree whole, told once, and a live range where DOM puts it', async () => {
+  // with no range or iterator live the children go at once
+  // (`_replaceAll`): 10,000 rows cleared one at a time, each a search and
+  // a splice, were 66 ms of a page's script
+  const doc = await hosted(
+    '<ul id="list"></ul><div id="box"><b>1</b><i>2</i><u>3</u></div>' +
+      '<p id="out"></p><script>' +
+      'var r = []; var list = document.getElementById("list");' +
+      'for (var i = 0; i < 2000; i++) { var li = document.createElement("li"); li.textContent = "row " + i; list.appendChild(li); }' +
+      'var first = list.firstChild; var last = list.lastChild;' +
+      'var records = []; var mo = new MutationObserver(function (m) { records = records.concat(m); });' +
+      'mo.observe(list, { childList: true });' +
+      'list.textContent = "";' +
+      'r.push(list.childNodes.length, list.firstChild === null, first.parentNode === null, first.nextSibling === null, last.previousSibling === null);' +
+      // a removed node goes back in, anywhere
+      'list.appendChild(last); list.insertBefore(first, last);' +
+      'r.push(list.childNodes.length, list.firstChild === first, first.nextSibling === last, last.previousSibling === first);' +
+      'list.replaceChildren(document.createElement("hr"));' +
+      'r.push(list.childNodes.length, list.firstChild.tagName, first.parentNode === null);' +
+      'list.innerHTML = "<li>a</li><li>b</li>";' +
+      'r.push(list.children.length, list.lastChild.textContent);' +
+      'Promise.resolve().then(function () {' +
+      // one record a replacement, its removed nodes in order, and one an
+      // insertion
+      '  r.push(records.map(function (m) { return m.addedNodes.length + "+" + m.removedNodes.length; }).join(" "), records[0].removedNodes[0] === first, records[0].removedNodes[1999] === last);' +
+      // a live range inside what is replaced collapses to the parent
+      '  var box = document.getElementById("box"); var range = document.createRange();' +
+      '  range.setStart(box.children[1].firstChild, 0); range.setEnd(box, 3);' +
+      '  box.textContent = "";' +
+      '  r.push(range.startContainer === box, range.startOffset, range.endContainer === box, range.endOffset);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t.length > 0),
+    [
+      '0',
+      'true',
+      'true',
+      'true',
+      'true',
+      '2',
+      'true',
+      'true',
+      'true',
+      '1',
+      'HR',
+      'true',
+      '2',
+      'b',
+      '0+2000 1+0 1+0 1+2 2+1',
+      'true',
+      'true',
+      'true',
+      '0',
+      'true',
+      '0',
+    ].join('|'),
+  );
+});
