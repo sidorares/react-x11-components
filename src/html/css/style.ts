@@ -784,6 +784,18 @@ export interface ComputedStyle {
    *  which leaves the drawing its own. */
   fill: string | null;
   stroke: string | null;
+  /** The rest of what an `<svg>`'s drawing inherits from the document
+   *  around it (SVG 2, 13): each as written, and null where nothing has
+   *  set it, which leaves the drawing its own (`SVG_INHERITED`). */
+  strokeWidth: string | null;
+  strokeDasharray: string | null;
+  strokeDashoffset: string | null;
+  strokeLinecap: string | null;
+  strokeLinejoin: string | null;
+  strokeMiterlimit: string | null;
+  strokeOpacity: string | null;
+  fillOpacity: string | null;
+  fillRule: string | null;
   borderCollapse: 'separate' | 'collapse';
   /** `border-spacing`: between columns, and between rows. */
   borderSpacing: number;
@@ -1462,6 +1474,15 @@ export const INHERITED = [
   'pointerEvents',
   'fill',
   'stroke',
+  'strokeWidth',
+  'strokeDasharray',
+  'strokeDashoffset',
+  'strokeLinecap',
+  'strokeLinejoin',
+  'strokeMiterlimit',
+  'strokeOpacity',
+  'fillOpacity',
+  'fillRule',
   'borderCollapse',
   'borderSpacing',
   'borderSpacingY',
@@ -1616,6 +1637,15 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     userSelect: 'auto',
     fill: null,
     stroke: null,
+    strokeWidth: null,
+    strokeDasharray: null,
+    strokeDashoffset: null,
+    strokeLinecap: null,
+    strokeLinejoin: null,
+    strokeMiterlimit: null,
+    strokeOpacity: null,
+    fillOpacity: null,
+    fillRule: null,
     borderCollapse: 'separate',
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
     // an anonymous table, which no sheet names, has none
@@ -1966,6 +1996,15 @@ export function inherit(
   out.pointerEvents = parent.pointerEvents;
   out.fill = parent.fill;
   out.stroke = parent.stroke;
+  out.strokeWidth = parent.strokeWidth;
+  out.strokeDasharray = parent.strokeDasharray;
+  out.strokeDashoffset = parent.strokeDashoffset;
+  out.strokeLinecap = parent.strokeLinecap;
+  out.strokeLinejoin = parent.strokeLinejoin;
+  out.strokeMiterlimit = parent.strokeMiterlimit;
+  out.strokeOpacity = parent.strokeOpacity;
+  out.fillOpacity = parent.fillOpacity;
+  out.fillRule = parent.fillRule;
   out.borderCollapse = parent.borderCollapse;
   out.borderSpacing = parent.borderSpacing;
   out.borderSpacingY = parent.borderSpacingY;
@@ -4269,6 +4308,37 @@ export function applyDeclaration(
     case 'stroke': {
       const paint = svgPaint(value);
       if (paint !== null) style[name] = paint;
+      return;
+    }
+    // what an `<svg>` drawing inherits besides its paint, kept as written
+    // for the drawing to read (`SVG_INHERITED`)
+    case 'stroke-width':
+    case 'stroke-dasharray':
+    case 'stroke-dashoffset':
+    case 'stroke-linecap':
+    case 'stroke-linejoin':
+    case 'stroke-miterlimit':
+    case 'stroke-opacity':
+    case 'fill-opacity':
+    case 'fill-rule': {
+      const v = value.trim();
+      if (!v || /[;{}]/.test(v)) return;
+      // a length with math or a relative unit in it is the pixels it comes
+      // to, as its computed value is, in the CSS pixels of the drawing; a
+      // number or a percentage is the drawing's to read
+      const length = (part: string): string => {
+        if (!/[a-z(]/i.test(part) || /^[\d.+-]+px$/i.test(part)) return part;
+        const px = parseLength(part, ctx);
+        return typeof px === 'number'
+          ? `${Math.round((px / ctx.scale) * 1e4) / 1e4}px`
+          : part;
+      };
+      style[SVG_INHERITED[name]] =
+        name === 'stroke-width' || name === 'stroke-dashoffset'
+          ? length(v)
+          : name === 'stroke-dasharray'
+            ? splitValue(v.replace(/,/g, ' ')).map(length).join(' ')
+            : v;
       return;
     }
 
@@ -7239,6 +7309,34 @@ const POINTER_EVENTS = new Set([
 
 const OBJECT_FITS = new Set(['fill', 'contain', 'cover', 'none', 'scale-down']);
 
+/** The SVG presentation properties a drawing inherits from the document
+ *  around it besides `fill` and `stroke` (SVG 2, 13.5 and 13.6), and the
+ *  field each is kept in, as written. */
+export const SVG_INHERITED: Readonly<
+  Record<
+    string,
+    | 'strokeWidth'
+    | 'strokeDasharray'
+    | 'strokeDashoffset'
+    | 'strokeLinecap'
+    | 'strokeLinejoin'
+    | 'strokeMiterlimit'
+    | 'strokeOpacity'
+    | 'fillOpacity'
+    | 'fillRule'
+  >
+> = {
+  'stroke-width': 'strokeWidth',
+  'stroke-dasharray': 'strokeDasharray',
+  'stroke-dashoffset': 'strokeDashoffset',
+  'stroke-linecap': 'strokeLinecap',
+  'stroke-linejoin': 'strokeLinejoin',
+  'stroke-miterlimit': 'strokeMiterlimit',
+  'stroke-opacity': 'strokeOpacity',
+  'fill-opacity': 'fillOpacity',
+  'fill-rule': 'fillRule',
+};
+
 /**
  * `aspect-ratio` (CSS Sizing 4, 5.1): `auto`, a ratio — one number, or
  * two with a `/` between — or both, in either order. Undefined where it is
@@ -7774,6 +7872,15 @@ const INHERITED_NAMES = new Set<string>([
   'pointer-events',
   'fill',
   'stroke',
+  'stroke-width',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-miterlimit',
+  'stroke-opacity',
+  'fill-opacity',
+  'fill-rule',
   'border-collapse',
   'border-spacing',
   'empty-cells',
@@ -8119,6 +8226,15 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'user-select': ['userSelect'],
   fill: ['fill'],
   stroke: ['stroke'],
+  'stroke-width': ['strokeWidth'],
+  'stroke-dasharray': ['strokeDasharray'],
+  'stroke-dashoffset': ['strokeDashoffset'],
+  'stroke-linecap': ['strokeLinecap'],
+  'stroke-linejoin': ['strokeLinejoin'],
+  'stroke-miterlimit': ['strokeMiterlimit'],
+  'stroke-opacity': ['strokeOpacity'],
+  'fill-opacity': ['fillOpacity'],
+  'fill-rule': ['fillRule'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
   'empty-cells': ['emptyCells'],

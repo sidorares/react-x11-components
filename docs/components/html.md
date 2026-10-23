@@ -3202,7 +3202,12 @@ of a circle, and CSS Zen Garden 215's arm reached out of its circle.
 An inline `<svg>`'s `fill` and `stroke` are the document's:
 properties a style sheet's rule sets on the element over its attributes,
 which inherit into it, and from it to the shapes it draws. That is how an
-icon set paints its icons, `.icon { fill: currentColor }`. A rule may name
+icon set paints its icons, `.icon { fill: currentColor }`. The rest of a
+stroke and a fill inherit into it from the document around it as well —
+`stroke-width`, `stroke-dasharray` and `stroke-dashoffset`, worked out to
+pixels where they hold math or a relative unit, `stroke-linecap`,
+`stroke-linejoin`, `stroke-miterlimit`, the two opacities and
+`fill-rule` — under the drawing's own attributes, which are its own. A rule may name
 an element inside the drawing as well — `.logo path { fill: #fff }`,
 `a:hover svg path { fill: red }` — and sets its `fill`, `stroke`,
 `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`,

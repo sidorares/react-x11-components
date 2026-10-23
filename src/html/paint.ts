@@ -70,6 +70,7 @@ import {
   masked,
   ROUND_CORNERS,
   scrolls,
+  SVG_INHERITED,
   urlImageOf,
   urlOf,
   WILL_CONTAIN,
@@ -12237,7 +12238,20 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       weight: style.fontWeight,
       style: style.fontStyle,
     },
+    svgInherited(style),
   );
+}
+
+/** What an inline `<svg>`'s drawing inherits from its box besides its
+ *  paint — `stroke-width` set on a `<div>` around it, say — as the
+ *  declarations its root starts from (SVG 2, 13.5). */
+function svgInherited(style: ComputedStyle): string {
+  let out = '';
+  for (const name in SVG_INHERITED) {
+    const value = style[SVG_INHERITED[name]];
+    if (value !== null) out += `${name}:${value};`;
+  }
+  return out;
 }
 
 /** A number for an SVG image, the same while it lives: its part in the key
