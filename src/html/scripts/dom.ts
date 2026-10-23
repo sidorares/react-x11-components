@@ -583,6 +583,35 @@ export function installDom(
       this.newURL = String(init.newURL ?? '');
     }
   }
+  /** What a document is told as it is swapped out for another and as it
+   *  is first shown (HTML 7.4.6.4, 8.1.7.1): the cross-document view
+   *  transition, which a navigation here never makes, so only a page's
+   *  own `new` makes one. */
+  class PageSwapEvent extends Event {
+    _transition: Any;
+    _activation: Any;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._transition = init?.viewTransition ?? null;
+      this._activation = init?.activation ?? null;
+    }
+    get viewTransition(): Any {
+      return this._transition;
+    }
+    get activation(): Any {
+      return this._activation;
+    }
+  }
+  class PageRevealEvent extends Event {
+    _transition: Any;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._transition = init?.viewTransition ?? null;
+    }
+    get viewTransition(): Any {
+      return this._transition;
+    }
+  }
   class MessageEvent extends Event {
     readonly data: Any;
     readonly origin: string;
@@ -4592,13 +4621,31 @@ export function installDom(
 
   // --- elements ------------------------------------------------------------------
 
-  /** A `DOMTokenList` over an attribute: `classList`, `relList`. */
+  /** A `DOMTokenList` over an attribute: `classList`, `relList`, and the
+   *  tokens it supports where it has any (`supports`). */
   class DOMTokenList {
     _el: Any;
     _attr: string;
-    constructor(el: Any, attr: string) {
+    _supported: readonly string[] | null;
+    constructor(
+      el: Any,
+      attr: string,
+      supported: readonly string[] | null = null,
+    ) {
       this._el = el;
       this._attr = attr;
+      this._supported = supported;
+    }
+    /** Whether a token is one the attribute does something with (DOM
+     *  7.1, "validation steps"), ASCII case-insensitively; a list with
+     *  no supported tokens, `classList`, throws. */
+    supports(token: Any): boolean {
+      if (!this._supported) {
+        throw new TypeError(
+          `The '${this._attr}' attribute has no supported tokens.`,
+        );
+      }
+      return this._supported.includes(str(token).toLowerCase());
     }
     _tokens(): string[] {
       return (this._el.getAttribute(this._attr) ?? '')
@@ -5975,6 +6022,59 @@ export function installDom(
   Object.defineProperty(HTMLLinkElement.prototype, 'href', urlProperty('href'));
   for (const name of ['rel', 'media', 'type', 'as']) {
     Object.defineProperty(HTMLLinkElement.prototype, name, reflect(name));
+  }
+  /** A `[SameObject, PutForwards=value]` `DOMTokenList` over an
+   *  attribute, with the tokens it supports: `relList` and `blocking`. */
+  const tokenList = (attr: string, supported: readonly string[]): Any => ({
+    get(this: Any): Any {
+      const lists = (this._tokenLists ??= new Map<string, Any>());
+      let list = lists.get(attr);
+      if (!list) {
+        list = new DOMTokenList(this, attr, supported);
+        lists.set(attr, list);
+      }
+      return list;
+    },
+    set(this: Any, v: Any): void {
+      this.setAttribute(attr, v);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  // what Chromium's link types are (HTML 4.6.7)
+  const LINK_TYPES = [
+    'alternate',
+    'dns-prefetch',
+    'expect',
+    'icon',
+    'manifest',
+    'modulepreload',
+    'next',
+    'preconnect',
+    'prefetch',
+    'preload',
+    'search',
+    'stylesheet',
+  ];
+  Object.defineProperty(
+    HTMLLinkElement.prototype,
+    'relList',
+    tokenList('rel', LINK_TYPES),
+  );
+  // what a hyperlink's `rel` does something with (HTML 4.6.6), on an
+  // `<a>` and on an `<area>`, which is one here
+  Object.defineProperty(
+    HTMLAnchorElement.prototype,
+    'relList',
+    tokenList('rel', ['noopener', 'noreferrer', 'opener']),
+  );
+  // the one blocking token there is (HTML 2.5.8)
+  for (const Interface of [HTMLLinkElement, HTMLScriptElement]) {
+    Object.defineProperty(
+      Interface.prototype,
+      'blocking',
+      tokenList('blocking', ['render']),
+    );
   }
 
   class HTMLTemplateElement extends HTMLElement {
@@ -9831,7 +9931,125 @@ export function installDom(
       );
     }
   }
+  /** An `@view-transition` rule's descriptors as they parse (CSS View
+   *  Transitions 2, 2.1): `navigation`, `auto` or `none`, and `types`,
+   *  `none` or a list of idents, each `null` where the block has none
+   *  that parses. A later declaration that parses wins. */
+  const viewTransitionDescriptors = (
+    block: string,
+  ): { navigation: string | null; types: string[] | null } => {
+    let navigation: string | null = null;
+    let types: string[] | null = null;
+    for (const part of block.split(';')) {
+      const colon = part.indexOf(':');
+      if (colon < 0) continue;
+      const name = part.slice(0, colon).trim().toLowerCase();
+      const value = part.slice(colon + 1).trim();
+      if (name === 'navigation') {
+        if (/^(?:auto|none)$/i.test(value)) navigation = value.toLowerCase();
+      } else if (name === 'types') {
+        const list = transitionTypesOf(value);
+        if (list) types = list;
+      }
+    }
+    return { navigation, types };
+  };
+  /** The idents a `types` descriptor lists, unescaped, or null where it
+   *  is no list of them: `none` alone is the empty list, and none of them
+   *  may be `none`, `default`, a CSS-wide keyword or the user agent's
+   *  `-ua-`, which Chromium reads case-sensitively. */
+  const transitionTypesOf = (value: string): string[] | null => {
+    const out: string[] = [];
+    let i = 0;
+    const hex = /[0-9a-f]/i;
+    while (i < value.length) {
+      if (/\s/.test(value[i])) {
+        i += 1;
+        continue;
+      }
+      let ident = '';
+      const start = i;
+      while (i < value.length && !/\s/.test(value[i])) {
+        const c = value[i];
+        if (c === '\\') {
+          if (i + 1 >= value.length || value[i + 1] === '\n') return null;
+          let digits = '';
+          let j = i + 1;
+          while (digits.length < 6 && j < value.length && hex.test(value[j])) {
+            digits += value[j];
+            j += 1;
+          }
+          if (digits) {
+            if (j < value.length && /\s/.test(value[j])) j += 1;
+            const code = parseInt(digits, 16);
+            ident +=
+              code === 0 ||
+              code > 0x10ffff ||
+              (code >= 0xd800 && code <= 0xdfff)
+                ? '\uFFFD'
+                : String.fromCodePoint(code);
+            i = j;
+          } else {
+            ident += value[i + 1];
+            i += 2;
+          }
+        } else if (/[-\w\u0080-\uffff]/.test(c)) {
+          ident += c;
+          i += 1;
+        } else {
+          return null;
+        }
+      }
+      // an ident starts with a letter, an underscore, a non-ASCII letter,
+      // an escape, or a hyphen before any of those or another hyphen
+      const raw = value.slice(start, i);
+      if (!/^(?:-?(?:[a-z_\u0080-\uffff]|\\)|--)/i.test(raw)) return null;
+      out.push(ident);
+    }
+    if (out.length === 1 && /^none$/i.test(out[0])) return [];
+    for (const ident of out) {
+      if (
+        /^(?:none|default|initial|inherit|unset|revert|revert-layer)$/i.test(
+          ident,
+        ) ||
+        ident.startsWith('-ua-')
+      ) {
+        return null;
+      }
+    }
+    return out.length ? out : null;
+  };
+  /** An `@view-transition` rule (CSS View Transitions 2, 2.1), its
+   *  descriptors read only and its text as they parse. */
+  class CSSViewTransitionRule extends CSSRule {
+    get navigation(): string {
+      return viewTransitionDescriptors(blockOf(this._text)).navigation ?? '';
+    }
+    get types(): readonly string[] {
+      return Object.freeze([
+        ...(viewTransitionDescriptors(blockOf(this._text)).types ?? []),
+      ]);
+    }
+    override get cssText(): string {
+      const { navigation, types } = viewTransitionDescriptors(
+        blockOf(this._text),
+      );
+      let out = '@view-transition { ';
+      if (navigation) out += `navigation: ${navigation}; `;
+      if (types) {
+        out += `types: ${types.length ? types.map(cssEscape).join(' ') : 'none'}; `;
+      }
+      return `${out}}`;
+    }
+    override set cssText(_v: Any) {}
+  }
+  /** Whether CSS drops a rule as it parses it: an `@view-transition` with
+   *  a prelude (CSS View Transitions 2, 2.1). */
+  const droppedRule = (text: string): boolean =>
+    /^@view-transition(?![\w-])/i.test(text) &&
+    preludeOf(text).slice('@view-transition'.length).trim() !== '';
   const RULE_CLASSES: Record<string, Any> = {
+    'view-transition': CSSViewTransitionRule,
     media: CSSMediaRule,
     supports: CSSSupportsRule,
     container: CSSContainerRule,
@@ -9855,13 +10073,15 @@ export function installDom(
   };
   const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
     const list = new CSSRuleList();
-    for (const text of texts) list.push(ruleOf(text, sheet, parent));
+    for (const text of texts) {
+      if (!droppedRule(text)) list.push(ruleOf(text, sheet, parent));
+    }
     return list;
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
     const rules = JSON.parse(String(call('cssRules', text))) as string[];
-    if (rules.length !== 1) {
+    if (rules.length !== 1 || droppedRule(rules[0])) {
       throw new DOMException(
         `Failed to parse the rule '${text}'.`,
         'SyntaxError',
@@ -9955,6 +10175,8 @@ export function installDom(
         if (!this._owner) readopt(this);
         return at;
       }
+      // a rule the host would keep and CSS drops (`droppedRule`)
+      if (/^\s*@view-transition/i.test(text)) oneRule(text);
       const answer = String(call('sheetInsert', this._owner._id, text, at));
       const first = answer.indexOf('\u0000');
       const second = answer.indexOf('\u0000', first + 1);
@@ -10140,6 +10362,11 @@ export function installDom(
       return this.isConnected ? sheetOf(this) : null;
     }
   }
+  Object.defineProperty(
+    HTMLStyleElement.prototype,
+    'blocking',
+    tokenList('blocking', ['render']),
+  );
   for (const name of ['media', 'type']) {
     Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
   }
@@ -20012,6 +20239,8 @@ export function installDom(
     CustomEvent,
     ErrorEvent,
     HashChangeEvent,
+    PageSwapEvent,
+    PageRevealEvent,
     PopStateEvent,
     Navigation,
     NavigationHistoryEntry,
@@ -20222,6 +20451,7 @@ export function installDom(
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
+    CSSViewTransitionRule,
   };
   for (const [name, value] of Object.entries(classes)) {
     // an interface's prototype says its name to `Object.prototype.toString`

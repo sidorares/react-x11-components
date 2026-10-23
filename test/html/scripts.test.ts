@@ -700,6 +700,94 @@ test('an @container rule is a CSSContainerRule, its name and its query serialize
   ]);
 });
 
+test('an @view-transition rule is a CSSViewTransitionRule, its descriptors as they parse, and one with a prelude is dropped', async () => {
+  // WPT's at-rule-with-types-parsing cases: what `types` lists, and how
+  // the rule serializes
+  const cases: [string, string[], string][] = [
+    ['nOnE', [], '@view-transition { types: none; }'],
+    ['abc xyz', ['abc', 'xyz'], '@view-transition { types: abc xyz; }'],
+    ['abc\\ xyz', ['abc xyz'], '@view-transition { types: abc\\ xyz; }'],
+    ['   abc \txyz ', ['abc', 'xyz'], '@view-transition { types: abc xyz; }'],
+    ['abc none', [], '@view-transition { }'],
+    ['abc, def', [], '@view-transition { }'],
+    ['dEfAuLt', [], '@view-transition { }'],
+    ['abc -ua-something', [], '@view-transition { }'],
+    [
+      'abc -uA-something',
+      ['abc', '-uA-something'],
+      '@view-transition { types: abc -uA-something; }',
+    ],
+    ['123', [], '@view-transition { }'],
+    ['*11 abc', [], '@view-transition { }'],
+  ];
+  const doc = await hosted(
+    '<style></style><p id="out">-</p><script>' +
+      `var cases = ${JSON.stringify(cases.map(([q]) => q))};` +
+      'var out = cases.map(function (q) {' +
+      "  var sheet = new CSSStyleSheet(); sheet.replaceSync('@view-transition { types: ' + q + ' }');" +
+      '  var rule = sheet.cssRules[0];' +
+      "  return rule instanceof CSSViewTransitionRule ? [rule.types, rule.cssText] : 'not a CSSViewTransitionRule';" +
+      '});' +
+      'var sheet = document.styleSheets[0];' +
+      "sheet.insertRule('@view-transition { navigation: auto; navigation: foo; types: a }');" +
+      'var rule = sheet.cssRules[0];' +
+      'rule.navigation = "none"; rule.types = ["b"];' +
+      'var nav = [rule.navigation, rule.types.join(), rule.cssText, rule.type];' +
+      "try { sheet.insertRule('@view-transition foo {}'); nav.push('inserted'); }" +
+      ' catch (e) { nav.push(e.name, sheet.cssRules.length); }' +
+      "var dropped = new CSSStyleSheet(); dropped.replaceSync('@view-transition foo {} @view-transition { navigation: none !important }');" +
+      'nav.push(dropped.cssRules.length, dropped.cssRules[0].cssText);' +
+      "document.getElementById('out').textContent = JSON.stringify([out, nav]);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    cases.map(([, types, text]) => [types, text]),
+    [
+      'auto',
+      'a',
+      '@view-transition { navigation: auto; types: a; }',
+      0,
+      'SyntaxError',
+      1,
+      1,
+      '@view-transition { }',
+    ],
+  ]);
+});
+
+test("PageSwapEvent and PageRevealEvent construct, and a link's, a script's and a style's blocking and relList support their tokens", async () => {
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      'var r = [], vt = document.startViewTransition();' +
+      'var swap = new PageSwapEvent("pageswap", { viewTransition: vt });' +
+      'r.push(swap instanceof Event, swap.type, swap.viewTransition === vt, swap.activation,' +
+      '  new PageRevealEvent("x").viewTransition);' +
+      'vt.skipTransition(); vt.ready.catch(function () {});' +
+      'var link = document.createElement("link"), style = document.createElement("style");' +
+      'r.push(link.blocking.supports("RENDER"), style.blocking.supports("asdf"),' +
+      '  link.relList.supports("preload"), link.relList.supports("noopener"),' +
+      '  document.createElement("a").relList.supports("noopener"), link.blocking === link.blocking);' +
+      'link.blocking = "render x"; r.push(link.getAttribute("blocking"), link.blocking.length);' +
+      'try { document.body.classList.supports("a"); r.push("no throw"); } catch (e) { r.push(e.name); }' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    'pageswap',
+    true,
+    null,
+    null,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    'render x',
+    2,
+    'TypeError',
+  ]);
+});
+
 test('a script innerHTML puts in never runs, and one a script appends does', async () => {
   const doc = await hosted(
     '<html><body><p id="out">-</p><div id="box"></div><script>' +
