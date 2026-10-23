@@ -114,6 +114,25 @@ runs a side: `BENCH_ROOT` at a second checkout's tree, built, for the base.
 profile a step and `ALLOC=dir` an allocation sampling profile a step,
 which `heapprofile.ts self|callers` reads.
 
+The same pages with their scripts running, as the browser example's JS
+switch has them: `htmlfetch.ts --scripts` mounts each page with its scripts
+on and keeps their sources and every `fetch` and `XMLHttpRequest` they make
+(by method, address and body), and `SCRIPTS=1` answers from what it kept,
+a request it did not keep being a 404. `pages-js.txt` is the list: sites
+whose scripts hydrate, render or fetch what they show, across React,
+Next.js, Vue, Svelte and Angular, documentation with scripts of its own,
+and news. A load there is a page's scripts at work as much as `<Html>`'s,
+so read its CPU beside the builds it took.
+
+```bash
+npx tsx --experimental-vm-modules scripts/bench/sweep/htmlfetch.ts \
+  ~/bench-js scripts/bench/sweep/pages-js.txt --scripts
+NODE_ENV=production REACT_X11_BACKEND=x11 DISPLAY=:99 CACHE=~/bench-js \
+  LIST=scripts/bench/sweep/pages-js.txt SCRIPTS=1 STEPS=none \
+  node --expose-gc --experimental-vm-modules \
+  scripts/bench/sweep/htmlpage.mjs > js.jsonl
+```
+
 ## A page's scripts at work
 
 `htmljs.mjs` runs synthetic pages whose own scripts change their DOM a step

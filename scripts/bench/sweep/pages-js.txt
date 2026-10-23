@@ -1,0 +1,23 @@
+# The pages htmlpage.mjs's `SCRIPTS=1` mounts with their scripts running:
+# sites whose scripts hydrate, render or fetch what they show, across the
+# frameworks the web is written in. `htmlfetch.ts --scripts` fills the cache
+# from this list, scripts and requests included.
+#
+# React and Next.js
+https://react.dev/
+https://nextjs.org/blog
+https://tailwindcss.com/docs/installation/using-vite
+https://todomvc.com/examples/react/dist/
+# Vue, Svelte, Angular
+https://vuejs.org/guide/introduction.html
+https://svelte.dev/
+https://angular.dev/overview
+# applications and documentation with scripts of their own
+https://github.com/facebook/react
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+https://www.npmjs.com/package/react
+https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array
+https://www.reddit.com/r/programming/
+# news
+https://www.bbc.com/news
+https://www.theguardian.com/international
