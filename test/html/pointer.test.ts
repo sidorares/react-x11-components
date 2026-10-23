@@ -833,6 +833,8 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
       nested: false,
       has: [{ anchor: '#rir-map', siblings: false }],
       followed: [],
+      below: [],
+      host: false,
     },
   );
   // an argument that starts at a sibling reaches the siblings before
@@ -880,7 +882,9 @@ test('a :hover inside :is(), :where() or :not() names the element it tests', asy
     [':is(a:not([data-card])):not(:where(.not-prose,.not-prose *))'],
   );
   assert.deepStrictEqual(found('a:not(:hover)').compounds, ['a']);
-  assert.deepStrictEqual(found('a:is(:hover, :focus) > b').compounds, ['a']);
+  assert.deepStrictEqual(pointerCompounds('a:is(:hover, :focus) > b').below, [
+    { compound: 'a', subject: 'b', child: true },
+  ]);
   // what follows the element a nested selector names follows it
   assert.deepStrictEqual(found(':is(.x .a:hover) ~ .b'), {
     compounds: ['.a'],
@@ -901,6 +905,51 @@ test('a :hover inside :is(), :where() or :not() names the element it tests', asy
   assert.strictEqual(found('li:nth-child(2 of :hover)').nested, true);
 });
 
+test('a :hover that leads below names the subject it reaches, not all that is in its element', async () => {
+  const { pointerCompounds } = await import('../../src/html/css/cascade.js');
+  // Bootstrap's docs, Sphinx and GitHub show a heading's anchor while the
+  // heading, or anything, is hovered
+  assert.deepStrictEqual(pointerCompounds(':hover > .anchor-link'), {
+    compounds: [],
+    siblings: false,
+    nested: false,
+    has: [],
+    followed: [],
+    below: [{ compound: '*', subject: '.anchor-link', child: true }],
+    host: false,
+  });
+  // a descendant, past a pseudo-element and a state of its own
+  assert.deepStrictEqual(
+    pointerCompounds('.markdown-heading:hover .anchor:focus::before').below,
+    [{ compound: '.markdown-heading', subject: '.anchor', child: false }],
+  );
+  assert.deepStrictEqual(pointerCompounds('p:hover > a.pilcrow:after').below, [
+    { compound: 'p', subject: 'a.pilcrow', child: true },
+  ]);
+  // two steps down is anywhere under it
+  assert.deepStrictEqual(pointerCompounds('li:hover > ul > li').below, [
+    { compound: 'li', subject: 'li', child: false },
+  ]);
+  // a subject with a function in it may ask of more than its element, and
+  // the compound reaches all that is in it as before
+  const fn = pointerCompounds('p:hover > a:not(.x)');
+  assert.deepStrictEqual(fn.compounds, ['p']);
+  assert.deepStrictEqual(fn.below, []);
+  // the subject testing the state is a compound of its own as well
+  const both = pointerCompounds('a:hover > b:hover');
+  assert.deepStrictEqual(both.compounds, ['b']);
+  assert.deepStrictEqual(both.below, [
+    { compound: 'a', subject: 'b', child: true },
+  ]);
+  // a sibling after it still reaches the siblings, whole
+  assert.deepStrictEqual(pointerCompounds('.a:hover + .b .c').followed, ['.a']);
+  // and one inside a function is not a rule's own subject
+  assert.deepStrictEqual(pointerCompounds(':is(.x:hover .y) .z').below, []);
+  // a host's own state is the edge's
+  assert.strictEqual(pointerCompounds(':host(:hover) .x').host, true);
+  assert.strictEqual(pointerCompounds(':host(:hover) .x').nested, false);
+});
+
 test('the focus names the elements it can restyle the way the pointer does', async () => {
   const { FOCUS_STATE, pointerCompounds } =
     await import('../../src/html/css/cascade.js');
@@ -914,7 +963,9 @@ test('the focus names the elements it can restyle the way the pointer does', asy
   assert.deepStrictEqual(focus('.mw-jump-link:not(:focus)').compounds, [
     '.mw-jump-link',
   ]);
-  assert.deepStrictEqual(focus('.row:focus-within td').compounds, ['.row']);
+  assert.deepStrictEqual(focus('.row:focus-within td').below, [
+    { compound: '.row', subject: 'td', child: false },
+  ]);
   assert.deepStrictEqual(focus('form:has(input:focus) label').has, [
     { anchor: 'form', siblings: false },
   ]);
@@ -1020,10 +1071,122 @@ metric(
     assert.ok(treeOf(el) === tree, 'a row built the document again');
     const reach = (
       el as unknown as {
-        _hoverReach(was: unknown[], now: unknown[]): Set<unknown>;
+        _hoverReach(was: unknown[], now: unknown[]): { reach: Set<unknown> };
       }
-    )._hoverReach([], [findById(el.document, 'r5')]);
+    )._hoverReach([], [findById(el.document, 'r5')]).reach;
     assert.strictEqual(reach.size, 1, 'a row reaches itself');
+  },
+);
+
+metric(
+  "a container's hover restyles in place the anchors it shows, however much is in it",
+  async () => {
+    // Bootstrap's docs write `:hover > .anchor-link`, and every element the
+    // pointer crossed reached all that was in it: a move over its 7,800
+    // elements built the page again, 180 ms a move
+    const sections = Array.from(
+      { length: 120 },
+      (_, i) =>
+        `<section id="s${i}"><h2 id="h${i}">Part ${i} <a class="anchor-link"` +
+        ` href="#s${i}">#</a></h2><p id="p${i}">Text of part ${i} with ` +
+        `<b>more</b> in it.</p><p>And a second paragraph.</p></section>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} .anchor-link{color:#ffffff}' +
+        ' :hover > .anchor-link{color:#0000ee}' +
+        ' .x:hover .y{color:#ff0000}</style>' +
+        `<main id="main">${sections}</main>`,
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const drawn = await hoverInPlace(result, el, 'h3');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the anchor did not show');
+    const reach = (
+      el as unknown as {
+        _hoverReach(was: unknown[], now: unknown[]): { reach: Set<unknown> };
+      }
+    )._hoverReach(
+      [],
+      [findById(el.document, 'h3'), findById(el.document, 's3')],
+    ).reach;
+    assert.deepStrictEqual(
+      [...reach].map(
+        (e) => (e as { attribs: { class?: string } }).attribs.class,
+      ),
+      ['anchor-link'],
+      'a hover reaches the anchors it shows and nothing else',
+    );
+    await hoverInPlace(result, el, 'p7');
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'main'), quiet),
+      0,
+      'not as it was',
+    );
+  },
+);
+
+metric(
+  "a ::part()'s hover builds again for the parts, and leaves every other hover in place",
+  async () => {
+    // MDN's `.button::part(button):hover`, which made every move over the
+    // page restyle all of it from the sheets, 140 ms a move
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee} a:hover{color:#ff0000}' +
+        ' .btn::part(face){display:block;color:#000000}' +
+        ' .btn::part(face):hover' +
+        '{color:#00aa00}</style>' +
+        '<div class="btn" id="host"><template shadowrootmode="open">' +
+        '<span part="face" id="face">a part</span></template></div>' +
+        '<p id="p">a <a id="a" href="#x">link</a> in the light tree</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    // in the light tree, a move costs what it changed
+    const drawn = await hoverInPlace(result, el, 'a');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the link did not change');
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'p'), quiet),
+      0,
+      'not as it was',
+    );
+    // over the part and off it again, the boxes are built again, and draw
+    // the part hovered, then as it was
+    el.setHover(...pointIn(el, 'host'));
+    const part = await snapshot(result, el);
+    assert.ok(bytesApart(part, quiet) > 0, 'the part did not change');
+    assert.strictEqual(bytesApart(part, await rebuilt(result, el)), 0);
+    el.setHover(...pointIn(el, 'p'));
+    assert.strictEqual(bytesApart(await snapshot(result, el), quiet), 0);
+  },
+);
+
+metric(
+  'a hover that fades a box restyles in place, its layers stacked again',
+  async () => {
+    // BBC's and Bootstrap's `a:hover{opacity:.8}`: a group made and taken
+    // away, which only changes the order layers paint in
+    const { result, node } = await render(
+      '<style>body{margin:0} .card{background:#3366cc;height:40px;' +
+        'margin-bottom:-20px} .card:hover{opacity:.5}' +
+        ' .pin{position:relative;background:#ff0000;width:20px;height:20px}' +
+        ' .over{position:relative;background:#00aa00;height:30px;' +
+        'margin-left:10px}</style>' +
+        '<div class="card" id="c"><div class="pin" id="pin">p</div></div>' +
+        '<div class="over" id="o">over</div><p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    // over its pin: the box laid over the card's middle is over the card
+    const drawn = await hoverInPlace(result, el, 'pin');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the fade drew nothing');
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'away'), quiet),
+      0,
+      'not as it was',
+    );
   },
 );
 

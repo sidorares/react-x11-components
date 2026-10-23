@@ -4678,10 +4678,41 @@ style changed, are styled again; the rest of a hovered card or row keep
 the styles they have. Only a function that takes no plain selector list —
 `:nth-child(… of :hover)` — is left as one that could reach anything.
 
+**A compound that leads below reaches the subject, not all that is in its
+element.** `:hover > .anchor-link`, Bootstrap's docs' way of showing a
+heading's anchor, names every element the pointer crosses — `*` — and what
+it changes is that element's children that are `.anchor-link`s. Read as
+reaching all that is in each element, it reached the whole of a page of
+7,800 elements and built it again at every move, 180 ms a move; now it
+reaches the anchors. The same goes for a descendant, `.heading:hover
+.anchor`, and through a pseudo-element, `p:hover > a.pilcrow::after`. A
+subject with a function in it — `:not()`, `:is()` — may ask more of its
+element than the matcher sees, and reaches all that is in the element as
+before. A subject inside an inline `<svg>` brings the drawing, which is its
+box.
+
+**A shadow tree's edge costs only the hovers that reach it.** A rule at a
+tree's edge — `::part(button):hover`, `:host(:hover)`, `::slotted(a:hover)`
+— is matched outside the indexes a restyle in place asks, so a move that
+flips the state of a host, of an element in a tree or of one a slot takes
+builds the boxes again. Every other move is restyled in place: MDN's one
+`.button::part(button):hover` made every move over its page restyle all of
+it from the sheets, 140 ms a move. A `:host-context()` or a `:has()` that
+tests the state at an edge, and one written before a `::part()`'s host,
+can be answered by an element outside any tree, and still makes every
+move build.
+
+**An `opacity` that starts or stops a stacking context is restyled in
+place.** `a:hover{opacity:.8}` makes the link a group and its layers one
+list among its context's, and moves no box: the order its layers paint in
+is worked out again from the styles, as a `z-index`'s is. It built BBC's
+page again at every such link.
+
 **What a hover cannot restyle in place, it builds again with the other
-styles kept.** Text set bold on hover, an `opacity`, a `display`, content a
+styles kept.** Text set bold on hover, a `display`, content a
 hover gives a `::before`, a list marker the element colours, a translation
-that would make a box the containing block of what is in it: the boxes are
+that would make a box the containing block of what is in it, a rule at a
+shadow tree's edge: the boxes are
 built and laid out again, as every hover's used to be. But the move reached
 the same few elements, and every other element's style is what it was, so
 the build takes those from the tree it replaces and matches selectors for
