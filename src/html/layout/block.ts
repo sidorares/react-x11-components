@@ -4743,10 +4743,34 @@ function anchorBoxFor(
       }
     }
     if (inside) continue;
+    if (scopedAway(anchor, box, name)) continue;
     if (!acceptableAnchor(anchor, box, ctx.anchorOrder!)) continue;
     return anchor;
   }
   return null;
+}
+
+/**
+ * Whether `anchor-scope` keeps an anchor's name from a box (CSS Anchor
+ * Positioning 1, 2.4): the nearest element around the anchor, itself
+ * included, that scopes the name — by naming it, or by `all` — has the box
+ * outside it. An element's own box is the one asked, and not the boxes
+ * inside it that carry its style.
+ */
+function scopedAway(anchor: Box, box: Box, name: string): boolean {
+  for (let at: Box | null = anchor; at; at = at.parent) {
+    const scope = at.style.anchorScope;
+    if (scope === 'none') continue;
+    const own =
+      at.pseudo === null
+        ? !!at.el && at.parent?.el !== at.el
+        : at.pseudo === 'before' || at.pseudo === 'after';
+    if (!own) continue;
+    if (scope !== 'all' && !scope.split(', ').includes(name)) continue;
+    for (let b: Box | null = box; b; b = b.parent) if (b === at) return false;
+    return true;
+  }
+  return false;
 }
 
 /** The scroll container a box is scrolled in: the nearest around it, or
