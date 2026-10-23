@@ -27,6 +27,7 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
+import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
@@ -172,6 +173,8 @@ export class ScriptRunner {
       settled: () => this.host.flush(),
       load: (url) => _options.load(url, null).catch(() => null),
       base: () => this.host.url,
+      entered: holdAnimationClock,
+      left: releaseAnimationClock,
     });
     this.host.entries = this.engine;
     // the page's workers, each in a thread of its own, their network the

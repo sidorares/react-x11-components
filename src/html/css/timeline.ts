@@ -35,6 +35,7 @@ import type { ScriptSampling } from './scripted.js';
 import {
   INHERITED,
   animatedFields,
+  propertyOfField,
   copyStyle,
   isInherited,
   transitionableFields,
@@ -45,6 +46,7 @@ import type { ComputedStyle, TimelineRef } from './style.js';
 /** A key for each CSS animation's run, as a page's `CSSAnimation` is
  *  kept by it (`cssAnimations`). */
 const RUN_KEYS = new WeakMap<Running, number>();
+const TRANSIT_KEYS = new WeakMap<Transit, number>();
 let runKeys = 0;
 
 /** How long a frame is: what an animation under way waits for its next. */
@@ -158,6 +160,15 @@ export class AnimationTimeline {
   private _transitions = new Map<object, Map<string, Transiting>>();
   /** The transitions a pass that styles the whole document has styled. */
   private _seenTransits: Set<Transiting> | null = null;
+  /** Where each transition was last seen to be, for the events its moving
+   *  owes (`_seenAt`). This timeline's own: a fork shares the runs. */
+  private _phases = new WeakMap<Transit, TransitPhase>();
+  /** The transition events owed the page, in the order they came about
+   *  (`takeTransitionEvents`). */
+  private _transitionEvents: TransitionEventRecord[] = [];
+  /** Told as an event is owed, so the element that tells them knows to
+   *  (`HtmlViewNode._oweTransitionEvents`). A fork has none. */
+  onTransitionEvent: (() => void) | null = null;
   /** Each element's animations a script made, or a pseudo-element's, as
    *  the cascade last sampled them (`noteScripts`): when they next change.
    *  The animations themselves are `ScriptAnimations`', the page's to make
@@ -196,7 +207,11 @@ export class AnimationTimeline {
       // `display: none`: its transitions are over
       for (const [el, states] of this._transitions) {
         for (const [pseudo, state] of states) {
-          if (!transits.has(state)) states.delete(pseudo);
+          if (transits.has(state)) continue;
+          for (const run of state.running.values()) {
+            this._cancelled(el, pseudo, run);
+          }
+          states.delete(pseudo);
         }
         if (!states.size) this._transitions.delete(el);
       }
@@ -926,6 +941,8 @@ export class AnimationTimeline {
       }
       running.set(field, {
         serial: ++transitSeq,
+        property: propertyOfField(field, item(list.properties, index)),
+        created: now,
         start: now + item(list.delays, index),
         duration: Math.max(0, item(list.durations, index)),
         easing: item(list.easings, index),
@@ -939,6 +956,7 @@ export class AnimationTimeline {
       const index = fields.get(field);
       // no longer named, or of no length: cancelled, at its new value
       if (index === undefined) {
+        this._cancelled(el, pseudo, run);
         running.delete(field);
         continue;
       }
@@ -950,6 +968,8 @@ export class AnimationTimeline {
       const delay = item(list.delays, index);
       const duration = Math.max(0, item(list.durations, index));
       const easing = item(list.easings, index);
+      // whatever comes of it, this one is cancelled (CSS Transitions 1, 3)
+      this._cancelled(el, pseudo, run);
       if (
         same(current, to) ||
         (interpolateField(field, current, to, 0.5) === undefined &&
@@ -972,6 +992,8 @@ export class AnimationTimeline {
         );
         running.set(field, {
           serial: ++transitSeq,
+          property: run.property,
+          created: now,
           start: now + (delay < 0 ? delay * shortening : delay),
           duration: duration * shortening,
           easing,
@@ -983,6 +1005,8 @@ export class AnimationTimeline {
       } else {
         running.set(field, {
           serial: ++transitSeq,
+          property: run.property,
+          created: now,
           start: now + delay,
           duration,
           easing,
@@ -998,6 +1022,7 @@ export class AnimationTimeline {
     let inherits = false;
     let willChange = 0;
     for (const [field, run] of running) {
+      this._seenAt(el, pseudo, run, now);
       if (now >= run.start + run.duration) {
         running.delete(field);
         completed.set(field, run.to);
@@ -1044,6 +1069,33 @@ export class AnimationTimeline {
     return out ?? after;
   }
 
+  /**
+   * The CSS transitions under way, each its element, its pseudo-element
+   * ('' for the element's own), its run, a key that is its run's, and
+   * none past its end: what a page's `getAnimations()` lists as a
+   * `CSSTransition` each (CSS Transitions 2, 4).
+   */
+  cssTransitions(): {
+    el: object;
+    pseudo: string;
+    run: Transit;
+    key: number;
+  }[] {
+    const out: { el: object; pseudo: string; run: Transit; key: number }[] = [];
+    const now = this.now;
+    for (const [el, states] of this._transitions) {
+      for (const [pseudo, state] of states) {
+        for (const run of state.running.values()) {
+          if (now >= run.start + run.duration) continue;
+          let key = TRANSIT_KEYS.get(run);
+          if (key === undefined) TRANSIT_KEYS.set(run, (key = ++runKeys));
+          out.push({ el, pseudo, run, key });
+        }
+      }
+    }
+    return out;
+  }
+
   /** Whether an element has a transition under way, or one run out, of its
    *  own or of a pseudo-element's: its style is its own. */
   transiting(el: object): boolean {
@@ -1066,8 +1118,124 @@ export class AnimationTimeline {
    *  displayed. */
   dropTransitions(el: object, pseudo: string): void {
     const states = this._transitions.get(el);
-    if (!states?.delete(pseudo)) return;
+    const state = states?.get(pseudo);
+    if (!states || !state) return;
+    for (const run of state.running.values()) this._cancelled(el, pseudo, run);
+    states.delete(pseudo);
     if (!states.size) this._transitions.delete(el);
+  }
+
+  /**
+   * A transition sampled at `now`: the events its phase moving since it
+   * was last sampled owes (CSS Transitions 2, 6.1) — `transitionrun` as it
+   * is first seen, `transitionstart` past its delay, `transitionend` at its
+   * end, each with the elapsed time the interval it crossed gives, and
+   * `transitionend` or `transitionstart` again where a seek took it back.
+   */
+  private _seenAt(el: object, pseudo: string, run: Transit, now: number): void {
+    const was = this._phases.get(run);
+    const phase: TransitPhase =
+      now < run.start
+        ? 'before'
+        : now < run.start + run.duration
+          ? 'active'
+          : 'after';
+    if (was === phase) return;
+    this._phases.set(run, phase);
+    const delay = run.start - run.created;
+    const begin = Math.max(Math.min(-delay, run.duration), 0);
+    const end = run.duration;
+    const owe = (type: TransitionEventRecord['type'], elapsed: number) => {
+      this._transitionEvents.push({
+        el,
+        pseudo,
+        type,
+        property: run.property,
+        elapsed,
+      });
+      this.onTransitionEvent?.();
+    };
+    if (was === undefined) owe('transitionrun', begin);
+    const from = was === undefined ? 0 : PHASE_RANK[was];
+    const to = PHASE_RANK[phase];
+    if (to > from) {
+      if (from < 1 && to >= 1) owe('transitionstart', begin);
+      if (to === 2) owe('transitionend', end);
+    } else if (to < from) {
+      // taken back by a seek
+      if (from === 2 && to === 1) owe('transitionstart', end);
+      else if (from === 2) {
+        owe('transitionstart', end);
+        owe('transitionend', begin);
+      } else owe('transitionend', begin);
+    }
+  }
+
+  /** A transition cancelled before its end: `transitioncancel`, with the
+   *  active time it had come to (CSS Transitions 2, 6.1), where the page
+   *  heard it run and has not heard it end. */
+  private _cancelled(el: object, pseudo: string, run: Transit): void {
+    const was = this._phases.get(run);
+    if (was === undefined || was === 'after') return;
+    this._phases.set(run, 'after');
+    this._transitionEvents.push({
+      el,
+      pseudo,
+      type: 'transitioncancel',
+      property: run.property,
+      elapsed: Math.max(0, Math.min(this.now - run.start, run.duration)),
+    });
+    this.onTransitionEvent?.();
+  }
+
+  /** The transitions of the elements `styled` does not hold are over,
+   *  cancelled: they are out of the document (CSS Transitions 1, 3). */
+  endTransitionsOutside(styled: ReadonlyMap<object, unknown>): void {
+    for (const [el, states] of this._transitions) {
+      if (styled.has(el)) continue;
+      for (const [pseudo, state] of states) {
+        for (const run of state.running.values()) {
+          this._cancelled(el, pseudo, run);
+        }
+      }
+      this._transitions.delete(el);
+    }
+  }
+
+  /** The transition events owed since this was last asked, in order. */
+  takeTransitionEvents(): TransitionEventRecord[] {
+    const out = this._transitionEvents;
+    this._transitionEvents = [];
+    return out;
+  }
+
+  /**
+   * A page set where a transition's time is (`CSSTransition.currentTime`):
+   * it is made again, its key, phase and everything else kept, as made
+   * `currentTime` ago, and is restyled at the next frame. The element it
+   * is on, or null where no transition under way has the key.
+   */
+  seekTransition(key: number, currentTime: number): object | null {
+    for (const [el, states] of this._transitions) {
+      for (const state of states.values()) {
+        for (const [field, run] of state.running) {
+          if (TRANSIT_KEYS.get(run) !== key) continue;
+          const created = this.now - currentTime;
+          const moved: Transit = {
+            ...run,
+            created,
+            start: created + (run.start - run.created),
+          };
+          TRANSIT_KEYS.set(moved, key);
+          const phase = this._phases.get(run);
+          if (phase) this._phases.set(moved, phase);
+          state.running.set(field, moved);
+          state.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
   }
 }
 
@@ -1129,6 +1297,10 @@ const INHERITS = new WeakMap<KeyframesRule, boolean>();
 export interface Transit {
   /** Which it is, the same in a fork: no other transition has it. */
   serial: number;
+  /** The longhand it is of, as a `CSSTransition` names it. */
+  property: string;
+  /** When it was made, on the timeline: its delay runs from here. */
+  created: number;
   /** When it starts, its delay out, on the timeline. */
   start: number;
   /** From its start to its end, in milliseconds. */
@@ -1145,6 +1317,28 @@ export interface Transit {
 }
 
 let transitSeq = 0;
+
+/** Where a transition is (Web Animations 1, 4.5.10, an effect's phase):
+ *  in its delay, under way, or at its end. */
+type TransitPhase = 'before' | 'active' | 'after';
+
+const PHASE_RANK: Record<TransitPhase, number> = {
+  before: 0,
+  active: 1,
+  after: 2,
+};
+
+/** A CSS transition event owed the page (CSS Transitions 2, 6.1): its
+ *  element and pseudo-element, its type, the longhand and the elapsed
+ *  time, in milliseconds. */
+export interface TransitionEventRecord {
+  el: object;
+  pseudo: string;
+  type:
+    'transitionrun' | 'transitionstart' | 'transitionend' | 'transitioncancel';
+  property: string;
+  elapsed: number;
+}
 
 /** An element's transitions, or a pseudo-element's, by field. */
 interface Transiting {

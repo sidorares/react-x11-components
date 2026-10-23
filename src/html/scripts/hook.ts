@@ -19,6 +19,7 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
+import type { TransitionEventInfo } from '../node.js';
 import type { FramePost } from './host.js';
 import type { FrameLink, RunnerSeams, ScriptRunner } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
@@ -80,6 +81,8 @@ export interface ScriptProps {
   scrolled?: () => void;
   /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
   onElementScroll?: (element: Element) => void;
+  /** The document's CSS transition events, which the page hears. */
+  transitionEvents?: (events: TransitionEventInfo[]) => void;
   /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
   canvasImage?: (element: Element) => unknown | null;
   /** The document's runner, where its scripts run: what a frame in it is
@@ -277,6 +280,11 @@ export function useScripts(
     (element: Element) => runner.current?.elementScrolled(element),
     [],
   );
+  const transitionEvents = useCallback(
+    (events: TransitionEventInfo[]) =>
+      runner.current?.host.transitionEvents(events),
+    [],
+  );
   const getRunner = useCallback(() => runner.current, []);
 
   // the engine, fetched the first time scripts are on; what the document
@@ -342,6 +350,7 @@ export function useScripts(
     navigateFrame,
     scrolled,
     onElementScroll,
+    transitionEvents,
     canvasImage,
     runner: getRunner,
     runtime: engine,

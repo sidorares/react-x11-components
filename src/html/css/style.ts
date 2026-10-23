@@ -7907,6 +7907,31 @@ export function animatedFields(
   return INHERIT_TARGETS[prop] ?? null;
 }
 
+/** The longhand a transition on `field` is of, as `transitionProperty`
+ *  names it (CSS Transitions 2, 6.1): `named` where that sets the field
+ *  alone, and otherwise the first longhand that does — the one a shorthand
+ *  or `all` stands for. */
+export function propertyOfField(field: string, named: string): string {
+  const own = animatedFields(named);
+  if (own?.length === 1 && own[0] === field) return named;
+  if (!FIELD_PROPERTIES) {
+    FIELD_PROPERTIES = new Map();
+    for (const name of [
+      ...Object.keys(INHERIT_TARGETS),
+      ...Object.keys(COLOR_PROPS),
+    ]) {
+      if (name.startsWith('-')) continue;
+      const fields = animatedFields(name);
+      if (fields?.length === 1 && !FIELD_PROPERTIES.has(fields[0])) {
+        FIELD_PROPERTIES.set(fields[0], name);
+      }
+    }
+  }
+  return FIELD_PROPERTIES.get(field) ?? named;
+}
+
+let FIELD_PROPERTIES: Map<string, string> | null = null;
+
 /**
  * The fields a transition of `all` may run on (CSS Transitions 1, 2.1):
  * every field a property `animatedFields` names sets, but what is no

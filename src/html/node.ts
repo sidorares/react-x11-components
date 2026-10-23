@@ -447,6 +447,10 @@ export interface HtmlViewProps {
    *  `scrollElementTo` — told after it is drawn where it went: what a page
    *  hears as the element's `scroll`. */
   onElementScroll?: (element: Element) => void;
+  /** The CSS transition events the document's transitions owe since the
+   *  last were told, in order (`AnimationTimeline.takeTransitionEvents`):
+   *  what a page hears as `transitionrun` and its kin. */
+  onTransitionEvents?: (events: TransitionEventInfo[]) => void;
   /** The pane that scrolls the element — the nearest scroll container
    *  around it, the host's — scrolled: noticed as the element paints, which
    *  a scroll that moves the document under the pane's viewport makes it
@@ -532,7 +536,7 @@ export function registerHtmlView(): void {
     ],
     // what the component watches is no part of the picture: a new window of
     // stops after each Tab is no repaint of the document
-    selfDamagedProps: ['watchStops', 'onViewportScroll'],
+    selfDamagedProps: ['watchStops', 'onViewportScroll', 'onTransitionEvents'],
     childrenAllowed: false,
   });
 }
@@ -2562,6 +2566,9 @@ export class HtmlViewNode extends Node {
           timeline?.beginPass(!kept);
           const tree = boxes();
           timeline?.endPass();
+          // and one that keeps styles ends the transitions of the elements
+          // it left out, taken out of the document
+          if (kept) timeline?.endTransitionsOutside(tree.styles);
           return tree;
         };
         this._tree = build();
@@ -3535,7 +3542,7 @@ export class HtmlViewNode extends Node {
     const kept = this._styleOf(element);
     const tree = this._tree;
     const cascade = this._cascade;
-    if (!kept || !tree || !cascade || !this._scripts.has(element)) return kept;
+    if (!kept || !tree || !cascade || !this._timedNow(element)) return kept;
     const parent = flatParentOf(element);
     const parentStyle = parent ? this._styleOf(parent) : tree.root.style;
     if (!parentStyle) return kept;
@@ -3548,12 +3555,23 @@ export class HtmlViewNode extends Node {
     );
   }
 
+  /** Whether what `element` draws now may be other than its last frame's:
+   *  a script animates it, or a transition of its own runs, which a page
+   *  may have sought (`seekTransition`). */
+  private _timedNow(element: Element): boolean {
+    return (
+      this._scripts.has(element) ||
+      (this._animating() && this._timeline.transiting(element))
+    );
+  }
+
   /** What `style` works out with the cascade on a fork of the timeline at
-   *  this moment, where a script animates `element`: the timeline's clock
-   *  for the element's frames is left as it was. */
+   *  this moment, where a script animates `element` or a transition runs
+   *  on it: the timeline's clock for the element's frames is left as it
+   *  was. */
   private _atNow<T>(element: Element, style: () => T): T {
     const cascade = this._cascade;
-    if (!cascade || !this._scripts.has(element)) return style();
+    if (!cascade || !this._timedNow(element)) return style();
     const was = cascade.timeline;
     if (this._animating()) {
       const fork = this._timeline.fork(element);
@@ -6113,7 +6131,45 @@ export class HtmlViewNode extends Node {
     timeline.now = animationClock.now();
     timeline.scrollProgress = this._timelineProgress;
     cascade.timeline = timeline;
+    timeline.onTransitionEvent ??= () => this._oweTransitionEvents();
     return timeline;
+  }
+
+  /** Whether the transition events of a pass are to be told. */
+  private _transitionEventsOwed = false;
+  /** Tell the transition events owed, once the pass that owes them has
+   *  run: on a timer of its own, so a page hears them outside the layout
+   *  that made them. */
+  private _oweTransitionEvents(): void {
+    if (this._transitionEventsOwed || !this._props().onTransitionEvents) {
+      return;
+    }
+    this._transitionEventsOwed = true;
+    animationClock.arm(() => {
+      this._transitionEventsOwed = false;
+      const events = this._timeline.takeTransitionEvents();
+      const tell = this._props().onTransitionEvents;
+      if (!events.length || !tell) return;
+      tell(
+        events.map((e) => ({
+          element: e.el as Element,
+          pseudo: e.pseudo ? `::${e.pseudo}` : '',
+          type: e.type,
+          property: e.property,
+          elapsedTime: e.elapsed / 1000,
+        })),
+      );
+    }, 0);
+  }
+
+  /** A page set where a CSS transition's time is (`CSSTransition`'s
+   *  `currentTime`, in milliseconds): it runs from there, restyled at the
+   *  next frame. */
+  seekTransition(key: number, currentTime: number): void {
+    if (!this._animating()) return;
+    this._timeline.now = animationClock.now();
+    if (!this._timeline.seekTransition(key, currentTime)) return;
+    this._scheduleFrame();
   }
 
   /**
@@ -8018,6 +8074,59 @@ export class HtmlViewNode extends Node {
       });
     }
     return out;
+  }
+
+  /** The CSS transitions under way on an element, or on what it holds as
+   *  well, or in the whole document for null, in their composite order:
+   *  their elements' tree order, an element before its pseudo-elements,
+   *  the order they were made in and then their properties' names (CSS
+   *  Transitions 2, 4.1). */
+  cssTransitionsOf(
+    element: Element | null,
+    subtree: boolean,
+  ): CssTransitionInfo[] {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return [];
+    const order = new Map<object, number>();
+    for (const el of tree.styles.keys()) order.set(el, order.size);
+    const PSEUDO_ORDER = ['', 'marker', 'before', 'after'];
+    const within = (el: Element): boolean => {
+      if (!element || el === element) return true;
+      if (!subtree) return false;
+      for (let at: Element | null = el; at;) {
+        if (at === element) return true;
+        const parent = flatParentOf(at);
+        at = parent && isElement(parent) ? parent : null;
+      }
+      return false;
+    };
+    const now = this._timeline.now;
+    return this._timeline
+      .cssTransitions()
+      .filter(
+        (t) =>
+          order.has(t.el) &&
+          PSEUDO_ORDER.includes(t.pseudo) &&
+          within(t.el as Element),
+      )
+      .sort(
+        (x, y) =>
+          order.get(x.el)! - order.get(y.el)! ||
+          PSEUDO_ORDER.indexOf(x.pseudo) - PSEUDO_ORDER.indexOf(y.pseudo) ||
+          x.run.serial - y.run.serial ||
+          (x.run.property < y.run.property ? -1 : 1),
+      )
+      .map(({ el, pseudo, run, key }) => ({
+        key,
+        element: el as Element,
+        pseudo: pseudo ? `::${pseudo}` : '',
+        property: run.property,
+        duration: run.duration,
+        delay: run.start - run.created,
+        easing: easingText(run.easing),
+        currentTime: now - run.created,
+      }));
   }
 
   snapViewport(x: number, y: number): { x: number; y: number } {
@@ -10133,6 +10242,32 @@ export interface CssAnimationInfo {
   rangeEnd: string;
 }
 
+/** A CSS transition event a page hears (CSS Transitions 2, 6.1): its
+ *  target and pseudo-element, its type, the longhand and the elapsed time
+ *  in seconds (`onTransitionEvents`). */
+export interface TransitionEventInfo {
+  element: Element;
+  pseudo: string;
+  type: string;
+  property: string;
+  elapsedTime: number;
+}
+
+/** A CSS transition as a page's `getAnimations()` lists it
+ *  (`HtmlViewNode.cssTransitionsOf`): its run's key, its owning element
+ *  and pseudo-element, its longhand, its effect's timing in milliseconds
+ *  and where its time is, from when it was made. */
+export interface CssTransitionInfo {
+  key: number;
+  element: Element;
+  pseudo: string;
+  property: string;
+  duration: number;
+  delay: number;
+  easing: string;
+  currentTime: number;
+}
+
 /** The timeline an element's `animation-timeline` names (Scroll-driven
  *  Animations 1, 4.2): `scroll-timeline-name` or `view-timeline-name` on
  *  the element or the nearest ancestor that declares it, its axis and
@@ -11834,6 +11969,31 @@ export const animationClock = {
     timers.clearTimeout?.(handle);
   },
 };
+
+/** How many page tasks are running, nested, and the clock they replaced
+ *  (`holdAnimationClock`). */
+let clockHolds = 0;
+let clockBeforeHold: (() => number) | null = null;
+
+/**
+ * A page's task begins: the animations' clock stands still until it ends
+ * (`releaseAnimationClock`), as a browser's document timeline does for a
+ * task (Web Animations 1, 4.1.1). A page that sets an animation's time and
+ * reads a style straight after reads the style at that time.
+ */
+export function holdAnimationClock(): void {
+  if (clockHolds++ > 0) return;
+  const held = animationClock.now();
+  clockBeforeHold = animationClock.now;
+  animationClock.now = () => held;
+}
+
+/** The page's task is over: the clock runs again. */
+export function releaseAnimationClock(): void {
+  if (clockHolds === 0 || --clockHolds > 0) return;
+  if (clockBeforeHold) animationClock.now = clockBeforeHold;
+  clockBeforeHold = null;
+}
 
 /**
  * The clock a resize rests on (`_stopAt`), as `hoverClock` is a held

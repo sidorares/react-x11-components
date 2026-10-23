@@ -400,6 +400,28 @@ export function installDom(
       this.relatedTarget = init.relatedTarget ?? null;
     }
   }
+  /** A CSS transition's event (CSS Transitions 1, 6.1): the longhand it
+   *  is of, the time it had run, in seconds, and its pseudo-element. */
+  class TransitionEvent extends Event {
+    _propertyName: string;
+    _elapsedTime: number;
+    _pseudoElement: string;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._propertyName = str(init?.propertyName ?? '');
+      this._elapsedTime = Number(init?.elapsedTime ?? 0);
+      this._pseudoElement = str(init?.pseudoElement ?? '');
+    }
+    get propertyName(): string {
+      return this._propertyName;
+    }
+    get elapsedTime(): number {
+      return this._elapsedTime;
+    }
+    get pseudoElement(): string {
+      return this._pseudoElement;
+    }
+  }
   class MouseEvent extends UIEvent {
     readonly screenX: number;
     readonly screenY: number;
@@ -4051,9 +4073,84 @@ export function installDom(
     return out;
   };
 
+  /**
+   * A CSS transition as a page sees it (CSS Transitions 2, 6.1): an
+   * `Animation` on the document's timeline whose state is the cascade's,
+   * read again each time `getAnimations()` lists it, by its run's key. Its
+   * effect's delay and duration are the transition's, filling backwards,
+   * and its timing function is the keyframes' (6.2), so its own easing is
+   * linear. Its `finished` settles at its end, by the timer every animation
+   * keeps (`_reschedule`): a page that waits on it is answered.
+   */
+  class CSSTransition extends Animation {
+    _property = '';
+    /** Its run's key, which the cascade knows it by. */
+    _key = 0;
+    get transitionProperty(): string {
+      return this._property;
+    }
+    override _report(): void {}
+    override _watch(): void {}
+    /** Where it is, set: the cascade's transition runs from there, so what
+     *  is drawn and what `getComputedStyle()` reads are at the time a page
+     *  sought (Web Animations 1, 4.4.4, "set the current time"). */
+    override set currentTime(v: Any) {
+      super.currentTime = v;
+      const now = this.currentTime;
+      if (typeof now === 'number') call('seekTransition', this._key, now);
+    }
+    override get currentTime(): Any {
+      return super.currentTime;
+    }
+  }
+  /** Each CSS transition's object, by its run's key. */
+  const cssTransitionObjects = new Map<number, Any>();
+  /** The CSS transitions under way on `target`, or on what it holds, or in
+   *  the document, in their composite order. */
+  const cssTransitionsOf = (target: Any, subtree: boolean): Any[] => {
+    const raw = call(
+      'cssTransitions',
+      target && target !== document ? target._id : 0,
+      subtree,
+    );
+    const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
+    const out: Any[] = [];
+    for (const info of list) {
+      let t = cssTransitionObjects.get(info.key);
+      if (!t) {
+        const effect = new KeyframeEffect(wrap(info.element), null, {
+          duration: info.duration,
+          delay: info.delay,
+          fill: 'backwards',
+          pseudoElement: info.pseudo || null,
+        });
+        t = new CSSTransition(effect, documentTimeline);
+        t._property = info.property;
+        t._key = info.key;
+        cssTransitionObjects.set(info.key, t);
+      }
+      t._pendingPlay = false;
+      t._pendingPause = false;
+      t._hold = null;
+      t._start = t._timeline._time() - info.currentTime;
+      t._reschedule();
+      out.push(t);
+    }
+    // what the cascade no longer runs is no one's
+    if (!target || target === document) {
+      const keys = new Set(list.map((info: Any) => info.key));
+      for (const key of [...cssTransitionObjects.keys()]) {
+        if (!keys.has(key)) cssTransitionObjects.delete(key);
+      }
+    }
+    return out;
+  };
+
   /** The animations running on `target`, or on what it holds as well, in
-   *  their composite order: the CSS animations first, then a script's. */
+   *  their composite order: the CSS transitions first, then the CSS
+   *  animations, then a script's (CSS Transitions 2, 4.1). */
   const animationsOf = (target: Any, subtree: boolean): Any[] => [
+    ...cssTransitionsOf(target, subtree),
     ...cssAnimationsOf(target, subtree),
     ...[...liveAnimations]
       .filter((a) => {
@@ -12576,6 +12673,10 @@ export function installDom(
     'ratechange',
     'fullscreenchange',
     'fullscreenerror',
+    'transitionrun',
+    'transitionstart',
+    'transitionend',
+    'transitioncancel',
   ]) {
     const property = {
       get(this: Any): Any {
@@ -21552,6 +21653,7 @@ export function installDom(
     Event,
     UIEvent,
     FocusEvent,
+    TransitionEvent,
     MouseEvent,
     PointerEvent,
     KeyboardEvent,
@@ -21580,6 +21682,7 @@ export function installDom(
     ViewTimeline,
     Animation,
     CSSAnimation,
+    CSSTransition,
     CSSStyleValue,
     CSSNumericValue,
     CSSUnitValue,
@@ -23458,6 +23561,26 @@ export function installDom(
     const ev = new Event(String(type));
     ev.isTrusted = true;
     return dispatch(target, ev);
+  });
+
+  // the document's CSS transition events, in the order they came about,
+  // each at its element, bubbling (CSS Transitions 2, 6.1)
+  entry('__transitionEvents', () => {
+    const [raw] = input();
+    const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
+    for (const e of list) {
+      const target = wrap(e.element);
+      if (!target) continue;
+      const ev = new TransitionEvent(e.type, {
+        bubbles: true,
+        propertyName: e.property,
+        elapsedTime: e.elapsedTime,
+        pseudoElement: e.pseudo,
+      });
+      ev.isTrusted = true;
+      dispatch(target, ev);
+    }
+    return true;
   });
 
   // nothing: run so that the microtasks a promise the host settled queued

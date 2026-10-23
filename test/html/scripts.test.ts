@@ -235,6 +235,8 @@ async function hosted(
       },
       'data-testname': 'doc',
       ...scripts,
+      // as `useScriptedHtml` hands it to `<Html>`, an internal prop
+      ...({ _onTransitionEvents: scripts.transitionEvents } as object),
     });
   }
   out.result = await renderX11(
@@ -6575,6 +6577,82 @@ test("a custom element registry is fixed where an element is made: none under cu
   assert.deepEqual(
     JSON.parse(doc.text('out')),
     [null, null, true, true, true, true, null, true, true],
+    doc.logs.join('\n'),
+  );
+});
+
+test('getAnimations() lists a CSS transition under way as a CSSTransition, before the CSS animations', async () => {
+  const doc = await hosted(
+    '<style>#t { opacity: 1; transition: opacity 20s 1s, margin 30s; animation: spin 10s }' +
+      '#t.on { opacity: 0; margin-left: 10px } @keyframes spin { to { padding-left: 5px } }</style>' +
+      '<p id="t">t</p><p id="out"></p><script>' +
+      'var t = document.getElementById("t"); getComputedStyle(t).opacity;' +
+      't.className = "on"; getComputedStyle(t).opacity;' +
+      'var all = document.getAnimations(), first = all[0];' +
+      'var r = [all.length, first instanceof CSSTransition, first instanceof Animation,' +
+      '  first.transitionProperty, all[1].transitionProperty, all[2] instanceof CSSAnimation,' +
+      '  first.effect.getTiming().duration, first.effect.getTiming().delay, first.effect.target === t,' +
+      '  first.playState, document.getAnimations()[0] === first, t.getAnimations().length];' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(
+    JSON.parse(doc.text('out')),
+    [
+      3,
+      true,
+      true,
+      'opacity',
+      'margin-left',
+      true,
+      20000,
+      1000,
+      true,
+      'running',
+      true,
+      3,
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
+test('a CSS transition tells the page as it runs, starts, ends and is cut short, and a seek moves what is drawn', async () => {
+  const doc = await hosted(
+    '<style>.t { opacity: 1; transition: opacity 1s linear }</style>' +
+      '<p id="a" class="t">a</p><p id="b" class="t">b</p><p id="out"></p><script>' +
+      'var log = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      // on the elements: one taken out of the document is heard there alone
+      '["transitionrun", "transitionstart", "transitionend", "transitioncancel"].forEach(function (type) {' +
+      '  [a, b].forEach(function (el) { el.addEventListener(type, function (e) {' +
+      '    log.push(e.target.id + ":" + e.type + ":" + e.propertyName + ":" +' +
+      '      (e.type === "transitioncancel" ? e.elapsedTime > 0 : e.elapsedTime) + ":" + (e instanceof TransitionEvent)); }); }); });' +
+      'var half;' +
+      'requestAnimationFrame(function () {' +
+      '  getComputedStyle(a).opacity; getComputedStyle(b).opacity;' +
+      '  a.style.opacity = "0"; b.style.opacity = "0";' +
+      // a seek is what is drawn and read back, in the same task
+      '  var t = a.getAnimations()[0]; t.currentTime = 500;' +
+      '  half = getComputedStyle(a).opacity;' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  b.remove(); t.currentTime = 1000;' +
+      '  setTimeout(function () { requestAnimationFrame(function () { setTimeout(function () {' +
+      '    document.getElementById("out").textContent = JSON.stringify([half, log.sort()]);' +
+      '  }, 50); }); }, 50); }); }); });' +
+      '</script>',
+  );
+  for (let i = 0; i < 40 && !doc.text('out'); i += 1) await settle(20);
+  assert.deepEqual(
+    JSON.parse(doc.text('out') || 'null'),
+    [
+      '0.5',
+      [
+        'a:transitionend:opacity:1:true',
+        'a:transitionrun:opacity:0:true',
+        'a:transitionstart:opacity:0:true',
+        'b:transitioncancel:opacity:true:true',
+        'b:transitionrun:opacity:0:true',
+        'b:transitionstart:opacity:0:true',
+      ],
+    ],
     doc.logs.join('\n'),
   );
 });
