@@ -344,8 +344,12 @@ metric(
     assert.strictEqual(part.element, null);
     assert.strictEqual(part.block, 'center');
     const far = el.elementRect(byId(el, 'far'))!;
-    assert.strictEqual(part.rect.y, far.y);
-    assert.strictEqual(part.rect.height, far.height);
+    // the line's top and height, worked out through the text's own
+    // extents, come to the element's within a last bit of rounding
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 1e-6, `${what}: ${a} against ${b}`);
+    near(part.rect.y, far.y, 'its top');
+    near(part.rect.height, far.height, 'its height');
     assert.ok(part.rect.x > far.x && part.rect.width < far.width);
     // the directive is no part of what names `:target`
     const sec = byId(el, 'sec');
