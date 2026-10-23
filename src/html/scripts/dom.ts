@@ -4560,8 +4560,7 @@ export function installDom(
       );
     }
     replaceChildren(...items: Any[]): void {
-      call('setText', this._id, '');
-      if (items.length) call('insert', this._id, nodesFrom(items), 0);
+      call('replaceChildren', this._id, items.length ? nodesFrom(items) : 0);
     }
     querySelector(selector: Any): Any {
       return wrap(Number(call('query', this._id, str(selector), false)));

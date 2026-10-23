@@ -213,3 +213,97 @@ test('a name a rule first asks of an ancestor after what is above an element was
     }
   }
 });
+
+test("the nth pseudo-classes answer from where an element is kept as css-select's count does, and again once the tree changes", async () => {
+  // css-select counts the siblings before an element at every match, so a
+  // table of 10,000 rows under `tr:nth-child(odd)` was 50 million steps;
+  // the cascade answers a plain `An+B` from positions worked out once a
+  // parent (`placeOf`), which have to be css-select's
+  const { appendChild, createElement, removeNode } =
+    await import('../src/html/dom.js');
+  const args = [
+    'odd',
+    'even',
+    '1',
+    '3',
+    '0',
+    '-n+3',
+    '3n+1',
+    '2n',
+    'n',
+    '+n',
+    '2n-1',
+    '2n - 1',
+    '-2n+5',
+    '4n+0',
+    ' 2n+1 ',
+    '-1',
+    '10n+9',
+  ];
+  const kinds = [
+    'nth-child',
+    'nth-last-child',
+    'nth-of-type',
+    'nth-last-of-type',
+  ];
+  const selectors = kinds.flatMap((kind) =>
+    args.map((arg) => `:${kind}(${arg})`),
+  );
+  // and in a compound, under a combinator, inside `:not()`, and the `of`
+  // form css-select keeps
+  selectors.push(
+    'li:nth-child(odd)',
+    'ul > :nth-of-type(2n)',
+    'p:not(:nth-last-child(2))',
+    ':nth-child(2n of .a)',
+    'span + :nth-last-of-type(-n+2)',
+  );
+  for (let seed = 1; seed <= 6; seed += 1) {
+    const next = rng(seed);
+    const source = new HtmlSource();
+    source.setSource(documentOf(next), true);
+    // text and comments between the elements, which are not counted
+    const css = selectors.map((s, i) => `${s} { --r${i}: 1 }`).join('\n');
+    const sheet = parseStylesheet(css, 0);
+    const rules = new Map(sheet.rules.map((rule) => [rule.declarations, rule]));
+    const cascade = new Cascade([sheet], LOOK, 800, 600, 1);
+    const candidates = (
+      cascade as unknown as {
+        _candidates(el: Element): { declarations: unknown }[];
+      }
+    )._candidates.bind(cascade);
+    const check = (when: string) => {
+      const elements: Element[] = [];
+      const walk = (node: { children?: unknown[] }): void => {
+        for (const child of (node.children ?? []) as Element[]) {
+          if (child.type === 'tag') elements.push(child);
+          walk(child);
+        }
+      };
+      walk(source.document);
+      for (const el of elements) {
+        const got = candidates(el)
+          .map((c) => rules.get(c.declarations as never)?.selector)
+          .filter((s): s is string => s !== undefined)
+          .sort();
+        const want = sheet.rules
+          .filter((rule) => is(el, rule.selector))
+          .map((rule) => rule.selector)
+          .sort();
+        assert.deepStrictEqual(
+          got,
+          want,
+          `seed ${seed}, ${when}, <${el.name}>`,
+        );
+      }
+      return elements;
+    };
+    const elements = check('as parsed');
+    // a child taken out and others put in, where the counts move
+    removeNode(elements[Math.floor(elements.length / 2)]);
+    const parent = elements[3].parent as Element;
+    appendChild(parent, createElement('li'));
+    appendChild(parent, createElement('span'));
+    check('changed');
+  }
+});

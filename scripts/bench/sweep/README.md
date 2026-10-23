@@ -15,23 +15,24 @@ rather than a display number: XQuartz crashes in the GL cells over 2,000
 nodes, and the socket starts it again for the next cell, where `:29` leaves
 every cell after the crash failing to connect.
 
-| Probe             | What                                                    | `ACTION=`                                                                                                                                                                                 |
-| ----------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `matrix.tsx`      | `<Flow>`, five scenes                                   | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                                                             |
-| `mapsweep.tsx`    | `<Map>`, London z15                                     | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
-| `chartsweep.tsx`  | the charts                                              | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
-| `tablesweep.tsx`  | `<Table>`, 100,000 log rows                             | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
-| `treesweep.tsx`   | `<Tree>`, 100,000 rows, all expanded                    | `wheel`, `fling`, `thumb`, `keys` (`ROWS`; `FRAMES=1` says where the selection sits in each frame)                                                                                        |
-| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`)                | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
-| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)                            | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
-| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)                         | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
-| `startup.mjs`     | an app's start, run with plain `node`                   | `APP=small\|menubar\|editor`: the imports, `createRoot` and the first paint, in ms since the process started (`editor` reads `dist/`; `npm run build` first)                              |
-| `htmlsweep.mjs`   | `<Html>`, a document at a time, plain `node` on `dist/` | `SUITE=corpus` (every Zen Garden design from a `CACHE`) or `synthetic` (`htmlgen.mjs`'s features, `SCALE=small\|large\|both`); a line a document, see below                               |
-| `docgen.ts`       | the documents                                           | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
-| `htmlanim.mjs`    | `<Html>`, a Zen Garden design moving                    | `PAGE` (219), `TARGETS`: its animations running, frames with the pointer away, then on each target and off it again; plain `node` on `dist/`                                              |
-| `htmlgen.mjs`     | `<Html>`'s synthetic documents                          | one a feature — `text`, `inline`, `table`, `flex`, `grid`, `float`, `selectors`, `positioned`, `paint`, `anim` — at an everyday size and a stress size, deterministic by seed             |
-| `htmlpage.mjs`    | `<Html>`, a page as it is lived with                    | `SUITE=pages` (real sites from `pages.txt`), `corpus` or `synthetic`: loaded, scrolled to its end, its window dragged narrower and back, hovered, loaded again; see below                 |
-| `htmlfetch.ts`    | the real pages, kept                                    | fills a disk cache with every document, stylesheet, font and image a list of pages asks for (`pages.txt`, or `zengarden`)                                                                 |
+| Probe             | What                                                       | `ACTION=`                                                                                                                                                                                 |
+| ----------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matrix.tsx`      | `<Flow>`, five scenes                                      | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                                                             |
+| `mapsweep.tsx`    | `<Map>`, London z15                                        | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
+| `chartsweep.tsx`  | the charts                                                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
+| `tablesweep.tsx`  | `<Table>`, 100,000 log rows                                | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
+| `treesweep.tsx`   | `<Tree>`, 100,000 rows, all expanded                       | `wheel`, `fling`, `thumb`, `keys` (`ROWS`; `FRAMES=1` says where the selection sits in each frame)                                                                                        |
+| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`)                   | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
+| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)                               | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
+| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)                            | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
+| `startup.mjs`     | an app's start, run with plain `node`                      | `APP=small\|menubar\|editor`: the imports, `createRoot` and the first paint, in ms since the process started (`editor` reads `dist/`; `npm run build` first)                              |
+| `htmlsweep.mjs`   | `<Html>`, a document at a time, plain `node` on `dist/`    | `SUITE=corpus` (every Zen Garden design from a `CACHE`) or `synthetic` (`htmlgen.mjs`'s features, `SCALE=small\|large\|both`); a line a document, see below                               |
+| `docgen.ts`       | the documents                                              | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
+| `htmlanim.mjs`    | `<Html>`, a Zen Garden design moving                       | `PAGE` (219), `TARGETS`: its animations running, frames with the pointer away, then on each target and off it again; plain `node` on `dist/`                                              |
+| `htmlgen.mjs`     | `<Html>`'s synthetic documents                             | one a feature — `text`, `inline`, `table`, `flex`, `grid`, `float`, `selectors`, `positioned`, `paint`, `anim` — at an everyday size and a stress size, deterministic by seed             |
+| `htmlpage.mjs`    | `<Html>`, a page as it is lived with                       | `SUITE=pages` (real sites from `pages.txt`), `corpus` or `synthetic`: loaded, scrolled to its end, its window dragged narrower and back, hovered, loaded again; see below                 |
+| `htmljs.mjs`      | `<Html>` with its scripts on, doing what pages' scripts do | `WORKLOADS`: `rows` (js-framework-benchmark's table), `feed`, `churn`, `toggle`, `width`, `transform`, `thrash`, `text`, `route`; each step from its start to the frame that shows it     |
+| `htmlfetch.ts`    | the real pages, kept                                       | fills a disk cache with every document, stylesheet, font and image a list of pages asks for (`pages.txt`, or `zengarden`)                                                                 |
 
 What the fields mean: `fps` — frames that painted, per second; `frame50`,
 `frame95` — the window's flush time; `lat50`, `lat95` — from an input to the
@@ -112,6 +113,24 @@ runs a side: `BENCH_ROOT` at a second checkout's tree, built, for the base.
 `STEPS` narrows the steps, `ONLY` the pages, `PROFILE=dir` writes a CPU
 profile a step and `ALLOC=dir` an allocation sampling profile a step,
 which `heapprofile.ts self|callers` reads.
+
+## A page's scripts at work
+
+`htmljs.mjs` runs synthetic pages whose own scripts change their DOM a step
+at a time, each step waiting two animation frames so that it is shown
+before the next begins: js-framework-benchmark's operations on a table of
+1,000 and 10,000 rows, a feed that grows twenty cards a step, a list that
+churns, a class toggled, widths and transforms set from a script, layout
+read straight after a write, a grid of ticking numbers and a route swapped
+with `innerHTML`. Each step is timed from its start, which the page logs,
+to the end of the first frame that drew the document after it; `js50` is
+the script's own share. Run it with `--experimental-vm-modules`, which the
+script engine needs.
+
+```bash
+NODE_ENV=production REACT_X11_BACKEND=x11 DISPLAY=:99 \
+  node --expose-gc --experimental-vm-modules scripts/bench/sweep/htmljs.mjs
+```
 
 ## Running one
 

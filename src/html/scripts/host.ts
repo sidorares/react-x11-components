@@ -1870,6 +1870,23 @@ export class DomHost {
       case 'replace':
         this._replace(this._parent(a), this._node(b), this._node(c));
         return null;
+      // what a parent holds replaced, as one record (DOM 4.2.6,
+      // `replaceChildren`, "replace all"): a removal and an insertion
+      // were two, which an observer told the children went and came back
+      case 'replaceChildren': {
+        const parent = this._parent(a);
+        const node = b ? this._node(b) : null;
+        if (node) this._validInsert(parent, node, null, false);
+        this._replaceAll(
+          parent,
+          !node
+            ? []
+            : this._isFragment(node)
+              ? ((node as Document).children.slice() as ChildNode[])
+              : [node as ChildNode],
+        );
+        return null;
+      }
       // a node's data changed in place, and a text split in two, as the
       // standard has them move the ranges in them
       case 'replaceData': {
@@ -3726,12 +3743,24 @@ export class DomHost {
     for (const node of nodes) if (node.parent) this._take(node);
     const removed = parent.children.slice();
     const owner = this._ownerOf(parent);
+    // With no range or iterator live, which the removing steps move a
+    // child at a time, the children go at once: one at a time, each a
+    // search of the list and a splice of it, a page that cleared a table
+    // of 10,000 rows spent 66 ms in it.
+    const quiet = !this._ranges.watching && !this._iterators.watching;
     for (const kid of removed) {
       if (owner !== this.document) this._owners.set(kid, owner);
+      if (quiet) {
+        kid.prev = null;
+        kid.next = null;
+        kid.parent = null;
+        continue;
+      }
       this._ranges.removing(kid);
       this._iterators.removing(kid);
       DomUtils.removeElement(kid);
     }
+    if (quiet) parent.children.length = 0;
     for (const node of nodes) {
       if (this._ownerOf(node) !== owner) this._adopt(node, owner);
       DomUtils.appendChild(parent, node);
