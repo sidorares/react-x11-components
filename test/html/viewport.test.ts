@@ -13,6 +13,7 @@ import {
   fillsOf,
   findById,
   h,
+  linesOf,
   metric,
   pixelsIn,
   render,
@@ -1377,6 +1378,84 @@ test('vw lengths taken in place at a new width lay out as a build does, over gen
     await cleanup();
   }
   assert.ok(inPlace >= 10, `${inPlace} of 30 restyled in place`);
+});
+
+test('fluid type in vw taken in place at a new width sets its text as a build does, over generated documents', async () => {
+  // Bootstrap's headings are `calc(1.3rem + .6vw)`, and every step of a
+  // drag built the boxes for them: a text's size, its lines' height and an
+  // indent are taken in place (`FONT_FIELDS`) — on a block, on an inline box
+  // in it that inherits the size, on a `::before` — and the layout that
+  // follows sets the runs at them. Each document is resized, and held to a
+  // build of all of it at the same width, box for box and line for line.
+  let seed = 11;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
+  const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
+  let ids = 0;
+  const text = () =>
+    Array.from({ length: 2 + Math.floor(random() * 10) }, () =>
+      pick(words),
+    ).join(' ');
+  const block = (depth: number): string => {
+    const id = `e${ids++}`;
+    const css: string[] = [];
+    if (random() < 0.6) {
+      css.push(
+        `font-size:${pick(['calc(10px + 1vw)', 'calc(.8rem + .6vw)', '3vw', '1.1em'])}`,
+      );
+    }
+    if (random() < 0.3)
+      css.push(`line-height:${pick(['1.5em', '1.3', 'normal'])}`);
+    if (random() < 0.2) css.push('text-indent:2vw');
+    if (random() < 0.3) css.push(`margin:${pick(['.5em 0', '1vw 0', '0'])}`);
+    const display = pick(['block', 'block', 'flex', 'inline-block']);
+    if (display !== 'block') css.push(`display:${display}`);
+    const cls = random() < 0.3 ? ' class="mark"' : '';
+    const inline =
+      random() < 0.5
+        ? ` <span style="font-size:${pick(['1.2em', 'smaller', '0.9em'])}">${text()}</span> `
+        : ' ';
+    const kids =
+      depth < 2
+        ? Array.from({ length: Math.floor(random() * 3) }, () =>
+            block(depth + 1),
+          )
+        : [];
+    return `<div id="${id}"${cls} style="${css.join(';')}">${text()}${inline}${text()}${kids.join('')}</div>`;
+  };
+  let inPlace = 0;
+  for (let doc = 0; doc < 24; doc += 1) {
+    ids = 0;
+    const source =
+      '<style>body{margin:0}.mark::before{content:"» "}</style>' +
+      block(0) +
+      block(0);
+    const { el, resize } = await renderScrolled(source, 300, 400);
+    const tree = treeOf(el);
+    await resize(300, 352);
+    if (treeOf(el) === tree) inPlace += 1;
+    const laid = () =>
+      Array.from({ length: ids }, (_, i) => {
+        const b = boxOf(el, `e${i}`);
+        return [
+          i,
+          b.x,
+          b.y,
+          b.width,
+          b.height,
+          linesOf(el, `e${i}`).map((l) => [l.x, l.y, l.width, l.height]),
+        ];
+      });
+    const resized = laid();
+    (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+    el.layoutNow();
+    assert.deepStrictEqual(resized, laid(), `document ${doc}: ${source}`);
+    await cleanup();
+  }
+  assert.ok(inPlace >= 8, `${inPlace} of 24 restyled in place`);
 });
 
 test('a vw that comes to hold follows the width, and one that stops does not', async () => {

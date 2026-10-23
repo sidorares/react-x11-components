@@ -5734,9 +5734,15 @@ export class HtmlViewNode extends Node {
     // changed, which the elements under them read
     const quiet = new Set<Element>();
     /** The ones whose lengths alone changed, taken in place where a layout
-     *  follows (`lengths`), and their boxes. */
-    const resized = new Set<Element>();
+     *  follows (`lengths`), with which lengths (`lengthChange`), and their
+     *  boxes. */
+    const resized = new Map<Element, number>();
     const resizedBoxes: Box[] = [];
+    const resizeAs = (el: Element, change: number): boolean => {
+      if (!change) return false;
+      resized.set(el, change);
+      return true;
+    };
     let refused = false;
     // what changed beyond ink (`hoverChange`): how far some box's ink
     // reaches, the order its layer paints in, where one is
@@ -5798,13 +5804,16 @@ export class HtmlViewNode extends Node {
           style = made;
           changed.set(el, made);
           quiet.add(el);
-        } else if (diff !== null && lengths && lengthsOnly(kept.style, made)) {
+        } else if (
+          diff !== null &&
+          lengths &&
+          resizeAs(el, lengthChange(kept.style, made))
+        ) {
           // what is laid out next lays it out at these lengths: its ink is
           // what it was, and where it moves is the layout's to say
           style = made;
           changed.set(el, made);
           quiet.add(el);
-          resized.add(el);
         } else if (diff === false) refused = true;
         else if (diff) {
           style = made;
@@ -5977,7 +5986,22 @@ export class HtmlViewNode extends Node {
         const made = cascade.pseudoStyleFor(from, box.pseudo, inherits);
         if (!made || made.display === 'none') return false;
         const diff = hoverChange(box.style, made);
-        if (diff === false) return false;
+        if (diff === false) {
+          // the size its element's text came to, which its runs are set at
+          // in the layout that follows
+          if (
+            !lengths ||
+            box.kind !== 'inline' ||
+            tree.firstLine ||
+            lengthChange(box.style, made) !== FONT_LENGTHS
+          ) {
+            return false;
+          }
+          resizedBoxes.push(box);
+          next.set(box, made);
+          restyled.push([box, made]);
+          continue;
+        }
         if (!diff) continue;
         if (diff.move && !movable(box, box.style, made)) return false;
         if (diff.fade && brokenAround(box)) return false;
@@ -6033,9 +6057,20 @@ export class HtmlViewNode extends Node {
         // lengths a block's own flow, a flex box's or a grid's lays it out
         // at; a replaced box's, a table's and an inline box's are read as
         // their boxes are built
-        if (resized.has(el)) {
-          if (box.kind !== 'block' && box.kind !== 'flex') return false;
+        // — and a text's size and its lines' on an inline box too, which
+        // the block it is on lays out again with its runs. A `::first-line`
+        // is styled from its block as the boxes are built (`FIRST_LINE`).
+        const change = resized.get(el);
+        if (change) {
           if (box.replaced !== 'none') return false;
+          if (
+            box.kind === 'inline'
+              ? change !== FONT_LENGTHS
+              : box.kind !== 'block' && box.kind !== 'flex'
+          ) {
+            return false;
+          }
+          if (change & FONT_LENGTHS && tree.firstLine) return false;
           resizedBoxes.push(box);
         }
         // an input button the page took to styling, or stopped, is drawn
@@ -6061,6 +6096,13 @@ export class HtmlViewNode extends Node {
         const display = box.style.display;
         if (tree.anonymous(parent!.style, display) !== box.style) return false;
         style = tree.anonymous(above, display);
+        // and the size its parent's text came to, which its own content
+        // was measured at: the text of a flex row is in one, a flex item
+        // whose max-content sized the line
+        if (lengths && lengthChange(box.style, style)) {
+          if (box.kind !== 'block' && box.kind !== 'flex') return false;
+          resizedBoxes.push(box);
+        }
       }
       if (!style) continue;
       next.set(box, style);
@@ -13064,17 +13106,39 @@ const LENGTH_FIELDS: ReadonlySet<string> = new Set([
   'flexBasis',
 ]);
 
-/** Whether two styles of one element differ, and only in `LENGTH_FIELDS`. */
-function lengthsOnly(was: ComputedStyle, now: ComputedStyle): boolean {
+/**
+ * The lengths a block's runs and lines are made of — its text's size, its
+ * lines' height, the first line's indent — which `collect` reads off each
+ * box's style as it lays a paragraph out, so that a box laid out again
+ * after taking them sets its text at them (`_restyleInPlace`'s `lengths`).
+ * Fluid type is one in `vw`: Bootstrap's headings are
+ * `calc(1.3rem + .6vw)`, and every step of a drag built the boxes.
+ */
+const FONT_FIELDS: ReadonlySet<string> = new Set([
+  'fontSize',
+  'lineHeight',
+  'textIndent',
+]);
+
+/** A difference in `LENGTH_FIELDS` (`lengthChange`). */
+const BOX_LENGTHS = 1;
+/** A difference in `FONT_FIELDS`. */
+const FONT_LENGTHS = 2;
+
+/** How two styles of one element differ where they differ only in lengths:
+ *  in `LENGTH_FIELDS` (`BOX_LENGTHS`), in `FONT_FIELDS` (`FONT_LENGTHS`), or
+ *  both; and 0 where they differ in anything else, or nothing. */
+function lengthChange(was: ComputedStyle, now: ComputedStyle): number {
   const a = was as unknown as Record<string, unknown>;
   const b = now as unknown as Record<string, unknown>;
-  let any = false;
+  let change = 0;
   for (const key in b) {
     if (sameValue(a[key], b[key])) continue;
-    if (!LENGTH_FIELDS.has(key)) return false;
-    any = true;
+    if (LENGTH_FIELDS.has(key)) change |= BOX_LENGTHS;
+    else if (FONT_FIELDS.has(key)) change |= FONT_LENGTHS;
+    else return 0;
   }
-  return any;
+  return change;
 }
 
 /**
