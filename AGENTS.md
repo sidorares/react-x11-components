@@ -2795,7 +2795,13 @@ then on (`escapes`). And **a partial layout stands on intrinsic sizes the
 tree's first, whole layout found**, which a box keeps for its lifetime: one
 no whole layout has laid out is laid out whole (`_wholeTree`), since a
 measure taken after a descendant was set aside would see less than is
-there.
+there — but for a tree a drag built, a breakpoint's or a `vw`'s, which a
+layout that stops sizes from all a box holds (`probeWhole`), and which is
+laid out whole at once where the tree before it escaped (`laidWhole`):
+built at every step, such a tree was laid out twice a step, once stopped
+and once whole. **Anything new that builds the boxes while the width moves
+says whether its tree may stop**, through `crossing` in `_update`, or a
+long page is laid out whole at every step of the drag.
 
 **What is above the viewport is kept as well, and the viewport holds
 still.** A pane that can follow what it shows (`anchorScrollBy`, react-x11
