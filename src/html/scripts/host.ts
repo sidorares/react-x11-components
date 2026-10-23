@@ -31,7 +31,11 @@ import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
 import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
-import type { CssAnimationInfo } from '../node.js';
+import type {
+  CssAnimationInfo,
+  CssTransitionInfo,
+  TransitionEventInfo,
+} from '../node.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import {
   HtmlSource,
@@ -257,6 +261,14 @@ export interface HandleInternals {
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
   cssAnimations(element: Element | null, subtree: boolean): CssAnimationInfo[];
+  /** The CSS transitions under way, the same way
+   *  (`HtmlViewNode.cssTransitionsOf`). */
+  cssTransitions(
+    element: Element | null,
+    subtree: boolean,
+  ): CssTransitionInfo[];
+  /** A page set where a CSS transition is (`HtmlViewNode.seekTransition`). */
+  seekTransition(key: number, currentTime: number): void;
   /** A view transition's steps, as the page's realm runs them: its old
    *  state captured, its new captured and its tree drawn — each answering
    *  the name two elements share, which skips it, or '' — how long until
@@ -1453,6 +1465,18 @@ export class DomHost {
     for (const el of elements) {
       this.entries.call('__fire', [this.idOf(el), 'scroll']);
     }
+  }
+
+  /** The document's CSS transitions owe these events: `transitionrun`,
+   *  `transitionstart`, `transitionend` and `transitioncancel`, which
+   *  bubble (CSS Transitions 2, 6.1). */
+  transitionEvents(events: TransitionEventInfo[]): void {
+    if (this._disposed || !this.entries) return;
+    this.entries.call('__transitionEvents', [
+      JSON.stringify(
+        events.map((e) => ({ ...e, element: this.idOf(e.element) })),
+      ),
+    ]);
   }
 
   /** And each one's `scrollend`, a frame after its last `scroll`. */
@@ -3129,6 +3153,17 @@ export class DomHost {
                   ? { ...x.timeline, subject: id(x.timeline.subject) }
                   : x.timeline,
           })),
+        );
+      }
+      case 'seekTransition':
+        this._seams.handle.seekTransition?.(Number(a), Number(b));
+        return null;
+      case 'cssTransitions': {
+        this.flush();
+        const el = a ? this._element(a) : null;
+        const list = this._seams.handle.cssTransitions?.(el, b === true) ?? [];
+        return JSON.stringify(
+          list.map((x) => ({ ...x, element: this.idOf(x.element) })),
         );
       }
       // what a page asked of a media element's player — `paused`, `muted`,

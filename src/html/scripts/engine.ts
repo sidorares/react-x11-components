@@ -113,6 +113,10 @@ export interface EngineOptions {
   /** What a classic script's `import()` resolves against: the document's
    *  address, which `history.pushState` moves. */
   base?(): string;
+  /** The outermost entry begins, and ends: a page's task, which the
+   *  animations' clock stands still for. */
+  entered?(): void;
+  left?(): void;
 }
 
 /** `vm.SourceTextModule`, where the runtime has it: Bun always, Node behind
@@ -686,13 +690,13 @@ export class ScriptEngine {
     // a top-level `await` is in.
     if (!evaluated && module.status !== 'linked') return module.namespace;
     if (!evaluated) {
-      this._depth += 1;
+      this._enter();
       try {
         evaluated = module.evaluate({ timeout: this._options.timeout });
       } catch (error) {
         evaluated = Promise.reject(error);
       } finally {
-        this._depth -= 1;
+        this._leave();
         if (!this._depth && !this._disposed) this._options.settled();
       }
       this._evaluated.set(module, evaluated);
@@ -778,7 +782,7 @@ export class ScriptEngine {
   private _evaluate(module: PageModule): boolean {
     // one an `import()` has evaluated already ran then
     if (this._evaluated.has(module)) return true;
-    this._depth += 1;
+    this._enter();
     let done: Promise<void>;
     try {
       done = module.evaluate({ timeout: this._options.timeout });
@@ -786,7 +790,7 @@ export class ScriptEngine {
       this._fault(error);
       return false;
     } finally {
-      this._depth -= 1;
+      this._leave();
       if (!this._depth && !this._disposed) this._options.settled();
     }
     this._evaluated.set(module, done);
@@ -902,7 +906,7 @@ export class ScriptEngine {
     }
     let ran = false;
     if (compiled) {
-      this._depth += 1;
+      this._enter();
       try {
         // what it completes with is the page's, and never read
         compiled.runInContext(this._context, {
@@ -914,7 +918,7 @@ export class ScriptEngine {
         // without reading the page's object (`_fault`)
         this._fault(error);
       } finally {
-        this._depth -= 1;
+        this._leave();
       }
     }
     this.call('__ran', null);
@@ -975,7 +979,7 @@ export class ScriptEngine {
       this._options.log('error', 'The page broke its script engine.');
       return undefined;
     }
-    this._depth += 1;
+    this._enter();
     try {
       const out = this._entry(name).runInContext(this._context, {
         timeout: this._options.timeout,
@@ -1011,9 +1015,17 @@ export class ScriptEngine {
       }
       return undefined;
     } finally {
-      this._depth -= 1;
+      this._leave();
       if (!this._depth && !this._disposed) this._options.settled();
     }
+  }
+
+  /** An entry begins: the outermost one is a task (`entered`). */
+  private _enter(): void {
+    if (this._depth++ === 0) this._options.entered?.();
+  }
+  private _leave(): void {
+    if (--this._depth === 0) this._options.left?.();
   }
 
   /**
