@@ -50,12 +50,15 @@ import {
   contained,
   exactMinContent,
   heightThroughRatio,
+  laidWholeAround,
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
   percentHeightsIn,
   positionOutOfFlow,
   resolveEdges,
+  setAsideOf,
+  wholeAgain,
   widthThroughRatio,
 } from './block.js';
 import type { LayoutContext } from './block.js';
@@ -115,7 +118,8 @@ export function layoutGrid(
 ): number {
   const style = box.style;
   const boxes: Box[] = [];
-  for (const child of box.children) {
+  // what this pass set aside of it, laid out again from the whole list
+  for (const child of wholeAgain(box, ctx)) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       // where it is as the grid's one item, in an area whose edges are the
@@ -255,15 +259,29 @@ export function layoutGrid(
     cols.gap = colGap;
   }
 
+  // a height of the grid's own, or else the least it may be, which the
+  // `fr` rows and the `auto` ones fill: its `min-height`, or the height a
+  // column it is an item of flexed it to (`USED_HEIGHT`)
+  const own = Number.isFinite(definite);
+  const least = own ? 0 : Math.max(leastHeight(box), USED_HEIGHT.get(box) ?? 0);
+  // the rows from `cut` on, where a layout that stops leaves them as they
+  // were (`cutAt`)
+  let cut = cutAt(box, items, rowDefs, ctx, sub, own || least > 0);
+  const kept = cut < rowCount ? KEPT_ROWS.get(box)! : null;
+
   // each item at its area's width, for its height
-  for (const item of items) {
-    layoutItem(
-      item,
-      extent(widths, lefts, item.col, item.cols),
-      ctx,
-      spanBefore(item),
-    );
-  }
+  const layOut = (from: number, to: number): void => {
+    for (const item of items) {
+      if (item.row < from || item.row >= to) continue;
+      layoutItem(
+        item,
+        extent(widths, lefts, item.col, item.cols),
+        ctx,
+        spanBefore(item),
+      );
+    }
+  };
+  layOut(0, cut);
   // what a subgrid's items make of its parent's rows: their heights at
   // these widths, before a row stretches them
   if (sub?.rows) {
@@ -273,30 +291,29 @@ export function layoutGrid(
     }));
   }
 
-  // a height of the grid's own, or else the least it may be, which the
-  // `fr` rows and the `auto` ones fill: its `min-height`, or the height a
-  // column it is an item of flexed it to (`USED_HEIGHT`)
-  const own = Number.isFinite(definite);
-  const least = own ? 0 : Math.max(leastHeight(box), USED_HEIGHT.get(box) ?? 0);
-  let heights: number[];
-  let tops: number[];
-  let height: number;
-  const givenRows = sub?.rows ? fromParent(sub.rows, rowGap, box, 'y') : null;
-  if (givenRows) {
-    // a subgrid's rows are its parent's, sized with everything in it
-    heights = givenRows.sizes;
-    tops = givenRows.at;
-    height = givenRows.size;
-  } else {
+  // the rows sized and placed, in the grid's height or its own
+  const placeRows = (): {
+    heights: number[];
+    tops: number[];
+    height: number;
+  } => {
     // the rows against a height: percentages of it, or `auto` without one
+    // — and those from the cut on the sizes they were, their items left
+    // out
     const sizeRows = (base: number, available: number, atLeast: number) => {
       const rowTracks: SizingTrack[] = [];
       for (let r = 0; r < rowCount; r += 1) {
-        rowTracks.push(sizing(rowDefs[r], base));
+        rowTracks.push(
+          r < cut
+            ? sizing(rowDefs[r], base)
+            : { min: kept!.heights[r], max: kept!.heights[r] },
+        );
       }
+      let sizedItems = sizedBy(items, 'rows');
+      if (cut < rowCount) sizedItems = sizedItems.filter((i) => i.row < cut);
       return sizeTracks(
         rowTracks,
-        sizedBy(items, 'rows').map((item) => rowItem(item, rowTracks, rowGap)),
+        sizedItems.map((item) => rowItem(item, rowTracks, rowGap)),
         {
           available,
           least: atLeast,
@@ -305,7 +322,7 @@ export function layoutGrid(
         },
       );
     };
-    heights = sizeRows(definite, own ? definite : Infinity, least);
+    let heights = sizeRows(definite, own ? definite : Infinity, least);
     // with no height of its own, the grid is as tall as its rows come to
     // with their percentages `auto`, and the percentages are of that (7.2.1)
     if (!own && [...plan.explicitRows, style.gridAutoRows].some(percentTrack)) {
@@ -314,7 +331,7 @@ export function layoutGrid(
       tall = Math.max(tall, least);
       heights = sizeRows(tall, tall, 0);
     }
-    height = rowGap * Math.max(0, heights.length - 1);
+    let height = rowGap * Math.max(0, heights.length - 1);
     for (const h of heights) height += h;
     // with no height of its own, a percentage gap is of the height its rows
     // come to without it, and the rows are placed with it where the grid is
@@ -332,11 +349,32 @@ export function layoutGrid(
       style.minHeight === AUTO;
     const room =
       own && !grows ? definite : Math.max(own ? definite : least, height);
-    tops = starts(heights, rowGap, style.alignContent, room);
+    const tops = starts(heights, rowGap, style.alignContent, room);
+    return { heights, tops, height };
+  };
+  let heights: number[];
+  let tops: number[];
+  let height: number;
+  const givenRows = sub?.rows ? fromParent(sub.rows, rowGap, box, 'y') : null;
+  if (givenRows) {
+    // a subgrid's rows are its parent's, sized with everything in it
+    heights = givenRows.sizes;
+    tops = givenRows.at;
+    height = givenRows.size;
+  } else {
+    ({ heights, tops, height } = placeRows());
+    // and where the rows it kept come to start above where the layout
+    // stops, they are laid out after all, as a block's child is
+    if (cut < rowCount && box.contentY + tops[cut] <= ctx.until!) {
+      layOut(cut, rowCount);
+      cut = rowCount;
+      ({ heights, tops, height } = placeRows());
+    }
   }
   // an item that takes a percentage of its area's height, which is known
   // now, is laid out again with it
   for (const item of items) {
+    if (item.row >= cut) continue;
     const child = item.box;
     const tall = extent(heights, tops, item.row, item.rows);
     if (Object.is(child.percentHeightBase, tall) || !percentOwn(child))
@@ -359,6 +397,7 @@ export function layoutGrid(
   });
 
   for (const item of items) {
+    if (item.row >= cut) continue;
     const child = item.box;
     const area = extent(widths, lefts, item.col, item.cols);
     const tall = extent(heights, tops, item.row, item.rows);
@@ -470,7 +509,111 @@ export function layoutGrid(
       box.contentY + tops[item.row] + child.marginTop + Math.max(0, dy),
     );
   }
+  // what is from the cut on is set aside, where it was and as tall
+  if (cut < rowCount) {
+    const aside = new Set<Box>();
+    for (const item of items) if (item.row >= cut) aside.add(item.box);
+    setAsideOf(box, aside, height, ctx);
+  }
+  if (!ctx.probing) {
+    const areas: number[] = [];
+    for (const item of items) {
+      areas.push(item.col, item.cols, item.row, item.rows);
+    }
+    KEPT_ROWS.set(box, {
+      items: items.map((item) => item.box),
+      areas,
+      heights,
+      tops,
+    });
+  }
   return height;
+}
+
+/** What a grid's last layout that was not a probe made of its rows: the
+ *  items it placed, by box and by area, and the rows' sizes and tops from
+ *  its content top. */
+interface KeptRows {
+  items: Box[];
+  /** Each item's column, columns spanned, row and rows spanned. */
+  areas: number[];
+  heights: number[];
+  tops: number[];
+}
+
+/** By grid, what a layout that stops keeps of its rows (`cutAt`). */
+const KEPT_ROWS = new WeakMap<Box, KeptRows>();
+
+/**
+ * The first of a grid's rows a layout that stops (`until`) keeps as they
+ * were, its items set aside: the first whose last layout started below
+ * where the layout stops, on a grid laid out before with the same items in
+ * the same areas — or the row count, for none. A row's size is its items'
+ * alone but where something shares the grid's height out among its rows,
+ * so the rows are laid out whole where one is a share (`fr`) or a
+ * percentage, the gap is one, the grid has a height of its own or a least
+ * one (`fixed`), an item spans the cut, an item is a subgrid or the grid
+ * is one, or the layout is a probe, crosses a fresh tree (`reach`) or is
+ * in columns. Next.js's blog is a grid of cards, 1,008 boxes laid out at
+ * every step of a drag, most of them below the window.
+ */
+function cutAt(
+  box: Box,
+  items: Item[],
+  rowDefs: GridTrack[],
+  ctx: LayoutContext,
+  sub: Subgrid | null,
+  fixed: boolean,
+): number {
+  const rows = rowDefs.length;
+  const until = ctx.until;
+  if (
+    until === undefined ||
+    ctx.reach !== undefined ||
+    ctx.probing ||
+    sub !== null ||
+    fixed ||
+    isPct(box.style.rowGap)
+  ) {
+    return rows;
+  }
+  const kept = KEPT_ROWS.get(box);
+  if (
+    !kept ||
+    kept.heights.length !== rows ||
+    kept.items.length !== items.length
+  ) {
+    return rows;
+  }
+  let cut = rows;
+  for (let r = 1; r < rows; r += 1) {
+    if (box.contentY + kept.tops[r] > until) {
+      cut = r;
+      break;
+    }
+  }
+  if (cut === rows) return rows;
+  for (const track of rowDefs) {
+    if (percentTrack(track)) return rows;
+    const max = track.max;
+    if (typeof max === 'object' && max !== null && 'fr' in max) return rows;
+  }
+  const areas = kept.areas;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (
+      kept.items[i] !== item.box ||
+      areas[i * 4] !== item.col ||
+      areas[i * 4 + 1] !== item.cols ||
+      areas[i * 4 + 2] !== item.row ||
+      areas[i * 4 + 3] !== item.rows ||
+      SUBGRIDS.has(item.box) ||
+      (item.row < cut && item.row + item.rows > cut)
+    ) {
+      return rows;
+    }
+  }
+  return laidWholeAround(box) ? rows : cut;
 }
 
 /**

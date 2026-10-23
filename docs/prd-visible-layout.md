@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: A, B and C are built; the rest is design.** Written 2026-10-24 after
+> **Status: A, B, C and E are built; the rest is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -229,6 +229,26 @@ nor reached: a row's size depends only on the items in it, unless an item
 spans the cut, the grid has a definite height that `fr` rows share, or
 `align-content` spreads the rows; any of those lays the grid out whole.
 
+**Built.** `layoutGrid` asks `cutAt` for the first row to keep: the first
+whose top in the grid's last layout that was not a probe (`KEPT_ROWS`) is
+below where the layout stops, on a grid with the same items in the same
+areas. The columns are sized from every item as before; the items above
+the cut are laid out, the rows from the cut on are fixed tracks of the
+sizes they had, and their items are set aside (`setAsideOf`), as a block's
+children are. A grid with a share, a percentage or a percentage gap among
+its rows, a height of its own or a least one, a subgrid, or an item across
+the cut is laid out whole; and where the rows above come out shorter and
+the cut starts above the line after all, the rest is laid out, so nothing
+that can be seen is a width old. `wholeAgain` takes back, at the start of a
+box's layout, what this pass set aside of its children, which a probe or a
+flex item's measure later in the pass needs. On the Mac, a step of
+Next.js's drag laid out 1,211 boxes where it laid out 1,751, its median
+frame went from 31.9 ms to 9.15 and the drag's processor time from 5.48 s
+to 4.60. BBC's, MDN's and GitHub's grids keep nothing: the ones past the
+line are a row each, or wholly in view. `test/html/relayout.test.ts`
+holds a step's visible rows to what the layout at rest draws over 24
+generated grids.
+
 ### F. A fixed box set aside lays the tree out again whole
 
 The Guardian sets aside a banner fixed to the viewport's bottom
@@ -270,7 +290,7 @@ right one.
    the seven slowest pages and gives the rest something to keep.
 2. **C** — built: small, the same shape as `until`, and every docs page has
    a sidebar.
-3. **E**, then **D**, then a table's rows: the cut decided from the last
+3. **E** — built — then **D**, then a table's rows: the cut decided from the last
    layout, which only a kept tree has — so after A.
 4. **F**, and what draws nothing: one page each in this set, and both
    common on news sites.

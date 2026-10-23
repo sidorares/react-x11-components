@@ -640,6 +640,132 @@ test('a dragged width takes the density an image below where it stops shows into
   );
 });
 
+test('a dragged width keeps the rows of a grid below where it stops as they were, and lays them out once it rests', async (t) => {
+  // Next.js's blog is a grid of cards, and every card was laid out at
+  // every step of a drag: the rows below the window keep the sizes they
+  // had, and their cards are set aside as a block's children are
+  const clock = holdClock(t, resizeClock);
+  const cards = (rows: string, extra = '') =>
+    `<div id="grid" style="display:grid;grid-template-columns:repeat(3,1fr);` +
+    `grid-auto-rows:${rows};gap:10px${extra}">` +
+    Array.from(
+      { length: 90 },
+      (_, i) =>
+        `<div id="c${i}" style="background:#${((i * 30) % 256).toString(16).padStart(2, '0')}4080">` +
+        `card ${i}${i % 4 ? '' : ' with a longer title that wraps'}</div>`,
+    ).join('') +
+    '</div><div id="end" style="height:10px"></div>';
+  const { el, resize } = await renderScrolled(
+    `<body style="margin:0">${cards('minmax(50px,auto)')}</body>`,
+    300,
+    400,
+  );
+  const tall = boxOf(el, 'grid').height;
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'a step of the drag');
+  assert.ok(reached(el, 'c20'), 'what can be seen, and a viewport more');
+  assert.ok(!reached(el, 'c60') && !reached(el, 'c89'), 'and no further');
+  assert.strictEqual(boxOf(el, 'grid').height, tall, 'as tall as it was');
+  const seen = shown(await fillsOf(el), 300);
+  await clock.finish();
+  assert.ok(!partial(el));
+  assert.ok(reached(el, 'c89'), 'all of it once the width rests');
+  assert.deepStrictEqual(
+    shown(await fillsOf(el), 300),
+    seen,
+    'what can be seen drawn as the whole layout draws it',
+  );
+
+  // and a grid whose rows share something out among them is laid out
+  // whole: rows that are shares, a height of its own, an item that spans
+  for (const [rows, extra] of [
+    ['1fr', ''],
+    ['minmax(50px,auto)', ';height:3000px'],
+    ['minmax(50px,auto)', ';min-height:3000px'],
+  ]) {
+    cleanup();
+    const doc = await renderScrolled(
+      `<body style="margin:0">${cards(rows, extra)}</body>`,
+      300,
+      400,
+    );
+    await doc.resize(300, 390);
+    await doc.resize(300, 380);
+    assert.ok(reached(doc.el, 'c89'), `laid out whole: ${rows}${extra}`);
+  }
+  cleanup();
+  const spans = await renderScrolled(
+    `<body style="margin:0">${cards('minmax(50px,auto)').replace(
+      'id="c3"',
+      'id="c3" style="grid-row:span 30"',
+    )}</body>`,
+    300,
+    400,
+  );
+  await spans.resize(300, 390);
+  await spans.resize(300, 380);
+  assert.ok(reached(spans.el, 'c89'), 'an item spans where it would stop');
+});
+
+test('a dragged width draws the rows of a grid it keeps as the whole layout at rest does, over generated grids', async (t) => {
+  // rows of every kind of track a cut keeps or refuses, items that span
+  // columns and rows, aligned and stretched, with a grid inside some, and
+  // what can be seen at a step held to what the layout at rest draws there
+  const clock = holdClock(t, resizeClock);
+  let seed = 11;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pick = <T>(list: T[]): T => list[Math.floor(random() * list.length)];
+  for (let doc = 0; doc < 24; doc += 1) {
+    const rows = pick(['auto', 'minmax(40px,auto)', '60px', 'min-content']);
+    const align = pick(['stretch', 'start', 'center', 'end']);
+    const items = Array.from(
+      { length: 60 + Math.floor(random() * 40) },
+      (_, i) => {
+        const span = random() < 0.15 ? `grid-column:span 2;` : '';
+        const down = random() < 0.05 ? `grid-row:span 2;` : '';
+        const inner =
+          random() < 0.1
+            ? '<div style="display:grid;grid-template-columns:1fr 1fr">' +
+              '<b>a</b><b>b</b><b>c</b></div>'
+            : '';
+        const words = 'word '.repeat(1 + Math.floor(random() * 12));
+        return (
+          `<div style="${span}${down}padding:${Math.floor(random() * 8)}px;` +
+          `background:#${Math.floor(random() * 0xffffff)
+            .toString(16)
+            .padStart(6, '0')}">` +
+          `${words}${inner}</div>`
+        );
+      },
+    ).join('');
+    const source =
+      `<body style="margin:0"><p>${'lead '.repeat(Math.floor(random() * 40))}</p>` +
+      `<div style="display:grid;grid-template-columns:repeat(${2 + Math.floor(random() * 3)},1fr);` +
+      `grid-auto-rows:${rows};align-items:${align};gap:${Math.floor(random() * 12)}px">` +
+      `${items}</div><p>after</p></body>`;
+    const { el, resize } = await renderScrolled(source, 300, 400);
+    let width = 400;
+    for (let step = 0; step < 3; step += 1) {
+      width -= 4 + Math.floor(random() * 6);
+      await resize(300, width);
+    }
+    const seen = shown(await fillsOf(el), 300);
+    const stopped = partial(el);
+    await clock.finish();
+    assert.ok(!partial(el));
+    assert.deepStrictEqual(
+      shown(await fillsOf(el), 300),
+      seen,
+      `document ${doc} (${rows}, ${align}, ${stopped ? 'stopped' : 'whole'})`,
+    );
+    cleanup();
+  }
+});
+
 test('a layout that stops measures the boxes it sizes from all they hold', async () => {
   // A shrink-to-fit box's width is its content's, measured by laying the
   // content out at no width limit: a probe, which a layout that stops

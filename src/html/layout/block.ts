@@ -379,6 +379,45 @@ function setAside(
   return Number.isFinite(span) && span > 0 ? span : 0;
 }
 
+/**
+ * A box's children with what this pass set aside of them taken back, for
+ * a layout of it at another width or another place in the pass, or a
+ * probe, which stops nowhere: laid out again from the whole list.
+ */
+export function wholeAgain(box: Box, ctx: LayoutContext): Box[] {
+  const whole = ctx.setAside?.get(box);
+  if (whole) {
+    for (const child of whole) HELD_BACK.delete(child);
+    ctx.setAside!.delete(box);
+    ASIDE_REACH.delete(box);
+    box.children = whole;
+  }
+  return box.children;
+}
+
+/**
+ * Set aside those of a box's children in `aside`, which a layout that
+ * stops (`until`) leaves where they were, as tall as they were: what of
+ * them is below where it stops, reaching `reach` below the box's content
+ * top. A grid's rows are set aside so (`layoutGrid`).
+ */
+export function setAsideOf(
+  box: Box,
+  aside: ReadonlySet<Box>,
+  reach: number,
+  ctx: LayoutContext,
+): void {
+  const children = box.children;
+  if (!ctx.setAside!.has(box)) ctx.setAside!.set(box, children);
+  const kept: Box[] = [];
+  for (const child of children) {
+    if (aside.has(child)) HELD_BACK.set(child, ctx.pass!);
+    else kept.push(child);
+  }
+  box.children = kept;
+  ASIDE_REACH.set(box, reach);
+}
+
 /** A shrink-to-fit box's content laid out at no width limit, all of it:
  *  a probe stops nowhere (`until`). */
 function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
@@ -399,7 +438,7 @@ function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
  *  content is one strip its columns balance, so it neither stops where
  *  the viewport ends nor keeps what is above it. A scroll container stops
  *  where what it shows ends (`layoutBox`). */
-function laidWholeAround(box: Box): boolean {
+export function laidWholeAround(box: Box): boolean {
   for (let at: Box | null = box; at; at = at.parent) {
     if (at.style.columns) return true;
   }
@@ -1407,15 +1446,8 @@ function layoutChildren(
   // where it stops, and sets it aside. One this pass set aside already, in
   // a layout of this box at another width or another place, is laid out
   // again from the whole list, and set aside again where it starts below.
-  let children = box.children;
   // a probe, which stops nowhere, lays out what was set aside too
-  const whole = ctx.setAside?.get(box);
-  if (whole) {
-    for (const child of whole) HELD_BACK.delete(child);
-    ctx.setAside!.delete(box);
-    ASIDE_REACH.delete(box);
-    box.children = children = whole;
-  }
+  let children = wholeAgain(box, ctx);
   let stopped = false;
   /** Whether this flow is a multicol container's or a scroll
    *  container's, or in one, which is laid out whole (`laidWholeAround`).
