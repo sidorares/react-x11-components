@@ -1039,12 +1039,12 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
 });
 
 test('a dragged width that builds again what holds a vw goes on laying out what can be seen', async (t) => {
-  // A `vw` a box's text is set by builds the boxes again at every step, and
+  // A `vw` a box's text is spaced by builds the boxes again at every step, and
   // the tree it builds is laid out as a crossing's is: down to what can be
   // seen, sized from all it holds. Laid out whole, a long page was all of
   // it at every step.
   holdClock(t, resizeClock);
-  const vw = '<style>#r0{margin-left:10vw;font-size:4vw}</style>';
+  const vw = '<style>#r0{margin-left:10vw;letter-spacing:1vw}</style>';
   const { el, resize } = await renderScrolled(
     LONG.replace('<body style="margin:0">', `${vw}<body style="margin:0">`),
     300,

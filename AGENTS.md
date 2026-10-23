@@ -1517,14 +1517,22 @@ boxes are kept: a change only of ink, or of what nothing draws — under
 the change is, since no box shows it. Node's API pages hold a hidden picker
 `max-width: 75vw`, and every step of a drag built the whole document's
 boxes for it. And since a layout follows, a change of a block's lengths
-alone is taken in place too (`lengths`, `lengthsOnly`): its width and its
+alone is taken in place too (`lengths`, `lengthChange`): its width and its
 limits, its margins, paddings, offsets and gaps, on a block or a flex or
-grid box that is not replaced — never a font's size, a line's height or a
-sizing keyword, which a box's runs and its measuring are built from. The
-box takes the new style, and what its layouts keep of its sizes for its
-life is forgotten for it and every box it is in (`forgetSizes`), so the
-layout after measures them again: MDN's, Python's, GitHub's, Next.js's and
-the Guardian's builds at every step of a drag were each a length in `vw`.
+grid box that is not replaced — and its text's size, its lines' height and
+its indent (`FONT_FIELDS`), on such a box, on an inline box in one, on a
+`::before` or an `::after`, and on the anonymous boxes that inherit them,
+since `collect` sets a paragraph's runs from each box's style as the block
+is laid out; never a sizing keyword, nor a font where a `::first-line` is
+styled from it as the boxes are built. The box takes the new style, and
+what its layouts keep of its sizes for its life is forgotten for it and
+every box it is in (`forgetSizes`), so the layout after measures them
+again: MDN's, Python's, GitHub's, Next.js's and the Guardian's builds at
+every step of a drag were each a length in `vw`, and Bootstrap's were its
+headings' fluid type, `calc(1.3rem + .6vw)`. **A box that takes a new
+font has its sizes forgotten too, whoever's style it is** — an anonymous
+box around a flex row's text kept the max-content it was measured at, and
+the row came out at the old size's widths.
 **Anything new a box's layouts keep for its life that a length decides is
 forgotten in `forgetSizes`**, or a drag lays the box out at the lengths it
 had; `test/html/viewport.test.ts` holds the resize to a build of the whole
