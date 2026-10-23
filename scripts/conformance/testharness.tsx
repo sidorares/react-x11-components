@@ -102,13 +102,14 @@ const PALETTE = {
   textMuted: '#000000',
 };
 
-/** The address wpt.fyi runs a test at: https for `.https.` and `.h2.`, a
- *  subdomain for `.www.`. */
+/** The address wpt.fyi runs a test at: https for `.https.` and `.h2.`, and
+ *  for a service worker's variant, which WPT's manifest forces onto https
+ *  (`force_https`); a subdomain for `.www.`. */
 export function urlFor(test: string): string {
   const name = test.split('?')[0];
   const sub = /\.www\./.test(name) ? 'www.' : '';
   if (/\.h2\./.test(name)) return `https://${sub}${HOST}:${H2_PORT}/${test}`;
-  if (/\.https\./.test(name)) {
+  if (/\.https\.|\.serviceworker(?:-module)?\.html$/.test(name)) {
     return `https://${sub}${HOST}:${HTTPS_PORT}/${test}`;
   }
   return `http://${sub}${HOST}:${HTTP_PORT}/${test}`;
@@ -262,6 +263,8 @@ function Page(props: {
   };
   const fetcher = network.fetcher(props.baseUrl);
   const scripts: HtmlScripts = {
+    // WPT's `.any.serviceworker.html` variants register their tests' worker
+    serviceWorkers: true,
     fetch: (request, signal) => {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
       if (path.startsWith('/__testdriver__/')) {

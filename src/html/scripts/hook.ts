@@ -157,6 +157,9 @@ export function useScripts(
     get workers() {
       return latest.current.workers;
     },
+    get serviceWorkers() {
+      return latest.current.serviceWorkers;
+    },
     get drawsFrames() {
       return latest.current.drawsFrames;
     },

@@ -128,6 +128,16 @@ export interface HtmlScripts {
   /** Whether the page may start dedicated workers, each a thread of its
    *  own. Default true. */
   workers?: boolean;
+  /**
+   * Whether a page may register service workers (`navigator.serviceWorker`,
+   * Service Workers 1), each a worker thread with its lifecycle and its
+   * messages, where the page is a secure context. They intercept none of
+   * the page's requests and keep no `caches`, so a site that registers one
+   * to work offline or to be pushed to finds less than it expects: off by
+   * default, and `navigator.serviceWorker` is then not there at all, which
+   * is what such a site checks for. Default false.
+   */
+  serviceWorkers?: boolean;
   /** Where the page is shown, as its scripts measure it. Default: the
    *  scroll pane around `<Html>`, or `<Html>` itself where none is. */
   viewport?: () => ScriptViewport;
@@ -289,6 +299,7 @@ export function useScriptedHtml(
     reserved: config.reserved,
     timeout: config.timeout,
     workers: config.workers ?? true,
+    serviceWorkers: config.serviceWorkers ?? false,
     drawsFrames: frames,
   };
   const url = props.baseUrl ?? 'about:blank';

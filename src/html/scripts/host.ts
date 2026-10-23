@@ -160,6 +160,10 @@ export interface WorkerInit {
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
+  /** A service worker's (Service Workers 1), with the scope it was
+   *  registered for and the address of the page that registered it, the
+   *  one client it has. */
+  service?: { scope: string; client: string };
 }
 
 /** Where a page's workers run (`workers.ts`): each started, posted to and
@@ -372,6 +376,9 @@ export interface HostSeams {
    *  fetches its source through it to know its duration and when it can
    *  play, and with none is ready as soon as it is asked. */
   network?: boolean;
+  /** Whether a page may register service workers (`HtmlScripts`'
+   *  `serviceWorkers`). */
+  serviceWorkers?: boolean;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -3160,6 +3167,8 @@ export class DomHost {
       // loads its source through
       case 'hasNetwork':
         return this._seams.network === true;
+      case 'serviceWorkers':
+        return this._seams.serviceWorkers === true;
       case 'canPlayType': {
         // the three answers HTML has, and none other (4.8.11.3)
         const answer = this._seams.canPlayType?.(text(a)) ?? '';

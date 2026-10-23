@@ -203,6 +203,7 @@ engine.call('__becomeWorker', {
   url: init.url,
   name: init.name,
   shared: !!init.shared,
+  service: init.service ?? null,
 });
 
 port.on('message', (m: ToWorker) => {
@@ -241,8 +242,14 @@ if (source === null) {
     0,
     0,
   );
+  if (init.service) engine.call('__serviceInstall', [false]);
 } else if (init.type === 'module') {
-  void engine.module(source, init.url, init.source === null);
+  void engine.module(source, init.url, init.source === null).then((ran) => {
+    if (init.service) engine.call('__serviceInstall', [ran]);
+  });
 } else {
-  engine.exec(source, init.url, 0);
+  const ran = engine.exec(source, init.url, 0);
+  // a service worker is installed once its script has run (Service
+  // Workers 1, "Install")
+  if (init.service) engine.call('__serviceInstall', [ran]);
 }
