@@ -2872,6 +2872,19 @@ card. **Anything new that sets a box's children aside takes them back with
 `wholeAgain` where the box's layout starts**, or a layout of it later in
 the same pass — a probe, a flex item measured — finds them cut short.
 
+**A table stops at a row in the same way** (`rowCut`, `KEPT_TABLES`): the
+rows whose last layout started below the line keep their heights, their
+cells keep the content heights they came to (`natural`) and are not laid
+out, and the rows are set aside in their groups. The columns are sized from
+every cell as before, from what each kept of its widths. A table that
+shares a height out among its rows — one of its own, one a flex or grid
+layout gave it, a least one — or has a cell spanning the cut, or a row past
+it that holds a box placed against something outside it, is laid out whole.
+`clampHeight` never comes to less than a box's borders and padding, so a
+least height is one past `verticalExtra`: compared with 0, every bordered
+table was taken for one with a `min-height`, and Wikipedia's list of
+countries, a bordered `wikitable`, was laid out whole.
+
 **What is above the viewport is kept as well, and the viewport holds
 still.** A pane that can follow what it shows (`anchorScrollBy`, react-x11
 2.45.0, CSS Scroll Anchoring 1) keeps the block at the top of its viewport

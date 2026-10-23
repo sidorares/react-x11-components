@@ -391,11 +391,16 @@ const LONG =
   ).join('') +
   '<div id="end" style="height:10px"></div></body>';
 
-/** The fills that reach the top `height` of the document. */
+/** The fills that reach the top `height` of the document, cut to it: what
+ *  of each can be seen. A box set aside is as tall as it was a width ago,
+ *  so a border down the side of one runs another length below. */
 const shown = (fills: Fill[], height: number): string[] =>
   fills
     .filter((f) => f.y < height)
-    .map((f) => `${String(f.style)} ${f.x},${f.y} ${f.w}x${f.h}`);
+    .map(
+      (f) =>
+        `${String(f.style)} ${f.x},${f.y} ${f.w}x${Math.min(f.h, height - f.y)}`,
+    );
 
 test('a dragged width lays out what can be seen, and the rest once it rests', async (t) => {
   const clock = holdClock(t, resizeClock);
@@ -822,6 +827,145 @@ test('a dragged width draws the rows of a grid it keeps as the whole layout at r
     );
     cleanup();
   }
+});
+
+test('a dragged width keeps the rows of a table below where it stops as they were, and lays them out once it rests', async (t) => {
+  // Wikipedia's list of countries is one table of some 250 rows, and
+  // every row was laid out at every step of a drag: the rows below the
+  // window keep their heights, their cells are not laid out, and the rows
+  // are set aside in their groups
+  const clock = holdClock(t, resizeClock);
+  const table = (extra = '', cell = (i: number) => `row ${i}`) =>
+    `<table id="t" style="width:100%;border-collapse:collapse${extra}">` +
+    '<thead><tr><th>name</th><th>value</th></tr></thead><tbody>' +
+    Array.from(
+      { length: 80 },
+      (_, i) =>
+        `<tr id="r${i}"><td style="background:#${((i * 37) % 256).toString(16).padStart(2, '0')}6080">` +
+        `${cell(i)}${i % 5 ? '' : ' with more words that wrap at a narrow width'}` +
+        `</td><td>${i * 13}</td></tr>`,
+    ).join('') +
+    '</tbody><tfoot><tr id="foot"><td>total</td><td>1</td></tr></tfoot></table>' +
+    '<div id="end" style="height:10px"></div>';
+  const { el, resize } = await renderScrolled(
+    `<body style="margin:0">${table()}</body>`,
+    300,
+    400,
+  );
+  const tall = boxOf(el, 't').height;
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'a step of the drag');
+  assert.ok(reached(el, 'r10'), 'what can be seen, and a viewport more');
+  assert.ok(!reached(el, 'r60') && !reached(el, 'foot'), 'and no further');
+  assert.strictEqual(boxOf(el, 't').height, tall, 'as tall as it was');
+  const seen = shown(await fillsOf(el), 300);
+  await clock.finish();
+  assert.ok(!partial(el));
+  assert.ok(reached(el, 'r79') && reached(el, 'foot'), 'all of it at rest');
+  assert.deepStrictEqual(
+    shown(await fillsOf(el), 300),
+    seen,
+    'what can be seen drawn as the whole layout draws it',
+  );
+
+  // and a table whose height is shared out among its rows, or with a cell
+  // across where it would stop, is laid out whole
+  for (const [extra, what] of [
+    [';height:6000px', 'a height of its own'],
+    [';min-height:6000px', 'a least one'],
+  ]) {
+    cleanup();
+    const doc = await renderScrolled(
+      `<body style="margin:0">${table(extra)}</body>`,
+      300,
+      400,
+    );
+    await doc.resize(300, 390);
+    await doc.resize(300, 380);
+    assert.ok(reached(doc.el, 'r79'), `laid out whole: ${what}`);
+  }
+  cleanup();
+  const spans = await renderScrolled(
+    `<body style="margin:0">${table().replace(
+      '<tr id="r3"><td',
+      '<tr id="r3"><td rowspan="40"',
+    )}</body>`,
+    300,
+    400,
+  );
+  await spans.resize(300, 390);
+  await spans.resize(300, 380);
+  assert.ok(reached(spans.el, 'r79'), 'a cell spans where it would stop');
+});
+
+test('a dragged width draws the rows of a table it keeps as the whole layout at rest does, over generated tables', async (t) => {
+  // spans across and down, cells aligned every way, collapsed and
+  // separated borders, a table in a cell, captions, and what can be seen
+  // at a step held to what the layout at rest draws there
+  const clock = holdClock(t, resizeClock);
+  let seed = 23;
+  let stops = 0;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pick = <T>(list: T[]): T => list[Math.floor(random() * list.length)];
+  for (let doc = 0; doc < 20; doc += 1) {
+    const columns = 2 + Math.floor(random() * 3);
+    const rows: string[] = [];
+    let spanned = 0;
+    for (let r = 0; r < 70 + Math.floor(random() * 30); r += 1) {
+      const cells: string[] = [];
+      let c = spanned > 0 ? 1 : 0;
+      if (spanned > 0) spanned -= 1;
+      while (c < columns) {
+        const across = c + 1 < columns && random() < 0.1 ? 2 : 1;
+        const down = c === 0 && spanned === 0 && random() < 0.04 ? 3 : 1;
+        if (down > 1) spanned = down - 1;
+        const va = pick(['baseline', 'top', 'middle', 'bottom']);
+        const inner =
+          random() < 0.05 ? '<table><tr><td>a</td><td>b</td></tr></table>' : '';
+        cells.push(
+          `<td colspan="${across}" rowspan="${down}" style="vertical-align:${va};` +
+            `padding:${Math.floor(random() * 6)}px;` +
+            `background:#${Math.floor(random() * 0xffffff)
+              .toString(16)
+              .padStart(6, '0')}">` +
+            `${'word '.repeat(1 + Math.floor(random() * 10))}${inner}</td>`,
+        );
+        c += across;
+      }
+      rows.push(`<tr>${cells.join('')}</tr>`);
+    }
+    rows.push('<tr id="last"><td>the last row</td></tr>');
+    const collapse = pick(['collapse', 'separate']);
+    const source =
+      `<body style="margin:0"><p>${'lead '.repeat(Math.floor(random() * 40))}</p>` +
+      `<table style="border-collapse:${collapse};border:1px solid #333;` +
+      `border-spacing:${Math.floor(random() * 4)}px">` +
+      (random() < 0.3 ? '<caption>a caption</caption>' : '') +
+      `<tbody>${rows.join('')}</tbody></table><p>after</p></body>`;
+    const { el, resize } = await renderScrolled(source, 300, 400);
+    let width = 400;
+    for (let step = 0; step < 3; step += 1) {
+      width -= 4 + Math.floor(random() * 6);
+      await resize(300, width);
+    }
+    const seen = shown(await fillsOf(el), 300);
+    // the table's own rows set aside, and not only what follows it
+    const stopped = partial(el) && !reached(el, 'last');
+    await clock.finish();
+    assert.ok(!partial(el));
+    assert.deepStrictEqual(
+      shown(await fillsOf(el), 300),
+      seen,
+      `document ${doc} (${collapse}, ${stopped ? 'stopped' : 'whole'})`,
+    );
+    if (stopped) stops += 1;
+    cleanup();
+  }
+  assert.ok(stops >= 10, `${stops} of 20 stopped inside the table`);
 });
 
 test('a layout that stops measures the boxes it sizes from all they hold', async () => {

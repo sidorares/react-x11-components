@@ -24,12 +24,15 @@ import {
   clampHeight,
   cyclicWidth,
   exactMinContent,
+  laidWholeAround,
   layoutBlockIn,
   layoutSubtree,
   measureIntrinsicWidth,
   moveContent,
   moveTo,
   resolveEdges,
+  setAsideOf,
+  wholeAgain,
 } from './block.js';
 import type { LayoutContext } from './block.js';
 import { firstBaselineIn } from './inline.js';
@@ -59,6 +62,12 @@ export function layoutTable(
   contentWidth: number,
 ): number {
   const grid = tableGrid(table);
+  // what this pass set aside of its rows, laid out again from the whole
+  // lists
+  wholeAgain(table, ctx);
+  for (const child of table.children) {
+    if (child.kind === 'table-row-group') wholeAgain(child, ctx);
+  }
   table.captionTop = 0;
   table.captionBottom = 0;
   // a percentage of a width that is not known is `auto`: the table is as
@@ -88,8 +97,98 @@ export function layoutTable(
   if (!fixed) for (const cell of grid.cells) measureCell(cell.box, ctx);
   const columns = sizeColumns(table, grid, contentWidth, fixed, auto, ctx);
   layoutCaptions(grid.captions, ctx, table);
-  const natural = layoutCells(grid.cells, columns, ctx);
-  return placeRows(table, grid, columns, natural);
+  // the rows from `cut` on, where a layout that stops leaves them as they
+  // were (`rowCut`)
+  const cut = rowCut(table, grid, ctx);
+  const natural = layoutCells(grid.cells, columns, ctx, cut, table);
+  const height = placeRows(table, grid, columns, natural, cut, !ctx.probing);
+  if (cut < grid.rows.length) setRowsAside(table, grid, cut, height, ctx);
+  return height;
+}
+
+/** What a table's last layout that was not a probe made of its rows: their
+ *  tops from the first row's top, their heights, and each cell's content
+ *  height (`layoutCells`' `natural`), in the grid's order. */
+interface KeptTable {
+  tops: number[];
+  heights: number[];
+  natural: number[];
+}
+
+/** By table, what a layout that stops keeps of its rows (`rowCut`). */
+const KEPT_TABLES = new WeakMap<Box, KeptTable>();
+
+/**
+ * The first of a table's rows a layout that stops (`until`) keeps as they
+ * were, its cells not laid out and the rows set aside: the first whose
+ * last layout started below where the layout stops — or the row count,
+ * for none. A row's height is its cells' alone but where the table shares
+ * a height out among its rows — one of its own, one a flex or grid layout
+ * gave it, a least one — or a cell spans the cut; any of those lays the
+ * table out whole, and so does a row from the cut on that holds a box
+ * placed against something outside it, and a layout that is a probe,
+ * crosses a fresh tree or is in columns. Wikipedia's list of countries is
+ * one table of some 250 rows, and a step of a drag laid out every one.
+ */
+function rowCut(table: Box, grid: TableGrid, ctx: LayoutContext): number {
+  const { rows, cells } = grid;
+  const count = rows.length;
+  const until = ctx.until;
+  if (until === undefined || ctx.reach !== undefined || ctx.probing) {
+    return count;
+  }
+  const kept = KEPT_TABLES.get(table);
+  if (
+    !kept ||
+    kept.heights.length !== count ||
+    kept.natural.length !== cells.length ||
+    resolveOrNull(table.style.height, table.percentHeightBase) !== null ||
+    Number.isFinite(givenHeight(table)) ||
+    clampHeight(table, table.verticalExtra) > table.verticalExtra
+  ) {
+    return count;
+  }
+  const top = table.contentY + table.captionTop;
+  let cut = count;
+  for (let r = 1; r < count; r += 1) {
+    if (top + kept.tops[r] > until) {
+      cut = r;
+      break;
+    }
+  }
+  if (cut === count) return count;
+  for (const cell of cells) {
+    if (cell.row < cut && cell.row + cell.rowSpan > cut) return count;
+  }
+  const holders = ctx.holders;
+  if (holders) {
+    for (let r = cut; r < count; r += 1) {
+      if (holders.has(rows[r])) return count;
+    }
+  }
+  return laidWholeAround(table) ? count : cut;
+}
+
+/** Set a table's rows from `cut` on aside, in the groups they are in, as
+ *  tall as they were (`setAsideOf`). */
+function setRowsAside(
+  table: Box,
+  grid: TableGrid,
+  cut: number,
+  height: number,
+  ctx: LayoutContext,
+): void {
+  const by = new Map<Box, Set<Box>>();
+  for (let r = cut; r < grid.rows.length; r += 1) {
+    const parent = grid.groups[r] ?? table;
+    let aside = by.get(parent);
+    if (!aside) by.set(parent, (aside = new Set()));
+    aside.add(grid.rows[r]);
+  }
+  for (const [parent, aside] of by) {
+    const reach = parent === table ? table.captionTop + height : parent.height;
+    setAsideOf(parent, aside, reach, ctx);
+  }
 }
 
 /** A table with no columns, and its captions. */
@@ -265,13 +364,22 @@ function layoutCells(
   cells: Cell[],
   columns: Columns,
   ctx: LayoutContext,
+  /** The first row kept as it was (`rowCut`), whose cells are not laid
+   *  out and take what they came to last. */
+  cut: number,
+  table: Box,
 ): number[] {
   const { widths, spacing } = columns;
   let rowWidth = spacing * Math.max(0, widths.length - 1);
   for (const columnWidth of widths) rowWidth += columnWidth;
   const natural: number[] = new Array<number>(cells.length);
+  const kept = KEPT_TABLES.get(table);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
+    if (cell.row >= cut) {
+      natural[i] = kept!.natural[i];
+      continue;
+    }
     const width = spannedWidth(widths, cell, spacing);
     layoutSubtree(cell.box, ctx, width, rowWidth);
     natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
@@ -312,6 +420,11 @@ function placeRows(
   grid: TableGrid,
   columns: Columns,
   natural: number[],
+  /** The first row kept as it was (`rowCut`). */
+  cut: number,
+  /** Whether what this makes of the rows is kept for the next layout to
+   *  cut by: one that is no probe's. */
+  keep: boolean,
 ): number {
   const { rows, cells } = grid;
   const { widths, columnX, gone, anyGone, spacing, rowSpacing } = columns;
@@ -337,20 +450,26 @@ function placeRows(
   // Chrome sizes it (Blink's `RowBaselineTabulator` gives it an ascent and
   // no descent): the lifted content hangs out of the cell. 17.5.3 asks only
   // that the rows encompass the cell, whose box is as tall as its content.
-  const { lift, own: ascent } = baselineLifts(cells, rows.length, natural);
+  const { lift, own: ascent } = baselineLifts(cells, rows.length, natural, cut);
   const needs = (i: number): number =>
     cells[i].rowSpan > 1
       ? cells[i].box.height
       : Math.max(cells[i].box.height, lift[i] + natural[i]);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
+    if (cell.row >= cut) continue;
     const need = cell.rowSpan > 1 ? lift[i] + ascent[i] : needs(i);
     // NaN for a spanning cell with no baseline, which Math.max would keep
     if (need > rowHeight[cell.row]) rowHeight[cell.row] = need;
   }
-  for (let r = 0; r < rows.length; r += 1) {
+  for (let r = 0; r < cut && r < rows.length; r += 1) {
     const specified = resolveOrNull(rows[r].style.height, NaN);
     if (specified !== null) rowHeight[r] = Math.max(rowHeight[r], specified);
+  }
+  // and the rows kept as they were the heights they had
+  if (cut < rows.length) {
+    const kept = KEPT_TABLES.get(table)!;
+    for (let r = cut; r < rows.length; r += 1) rowHeight[r] = kept.heights[r];
   }
   // A row-spanning cell only forces height when the rows it covers do not
   // already provide it — otherwise a `rowspan="3"` cell would make each of
@@ -363,7 +482,7 @@ function placeRows(
   const lastRow = (cell: Cell): number =>
     Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
   for (let i = 0; i < cells.length; i += 1) {
-    if (cells[i].rowSpan > 1) spanning.push(i);
+    if (cells[i].rowSpan > 1 && cells[i].row < cut) spanning.push(i);
   }
   if (spanning.length) {
     const starts: boolean[] = new Array<boolean>(rows.length).fill(false);
@@ -451,6 +570,8 @@ function placeRows(
 
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
+    // a cell of a row kept as it was is where it was, set aside with it
+    if (cell.row >= cut) continue;
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let height = 0;
     let clip = false;
@@ -564,6 +685,11 @@ function placeRows(
       child.y;
   }
 
+  if (keep) {
+    const tops = new Array<number>(rows.length);
+    for (let r = 0; r < rows.length; r += 1) tops[r] = rowTop[r] - top;
+    KEPT_TABLES.set(table, { tops, heights: rowHeight, natural });
+  }
   return y - top;
 }
 
@@ -1445,6 +1571,8 @@ function baselineLifts(
   cells: Cell[],
   rowCount: number,
   natural: number[],
+  /** The first row kept as it was, whose cells are not asked. */
+  cut: number,
 ): { lift: number[]; own: number[] } {
   const lift = new Array<number>(cells.length).fill(0);
   const own = new Array<number>(cells.length).fill(NaN);
@@ -1456,6 +1584,7 @@ function baselineLifts(
   if (!any) return { lift, own };
   const row = new Array<number>(rowCount).fill(-Infinity);
   for (let i = 0; i < cells.length; i += 1) {
+    if (cells[i].row >= cut) continue;
     const box = cells[i].box;
     const va = box.style.verticalAlign;
     if (va === 'top' || va === 'middle' || va === 'bottom') continue;
