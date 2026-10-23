@@ -25,10 +25,13 @@
 //    again.** A player is above the whole document, so a caption laid
 //    across a video, a play button in its corner or a gradient on top of a
 //    hero would be hidden under it. A few such boxes (`MAX_COVERS`), each
-//    where a rectangle stands for what clips it and nothing turns, filters
-//    or fades it, are painted a second time, over the player, by a sibling
-//    mounted after it (`coversOf`, `HtmlViewNode.paintCovers`). A video
-//    with any other over it stays its poster (`paintedAfter`, and `crowded`
+//    where a rectangle stands for what clips it, are painted a second time,
+//    over the player, by a sibling mounted after it, as the document paints
+//    them — through their own matrix, opacity and filter (`coversOf`,
+//    `HtmlViewNode.paintCovers`, `paintCover`). What is painted after a
+//    video in a box's flow is what is painted after the box
+//    (`coverersOver`), and what that flow paints over it is no box to paint
+//    again. A video with any other over it stays its poster (`crowded`
 //    where its place in the paint order cannot be told) — the test a
 //    sprite's layer is held to (`sprites.ts`). What is asked of a box is
 //    what it draws there, and not how far it reaches (`inkMeets`): GitHub
@@ -65,7 +68,7 @@ import type { Box, BoxTree } from './layout/boxes.js';
 import {
   clipFor,
   contentCorners,
-  coverersAfter,
+  coverersOver,
   drawnAtViewport,
   drawsNothing,
   evenScaleOf,
@@ -402,26 +405,34 @@ function placementOf(
   const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
   if (reach.width > 0 && reach.height > 0) {
-    // asked in the box's own coordinates where a scale is around it, which
-    // the walk takes up through each context's
-    // and, where it is fixed to the viewport, the boxes fixed there with it
-    // in the same terms, which no scroll moves it against
-    const fixedReach = atViewport ? reach : null;
-    const after = zoomed
-      ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, null, true)
-      : paintedAfter(box, reach, fixedReach);
-    if (after === null) {
-      const inside = zoomed
-        ? (parent: Box): Rect => unzoomRect(zoomBetween(parent)!, reach)
-        : null;
-      if (crowded(tree, box, reach, inside)) return null;
-    } else if (after) {
-      // what is painted over it again is painted where it is laid out,
-      // which under a scale it is not
-      const over =
-        drawnOver && !zoomed && coversOf(tree, box, reach, shows, scale);
-      if (!over) return null;
-      drawnOver!.push(...over);
+    if (drawnOver && !zoomed && !atViewport) {
+      // what the document paints after it, where a sibling after the
+      // player can paint it again — from the box it is painted with, where
+      // it is in a layer's flow (`coverersOver`); what is painted over it
+      // again is painted where it is laid out, which under a scale around
+      // it it is not. Where its place in the paint order cannot be told,
+      // nothing but its own ink and its ancestors' may be within reach.
+      const found = coverersOver(box, reach);
+      if (found) {
+        const over = coversOf(tree, found, shows, scale);
+        if (!over) return null;
+        drawnOver.push(...over);
+      } else if (crowded(tree, box, reach)) return null;
+    } else {
+      // asked in the box's own coordinates where a scale is around it,
+      // which the walk takes up through each context's
+      // and, where it is fixed to the viewport, the boxes fixed there with
+      // it in the same terms, which no scroll moves it against
+      const fixedReach = atViewport ? reach : null;
+      const after = zoomed
+        ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, null, true)
+        : paintedAfter(box, reach, fixedReach);
+      if (after === null) {
+        const inside = zoomed
+          ? (parent: Box): Rect => unzoomRect(zoomBetween(parent)!, reach)
+          : null;
+        if (crowded(tree, box, reach, inside)) return null;
+      } else if (after) return null;
     }
   }
   let opacity = 1;
@@ -460,29 +471,44 @@ export interface Cover {
 const MAX_COVERS = 4;
 
 /**
- * The boxes the document paints after a video whose ink reaches `reach`
- * (`coverersAfter`), each with the part of what the video `shows` it
- * reaches, where a sibling over the player can paint them as the document
- * does: no more than `MAX_COVERS`, and each laid out where it is drawn —
- * no matrix, filter, mask or clip path on it or around it, nothing fading
- * it, nothing holding it back, not fixed to the viewport — and cut, where
- * the boxes around it cut it, to a rectangle. Null where any is not, and
- * the video keeps its poster. GitHub's hero has a play button in the
- * corner of its video.
+ * Of the boxes the document paints after a video whose ink reaches its
+ * picture (`coverersOver`), each with the part of what the video `shows`
+ * it reaches, where a sibling over the player can paint them as the
+ * document does (`paintCover`): no more than `MAX_COVERS`, none held back
+ * or fixed to the viewport, and each cut, where the boxes around it cut
+ * it, to a rectangle. Null where any is not, and the video keeps its
+ * poster. GitHub's hero has a play button in the corner of its video, and
+ * diabrowser.com's a dock whose arc a scroll scales, under a halo it blurs
+ * and fades.
+ *
+ * What a box is drawn through itself — its matrix, its opacity, its
+ * filter, its mask, its clip path — is drawn over the player as the
+ * document draws it over the poster. What is around it is not. A cover is
+ * a layer of a context the video is in, and nothing between the two is a
+ * group — a box that fades, turns, filters, masks or cuts to a path is a
+ * context itself — so a box around a cover that does any of those holds the
+ * video too, and the document fades or filters the two as one group, which
+ * a player and a paint over it are two of. Nor does the canvas cut a cover
+ * to a rounded box around it: it clips to a rectangle, and paints the
+ * cover with none of the boxes around it. Until the player has a frame it
+ * shows the document under it, so what of a cover is translucent is drawn
+ * twice there for that long.
  */
 function coversOf(
   tree: BoxTree,
-  box: Box,
-  reach: Rect,
+  found: readonly Box[],
   shows: Rect,
   scale: number,
 ): Cover[] | null {
-  const found = coverersAfter(box, reach);
-  if (!found || found.length > MAX_COVERS) return null;
+  if (found.length > MAX_COVERS) return null;
   const out: Cover[] = [];
   for (const cover of found) {
     if (heldBack(tree, cover) || drawnAtViewport(cover)) return null;
-    for (let at: Box | null = cover; at; at = at.parent) {
+    for (
+      let at = cover.topLayer ? null : cover.parent;
+      at;
+      at = at.topLayer ? null : at.parent
+    ) {
       const style = at.style;
       if (
         placedMatrix(at) ||
@@ -494,6 +520,8 @@ function coversOf(
         return null;
       }
     }
+    // where it is drawn: its own bounds are through its own matrix, as no
+    // box's inside it are (`computePaintBounds`)
     const ink = {
       x: cover.boundsX,
       y: cover.boundsY,
