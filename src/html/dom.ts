@@ -464,6 +464,17 @@ export class ShadowRoot extends DomDocument {
   }
 }
 
+/** The elements the parser made with a `customelementregistry` attribute,
+ *  whose custom element registry is null, as is what the parser makes in
+ *  them (HTML's scoped registries, "create an element for a token"). The
+ *  attribute set later changes nothing, so the mark is the parser's. */
+const NULL_REGISTRY = new WeakSet<Element>();
+
+/** Whether the parser made an element with `customelementregistry`. */
+export function parsedWithNullRegistry(el: Element): boolean {
+  return NULL_REGISTRY.has(el);
+}
+
 /** The shadow root an element hosts, or null — open or closed. */
 export function shadowRootOf(el: Element): ShadowRoot | null {
   return SHADOW_ROOTS.get(el) ?? null;
@@ -1314,6 +1325,7 @@ class Handler extends DomHandler {
     if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
+    if (attribs.customelementregistry !== undefined) NULL_REGISTRY.add(opened);
     if (name === 'head') this._headSeen = true;
     if (name === 'html' && !this._html && opened.parent === this.root) {
       this._html = opened;

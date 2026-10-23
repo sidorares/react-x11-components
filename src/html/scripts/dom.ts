@@ -91,11 +91,18 @@ export function installDom(
     if (MUTATES.has(op)) {
       mutated();
       if (customElementsDefined) takeReactions();
-    } else if (customElementsDefined && (op === 'clone' || op === 'import')) {
+    } else if (
+      customElementsDefined &&
+      !copying &&
+      (op === 'clone' || op === 'import')
+    ) {
       takeReactions();
     }
     return r;
   };
+  /** Set while a copy is made whose registries are pinned after the op
+   *  (`copyOf`), so its upgrades wait for them. */
+  let copying = false;
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
@@ -4298,7 +4305,10 @@ export function installDom(
       return old;
     }
     cloneNode(deep = false): Any {
-      return wrap(call('clone', this._id, !!deep));
+      if (!registriesMatter || this.nodeType === 9) {
+        return wrap(call('clone', this._id, !!deep));
+      }
+      return copyOf('clone', this, !!deep, null, this.ownerDocument);
     }
     /** Adjacent texts made one, and empty ones taken out (DOM 4.4). */
     normalize(): void {
@@ -4585,8 +4595,8 @@ export function installDom(
     }
     const roots: Any[] = options?.shadowRoots ?? [];
     // the shadow roots in it written with `shadowrootcustomelementregistry`
-    // (HTML 8.5.2), closed ones too: one whose registry is scoped, and one
-    // with none where its host's document has one
+    // (HTML 8.5.2), closed ones too: all but those whose registry and
+    // whose document's are both none, or both global
     const own: number[] = [];
     const visit = (at: Any): void => {
       const elements = [
@@ -4597,11 +4607,11 @@ export function installDom(
         const id = Number(call('shadowRoot', el._id, true));
         const root = id ? wrap(id) : null;
         if (!root) continue;
-        const registry = shadowRegistryOf(root);
+        const registry = root.customElementRegistry;
+        const ofDocument = documentRegistryOf(el.ownerDocument);
         if (
-          registry === null
-            ? documentRegistryOf(el.ownerDocument) !== null
-            : !!registryStates.get(registry)?.scoped
+          !(registry === null && ofDocument === null) &&
+          !(isGlobalRegistry(registry) && isGlobalRegistry(ofDocument))
         ) {
           own.push(id);
         }
@@ -4639,7 +4649,7 @@ export function installDom(
       return str(call('shadowFlags', this._id))[1] === '1';
     }
     get customElementRegistry(): Any {
-      return shadowRegistryOf(this);
+      return adoptedRegistry(shadowRegistryOf(this), this.host.ownerDocument);
     }
     get slotAssignment(): string {
       return 'named';
@@ -5493,7 +5503,7 @@ export function installDom(
       }
       // the document's registry, whatever the host's, but where one is
       // named (HTML 4.13.4, scoped registries)
-      const own = this.ownerDocument === document ? customElements : null;
+      const own = documentRegistryOf(this.ownerDocument);
       const given = registryGiven(init, own, 'attachShadow');
       // a declarative root the call takes back keeps its registry (DOM
       // 4.9, "attach a shadow root", step 4)
@@ -5510,12 +5520,7 @@ export function installDom(
         ),
       );
       if (!had) {
-        shadowRegistries.set(
-          root,
-          given === undefined
-            ? initializedRegistryOf(this.ownerDocument, own)
-            : given,
-        );
+        shadowRegistries.set(root, given === undefined ? own : given);
       }
       return root;
     }
@@ -7630,6 +7635,7 @@ export function installDom(
     'addEventListener',
     'removeEventListener',
     'dispatchEvent',
+    'customElements',
   ]);
   const crossOrigin = (): Any =>
     new DOMException(
@@ -7764,6 +7770,14 @@ export function installDom(
       set: (v: Any) => {
         frameLocationOf(frame).href = v;
       },
+      configurable: true,
+      enumerable: true,
+    });
+    // a window's own global registry (HTML 4.13.4), for the elements its
+    // document makes: a frame defines its names apart from the page
+    const registry = globalRegistry();
+    Object.defineProperty(win, 'customElements', {
+      get: () => registry,
       configurable: true,
       enumerable: true,
     });
@@ -11380,10 +11394,9 @@ export function installDom(
         : this._type === 'application/xhtml+xml'
           ? HTML_NS
           : '~';
-      const own = this === document ? customElements : null;
+      const own = documentRegistryOf(this);
       const given = registryGiven(options, own, 'createElement');
-      const registry =
-        given === undefined ? initializedRegistryOf(this, own) : given;
+      const registry = given === undefined ? own : given;
       const is = isOption(options);
       if (is !== null && registry && stateOf(registry).scoped) {
         throw new DOMException(
@@ -11391,7 +11404,7 @@ export function installDom(
           'NotSupportedError',
         );
       }
-      if (ns === '' && registry && customElementsDefined) {
+      if (ns === '' && constructsWith(registry) && customElementsDefined) {
         const made = createCustom(name, is, registry);
         if (made) return made;
       }
@@ -11430,14 +11443,13 @@ export function installDom(
           'NamespaceError',
         );
       }
-      const own = this === document ? customElements : null;
+      const own = documentRegistryOf(this);
       const given = registryGiven(options, own, 'createElementNS');
-      const registry =
-        given === undefined ? initializedRegistryOf(this, own) : given;
+      const registry = given === undefined ? own : given;
       if (
         ns === HTML_NS &&
         prefix === null &&
-        registry &&
+        constructsWith(registry) &&
         customElementsDefined
       ) {
         const made = createCustom(local, isOption(options), registry);
@@ -11506,18 +11518,22 @@ export function installDom(
     importNode(node: Any, options: Any = false): Any {
       const dict = options !== null && typeof options === 'object';
       const deep = dict ? !options.selfOnly : !!options;
-      const own = this === document ? customElements : null;
+      const own = documentRegistryOf(this);
       const given = dict
         ? registryGiven(options, own, 'importNode')
         : undefined;
-      const copy = wrap(Number(call('import', idOf(node), deep, this._id)));
-      if (given !== undefined && copy instanceof Element) {
-        elementRegistries.set(copy, given);
-        for (const el of copy.querySelectorAll('*')) {
-          elementRegistries.set(el, given);
-        }
+      // ImportNodeOptions' registry is no nullable member (DOM 4.5)
+      if (given === null) {
+        throw new TypeError(
+          "Failed to execute 'importNode' on 'Document': Failed to read the 'customElementRegistry' property from 'ImportNodeOptions': Failed to convert value to 'CustomElementRegistry'.",
+        );
       }
-      return copy;
+      // a copy keeps its original's registry, and takes this one where
+      // that is none (DOM 4.5, "clone a node")
+      if (given === undefined && !registriesMatter) {
+        return wrap(Number(call('import', idOf(node), deep, this._id)));
+      }
+      return copyOf('import', node, deep, given ?? own, this);
     }
     /** The document's registry: its window's, and none for a document of
      *  no browsing context's. */
@@ -20193,46 +20209,158 @@ export function installDom(
   /** A document's registry, where it is not this window's: one a page
    *  initialized it with, or its own window's. */
   const documentRegistries = new WeakMap<Any, Any>();
+  /** A document's registry (DOM 4.5, "look up a custom element
+   *  registry"): this window's for its document, one a page initialized
+   *  it with, or the window's of a frame this realm made — never another
+   *  realm's, which no registry here can stand for. */
   const documentRegistryOf = (doc: Any): Any => {
     if (!doc) return null;
     if (doc === document) return customElements;
     if (documentRegistries.has(doc)) return documentRegistries.get(doc);
-    return doc.defaultView?.customElements ?? null;
+    const registry = doc.defaultView?.customElements;
+    return registry && registryStates.has(registry) ? registry : null;
   };
-  /** A document's registry where it makes an element or a shadow root
-   *  (DOM 4.5, "look up a custom element registry"): the one this realm
-   *  initialized it with, or `own`, the window's for the window's
-   *  document. A frame's document is another realm's to answer for. */
-  const initializedRegistryOf = (doc: Any, own: Any): Any =>
-    documentRegistries.has(doc) ? documentRegistries.get(doc) : own;
+  /** Whether `createElement` runs a definition of a registry: this
+   *  window's, or a scoped one. A frame's window's has no constructor
+   *  that makes an element in the frame's document. */
+  const constructsWith = (registry: Any): boolean =>
+    !!registry &&
+    (registry === customElements || !!registryStates.get(registry)?.scoped);
+  /** A shadow root's registry: none where its template said
+   *  `shadowrootcustomelementregistry`, its host document's otherwise. */
   const shadowRegistryOf = (root: Any): Any => {
     if (shadowRegistries.has(root)) return shadowRegistries.get(root);
     const registry =
-      call('shadowRegistryNull', root._id) === true ? null : customElements;
+      call('shadowRegistryNull', root._id) === true
+        ? null
+        : documentRegistryOf(root.host.ownerDocument);
     shadowRegistries.set(root, registry);
     return registry;
   };
-  const registryOf = (el: Any): Any => {
-    const registry = pinnedRegistryOf(el);
-    // one moved into another document trades its old document's own
-    // registry for the new one's, and keeps a scoped one (HTML 4.13.4,
-    // "adopt")
-    return registry === customElements && el.ownerDocument !== document
-      ? documentRegistryOf(el.ownerDocument)
-      : registry;
+  /** Whether a page has made registries other than the window's matter
+   *  — a scoped one made, a registry named where an element or a root is,
+   *  `customelementregistry` parsed, a frame's window's — after which a
+   *  copy keeps its original's registry (`pinCopies`). Before, every
+   *  element's is its document's, and a copy's would be the same. */
+  let registriesMatter = false;
+  const isGlobalRegistry = (registry: Any): boolean =>
+    !!registry && !registryStates.get(registry)?.scoped;
+  /** What a copy is made with (DOM 4.5, "clone a node"): each element
+   *  its original's registry, or `fallback` where that is none, a global
+   *  one being `doc`'s; each shadow root its original's, the elements in
+   *  it with no fallback. */
+  const pinCopies = (
+    from: Any,
+    to: Any,
+    deep: boolean,
+    fallback: Any,
+    doc: Any,
+  ): void => {
+    const globalOfDoc = (): Any => {
+      const registry = documentRegistryOf(doc);
+      return isGlobalRegistry(registry) ? registry : null;
+    };
+    const pin = (a: Any, b: Any, fallback: Any): void => {
+      if (a instanceof Element && b instanceof Element) {
+        let registry = registryOf(a) ?? fallback;
+        if (isGlobalRegistry(registry)) registry = globalOfDoc();
+        elementRegistries.set(b, registry);
+        const rootA = wrap(Number(call('shadowRoot', a._id, true)));
+        const rootB = wrap(Number(call('shadowRoot', b._id, true)));
+        if (rootA && rootB) {
+          let shadow = rootA.customElementRegistry;
+          if (isGlobalRegistry(shadow)) shadow = globalOfDoc();
+          shadowRegistries.set(rootB, shadow);
+          walk(rootA, rootB, null);
+        }
+      }
+      if (deep) walk(a, b, fallback);
+    };
+    const walk = (a: Any, b: Any, fallback: Any): void => {
+      for (
+        let x = a.firstChild, y = b.firstChild;
+        x && y;
+        x = x.nextSibling, y = y.nextSibling
+      ) {
+        pin(x, y, fallback);
+      }
+    };
+    pin(from, to, fallback);
   };
+  /** A copy made by `clone` or `import` with its registries pinned
+   *  (`pinCopies`) before the upgrades its elements are due. */
+  const copyOf = (
+    op: 'clone' | 'import',
+    node: Any,
+    deep: boolean,
+    fallback: Any,
+    doc: Any,
+  ): Any => {
+    copying = true;
+    let copy: Any;
+    try {
+      copy = wrap(
+        Number(
+          op === 'clone'
+            ? call('clone', node._id, deep)
+            : call('import', idOf(node), deep, doc._id),
+        ),
+      );
+    } finally {
+      copying = false;
+    }
+    pinCopies(node, copy, deep, fallback, doc);
+    if (customElementsDefined) takeReactions();
+    return copy;
+  };
+  /** A registry as adoption leaves it (DOM 4.5, "adopt"): a global one
+   *  made in another document is the global one of the document it is in
+   *  now, or none where that document's is scoped; a scoped one stays. */
+  const adoptedRegistry = (registry: Any, doc: Any): Any => {
+    if (!registry || registryStates.get(registry)?.scoped) return registry;
+    const now = documentRegistryOf(doc);
+    if (now === registry) return registry;
+    return now && !registryStates.get(now)?.scoped ? now : null;
+  };
+  const registryOf = (el: Any): Any =>
+    adoptedRegistry(pinnedRegistryOf(el), el.ownerDocument);
+  /** The registry an element was made with. What the parser made has
+   *  its intended parent's (HTML 13.2.6.1, "create an element for a
+   *  token"), its parent's here, and none where it wrote
+   *  `customelementregistry` (`elementRegistryNull`); one in a template's
+   *  contents has none either, and is not kept, since one taken into the
+   *  document is adopted and takes the document's (DOM 4.5, "adopt"). */
   const pinnedRegistryOf = (el: Any): Any => {
     if (elementRegistries.has(el)) return elementRegistries.get(el);
-    const root = el.getRootNode();
-    const registry =
-      root instanceof ShadowRoot
-        ? shadowRegistryOf(root)
-        : root === document
-          ? customElements
-          : root !== el && root instanceof Element
-            ? pinnedRegistryOf(root)
-            : documentRegistryOf(el.ownerDocument);
-    elementRegistries.set(el, registry);
+    const chain: Any[] = [];
+    let registry: Any = null;
+    let keep = true;
+    for (let at = el; ;) {
+      if (elementRegistries.has(at)) {
+        registry = elementRegistries.get(at);
+        break;
+      }
+      chain.push(at);
+      const none = call('elementRegistryNull', at._id);
+      if (none) {
+        keep = none === true;
+        if (keep) registriesMatter = true;
+        break;
+      }
+      const parent = at.parentNode;
+      if (parent instanceof Element) {
+        at = parent;
+        continue;
+      }
+      registry =
+        parent instanceof ShadowRoot
+          ? shadowRegistryOf(parent)
+          : documentRegistryOf(
+              parent?.nodeType === 9 ? parent : at.ownerDocument,
+            );
+      break;
+    }
+    if (keep) for (const at of chain) elementRegistries.set(at, registry);
     return registry;
   };
   /** A registry an element, a shadow root or an import is given (DOM 4.5,
@@ -20242,6 +20370,7 @@ export function installDom(
     if (!options || typeof options !== 'object') return undefined;
     const given = options.customElementRegistry;
     if (given === undefined) return undefined;
+    registriesMatter = true;
     if (given !== null && !registryStates.has(given)) {
       throw new TypeError(
         `Failed to execute '${method}': The provided value is not of type 'CustomElementRegistry'.`,
@@ -20579,6 +20708,7 @@ export function installDom(
         defining: false,
         scoped: true,
       });
+      registriesMatter = true;
     }
     /** HTML 4.13.4, `define()`. */
     define(name: Any, ctor: Any, options?: Any): void {
@@ -20796,8 +20926,15 @@ export function installDom(
   }
   // the window's own, which every element of its document has but where a
   // scoped one is named
-  const customElements = new CustomElementRegistry();
-  stateOf(customElements).scoped = false;
+  /** A window's registry, global rather than scoped (HTML 4.13.4). */
+  const globalRegistry = (): Any => {
+    const registry = new CustomElementRegistry();
+    stateOf(registry).scoped = false;
+    return registry;
+  };
+  const customElements = globalRegistry();
+  // the window's own is no registry a page made
+  registriesMatter = false;
 
   /** A custom element's states, which `:state()` would read: a set of
    *  strings. */
