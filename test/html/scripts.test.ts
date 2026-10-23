@@ -6547,6 +6547,38 @@ test('attachShadow() takes back a declarative root emptied, a template keeps the
   ]);
 });
 
+test("a custom element registry is fixed where an element is made: none under customelementregistry, a frame window its own, and a copy its original's", async () => {
+  const doc = await hosted(
+    '<div id="none" customelementregistry><p id="in"></p></div><p id="out"></p><script>' +
+      'var r = [];' +
+      // what the parser made with the attribute has no registry, nor does
+      // what it made inside it; written later, the attribute changes none
+      'var none = document.getElementById("none");' +
+      'r.push(none.customElementRegistry, document.getElementById("in").customElementRegistry);' +
+      'var later = document.createElement("div"); later.setAttribute("customelementregistry", "");' +
+      'r.push(later.customElementRegistry === customElements);' +
+      // a frame's window has a registry of its own, which its document
+      // makes elements with and an element adopted into it takes
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var win = f.contentWindow, fdoc = f.contentDocument;' +
+      'r.push(win.customElements !== customElements, fdoc.createElement("b").customElementRegistry === win.customElements);' +
+      'var moved = document.createElement("i"); fdoc.body.appendChild(moved);' +
+      'r.push(moved.customElementRegistry === win.customElements);' +
+      // a copy keeps its original's registry, and an import takes the one
+      // it names where the original has none (DOM 4.5, "clone a node")
+      'r.push(none.cloneNode(true).firstChild.customElementRegistry);' +
+      'var scoped = new CustomElementRegistry();' +
+      'var copy = document.importNode(none, { customElementRegistry: scoped });' +
+      'r.push(copy.customElementRegistry === scoped, copy.firstChild.customElementRegistry === scoped);' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(
+    JSON.parse(doc.text('out')),
+    [null, null, true, true, true, true, null, true, true],
+    doc.logs.join('\n'),
+  );
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

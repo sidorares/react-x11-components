@@ -53,6 +53,7 @@ import {
   setMediaFlag,
   setPaused,
   markCustomized,
+  parsedWithNullRegistry,
   setModal,
   setPopoverOpen,
   shadowRootAround,
@@ -2231,6 +2232,19 @@ export class DomHost {
       // registries are kept by
       case 'shadowRegistryNull':
         return (this._node(a) as ShadowRoot).registryNull;
+      // whether an element has no registry where its parent would give it
+      // one: the parser wrote it with `customelementregistry` (true), or
+      // it is a top element of a template's contents, whose document has
+      // none (HTML 4.12.3) until it is adopted ('template')
+      case 'elementRegistryNull': {
+        const el = this._element(a);
+        if (parsedWithNullRegistry(el)) return true;
+        const parent = el.parent;
+        return (parent instanceof Element && parent.name === 'template') ||
+          (parent !== null && this._templateContents.has(parent))
+          ? 'template'
+          : false;
+      }
 
       // --- custom elements (`_custom…`)
       // a name defined, local name `b` (its own, or the element an `is`
