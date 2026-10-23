@@ -440,6 +440,11 @@ class RuleIndex {
   readonly byId = new Map<string, IndexedRule[]>();
   readonly byClass = new Map<string, IndexedRule[]>();
   readonly byTag = new Map<string, IndexedRule[]>();
+  /** By the attribute their subject has to have, lower-cased. */
+  readonly byAttr = new Map<string, IndexedRule[]>();
+  /** Those whose subject is `:root`: asked of an element with no element
+   *  above it. */
+  readonly rootRules: IndexedRule[] = [];
   readonly universal: IndexedRule[] = [];
   /** Whether any rule in here is pointer-sensitive, so the renderer knows
    *  whether a pointer move can change the cascade at all. */
@@ -460,6 +465,8 @@ class RuleIndex {
   readonly ownStyleIds = new Set<string>();
   readonly ownStyleClasses = new Set<string>();
   readonly ownStyleTags = new Set<string>();
+  readonly ownStyleAttrs = new Set<string>();
+  ownStyleRoot = false;
   ownStyleEverywhere = false;
   /** How many rules are in here, so an empty index costs one comparison. */
   size = 0;
@@ -491,8 +498,11 @@ class RuleIndex {
     return this.names(el);
   }
 
-  /** Whether a bucket here is for `el`'s id, or for a class of its. */
+  /** Whether a bucket here is for `el`'s id, a class of its, an attribute
+   *  it has, or `:root` where nothing is above it. */
   names(el: Element): boolean {
+    if (this.byAttr.size && this.attrs(el)) return true;
+    if (this.rootRules.length && !elementParent(el)) return true;
     if (this.byId.size) {
       const id = attr(el, 'id');
       if (id && this.byId.has(id)) return true;
@@ -504,6 +514,17 @@ class RuleIndex {
           if (name && this.byClass.has(name)) return true;
         }
       }
+    }
+    return false;
+  }
+
+  /** Whether a bucket here is for an attribute `el` has. */
+  attrs(el: Element): boolean {
+    const attribs = el.attribs;
+    for (const name in attribs) {
+      if (this.byAttr.has(name)) return true;
+      const lower = name.toLowerCase();
+      if (lower !== name && this.byAttr.has(lower)) return true;
     }
     return false;
   }
@@ -540,6 +561,8 @@ class RuleIndex {
       if (key.kind === 'id') this.ownStyleIds.add(key.name);
       else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
       else if (key.kind === 'tag') this.ownStyleTags.add(key.name);
+      else if (key.kind === 'attr') this.ownStyleAttrs.add(key.name);
+      else if (key.kind === 'root') this.ownStyleRoot = true;
       else this.ownStyleEverywhere = true;
     }
     this._bucket(key).push(indexed);
@@ -551,14 +574,18 @@ class RuleIndex {
     }
   }
 
-  private _bucket(key: ReturnType<typeof rightmostKey>): IndexedRule[] {
+  private _bucket(key: SelectorKey): IndexedRule[] {
     return key.kind === 'id'
       ? mapBucket(this.byId, key.name)
       : key.kind === 'class'
         ? mapBucket(this.byClass, key.name)
         : key.kind === 'tag'
           ? mapBucket(this.byTag, key.name)
-          : this.universal;
+          : key.kind === 'attr'
+            ? mapBucket(this.byAttr, key.name)
+            : key.kind === 'root'
+              ? this.rootRules
+              : this.universal;
   }
 }
 
@@ -1523,10 +1550,20 @@ function mapBucket(
  * test alone lands in the universal bucket, which is the correct fallback
  * rather than a failure.
  */
-function rightmostKey(selector: string): {
-  kind: 'id' | 'class' | 'tag' | 'any';
+/**
+ * The bucket a rule is filed under (`rightmostKey`): an id, a class, a
+ * type, an attribute its subject has to have, `:root`, or none. The first
+ * three name what an element is, the next two what only some elements
+ * have, which the universal bucket held: GitHub's 1,443 rules there —
+ * Primer's `[data-color-mode=…][data-light-theme=…]` themes, its `:root`
+ * tokens, `[hidden]`, `[popover]` — were asked of every element.
+ */
+type SelectorKey = {
+  kind: 'id' | 'class' | 'tag' | 'attr' | 'root' | 'any';
   name: string;
-} {
+};
+
+function rightmostKey(selector: string): SelectorKey {
   // Scan to the last top-level combinator; everything after it is the
   // compound this rule finally has to match.
   let start = 0;
@@ -1569,10 +1606,7 @@ function rightmostKey(selector: string): {
  * which is all such a rule asks. A type is left to the matcher, which
  * reads an element's name its own way (`getName`).
  */
-function keyOnly(
-  selector: string,
-  key: { kind: 'id' | 'class' | 'tag' | 'any'; name: string },
-): boolean {
+function keyOnly(selector: string, key: SelectorKey): boolean {
   if (key.kind !== 'class' && key.kind !== 'id') return false;
   const text = selector.trim();
   if (text[0] !== (key.kind === 'class' ? '.' : '#')) return false;
@@ -1580,14 +1614,22 @@ function keyOnly(
   return name.end === text.length && name.value === key.name;
 }
 
-/** A compound selector's most selective key (`rightmostKey`). */
-function compoundKey(compound: string): {
-  kind: 'id' | 'class' | 'tag' | 'any';
-  name: string;
-} {
+/**
+ * A compound selector's most selective key (`rightmostKey`): its id, else
+ * its first class, its type, the first attribute it tests, or `:root` —
+ * and of an `:is()` or a `:where()` of one complex selector, the key of
+ * that selector's subject, which is this compound's too: `:is(.a .b)`
+ * matches only what `.b` does. An attribute in a namespace, or any, is no
+ * key, nor is anything inside `:not()`.
+ */
+function compoundKey(compound: string): SelectorKey {
   let id: string | null = null;
   let cls: string | null = null;
   let tag: string | null = null;
+  let attrName: string | null = null;
+  let root = false;
+  /** The best key an `:is()` or a `:where()` in it gave. */
+  let inner: SelectorKey | null = null;
   let i = 0;
   while (i < compound.length) {
     const c = compound[i];
@@ -1599,11 +1641,29 @@ function compoundKey(compound: string): {
       if (c === '.' && !cls) cls = name.value;
       i = Math.max(name.end, i + 1);
     } else if (c === '[') {
-      i = balancedEnd(compound, i, '[', ']');
+      const end = balancedEnd(compound, i, '[', ']');
+      if (attrName === null)
+        attrName = attributeTested(compound.slice(i + 1, end - 1));
+      i = end;
     } else if (c === ':') {
       const skip = compound[i + 1] === ':' ? 2 : 1;
-      const end = Math.max(readIdent(compound, i + skip).end, i + skip);
-      i = compound[end] === '(' ? balancedEnd(compound, end, '(', ')') : end;
+      const ident = readIdent(compound, i + skip);
+      const end = Math.max(ident.end, i + skip);
+      if (compound[end] === '(') {
+        const close = balancedEnd(compound, end, '(', ')');
+        const fn = ident.value.toLowerCase();
+        if (skip === 1 && (fn === 'is' || fn === 'where') && !inner) {
+          const arg = compound.slice(end + 1, close - 1);
+          if (selectorsOf(arg).length === 1) {
+            const key = rightmostKey(arg.trim());
+            if (key.kind !== 'any') inner = key;
+          }
+        }
+        i = close;
+      } else {
+        if (skip === 1 && ident.value.toLowerCase() === 'root') root = true;
+        i = end;
+      }
     } else if (startsIdent(compound, i)) {
       const name = readIdent(compound, i);
       if (!tag) tag = name.value.toLowerCase();
@@ -1614,8 +1674,31 @@ function compoundKey(compound: string): {
   }
   if (id) return { kind: 'id', name: id };
   if (cls) return { kind: 'class', name: cls };
+  if (inner && (inner.kind === 'id' || inner.kind === 'class')) return inner;
   if (tag && tag !== '*') return { kind: 'tag', name: tag };
+  if (inner && inner.kind === 'tag') return inner;
+  if (attrName !== null) return { kind: 'attr', name: attrName };
+  if (inner) return inner;
+  if (root) return { kind: 'root', name: '' };
   return { kind: 'any', name: '' };
+}
+
+/**
+ * The attribute an attribute selector's inside (`[…]` without its
+ * brackets) tests, lower-cased as the matcher compares an HTML document's:
+ * null where it names a namespace, or any, which a name alone does not
+ * say.
+ */
+function attributeTested(inside: string): string | null {
+  let i = 0;
+  while (i < inside.length && /\s/.test(inside[i])) i += 1;
+  if (!startsIdent(inside, i)) return null;
+  const name = readIdent(inside, i);
+  let j = name.end;
+  while (j < inside.length && /\s/.test(inside[j])) j += 1;
+  // `ns|name`, where the `|` is no `|=`
+  if (inside[j] === '|' && inside[j + 1] !== '=') return null;
+  return name.value.toLowerCase();
 }
 
 /**
@@ -4935,6 +5018,12 @@ export class Cascade {
     if (index.ownStyleTags.size && index.ownStyleTags.has(tagOf(el))) {
       return false;
     }
+    if (index.ownStyleRoot && !elementParent(el)) return false;
+    if (index.ownStyleAttrs.size) {
+      for (const name in el.attribs) {
+        if (index.ownStyleAttrs.has(name.toLowerCase())) return false;
+      }
+    }
     if (index.ownStyleIds.size) {
       const id = attr(el, 'id');
       if (id && index.ownStyleIds.has(id)) return false;
@@ -6828,6 +6917,20 @@ export class Cascade {
       }
     }
     consider(index.byTag.get(tagOf(el)));
+    if (index.byAttr.size) {
+      const attribs = el.attribs;
+      for (const name in attribs) {
+        const bucket = index.byAttr.get(name);
+        if (bucket) consider(bucket);
+        else {
+          const lower = name.toLowerCase();
+          if (lower !== name) consider(index.byAttr.get(lower));
+        }
+      }
+    }
+    if (index.rootRules.length && (inCopy || !elementParent(el))) {
+      consider(index.rootRules);
+    }
     consider(index.universal);
   }
 

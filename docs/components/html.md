@@ -5247,6 +5247,18 @@ of 1,000 elements went from 640 to 379 ms on X11, and on a Tailwind-shaped
 page of 6,000 elements 24 deep, matching every element for a build went
 from 185 to 51 ms.
 
+**A rule's bucket is anything every element it matches has.** Its
+subject's id, else a class, else its type — and where it has none of
+those, the first attribute it tests, or `:root`, where the universal
+bucket asked every element of every such rule. The subject of an `:is()`
+or a `:where()` of one selector is the compound's too: `:is(.a .b)`
+matches only what `.b` does. GitHub's repository page had 1,443 rules in
+the universal bucket — Primer's `[data-color-mode=…][data-light-theme=…]`
+themes, its `:root` tokens, `[hidden]`, `[popover]` — and 295 are left
+there: its load went from 1.54 to 1.41 s of processor time, and with its
+scripts, which restyle it a dozen times, from 5.9 to 5.5 s; a drag of its
+window's edge from 14.2 s to 13.2 over eighty frames.
+
 **A padded inline box leaves its paragraph one layout.** Its padding,
 border and margin take room on its line, and one layout of the
 paragraph's text has none to give them; set a line at a time instead, the

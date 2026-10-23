@@ -1439,7 +1439,13 @@ so the build it was written for got faster and a hover over a Tailwind
 page 24 elements deep got 180 times slower. `test/html-selector-filter.test.ts`
 holds both paths to css-select, over generated documents and selectors
 and over a name first asked after the names above an element were worked
-out.
+out. **A bucket is anything every element a rule matches has**
+(`compoundKey`): the subject's id, a class, its type, else the first
+attribute it tests (lower-cased, and never one in a namespace or any) or
+`:root`, and the subject of an `:is()` or a `:where()` of one complex
+selector; never anything inside `:not()`. Anything new that reads the
+buckets reads `byAttr` and `rootRules` too — `names`, `_matchInto`,
+`_shareable` — or a rule filed there is never asked.
 
 **A registered custom property is the root's from the start.** What an
 `@property` rule registers (CSS Properties and Values 1) is kept by the

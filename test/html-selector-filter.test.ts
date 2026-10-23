@@ -58,7 +58,8 @@ function documentOf(next: () => number): string {
     const attrs =
       (classes.length ? ` class="${classes.join(' ')}"` : '') +
       (next() < 0.15 ? ` id="${IDS[Math.floor(next() * IDS.length)]}"` : '') +
-      (next() < 0.2 ? ` data-k="${Math.floor(next() * 3)}"` : '');
+      (next() < 0.2 ? ` data-k="${Math.floor(next() * 3)}"` : '') +
+      (next() < 0.1 ? ' lang="en"' : '');
     let inside = '';
     if (depth < 6 && n < 400) {
       const kids = Math.floor(next() * 4);
@@ -69,6 +70,29 @@ function documentOf(next: () => number): string {
   let body = '';
   for (let i = 0; i < 6; i += 1) body += element(0);
   return `<html><head></head><body>${body}</body></html>`;
+}
+
+/** An attribute test, which a compound with no class, id or type is
+ *  filed under by its name: present, a value, a name in capitals, or one
+ *  no element has. */
+function attributeTest(next: () => number): string {
+  const r = next();
+  if (r < 0.4) return `[data-k="${Math.floor(next() * 3)}"]`;
+  if (r < 0.6) return '[data-k]';
+  if (r < 0.75) return `[DATA-K="${Math.floor(next() * 3)}"]`;
+  if (r < 0.9) return '[lang]';
+  return '[title]';
+}
+
+/** What a compound is filed under through: `:is()` and `:where()` of
+ *  a list, of one complex selector, or of an attribute test, and `:root`. */
+function filtering(next: () => number): string {
+  const r = next();
+  if (r < 0.3) return `:is(.a, #${IDS[Math.floor(next() * IDS.length)]})`;
+  if (r < 0.5) return ':is(.b .c)';
+  if (r < 0.65) return `:where(.${CLASSES[Math.floor(next() * 4)]})`;
+  if (r < 0.8) return `:where(${attributeTest(next)})`;
+  return ':root';
 }
 
 /** A selector of one to three compounds. */
@@ -83,11 +107,10 @@ function selectorOf(next: () => number): string {
       if (r < 0.5)
         text += `.${escape(CLASSES[Math.floor(next() * CLASSES.length)])}`;
       else if (r < 0.62) text += `#${IDS[Math.floor(next() * IDS.length)]}`;
-      else if (r < 0.72) text += `[data-k="${Math.floor(next() * 3)}"]`;
+      else if (r < 0.72) text += attributeTest(next);
       else if (r < 0.8)
         text += `:not(.${escape(CLASSES[Math.floor(next() * CLASSES.length)])})`;
-      else if (r < 0.88)
-        text += `:is(.a, #${IDS[Math.floor(next() * IDS.length)]})`;
+      else if (r < 0.88) text += filtering(next);
       else if (r < 0.94) text += ':first-child';
       else text += `:nth-child(${1 + Math.floor(next() * 3)})`;
     }
@@ -108,6 +131,10 @@ test('the rules an element matches are the ones the matcher matches, with the fa
     const selectors = Array.from({ length: 160 }, () => selectorOf(next));
     // the plain cases a framework writes most: a class alone, an id alone
     selectors.push('.a', '.md\\:x', '#y', '.b .c', '#x .e', 'section .a');
+    // and the ones the universal bucket held, filed under an attribute and
+    // `:root` now
+    selectors.push('[data-k]', ':root', 'html:root', ':root body', '[lang] em');
+    selectors.push(':is(.b .c):first-child', ':where([data-k="1"]) > p');
     const css = selectors.map((s, i) => `${s} { --r${i}: 1 }`).join('\n');
     const source = new HtmlSource();
     source.setSource(documentOf(next), true);
