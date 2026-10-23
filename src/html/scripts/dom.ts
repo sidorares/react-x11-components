@@ -17107,11 +17107,24 @@ export function installDom(
   }
 
   const [userAgent, language] = String(call('navigator')).split('\u0000');
+  // The platform the user agent names, as a browser's own two always agree:
+  // a page that reads one and then the other is told of one machine.
+  // Chrome's strings, and Linux's where the agent names none of them.
+  const device = /\b(iPhone|iPad|iPod)\b/.exec(userAgent);
+  const platform = device
+    ? device[1]
+    : /Android/.test(userAgent)
+      ? 'Linux armv8l'
+      : /Macintosh|Mac OS X/.test(userAgent)
+        ? 'MacIntel'
+        : /Windows/.test(userAgent)
+          ? 'Win32'
+          : 'Linux x86_64';
   const navigator = {
     userAgent,
     appName: 'Netscape',
     appVersion: userAgent.replace(/^Mozilla\//, ''),
-    platform: 'Linux x86_64',
+    platform,
     vendor: '',
     language,
     languages: [language],
