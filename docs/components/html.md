@@ -83,6 +83,7 @@ handle.refresh();
 | `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host. A point in the viewport past what the document lays out is the root element, which paints the canvas, as a browser has it.                                                                                                                                                                                 |
 | `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. A box fixed to the viewport, and what is in it, is where the scroll draws it. Null for an element with no box.                                                            |
+| `indicatedPart()`                                                                       | Where `baseUrl`'s fragment points, laid out first, for the host to scroll there: `{ element, rect, block }` — the text its [text directives](#text-fragments) found, `element` null and `block` `'center'`, or the element it names, `block` `'start'` — with `rect` in `elementRect`'s coordinates. Null where it points at neither.                                                                                                                                                                                                                                                                             |
 | `offsetRect(element)`                                                                   | Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth` and `offsetHeight` measure it, laid out first — `{ parent, x, y, width, height }`: its offset parent, which is the nearest positioned, transformed or contained element around it, or a `<td>`, a `<th>` or a `<table>` around one that is not positioned, or the `<body>`; and its border box from that one's padding edge, in logical pixels, where layout put it before a transform or a scroll moved it. As Chrome has them where it parts from CSSOM View's words: see [Offsets](#offsets). Null for an element with no box. |
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                 |
 | `canvasChanged(element)`                                                                | A `<canvas>`'s picture (`canvasImage`) changed: repaint it where it is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -303,10 +304,65 @@ failing one the `<a>` it is the name of — as written, then percent-decoded
 a link to `#section` reaches `onLink` like any other, and a host that
 follows it hands back the same URL with the new fragment, which resolves
 nothing differently and restyles only where a rule tests `:target`. Where
-to scroll is the host's, as the scroller is: `handle.elementRect` says
-where the element is. A document with no URL of its own can be given a
-fragment alone, `baseUrl="#section"`, which names a target and resolves
-nothing.
+to scroll is the host's, as the scroller is: `handle.indicatedPart()` says
+where the fragment points, and `handle.elementRect` where any element is.
+A document with no URL of its own can be given a fragment alone,
+`baseUrl="#section"`, which names a target and resolves nothing.
+
+### Text fragments
+
+A fragment may end in a fragment directive, `:~:`, which names text rather
+than an element (WICG Scroll To Text Fragment) — the links Google's results
+and a browser's "copy link to highlight" hand out:
+
+```jsx
+<Html source={html} baseUrl="https://example.com/page#:~:text=an%20example" />
+```
+
+Each `text=` directive in it — `text=[prefix-,]start[,end][,-suffix]`,
+several joined by `&`, each term percent-decoded — is sought in the
+document, and the text it finds is drawn in `::target-text`: the UA sheet's
+`Mark` under `MarkText`, yellow under black, and whatever a page's
+`::target-text` rule says instead, its colour, background, decoration and
+shadow drawn as a [custom highlight](#what-renders)'s are, over the custom
+highlights and under the selection. The host scrolls to it:
+`handle.indicatedPart()` answers the first directive's text, around all its
+lines, with `block: 'center'`, where a browser puts it in the middle of the
+viewport — and the element the fragment names before the directive, with
+`block: 'start'`, where no directive found any text:
+
+```js
+const part = handle.indicatedPart();
+if (part) {
+  const y =
+    part.block === 'center'
+      ? part.rect.y + part.rect.height / 2 - viewportHeight / 2
+      : part.rect.y;
+  scroller.scrollTo({ y: Math.max(0, y) });
+}
+```
+
+What is searched is the text the document draws, as Chrome's find buffer
+reads it: white space collapsed, a `text-transform` applied, a line break a
+space, and none of what generated content, `display: none` or
+`visibility: hidden` holds. A term is matched case and accents aside (the
+spec's primary level of UTS #10, `cafe` finding `Café`), within one block,
+starting on a word boundary and ending on one unless a suffix follows it;
+a prefix and a suffix are right beside it, with only white space between,
+which may be a block's edge. A range runs from its start to the first end
+after it, across blocks. The search runs once the parse has ended, and
+again in each build whose text changed until every directive has found
+something, so text a page's script writes in is found as it arrives; what
+was found stays where it was found.
+
+The directive is the host's and no part of the document's URL. `:target`
+is the element the part before it names — `#sec:~:text=a` targets `#sec`,
+`#:~:text=a` targets nothing — and with scripts on, `location.hash` and
+`location.href` read the URL without it, `#:~:text=a` an empty fragment,
+`#`, as a browser's do; `document.fragmentDirective` is there, for a page
+that asks whether links to text are taken. A host that follows a link to a
+fragment directive hands it back in `baseUrl` as it does any fragment, and
+the new one is sought afresh.
 
 ### Responsive images
 
@@ -3651,6 +3707,11 @@ and in its container's units: the shadow under every glyph, the underline
 under the text and the line through over it. Its style is worked out as it
 is painted, so a change that turns one of its rules on or off paints the
 text again.
+
+**Target text:** `::target-text` is the text `baseUrl`'s text directives
+found, drawn as a custom highlight is, over the custom highlights and under
+the selection, in `Mark` under `MarkText` where no rule says otherwise: see
+[Text fragments](#text-fragments).
 
 **Placeholders:** `::placeholder` (and `::-webkit-input-placeholder`) gives
 a text field's hint its colour and its opacity, which its widget draws:

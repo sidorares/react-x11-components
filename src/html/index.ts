@@ -51,6 +51,7 @@ import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type {
   DocumentInteraction,
   HtmlViewProps,
+  IndicatedPart,
   OffsetRect,
   ScriptRequest,
 } from './node.js';
@@ -92,7 +93,12 @@ export {
   HtmlViewNode,
   registerHtmlView,
 } from './node.js';
-export type { HtmlViewProps, OffsetRect, ScriptRequest } from './node.js';
+export type {
+  HtmlViewProps,
+  IndicatedPart,
+  OffsetRect,
+  ScriptRequest,
+} from './node.js';
 export type { ScrollState as ElementScroll } from './layout/scroll.js';
 export type {
   DomEventHandler,
@@ -492,6 +498,16 @@ export interface HtmlHandle {
    * element with no box.
    */
   elementRect(element: Element): Rect | null;
+  /**
+   * Where the fragment of `baseUrl` points, laid out first, for the host to
+   * scroll there as a browser scrolls to a URL's fragment: the text its
+   * text directives name (`#:~:text=…`), around all its lines, which a
+   * browser scrolls to the middle of the viewport, or else the element it
+   * names, whose top goes to the top — `scroller.scrollTo({ y: rect.y })`,
+   * in `elementRect`'s coordinates. Null where it points at neither. See
+   * [Text fragments](docs/components/html.md#text-fragments).
+   */
+  indicatedPart(): IndicatedPart | null;
   /**
    * Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`,
    * `offsetWidth` and `offsetHeight` measure it (CSSOM View 7), laid out
@@ -1056,6 +1072,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.hrefAtPoint(x, y) ?? null,
       elementRect: (element: Element) =>
         nodeRef.current?.elementRect(element) ?? null,
+      indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
       offsetRect: (element: Element) =>
         nodeRef.current?.offsetRect(element) ?? null,
       clientBox: (element: Element) =>

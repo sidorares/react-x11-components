@@ -428,6 +428,7 @@ export type {
   HtmlNetworkOptions,
   HtmlProps,
   HtmlScripts,
+  IndicatedPart as HtmlIndicatedPart,
   FetchRequest as HtmlFetchRequest,
   FetchResponse as HtmlFetchResponse,
   MediaRect as HtmlMediaRect,

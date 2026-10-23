@@ -11526,6 +11526,14 @@ export function installDom(
     get timeline(): Any {
       return documentTimeline;
     }
+    get fragmentDirective(): Any {
+      let found = fragmentDirectives.get(this);
+      if (!found) {
+        found = new FragmentDirective(FRAGMENT_DIRECTIVE);
+        fragmentDirectives.set(this, found);
+      }
+      return found;
+    }
     getAnimations(): Any[] {
       return animationsOf(this, true);
     }
@@ -15154,6 +15162,20 @@ export function installDom(
     randomUUID: (): string => String(call('uuid')),
     subtle: undefined,
   };
+
+  /** `document.fragmentDirective` (WICG Scroll To Text Fragment): an
+   *  object with nothing on it, which says that a URL's `#:~:text=…` is
+   *  taken — what a page that makes links to text asks before it makes
+   *  one. The directive itself is the host's, never the page's. */
+  const FRAGMENT_DIRECTIVE = Symbol('fragmentDirective');
+  class FragmentDirective {
+    constructor(token?: Any) {
+      if (token !== FRAGMENT_DIRECTIVE) {
+        throw new TypeError('Illegal constructor');
+      }
+    }
+  }
+  const fragmentDirectives = new WeakMap<object, FragmentDirective>();
 
   /** `visualViewport`: the pane's, as `innerWidth` is, at a scale of 1. */
   class VisualViewport extends EventTarget {
@@ -22071,6 +22093,7 @@ export function installDom(
     TextEncoder,
     TextDecoder,
     VisualViewport,
+    FragmentDirective,
     PromiseRejectionEvent,
     NodeFilter,
     TreeWalker,

@@ -418,10 +418,18 @@ export default function Page(props: PageProps): ReactElement {
     // this commit rather than in it: asked a macrotask later, a page just
     // built has been laid out at the width it is shown at.
     const timer = setTimeout(() => {
-      const document = handle.document;
-      const target = document && fragmentTarget(document, fragment);
-      const rect = target && handle.elementRect(target);
-      if (rect) scroller.current?.scrollTo({ y: rect.y * zoom });
+      // what the fragment points at: the text a `#:~:text=` names, to the
+      // middle of the pane, or the element an id names, to its top
+      const part = handle.indicatedPart();
+      const pane = scroller.current;
+      if (!part || !pane) return;
+      const { rect } = part;
+      const shown = pane.getClientRects()[0]?.height ?? 0;
+      const y =
+        part.block === 'center'
+          ? (rect.y + rect.height / 2) * zoom - shown / 2
+          : rect.y * zoom;
+      pane.scrollTo({ y: Math.max(0, y) });
     }, 0);
     return () => clearTimeout(timer);
   }, [fragment, finished, entryId]);
@@ -945,17 +953,4 @@ function titleOf(doc: Document): string | null {
     ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
     : '';
   return text || null;
-}
-
-/** The element a fragment names: an `id`, or an old `<a name>`. */
-function fragmentTarget(doc: Document, fragment: string): Element | null {
-  const id = decodeURIComponent(fragment);
-  if (!id) return null;
-  return (
-    DomUtils.findOne((el) => el.attribs.id === id, doc.children) ??
-    DomUtils.findOne(
-      (el) => el.name === 'a' && el.attribs.name === id,
-      doc.children,
-    )
-  );
 }
