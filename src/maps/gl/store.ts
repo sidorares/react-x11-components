@@ -18,13 +18,18 @@
 // cost for a tile is its upload. The bucket format is what makes the second
 // one free to have — two ArrayBuffers and a small draw list, nothing that
 // needs a serializer.
+//
+// A tile built here is drawn by its fan and cut into triangles later
+// (`./buckets.ts`): `cutUntil` is the other half of `pump`, which the view
+// calls only while the map is still and nothing waits to be built. A worker
+// cuts straight after it builds.
 import { parseVectorTile } from '../sources.js';
 import type { MapSource, TileData } from '../sources.js';
 import { FILL_DEPTH } from '../proj.js';
 import type { TileId } from '../proj.js';
 import type { PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
-import { buildTileBuckets, rasterTileData } from './buckets.js';
+import { buildTileBuckets, cutTile, rasterTileData } from './buckets.js';
 import type { GlTileData } from './buckets.js';
 import type { BuildRequest } from './build-worker.js';
 import type { TileLookup } from './cover.js';
@@ -104,6 +109,9 @@ export class GlTileStore implements TileLookup {
   /** Bucket builds and their cost on this thread, for a HUD. */
   built = 0;
   buildMs = 0;
+  /** Tiles cut into triangles on this thread, and what that cost. */
+  cuts = 0;
+  cutMs = 0;
 
   constructor(options: GlTileStoreOptions) {
     this._source = options.source;
@@ -131,6 +139,13 @@ export class GlTileStore implements TileLookup {
     let n = this._queue.length;
     for (const entry of this._entries.values())
       if (entry.state === 'building') n++;
+    return n;
+  }
+
+  /** Tiles built and not yet cut into triangles: drawn by their fan. */
+  get uncut(): number {
+    let n = 0;
+    for (const entry of this._entries.values()) if (entry.data?.cut) n++;
     return n;
   }
 
@@ -386,6 +401,32 @@ export class GlTileStore implements TileLookup {
       this.built++;
     }
     return this._queue.length > 0;
+  }
+
+  /**
+   * Cut built tiles into triangles until `deadline` — the tiles the view
+   * asked for last, first, so what is on screen is cut before the ring kept
+   * warm around it. A tile is cut a chunk of polygons at a time and picks up
+   * where it stopped. Answers whether any are left.
+   *
+   * The view calls this while the map is still and nothing is waiting to be
+   * built: a tile draws the same pixels by its fan as by its triangles, so
+   * a cut can wait for a moment when this thread has nothing else to do,
+   * and changes only what the frames after it cost.
+   */
+  cutUntil(deadline: number): boolean {
+    for (;;) {
+      let next: Entry | null = null;
+      for (const entry of this._entries.values()) {
+        if (!entry.data?.cut) continue;
+        if (!next || entry.used > next.used) next = entry;
+      }
+      if (!next) return false;
+      const started = now();
+      if (cutTile(next.data!, deadline)) this.cuts++;
+      this.cutMs += now() - started;
+      if (now() >= deadline) return this.uncut > 0;
+    }
   }
 
   /**

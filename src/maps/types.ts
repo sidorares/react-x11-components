@@ -161,6 +161,9 @@ export interface MapGlFrameStats {
   /** Tiles loaded and waiting for a build, and tiles still loading. */
   building: number;
   loading: number;
+  /** Tiles built and not yet cut into triangles, which draw their fills
+   *  by the stencil fan until the map is still long enough to cut them. */
+  uncut: number;
   /** Bytes of tile geometry on the GPU. */
   gpuBytes: number;
   /** Segment instances drawn, every pass counted — the frame's work. */

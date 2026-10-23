@@ -52,7 +52,7 @@ import {
   unprojectPoint,
 } from '../../src/maps/proj.js';
 import type { LngLat, MapCamera, TileId } from '../../src/maps/proj.js';
-import { buildTileBuckets } from '../../src/maps/gl/buckets.js';
+import { buildTileBuckets, cutTile } from '../../src/maps/gl/buckets.js';
 import type { GlTileData } from '../../src/maps/gl/buckets.js';
 import { GlMapRenderer } from '../../src/maps/gl/renderer.js';
 import type { GlRenderStats } from '../../src/maps/gl/renderer.js';
@@ -118,6 +118,8 @@ interface Corpus {
   buckets: Map<string, GlTileData>;
   bytes: Map<string, number>;
   buildMs: Map<string, number>;
+  /** Cutting the polygons into triangles, which a build leaves for later. */
+  cutMs: Map<string, number>;
 }
 
 async function loadCorpus(prepared: PreparedStyle): Promise<Corpus> {
@@ -126,6 +128,7 @@ async function loadCorpus(prepared: PreparedStyle): Promise<Corpus> {
     buckets: new Map(),
     bytes: new Map(),
     buildMs: new Map(),
+    cutMs: new Map(),
   };
   for (const { tile, file, bytes } of await cachedTiles()) {
     const data = new Uint8Array(await readFile(file));
@@ -134,14 +137,21 @@ async function loadCorpus(prepared: PreparedStyle): Promise<Corpus> {
     const parsed = parseTile(data);
     corpus.parsed.set(k, parsed);
     const runs: number[] = [];
+    const cuts: number[] = [];
     let built: GlTileData | null = null;
     for (let i = 0; i < 3; i++) {
       const started = performance.now();
       built = buildTileBuckets(parseTile(data), prepared);
       runs.push(performance.now() - started);
+      // The cut a still map or a worker makes later, timed apart: every
+      // tile is drawn cut, so `--fills` alone picks the path.
+      const cutStarted = performance.now();
+      cutTile(built);
+      cuts.push(performance.now() - cutStarted);
     }
     corpus.buckets.set(k, built!);
     corpus.buildMs.set(k, median(runs));
+    corpus.cutMs.set(k, median(cuts));
   }
   return corpus;
 }
@@ -727,10 +737,13 @@ async function main(): Promise<void> {
     return;
   }
   const builds = [...corpus.buildMs.values()];
+  const cuts = [...corpus.cutMs.values()];
   process.stdout.write(
-    `  ${corpus.buckets.size} tiles; bucket build median ${fmt(median(builds))} ms, p95 ${fmt(p95(builds))} ms, max ${fmt(Math.max(...builds))} ms\n`,
+    `  ${corpus.buckets.size} tiles; bucket build median ${fmt(median(builds))} ms, p95 ${fmt(p95(builds))} ms, max ${fmt(Math.max(...builds))} ms\n` +
+      `  and the cut after it: median ${fmt(median(cuts))} ms, p95 ${fmt(p95(cuts))} ms, max ${fmt(Math.max(...cuts))} ms\n`,
   );
   results.build = Object.fromEntries(corpus.buildMs);
+  results.cut = Object.fromEntries(corpus.cutMs);
   if (stages.includes('tile'))
     await stageTile(dri, corpus, prepared, cpuBackends, results);
   if (stages.includes('view')) stageView(dri, corpus, prepared, results);

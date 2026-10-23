@@ -37,9 +37,18 @@
 // concave ring's hull, a pixel once for every time the ring winds past it,
 // and a cover pass over the whole layer then reads the count back. The
 // triangles cover each pixel of the polygon once and nothing else, so an
-// opaque fill is one draw with no stencil at all. The fan stays: it is what
-// the renderer falls back to on a table without `drawElements`, and an
-// overlay, built each time the view moves, is not worth cutting.
+// opaque fill is one draw with no stencil at all.
+//
+// **The cut is not part of the build.** It is half as long again as the rest
+// of a tile's build, and the triangles draw the same pixels as the fan — so
+// a tile is built with its fan and drawn with it at once, and is cut later,
+// by {@link cutTile}: on a build worker straight after the build, or on this
+// thread in slices while the map is still. What waits for the cut is only
+// {@link PendingCut} — which rings make which polygon — since the points are
+// the fill stream's. Until a tile is cut its fill layers have no
+// `triangles`, which is what sends the renderer to its fan for that tile.
+// The fan also stays for a table without `drawElements`, and for an overlay,
+// built each time the view moves.
 //
 // Coordinates are normalised to {@link TILE_EXTENT} because `extent` is a
 // per-*layer* field that real tiles vary (Shortbread cuts `streets`, `land`,
@@ -85,7 +94,8 @@ export interface LayerDraw {
   /**
    * A fill layer's `[firstIndex, indexCount]` pairs into the tile's
    * triangle indices, three to a triangle. Absent for a line or a circle
-   * layer, and for an overlay's fills, which only have the fan.
+   * layer, for a fill whose tile is not cut yet, and for an overlay's
+   * fills, which only have the fan.
    */
   triangles?: number[];
 }
@@ -98,9 +108,9 @@ export interface BucketStats {
   /** Records written to the fill stream, closing points and sentinels
    *  included. */
   fillRecords: number;
-  /** Triangles the polygons were cut into. */
+  /** Triangles the polygons were cut into; 0 until they are. */
   triangles: number;
-  /** Of {@link ms}, what cutting them took. */
+  /** What cutting them took, apart from {@link ms}. */
   triangulateMs: number;
   /** Membership groups — distinct sets of style layers a feature belongs
    *  to. What decides how many draw ranges a layer needs. */
@@ -118,9 +128,12 @@ export interface GlTileData {
   fill: ArrayBuffer;
   fillRecords: number;
   /** The polygons' triangles: `triangleIndices` uint32 indices of fill
-   *  records, three to a triangle. */
+   *  records, three to a triangle. Empty until {@link cutTile}. */
   triangles: ArrayBuffer;
   triangleIndices: number;
+  /** What the cut still needs, until {@link cutTile} has finished; null
+   *  once it has, and for a tile with nothing to cut. */
+  cut: PendingCut | null;
   /** Indexed by style layer; a hole where this tile has nothing to draw. */
   draws: (LayerDraw | undefined)[];
   /** Where the tile's labels could go — see `../anchors.ts`. */
@@ -144,6 +157,7 @@ export function rasterTileData(
     fillRecords: 0,
     triangles: new ArrayBuffer(0),
     triangleIndices: 0,
+    cut: null,
     draws: [],
     raster: { width, height, pixels },
     stats: {
@@ -342,23 +356,36 @@ function emitRing(
 }
 
 /**
- * A tile's polygons, gathered as their rings go into the fill stream and cut
- * into triangles in one earstrip call at the end: one crossing into
- * WebAssembly a tile, where a call a polygon would be twenty thousand on a
- * city tile. The coordinates are the records' own, normalised and rounded,
- * so a triangle's corners are exactly the points the fan and the edge draw.
+ * A tile's polygons waiting to be cut: what {@link cutTile} needs that the
+ * fill stream does not say. The points are the stream's own records; this is
+ * which rings make which polygon, which the stream has lost — a hole is told
+ * from an exterior ring by the feature it was in — and which polygons each
+ * fill layer draws. Some eight bytes a ring, plus the cut's progress.
  */
-class Polygons {
-  coords = new Float64Array(2048);
-  /** The fill record each vertex is. */
-  records = new Uint32Array(1024);
-  vertices = 0;
-  /** Polygon `p`'s first vertex. */
+export interface PendingCut {
+  /** `[firstRecord, pointCount]` per ring, polygon by polygon. */
+  rings: Uint32Array;
+  /** Polygon `p` is rings `[polygonRings[p], polygonRings[p + 1])`, its
+   *  exterior first. One longer than the polygons. */
+  polygonRings: Uint32Array;
+  /** Each fill layer's index in `draws`, and its `[firstPolygon,
+   *  polygonCount]` pairs. */
+  layers: { layer: number; polygons: number[] }[];
+  /** The first polygon not cut yet. */
+  next: number;
+  /** Where polygon `p`'s triangles start among the indices; filled as far
+   *  as {@link next}. */
+  offsets: Uint32Array;
+  /** The indices cut so far, one array per earstrip call. */
+  chunks: Uint32Array<ArrayBuffer>[];
+  /** Milliseconds spent cutting so far. */
+  ms: number;
+}
+
+/** A tile's rings as the build writes them, grouped into polygons. */
+class PolygonRings {
+  rings: number[] = [];
   starts: number[] = [];
-  /** Each hole's first vertex, counted from its polygon's. */
-  holes: number[] = [];
-  /** Polygon `p`'s first entry in {@link holes}. */
-  holeStarts: number[] = [];
   private _open = false;
 
   get count(): number {
@@ -366,80 +393,140 @@ class Polygons {
   }
 
   /**
-   * A ring written at fill record `record`. An exterior ring — positive
-   * area, MVT 4.3.4.4 — opens a polygon and an interior one is a hole in the
-   * open one; an interior ring with no polygon open is filled as one, which
-   * is what the non-zero fan does with it too.
+   * A ring of `count` points written at fill record `record`. An exterior
+   * ring — positive area, MVT 4.3.4.4 — opens a polygon and an interior one
+   * is a hole in the open one; an interior ring with no polygon open is
+   * filled as one, which is what the non-zero fan does with it too.
    */
-  ring(
-    record: number,
-    coords: Int32Array,
-    from: number,
-    to: number,
-    k: number,
-    area: number,
-  ): void {
+  ring(record: number, count: number, area: number): void {
     // No area is nothing to fill, and a hole of none would cut nothing.
     if (record < 0 || area === 0) return;
     if (area > 0 || !this._open) {
-      this.starts.push(this.vertices);
-      this.holeStarts.push(this.holes.length);
+      this.starts.push(this.rings.length / 2);
       this._open = true;
-    } else {
-      this.holes.push(this.vertices - this.starts[this.starts.length - 1]);
     }
-    const count = to - from;
-    this._reserve(this.vertices + count);
-    const xy = this.coords;
-    const records = this.records;
-    let v = this.vertices;
-    for (let i = from; i < to; i++) {
-      xy[v * 2] = coord(coords[i * 2], k);
-      xy[v * 2 + 1] = coord(coords[i * 2 + 1], k);
-      records[v] = record + (i - from);
-      v++;
-    }
-    this.vertices = v;
+    this.rings.push(record, count);
   }
 
   /** The feature is over: its next ring, whatever it is, opens a polygon. */
   close(): void {
     this._open = false;
   }
+}
 
-  /** Every polygon's triangles, as fill-record indices, and where polygon
-   *  `p`'s start in them: `offsets[p]`. */
-  cut(): {
-    indices: Uint32Array<ArrayBuffer>;
-    offsets: Uint32Array<ArrayBuffer>;
-  } {
-    const count = this.count;
-    this.starts.push(this.vertices);
-    this.holeStarts.push(this.holes.length);
-    const { indices, offsets } = triangulate(
-      this.coords.subarray(0, this.vertices * 2),
-      this.starts,
-      this.holes,
-      this.holeStarts,
+/**
+ * Points handed to earstrip in one call. Some 1.5 ms of cutting on the
+ * bench's machine, so a deadline is overrun by no more than that, and few
+ * enough calls that crossing into WebAssembly costs nothing: a dense city
+ * tile is five or six.
+ */
+export const CUT_CHUNK_POINTS = 32768;
+
+/** A chunk's points and the record each one is, kept between calls and
+ *  made at the first. */
+let cutPoints: Float64Array | null = null;
+let cutRecords: Uint32Array | null = null;
+
+/**
+ * Cut a tile's polygons into triangles, a chunk of polygons at a time, until
+ * they are all cut or `deadline` (a `performance.now()` time) has passed —
+ * always at least one chunk. Answers whether the tile is cut. The finished
+ * cut fills in `triangles`, `triangleIndices` and each fill layer's
+ * `triangles`, all at once: a tile is drawn by its fan until then, never
+ * half by each.
+ */
+export function cutTile(
+  data: GlTileData,
+  deadline = Infinity,
+  chunkPoints = CUT_CHUNK_POINTS,
+): boolean {
+  const cut = data.cut;
+  if (!cut) return true;
+  const started = now();
+  const i16 = new Int16Array(data.fill);
+  const { rings, polygonRings, offsets } = cut;
+  const polygons = polygonRings.length - 1;
+  while (cut.next < polygons) {
+    const from = cut.next;
+    let to = from;
+    let points = 0;
+    while (to < polygons && (to === from || points < chunkPoints)) {
+      for (let r = polygonRings[to]; r < polygonRings[to + 1]; r++) {
+        points += rings[r * 2 + 1];
+      }
+      to++;
+    }
+    if (!cutPoints || !cutRecords || cutRecords.length < points) {
+      cutPoints = new Float64Array(Math.max(points, chunkPoints) * 2);
+      cutRecords = new Uint32Array(Math.max(points, chunkPoints));
+    }
+    const xy = cutPoints;
+    const records = cutRecords;
+    const starts = new Uint32Array(to - from + 1);
+    const holeStarts = new Uint32Array(to - from + 1);
+    const holes: number[] = [];
+    let v = 0;
+    for (let p = from; p < to; p++) {
+      starts[p - from] = v;
+      holeStarts[p - from] = holes.length;
+      for (let r = polygonRings[p]; r < polygonRings[p + 1]; r++) {
+        if (r > polygonRings[p]) holes.push(v - starts[p - from]);
+        const record = rings[r * 2];
+        const count = rings[r * 2 + 1];
+        for (let j = 0; j < count; j++) {
+          xy[v * 2] = i16[(record + j) * 4];
+          xy[v * 2 + 1] = i16[(record + j) * 4 + 1];
+          records[v] = record + j;
+          v++;
+        }
+      }
+    }
+    starts[to - from] = v;
+    holeStarts[to - from] = holes.length;
+    const { indices, offsets: own } = triangulate(
+      xy.subarray(0, v * 2),
+      starts,
+      holes,
+      holeStarts,
     );
-    this.starts.length = count;
-    this.holeStarts.length = count;
-    const records = this.records;
     for (let i = 0; i < indices.length; i++) indices[i] = records[indices[i]];
-    return { indices, offsets };
+    const base = offsets[from];
+    for (let p = from; p < to; p++) {
+      offsets[p + 1] = base + own[p - from + 1];
+    }
+    cut.chunks.push(indices);
+    cut.next = to;
+    if (now() >= deadline) break;
   }
+  cut.ms += now() - started;
+  if (cut.next < polygons) return false;
 
-  private _reserve(vertices: number): void {
-    if (this.records.length >= vertices) return;
-    let size = this.records.length;
-    while (size < vertices) size *= 2;
-    const coords = new Float64Array(size * 2);
-    coords.set(this.coords.subarray(0, this.vertices * 2));
-    this.coords = coords;
-    const records = new Uint32Array(size);
-    records.set(this.records.subarray(0, this.vertices));
-    this.records = records;
+  let triangles: Uint32Array<ArrayBuffer>;
+  if (cut.chunks.length === 1) {
+    triangles = cut.chunks[0];
+  } else {
+    triangles = new Uint32Array(offsets[polygons]);
+    let at = 0;
+    for (const chunk of cut.chunks) {
+      triangles.set(chunk, at);
+      at += chunk.length;
+    }
   }
+  for (const { layer, polygons: list } of cut.layers) {
+    const ranges: number[] = [];
+    for (let r = 0; r < list.length; r += 2) {
+      const first = offsets[list[r]];
+      const count = offsets[list[r] + list[r + 1]] - first;
+      if (count > 0) coalesce(ranges, first, count);
+    }
+    data.draws[layer]!.triangles = ranges;
+  }
+  data.triangles = triangles.buffer;
+  data.triangleIndices = triangles.length;
+  data.stats.triangles = triangles.length / 3;
+  data.stats.triangulateMs = cut.ms;
+  data.cut = null;
+  return true;
 }
 
 interface Group {
@@ -447,7 +534,7 @@ interface Group {
   features: number[];
   fill: [number, number];
   line: [number, number];
-  /** `[firstPolygon, polygonCount]` in the tile's {@link Polygons}. */
+  /** `[firstPolygon, polygonCount]` in the tile's {@link PolygonRings}. */
   polygons: [number, number];
 }
 
@@ -476,10 +563,10 @@ export function buildTileBuckets(
   const started = now();
   const line = new Stream(1024);
   const fill = new Stream(1024);
-  const polygons = new Polygons();
+  const polygons = new PolygonRings();
   /** Each fill layer's draw, with its `[firstPolygon, polygonCount]` pairs
    *  — its triangles once the tile's polygons are cut. */
-  const fills: { draw: LayerDraw; polygons: number[] }[] = [];
+  const fills: { layer: number; polygons: number[] }[] = [];
   const buffer = new GeometryBuffer();
   const draws: (LayerDraw | undefined)[] = new Array(prepared.layers.length);
   let features = 0;
@@ -564,14 +651,7 @@ export function buildTileBuckets(
           }
           if (needFill && polygon) {
             const record = emitRing(fill, buffer.coords, from, to, k);
-            polygons.ring(
-              record,
-              buffer.coords,
-              from,
-              to,
-              k,
-              buffer.areas[part],
-            );
+            polygons.ring(record, to - from, buffer.areas[part]);
           }
           if (needLine) emitLine(line, buffer.coords, from, to, k, polygon);
         }
@@ -605,44 +685,44 @@ export function buildTileBuckets(
       if (ranges.length === 0) continue;
       const draw: LayerDraw = { layer: index, kind: type, ranges };
       draws[index] = draw;
-      if (type === 'fill') fills.push({ draw, polygons: cut });
+      if (type === 'fill') fills.push({ layer: index, polygons: cut });
     }
   }
 
-  let triangles = new Uint32Array(0);
-  const cutStarted = now();
+  // Nothing to cut is cut already: a fill layer whose rings have no area
+  // draws no triangles, and the tile waits for nothing.
+  let cut: PendingCut | null = null;
   if (polygons.count > 0) {
-    const { indices, offsets } = polygons.cut();
-    triangles = indices;
-    for (const { draw, polygons: cut } of fills) {
-      const ranges: number[] = [];
-      for (let r = 0; r < cut.length; r += 2) {
-        const first = offsets[cut[r]];
-        const count = offsets[cut[r] + cut[r + 1]] - first;
-        if (count > 0) coalesce(ranges, first, count);
-      }
-      draw.triangles = ranges;
-    }
+    polygons.starts.push(polygons.rings.length / 2);
+    cut = {
+      rings: Uint32Array.from(polygons.rings),
+      polygonRings: Uint32Array.from(polygons.starts),
+      layers: fills,
+      next: 0,
+      offsets: new Uint32Array(polygons.count + 1),
+      chunks: [],
+      ms: 0,
+    };
   } else {
-    for (const { draw } of fills) draw.triangles = [];
+    for (const { layer } of fills) draws[layer]!.triangles = [];
   }
-  const triangulateMs = now() - cutStarted;
 
   return {
     line: line.take(),
     lineRecords: line.count,
     fill: fill.take(),
     fillRecords: fill.count,
-    triangles: triangles.buffer,
-    triangleIndices: triangles.length,
+    triangles: new ArrayBuffer(0),
+    triangleIndices: 0,
+    cut,
     draws,
     labels: buildTileLabels(tile, prepared, TILE_EXTENT, id),
     stats: {
       features,
       lineRecords: line.count,
       fillRecords: fill.count,
-      triangles: triangles.length / 3,
-      triangulateMs,
+      triangles: 0,
+      triangulateMs: 0,
       groups: groupCount,
       ms: now() - started,
     },

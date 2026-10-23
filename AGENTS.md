@@ -3580,22 +3580,33 @@ would visibly move. Three rules came with it:
   harness's own "no GLX" failure never lands. `test/maps.test.ts` is the
   retained renderer's, and stays exactly as it is.
 
-**A GL fill is triangles, and the fan is the fallback.** The bucket builder
-cuts every polygon with [earstrip](https://github.com/GLMap/earstrip) — one
-WebAssembly call a tile, indices into the fill stream's own records — and
-the renderer draws an opaque fill as those triangles with no stencil, where
-it drew a stencil fan and a cover pass over the layer's squares. That trade
-is a one-time cost per tile (build +48%, GPU bytes +66% on the bench corpus)
-for every frame after it (20–30% off the dense views), and both halves were
-measured: `scripts/bench/maps-gl.ts --fills=stencil|triangles` runs either
-path, on macOS or, through x11-dri's GBM/EGL, on Linux. Three things to
-keep:
+**A GL fill is triangles, cut while the map is still, and the fan is
+always there.** The renderer draws an opaque fill as earstrip's triangles —
+indices into the fill stream's own records — with no stencil, where it drew
+a stencil fan and a cover pass over the layer's squares: 20–30% off a dense
+frame. The cut costs half a build again, and **the two paths draw the same
+pixels**, which is the fact the rest stands on. `scripts/bench/maps-gl.ts
+--fills=stencil|triangles` runs either path, on macOS or, through x11-dri's
+GBM/EGL, on Linux. Four things to keep:
 
-- **A path that cannot cut keeps the fan**: a table without `drawElements`,
-  an overlay (built again as the view moves), and a layer any of whose tiles
-  has no triangles. Anything new that builds fill records without cutting
-  them leaves `LayerDraw.triangles` undefined, which is what sends the layer
-  to the fan.
+- **The cut is not part of the build.** `buildTileBuckets` writes the fan and
+  `PendingCut` — which rings make which polygon, eight bytes a ring — and
+  `cutTile` cuts later, resumably, a chunk of polygons at a time: a build
+  worker straight after its build, the main thread in `CUT_SLICE_MS` slices
+  that the view (`_cutSoon`) runs only while the camera is still and nothing
+  waits to be built, and that ask for no frame. Moved into the build, it cost
+  every tile that arrived during a gesture half its build again. **Work that
+  changes no pixel and only makes later frames cheaper waits for the map to
+  rest the same way.** And a map that is never still never gets it: that is
+  the cost, and the fan is why it is safe.
+- **A tile not cut draws its fan, tile by tile.** The renderer takes each
+  tile's own path within a layer — fans first, their cover cut to the
+  squares of the tiles that need it, then the triangles — since a cut tile
+  beside an uncut one is the ordinary state while tiles stream in. A path
+  that cannot cut at all keeps the fan everywhere: a table without
+  `drawElements`, and an overlay (built again as the view moves). Anything
+  new that builds fill records without a `PendingCut` leaves
+  `LayerDraw.triangles` undefined, which is what sends a tile to its fan.
 - **earstrip is a regular dependency.** 160 KB, no dependencies of its own,
   no native code, and reached only from the lazy GL chunk — the `ical.js`
   judgement, not the `@xterm/headless` one.

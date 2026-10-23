@@ -627,24 +627,34 @@ and any level a zoom out lands on has one within two levels above it:
 blurred, never blank. Measured over hard trackpad flicks, frames with
 nothing to draw went from 28 to 1.
 
-**On the GL renderer a fill is triangles, cut when the tile is built.** Each
+**On the GL renderer a fill is triangles, cut while the map is still.** Each
 polygon — an exterior ring and its holes — is cut by
-[earstrip](https://github.com/GLMap/earstrip) as the tile's buckets are
-built, one call for the whole tile, and the triangles index the points the
-fill's edge is drawn from, so they cost four bytes an index and no vertex of
-their own. A frame then draws an opaque fill in one indexed draw a tile, with
-no stencil at all. What it replaced is the stencil fan: a fan a ring into the
-stencil buffer, which covers a concave ring's whole hull, then a cover pass
-over every square the layer is in to read the winding back — two passes over
-far more pixels than the polygons have, for every fill layer of every frame.
-A translucent fill is still drawn each pixel once, marking the stencil as it
-goes, so two features that overlap are coloured once. On the bench's dense
-views (`scripts/bench/maps-gl.ts`, 2400×1600) a frame is 20–30% quicker, and
-on valid rings the two draw the same pixels exactly. The price is paid once a
-tile: building it takes about half as long again, almost all of it the cut,
-and its geometry takes some two thirds more GPU memory. The fan is kept for
-overlays, which are built again as the view moves, and for a GL table with
-no `drawElements`, where `fillRule` governs it.
+[earstrip](https://github.com/GLMap/earstrip), and the triangles index the
+points the fill's edge is drawn from, so they cost four bytes an index and no
+vertex of their own. A frame then draws an opaque fill in one indexed draw a
+tile, with no stencil at all. What it replaced is the stencil fan: a fan for
+each ring into the stencil buffer, which covers a concave ring's whole hull, then a
+cover pass over every square the layer is in to read the winding back — two
+passes over far more pixels than the polygons have, for every fill layer of
+every frame. A translucent fill is still drawn each pixel once, marking the
+stencil as it goes, so two features that overlap are coloured once. On the
+bench's dense views (`scripts/bench/maps-gl.ts`, 2400×1600) a frame of cut
+tiles is 20–30% quicker, and on valid rings the two draw the same pixels
+exactly.
+
+That sameness is why the cut is not part of a tile's build. Cutting takes
+half as long again as building, so a tile is built and drawn by its fan at
+once, as before, and is cut afterwards: on a build worker straight after the
+build (`buildWorkers`), or on the main thread in slices of a few milliseconds
+while the camera is still and nothing waits to be built, the tiles in view
+first. A cut lands with nothing to see and asks for no frame; it changes what
+the frames after it cost. A tile built on the main thread costs some 6% more
+than it did, for the rings the cut will need. A map that is never still — an
+animation that moves it every frame — draws by its fans throughout, which is
+what every map did before; `stats.gl.uncut` counts the tiles waiting. Once
+cut, a tile's geometry takes some two thirds more GPU memory. The fan is kept
+for overlays, which are built again as the view moves, and for a GL table
+with no `drawElements`, where `fillRule` governs it.
 
 **A frame that only continues a redraw claims one pixel.** There is no "call
 me next frame" on the element seam — damage is what schedules a paint — so a

@@ -75,6 +75,7 @@ import {
   RECORD_BYTES,
   TILE_EXTENT,
   buildTileBuckets,
+  cutTile,
   rasterTileData,
 } from '../src/maps/gl/buckets.js';
 import type { GlTileData } from '../src/maps/gl/buckets.js';
@@ -378,8 +379,34 @@ test('a ring is closed explicitly, carries its fan apex, and ends in a sentinel'
   assert.deepStrictEqual(rec(11), [BREAK, BREAK, BREAK, BREAK]);
 });
 
-test("a polygon's triangles name its own fill records and cover the ring less its courtyard, once", () => {
+/** A tile's buckets, cut into triangles as a worker or an idle slice would. */
+function cutBuckets(tile = fixtureTile(), layers = STYLE): GlTileData {
+  const data = buildTileBuckets(tile, prepareStyle({ layers }));
+  assert.strictEqual(cutTile(data), true);
+  return data;
+}
+
+test('a build leaves the cut for later: the fan draws until it is done', () => {
   const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  assert.ok(data.cut, 'the polygons wait to be cut');
+  assert.strictEqual(data.triangleIndices, 0);
+  assert.strictEqual(data.draws[0]!.triangles, undefined);
+  // One polygon of two rings: a ring is its first record and its points.
+  assert.deepStrictEqual([...data.cut!.polygonRings], [0, 2]);
+  assert.deepStrictEqual([...data.cut!.rings], [0, 4, 6, 4]);
+  assert.strictEqual(cutTile(data), true);
+  assert.strictEqual(data.cut, null);
+  assert.ok(data.stats.triangulateMs >= 0);
+  // A tile with nothing to cut is cut already.
+  const roads = buildTileBuckets(
+    fixtureTile(),
+    prepareStyle({ layers: STYLE.slice(1) }),
+  );
+  assert.strictEqual(roads.cut, null);
+});
+
+test("a polygon's triangles name its own fill records and cover the ring less its courtyard, once", () => {
+  const data = cutBuckets();
   const fill = records(data.fill);
   const draw = data.draws[0]!;
   const [first, count] = draw.ranges;
@@ -453,12 +480,24 @@ test('features of one fill layer are cut in one batch, each polygon apart', () =
       ],
     ),
   );
-  const data = buildTileBuckets(
+  const data = cutBuckets(parseTile(bytes), STYLE.slice(0, 1));
+  assert.strictEqual(data.stats.triangles, 6);
+  assert.deepStrictEqual(data.draws[0]!.triangles, [0, 18]);
+  // Cut a polygon a call, with every deadline already past, it comes to
+  // the same: a chunk is at least one polygon, and the cut picks up where
+  // it stopped.
+  const slow = buildTileBuckets(
     parseTile(bytes),
     prepareStyle({ layers: STYLE.slice(0, 1) }),
   );
-  assert.strictEqual(data.stats.triangles, 6);
-  assert.deepStrictEqual(data.draws[0]!.triangles, [0, 18]);
+  let calls = 1;
+  while (!cutTile(slow, -Infinity, 1)) calls++;
+  assert.strictEqual(calls, 3);
+  assert.deepStrictEqual(
+    new Uint32Array(slow.triangles),
+    new Uint32Array(data.triangles),
+  );
+  assert.deepStrictEqual(slow.draws[0]!.triangles, [0, 18]);
 });
 
 // --- the cover ------------------------------------------------------------------
@@ -912,7 +951,7 @@ function elementsGl(stencil = true) {
 }
 
 test('on a table with drawElements, an opaque fill is its triangles in one draw, with no stencil and no cover', () => {
-  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const data = cutBuckets();
   const only = STYLE.slice(0, 1);
   const { gl, log } = elementsGl();
   const renderer = new GlMapRenderer(gl, { antialias: false });
@@ -957,7 +996,7 @@ test('on a table with drawElements, an opaque fill is its triangles in one draw,
 });
 
 test('a translucent fill is its triangles each pixel once, under the stencil, its edge outside them, then the stencil cleared', () => {
-  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const data = cutBuckets();
   const veil: MapStyleLayer[] = [
     {
       id: 'buildings',
@@ -987,7 +1026,7 @@ test('a translucent fill is its triangles each pixel once, under the stencil, it
 });
 
 test('the fan stays: for a table without drawElements, for `triangles: false`, and for an overlay', () => {
-  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const data = cutBuckets();
   const only = STYLE.slice(0, 1);
   const off = elementsGl();
   new GlMapRenderer(off.gl, { antialias: false, triangles: false }).render(
@@ -1027,6 +1066,179 @@ test('the fan stays: for a table without drawElements, for `triangles: false`, a
   assert.strictEqual(bucket.data.triangleIndices, 0);
   const fill = bucket.data.draws.find((d) => d?.kind === 'fill');
   assert.ok(fill && fill.triangles === undefined);
+});
+
+test('a layer over a cut tile and one not cut yet draws each its own way: the fan, covered over its own square, then the triangles', () => {
+  const cut = cutBuckets();
+  const uncut = buildTileBuckets(
+    fixtureTile(),
+    prepareStyle({ layers: STYLE }),
+  );
+  const { gl, log } = elementsGl();
+  const renderer = new GlMapRenderer(gl, { antialias: false });
+  const frame = {
+    ...frameOver(cut, STYLE.slice(0, 1)),
+    width: 512,
+    sources: [
+      [
+        {
+          data: cut,
+          x: 0,
+          y: 0,
+          size: 256,
+          clip: { x: 0, y: 0, width: 256, height: 256 },
+        },
+        {
+          data: uncut,
+          x: 256,
+          y: 0,
+          size: 256,
+          clip: { x: 256, y: 0, width: 256, height: 256 },
+        },
+      ],
+    ],
+  };
+  renderer.render(frame);
+  // The second frame, past the first one's stencil probe.
+  log.length = 0;
+  const stats = renderer.render(frame);
+  const names = log.map((c) => c.name);
+  // The uncut tile's fan, both facings, then its cover; then the cut
+  // tile's triangles.
+  assert.strictEqual(
+    names.filter((n) => n === 'drawArraysInstanced').length,
+    2,
+  );
+  assert.strictEqual(names.filter((n) => n === 'drawElements').length, 1);
+  const cover = names.indexOf('drawArrays');
+  assert.ok(names.lastIndexOf('drawArraysInstanced') < cover);
+  assert.ok(cover < names.indexOf('drawElements'));
+  // The cover is cut to the square of the tile that needs it.
+  const box = log
+    .slice(0, cover)
+    .filter((c) => c.name === 'scissor')
+    .at(-1)!;
+  assert.deepStrictEqual(
+    box.args,
+    scissorOf({ x: 256, y: 0, width: 256, height: 256 }, 512, 256),
+  );
+  // Priced the same way: the fan's records twice, and the triangles once.
+  const fanned = uncut.draws[0]!.ranges[1] - 1;
+  assert.strictEqual(renderer.estimate(frame), fanned * 2 + 8);
+  assert.strictEqual(stats.instances, fanned * 2 + 8);
+  assert.ok(!log.some((c) => c.name === 'stencilOpSeparate'));
+});
+
+test('a tile cut after it went up has its triangles uploaded at the next frame, and only they', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const only = STYLE.slice(0, 1);
+  const { gl, log } = elementsGl();
+  const k = gl as Record<string, number>;
+  const renderer = new GlMapRenderer(gl, { antialias: false });
+  renderer.render(frameOver(data, only));
+  assert.ok(!log.some((c) => c.name === 'drawElements'), 'its fan first');
+  const before = renderer.gpuBytes;
+  assert.strictEqual(cutTile(data), true);
+  log.length = 0;
+  const stats = renderer.render(frameOver(data, only));
+  const uploads = log.filter((c) => c.name === 'bufferData');
+  assert.strictEqual(uploads.length, 1);
+  assert.strictEqual(uploads[0].args[0], k.ELEMENT_ARRAY_BUFFER);
+  assert.strictEqual(stats.uploads, 1);
+  assert.strictEqual(renderer.gpuBytes, before + 24 * 4);
+  assert.strictEqual(
+    log.filter((c) => c.name === 'drawElements').length,
+    1,
+    'and drawn by them',
+  );
+  // Released with the rest of the tile.
+  log.length = 0;
+  renderer.release(data);
+  assert.strictEqual(renderer.gpuBytes, 0);
+  assert.strictEqual(
+    log.filter((c) => c.name === 'deleteBuffer').length,
+    3,
+    'its two streams and its triangles',
+  );
+});
+
+test('the store cuts the tiles the view asked for last first, and picks up where it stopped', async () => {
+  const source: MapSource = {
+    load: () => ({ kind: 'vector', data: fixtureBytes() }),
+  };
+  const store = new GlTileStore({
+    source,
+    prepared: prepareStyle({ layers: STYLE }),
+    onChange: () => {},
+  });
+  store.tick();
+  store.want([
+    { z: 3, x: 1, y: 1 },
+    { z: 3, x: 2, y: 1 },
+  ]);
+  await new Promise((r) => setTimeout(r, 10));
+  while (store.pump(Infinity));
+  assert.strictEqual(store.uncut, 2, 'built here, and drawn by their fans');
+  store.tick();
+  const recent = store.get({ z: 3, x: 2, y: 1 })!;
+  // A deadline already passed still cuts a chunk.
+  assert.strictEqual(store.cutUntil(-Infinity), true);
+  assert.strictEqual(recent.cut, null, 'the one asked for last');
+  assert.strictEqual(store.uncut, 1);
+  assert.strictEqual(store.cutUntil(-Infinity), false);
+  assert.strictEqual(store.uncut, 0);
+  assert.strictEqual(store.cuts, 2);
+  store.dispose(() => {});
+});
+
+test('a still map cuts its tiles between frames, and a moving one leaves them to its fans', async (t) => {
+  const settle = holdClock(t, settleClock);
+  const controller = new MapController({
+    center: { lon: -0.1281, lat: 51.508 },
+    zoom: 14,
+  });
+  const driver = new GlMapDriver(controller, {
+    controller,
+    map: {
+      sources: [
+        {
+          id: 'fixture',
+          minZoom: 0,
+          maxZoom: 14,
+          tileSize: 512,
+          load: () => ({ kind: 'vector' as const, data: fixtureBytes() }),
+        },
+      ],
+      mapStyle: { layers: STYLE },
+      adaptive: false,
+    },
+    onFailure: (error: Error) => {
+      throw error;
+    },
+  });
+  const gl = elementsGl().gl;
+  const info = { width: 512, height: 512, node: { scale: 1 } };
+  const frame = async () => {
+    driver.draw(gl, info);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  // Moving, with the settle window held open: every tile is built, and
+  // none is cut.
+  controller.setCamera({ zoom: 14.2 });
+  assert.ok(controller.moving);
+  for (let i = 0; i < 8; i++) await frame();
+  let gl0 = driver.stats()!.gl!;
+  assert.strictEqual(gl0.building, 0);
+  assert.ok(gl0.uncut > 0, 'built and waiting to be cut');
+  // Still: the frame that says so starts the slices, and the gaps between
+  // frames are where they run.
+  await settle.finish();
+  assert.ok(!controller.moving);
+  await frame();
+  await frame();
+  gl0 = driver.stats()!.gl!;
+  assert.strictEqual(gl0.uncut, 0);
+  driver.dispose();
 });
 
 test('a map that names no renderer is auto — the retained one on a connection with no direct GL, which it says', async () => {

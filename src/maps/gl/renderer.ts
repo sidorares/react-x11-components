@@ -196,9 +196,10 @@ export interface GlRenderOptions {
    * Fill a tile's polygons from the triangles its bucket was cut into —
    * one draw, each pixel once, no stencil for an opaque fill — rather than
    * from the fan. `true` by default; `false` is the fan, which `fillRule`
-   * governs, and is what a table without `drawElements` gets either way.
-   * The triangles fill each polygon by earstrip's rule, which is the
-   * non-zero one on every ring a tile holds that is not broken.
+   * governs, and is what a table without `drawElements` gets either way,
+   * and a tile not cut yet gets until it is. The triangles fill each
+   * polygon by earstrip's rule, which is the non-zero one on every ring a
+   * tile holds that is not broken.
    */
   triangles?: boolean;
   /**
@@ -504,6 +505,7 @@ export class GlMapRenderer {
     const edges = frame.edges ?? this._options.antialias;
     const stencil =
       this._options.fillRule === 'nonzero' && !this._separate ? 2 : 1;
+    const cuts = this._options.triangles && this._elements;
     let work = 0;
     for (const tiles of frame.sources) {
       const visible = tiles.map(
@@ -518,25 +520,29 @@ export class GlMapRenderer {
         // ladder that climbs on its own transients.
         if (!drawsAt(layer, frame.zoom, detail)) continue;
         let records = 0;
+        // A tile cut into triangles draws them; one not cut yet, its fan.
+        let fanned = 0;
         let triangles = 0;
-        let cut = this._options.triangles && this._elements;
         for (let t = 0; t < tiles.length; t++) {
           if (!visible[t]) continue;
           const draw = tiles[t].data.draws[i];
           if (!draw) continue;
+          let n = 0;
           for (let r = 1; r < draw.ranges.length; r += 2) {
-            records += draw.ranges[r] - 1;
+            n += draw.ranges[r] - 1;
           }
-          if (!draw.triangles) cut = false;
-          else {
+          records += n;
+          if (cuts && draw.triangles) {
             for (let r = 1; r < draw.triangles.length; r += 2) {
               triangles += draw.triangles[r] / 3;
             }
+          } else {
+            fanned += n;
           }
         }
         if (layer.type === 'fill') {
           const edge = layer.outlineColor !== undefined || edges ? 1 : 0;
-          work += cut ? triangles + records * edge : records * (stencil + edge);
+          work += triangles + fanned * stencil + records * edge;
         } else {
           work += records;
         }
@@ -777,12 +783,26 @@ export class GlMapRenderer {
     paint: FillPaint,
   ): boolean {
     const gl = this._gl;
-    // The cover's extent: the union of the squares this layer drew in.
-    const box = this._unionOf(tiles, index, scissors);
+    // The union of the squares this layer drew in.
+    const box = this._unionOf(tiles, index, scissors, false);
     if (!box) return false;
     const translucent = paint.color[3] < 1;
 
-    if (this._cut(tiles, index, scissors)) {
+    // Each tile its own way: by its triangles once it is cut, by its fan
+    // until then. The squares never overlap, so the two never meet.
+    const cuts = this._options.triangles && this._elements;
+    let fanned = false;
+    let cut = false;
+    for (let t = 0; t < tiles.length; t++) {
+      const draw = tiles[t].data.draws[index];
+      if (!draw || !scissors[t]) continue;
+      if (cuts && draw.triangles) cut = true;
+      else fanned = true;
+    }
+    // The fans first: their cover finds the stencil zero in a cut tile's
+    // square, which no triangle has marked yet, and colours nothing there.
+    if (fanned) this._fanFill(tiles, index, scissors, paint, cuts);
+    if (cut) {
       // 1–2. The triangles, in the colour: each pixel of the polygons once
       // and nothing outside them. An opaque fill needs no stencil at all —
       // where two features overlap, the colour is laid down twice the same.
@@ -797,25 +817,8 @@ export class GlMapRenderer {
         gl.disable(gl.STENCIL_TEST);
       }
       this._triangles(tiles, index, scissors, paint.color);
-    } else {
-      this._fanFill(tiles, index, scissors, paint, box);
     }
     this._fillEdge(tiles, index, scissors, paint, box);
-    return true;
-  }
-
-  /** Whether a fill layer is drawn from its triangles: the table can draw
-   *  them, and every tile that draws the layer here has them. */
-  private _cut(
-    tiles: readonly RenderTile[],
-    index: number,
-    scissors: (number[] | null)[],
-  ): boolean {
-    if (!this._options.triangles || !this._elements) return false;
-    for (let t = 0; t < tiles.length; t++) {
-      const draw = tiles[t].data.draws[index];
-      if (draw && scissors[t] && !draw.triangles) return false;
-    }
     return true;
   }
 
@@ -856,16 +859,18 @@ export class GlMapRenderer {
   }
 
   /** A fill layer's fan: the winding number into the stencil buffer, then
-   *  the colour wherever it is not zero. */
+   *  the colour wherever it is not zero — over the tiles not cut yet, where
+   *  `cuts` says the rest draw their triangles. */
   private _fanFill(
     tiles: readonly RenderTile[],
     index: number,
     scissors: (number[] | null)[],
     paint: FillPaint,
-    box: number[],
+    cuts: boolean,
   ): void {
     const gl = this._gl;
     const stats = this._stats;
+    const box = this._unionOf(tiles, index, scissors, cuts)!;
 
     // 1. The winding number, into the stencil buffer.
     gl.useProgram(this._fan.program);
@@ -881,7 +886,7 @@ export class GlMapRenderer {
       gl.disable(gl.CULL_FACE);
       gl.stencilOpSeparate(gl.FRONT, gl.KEEP, gl.KEEP, gl.INCR_WRAP);
       gl.stencilOpSeparate(gl.BACK, gl.KEEP, gl.KEEP, gl.DECR_WRAP);
-      this._eachTile(tiles, index, scissors, this._fan, true, fan);
+      this._eachTile(tiles, index, scissors, this._fan, true, fan, cuts);
     } else {
       const passes: [number | null, number][] = nonzero
         ? [
@@ -896,7 +901,7 @@ export class GlMapRenderer {
           gl.cullFace(cull);
         }
         gl.stencilOp(gl.KEEP, gl.KEEP, op);
-        this._eachTile(tiles, index, scissors, this._fan, true, fan);
+        this._eachTile(tiles, index, scissors, this._fan, true, fan, cuts);
       }
     }
     gl.disable(gl.CULL_FACE);
@@ -1170,11 +1175,13 @@ export class GlMapRenderer {
   }
 
   /** The union of the squares a layer draws in, as a scissor box; null
-   *  when no tile draws it. */
+   *  when no tile draws it. `uncut` counts only the tiles drawing it by
+   *  their fan. */
   private _unionOf(
     tiles: readonly RenderTile[],
     index: number,
     scissors: (number[] | null)[],
+    uncut = false,
   ): number[] | null {
     let x0 = Infinity;
     let y0 = Infinity;
@@ -1182,7 +1189,8 @@ export class GlMapRenderer {
     let y1 = -Infinity;
     for (let t = 0; t < tiles.length; t++) {
       const s = scissors[t];
-      if (!s || !tiles[t].data.draws[index]) continue;
+      const draw = tiles[t].data.draws[index];
+      if (!s || !draw || (uncut && draw.triangles)) continue;
       if (s[0] < x0) x0 = s[0];
       if (s[1] < y0) y0 = s[1];
       if (s[0] + s[2] > x1) x1 = s[0] + s[2];
@@ -1278,6 +1286,8 @@ export class GlMapRenderer {
     program: Program,
     fillStream: boolean,
     draw: (instances: number) => void,
+    /** Pass over the tiles that are cut: their fills draw triangles. */
+    uncut = false,
   ): void {
     const gl = this._gl;
     const stats = this._stats;
@@ -1285,7 +1295,7 @@ export class GlMapRenderer {
       const tile = tiles[t];
       const layerDraw = tile.data.draws[index];
       const s = scissors[t];
-      if (!layerDraw || !s) continue;
+      if (!layerDraw || !s || (uncut && layerDraw.triangles)) continue;
       const gpu = this._tiles.get(tile.data);
       if (!gpu) continue;
       gl.scissor(s[0], s[1], s[2], s[3]);
@@ -1537,7 +1547,18 @@ export class GlMapRenderer {
 
   private _gpu(data: GlTileData): TileGpu {
     let gpu = this._tiles.get(data);
-    if (gpu) return gpu;
+    if (gpu) {
+      // Cut since it went up: its triangles go up now, and only they do.
+      if (!gpu.triangleVao && data.triangleIndices > 0) {
+        const bytes = this._uploadTriangles(data, gpu);
+        if (bytes > 0) {
+          this.gpuBytes += bytes;
+          this._stats.uploads++;
+          this._stats.uploadBytes += bytes;
+        }
+      }
+      return gpu;
+    }
     const gl = this._gl;
     gpu = {
       line: null,
@@ -1560,31 +1581,7 @@ export class GlMapRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(data.fill), gl.STATIC_DRAW);
       gpu.bytes += data.fill.byteLength;
     }
-    if (gpu.fill && data.triangleIndices > 0 && this._elements) {
-      // The index buffer is bound inside the vertex array, which is what
-      // keeps it the array's: bound outside one, it would be whichever
-      // array happened to be bound's.
-      gpu.triangleVao = gl.createVertexArray();
-      gl.bindVertexArray(gpu.triangleVao);
-      gpu.triangles = gl.createBuffer();
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.triangles);
-      gl.bufferData(
-        gl.ELEMENT_ARRAY_BUFFER,
-        new Uint8Array(data.triangles),
-        gl.STATIC_DRAW,
-      );
-      gl.bindBuffer(gl.ARRAY_BUFFER, gpu.fill);
-      gl.enableVertexAttribArray(ATTRIBUTES.a_corner);
-      gl.vertexAttribPointer(
-        ATTRIBUTES.a_corner,
-        2,
-        gl.SHORT,
-        false,
-        RECORD_BYTES,
-        0,
-      );
-      gpu.bytes += data.triangles.byteLength;
-    }
+    this._uploadTriangles(data, gpu);
     if (data.raster) {
       const { width, height, pixels } = data.raster;
       gpu.texture = gl.createTexture();
@@ -1611,6 +1608,40 @@ export class GlMapRenderer {
     this._stats.uploads++;
     this._stats.uploadBytes += gpu.bytes;
     return gpu;
+  }
+
+  /**
+   * A tile's triangle indices, and the vertex array that reads the fill
+   * stream's points through them. Answers the bytes it added, which are in
+   * the tile's own count already.
+   */
+  private _uploadTriangles(data: GlTileData, gpu: TileGpu): number {
+    if (!gpu.fill || data.triangleIndices === 0 || !this._elements) return 0;
+    const gl = this._gl;
+    // The index buffer is bound inside the vertex array, which is what
+    // keeps it the array's: bound outside one, it would be whichever array
+    // happened to be bound's.
+    gpu.triangleVao = gl.createVertexArray();
+    gl.bindVertexArray(gpu.triangleVao);
+    gpu.triangles = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.triangles);
+    gl.bufferData(
+      gl.ELEMENT_ARRAY_BUFFER,
+      new Uint8Array(data.triangles),
+      gl.STATIC_DRAW,
+    );
+    gl.bindBuffer(gl.ARRAY_BUFFER, gpu.fill);
+    gl.enableVertexAttribArray(ATTRIBUTES.a_corner);
+    gl.vertexAttribPointer(
+      ATTRIBUTES.a_corner,
+      2,
+      gl.SHORT,
+      false,
+      RECORD_BYTES,
+      0,
+    );
+    gpu.bytes += data.triangles.byteLength;
+    return data.triangles.byteLength;
   }
 
   /**

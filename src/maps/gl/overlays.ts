@@ -252,6 +252,7 @@ export function buildOverlayBucket(
       // its fills keep the fan rather than pay for a cut each time.
       triangles: new ArrayBuffer(0),
       triangleIndices: 0,
+      cut: null,
       draws,
       stats: {
         features: overlays.length,

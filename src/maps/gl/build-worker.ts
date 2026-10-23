@@ -15,7 +15,7 @@ import type { PreparedStyle } from '../paint.js';
 import type { TileId } from '../proj.js';
 import { parseVectorTile } from '../sources.js';
 import type { MapStyleLayer } from '../style.js';
-import { buildTileBuckets } from './buckets.js';
+import { buildTileBuckets, cutTile } from './buckets.js';
 
 /** What the store sends. */
 export type BuildRequest =
@@ -57,6 +57,9 @@ parentPort?.on('message', (message) => {
       prepared,
       request.tile,
     );
+    // Off the main thread, so cut at once: the tile arrives with its
+    // triangles and costs the main thread their upload alone.
+    cutTile(data);
     const transfer = [data.line, data.fill, data.triangles];
     if (data.labels) transfer.push(data.labels.anchors.buffer as ArrayBuffer);
     parentPort.postMessage({ job: request.job, data }, transfer);
