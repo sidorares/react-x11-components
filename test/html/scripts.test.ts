@@ -2693,6 +2693,34 @@ test("a clone of a clonable shadow host takes a copy of its tree, and initialize
   );
 });
 
+test('initialize() upgrades, in tree order, what its registry defines, connected or not and in any document', async () => {
+  // HTML 4.13.4's initialize() runs "try to upgrade" on every element of
+  // its registry under the node, ones it had already given the registry
+  // included, and the definition looked up is the registry's own: the
+  // element's document and whether it is connected do not enter into it
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], scoped = new CustomElementRegistry();' +
+      'var other = document.implementation.createHTMLDocument();' +
+      'other.body.innerHTML = "<a-a id=1><a-a id=2></a-a></a-a><b-b></b-b>";' +
+      'scoped.define("a-a", class extends HTMLElement { constructor() { super(); r.push("a" + this.id); } });' +
+      'scoped.initialize(other.body);' +
+      'r.push(other.querySelector("b-b").customElementRegistry === scoped);' +
+      // defined after the registry was given: the next initialize() upgrades it
+      'scoped.define("b-b", class extends HTMLElement { constructor() { super(); r.push("b"); } });' +
+      'scoped.initialize(other.body);' +
+      // an element of another scoped registry keeps it, and is not upgraded
+      'var second = new CustomElementRegistry();' +
+      'other.body.append(document.createElement("c-c", { customElementRegistry: second }));' +
+      'scoped.define("c-c", class extends HTMLElement { constructor() { super(); r.push("c"); } });' +
+      'scoped.initialize(other.body);' +
+      'r.push(other.querySelector("c-c").customElementRegistry === second);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), 'a1|a2|true|b|true', doc.logs.join('\n'));
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +
