@@ -153,6 +153,23 @@ test('a first line keeps its first box after the indent, however wide', async ()
   assert.strictEqual(f.lines.length, 1);
 });
 
+test('inline-blocks in an element that does not wrap stay on one line, wider than it', async () => {
+  // CSS Text 3, 5.1: the break between two of them is the `white-space`
+  // of what holds them, and a `nowrap` row overflows — a carousel's does
+  const row = (ws: string) =>
+    render(
+      `<div style="white-space:${ws};width:400px;border:2px solid black;padding-bottom:10px">\n  ` +
+        '<div id="a" style="display:inline-block;width:305px;height:20px"></div' +
+        '\n  ><div id="b" style="display:inline-block;width:100px;height:20px"></div>\n</div>',
+      800,
+    );
+  const nowrap = view((await row('nowrap')).node);
+  assert.strictEqual(boxOf(nowrap, 'b').y, boxOf(nowrap, 'a').y, 'one line');
+  assert.strictEqual(boxOf(nowrap, 'b').x - boxOf(nowrap, 'a').x, 305);
+  const wrapping = view((await row('normal')).node);
+  assert.ok(boxOf(wrapping, 'b').y > boxOf(wrapping, 'a').y, 'two lines');
+});
+
 metric('font-size: 0 leaves no room between inline-blocks', async () => {
   // the common way to lose the spaces between columns set inline: at no
   // size the space between them takes no room, where it used to be 1px. The

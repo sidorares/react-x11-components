@@ -5309,14 +5309,14 @@ export function installDom(
       return this.clientHeight;
     }
     get scrollTop(): number {
-      if (this._viewport()) return viewport().scrollY;
+      if (this._viewport()) return viewport(true).scrollY;
       return scrollStateOf(this)?.[1] ?? 0;
     }
     set scrollTop(v: Any) {
       this._scrollTo(undefined, Number(v));
     }
     get scrollLeft(): number {
-      if (this._viewport()) return viewport().scrollX;
+      if (this._viewport()) return viewport(true).scrollX;
       return scrollStateOf(this)?.[0] ?? 0;
     }
     set scrollLeft(v: Any) {
@@ -12511,14 +12511,21 @@ export function installDom(
   const document: Any = wrap(1);
 
   /** The viewport, in CSS pixels, as the host's pane has it now. */
-  const viewport = (): {
+  /** The viewport's size and where it is scrolled — `scrolled` where it
+   *  is the offsets a page reads, which a layout of what it changed can
+   *  move, and so are read after one (CSSOM View 6.1). */
+  const viewport = (
+    scrolled = false,
+  ): {
     width: number;
     height: number;
     scrollX: number;
     scrollY: number;
     dpr: number;
   } => {
-    const [width, height, scrollX, scrollY, dpr] = String(call('viewport'))
+    const [width, height, scrollX, scrollY, dpr] = String(
+      call('viewport', scrolled),
+    )
       .split(',')
       .map(Number);
     return { width, height, scrollX, scrollY, dpr };
@@ -21702,10 +21709,10 @@ export function installDom(
   getter('innerHeight', () => viewport().height);
   getter('outerWidth', () => viewport().width);
   getter('outerHeight', () => viewport().height);
-  getter('scrollX', () => viewport().scrollX);
-  getter('scrollY', () => viewport().scrollY);
-  getter('pageXOffset', () => viewport().scrollX);
-  getter('pageYOffset', () => viewport().scrollY);
+  getter('scrollX', () => viewport(true).scrollX);
+  getter('scrollY', () => viewport(true).scrollY);
+  getter('pageXOffset', () => viewport(true).scrollX);
+  getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => location.protocol === 'https:');
   getter('origin', () => location.origin);

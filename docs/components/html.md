@@ -4143,12 +4143,17 @@ view — comes to rest at the place nearest where it asked, where
 snapport. A scroll with a direction — `scrollBy`, a scroll key, the wheel
 once it has rested on the container — rests only at a place ahead of where
 it began, the one nearest where it would have gone: a step from one snap
-position goes on to the next, however near the last. Where several areas line up at that place, the focused element or
-the URL's target is the one snapped to, then one that lines up on both
-axes, then one inside another, then the first in tree order. The area each
-axis lined up is kept by its element, and a layout that moves it scrolls
-the container with it; a `mandatory` container no script has scrolled is
-snapped where it is after a layout. An area is the nearest scroll container
+position goes on to the next, however near the last. On a container that
+snaps on one axis, only an area the snapport shows across it is a snap
+position (5.1), so one pushed out to the side is passed over. Where several
+areas line up at that place, the focused element or the URL's target is
+the one snapped to, then one that lines up on both axes, then the innermost
+of those inside another, then the first in tree order. The area each axis
+lined up is kept by its element, and a layout that moves it scrolls the
+container with it; a `mandatory` container no script has scrolled is
+snapped where it is after a layout, or after a restyle that changed what a
+container snaps on — the viewport too — and a page that reads where the
+viewport is scrolled reads it after that layout. An area is the nearest scroll container
 on its containing blocks', so a box positioned past a scroll container
 inside the snap container is the snap container's; an anonymous box takes
 its parent's `scroll-snap-align` with the rest of its style, and is none.

@@ -6390,6 +6390,32 @@ test('the viewport snaps where the root makes it a snap container, and again whe
   );
 });
 
+test('a root made a mandatory snap container snaps at once, read straight after, and a container follows the innermost of the areas lined up that it shows', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>body { margin: 0 } .c { height: 300px; scroll-snap-align: start }' +
+      ' #s { overflow: scroll; position: relative; width: 200px; height: 200px; scroll-snap-type: y mandatory }' +
+      ' #s div { position: absolute; scroll-snap-align: start; top: 0; left: 0 }' +
+      ' #space { height: 1000px; width: 10px; scroll-snap-align: none !important }</style></head><body>' +
+      '<div class="c" style="scroll-snap-align: none"></div><div class="c" style="height: 30px"></div>' +
+      '<div class="c" id="c3"></div>' +
+      '<div id="s"><div id="space"></div><div id="outer" style="top: 150px; width: 100px; height: 100px">' +
+      '<div id="inner" style="width: 50px; height: 50px"><div id="innermost" style="width: 20px; height: 20px">' +
+      '</div></div></div></div><p id="out"></p><script>' +
+      'var html = document.documentElement, r = [];' +
+      'html.style.scrollSnapType = "y mandatory"; r.push(html.scrollTop);' +
+      'html.style.scrollSnapType = ""; html.scrollTo(0, 0);' +
+      'var s = document.getElementById("s"); s.scrollTop = 150; r.push(s.scrollTop);' +
+      // the innermost goes out of sight across the axis: the next one in is
+      // what it follows
+      'document.getElementById("innermost").style.left = "500px"; r.push(s.scrollTop);' +
+      'document.getElementById("inner").style.top = "40px"; r.push(s.scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+    { pane: 200 },
+  );
+  assert.strictEqual(doc.text('out'), '300|150|150|190', doc.logs.join('\n'));
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

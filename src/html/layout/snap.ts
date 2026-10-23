@@ -152,7 +152,11 @@ export function snapTo(
       const place = placeOf(c, area, axis);
       return !!place && dir * (place.to - start) > 0.5;
     };
-    const areas = dir && c.areas.some(ahead) ? c.areas.filter(ahead) : c.areas;
+    // only the areas the snapport shows across this axis, where it stays
+    // where it is on the other
+    const across = axis === 'x' ? y : x;
+    const shown = c.areas.filter((a) => visibleAcross(c, a, axis, across));
+    const areas = dir && shown.some(ahead) ? shown.filter(ahead) : shown;
     let best: { at: number; boxes: Box[] } | null = null;
     for (const area of areas) {
       const place = placeOf(c, area, axis);
@@ -208,9 +212,35 @@ function choose(
   if (preferred) return preferred;
   const both = other && boxes.find((b) => other.includes(b));
   if (both) return both;
-  // one inside another is the more particular of the two
-  const inner = boxes.find((b) => boxes.some((o) => o !== b && isInside(b, o)));
+  // one inside another is the more particular of the two, and the
+  // innermost the most: inside another, and with none inside it
+  const inner = boxes.find(
+    (b) =>
+      boxes.some((o) => o !== b && isInside(b, o)) &&
+      !boxes.some((o) => o !== b && isInside(o, b)),
+  );
   return inner ?? boxes[0];
+}
+
+/**
+ * Whether an area shows in the snapport across an axis — the container
+ * scrolled to `at` on the other — and so is a snap position on it (5.1,
+ * "scoping valid snap positions to visible boxes"). Where the container
+ * snaps on the other axis too, both are chosen together, and every area
+ * counts.
+ */
+function visibleAcross(
+  c: SnapContainer,
+  area: SnapArea,
+  axis: 'x' | 'y',
+  at: number,
+): boolean {
+  const other = axis === 'x' ? 'y' : 'x';
+  if (snapsOn(c.style, other)) return true;
+  const start = other === 'x' ? area.x : area.y;
+  const size = other === 'x' ? area.width : area.height;
+  const port = other === 'x' ? c.width : c.height;
+  return start < at + port && start + size > at;
 }
 
 function isInside(box: Box, outer: Box): boolean {
@@ -220,9 +250,18 @@ function isInside(box: Box, outer: Box): boolean {
 
 /** Whether an area still lines up on an axis in a container: a snap
  *  position a container snapped to it may stay at. */
-export function linesUp(c: SnapContainer, box: Box, axis: 'x' | 'y'): boolean {
+export function linesUp(
+  c: SnapContainer,
+  box: Box,
+  axis: 'x' | 'y',
+  across: number,
+): boolean {
   const area = c.areas.find((a) => a.box === box);
-  return !!area && placeOf(c, area, axis) !== null;
+  return (
+    !!area &&
+    placeOf(c, area, axis) !== null &&
+    visibleAcross(c, area, axis, across)
+  );
 }
 
 /**
@@ -244,7 +283,8 @@ export function resnap(
     if (!snapsOn(c.style, axis)) continue;
     const target = axis === 'x' ? targets.x : targets.y;
     const area = target && c.areas.find((a) => a.box === target);
-    if (!area) continue;
+    // one the snapport no longer shows across the axis is none (5.1)
+    if (!area || !visibleAcross(c, area, axis, axis === 'x' ? y : x)) continue;
     const place = placeOf(c, area, axis);
     if (!place) continue;
     const now = axis === 'x' ? x : y;

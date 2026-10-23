@@ -5528,9 +5528,13 @@ export class HtmlViewNode extends Node {
     const moved: [Box, ComputedStyle][] = [];
     const kept = !!this._sprites?.size || !!this._filtered?.size;
     let reoffer = false;
+    // a container whose snap type changed, which may have to come to rest
+    // at a snap position it was not at (`_resnap`)
+    let snapTyped = false;
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
+      if (style.scrollSnapType !== was.scrollSnapType) snapTyped = true;
       if (kept) this._restyledSprites(box, was, style);
       // a box turned into the plane or out of it is a still part to offer
       // or one no longer (`_tiltedBoxes`)
@@ -5620,7 +5624,7 @@ export class HtmlViewNode extends Node {
     // a snap area's alignment, or its container's type, that changed
     // without a layout: what a container was snapped to may be no snap
     // position now (CSS Scroll Snap 1, 5.4)
-    if (cascade.snaps) this._resnap(true);
+    if (cascade.snaps) this._resnap(!snapTyped);
     return true;
   }
 
@@ -7544,6 +7548,13 @@ export class HtmlViewNode extends Node {
    * kin, in CSS pixels — laid out first; null for an element that is no
    * scroll container, or has no box.
    */
+  /** The pipeline brought up to date at the width the document is drawn
+   *  at, for a reader of where the viewport is scrolled
+   *  (`HandleInternals.layoutNow`). */
+  layoutNow(): void {
+    this._prepare(this.abs.width || 1);
+  }
+
   scrollStateOf(element: Element): ScrollState | null {
     this._prepare(this.abs.width || 1);
     const box = this._scrollerOf(element);
@@ -8014,19 +8025,23 @@ export class HtmlViewNode extends Node {
     const lost = (
       snap: SnapContainer,
       keys: { x: SnapKey | null; y: SnapKey | null },
+      x: number,
+      y: number,
     ): boolean =>
       (['x', 'y'] as const).some((axis) => {
         const key = keys[axis];
         if (!key) return false;
         const box = snapBox(snap, key);
-        return !box || !linesUp(snap, box, axis);
+        return !box || !linesUp(snap, box, axis, axis === 'x' ? y : x);
       });
     for (const [el, keys] of this._snapped) {
       if (el === this._source.document) {
         const snap = this._viewportSnap();
         const pane = this._pane();
         if (!snap || !pane) continue;
-        if (lostOnly && !lost(snap, keys)) continue;
+        if (lostOnly && !lost(snap, keys, pane.scrollX, pane.scrollY)) {
+          continue;
+        }
         // the pane's offsets are device pixels, as the boxes are
         const at = resnap(snap, pane.scrollX, pane.scrollY, {
           x: snapBox(snap, keys.x),
@@ -8043,8 +8058,8 @@ export class HtmlViewNode extends Node {
       const box = this._scrollerOf(el as Element);
       const snap = box && this._snapContainerOf(box);
       if (!box || !snap) continue;
-      if (lostOnly && !lost(snap, keys)) continue;
       const state = scrollStateOf(box);
+      if (lostOnly && !lost(snap, keys, state.x, state.y)) continue;
       const at = resnap(snap, state.x, state.y, {
         x: snapBox(snap, keys.x),
         y: snapBox(snap, keys.y),
@@ -8055,8 +8070,24 @@ export class HtmlViewNode extends Node {
       }
     }
     // a mandatory container must be at rest at a snap position, whether or
-    // not a script scrolled it
+    // not a script scrolled it — the viewport too, where the root is one
     if (lostOnly) return;
+    const doc = this._source.document;
+    const viewport = this._snapped.has(doc) ? null : this._viewportSnap();
+    const pane = viewport?.style.scrollSnapType?.mandatory && this._pane();
+    if (viewport && pane) {
+      const at = snapTo(viewport, pane.scrollX, pane.scrollY);
+      this._snapped.set(doc, {
+        x: snapKey(at.targetX),
+        y: snapKey(at.targetY),
+      });
+      if (
+        Math.abs(at.x - pane.scrollX) >= 0.5 ||
+        Math.abs(at.y - pane.scrollY) >= 0.5
+      ) {
+        pane.scrollTo({ x: at.x / s, y: at.y / s });
+      }
+    }
     for (const box of snapContainersIn(tree.root)) {
       const el = box.el!;
       if (this._snapped.has(el) || !box.style.scrollSnapType!.mandatory) {
