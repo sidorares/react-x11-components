@@ -48,6 +48,8 @@ import {
   hasMediaFlag,
   isPaused,
   setMuted,
+  setFullscreen,
+  isFullscreen,
   setMediaFlag,
   setPaused,
   markCustomized,
@@ -2231,6 +2233,25 @@ export class DomHost {
         }
         return isModal(el);
       }
+      // an element made the fullscreen element or taken out (Fullscreen
+      // 2), told as a change of an attribute nothing has, which
+      // `:fullscreen` reads; given no `b`, whether it is fullscreen
+      case 'fullscreen': {
+        const el = this._element(a);
+        if (
+          typeof b === 'boolean' &&
+          (!b || this._inDocument(el)) &&
+          setFullscreen(el, b) &&
+          this._inDocument(el)
+        ) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-fullscreen',
+          });
+        }
+        return isFullscreen(el);
+      }
       // a popover shown or hidden (HTML 6.12), told as a change of an
       // attribute nothing has, which only `:popover-open` reads; given no
       // `b`, whether it is showing — taken out of the document, it is not
@@ -3566,6 +3587,9 @@ export class DomHost {
           for (const el of topLayerIn(node, layer)) {
             setModal(el, false);
             setPopoverOpen(el, false);
+            // and a fullscreen element is fullscreen no longer
+            // (Fullscreen 2, the removing steps)
+            setFullscreen(el, false);
           }
         }
       }
@@ -3745,7 +3769,7 @@ export class DomHost {
       stalled: (el) => hasMediaFlag(el, 'stalled'),
       // a page cannot lock a volume, and nothing here does
       'volume-locked': nothing,
-      fullscreen: nothing,
+      fullscreen: (el) => isFullscreen(el),
       autofill: nothing,
       '-webkit-autofill': nothing,
       'user-valid': nothing,

@@ -433,6 +433,24 @@ dialog:popover-open { display: block; }
   pointer-events: none !important;
   background-color: transparent;
 }
+/* the fullscreen element, all of the viewport over the rest of the
+   document, on black (Fullscreen 2, 4.1) */
+:not(:root):fullscreen {
+  object-fit: contain;
+  position: fixed !important;
+  inset: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  width: 100% !important;
+  height: 100% !important;
+  transform: none !important;
+}
+iframe:fullscreen { border: none !important; padding: 0 !important; }
+:not(:root):fullscreen::backdrop { background: black; }
 /* what is under an element in the top layer, the whole viewport (CSS
    Position 4, 3.2), and a dialog's dimmed */
 ::backdrop { display: block; position: fixed; inset: 0; }

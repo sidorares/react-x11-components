@@ -556,12 +556,15 @@ export function isCustomized(el: Element): boolean {
  *  node at the top of the document, which a shadow tree's host leads up
  *  to. */
 const TOP_LAYERS = new WeakMap<AnyNode, Element[]>();
+/** What an element is in a top layer as: a modal dialog, a popover, or
+ *  the document's fullscreen element. */
+type TopLayerKind = 'modal' | 'popover' | 'fullscreen';
 /** Each element in a top layer: when it went in, counted across
- *  documents, the top of the document whose layer it is in, and whether it
- *  is there as a modal dialog rather than as a popover. */
+ *  documents, the top of the document whose layer it is in, and what it
+ *  is there as. */
 const IN_TOP_LAYER = new WeakMap<
   Element,
-  { order: number; top: AnyNode; modal: boolean }
+  { order: number; top: AnyNode; kind: TopLayerKind }
 >();
 let topLayerCount = 0;
 const NO_ELEMENTS: readonly Element[] = [];
@@ -583,8 +586,8 @@ function topOf(node: AnyNode): AnyNode {
  *  removal from the document). False where nothing changed. */
 export function setModal(el: Element, modal: boolean): boolean {
   const was = IN_TOP_LAYER.get(el);
-  if (modal) return !was && enterTopLayer(el, true);
-  return !!was?.modal && leaveTopLayer(el);
+  if (modal) return !was && enterTopLayer(el, 'modal');
+  return was?.kind === 'modal' && leaveTopLayer(el);
 }
 
 /** Show an element as a popover, last of its document's top layer, or hide
@@ -592,16 +595,31 @@ export function setModal(el: Element, modal: boolean): boolean {
  *  the document). False where nothing changed. */
 export function setPopoverOpen(el: Element, open: boolean): boolean {
   const was = IN_TOP_LAYER.get(el);
-  if (open) return !was && enterTopLayer(el, false);
-  return !!was && !was.modal && leaveTopLayer(el);
+  if (open) return !was && enterTopLayer(el, 'popover');
+  return was?.kind === 'popover' && leaveTopLayer(el);
 }
 
-function enterTopLayer(el: Element, modal: boolean): boolean {
+/** Make an element its document's fullscreen element, last of its top
+ *  layer, or take it out (Fullscreen 2, `requestFullscreen()` and
+ *  `exitFullscreen()`, and its removal from the document). False where
+ *  nothing changed. */
+export function setFullscreen(el: Element, on: boolean): boolean {
+  const was = IN_TOP_LAYER.get(el);
+  if (on) return !was && enterTopLayer(el, 'fullscreen');
+  return was?.kind === 'fullscreen' && leaveTopLayer(el);
+}
+
+/** Whether `:fullscreen` matches an element (Fullscreen 2, 4). */
+export function isFullscreen(el: Element): boolean {
+  return IN_TOP_LAYER.get(el)?.kind === 'fullscreen';
+}
+
+function enterTopLayer(el: Element, kind: TopLayerKind): boolean {
   const top = topOf(el);
   let layer = TOP_LAYERS.get(top);
   if (!layer) TOP_LAYERS.set(top, (layer = []));
   layer.push(el);
-  IN_TOP_LAYER.set(el, { order: (topLayerCount += 1), top, modal });
+  IN_TOP_LAYER.set(el, { order: (topLayerCount += 1), top, kind });
   return true;
 }
 
@@ -619,7 +637,7 @@ function leaveTopLayer(el: Element): boolean {
 /** Whether `:modal` matches an element: a dialog `showModal()` opened and
  *  nothing has closed or taken out of the document since. */
 export function isModal(el: Element): boolean {
-  return IN_TOP_LAYER.get(el)?.modal === true;
+  return IN_TOP_LAYER.get(el)?.kind === 'modal';
 }
 
 /** Each document's active view transition, by its types (CSS View
@@ -661,7 +679,7 @@ export function inActiveTransition(
 /** Whether `:popover-open` matches an element: one shown as a popover and
  *  not hidden or taken out of the document since. */
 export function isPopoverOpen(el: Element): boolean {
-  return IN_TOP_LAYER.get(el)?.modal === false;
+  return IN_TOP_LAYER.get(el)?.kind === 'popover';
 }
 
 /** What a page's scripts set a media element's `muted` to, from the first
