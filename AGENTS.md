@@ -1481,7 +1481,9 @@ so a resize restyles only when it crossed one — and then only the elements
 the rules it turned on or off match (`Cascade.crossed`), with the elements
 under them whose parent's style came out other than it was
 (`KeptStyles.follow`): Wikipedia's 1120px breakpoint turns 55 rules over
-that match 27 of its 4,386 elements. That stands on **a child's computed
+that match 27 of its 4,386 elements. A query on the height or the aspect
+ratio is a breakpoint too: its answer is in the band (`mediaBand`), and
+`crossed` is handed both heights. That stands on **a child's computed
 style being a function of the rules that match it and its parent's
 style**: anything new that makes a style read more — a sibling's style, an
 ancestor's past the parent — has to say so to `follow`, or a crossing keeps
@@ -1489,9 +1491,14 @@ a style that changed. And `crossed` answers null, a whole restyle, for
 what is under a media query outside the rule indexes: a `@keyframes`, a
 rule at a shadow tree's edge, a shadow tree, a `@font-face`. The viewport
 units are the other exception, handled the same way: a `vw` or a `vh` is a
-number once computed, so the cascade notes as a length is resolved whether
-a style holds one (`_viewportRead`), and only those documents restyle when
-that side of the viewport moves. The viewport
+number once computed, so the cascade notes as a length is resolved which
+sides a style holds (`_viewportRead`, by the style, since a style is
+shared), and a move of that side styles again those elements, with
+`follow` (`viewportReaders`), and the root box, whose style is no
+element's. **Anything new that resolves a viewport unit outside a style's
+computation goes through `_queryViewportRead`**, as a container query's
+length does, which styles every element again: what reads it is no style
+the build can find. The viewport
 is the box that scrolls the element, whose height core's layout pass
 decides _after_ the element was measured — so a document that reads it (a
 `vh`, the root's percentage height, a box against the initial containing
