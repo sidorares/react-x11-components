@@ -759,6 +759,56 @@ test("a child put in reaches the later siblings of its new siblings, and its hol
   assert.notStrictEqual(el2.computedStyle(p2)?.color, 'rgb(0, 0, 255)');
 });
 
+test('a change a :has() anchors at the root of a long document is restyled in place where the root’s style comes out as it was', async () => {
+  // Next.js puts scripts and styles in its <head> as it loads, and a
+  // `:root:has(…)` in its sheets puts the root among the elements each one
+  // reaches: the root and all it holds were more than a restyle in place
+  // takes, and each was a build of the whole document
+  const paragraphs = Array.from(
+    { length: 400 },
+    (_, i) => `<p id="p${i}">Paragraph ${i}</p>`,
+  ).join('');
+  const { result, node } = await render(
+    '<html><head><script></script></head><body>' +
+      paragraphs +
+      '</body></html><style>p { margin: 0 } ' +
+      'html:has(script.flag) { background: #00ff00 }</style>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const html = byId(el, 'p0').parent!.parent! as Element;
+  const head = html.children.find(
+    (n) => (n as Element).name === 'head',
+  ) as Element;
+  const putIn = (attribs: Record<string, string>): HtmlChange => {
+    const script = createElement('script', attribs);
+    appendChild(head as never, script);
+    return {
+      type: 'childList',
+      target: head as never,
+      addedNodes: [script],
+      removedNodes: [],
+    };
+  };
+  const plain = putIn({});
+  assert.ok(scopeOf(el, [plain])?.has(html), 'the root was not reached');
+  const tree = treeOf(el);
+  const computed = await stylesComputed(el, async () => {
+    el.touchDocument([plain]);
+    await snapshot(result, el);
+  });
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.ok(computed > 0 && computed < 10, `${computed} styles worked out`);
+  // and one that changes what the root draws still reaches it
+  el.touchDocument([putIn({ class: 'flag' })]);
+  await snapshot(result, el);
+  assert.strictEqual(
+    el.computedStyle(html)?.['background-color'],
+    'rgb(0, 255, 0)',
+  );
+});
+
 test('a class that an attribute selector answers alike for before and after restyles nothing it tests, and one it answers otherwise for restyles what it reaches', async () => {
   // Primer's pricing rules: a `[class*=]` in a `:has()` that starts at a
   // sibling made every class change on github.com/features a refresh of

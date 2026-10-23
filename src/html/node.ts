@@ -5441,18 +5441,25 @@ export class HtmlViewNode extends Node {
    * rules test the state that changed.
    */
   private _restyleInPlace(
-    reach: ReadonlySet<Element>,
+    given: ReadonlySet<Element>,
     ownChanged: (el: Element) => boolean,
     pseudoRules: 0 | 1 | 2,
     /** The most elements it restyles, past which a build is the cheaper. */
     limit = HOVER_RESTYLE_LIMIT,
+    /** The elements a change restyles, followed down from where it is to
+     *  each child whose parent's style came out other than it was, in
+     *  place of `given`, a reach worked out before: what a change to the
+     *  root reaches is everything, and what it changes, mostly nothing. */
+    from: ReadonlySet<Element> | null = null,
   ): boolean {
     const cascade = this._cascade;
     const tree = this._tree;
     const layouts = this._layouts;
     if (!cascade || !tree || !layouts) return false;
     if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
-    if (reach.size > limit) return false;
+    if ((from ?? given).size > limit) return false;
+    const grown = from ? new Set<Element>() : null;
+    const reach: ReadonlySet<Element> = grown ?? given;
     // a first line's, a first letter's and a marker's styles are layout's
     if (pseudoRules === HOVER_PSEUDO_OTHER) return false;
     // what an animation restyled comes to at this moment's time
@@ -5555,9 +5562,56 @@ export class HtmlViewNode extends Node {
     const builtStyles = cascade.stylesOf;
     cascade.stylesOf = (el) => fresh.get(el) ?? tree.styles.get(el)?.style;
     try {
-      for (const el of reach) {
-        styleOf(el);
-        if (refused) return false;
+      if (from && grown) {
+        // down from the top through what is above the elements changed, a
+        // parent before its children, so each is styled from its parent's
+        // style as this restyle made it; and on below an element only
+        // where its style came out other than it was
+        const above = new Set<Element>();
+        const tops = new Set<Element>();
+        for (const el of from) {
+          let top: Element | null = el;
+          for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+            // a way up another element of the change took already
+            if (above.has(at)) {
+              top = null;
+              break;
+            }
+            above.add(at);
+            top = at;
+          }
+          if (top) tops.add(top);
+        }
+        const visit = (el: Element, parentChanged: boolean): void => {
+          if (parentChanged || from.has(el)) {
+            grown.add(el);
+            if (grown.size > limit) refused = true;
+          }
+          if (refused) return;
+          const style = styleOf(el);
+          if (refused) return;
+          const moved =
+            grown.has(el) &&
+            style !== null &&
+            style !== tree.styles.get(el)?.style;
+          if (!moved && !above.has(el)) return;
+          for (const child of flatChildrenOf(el)) {
+            if (!isElement(child)) continue;
+            if (moved || above.has(child) || from.has(child)) {
+              visit(child, moved);
+            }
+            if (refused) return;
+          }
+        };
+        for (const top of tops) {
+          visit(top, false);
+          if (refused) return false;
+        }
+      } else {
+        for (const el of reach) {
+          styleOf(el);
+          if (refused) return false;
+        }
       }
     } finally {
       cascade.stylesOf = builtStyles;
@@ -7875,10 +7929,19 @@ export class HtmlViewNode extends Node {
     if (scope.drawings.size) this._drawAgain(scope.drawings);
     if (!scope.own.size && !scope.boxes) return;
     if (!scope.boxes) {
+      // the change's elements and all they hold, or where that is more than
+      // a restyle in place takes, followed down from them: a `:has()` that
+      // anchors at the root puts the root among them for a change to a
+      // `<script>` in the head (`_restyleInPlace`'s `from`)
       const reach = withDescendants(scope.own, HOVER_RESTYLE_LIMIT);
       if (
-        reach &&
-        this._restyleInPlace(reach, (el) => scope.own.has(el), scope.pseudo)
+        this._restyleInPlace(
+          reach ?? EMPTY_SET,
+          (el) => scope.own.has(el),
+          scope.pseudo,
+          HOVER_RESTYLE_LIMIT,
+          reach ? null : scope.own,
+        )
       ) {
         // a transition the change started wants its frames
         this._scheduleFrame();
@@ -12704,10 +12767,12 @@ function hoverChange(
   const b = now as unknown as Record<string, unknown>;
   let change: HoverChange | null = null;
   for (const key in b) {
-    // the sets are shared by what made them (`Cascade._customFor`): one
-    // object where they are the same
+    // the sets are shared by what made them (`Cascade._customFor`), and
+    // within a build they are one object where they are the same; a
+    // restyle makes the root's again, and Next.js's, the same set, sent
+    // every restyle in place that reached it down through all of the page
     if (key === 'custom') {
-      if (a[key] !== b[key]) {
+      if (!sameValue(a[key], b[key])) {
         change ??= {
           ink: false,
           reach: false,
