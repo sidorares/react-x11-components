@@ -2746,6 +2746,38 @@ test("upgrade() upgrades its own registry's elements, and a copy of no registry 
   assert.strictEqual(doc.text('out'), 'false|true||true', doc.logs.join('\n'));
 });
 
+test("createContextualFragment parses in its context's registry, and in a template in none until what it made is put somewhere", async () => {
+  // HTML 13.4 and its scoped registries: the fragment's elements take the
+  // context element's registry, and a template's content is parsed as
+  // children of nothing, in no registry; a custom element's name as the
+  // context parses as a div does, and makes no element of that name
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], made = 0, scoped = new CustomElementRegistry();' +
+      'class X extends HTMLElement {} scoped.define("x-x", X);' +
+      'customElements.define("y-y", class extends HTMLElement { constructor() { super(); made++; } });' +
+      'var range = document.createRange();' +
+      'var div = document.createElement("div", { customElementRegistry: scoped });' +
+      'range.selectNodeContents(div);' +
+      'var x = range.createContextualFragment("<x-x><x-x></x-x></x-x>").firstChild;' +
+      'r.push(x.customElementRegistry === scoped, x instanceof X, x.firstChild instanceof X);' +
+      'range.selectNodeContents(document.createElement("template", { customElementRegistry: scoped }));' +
+      'var frag = range.createContextualFragment("<tr><td><x-x></x-x></td></tr>");' +
+      'var tr = frag.firstChild;' +
+      'r.push(tr.localName, tr.customElementRegistry, tr.querySelector("x-x").customElementRegistry);' +
+      'document.body.append(tr); r.push(tr.customElementRegistry === customElements);' +
+      'range.selectNodeContents(document.createElement("y-y"));' +
+      'r.push(made, range.createContextualFragment("<b>b</b>").firstChild.localName, made);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'true|true|true|tr|||true|1|b|1',
+    doc.logs.join('\n'),
+  );
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +
