@@ -110,6 +110,10 @@ export interface UnitContext {
    *  a sheet that only mentions one, in a rule nothing matches, holds
    *  none (`Cascade.readsViewportWidth`). */
   viewport?: (unit: 'vw' | 'vh' | 'vmin' | 'vmax') => void;
+  /** Told as a length in `rem` is resolved, so the cascade knows a style
+   *  holds one, which a change of the root's `font-size` reaches wherever
+   *  the element is (`Cascade._remRead`). */
+  remRead?: () => void;
   /** The content box of the element's nearest size container of an axis,
    *  in device pixels, for `cqw`, `cqh` and their kin (CSS Conditional 5,
    *  3.4) — the viewport's where there is none. Absent, the viewport's. */
@@ -251,6 +255,7 @@ function unitScale(unit: string, ctx: UnitContext): number {
     case 'em':
       return ctx.em;
     case 'rem':
+      ctx.remRead?.();
       return ctx.rem;
     case 'pt':
       return (96 / 72) * ctx.scale;

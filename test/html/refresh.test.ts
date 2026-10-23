@@ -156,6 +156,26 @@ test('an attribute set to what it was, or set and set back, restyles nothing', a
   assert.ok(treeOf(el) !== tree, 'a box that went is still drawn');
 });
 
+test('the root’s font-size changed reaches a rem anywhere, though every parent’s style comes out as it was', async () => {
+  const { result, node } = await render(
+    '<html id="root" style="font-size:16px"><body style="margin:0;font-size:16px">' +
+      '<div><div id="t" style="width:2rem;height:4px"></div></div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const t = byId(el, 't');
+  assert.strictEqual(el.computedStyle(t)?.width, '32px');
+  const root = byId(el, 'root');
+  const oldValue = root.attribs.style ?? null;
+  root.attribs.style = 'font-size:10px';
+  el.touchDocument([
+    { type: 'attributes', target: root, attributeName: 'style', oldValue },
+  ]);
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(t)?.width, '20px');
+});
+
 metric(
   'a class that moves something builds the boxes again, styling only what it reaches',
   async () => {
