@@ -1334,3 +1334,33 @@ test("clip-path's computed value is its shape's lengths and percentages, and a p
     'shape(from 5px 5px, hline by calc(25% + 25px), vline by 30px, close)',
   );
 });
+
+test('two custom property sets are the same where every link of them is, however often asked', async () => {
+  const { sameValue } = await import('../../src/html/css/style.js');
+  const { CustomProps } = await import('../../src/html/css/vars.js');
+  const chain = (values: Record<string, string | null>[]) => {
+    let at: InstanceType<typeof CustomProps> | null = null;
+    for (const own of values) {
+      const next: InstanceType<typeof CustomProps> = new CustomProps(at);
+      for (const [k, v] of Object.entries(own)) next.own.set(k, v);
+      at = next;
+    }
+    return at!;
+  };
+  const a = chain([{ '--x': '1' }, { '--y': 'red', '--z': null }]);
+  const b = chain([{ '--x': '1' }, { '--z': null, '--y': 'red' }]);
+  const shared = chain([{ '--x': '1' }]);
+  const c = new CustomProps(shared);
+  c.own.set('--y', 'red');
+  c.own.set('--z', null);
+  const d = chain([{ '--x': '2' }, { '--y': 'red', '--z': null }]);
+  const e = chain([{ '--y': 'red', '--z': null }]);
+  for (let round = 0; round < 2; round += 1) {
+    assert.strictEqual(sameValue(a, b), true, 'the same links, apart');
+    assert.strictEqual(sameValue(a, c), true, 'a link shared');
+    assert.strictEqual(sameValue(a, d), false, 'a parent otherwise');
+    assert.strictEqual(sameValue(a, e), false, 'a link short');
+    assert.strictEqual(sameValue(d, e), false);
+    assert.strictEqual(sameValue({ custom: a }, { custom: b }), true);
+  }
+});
