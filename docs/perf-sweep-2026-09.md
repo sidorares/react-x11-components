@@ -4974,6 +4974,22 @@ sites in 12.77 s from 13.72, svelte.dev in 338 ms from 674. The process
 spent more: 19.1 s of processor time from 17.9, since each worker
 evaluates and warms the decoders on its own.
 
+With react-x11 2.54.0, which carries it, `<Html>` asks for it (#962): the
+seventeen pages settled in 9.48 s from 10.06, the thirteen sites in 21.76
+s from 22.77, for 6% and 2.5% more processor time.
+
+### A change that reaches the root
+
+A `:root:has(…)` in a page's sheets puts the root among the elements a
+change to a `<script>` in the `<head>` reaches, and the root and all it
+holds were more than a restyle in place takes, so each was a build of the
+whole document: Next.js puts its scripts and styles in its head as it
+loads. A restyle in place follows down from such a change instead, a
+parent before its children and on below an element only where its style
+moved, and a custom property set the same as the one it replaces is no
+change (#961). Next.js's blog loaded in 3.9 s of processor time from 4.8,
+settling in 2.06 s from 2.58, and the thirteen sites in 33.4 s from 34.7.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -5575,11 +5591,11 @@ round 15.
   more than an in-place restyle takes, and a change of an offset is no
   hover's change. Placing what moved without a build is the step (round
   49).
-- **Images decode on the JavaScript thread under Node** (core): until
-  react-x11#1004 is released, and `<Html>` asks for `offThread`, a page's
-  photographs hold the thread for a fifth to a half of its load (round
-  49). Native decoders on a Mac (ImageIO, which reads WebP) would take the
-  processor time a worker adds back off.
+- **A decode worker warms the decoders on its own** (core): since #962 a
+  document's images decode on up to two workers, and a page of many small
+  thumbnails — Wikipedia's — pays more for the workers' warm-up than it
+  saves the main thread, some 600 ms of processor time (round 49). Native
+  decoders on a Mac (ImageIO, which reads WebP) would take it back.
 - **A shadow root attached restyles the document** (`<Html scripts>`):
   `attachShadow` is a refresh of everything (`_refreshAll`), 1.1 s of the
   JS sites' loads (round 48). It would come down to the host's subtree,
