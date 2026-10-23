@@ -190,6 +190,10 @@ const DEFAULT_BUDGET_MS = 12;
 /** Milliseconds a frame may spend building tiles' buckets on this thread;
  *  a frame always builds at least one waiting tile. */
 const BUILD_BUDGET_MS = 6;
+/** Milliseconds of cutting tiles into triangles in one slice while the map
+ *  is still — the longest a gesture that starts mid-slice waits for this
+ *  thread, plus the chunk earstrip is in (`CUT_CHUNK_POINTS`). */
+const CUT_SLICE_MS = 4;
 /** Milliseconds a frame may spend measuring strings it has not set before
  *  — the one label cost that can be large (the first strings on X11 load
  *  fonts and rasterize glyphs in JS). Placement's remainder waits a frame. */
@@ -495,6 +499,8 @@ export class GlMapDriver implements MapView {
   /** When labels were last placed. */
   private _placedAt = -Infinity;
   private _pumpTimer: unknown = null;
+  /** The next slice of cutting tiles into triangles, while one is due. */
+  private _cutTimer: unknown = null;
   private _stats: MapFrameStats | null = null;
   private _announced = false;
   private _paneStyle: {
@@ -1089,6 +1095,7 @@ export class GlMapDriver implements MapView {
     let errors = 0;
     let building = 0;
     let loading = 0;
+    let uncut = 0;
     for (const c of covers) {
       tiles += c.target.inView.length;
       ready += c.target.own;
@@ -1097,6 +1104,7 @@ export class GlMapDriver implements MapView {
       errors += c.store.failedAmong(c.target.inView);
       building += c.store.building;
       loading += c.store.loading;
+      uncut += c.store.uncut;
     }
     const level = primary?.target.level ?? 0;
     this._stats = {
@@ -1121,6 +1129,7 @@ export class GlMapDriver implements MapView {
         buildMs,
         building,
         loading,
+        uncut,
         gpuBytes: renderer.gpuBytes,
         instances: stats.instances,
         drawCalls: stats.drawCalls,
@@ -1163,6 +1172,7 @@ export class GlMapDriver implements MapView {
       attributing
     )
       this.request();
+    if (uncut > 0 && !this._controller.moving) this._cutSoon();
     if (!this._announced) {
       this._announced = true;
       this._pane?.notifyA11ySceneChanged?.();
@@ -1414,6 +1424,34 @@ export class GlMapDriver implements MapView {
   }
 
   /**
+   * Cut built tiles into triangles while the map is still: a slice of
+   * {@link CUT_SLICE_MS} on a timer, and another after it while tiles are
+   * left. Not while the camera moves — `settled()` draws a frame, which
+   * comes back here — and not while tiles wait to be built, which the frames
+   * still coming do; and asking for no frame, since a tile draws the same
+   * pixels by its fan as by its triangles. A cut changes what the frames
+   * after it cost, and nothing on screen.
+   */
+  private _cutSoon(): void {
+    if (this._cutTimer !== null) return;
+    this._cutTimer = globals.setTimeout(() => {
+      this._cutTimer = null;
+      if (this._controller.moving) return;
+      for (const store of this._stores.values()) {
+        if (store.building > 0) return;
+      }
+      const deadline = now() + CUT_SLICE_MS;
+      let more = false;
+      for (const store of this._stores.values()) {
+        if (now() < deadline ? store.cutUntil(deadline) : store.uncut > 0) {
+          more = true;
+        }
+      }
+      if (more) this._cutSoon();
+    }, 0);
+  }
+
+  /**
    * Let go of everything GL: the stores, the atlas, the renderer — all of
    * it made again, lazily, by the next frame if there is one. React's
    * strict-mode double effect is the case where there is.
@@ -1422,6 +1460,8 @@ export class GlMapDriver implements MapView {
     this._controller.detach(this);
     if (this._pumpTimer !== null) globals.clearTimeout(this._pumpTimer);
     this._pumpTimer = null;
+    if (this._cutTimer !== null) globals.clearTimeout(this._cutTimer);
+    this._cutTimer = null;
     this._atlas?.dispose();
     this._atlas = null;
     this._atlasKey = '';

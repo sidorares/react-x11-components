@@ -3685,6 +3685,46 @@ would visibly move. Three rules came with it:
   harness's own "no GLX" failure never lands. `test/maps.test.ts` is the
   retained renderer's, and stays exactly as it is.
 
+**A GL fill is triangles, cut while the map is still, and the fan is
+always there.** The renderer draws an opaque fill as earstrip's triangles —
+indices into the fill stream's own records — with no stencil, where it drew
+a stencil fan and a cover pass over the layer's squares: 20–30% off a dense
+frame. The cut costs half a build again, and **the two paths draw the same
+pixels**, which is the fact the rest stands on. `scripts/bench/maps-gl.ts
+--fills=stencil|triangles` runs either path, on macOS or, through x11-dri's
+GBM/EGL, on Linux. Four things to keep:
+
+- **The cut is not part of the build.** `buildTileBuckets` writes the fan and
+  `PendingCut` — which rings make which polygon, eight bytes a ring — and
+  `cutTile` cuts later, resumably, a chunk of polygons at a time: a build
+  worker straight after its build, the main thread in `CUT_SLICE_MS` slices
+  that the view (`_cutSoon`) runs only while the camera is still and nothing
+  waits to be built, and that ask for no frame. Moved into the build, it cost
+  every tile that arrived during a gesture half its build again. **Work that
+  changes no pixel and only makes later frames cheaper waits for the map to
+  rest the same way.** And a map that is never still never gets it: that is
+  the cost, and the fan is why it is safe.
+- **A tile not cut draws its fan, tile by tile.** The renderer takes each
+  tile's own path within a layer — fans first, their cover cut to the
+  squares of the tiles that need it, then the triangles — since a cut tile
+  beside an uncut one is the ordinary state while tiles stream in. A path
+  that cannot cut at all keeps the fan everywhere: a table without
+  `drawElements`, and an overlay (built again as the view moves). Anything
+  new that builds fill records without a `PendingCut` leaves
+  `LayerDraw.triangles` undefined, which is what sends a tile to its fan.
+- **earstrip is a regular dependency.** 160 KB, no dependencies of its own,
+  no native code, and reached only from the lazy GL chunk — the `ical.js`
+  judgement, not the `@xterm/headless` one.
+- **Its types are ours, through the `#earstrip` import.** earstrip 0.2.0's
+  `earstrip.d.ts` has an extensionless relative `import()`, which fails
+  `nodenext` with `skipLibCheck` off. `package.json`'s `imports` maps
+  `#earstrip` to the package, with a `types` condition pointing at
+  `src/maps/gl/earstrip.d.ts`: TypeScript reads that, and Node, tsx and
+  esbuild, which never read `types`, load the package. `paths` was tried
+  first and is wrong — tsx honours it at run time and loaded the `.d.ts`.
+  When a release fixes the declaration (GLMap/earstrip#1), delete the copy
+  and import `earstrip` directly.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from

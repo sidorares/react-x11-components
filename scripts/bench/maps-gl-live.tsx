@@ -360,6 +360,22 @@ for (let i = 0; i < 400; i++) {
     break;
 }
 const settledMs = performance.now() - settleStart;
+// …and until its tiles are cut into triangles, which a still map does
+// between frames and asks no frame for. A frame is asked for only to read
+// the count, and a nudge is a move, which holds the cut off for the settle
+// window (140 ms), so it is asked for well after it. The pan and the zoom
+// are then drawn by triangles; the fly is what a map that never stops
+// gets, a fan for every tile it reaches. The time is to the frame that saw
+// none left, so it is an upper bound.
+const cutStart = performance.now();
+for (let i = 0; i < 25; i++) {
+  await wait(300);
+  nudge();
+  await wait(30);
+  const last = frames[frames.length - 1];
+  if (last && last.uncut === 0) break;
+}
+const cutMs = performance.now() - cutStart;
 
 if (readback) {
   // Labels land a readback after they are placed and fade in after that.
@@ -409,7 +425,7 @@ const backend =
   process.env.REACT_X11_BACKEND ??
   (process.platform === 'darwin' ? 'cocoa' : 'x11');
 process.stdout.write(
-  `\nlive on ${backend}: 1200×800 window, ${seconds} s per phase; settled in ${settledMs.toFixed(0)} ms\n` +
+  `\nlive on ${backend}: 1200×800 window, ${seconds} s per phase; settled in ${settledMs.toFixed(0)} ms, cut in ${cutMs.toFixed(0)} ms more\n` +
     `  labels ${labels ? 'on' : 'off'}, ${markerCount} markers, overlays ${withOverlays ? 'on' : 'off'}\n` +
     `  phase   frames   fps   interval med    p95    max   >20ms   issue med   build total/max   tiles   segments\n`,
 );
@@ -444,6 +460,8 @@ for (const phase of ['settle', 'pan', 'zoom', 'fly'] as const) {
     issue: issue[issue.length >> 1],
     buildTotal: build.reduce((a, b) => a + b, 0),
     buildMax: Math.max(...build),
+    // Tiles drawn by their fan for want of a cut, at the most.
+    uncut: Math.max(...list.map((f) => f.uncut)),
     tiles: Math.max(...list.map((f) => f.tiles)),
     segments: Math.max(...list.map((f) => f.instances)),
     // What adaptive quality and the fade did in this phase.
@@ -474,6 +492,7 @@ for (const phase of ['settle', 'pan', 'zoom', 'fly'] as const) {
           : '')
       : '') +
     (row.faded ? `   fading on ${row.faded} frames` : '') +
+    (row.uncut ? `   uncut tiles ≤${row.uncut}` : '') +
     (covered.get(phase)
       ? `   COVERED for ~${covered.get(phase)} ms: not a measurement`
       : '') +

@@ -170,6 +170,23 @@ void main() {
 }
 `;
 
+/**
+ * A polygon's triangles, as earstrip cut them: each vertex a fill record's
+ * point, in the colour. It reads the point at `a_corner`'s location, 0, and
+ * not `a_p0`'s: a desktop table in its compatibility profile may draw
+ * nothing unless attribute 0 is an enabled array, and here it is the only
+ * one.
+ */
+export const TRIANGLE_VERTEX = `precision highp float;
+attribute vec2 a_corner;
+uniform vec3 u_tile;
+uniform vec2 u_viewport;
+void main() {
+  vec2 p = a_corner * u_tile.x + u_tile.yz;
+  gl_Position = vec4(p.x / u_viewport.x * 2.0 - 1.0, 1.0 - p.y / u_viewport.y * 2.0, 0.0, 1.0);
+}
+`;
+
 /** The viewport, filled where the stencil says a polygon is. */
 export const COVER_VERTEX = `precision highp float;
 attribute vec2 a_corner;
