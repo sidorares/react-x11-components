@@ -11966,14 +11966,48 @@ export function installDom(
       return at ? at.getBoundingClientRect() : new DOMRect();
     }
     createContextualFragment(html: Any): Any {
-      let context = this.startContainer;
+      const start = this.startContainer;
+      let context = start;
       while (context && !(context instanceof Element)) {
         context = context.parentNode;
       }
-      const doc = context?.ownerDocument ?? document;
+      const doc = start.nodeType === 9 ? start : start.ownerDocument;
       const fragment = doc.createDocumentFragment();
-      const holder = doc.createElement(context?.localName ?? 'div');
+      const html_ = context?.namespaceURI === HTML_NS;
+      // what is parsed in a template is parsed in no template's contents
+      // and has no registry (HTML's scoped registries) until it is put
+      // where one is looked up
+      if (html_ && context.localName === 'template') {
+        const holder = doc.createElement('template');
+        holder.innerHTML = html;
+        const content = holder.content;
+        for (const top of content.children) registryUntilPut.add(top);
+        while (content.firstChild) fragment.appendChild(content.firstChild);
+        return fragment;
+      }
+      // the context's name decides how its content is parsed, and one
+      // with no name of its own, a custom element's, parses as a div
+      // does: made by that name, it would run its constructor
+      const name =
+        !context || (html_ && context.localName === 'html')
+          ? 'body'
+          : html_ && !context.localName.includes('-')
+            ? context.localName
+            : 'div';
+      const holder =
+        context && !html_
+          ? doc.createElementNS(context.namespaceURI, context.localName)
+          : doc.createElement(name);
+      // and what is parsed takes the context's registry (HTML 13.4)
+      const pinned = registriesMatterNow();
+      if (pinned) {
+        pinRegistry(
+          holder,
+          context ? registryOf(context) : documentRegistryOf(doc),
+        );
+      }
       holder.innerHTML = html;
+      if (pinned) for (const el of holder.querySelectorAll('*')) registryOf(el);
       while (holder.firstChild) fragment.appendChild(holder.firstChild);
       return fragment;
     }
@@ -20376,6 +20410,10 @@ export function installDom(
     if (registry === null) noneIn.set(el, el.ownerDocument);
     else noneIn.delete(el);
   };
+  /** What `createContextualFragment` parsed in a template: no registry
+   *  while it is nobody's child (HTML's scoped registries), and the one
+   *  looked up where it is put. */
+  const registryUntilPut = new WeakSet<Any>();
   const shadowRegistries = new WeakMap<Any, Any>();
   /** A document's registry, where it is not this window's: one a page
    *  initialized it with, or its own window's. */
@@ -20536,6 +20574,14 @@ export function installDom(
       if (parent instanceof Element) {
         at = parent;
         continue;
+      }
+      if (
+        registryUntilPut.has(at) &&
+        !(parent instanceof ShadowRoot) &&
+        parent?.nodeType !== 9
+      ) {
+        keep = false;
+        break;
       }
       registry =
         parent instanceof ShadowRoot
