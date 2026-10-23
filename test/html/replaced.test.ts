@@ -497,6 +497,64 @@ test('an image its own size lays out lays the document out again where it arrive
   assert.strictEqual(boxOf(doc.el(), 'p').y, before + 20 - 10, 'what follows');
 });
 
+test('an image that arrives after the first layout widens the boxes that shrink to it, as one there from the start does', async () => {
+  // what a flex item and an inline-block measured of the image while it
+  // was on its way is kept for their lives, and was kept after it arrived:
+  // the item was as narrow as no image, and the image hung out of it
+  const source =
+    '<div style="display:flex;width:10px"><div id="i"><img id="a" ' +
+    'src="large.png"></div></div><span id="ib" style="display:inline-block">' +
+    '<img id="b" src="large.png"></span><div id="f" style="float:left">' +
+    '<img id="c" src="large.png"></div>';
+  const laid = (doc: Awaited<ReturnType<typeof choosing>>) =>
+    ['i', 'a', 'ib', 'b', 'f', 'c'].map((id) => [id, ...doc.size(id)]);
+  const at = await choosing(source, { 'large.png': LARGE });
+  const expected = laid(at);
+  assert.deepStrictEqual(expected[0], ['i', 40, 20], 'as wide as the image');
+  cleanup();
+  const later = await choosing(source, { 'large.png': LARGE }, { later: true });
+  assert.deepStrictEqual(later.size('i'), [0, 0], 'no image yet');
+  const tree = treeOf(later.el());
+  await later.release();
+  await waitFor(() => assert.deepStrictEqual(later.size('a'), [40, 20]));
+  assert.strictEqual(treeOf(later.el()), tree, 'the same boxes');
+  assert.deepStrictEqual(laid(later), expected);
+});
+
+test('an image whose w candidate shows at another density takes its size in place at a new width, and lays out as a build does', async () => {
+  // BBC's images: `w` candidates and a `sizes` in `vw`, so at every step
+  // of a drag the candidate shown is another density, another size — and
+  // the boxes were built for each. A flex item and an inline-block hold
+  // two of them, and what they measured of the image is measured again.
+  const source =
+    '<div style="display:flex;width:5px"><div id="i"><img id="a" ' +
+    'srcset="small.png 20w, large.png 40w" sizes="50vw"></div></div>' +
+    '<span id="ib" style="display:inline-block"><img id="b" ' +
+    'srcset="small.png 20w, large.png 40w" sizes="25vw"></span>';
+  const doc = await choosing(
+    source,
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 80 },
+  );
+  const laid = () => ['i', 'a', 'ib', 'b'].map((id) => [id, ...doc.size(id)]);
+  assert.deepStrictEqual(doc.size('a'), [40, 20]);
+  for (const width of [60, 100, 72, 80]) {
+    const tree = treeOf(doc.el());
+    await doc.resize(width);
+    assert.strictEqual(treeOf(doc.el()), tree, `built again at ${width}`);
+    assert.deepStrictEqual(doc.size('a'), [width / 2, width / 4]);
+    const inPlace = laid();
+    // and the document styled and built again whole, at the same width
+    const el = doc.el() as unknown as {
+      _invalidate(stale: number): void;
+      layoutNow(): void;
+    };
+    el._invalidate(3);
+    el.layoutNow();
+    assert.deepStrictEqual(inPlace, laid(), `at ${width}`);
+  }
+});
+
 test('an object built before its image arrived is built again as one', async () => {
   const doc = await choosing(
     '<object id="o" data="small.png" type="image/png">fallback</object>',

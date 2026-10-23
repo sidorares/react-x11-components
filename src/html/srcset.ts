@@ -410,8 +410,8 @@ export interface SourceStore {
 
 /** What a round of choices changed (`ImageSources.choose`). */
 export interface SourceChanges {
-  /** Whether what any image shows changed: its URL, or its density. */
-  shown: boolean;
+  /** The images whose source shown changed: its URL, or its density. */
+  shown: Element[];
   /** The images whose dimension attribute source is another element now,
    *  whose styles the attributes it has make (`dimensionSource`). */
   restyle: Element[];
@@ -488,13 +488,13 @@ export class ImageSources {
    * Choose each element's source in `env`, and ask for each one chosen —
    * but an image whose `sizes` waits on its layout, whose candidate
    * `chooseLaidOut` picks, and which shows what it showed until then. What
-   * changed: whether what any of them shows, and which are sized by
+   * changed: which of them show another source, and which are sized by
    * another element now.
    */
   choose(elements: readonly Element[], env: SourceEnv): SourceChanges {
     this._env = env;
     const key = envKey(env);
-    const changes: SourceChanges = { shown: false, restyle: [] };
+    const changes: SourceChanges = { shown: [], restyle: [] };
     for (const el of elements) {
       const signature = signatureOf(el);
       const kept = this._choices.get(el);
@@ -519,7 +519,7 @@ export class ImageSources {
       }
       const after = this.shown(el);
       if (before?.url !== after?.url || before?.density !== after?.density) {
-        changes.shown = true;
+        changes.shown.push(el);
       }
     }
     return changes;

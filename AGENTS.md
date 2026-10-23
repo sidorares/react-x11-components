@@ -1726,6 +1726,10 @@ moves; only an element whose box is another kind with its image
 (`awaitingKind`), or a marker or generated content sized by it, builds the
 boxes. **Anything new that a box takes from an image as it is built joins
 one of those lists**, or an arrival leaves the box as the image was not.
+And a size taken in place forgets what the boxes around it measured of it
+for their lives (`forgetSizes`): a flex item, an inline-block or a float
+shrunk to an image still on its way stayed as narrow as no image once it
+came, and the image hung out of it.
 Over a network, the Zen Garden's designs took eleven builds a page before
 these and take one; Wikipedia's X Window System article was built eleven
 times as its images came in, at some 180 ms a time on a Mac, and is
@@ -1842,8 +1846,16 @@ scale, the scheme — or its attributes change, and never because an image
 arrived: `pick` prefers a denser candidate already asked for, as Chrome
 prefers one it has cached, so a choice made again on an arrival would
 trade one element's image for one another element asked for. And a choice
-that changes what an image shows builds the boxes again keeping every
-style and **leaves `_sizes` alone**, as a `vw` does: core asks a document
+that changes what an image shows is taken into its box in place
+(`_showInPlace`) — the size the source gives at its density, what the
+boxes around it measured of it forgotten (`forgetSizes`) — and laid out by
+the layout the width's move asks for anyway, which stops where what can be
+seen ends: a stale layout would lay out whole. BBC's images are `w`
+candidates with a `sizes` in `vw`, so each showed the candidate it showed
+at another density at every step of a drag, and the boxes were built for
+it. Only a choice that sizes an image by another `<source>` now builds,
+keeping every style but that image's. Either way it **leaves `_sizes`
+alone**, as a `vw` does: core asks a document
 its height at a resize's old width as well as its new one, and a cleared
 cache laid it out three times a frame. That is sound because the size a
 width comes to is the same whichever candidate it holds — a `w` one is as

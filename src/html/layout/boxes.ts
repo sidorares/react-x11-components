@@ -1050,6 +1050,10 @@ export interface BoxTree {
    *  image arriving is checked against, since one that sizes nothing anew
    *  changes no box (`HtmlViewNode._imageArrived`). */
   awaiting: Box[];
+  /** Every image's box, in document order, laid out or set aside: what an
+   *  image that shows another source takes its size into
+   *  (`HtmlViewNode._showInPlace`). */
+  images: Box[];
   /** Every element whose box is another kind once its image is in — an
    *  `<object>`, an `<embed>`, a `<video>`'s poster, an image button —
    *  built before it was. */
@@ -1255,6 +1259,7 @@ class Builder {
     sized: boolean;
   }[] = [];
   private _awaiting: Box[] = [];
+  private _images: Box[] = [];
   private _awaitingKind: Element[] = [];
   private _relative = false;
   private _tilted = false;
@@ -1350,6 +1355,7 @@ class Builder {
       backgrounds: this._backgrounds,
       contentImages: this._contentImages,
       awaiting: this._awaiting,
+      images: this._images,
       awaitingKind: this._awaitingKind,
       relative: this._relative || isRelative(rootStyle),
       tilted: this._tilted || outOfPlane(rootStyle),
@@ -1941,6 +1947,7 @@ class Builder {
       // attribute — and the box is device, and zoomed as its lengths are
       // (CSS Viewport 1, 5).
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
+      this._images.push(box);
       const loaded = this._options.imageSize(el);
       if (loaded) {
         setIntrinsics(box, loaded, scale);
@@ -1952,14 +1959,7 @@ class Builder {
         // its `<picture>` chose, where that has any (`dimensionSource`);
         // without them the box is a small placeholder rather than nothing.
         const sized = this._options.cascade.dimensionSource?.(el) ?? el;
-        const width = numberAttr(sized, 'width') ?? 0;
-        const height = numberAttr(sized, 'height') ?? 0;
-        box.intrinsic = {
-          width: width * scale,
-          height: height * scale,
-          missing: 0,
-          ratio: width > 0 && height > 0 ? width / height : 0,
-        };
+        box.intrinsic = awaitedIntrinsics(sized, scale);
         this._awaiting.push(box);
       }
       // The alt text joins the document text, so a document read with the
@@ -3337,6 +3337,23 @@ export function intrinsicsOf(
     height: (size.height ?? 150) * scale,
     missing: (size.width === null ? 1 : 0) | (size.height === null ? 2 : 0),
     ratio: size.ratio,
+  };
+}
+
+/** An image box's intrinsic size while its image has not arrived: what
+ *  the `width` and `height` of `sized` say, its own or the `<source>`'s
+ *  its `<picture>` chose (`dimensionSource`), and no size without them. */
+export function awaitedIntrinsics(
+  sized: Element,
+  scale: number,
+): NonNullable<Box['intrinsic']> {
+  const width = numberAttr(sized, 'width') ?? 0;
+  const height = numberAttr(sized, 'height') ?? 0;
+  return {
+    width: width * scale,
+    height: height * scale,
+    missing: 0,
+    ratio: width > 0 && height > 0 ? width / height : 0,
   };
 }
 

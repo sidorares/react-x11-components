@@ -546,6 +546,8 @@ export async function renderScrolled(
   source: string,
   height: number,
   width = 400,
+  /** More of `<Html>`'s props. */
+  props: Record<string, unknown> = {},
 ) {
   const doc = (height: number, width: number) =>
     h(
@@ -554,7 +556,7 @@ export async function renderScrolled(
       h(
         'box',
         { style: { flexGrow: 1, overflow: 'scroll' } },
-        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        h(Html, { source, partial: false, 'data-testname': 'doc', ...props }),
       ),
     );
   const result = await renderX11(
