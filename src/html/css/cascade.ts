@@ -2609,6 +2609,14 @@ export class Cascade {
   private _queriesHeight = false;
   private _heldWidth = false;
   private _heldHeight = false;
+  /** Whether a style of the document holds a length in `rem` (`remRead`),
+   *  and whether this build found the root's `font-size` moved: then no
+   *  style is kept, since one far from the root reads it. */
+  private _readsRem = false;
+  private _remMoved = false;
+  private _remRead = (): void => {
+    this._readsRem = true;
+  };
   private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
     if (unit !== 'vh') this._heldWidth = true;
     if (unit !== 'vw') this._heldHeight = true;
@@ -3464,11 +3472,13 @@ export class Cascade {
    */
   beginSharing(kept: KeptStyles | null = null): void {
     // every style there is is about to be computed: whether one holds a
-    // length of the viewport's is for this build to find out
+    // length of the viewport's, or a `rem`, is for this build to find out
     if (!kept) {
       this._heldWidth = false;
       this._heldHeight = false;
+      this._readsRem = false;
     }
+    this._remMoved = false;
     this._namesKept.clear();
     this._keepNames = true;
     this._inBuild = true;
@@ -4079,8 +4089,10 @@ export class Cascade {
           rem: root
             ? (root.fontSize * zoom) / root.effectiveZoom
             : style.fontSize,
+          remRead: this._remRead,
           vw: this.viewportWidth * zoom,
           vh: this.viewportHeight * zoom,
+          viewport: this._viewportRead,
           scale: this.scale * zoom,
         };
         const len = parseLength(text, ctx);
@@ -4400,6 +4412,7 @@ export class Cascade {
     const kept = this._kept;
     if (
       kept !== null &&
+      !this._remMoved &&
       !kept.restyle.has(el) &&
       (!kept.follow || this._parentAsWas(el, parentStyle, kept))
     ) {
@@ -5443,6 +5456,7 @@ export class Cascade {
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize * rootZoom,
+      remRead: this._remRead,
       initial: this.initial,
       uaSets: this._uaSets,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
@@ -5526,7 +5540,16 @@ export class Cascade {
     };
     let line: LineSource | null = null;
     // the root's other declarations measure a `rem` from its own size
-    if (root) this._root = style;
+    if (root) {
+      // and where its size moved in a build that keeps styles, every one
+      // that holds a `rem` is computed again, wherever it is: its parent's
+      // can come out as it was (`sharedStyleFor`)
+      const was = this._kept?.styles.get(el)?.style;
+      if (was && this._readsRem && was.fontSize !== style.fontSize) {
+        this._remMoved = true;
+      }
+      this._root = style;
+    }
     const ctx: UnitContext = {
       ...ctxParent,
       em: style.fontSize,
@@ -5999,6 +6022,7 @@ export class Cascade {
         units: {
           em: style.fontSize,
           rem: (this._root ?? this.initial).fontSize,
+          remRead: this._remRead,
           vw: this.viewportWidth,
           vh: this.viewportHeight,
           viewport: this._viewportRead,
