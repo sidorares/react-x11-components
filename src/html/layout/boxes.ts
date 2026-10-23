@@ -2121,6 +2121,8 @@ class Builder {
     // a translation is moved by the same pass
     if (style.translate || style.transform) this._relative = true;
     if (outOfPlane(style)) this._tilted = true;
+    // a `::before` or an `::after` is an anchor as its element is
+    if (style.anchorNames !== null) this._anchors = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

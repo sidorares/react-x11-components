@@ -1524,6 +1524,26 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
 });
 
+test('a ::before or an ::after is an anchor, as its element is', async () => {
+  // CSS Anchor Positioning 1, 2.1: anchor-name applies to every element,
+  // and to the tree-abiding pseudo-elements
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:200px;height:200px}' +
+      '#one::before,#two::after{display:block;width:100px;height:50px;content:""}' +
+      '#one::before{anchor-name:--a}#two::after{anchor-name:--b}' +
+      '.t{position:absolute;width:10px;height:10px;left:anchor(right);top:anchor(bottom)}' +
+      '#ta{position-anchor:--a}#tb{position-anchor:--b}</style>' +
+      '<div class="cb"><div id="one"></div><div class="t" id="ta"></div></div>' +
+      '<div class="cb"><div id="two">x</div><div class="t" id="tb"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('ta'), [100, 50]);
+  // the ::after after the line of text the element holds
+  const text = boxOf(el, 'two');
+  assert.deepStrictEqual(at('tb'), [100, text.y + text.height]);
+});
+
 test('a box anchored to something a scroller scrolls moves with it, on the axes its anchors share that scroller, and only an anchor laid out before it is one', async () => {
   const { node } = await render(
     '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
