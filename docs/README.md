@@ -70,6 +70,11 @@ parts.
   `<Html>`, why the element draws a document rather than composing one, the
   resource and script seams, the isolated-process mode, and the audit of
   exposing the seams as a Chrome DevTools Protocol surface.
+- [Laying out only what can be seen](prd-visible-layout.md) — design: where
+  a dragged width's layout of a document runs past the viewport today — the
+  builds that throw away every kept size, scroll containers, grids, flex
+  columns and an escaping fixed box — measured on seventeen pages, and the
+  order of work that removes each.
 - [`<Html>` animations off the JavaScript clock](prd-html-animations.md) —
   investigation: what Core Animation, react-x11's two presenters and the
   X11 and Wayland backends can run of a CSS animation, which animations
