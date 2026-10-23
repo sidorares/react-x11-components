@@ -2066,7 +2066,19 @@ closes a way out a DOM binding opens by accident:
   `autoplay` still plays. **Anything new that tells a player what to do
   goes through `setMediaState`**, a press on `controls` included, or the
   next prop a script sets is no change and the player is not told.
-  Nothing comes back from the player to the page yet.
+  Nothing comes back from the player to the page yet. **Where the page's
+  requests reach a network (`network`, `hasNetwork`), the page loads the
+  media itself as far as its metadata**: the host fetches the source
+  (`_mediaFetch`), reads its container's head (`scripts/media.ts`) and
+  tells the facade the duration, the size and how much has arrived
+  (`__media`), and the facade runs HTML's load algorithm, ready states,
+  stall timer and clock over that (`mediaLoad`, `mediaReady`,
+  `mediaSync`). **The bytes stay host-side**: parsed in the page's realm,
+  another origin's would be readable by any page that patched a
+  `Uint8Array` method. And `mediaSync` is what tells the host the flags
+  `:seeking`, `:buffering` and `:stalled` read, so **anything new that
+  changes a media element's paused, network or ready state, its seek or
+  its stall calls it**.
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its

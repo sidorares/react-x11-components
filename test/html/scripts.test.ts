@@ -131,6 +131,8 @@ async function hosted(
     held?: HeldSheets;
     videos?: boolean;
     canPlayType?: (type: string) => '' | 'maybe' | 'probably';
+    /** Whether `fetch` is a network, which a media element loads from. */
+    network?: boolean;
     userAgent?: string;
     scheme?: 'light' | 'dark';
     pane?: number;
@@ -179,6 +181,7 @@ async function hosted(
       out.timeouts += 1;
     },
     canPlayType: options.canPlayType,
+    network: options.network,
   };
   function Page() {
     const app = useApp();
@@ -3480,6 +3483,150 @@ test('CSS.registerProperty registers as @property does, checking what it is give
     'ok|InvalidModificationError|SyntaxError|SyntaxError|SyntaxError|SyntaxError|SyntaxError|TypeError|' +
       '3px|12px|30px|attr(data-w px)|7px|20px',
   );
+});
+
+/** An MP4 of `seconds` and `width` by `height` whose `moov` is first, as
+ *  a web video's is, and `data` bytes of media after it. */
+function mp4(seconds: number, width: number, height: number, data: number) {
+  const u32 = (n: number) => [
+    (n >>> 24) & 255,
+    (n >>> 16) & 255,
+    (n >>> 8) & 255,
+    n & 255,
+  ];
+  const box = (type: string, content: number[]) => [
+    ...u32(content.length + 8),
+    ...[...type].map((c) => c.charCodeAt(0)),
+    ...content,
+  ];
+  const mvhd = new Array<number>(100).fill(0);
+  mvhd.splice(12, 8, ...u32(1000), ...u32(seconds * 1000));
+  const tkhd = new Array<number>(84).fill(0);
+  tkhd.splice(76, 8, ...u32(width * 65536), ...u32(height * 65536));
+  const head = [
+    ...box('ftyp', [...'isom'].map((c) => c.charCodeAt(0)).concat(0, 0, 2, 0)),
+    ...box('moov', [...box('mvhd', mvhd), ...box('trak', box('tkhd', tkhd))]),
+    ...u32(data + 8),
+    ...[...'mdat'].map((c) => c.charCodeAt(0)),
+  ];
+  const bytes = new Uint8Array(head.length + data);
+  bytes.set(head);
+  return bytes;
+}
+
+test('a media element loads its source where there is a network: its events, its duration and size, and :playing, :seeking and :buffering as it plays, seeks and waits', async () => {
+  const clip = mp4(4, 320, 240, 100_000);
+  const respond = (
+    url: string,
+    bytes: Uint8Array | null,
+    chunks?: AsyncIterable<Uint8Array>,
+  ) => ({
+    url,
+    status: 200,
+    statusText: 'OK',
+    redirected: false,
+    headers: [
+      ['content-type', 'video/mp4'],
+      ['content-length', String(clip.length)],
+    ] as [string, string][],
+    body: '',
+    ...(bytes ? { bytes } : {}),
+    ...(chunks ? { chunks } : {}),
+  });
+  const doc = await hosted(
+    '<style>p { color: rgb(0, 0, 0) } video:seeking + p { color: rgb(1, 2, 3) }</style>' +
+      '<div><p id="out"></p></div><script>' +
+      'var v = document.createElement("video"), r = [], out = document.getElementById("out");' +
+      'out.parentNode.insertBefore(v, out);' +
+      'function on(t) { return new Promise(function (res) { v.addEventListener(t, res, { once: true }); }); }' +
+      '["loadstart", "durationchange", "loadedmetadata", "loadeddata", "canplay", "canplaythrough", "suspend",' +
+      ' "play", "playing", "waiting", "seeking", "seeked", "abort", "emptied", "error"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t); }); });' +
+      'v.src = "clip.mp4";' +
+      'r.push(v.networkState, v.paused);' +
+      'on("suspend").then(function () {' +
+      '  r.push(v.readyState, v.duration, v.videoWidth, v.videoHeight, v.networkState);' +
+      '  var p = v.play(); r.push(v.matches(":playing")); return p;' +
+      '}).then(function () {' +
+      '  v.currentTime = 2;' +
+      '  r.push(v.seeking, v.matches(":seeking"), getComputedStyle(out).color); return on("seeked");' +
+      '}).then(function () {' +
+      '  r.push(v.matches(":seeking"), getComputedStyle(out).color, v.currentTime >= 2);' +
+      '  v.src = "slow.mp4"; return on("loadedmetadata");' +
+      '}).then(function () {' +
+      '  v.play().catch(function (e) { r.push(e.name); });' +
+      '  r.push(v.readyState, v.matches(":buffering"));' +
+      '  v.src = "missing.mp4"; r.push(v.matches(":buffering"));' +
+      '  return on("error");' +
+      '}).then(function () {' +
+      '  r.push(v.error.code, v.networkState);' +
+      '  document.getElementById("out").textContent = JSON.stringify(r);' +
+      '});' +
+      '</script>',
+    {
+      network: true,
+      answer: (request) => {
+        if (request.url.endsWith('/clip.mp4'))
+          return respond(request.url, clip);
+        if (!request.url.endsWith('/slow.mp4')) return null;
+        // its head, and then nothing for longer than the test
+        return respond(request.url, null, {
+          async *[Symbol.asyncIterator]() {
+            yield clip.subarray(0, 4096);
+            await new Promise((r) => setTimeout(r, 2000));
+          },
+        });
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(JSON.parse(text), [
+    3,
+    true,
+    'loadstart',
+    'durationchange',
+    'loadedmetadata',
+    'loadeddata',
+    'canplay',
+    'canplaythrough',
+    'suspend',
+    4,
+    4,
+    320,
+    240,
+    1,
+    true,
+    'play',
+    'playing',
+    true,
+    true,
+    'rgb(1, 2, 3)',
+    'seeking',
+    'seeked',
+    false,
+    'rgb(0, 0, 0)',
+    true,
+    'abort',
+    'emptied',
+    'loadstart',
+    'durationchange',
+    'loadedmetadata',
+    2,
+    true,
+    false,
+    // the load turns the pending play() down at once, and the play event
+    // queued before it fires after; loadeddata, queued in a task of its
+    // own after loadedmetadata, is a task of the load that ended
+    'AbortError',
+    'play',
+    'abort',
+    'emptied',
+    'loadstart',
+    'error',
+    4,
+    3,
+  ]);
 });
 
 test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {

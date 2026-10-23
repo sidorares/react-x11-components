@@ -149,11 +149,10 @@ exist here; the rest pass.
 **jspi-for-wasm (100%).**
 
 **media-pseudo-classes (37.3%).** `:playing` and `:paused` follow
-`play()`, `pause()` and `load()` (#891); what is left loads a source and
-waits for `canplay`, `playing` and `seeking` from its player, and
-`:seeking`, `:buffering` and `:stalled` read the player's state. A page's
-`play()` and `pause()` reach core's `<video>`, but nothing comes back from
-the player to the page yet.
+`play()`, `pause()` and `load()` (#891). The rest waits for `canplay`,
+`playing` and `seeking`, and reads `:seeking`, `:buffering` and `:stalled`,
+which the page's own load of a source answers where it has a network: all
+five tests pass run alone since then.
 
 **navigation (47.9%).** The `navigate` event in another window — a link or
 a form aimed at a frame, a `window.open` — where a frame without scripts
