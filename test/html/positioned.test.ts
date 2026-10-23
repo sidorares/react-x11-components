@@ -1568,6 +1568,45 @@ test("a box is placed against where its anchor's relative offset moved it", asyn
   assert.deepStrictEqual(at('area'), [110, 200]);
 });
 
+test('anchor-scope keeps an anchor name to the boxes inside the element that scopes it', async () => {
+  // CSS Anchor Positioning 1, 2.4: the nearest element around the anchor,
+  // itself included, that scopes its name, by the name or by `all`, has
+  // to hold the box that looks for it as well
+  const scoped = (body: string) =>
+    '<style>body{margin:0}main{position:relative;width:100px;height:100px;border-top:1px solid}' +
+    '.all{anchor-scope:all}.sa{anchor-scope:--a}.sb{anchor-scope:--b}' +
+    '.anchor{anchor-name:--a;height:10px;margin-top:20px}' +
+    '#t{position:absolute;position-anchor:--a;top:anchor(bottom);width:5px;height:5px}</style>' +
+    `<main>${body}</main>`;
+  const top = async (body: string) =>
+    boxOf(view((await render(scoped(body), 300)).node), 't').y;
+  const t = '<div id="t"></div>';
+  // the element that names the anchor scopes it as well
+  assert.strictEqual(
+    await top(`<div class="sa anchor">${t}</div>`),
+    31,
+    'scoped by itself',
+  );
+  // outside, the box finds none, and stays where the flow had it
+  assert.strictEqual(
+    await top(`${t}<div class="sa"><div class="anchor"></div></div>`),
+    1,
+  );
+  assert.strictEqual(
+    await top(`${t}<div class="all"><div class="anchor"></div></div>`),
+    1,
+  );
+  // another name's scope is no matter
+  assert.strictEqual(
+    await top(`${t}<div class="sb"><div class="anchor"></div></div>`),
+    31,
+  );
+  assert.strictEqual(
+    await top(`<div class="all"><div class="anchor"></div>${t}</div>`),
+    31,
+  );
+});
+
 test('a box anchored to something a scroller scrolls moves with it, on the axes its anchors share that scroller, and only an anchor laid out before it is one', async () => {
   const { node } = await render(
     '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
