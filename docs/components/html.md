@@ -5043,6 +5043,18 @@ document range, and by ink-bounds distance for hit testing — so a drag costs
 the paragraphs it crosses. And a paragraph is one glyph batch: ntk's text
 layout draws all of its lines in a single composite.
 
+**A sheet is parsed once while the document keeps it.** A sheet a script
+puts in, or one that arrives late, makes the cascade again, and the cascade
+takes every sheet it had from the one before rather than parsing it again:
+a sheet is the same parse where its text, its base URL and the media it is
+under read as they did, and, where it names a cascade layer, where the
+layers ranked before it are the ones its parse saw, since a layer's rank is
+the order the document's sheets first name it in. Each is taken once a
+cascade, so a sheet linked twice is two parses. GitHub's repository page
+carries 3.7 MB of CSS, most of it in Primer's layers, and its scripts bring
+three sheets as it loads: each made the cascade again in some 210 ms, and
+in 85 now, and the load settles 140 ms sooner.
+
 **Text layouts are kept from one pass to the next.** An edit re-parses the
 document and lays it out again — any character of an HTML string can change
 any box — and most of a layout pass was the text engine setting paragraphs
