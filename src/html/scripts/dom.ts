@@ -400,17 +400,49 @@ export function installDom(
       this.relatedTarget = init.relatedTarget ?? null;
     }
   }
+  /** A CSS animation's event (CSS Animations 1, 4.2): its name, the time
+   *  it had run, in seconds, and its pseudo-element. */
+  class AnimationEvent extends Event {
+    _animationName: string;
+    _elapsedTime: number;
+    _pseudoElement: string;
+    _animation: Any = null;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._animationName = str(init?.animationName ?? '');
+      this._elapsedTime = Number(init?.elapsedTime ?? 0);
+      this._pseudoElement = str(init?.pseudoElement ?? '');
+    }
+    /** The `CSSAnimation` it is of, where the document has one. */
+    get animation(): Any {
+      return this._animation;
+    }
+    get animationName(): string {
+      return this._animationName;
+    }
+    get elapsedTime(): number {
+      return this._elapsedTime;
+    }
+    get pseudoElement(): string {
+      return this._pseudoElement;
+    }
+  }
   /** A CSS transition's event (CSS Transitions 1, 6.1): the longhand it
    *  is of, the time it had run, in seconds, and its pseudo-element. */
   class TransitionEvent extends Event {
     _propertyName: string;
     _elapsedTime: number;
     _pseudoElement: string;
+    _animation: Any = null;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this._propertyName = str(init?.propertyName ?? '');
       this._elapsedTime = Number(init?.elapsedTime ?? 0);
       this._pseudoElement = str(init?.pseudoElement ?? '');
+    }
+    /** The `CSSTransition` it is of, where the document has one. */
+    get animation(): Any {
+      return this._animation;
     }
     get propertyName(): string {
       return this._propertyName;
@@ -3956,16 +3988,38 @@ export function installDom(
    */
   class CSSAnimation extends Animation {
     _name = '';
+    /** Its run's key, which the cascade knows it by. */
+    _key = 0;
     get animationName(): string {
       return this._name;
     }
-    // drawn by the document's cascade, and brought up to date by it
+    /** What a page did to it — a seek, `pause()`, `play()`, `finish()` —
+     *  is the cascade's run's as well, so what is drawn, what is read back
+     *  and the events it tells follow it. It is in no list of a script's
+     *  animations: `getAnimations()` finds it through the cascade. */
+    override _changed(): void {
+      this._reschedule();
+      // one the page has held, running or paused, keeps a view transition
+      // whose pseudo-element it animates going (`scriptedTransition`)
+      if (this.playState === 'idle') heldCssAnimations.delete(this);
+      else heldCssAnimations.add(this);
+      const time = this.currentTime;
+      if (typeof time === 'number') {
+        call('seekAnimation', this._key, time, this.playState === 'paused');
+      } else if (this.playState === 'idle') {
+        call('cancelCss', 'animation', this._key);
+      }
+    }
+    // drawn by the document's cascade, and brought up to date by it; its
+    // `finished` settles at its end, by the timer every animation keeps
     override _report(): void {}
     override _watch(): void {}
-    override _reschedule(): void {}
   }
   /** Each CSS animation's object, by its run's key. */
   const cssAnimationObjects = new Map<number, Any>();
+  /** The CSS animations a page's script did something to, which are none
+   *  of `liveAnimations`, the list of a script's own. */
+  const heldCssAnimations = new Set<Any>();
   /** The timeline objects a CSS animation runs on, by what they are, so a
    *  page reads one object for one timeline. */
   const cssTimelines = new Map<string, Any>();
@@ -4023,6 +4077,7 @@ export function installDom(
         };
         a = new CSSAnimation(effect, cssTimelineOf(info.timeline));
         a._name = info.name;
+        a._key = info.key;
         cssAnimationObjects.set(info.key, a);
       } else {
         a._timeline = cssTimelineOf(info.timeline);
@@ -4061,6 +4116,7 @@ export function installDom(
         a._hold = null;
         a._start = a._timeline._time() - info.currentTime;
       }
+      a._reschedule();
       out.push(a);
     }
     // what the cascade no longer runs is no one's
@@ -4091,16 +4147,17 @@ export function installDom(
     }
     override _report(): void {}
     override _watch(): void {}
-    /** Where it is, set: the cascade's transition runs from there, so what
-     *  is drawn and what `getComputedStyle()` reads are at the time a page
-     *  sought (Web Animations 1, 4.4.4, "set the current time"). */
-    override set currentTime(v: Any) {
-      super.currentTime = v;
-      const now = this.currentTime;
-      if (typeof now === 'number') call('seekTransition', this._key, now);
-    }
-    override get currentTime(): Any {
-      return super.currentTime;
+    /** What a page did to it — a seek, `finish()` — is the cascade's
+     *  transition's as well, so what is drawn, what `getComputedStyle()`
+     *  reads and the events it tells are at the time the page set (Web
+     *  Animations 1, 4.4.4). It is in no list of a script's animations. */
+    override _changed(): void {
+      this._reschedule();
+      const time = this.currentTime;
+      if (typeof time === 'number') call('seekTransition', this._key, time);
+      else if (this.playState === 'idle') {
+        call('cancelCss', 'transition', this._key);
+      }
     }
   }
   /** Each CSS transition's object, by its run's key. */
@@ -12443,7 +12500,7 @@ export function installDom(
   /** Whether a page's script animates one of the active transition's
    *  pseudo-elements, running or paused: what keeps it going (7.9). */
   const scriptedTransition = (doc: Any): boolean => {
-    for (const a of liveAnimations) {
+    for (const a of [...liveAnimations, ...heldCssAnimations]) {
       const effect = a.effect;
       if (
         effect?.target === doc.documentElement &&
@@ -12677,6 +12734,10 @@ export function installDom(
     'transitionstart',
     'transitionend',
     'transitioncancel',
+    'animationstart',
+    'animationiteration',
+    'animationend',
+    'animationcancel',
   ]) {
     const property = {
       get(this: Any): Any {
@@ -21654,6 +21715,7 @@ export function installDom(
     UIEvent,
     FocusEvent,
     TransitionEvent,
+    AnimationEvent,
     MouseEvent,
     PointerEvent,
     KeyboardEvent,
@@ -23565,18 +23627,36 @@ export function installDom(
 
   // the document's CSS transition events, in the order they came about,
   // each at its element, bubbling (CSS Transitions 2, 6.1)
-  entry('__transitionEvents', () => {
+  entry('__cssEvents', () => {
     const [raw] = input();
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     for (const e of list) {
       const target = wrap(e.element);
       if (!target) continue;
-      const ev = new TransitionEvent(e.type, {
-        bubbles: true,
-        propertyName: e.property,
-        elapsedTime: e.elapsedTime,
-        pseudoElement: e.pseudo,
-      });
+      const ev = String(e.type).startsWith('animation')
+        ? new AnimationEvent(e.type, {
+            bubbles: true,
+            animationName: e.name,
+            elapsedTime: e.elapsedTime,
+            pseudoElement: e.pseudo,
+          })
+        : new TransitionEvent(e.type, {
+            bubbles: true,
+            propertyName: e.name,
+            elapsedTime: e.elapsedTime,
+            pseudoElement: e.pseudo,
+          });
+      // the object `getAnimations()` hands out for it, made as it is asked
+      // for where the page has not yet
+      const objects =
+        ev instanceof AnimationEvent
+          ? cssAnimationObjects
+          : cssTransitionObjects;
+      if (!objects.has(e.key)) {
+        if (ev instanceof AnimationEvent) cssAnimationsOf(target, false);
+        else cssTransitionsOf(target, false);
+      }
+      ev._animation = objects.get(e.key) ?? null;
       ev.isTrusted = true;
       dispatch(target, ev);
     }

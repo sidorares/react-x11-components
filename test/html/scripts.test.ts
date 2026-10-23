@@ -236,7 +236,7 @@ async function hosted(
       'data-testname': 'doc',
       ...scripts,
       // as `useScriptedHtml` hands it to `<Html>`, an internal prop
-      ...({ _onTransitionEvents: scripts.transitionEvents } as object),
+      ...({ _onCssEvents: scripts.cssEvents } as object),
     });
   }
   out.result = await renderX11(
@@ -6652,6 +6652,44 @@ test('a CSS transition tells the page as it runs, starts, ends and is cut short,
         'b:transitionrun:opacity:0:true',
         'b:transitionstart:opacity:0:true',
       ],
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
+test('a CSS animation tells the page as it starts, goes round, ends and is cancelled, and follows what a page does to it', async () => {
+  const doc = await hosted(
+    '<style>@keyframes k { to { opacity: 0 } }</style>' +
+      '<p id="a">a</p><p id="b">b</p><p id="out"></p><script>' +
+      'var log = [], a = document.getElementById("a"), b = document.getElementById("b"), t;' +
+      '["animationstart", "animationiteration", "animationend", "animationcancel"].forEach(function (type) {' +
+      '  [a, b].forEach(function (el) { el.addEventListener(type, function (e) {' +
+      '    log.push(e.target.id + ":" + e.type + ":" + e.animationName + ":" +' +
+      '      (e.type === "animationcancel" ? e.elapsedTime >= 0 : e.elapsedTime) + ":" +' +
+      '      (e instanceof AnimationEvent) + ":" + (e.animation instanceof CSSAnimation)); }); }); });' +
+      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 20); }); }' +
+      'frame(function () {' +
+      '  a.style.animation = "k 1s linear 2"; b.style.animation = "k 1s linear infinite";' +
+      '  t = a.getAnimations()[0]; t.currentTime = 500;' +
+      '  frame(function () {' +
+      // a seek into its second iteration, and its end
+      '    t.currentTime = 1500;' +
+      '    frame(function () {' +
+      '      t.finish(); b.style.animation = "none";' +
+      '      frame(function () { frame(function () {' +
+      '        document.getElementById("out").textContent = JSON.stringify(log.sort());' +
+      '      }); }); }); }); });' +
+      '</script>',
+  );
+  for (let i = 0; i < 60 && !doc.text('out'); i += 1) await settle(20);
+  assert.deepEqual(
+    JSON.parse(doc.text('out') || 'null'),
+    [
+      'a:animationend:k:2:true:true',
+      'a:animationiteration:k:1:true:true',
+      'a:animationstart:k:0:true:true',
+      'b:animationcancel:k:true:true:true',
+      'b:animationstart:k:0:true:true',
     ],
     doc.logs.join('\n'),
   );

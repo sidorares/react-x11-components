@@ -34,7 +34,7 @@ import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
 import type {
   CssAnimationInfo,
   CssTransitionInfo,
-  TransitionEventInfo,
+  CssEventInfo,
 } from '../node.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import {
@@ -269,6 +269,11 @@ export interface HandleInternals {
   ): CssTransitionInfo[];
   /** A page set where a CSS transition is (`HtmlViewNode.seekTransition`). */
   seekTransition(key: number, currentTime: number): void;
+  /** And a CSS animation, held there where the page paused it
+   *  (`HtmlViewNode.seekAnimation`). */
+  seekAnimation(key: number, currentTime: number, paused: boolean): void;
+  /** And one a page cancelled (`HtmlViewNode.cancelCss`). */
+  cancelCss(kind: 'animation' | 'transition', key: number): void;
   /** A view transition's steps, as the page's realm runs them: its old
    *  state captured, its new captured and its tree drawn — each answering
    *  the name two elements share, which skips it, or '' — how long until
@@ -1470,9 +1475,9 @@ export class DomHost {
   /** The document's CSS transitions owe these events: `transitionrun`,
    *  `transitionstart`, `transitionend` and `transitioncancel`, which
    *  bubble (CSS Transitions 2, 6.1). */
-  transitionEvents(events: TransitionEventInfo[]): void {
+  cssEvents(events: CssEventInfo[]): void {
     if (this._disposed || !this.entries) return;
-    this.entries.call('__transitionEvents', [
+    this.entries.call('__cssEvents', [
       JSON.stringify(
         events.map((e) => ({ ...e, element: this.idOf(e.element) })),
       ),
@@ -3157,6 +3162,15 @@ export class DomHost {
       }
       case 'seekTransition':
         this._seams.handle.seekTransition?.(Number(a), Number(b));
+        return null;
+      case 'cancelCss':
+        this._seams.handle.cancelCss?.(
+          a === 'animation' ? 'animation' : 'transition',
+          Number(b),
+        );
+        return null;
+      case 'seekAnimation':
+        this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
         return null;
       case 'cssTransitions': {
         this.flush();

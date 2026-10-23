@@ -37,7 +37,7 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { HTML_USER_AGENT } from '../network.js';
-import type { TransitionEventInfo } from '../node.js';
+import type { CssEventInfo } from '../node.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
@@ -159,7 +159,7 @@ export interface InternalHtmlProps extends HtmlProps {
   /** The pane around the element scrolled (`HtmlViewProps`). */
   _onViewportScroll?: () => void;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
-  _onTransitionEvents?: (events: TransitionEventInfo[]) => void;
+  _onCssEvents?: (events: CssEventInfo[]) => void;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of
@@ -465,7 +465,7 @@ export function useScriptedHtml(
     renderEmbedded:
       frames && scripts.scripting ? renderEmbedded : props.renderEmbedded,
     _onViewportScroll: scripts.scrolled,
-    _onTransitionEvents: scripts.transitionEvents,
+    _onCssEvents: scripts.cssEvents,
     _frames:
       holderContext && engine
         ? h(engine.FrameHolder, { context: holderContext })
