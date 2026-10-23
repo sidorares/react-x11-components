@@ -190,6 +190,7 @@ import {
   containmentApplies,
   containsOutOfFlow,
   heldBack,
+  laidWhole,
   layoutDocument,
   placedMatrix,
   resolvedInsets,
@@ -2638,6 +2639,15 @@ export class HtmlViewNode extends Node {
           restyleOnly = new Set([...restyleOnly, ...readers]);
         }
         follow = true;
+        // and the tree it builds is laid out as a crossing's is while the
+        // width moves (`_stopAt`): down to what can be seen, measured from
+        // all it holds. Python's sidebar is a quarter of the viewport wide,
+        // and every step of a drag built the boxes and laid the whole
+        // reference out under them.
+        // Not where the tree before set aside what something laid out is
+        // placed against: that layout is made again whole, and the
+        // Guardian, whose ads are `max-width` in `vw`, paid for two a step.
+        if (!laidWhole(tree)) crossing = true;
       }
     }
 

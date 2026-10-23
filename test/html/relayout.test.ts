@@ -13,7 +13,11 @@ import {
   resizeClock,
 } from '../../src/html/node.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
-import { heldBack, layoutDocument } from '../../src/html/layout/block.js';
+import {
+  heldBack,
+  laidWhole,
+  layoutDocument,
+} from '../../src/html/layout/block.js';
 import type { BoxTree } from '../../src/html/layout/boxes.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
 import {
@@ -613,6 +617,58 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
   time = 250;
   await resize(300, 370);
   assert.ok(partial(el), 'and the step after it the drag’s');
+});
+
+test('a dragged width that builds again what holds a vw goes on laying out what can be seen', async (t) => {
+  // A `vw` a box is laid out by builds the boxes again at every step, and
+  // the tree it builds is laid out as a crossing's is: down to what can be
+  // seen, sized from all it holds. Laid out whole, a long page was all of
+  // it at every step.
+  holdClock(t, resizeClock);
+  const vw = '<style>#r0{margin-left:10vw}</style>';
+  const { el, resize } = await renderScrolled(
+    LONG.replace('<body style="margin:0">', `${vw}<body style="margin:0">`),
+    300,
+    400,
+  );
+  const treeOf = (): BoxTree => (el as unknown as { _tree: BoxTree })._tree;
+  let tree = treeOf();
+  await resize(300, 390);
+  assert.notStrictEqual(treeOf(), tree, 'built again');
+  assert.strictEqual(boxOf(el, 'r0').x, 39, 'at the new width');
+  assert.ok(partial(el), 'and laid out down to what can be seen');
+  assert.ok(!reached(el, 'end'));
+  tree = treeOf();
+  await resize(300, 380);
+  assert.notStrictEqual(treeOf(), tree);
+  assert.strictEqual(boxOf(el, 'r0').x, 38);
+  assert.ok(partial(el), 'at every step');
+  await cleanup();
+
+  // One whose layout that stopped set aside a fixed box was laid out whole
+  // after it, and the tree each step after builds is laid out whole at
+  // once, rather than once stopped and once whole
+  const fixed =
+    '<div id="foot"><div id="fixed" style="position:fixed;top:0;' +
+    'right:0;width:20px;height:20px"></div></div>';
+  const inside = await renderScrolled(
+    LONG.replace(
+      '<body style="margin:0">',
+      `${vw}<body style="margin:0">`,
+    ).replace('</body>', `${fixed}</body>`),
+    300,
+    400,
+  );
+  const insideTree = (): BoxTree =>
+    (inside.el as unknown as { _tree: BoxTree })._tree;
+  await inside.resize(300, 390);
+  assert.ok(!partial(inside.el), 'laid out whole');
+  assert.ok(laidWhole(insideTree()), 'after it stopped');
+  await inside.resize(300, 380);
+  assert.ok(!partial(inside.el));
+  assert.ok(!laidWhole(insideTree()), 'at once');
+  assert.ok(reached(inside.el, 'fixed') && reached(inside.el, 'end'));
+  assert.strictEqual(boxOf(inside.el, 'r0').x, 38);
 });
 
 // A dragged width lays out from the top of what can be seen: the blocks

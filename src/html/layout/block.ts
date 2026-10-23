@@ -303,6 +303,12 @@ const PROBED = new WeakMap<Box, number>();
  *  (`escapes`): laid out whole from then on. */
 const LAID_WHOLE = new WeakSet<BoxTree>();
 
+/** Whether a layout that stopped found a box it set aside placed by
+ *  something it laid out, and laid the tree out whole (`escapes`). */
+export function laidWhole(tree: BoxTree): boolean {
+  return LAID_WHOLE.has(tree);
+}
+
 /** Every out-of-flow box in a tree, found once (`escapes`). */
 const OUT_OF_FLOW = new WeakMap<BoxTree, Box[]>();
 
