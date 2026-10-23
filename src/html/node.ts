@@ -54,6 +54,13 @@ import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
 import type { HighlightRanges } from './scripts/host.js';
+import {
+  findTextDirective,
+  parseTextDirectives,
+  searchTextOf,
+  splitFragment,
+} from './text-fragments.js';
+import type { TextDirective } from './text-fragments.js';
 import { compareDocumentPosition } from 'domutils';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
@@ -94,6 +101,7 @@ import {
   HOVER_PSEUDO_OTHER,
   HOVER_UNTOUCHED,
   NO_FOCUS,
+  TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
 } from './css/cascade.js';
@@ -505,6 +513,39 @@ export interface OffsetRect {
   y: number;
   width: number;
   height: number;
+}
+
+/**
+ * Where the fragment of the document's URL points (HTML's indicated part,
+ * `HtmlViewNode.indicatedPart`): the text its text directives found, or
+ * the element it names — where it is, in `elementRect`'s coordinates, and
+ * how a viewport is scrolled to show it.
+ */
+export interface IndicatedPart {
+  /** The element the fragment names, its `:target`; null for text. */
+  element: Element | null;
+  /** The text's rectangle, around all its lines, or the element's. */
+  rect: Rect;
+  /** Where in the viewport a browser scrolls it to: text to the middle
+   *  (`scrollIntoView({ block: 'center' })`), an element to the top. */
+  block: 'start' | 'center';
+}
+
+/** The text a URL's text directives name, as they were sought
+ *  (`HtmlViewNode._seekTargetText`). */
+interface TargetText {
+  /** The fragment directive, as the URL wrote it. */
+  directive: string;
+  /** The document it was sought in. */
+  document: Document;
+  directives: TextDirective[];
+  /** What each directive found, a DOM range, or null for nothing yet. */
+  ranges: ({ sc: AnyNode; so: number; ec: AnyNode; eo: number } | null)[];
+  /** The tree it was last sought in, and that tree's text. */
+  sought: BoxTree | null;
+  soughtText: string | null;
+  /** Whether it is sought no more: every directive found. */
+  done: boolean;
 }
 
 /**
@@ -943,6 +984,9 @@ export class HtmlViewNode extends Node {
   /** The element the fragment of the document's URL names, `:target`
    *  (`_updateBase`). */
   private _target: Element | null = null;
+  /** The text the fragment's text directives name, `::target-text`
+   *  (`_seekTargetText`); null where it has none. */
+  private _targetText: TargetText | null = null;
   /** Where the pointer last moved to, in logical window pixels, while it
    *  is over the element (`defaultMouseMove`). */
   private _pointerAt: { x: number; y: number } | null = null;
@@ -1228,7 +1272,9 @@ export class HtmlViewNode extends Node {
    * And the element the prop's fragment names, which is `:target`: the
    * document's URL is the prop, and a link to `#section` the host follows
    * is the same URL with another fragment — which resolves nothing
-   * differently, so it restyles only where a rule tests `:target`.
+   * differently, so it restyles only where a rule tests `:target`. A
+   * fragment directive (`#sec:~:text=…`) is no part of what names it, and
+   * its text directives are sought in the document (`_seekTargetText`).
    */
   private _updateBase(): void {
     const url = this._props().baseUrl || null;
@@ -1239,16 +1285,84 @@ export class HtmlViewNode extends Node {
     if (base && !ABSOLUTE_URL.test(base)) base = null;
     if (base) base = base.split('#')[0];
     if (this._urls.setBase(base)) this._invalidate(Stale.Style);
-    const target = indicatedElement(
-      this._source.document,
+    const { fragment, directive } = splitFragment(
       url && hash >= 0 ? url.slice(hash + 1) : '',
     );
+    const target = indicatedElement(this._source.document, fragment);
     if (target !== this._target) {
       this._target = target;
       const cascade = this._cascade;
       cascade?.setTarget(target);
       if (cascade?.targetSensitive) this._invalidate(Stale.Boxes);
     }
+    this._noteTextDirectives(directive);
+  }
+
+  /**
+   * The fragment directive of the document's URL, as `_updateBase` read it:
+   * a new one — or the same over a new document — is sought afresh, and
+   * the text the last one lit is lit no more.
+   */
+  private _noteTextDirectives(directive: string | null): void {
+    const doc = this._source.document;
+    const had = this._targetText;
+    if (had && had.directive === directive && had.document === doc) return;
+    const directives = directive ? parseTextDirectives(directive) : [];
+    this._targetText = directives.length
+      ? {
+          directive: directive!,
+          document: doc,
+          directives,
+          ranges: directives.map(() => null),
+          sought: null,
+          soughtText: null,
+          done: false,
+        }
+      : null;
+    if (had?.ranges.some(Boolean)) this.invalidate();
+  }
+
+  /**
+   * Find the text the fragment's text directives name (WICG Scroll To Text
+   * Fragment, "invoke text directives"), in the text the document draws
+   * (`text-fragments.ts`), once its parse has ended: each directive until
+   * it is found, in each tree built whose text is other than the last one
+   * sought in, so text a page's script writes in — which nothing here can
+   * wait for, since the element has loaded before the page's scripts run
+   * — is found as it arrives, and a build that changes no text, an
+   * animation's frame, costs a comparison. What is found is kept as DOM
+   * ranges, which outlive the tree, and lit at every paint in
+   * `::target-text` (`_litRanges`).
+   */
+  private _seekTargetText(): void {
+    const t = this._targetText;
+    const tree = this._tree;
+    if (!t || t.done || !tree || tree === t.sought) return;
+    if (!this._source.complete || this._stale !== Stale.Nothing) return;
+    if (t.document !== this._source.document) return;
+    t.sought = tree;
+    if (tree.text === t.soughtText) return;
+    t.soughtText = tree.text;
+    let text: ReturnType<typeof searchTextOf> | null = null;
+    let found = false;
+    for (let i = 0; i < t.directives.length; i += 1) {
+      if (t.ranges[i]) continue;
+      text ??= searchTextOf(tree);
+      const match = findTextDirective(text, t.directives[i]);
+      if (!match) continue;
+      const start = pointOfUnit(tree, match[0]);
+      const end = pointOfUnit(tree, match[1], true);
+      if (!start || !end) continue;
+      t.ranges[i] = {
+        sc: start.node,
+        so: start.offset,
+        ec: end.node,
+        eo: end.offset,
+      };
+      found = true;
+    }
+    if (t.ranges.every(Boolean)) t.done = true;
+    if (found) this.invalidate();
   }
 
   /**
@@ -2210,6 +2324,7 @@ export class HtmlViewNode extends Node {
       this._fail(error, target);
     }
     this._lifecycle();
+    this._seekTargetText();
   }
 
   /** The document `onParsed` and `onLoaded` were last told of. */
@@ -4368,11 +4483,18 @@ export class HtmlViewNode extends Node {
 
   /** The custom highlights to paint, the lowest priority first and in the
    *  order registered among equals, each range a document range in code
-   *  units with its name's styler; none where no rule styles any. */
+   *  units with its name's styler, and over them the text the URL's text
+   *  directives found, in `::target-text` (CSS Pseudo 4, 3.5); none where
+   *  no rule styles any. */
   private _litRanges(): PaintOptions['highlights'] {
     const tree = this._tree;
     const styler = tree?.highlightStyler;
-    if (!this._highlights.length || !styler || !tree.textNodes?.length) {
+    const targets = this._targetText?.ranges.filter((r) => r !== null);
+    if (
+      (!this._highlights.length && !targets?.length) ||
+      !styler ||
+      !tree.textNodes?.length
+    ) {
       return undefined;
     }
     // a highlight's style is worked out here, after every layout, and its
@@ -4386,7 +4508,10 @@ export class HtmlViewNode extends Node {
     const ordered = this._highlights
       .map((h, i) => ({ h, i }))
       .sort((a, b) => a.h.priority - b.h.priority || a.i - b.i);
-    for (const { h } of ordered) {
+    const all: { name: string; ranges: HighlightRanges['ranges'] }[] =
+      ordered.map(({ h }) => h);
+    if (targets?.length) all.push({ name: TARGET_TEXT, ranges: targets });
+    for (const h of all) {
       const lit = styler(h.name);
       // a highlight's ranges lit as one, so where two of them overlap
       // their text is lit once (CSS Highlight API 1, 4)
@@ -4523,6 +4648,42 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     this._followViewport();
     return this._rectOf(element);
+  }
+
+  /**
+   * Where the fragment of the document's URL points, laid out first, for
+   * a host to scroll there (HTML's "scroll to the fragment"): the text the
+   * first of its text directives that found any names, around all its
+   * lines, or else the element the fragment names. Null where it points
+   * at neither — no fragment, or one that names nothing here.
+   */
+  indicatedPart(): IndicatedPart | null {
+    this._prepare(this.abs.width || 1);
+    const range = this._targetText?.ranges.find((r) => r !== null);
+    const rects =
+      range && this.textRects(range.sc, range.so, range.ec, range.eo);
+    if (rects?.length) {
+      let left = Infinity;
+      let top = Infinity;
+      let right = -Infinity;
+      let bottom = -Infinity;
+      for (const r of rects) {
+        left = Math.min(left, r.x);
+        top = Math.min(top, r.y);
+        right = Math.max(right, r.x + r.width);
+        bottom = Math.max(bottom, r.y + r.height);
+      }
+      const rect = {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+      };
+      return { element: null, rect, block: 'center' };
+    }
+    const target = this._target;
+    const rect = target && this.elementRect(target);
+    return rect ? { element: target, rect, block: 'start' } : null;
   }
 
   /**
@@ -7813,7 +7974,10 @@ export class HtmlViewNode extends Node {
     this._sweep();
     // a rule a change turns on or off for a custom highlight restyles no
     // element of its own, and its text is painted again in the new look
-    if (this._highlights.length && this._cascade?.hasHighlights) {
+    if (
+      (this._highlights.length || this._targetText?.ranges.some(Boolean)) &&
+      this._cascade?.hasHighlights
+    ) {
       this._cascade.highlightGeneration += 1;
       this.invalidate();
     }

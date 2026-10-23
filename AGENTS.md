@@ -3358,6 +3358,19 @@ highlight's characters (`cutRun`, `inColours`, `onlyOf`), since ntk's text
 shadow sets each run on a whole pixel and a cast glyph came out a pixel
 aside; other engines cast, clipped to the bands.
 
+**`::target-text` is a highlight like the page's, and the fragment
+directive is nobody's URL.** The text a `#:~:text=…` names
+(`text-fragments.ts`) is lit through the same `_litRanges` as a page's
+`CSS.highlights`, its rules kept among theirs under `TARGET_TEXT`, a name
+no `::highlight()` can write, and the UA sheet styles it — so
+`Cascade.hasHighlights` holds in every document, and a gate that asks it
+has to ask whether there is anything to light as well. And the directive
+is taken off before anything reads the fragment: `_updateBase` splits it
+(`splitFragment`) before it finds `:target`, and `DomHost` drops it from
+the URL a page's `location` reads. **Anything new that reads `baseUrl`'s
+fragment splits it the same way**, or `#sec:~:text=a` names an element
+called `sec:~:text=a`.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run

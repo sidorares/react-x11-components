@@ -97,6 +97,7 @@ import {
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
 import { navigableFor } from './target.js';
+import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import * as ntk from 'react-x11/ntk';
 import type {
@@ -1234,7 +1235,10 @@ export class DomHost {
     url: string,
     shared: DomShared = new DomShared(),
   ) {
-    this.url = url;
+    // a fragment directive is the user agent's, and no part of the URL a
+    // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
+    // `location.hash` ''
+    this.url = withoutFragmentDirective(url);
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;

@@ -180,6 +180,9 @@ big { font-size: 1.17em; }
 sub { vertical-align: sub; font-size: 0.75em; }
 sup { vertical-align: super; font-size: 0.75em; }
 mark { background-color: #fff2a8; color: #1a1a1a; }
+/* the text a URL's text directive names, \`#:~:text=…\` (CSS Pseudo 4's UA
+   sheet), lit as a highlight is (\`text-fragments.ts\`) */
+::target-text { background-color: Mark; color: MarkText; }
 /* the HTML standard's rendering (15.3.4): an abbreviation with its
    expansion in a title says so */
 abbr[title], acronym[title] { text-decoration: dotted underline; }

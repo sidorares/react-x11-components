@@ -140,9 +140,12 @@ async function hosted(
     pane?: number;
     scale?: number;
     animate?: boolean;
+    /** The page's URL, `baseUrl`, where it is not `PAGE`. */
+    url?: string;
   } = {},
 ): Promise<Hosted> {
   const scale = options.scale ?? 1;
+  const url = options.url ?? PAGE;
   const out = {
     logs: [] as string[],
     links: [] as string[],
@@ -190,14 +193,14 @@ async function hosted(
     const app = useApp();
     const handle = useHtmlHandle();
     out.handle = handle;
-    const scripts = useScripts(true, handle, PAGE, seams);
+    const scripts = useScripts(true, handle, url, seams);
     out.scrolled = () => scripts.scrolled?.();
     out.run = (code) => scripts.runner?.()?.engine.exec(code, 'test', 0);
     return h(Html, {
       source,
       partial: false,
       ref: handle.ref,
-      baseUrl: PAGE,
+      baseUrl: url,
       animate: options.animate,
       onLink: (href: string) => void out.links.push(href),
       // where the page sends it: a frame its target names, or the tab
@@ -6270,6 +6273,51 @@ async function differing(doc: Hosted, a: string, b: string): Promise<number> {
   for (let i = 0; i < p.length; i += 1) if (p[i] !== q[i]) differ += 1;
   return differ;
 }
+
+test('a fragment directive is no part of the URL a page reads, and document.fragmentDirective says it is taken', async () => {
+  const read =
+    '<p id="sec">sec</p><p id="out"></p><script>' +
+    'var t = document.querySelector(":target");' +
+    'var f = document.fragmentDirective, made;' +
+    'try { new FragmentDirective(); made = "made"; } catch (e) { made = e.name; }' +
+    'document.getElementById("out").textContent = [location.hash, location.href,' +
+    ' document.URL, t ? t.id : "none", f instanceof FragmentDirective,' +
+    ' f === document.fragmentDirective, made].join("|");' +
+    '</script>';
+  const named = await hosted(read, { url: `${PAGE}#sec:~:text=sec` });
+  assert.equal(
+    named.text('out'),
+    `#sec|${PAGE}#sec|${PAGE}#sec|sec|true|true|TypeError`,
+  );
+  const only = await hosted(read, { url: `${PAGE}#:~:text=sec` });
+  assert.equal(only.text('out'), `|${PAGE}#|${PAGE}#|none|true|true|TypeError`);
+});
+
+metric(
+  "the text a URL's text directive names is lit in ::target-text with scripts on, and found where a script writes it",
+  async () => {
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/30px sans-serif; color: #000000 }' +
+        ' p { margin: 0 } .mark { background-color: #ffff00; color: #000000 }' +
+        // drawn as the written text is, and no text a directive finds
+        ' #ref2::before { content: "four " } #ref2::after { content: " six" }' +
+        ' #ref2 .mark::before { content: "five" }' +
+        '</style>' +
+        '<p id="t">one two three</p><p id="late"></p>' +
+        '<p id="ref">one <span class="mark">two</span> three</p>' +
+        '<p id="ref2"><span class="mark"></span></p>' +
+        '<p id="out"></p><script>' +
+        'document.getElementById("late").textContent = "four five six";' +
+        'document.getElementById("out").textContent = "set";' +
+        '</script>',
+      { url: `${PAGE}#:~:text=two&text=five` },
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    assert.equal(await differing(doc, 't', 'ref'), 0, 'in the markup');
+    assert.equal(await differing(doc, 'late', 'ref2'), 0, 'written in');
+  },
+);
 
 metric(
   "a highlight's text-decoration and text-shadow are drawn as the element's would be, its container units the container's",

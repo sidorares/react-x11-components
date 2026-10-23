@@ -606,14 +606,23 @@ type PseudoElement =
   | 'details-content';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
- *  `::first-line`, `::marker`, `::selection`, `::placeholder` or
- *  `::backdrop`, or CSS 2's
+ *  `::first-line`, `::marker`, `::selection`, `::placeholder`,
+ *  `::backdrop`, `::target-text` or a `::highlight()`, or CSS 2's
  *  single-colon spelling of any of its first four. `::-webkit-input-
  *  placeholder` is `::placeholder` under the name WebKit gave it, which
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*(-?[_a-zA-Z\u0080-\uffff][-\w\u0080-\uffff]*)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*(-?[_a-zA-Z\u0080-\uffff][-\w\u0080-\uffff]*)\s*\)$/i;
+
+/**
+ * The name `::target-text`'s rules are kept under among the custom
+ * highlights' (`Cascade.highlightStyle`): the text a URL's text directive
+ * matched (`text-fragments.ts`) is a highlight like any other, with a look
+ * the UA sheet gives it, and painted above them (CSS Pseudo 4, 3.5). No
+ * `::highlight()` can name it, since no identifier starts with a space.
+ */
+export const TARGET_TEXT = ' target-text';
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -671,6 +680,13 @@ function splitPseudoElement(rule: StyleRule): {
     return { which: 'highlight', rule: { ...rule, selector }, name: m[3] };
   }
   const name = (m[1] ?? m[2]).toLowerCase();
+  if (name === 'target-text') {
+    return {
+      which: 'highlight',
+      rule: { ...rule, selector },
+      name: TARGET_TEXT,
+    };
+  }
   return {
     which: (name === '-webkit-input-placeholder'
       ? 'placeholder'
@@ -5429,7 +5445,8 @@ export class Cascade {
     };
   }
 
-  /** Whether any rule styles a custom highlight (`highlightStyle`). */
+  /** Whether any rule styles a custom highlight or `::target-text`
+   *  (`highlightStyle`), which the UA sheet's does. */
   get hasHighlights(): boolean {
     return this._highlights.size > 0;
   }
@@ -5439,7 +5456,8 @@ export class Cascade {
    * the background the rules for that highlight set, and its parent's for
    * either they leave alone, inherited along the chain of that highlight as
    * `::selection`'s is (CSS Pseudo 4, 3.5). A custom highlight has no
-   * default look: text no rule reaches is drawn as it was.
+   * default look: text no rule reaches is drawn as it was. `::target-text`
+   * is the highlight named `TARGET_TEXT`, which the UA sheet gives one.
    */
   highlightStyle(
     el: Element,
