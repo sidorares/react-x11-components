@@ -2778,6 +2778,54 @@ test("createContextualFragment parses in its context's registry, and in a templa
   );
 });
 
+test("getComputedStyle answers a positioned box's used insets, and clientWidth a box's padding box", async () => {
+  // CSSOM 9's resolved value of an inset is the used one where the box is
+  // positioned: an absolute box's from where it was placed, an anchor()
+  // included, a relative one's the side opposite negated, a sticky one's
+  // auto kept; CSSOM View 6's client box is the padding box, and none for
+  // an inline box
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="cb" style="position: relative; width: 200px; height: 100px; padding: 5px; border: 3px solid">' +
+      '<div id="a" style="position: absolute; anchor-name: --a; left: 20px; top: 10%; width: 30px; height: 20px"></div>' +
+      '<div id="b" style="position: absolute; left: anchor(--a right); bottom: 10px; width: 10px; height: 10px; margin: 2px"></div>' +
+      '<div id="c" style="position: absolute; top: 0; bottom: 0; height: 10px"></div>' +
+      '<div id="r" style="position: relative; bottom: 4px; left: 50%"></div>' +
+      '<div id="s" style="position: sticky; top: 10%"></div>' +
+      '</div><span id="i">x</span>' +
+      // and in a container scrolled down, where it was placed
+      '<div id="sc" style="position: relative; overflow: scroll; width: 100px; height: 100px">' +
+      '<div style="height: 500px"></div><div id="in" style="position: absolute; top: 300px"></div></div>' +
+      '<script>' +
+      'var r = [], cs = function (id) { return getComputedStyle(document.getElementById(id)); };' +
+      'document.getElementById("sc").scrollTop = 200;' +
+      'var a = cs("a"), b = cs("b"), c = cs("c"), rel = cs("r"), st = cs("s");' +
+      'r.push(a.top, a.right, a.bottom, a.left);' +
+      'r.push(b.top, b.right, b.bottom, b.left);' +
+      // over-constrained: the computed values
+      'r.push(c.top, c.bottom);' +
+      'r.push(rel.top, rel.right, rel.bottom, rel.left);' +
+      'r.push(st.top, st.bottom, cs("in").top);' +
+      'var cb = document.getElementById("cb");' +
+      'r.push(cb.clientWidth, cb.clientHeight, cb.clientTop, cb.clientLeft, document.getElementById("i").clientWidth);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    [
+      '11px|160px|79px|20px',
+      // its margin box ends at the anchor's right
+      '86px|146px|10px|50px',
+      '0px|0px',
+      '-4px|-100px|4px|100px',
+      '10px|auto|300px',
+      '210|110|3|3|0',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +

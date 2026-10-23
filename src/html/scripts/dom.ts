@@ -5087,6 +5087,13 @@ export function installDom(
     const r = call('scrollState', el._id);
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
   };
+  /** An element's padding box where it is no scroll container — width,
+   *  height, and its top and left borders (CSSOM View 6) — or null where
+   *  its box is none or inline. */
+  const clientBoxOf = (el: Any): number[] | null => {
+    const r = call('clientBox', el._id);
+    return typeof r === 'string' && r ? r.split(',').map(Number) : null;
+  };
 
   // --- attribute nodes ---------------------------------------------------------------
   //
@@ -5501,19 +5508,21 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[4]);
       if (this._viewport()) return viewport().width;
-      return Math.round(docRect(this)?.[2] ?? 0);
+      return Math.round(clientBoxOf(this)?.[0] ?? 0);
     }
     get clientHeight(): number {
       const s = scrollStateOf(this);
       if (s) return Math.round(s[5]);
       if (this._viewport()) return viewport().height;
-      return Math.round(docRect(this)?.[3] ?? 0);
+      return Math.round(clientBoxOf(this)?.[1] ?? 0);
     }
     get clientTop(): number {
-      return Math.round(scrollStateOf(this)?.[6] ?? 0);
+      const s = scrollStateOf(this);
+      return Math.round(s ? s[6] : (clientBoxOf(this)?.[2] ?? 0));
     }
     get clientLeft(): number {
-      return Math.round(scrollStateOf(this)?.[7] ?? 0);
+      const s = scrollStateOf(this);
+      return Math.round(s ? s[7] : (clientBoxOf(this)?.[3] ?? 0));
     }
     get scrollWidth(): number {
       const s = scrollStateOf(this);

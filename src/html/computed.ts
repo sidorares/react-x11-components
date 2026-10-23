@@ -32,6 +32,9 @@ export interface UsedBox {
   margin: [number, number, number, number];
   border: [number, number, number, number];
   padding: [number, number, number, number];
+  /** The insets, top first, where the box is positioned: device pixels,
+   *  `auto`, or null for the computed value (`resolvedInsets`). */
+  insets?: readonly (number | 'auto' | null)[] | null;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -694,6 +697,14 @@ function cssomAt(
       ? px(box.padding[i], scale)
       : len(paddings[i], scale);
   });
+  // a positioned box's insets are the ones layout used (CSSOM 9.1)
+  const insets = box?.insets;
+  if (insets) {
+    SIDES.forEach((side, i) => {
+      const v = insets[i];
+      if (v !== null) out[side] = v === 'auto' ? 'auto' : px(v, scale);
+    });
+  }
   if (box && style.display !== 'inline') {
     // the used size, of the box `box-sizing` says (CSSOM 9.1, the resolved
     // value of `width` and `height`)
