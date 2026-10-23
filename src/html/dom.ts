@@ -395,6 +395,10 @@ export class ShadowRoot extends DomDocument {
    *  it. A declarative root is clonable where its template said so. */
   clonable = false;
   serializable = false;
+  /** Made by the parser and not yet taken by a script's `attachShadow()`,
+   *  which hands such a root back emptied rather than refusing the host
+   *  (DOM 4.9, "attach a shadow root", step 4). */
+  declarative = false;
   private _assignedAt = -1;
   /** The nodes assigned to each slot, in tree order. */
   private _assigned = new Map<Element, ChildNode[]>();
@@ -1430,6 +1434,7 @@ class Handler extends DomHandler {
     root.registryNull = attribs.shadowrootcustomelementregistry !== undefined;
     root.clonable = attribs.shadowrootclonable !== undefined;
     root.serializable = attribs.shadowrootserializable !== undefined;
+    root.declarative = true;
     SHADOW_ROOTS.set(host, root);
     treesChanged();
     stack.push(root);

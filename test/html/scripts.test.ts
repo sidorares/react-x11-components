@@ -6488,6 +6488,65 @@ test('showModal() and requestFullscreen() refuse a showing popover and hide the 
   );
 });
 
+test('getHTML() writes the shadow trees it is asked for as declarative templates, and an empty attribute as `=""`', async () => {
+  // HTML 8.5.2: a serializable root where serializableShadowRoots, one
+  // listed in shadowRoots either way, closed or not; `=""` for every empty
+  // attribute, as innerHTML writes it too
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var div = document.createElement("div");' +
+      'div.setHTMLUnsafe(\'<span><template shadowrootmode="open" shadowrootserializable><b>s</b></template></span><input disabled>\');' +
+      'var host = document.createElement("section"); div.appendChild(host);' +
+      'var root = host.attachShadow({ mode: "closed" }); root.innerHTML = "<u>c</u>";' +
+      'var r = [div.getHTML(), div.getHTML({ serializableShadowRoots: true }),' +
+      '  div.getHTML({ shadowRoots: [root] }), div.innerHTML];' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    '<span></span><input disabled=""><section></section>',
+    '<span><template shadowrootmode="open" shadowrootserializable=""><b>s</b></template></span><input disabled=""><section></section>',
+    '<span></span><input disabled=""><section><template shadowrootmode="closed"><u>c</u></template></section>',
+    '<span></span><input disabled=""><section></section>',
+  ]);
+});
+
+test('attachShadow() takes back a declarative root emptied, a template keeps the roots parsed into it, and a document makes elements with its registry', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      // DOM 4.9, "attach a shadow root", step 4: the parser's root, its
+      // mode asked for, comes back with nothing in it; then it is the
+      // script's, and a second call is refused
+      'var div = document.createElement("div");' +
+      'div.setHTMLUnsafe(\'<p><template shadowrootmode="closed" shadowrootdelegatesfocus><b>x</b></template></p>\');' +
+      'try { div.firstChild.attachShadow({ mode: "open" }); } catch (e) { r.push(e.name); }' +
+      'var root = div.firstChild.attachShadow({ mode: "closed" });' +
+      'r.push(root.childNodes.length, root.delegatesFocus);' +
+      'try { div.firstChild.attachShadow({ mode: "closed" }); } catch (e) { r.push(e.name); }' +
+      // a template's content stands for what it holds, shadow roots too
+      'var t = document.createElement("template");' +
+      't.setHTMLUnsafe(\'<div><template shadowrootmode="open"><i>s</i></template></div>\');' +
+      'r.push(t.content.firstChild.shadowRoot.innerHTML);' +
+      // HTML 4.13.4: a document a scoped registry was initialized on
+      // makes its elements, and its shadow roots, with it
+      'var registry = new CustomElementRegistry();' +
+      'var other = document.implementation.createHTMLDocument();' +
+      'registry.initialize(other);' +
+      'var made = other.createElement("div");' +
+      'r.push(made.customElementRegistry === registry, made.attachShadow({ mode: "open" }).customElementRegistry === registry);' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    'NotSupportedError',
+    0,
+    true,
+    'NotSupportedError',
+    '<i>s</i>',
+    true,
+    true,
+  ]);
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
