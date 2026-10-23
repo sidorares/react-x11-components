@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.51.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.51.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.54.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.54.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -795,6 +795,15 @@ it up. **The floor is a running one and moves often** — every move since
   the pill alone, where it measured the whole table — 0.6 ms of a frame on a
   Mac at a million rows, where it was 8. `test/table.test.ts` counts the
   passes.
+- `^2.54.0` — `decodeImageBytes(bytes, { offThread: true })`
+  (react-x11#1004): under Node, a PNG, a JPEG or a WebP of 8 KB or more
+  decodes on a worker thread for a caller that waits for a promise anyway,
+  and `<Html>`'s images ask for it (`resources.ts`). Image decoding held the
+  JavaScript thread for half of the Guardian's load and react.dev's; a
+  load settles a quarter to a half sooner on such pages, for some 6% more
+  processor time across the process, since each worker warms the decoders
+  on its own. 2.53.0 under it converts a `<video frames>` frame on the GPU
+  on Linux (#1003).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

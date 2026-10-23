@@ -26,6 +26,7 @@ import {
   FONTS,
   fillsOf,
   h,
+  imagesIn,
   metric,
   pixelsPng,
   rebuilt,
@@ -1152,6 +1153,7 @@ metric(
     });
     await act();
     const el = view(screen.getByTestName('doc') as DrawnNode);
+    await imagesIn(el);
     const resize = async (width: number) => {
       await act(() => result.rerender(doc(width)));
       await act();

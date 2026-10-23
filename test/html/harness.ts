@@ -1050,7 +1050,24 @@ export async function renderWithBytes(
         }
       : { backend: 'mock' as const },
   );
-  return { result, el: view(screen.getByTestName('doc') as DrawnNode) };
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  await imagesIn(el);
+  return { result, el };
+}
+
+/**
+ * Wait for every image the document asked for to arrive or fail. A PNG or
+ * a JPEG long enough decodes on a worker thread (`offThread`, core's
+ * `decodeImageBytes`), and lands a task or more after the render, which no
+ * `act()` waits for.
+ */
+export async function imagesIn(el: HtmlViewNode): Promise<void> {
+  const store = (el as unknown as { _resources: { pending: number } })
+    ._resources;
+  for (let i = 0; i < 1000 && store.pending > 0; i += 1) {
+    await new Promise((done) => setTimeout(done, 2));
+  }
+  await act();
 }
 
 /** Render on the mock backend at a display scale, each image URL answered
