@@ -579,7 +579,9 @@ function webpStills(): Promise<DecodeStill> {
  * shows in a document exactly when it would show in an `<image>`: PNG and
  * JPEG, WebP, and under Bun every format `Bun.Image` reads, decoded off the
  * JavaScript thread. A WebP, and under Bun everything, lands a moment
- * later as a promise, which `_settle` waits for as it waits for a host's.
+ * later as a promise, which `_settle` waits for as it waits for a host's —
+ * and under Node so does a PNG or a JPEG long enough to be decoded on a
+ * worker (`offThread`).
  * Bytes no decoder here reads throw, or reject, and the image is a failed
  * one, framed as a declined image is.
  *
@@ -602,7 +604,10 @@ function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
         data: canvas.at(0),
       });
     }
-    return ntk.decodeImageBytes(bytes);
+    // off the JavaScript thread (react-x11#1004): a document waits for a
+    // promise anyway, and its photographs held the thread for half of the
+    // Guardian's load
+    return ntk.decodeImageBytes(bytes, { offThread: true });
   } catch {
     return null;
   }
