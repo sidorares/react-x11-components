@@ -19,6 +19,7 @@ import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
 import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
+import { matrix4Of, matrixOf } from './css/transform.js';
 import type { Len } from './css/values.js';
 import { inkColor } from './css/values.js';
 import { rgbaOf } from './css/color.js';
@@ -275,6 +276,40 @@ export function cssomTransform(
       return `matrix3d(${m.map(n).join(', ')})`;
     })
     .join(' ');
+}
+
+/** A `transform` list as the matrix it comes to for a box, in CSS pixels:
+ *  `matrix()`, or `matrix3d()` where it is no matrix of the plane. */
+function transformMatrixText(
+  list: TransformFunction[],
+  box: UsedBox,
+  scale: number,
+): string {
+  const only = {
+    transform: list,
+    translate: null,
+    rotate: null,
+    scale: null,
+    perspective: null,
+  };
+  const solid = matrix4Of(only, box.width, box.height);
+  const planar =
+    !solid ||
+    ([2, 3, 6, 7, 8, 9, 11, 14].every((i) => Math.abs(solid[i]) < 1e-12) &&
+      solid[10] === 1 &&
+      solid[15] === 1);
+  if (solid && !planar) {
+    const m = solid.map((v, i) =>
+      i === 12 || i === 13 || i === 14
+        ? v / scale
+        : i === 3 || i === 7 || i === 11
+          ? v * scale
+          : v,
+    );
+    return `matrix3d(${m.map(float6).join(', ')})`;
+  }
+  const [a, b, c, d, e, f] = matrixOf(only, box.width, box.height);
+  return `matrix(${[a, b, c, d, e / scale, f / scale].map(float6).join(', ')})`;
 }
 
 function primitiveText(fn: Primitive, scale: number): string {
@@ -605,10 +640,14 @@ function cssomAt(
     'outline-width': px(style.outlineWidth, scale),
     'outline-color': cssomColor(style.outlineColor, color),
   };
-  // a transform is a matrix CSSOM serializes, which is not written here:
-  // a script asking for one hears none where there is none, and nothing
-  // where there is
-  if (!style.transform) out.transform = 'none';
+  // a transform resolves to the matrix its list comes to for the box
+  // (CSSOM 9, "resolved value"), and with no box is the list it computes
+  // to
+  out.transform = !style.transform
+    ? 'none'
+    : box
+      ? transformMatrixText(style.transform, box, scale)
+      : cssomTransform(style.transform, scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,

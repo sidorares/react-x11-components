@@ -2860,6 +2860,8 @@ export class DomHost {
       // the CSS animations under way on an element, or on what it holds,
       // or in the whole document for 0: each with its element by its id
       case 'cssAnimations': {
+        // what a script changed is styled before it is asked of
+        this.flush();
         const el = a ? this._element(a) : null;
         const list = this._seams.handle.cssAnimations?.(el, b === true) ?? [];
         const id = (e: Element | null) => (e ? this.idOf(e) : 0);

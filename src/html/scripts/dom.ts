@@ -1702,26 +1702,8 @@ export function installDom(
     if (typeof given[Symbol.iterator] === 'function') {
       frames = Array.from(given as Iterable<Any>, (frame) => ({
         ...(frame ?? {}),
-        offset:
-          frame?.offset === null || frame?.offset === undefined
-            ? null
-            : Number(frame.offset),
+        offset: keyframeOffsetOf(frame?.offset),
       }));
-      let last = -Infinity;
-      for (const { offset } of frames) {
-        if (offset === null) continue;
-        if (!(offset >= 0 && offset <= 1)) {
-          throw new TypeError(
-            "Failed to execute 'animate' on 'Element': Offsets must be null or in the range [0,1].",
-          );
-        }
-        if (offset < last) {
-          throw new TypeError(
-            "Failed to execute 'animate' on 'Element': Offsets must be monotonically non-decreasing.",
-          );
-        }
-        last = offset;
-      }
     } else {
       const byOffset = new Map<number, Any>();
       for (const [name, values] of Object.entries(given)) {
@@ -1741,9 +1723,11 @@ export function installDom(
         .map(([, frame]) => frame);
       const listOf = (v: Any): Any[] =>
         v === undefined ? [] : Array.isArray(v) ? v : [v];
-      listOf(given.offset).forEach((o, i) => {
-        if (frames[i]) frames[i].offset = o === null ? null : Number(o);
-      });
+      listOf(given.offset)
+        .map(keyframeOffsetOf)
+        .forEach((o, i) => {
+          if (frames[i]) frames[i].offset = o;
+        });
       const easings = listOf(given.easing);
       const composites = listOf(given.composite);
       frames.forEach((frame, i) => {
@@ -1751,8 +1735,38 @@ export function installDom(
         if (i < composites.length) frame.composite = composites[i];
       });
     }
-    const offsets: (number | null)[] = frames.map((f) => f.offset);
-    const n = frames.length;
+    // a property's value is a string, whatever it was given as
+    for (const frame of frames) {
+      for (const name of Object.keys(frame)) {
+        const value = frame[name];
+        if (keyframeProperty(name) !== null && value !== undefined) {
+          frame[name] = String(value);
+        }
+      }
+    }
+    let last = -Infinity;
+    for (const { offset } of frames) {
+      if (offset === null || typeof offset === 'object') continue;
+      if (!(offset >= 0 && offset <= 1)) {
+        throw new TypeError(
+          "Failed to execute 'animate' on 'Element': Offsets must be null or in the range [0,1].",
+        );
+      }
+      if (offset < last) {
+        throw new TypeError(
+          "Failed to execute 'animate' on 'Element': Offsets must be monotonically non-decreasing.",
+        );
+      }
+      last = offset;
+    }
+    // a frame at a timeline offset is placed by the timeline, and the
+    // others are spaced as though it were not there (Scroll-driven
+    // Animations 1, 4.4)
+    const spaced = frames.filter(
+      (f) => f.offset === null || typeof f.offset === 'number',
+    );
+    const offsets: (number | null)[] = spaced.map((f) => f.offset);
+    const n = spaced.length;
     if (n > 1 && offsets[0] === null) offsets[0] = 0;
     if (n > 0 && offsets[n - 1] === null) offsets[n - 1] = 1;
     for (let i = 1; i < n - 1; i += 1) {
@@ -1766,13 +1780,86 @@ export function installDom(
       }
       i = j;
     }
-    return frames.map((frame, i) => ({
+    const computed = new Map<Any, number | null>(
+      spaced.map((f, i) => [f, offsets[i]]),
+    );
+    return frames.map((frame) => ({
       ...frame,
       offset: frame.offset,
       easing: String(frame.easing ?? 'linear'),
       composite: String(frame.composite ?? 'auto'),
-      computedOffset: offsets[i],
+      computedOffset: computed.has(frame) ? computed.get(frame) : null,
     }));
+  };
+
+  /**
+   * A keyframe's `offset` as a page gives it: null, a number, a number or a
+   * percentage as text, or a timeline offset — a `TimelineRangeOffset`, or
+   * a range's name and a percentage as text, `"contain 25%"` — kept as
+   * `{ rangeName, offset }` (Scroll-driven Animations 1, 4.4). Anything
+   * else throws, as a name that is no range's and a length do.
+   */
+  const keyframeOffsetOf = (given: Any): Any => {
+    if (given === null || given === undefined) return null;
+    const bad = (): never => {
+      throw new TypeError(
+        "Failed to execute 'animate' on 'Element': Invalid keyframe offset.",
+      );
+    };
+    const timelineOffset = (name: string, offset: Any): Any => {
+      if (!RANGE_NAMES.includes(name)) bad();
+      const value = offset === undefined ? percentOf(0) : offset;
+      if (
+        !(value instanceof CSSNumericValue) ||
+        !value.type().percent ||
+        Object.keys(value.type()).some(
+          (k) => k !== 'percent' && k !== 'percentHint' && value.type()[k],
+        )
+      ) {
+        bad();
+      }
+      return { rangeName: name, offset: value };
+    };
+    if (typeof given === 'object' && !(given instanceof String)) {
+      if (given instanceof CSSNumericValue) {
+        if (given instanceof CSSUnitValue && given.unit === 'number') {
+          return given.value;
+        }
+        return given.to('percent').value / 100;
+      }
+      if ('rangeName' in given) {
+        return timelineOffset(String(given.rangeName), given.offset);
+      }
+      return Number(given);
+    }
+    if (typeof given !== 'string' && !(given instanceof String)) {
+      return Number(given);
+    }
+    const text = String(given).trim();
+    const named = /^([a-z-]+)\s+(.+)$/i.exec(text);
+    if (named) {
+      let value: Any;
+      try {
+        value = CSSNumericValue.parse(named[2]);
+      } catch {
+        bad();
+      }
+      return timelineOffset(named[1].toLowerCase(), value);
+    }
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) {
+      return Number(text);
+    }
+    let value: Any;
+    try {
+      value = CSSNumericValue.parse(text);
+    } catch {
+      bad();
+    }
+    try {
+      return value.to('percent').value / 100;
+    } catch {
+      return bad();
+    }
   };
 
   /** A keyframe's property by the name a page gives it, as CSS names it
@@ -2079,7 +2166,37 @@ export function installDom(
       this._animation?._changed();
     }
     getKeyframes(): Any[] {
-      return this._frames.map((f) => ({ ...f }));
+      return this._frames.map((f) =>
+        f.offset !== null && typeof f.offset === 'object'
+          ? {
+              ...f,
+              offset: {
+                rangeName: f.offset.rangeName,
+                offset: f.offset.offset,
+              },
+              computedOffset: this._timelineOffset(f.offset),
+            }
+          : { ...f },
+      );
+    }
+    /**
+     * Where a frame at a timeline offset is in the effect's iteration: how
+     * far its place on the view timeline is through the animation's range
+     * (Scroll-driven Animations 1, 4.4) — outside 0 to 1 where it is
+     * outside the range — and null where the timeline cannot place it: no
+     * view timeline, or one with nothing to view.
+     */
+    _timelineOffset(offset: Any): number | null {
+      const a = this._animation;
+      const tl = a?._timeline;
+      if (!(tl instanceof ViewTimeline) || tl._time() === null) return null;
+      const [from, to] = a._range();
+      if (!(to - from > 0)) return null;
+      const at = tl._rangeAt(
+        { name: offset.rangeName, offset: offset.offset },
+        false,
+      );
+      return (at - from) / (to - from);
     }
     setKeyframes(keyframes: Any): void {
       this._frames = keyframesOf(keyframes);
@@ -2121,21 +2238,39 @@ export function installDom(
                 : null;
         if (pseudo === null) this._framesJson = '';
         else {
-          const frames = this._frames.map((frame) => {
-            const props: [string, string][] = [];
-            for (const [name, value] of Object.entries(frame)) {
-              const prop = keyframeProperty(name);
-              if (prop === null || value === null || value === undefined) {
-                continue;
+          // in the order of their computed offsets, a frame the
+          // timeline cannot place left out (Web Animations 1, 6.6.2)
+          const frames = this._frames
+            .map((frame) => {
+              const props: [string, string][] = [];
+              for (const [name, value] of Object.entries(frame)) {
+                const prop = keyframeProperty(name);
+                if (prop === null || value === null || value === undefined) {
+                  continue;
+                }
+                props.push([prop, String(value)]);
               }
-              props.push([prop, String(value)]);
-            }
-            return [frame.computedOffset, String(frame.easing), props];
-          });
+              const at =
+                frame.offset !== null && typeof frame.offset === 'object'
+                  ? this._timelineOffset(frame.offset)
+                  : frame.computedOffset;
+              return [at, String(frame.easing), props];
+            })
+            .filter((frame) => frame[0] !== null)
+            .sort((x, y) => (x[0] as number) - (y[0] as number));
           this._framesJson = `${JSON.stringify(pseudo)},${JSON.stringify(frames)}`;
         }
       }
-      if (!this._framesJson) return null;
+      const json = this._framesJson;
+      // a frame placed by the timeline is placed again each time
+      if (
+        this._frames.some(
+          (f) => f.offset !== null && typeof f.offset === 'object',
+        )
+      ) {
+        this._framesJson = null;
+      }
+      if (!json) return null;
       const timing = [
         n.delay,
         n.endDelay,
@@ -2146,7 +2281,7 @@ export function installDom(
         n.direction,
         n.easing,
       ];
-      return `[${this._framesJson},${JSON.stringify(timing)}]`;
+      return `[${json},${JSON.stringify(timing)}]`;
     }
   }
 
@@ -2549,6 +2684,32 @@ export function installDom(
       return ((at - from) / (to - from)) * 100;
     }
   }
+  /** An interface's attributes as Web IDL has them (3.7.6): enumerable,
+   *  and a getter that throws for what is no instance of it, its own
+   *  prototype among them. */
+  const idlAttributes = (Interface: Any): void => {
+    const proto = Interface.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, key);
+      if (!d?.get) continue;
+      const get = d.get;
+      const checked = function (this: Any): Any {
+        if (!(this instanceof Interface)) {
+          throw new TypeError('Illegal invocation');
+        }
+        return get.call(this);
+      };
+      Object.defineProperty(checked, 'name', { value: `get ${key}` });
+      Object.defineProperty(proto, key, {
+        ...d,
+        enumerable: true,
+        get: checked,
+      });
+    }
+  };
+  idlAttributes(ScrollTimeline);
+  idlAttributes(ViewTimeline);
   /** A view timeline's insets, from a string of one or two
    *  `<length-percentage>` or `auto`, or a list of one or two values
    *  (Scroll Animations 1, 3.3). `auto` is the scroll container's

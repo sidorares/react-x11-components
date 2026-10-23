@@ -110,6 +110,8 @@ import { AnimationTimeline } from './css/timeline.js';
 import { easingText, timingAt } from './css/animation.js';
 import type { ScrollProgress } from './css/timeline.js';
 import {
+  RANGE_END,
+  RANGE_START,
   scrollEdgeAt,
   timelineTriggersOf,
   triggerActive,
@@ -6032,6 +6034,7 @@ export class HtmlViewNode extends Node {
       at: (-from / (to - from)) * 100,
       edge,
       edgeAt: (e) => ((viewEdgeAt(e, place) - from) / (to - from)) * 100,
+      view: true,
     };
   };
 
@@ -7579,17 +7582,18 @@ export class HtmlViewNode extends Node {
       }
       return false;
     };
-    const lenText = (len: Len): string =>
-      typeof len === 'number'
-        ? `${len / s}px`
-        : len && typeof len === 'object' && 'pct' in len
-          ? `${(len as { pct: number }).pct}%`
-          : '0%';
+    const lenText = (len: Len): string => {
+      if (typeof len === 'number') return `${len / s}px`;
+      if (!len || typeof len !== 'object' || !('pct' in len)) return '0%';
+      const { pct, px } = len as { pct: number; px?: number };
+      if (!px) return `${pct}%`;
+      return `calc(${pct}% ${px < 0 ? '-' : '+'} ${Math.abs(px) / s}px)`;
+    };
     const edgeText = (
       edge: { name: string | null; offset: Len } | undefined,
       end: boolean,
     ): string => {
-      if (!edge) return 'normal';
+      if (!edge || edge === (end ? RANGE_END : RANGE_START)) return 'normal';
       const offset = lenText(edge.offset);
       if (edge.name === null) {
         return offset === (end ? '100%' : '0%') ? 'normal' : offset;
