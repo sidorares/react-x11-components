@@ -97,6 +97,7 @@ handle.refresh();
 | `customProperty(el, name, pseudo?)`                                                     | A custom property's computed value, as `getComputedStyle` reads it by its name — case and all, `--Tabs-x` and `--tabs-x` being two — with every `var()` in it replaced, and `''` where nothing sets it. Not in `computedStyle`'s record, which would carry every one a theme sets on the root to each element. Null as `computedStyle` is.                                                                                                                                                                                                                                                                        |
 | `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                                                                                                                                                                    |
 | `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                                                                                                                                                          |
+| `beforeUnload()`                                                                        | Ask the document whether it may be left, before the host goes to another — a typed address, Reload, a tab closed: with `scripts` on its `beforeunload` is told, and it stays only where it asks to be confirmed, the user has pressed or typed in it, and `scripts.promptToUnload` says to stay. True to leave it, and true with no scripts.                                                                                                                                                                                                                                                                      |
 | `controlValue(el)`                                                                      | What a control holds: typed text, or its markup's value where nothing was typed; the option a `<select>` shows; whether a box or a radio is checked. Null for what is no control.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `controlSelection(el)`                                                                  | A text field's selection, as a script reads `selectionStart`, `selectionEnd` and `selectionDirection`: `{ start, end, direction }` in UTF-16 code units into what it holds — its widget's, the user's caret and what they selected, where core's field says, and else what was last set; a caret at the end of its text where nothing was. Null for what is no text field.                                                                                                                                                                                                                                        |
@@ -808,6 +809,7 @@ since this component navigates nowhere by itself:
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
 | `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
 | `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                              |
+| `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
 | `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
 | `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
 | `timeout`        | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                                           |
@@ -873,6 +875,29 @@ the frame loaded — a handler on its `navigation` — is still there. Not
 yet: a frame of another origin, which runs in a realm of its own, hears
 nothing of the page's navigations of it, and the host's own entries
 before and after the page's are not in `navigation.entries()`.
+
+**A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
+hears `pageshow` after its `load`. A navigation to another document that
+the page starts — a link, a form, `location`, `navigation`, `history` past
+its own entries, `reload()` — asks it first, after its `navigate`:
+`beforeunload` at its window and at its frames', and the navigation stops
+only where one canceled it or gave it a `returnValue`, the user has pressed
+or typed in the page, and `promptToUnload` answers to stay, so a page
+nobody has used is left whatever it asks. One the host starts is asked
+through the handle's `beforeUnload()`. As it goes — its `<Html>` unmounted
+or handed another document, a frame given another or taken out of the
+page — its frames' documents and then it hear `pagehide`, with `persisted`
+false, since nothing is kept to be shown again, `visibilitychange` to
+`hidden`, and `unload`, each under the script timeout, with `beforeunload`
+before them where nothing asked as its navigation started; what they
+change is drawn nowhere. While it unloads, and after, it goes nowhere: an
+address assigned is dropped, and `navigation`'s methods are refused with an
+`InvalidStateError`, after the URL and the state they are handed are
+checked, as a detached frame's are. Its scripts stop with its engine, so a
+timer it sets as it goes never fires. Not yet: `navigator.sendBeacon`,
+whose request would have to outlive the document, a page in a tab the
+host puts behind another, which stays `visible`, and the back-forward
+cache, which would make `persisted` true.
 
 **A script's animations are drawn where the page's timing has them.**
 `animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's

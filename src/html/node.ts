@@ -720,6 +720,9 @@ const enum Stale {
 export class HtmlViewNode extends Node {
   /** What `<Html>` holds, for the handle (`DocumentInteraction`). */
   interactive: DocumentInteraction | null = null;
+  /** Whether the document may be left, as its scripts answer: the
+   *  handle's `beforeUnload`. */
+  unloadCheck: (() => boolean) | null = null;
   private _source = new HtmlSource();
   /** Where the document's relative URLs resolve: its `<base href>` against
    *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */

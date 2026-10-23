@@ -9,7 +9,7 @@
 // the engine's chunk is in, which `useScripts` keeps what it reports for.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, cleanup, renderX11 } from 'react-x11/test';
+import { act, cleanup, renderX11, screen, userEvent } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
 import {
@@ -278,6 +278,40 @@ test('what leaves the document is handed to its seams: location, the title, the 
   ]);
   assert.deepEqual(titles, ['Named']);
   assert.ok(logged.includes('warn: careful'), logged.join('\n'));
+});
+
+test('the handle asks the document whether it may be left: its beforeunload, and the prompt where it asks to be confirmed and has been used', async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  let answer = false;
+  let prompts = 0;
+  const logged: string[] = [];
+  const scripts: HtmlScripts = {
+    promptToUnload: () => {
+      prompts += 1;
+      return answer;
+    },
+    log: (level, text) => void logged.push(text),
+  };
+  const page = await shown(
+    '<input type="button" value="go"><p id="out"></p><script>' +
+      'onbeforeunload = function () { console.log("asked"); return "stay?"; };' +
+      'document.getElementById("out").textContent = "ready";' +
+      '</script>',
+    { scripts },
+  );
+  await until(page, 'out', (s) => s === 'ready');
+  // nobody has used it: asked, and left with no prompt
+  assert.equal(page.handle.beforeUnload(), true);
+  assert.equal(prompts, 0);
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  assert.equal(page.handle.beforeUnload(), false, 'the prompt kept it');
+  answer = true;
+  assert.equal(page.handle.beforeUnload(), true);
+  assert.equal(prompts, 2);
+  assert.equal(logged.filter((text) => text === 'asked').length, 3);
+  // and a document with no scripts is left as it is
+  const still = await shown('<p>no scripts</p>');
+  assert.equal(still.handle.beforeUnload(), true);
 });
 
 test('workers are on unless they are turned off', async (t) => {
