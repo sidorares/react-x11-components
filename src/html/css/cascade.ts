@@ -3059,6 +3059,15 @@ export class Cascade {
     return ((VIEWPORT_SIDES.get(style) ?? 0) & sides) !== 0;
   }
 
+  /** Whether a pseudo-element's style holds a length of those sides of
+   *  the viewport (`_pseudoSides`), which its element's restyle in place
+   *  does not make again. */
+  pseudoReadsViewport(sides: number): boolean {
+    for (const read of this._pseudoSides.values())
+      if (read & sides) return true;
+    return false;
+  }
+
   viewportReaders(
     styles: ReadonlyMap<Element, { style: ComputedStyle }>,
     sides: number,

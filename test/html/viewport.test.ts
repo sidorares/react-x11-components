@@ -1238,6 +1238,39 @@ test('a vw only a sheet mentions leaves a resize to the layout', async () => {
   assert.ok(treeOf(el) === tree, 'no box built again');
 });
 
+test('a vw on what nothing draws is restyled in place on a resize, and the boxes are kept', async () => {
+  // Node's API pages hold a hidden version picker, `max-width: 75vw`, and
+  // every step of a drag built the whole document's boxes for it: 80 builds
+  // in a drag of 80 steps on macOS, at some 200 ms each
+  const items = Array.from({ length: 30 }, (_, i) => `<li>v${i}</li>`).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.picker{display:none;max-width:75vw;' +
+      'min-width:min(300px,75vw)}#a{height:10px}#b{width:50vw;height:10px}' +
+      `</style><div id="a"><div id="pick" class="picker"><ul>${items}</ul></div></div>`,
+    300,
+    400,
+  );
+  const tree = treeOf(el);
+  const pick = findById(el.document, 'pick')!;
+  assert.strictEqual(el.computedStyle(pick)?.['max-width'], '300px');
+  await resize(300, 600);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.strictEqual(el.computedStyle(pick)?.['max-width'], '450px');
+  assert.strictEqual(boxOf(el, 'a').width, 600, 'laid out at the new width');
+});
+
+test('a vw on what is drawn still builds what it sizes', async () => {
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.picker{display:none;max-width:75vw}' +
+      '#b{width:50vw;height:10px}</style><div class="picker"></div><div id="b"></div>',
+    300,
+    400,
+  );
+  assert.strictEqual(boxOf(el, 'b').width, 200);
+  await resize(300, 600);
+  assert.strictEqual(boxOf(el, 'b').width, 300);
+});
+
 test('a vw that comes to hold follows the width, and one that stops does not', async () => {
   // under a `@media` band: crossing into it styles the page again, which
   // finds the `vw`, and every resize in the band after it does too

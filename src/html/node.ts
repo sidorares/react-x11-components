@@ -2606,11 +2606,31 @@ export class HtmlViewNode extends Node {
       // the root box, standing in for a body or an `<html>` the markup does
       // not write, is styled in every build: one that holds such a length
       // is built again with every element's style kept
-      if (
-        readers.size ||
+      const rootReads =
         cascade.holdsViewport(tree.root.style, sides) ||
-        (tree.impliedHtml && cascade.holdsViewport(tree.impliedHtml, sides))
+        (!!tree.impliedHtml && cascade.holdsViewport(tree.impliedHtml, sides));
+      // and where what reads it only inks, or is drawn nowhere, it is
+      // restyled in place, as a hover is, and the boxes kept
+      // — up to an eighth of the document, past which the build of all of
+      // it the other way costs less
+      const limit = Math.max(HOVER_RESTYLE_LIMIT, tree.styles.size >> 3);
+      const reach =
+        readers.size && !rootReads && !cascade.pseudoReadsViewport(sides)
+          ? withDescendants(readers, limit)
+          : null;
+      if (
+        reach &&
+        this._stale === Stale.Nothing &&
+        this._restyleInPlace(
+          reach,
+          (el) => readers.has(el),
+          HOVER_PSEUDO_NONE,
+          limit,
+        )
       ) {
+        this._styledWidth = target;
+        this._styledHeight = viewport;
+      } else if (readers.size || rootReads) {
         if (this._stale < Stale.Boxes) {
           this._stale = Stale.Boxes;
           restyleOnly = readers;
@@ -5414,13 +5434,15 @@ export class HtmlViewNode extends Node {
     reach: ReadonlySet<Element>,
     ownChanged: (el: Element) => boolean,
     pseudoRules: 0 | 1 | 2,
+    /** The most elements it restyles, past which a build is the cheaper. */
+    limit = HOVER_RESTYLE_LIMIT,
   ): boolean {
     const cascade = this._cascade;
     const tree = this._tree;
     const layouts = this._layouts;
     if (!cascade || !tree || !layouts) return false;
     if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
-    if (reach.size > HOVER_RESTYLE_LIMIT) return false;
+    if (reach.size > limit) return false;
     // a first line's, a first letter's and a marker's styles are layout's
     if (pseudoRules === HOVER_PSEUDO_OTHER) return false;
     // what an animation restyled comes to at this moment's time
@@ -5460,6 +5482,22 @@ export class HtmlViewNode extends Node {
      *  its layers: it may have come over a widget, or gone from over one
      *  (`controlRectsOf`). */
     let covers = false;
+    /** Whether `el`, or an element it is in, was `display: none`, and is
+     *  with what this restyle made: none of it was drawn, nor is. */
+    const unseenBefore = (el: Element): boolean => {
+      for (let at: Element | null = el; at; at = flatParentOf(at)) {
+        if (tree.styles.get(at)?.style.display === 'none') return true;
+      }
+      return false;
+    };
+    const unseenAfter = (el: Element, own: ComputedStyle): boolean => {
+      if (own.display === 'none') return true;
+      for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+        const style = fresh.get(at) ?? tree.styles.get(at)?.style;
+        if (style?.display === 'none') return true;
+      }
+      return false;
+    };
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
       if (!kept) return null;
@@ -5480,7 +5518,14 @@ export class HtmlViewNode extends Node {
       if (parentStyle !== parentWas || flipped(el)) {
         const made = cascade.styleFor(el, parentStyle, kept.inFlex);
         const diff = hoverChange(kept.style, made);
-        if (diff === false) refused = true;
+        // under `display: none` before and after, a change of any kind
+        // draws nothing: Node's API pages hold a hidden picker
+        // `max-width: 75vw`, and every step of a drag built the boxes
+        if (diff === false && unseenBefore(el) && unseenAfter(el, made)) {
+          style = made;
+          changed.set(el, made);
+          quiet.add(el);
+        } else if (diff === false) refused = true;
         else if (diff) {
           style = made;
           changed.set(el, made);
