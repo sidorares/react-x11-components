@@ -2131,7 +2131,12 @@ closes a way out a DOM binding opens by accident:
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`. Listing the
   getter-only accessors on the facade's interfaces, and checking each
-  against the IDL, is a quick way to find the next one.
+  against the IDL, is a quick way to find the next one. A library's
+  reading of a standard counts too: css-select reads a query from an
+  element as jQuery does, `:scope .a .b`, where the DOM matches the
+  selector against the whole document, so `el.querySelectorAll('.a .b')`
+  found nothing whose `.a` was above `el`. **A page's selector goes
+  through `_query`**, which compiles it as the DOM does and keeps it.
 - **What a page waits on settles.** A stand-in that answers and never
   finishes is worse than none: `animate()` handed back an object whose
   `onfinish` was never called, so a menu that hid a panel at the end of its

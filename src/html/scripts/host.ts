@@ -18,7 +18,7 @@
 // process; a navigation is a link the browser follows.
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
-import { is, selectAll, selectOne } from 'css-select';
+import { compile, selectAll, selectOne } from 'css-select';
 import {
   Comment,
   Document,
@@ -465,6 +465,16 @@ const FRAME_LOOK: RootLook = {
 
 /** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
 const FRAME_SIZE = { width: 300, height: 150 };
+
+/** A selector that names the node a query is asked from (`_query`). */
+const QUERY_SCOPED = /:scope(?![\w-])/i;
+
+/** A selector whose matcher keeps answers for as long as it lives
+ *  (css-select's `cacheResults`): a `:has()`, a `:contains()`. */
+const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
+
+/** How many compiled queries a page keeps (`_query`). */
+const KEPT_QUERIES = 1000;
 
 /** The elements that hold a document of their own: a frame's. */
 const FRAME_TAGS = new Set(['iframe', 'frame', 'object']);
@@ -2505,16 +2515,17 @@ export class DomHost {
       // --- selectors
       case 'query': {
         const root = this._node(a);
-        const options = this._selectOptions();
+        const options = this._queryOptions();
         // a view transition's pseudo-element is no element
         if (this._transitionSelector(text(b))) return c ? '' : 0;
         try {
+          const query = this._query(text(b), root);
           if (c) {
-            return selectAll(text(b), root as Element, options)
+            return selectAll(query, root as Element, options)
               .map((el) => this.idOf(el))
               .join(',');
           }
-          return this.idOf(selectOne(text(b), root as Element, options));
+          return this.idOf(selectOne(query, root as Element, options));
         } catch (error) {
           throw new DomError(
             'SyntaxError',
@@ -2525,7 +2536,8 @@ export class DomHost {
       case 'matches':
         if (this._transitionSelector(text(b))) return false;
         try {
-          return is(this._element(a), text(b), this._selectOptions());
+          const el = this._element(a);
+          return this._query(text(b), el)(el);
         } catch {
           throw new DomError(
             'SyntaxError',
@@ -2533,13 +2545,12 @@ export class DomHost {
           );
         }
       case 'closest': {
-        const options = this._selectOptions();
         if (this._transitionSelector(text(b))) return 0;
         try {
-          for (let at: AnyNode | null = this._element(a); at; at = at.parent) {
-            if (at instanceof Element && is(at, text(b), options)) {
-              return this.idOf(at);
-            }
+          const from = this._element(a);
+          const query = this._query(text(b), from);
+          for (let at: AnyNode | null = from; at; at = at.parent) {
+            if (at instanceof Element && query(at)) return this.idOf(at);
           }
         } catch {
           throw new DomError(
@@ -3988,6 +3999,45 @@ export class DomHost {
     return (this._pseudos = { pseudos });
   }
   private _pseudos: ReturnType<DomHost['_selectOptions']> | null = null;
+
+  /** The options a page's own query is compiled with (`_query`). */
+  private _queryOptions(): ReturnType<DomHost['_selectOptions']> & {
+    relativeSelector: false;
+  } {
+    return (this._queryOpts ??= {
+      ...this._selectOptions(),
+      relativeSelector: false,
+    });
+  }
+  private _queryOpts: ReturnType<DomHost['_queryOptions']> | null = null;
+
+  /**
+   * A selector of the page's own — `querySelector`, `matches`, `closest` —
+   * compiled as the DOM matches one (DOM 4.2.6): against the whole
+   * document, with `:scope` the node it is asked from, and no relative
+   * selector, which throws. css-select reads a query from an element as
+   * jQuery does, `:scope .a .b`, and `el.querySelectorAll('.a .b')` found
+   * none whose `.a` was above `el`. One that names no `:scope` and keeps
+   * no answers (a `:has()` or a `:contains()` does, `KEEPS_ANSWERS` in the
+   * cascade) is compiled once: GitHub's scripts ask the same few hundred
+   * selectors thousands of times a load.
+   */
+  private _query(selector: string, scope: AnyNode): (el: Element) => boolean {
+    const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
+    const kept = keeps ? this._queries.get(selector) : undefined;
+    if (kept) return kept;
+    const query = compile(
+      selector,
+      this._queryOptions() as Parameters<typeof compile>[1],
+      keeps ? undefined : (scope as Element),
+    ) as unknown as (el: Element) => boolean;
+    if (keeps) {
+      if (this._queries.size >= KEPT_QUERIES) this._queries.clear();
+      this._queries.set(selector, query);
+    }
+    return query;
+  }
+  private readonly _queries = new Map<string, (el: Element) => boolean>();
 
   /** Whether a node is in a `<template>`'s content. */
   private _inTemplate(node: AnyNode): boolean {
