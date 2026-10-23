@@ -94,7 +94,9 @@ export function useVideos(view: {
 
 /** The `<canvas>` what the document paints over a player is painted on
  *  again, where it shows: over what the player shows, and nowhere a press
- *  stops, which is the document's. */
+ *  stops, which is the document's. Not at the video's opacity, which fades
+ *  the video and not what is painted over it: a box that fades both keeps
+ *  the poster (`coversOf`), and a cover's own is painted with it. */
 function renderCovers(
   rect: MediaRect,
   id: string,
@@ -119,7 +121,6 @@ function renderCovers(
       width,
       height,
       pointerEvents: 'none',
-      ...(rect.opacity !== undefined && { opacity: rect.opacity }),
     },
     onDraw: (ctx, info) => view.current?.paintCovers(el, ctx, info.node.abs),
   });

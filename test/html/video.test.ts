@@ -7,9 +7,11 @@ import {
   cleanup,
   expectPixel,
   fireEvent,
+  pixelAt,
   renderX11,
   screen,
   waitFor,
+  waitForPixel,
 } from 'react-x11/test';
 import { createVideoFrames, useApp } from 'react-x11';
 import type { DrawnNode, NtkApp, VideoFrames } from 'react-x11';
@@ -364,12 +366,15 @@ test("the video takes its stream's size once the player knows it", async () => {
   assert.deepStrictEqual([second.abs.width, second.abs.height], [100, 50]);
 });
 
-test('a video something is painted over keeps its poster', async () => {
-  // a sibling over the document would hide the caption laid across it
+test('a video its own flow paints something over keeps its poster', async () => {
+  // a sibling over the document would hide the caption pulled up across
+  // it, which is painted with the video, after it, and is no box a
+  // sibling after the player can paint again
+  const asked: ResourceRequest[] = [];
   await renderVideo(
     '<div style="position:relative">' +
       '<video src="a.mp4" style="display:block;width:100px;height:50px"></video>' +
-      '<div style="position:absolute;left:0;bottom:0;right:0">caption</div>' +
+      '<p style="margin:-14px 0 0;height:14px">caption</p>' +
       '</div>' +
       // and one beside it with nothing over it is mounted
       '<video src="b.mp4" style="display:block;width:100px;height:50px"></video>',
@@ -377,6 +382,11 @@ test('a video something is painted over keeps its poster', async () => {
       kind: 'video',
       frames: createVideoFrames(app, { width: 16, height: 16 }),
     }),
+    { asked },
+  );
+  assert.deepStrictEqual(
+    asked.map((r) => r.url),
+    ['b.mp4'],
   );
   const mounted = videos();
   assert.strictEqual(mounted.length, 1);
@@ -385,6 +395,40 @@ test('a video something is painted over keeps its poster', async () => {
       .width,
     16,
   );
+});
+
+test('a video in the flow of a box has what is painted after the box painted over its player', async () => {
+  // diabrowser.com's hero: a video in a box its scroll moves, a box with
+  // a z-index around both, and the dock with a higher one over its foot
+  const asked: ResourceRequest[] = [];
+  const { result } = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      '<div style="position:relative;z-index:1;width:80px">' +
+      '<div style="position:relative">' +
+      '<video src="a.mp4" style="display:block;width:80px;height:40px">' +
+      '</video></div></div>' +
+      '<div style="position:relative;z-index:3;margin-top:-16px;' +
+      'width:80px;height:16px;background:#f00"></div>',
+    (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+    { asked },
+  );
+  assert.deepStrictEqual(
+    asked.map((r) => r.url),
+    ['a.mp4'],
+  );
+  assert.strictEqual(videos().length, 1, 'a player is mounted');
+  const over = screen.all((n) => n.kind === 'canvas');
+  assert.strictEqual(over.length, 1, 'and a canvas after it');
+  assert.deepStrictEqual(
+    [over[0].abs.x, over[0].abs.y, over[0].abs.width, over[0].abs.height],
+    [0, 24, 80, 16],
+    'over the foot the dock reaches',
+  );
+  await act();
+  await expectPixel(result.ctx, 40, 10, '#00ff00', { message: 'the frame' });
+  await expectPixel(result.ctx, 40, 32, '#ff0000', {
+    message: 'the dock over it',
+  });
 });
 
 test('a box over a video that draws nothing there leaves it mounted', async () => {
@@ -461,22 +505,176 @@ for (const scale of [1, 2]) {
   });
 }
 
+/** A positioned 80 by 40 video with `over` after it in a box as wide. */
+const videoUnder = (src: string, over: string, video = ''): string =>
+  '<div style="position:relative;width:80px">' +
+  `<video src="${src}" style="display:block;position:relative;` +
+  `width:80px;height:40px;${video}"></video>${over}</div>`;
+
+/** A 24px square laid over a video at (`left`, 8), as positioned. */
+const square = (left: number, style: string): string =>
+  `<div style="position:absolute;z-index:1;left:${left}px;top:8px;` +
+  `width:24px;height:24px;${style}"></div>`;
+
+for (const scale of [1, 2]) {
+  test(`a box scaled or turned over a video is painted over its player through its matrix, at a scale of ${scale}`, async () => {
+    const { result } = await renderVideo(
+      '<style>body{margin:0;background:#fff}</style>' +
+        videoUnder(
+          'a.mp4',
+          // a half of it about its middle, 10 to 22 across and 14 to 26
+          // down, and a diamond about 56, 20 reaching 17 each way
+          square(4, 'background:#f00;transform:scale(.5)') +
+            square(44, 'background:#00f;transform:rotate(45deg)'),
+        ),
+      (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+      { scale },
+    );
+    assert.strictEqual(videos().length, 1, 'a player is mounted');
+    await act();
+    const at = (x: number, y: number, want: string, message: string) =>
+      expectPixel(result.ctx, x * scale, y * scale, want, {
+        tolerance: 2,
+        message,
+      });
+    await at(16, 20, '#ff0000', 'the middle of the box scaled');
+    await at(6, 10, '#00ff00', 'the frame, where it was laid out');
+    await at(56, 20, '#0000ff', 'the middle of the box turned');
+    await at(45, 9, '#00ff00', 'the frame, past a corner turned away');
+    await at(71, 20, '#0000ff', 'a corner turned past where it was laid out');
+  });
+}
+
+test('a faded box over a video is painted over its player at its opacity, and a faded video fades nothing over it', async () => {
+  const { result } = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      videoUnder('a.mp4', square(4, 'background:#f00;opacity:.5')) +
+      videoUnder('b.mp4', square(4, 'background:#f00'), 'opacity:.5'),
+    (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+  );
+  assert.strictEqual(videos().length, 2, 'both are mounted');
+  await act();
+  await expectPixel(result.ctx, 16, 20, [128, 128, 0], {
+    tolerance: 3,
+    message: 'red at half over the frame',
+  });
+  await expectPixel(result.ctx, 50, 60, [128, 255, 128], {
+    tolerance: 3,
+    message: 'the second frame at half over the page',
+  });
+  await expectPixel(result.ctx, 16, 60, '#ff0000', {
+    message: 'and the box over it, whole',
+  });
+});
+
+test('a filtered box over a video is painted over its player through its filter, and a blur past its edge', async () => {
+  const { result } = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      videoUnder(
+        'a.mp4',
+        square(4, 'background:#00f;filter:invert(1)') +
+          square(48, 'background:#f00;filter:blur(2px)'),
+      ),
+    (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+  );
+  assert.strictEqual(videos().length, 1, 'a player is mounted');
+  // drawn from a read of what the box paints, where the context runs no
+  // filter itself
+  await waitForPixel(result.ctx, 16, 20, '#ffff00', {
+    message: 'blue inverted',
+  });
+  await waitForPixel(result.ctx, 60, 20, '#ff0000', {
+    tolerance: 2,
+    message: 'the middle of the box blurred',
+  });
+  // a pixel and a half past its left edge, a fifth of the way to red: the
+  // blur reaches over the frame, which shows under it
+  const [r, g, b] = await pixelAt(result.ctx, 46, 20);
+  assert.ok(
+    r > 20 && r < 120 && g > 130 && g < 240 && b < 10,
+    `the blur over the frame, past the box: ${[r, g, b]}`,
+  );
+});
+
+test('a sticky box the viewport holds over a video is painted over its player where the scroll has it', async () => {
+  // diabrowser.com's dock, held at the foot of the viewport over the hero
+  const pane = { current: null as null | { scrollTo(y: number): void } };
+  const { result } = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      '<div style="position:relative;z-index:1;width:80px">' +
+      '<div style="position:relative">' +
+      '<video src="a.mp4" style="display:block;width:80px;height:300px">' +
+      '</video></div></div>' +
+      '<div style="position:sticky;bottom:0;z-index:3;margin-top:-40px;' +
+      'width:80px;height:40px;background:#f00"></div>' +
+      '<div style="height:600px"></div>',
+    (_, app) => ({ kind: 'video', frames: solid(app, 8, 30, [0, 255, 0]) }),
+    {
+      height: 200,
+      wrap: (doc) =>
+        h(
+          'box',
+          {
+            style: { flexGrow: 1, overflow: 'scroll' },
+            ref: (node: unknown) => {
+              pane.current = node as typeof pane.current;
+            },
+          },
+          doc,
+        ),
+    },
+  );
+  const [video] = videos();
+  assert.ok(video, 'a player is mounted');
+  await act();
+  await expectPixel(result.ctx, 40, 150, '#00ff00', { message: 'the frame' });
+  await expectPixel(result.ctx, 40, 180, '#ff0000', {
+    message: 'the dock at the foot of the viewport',
+  });
+  await act(async () => pane.current!.scrollTo(50));
+  await act();
+  await waitFor(() => {
+    const [over] = screen.all((n) => n.kind === 'canvas');
+    assert.deepStrictEqual(
+      [over.abs.y, over.abs.height],
+      [160, 40],
+      'the canvas where the dock is held',
+    );
+  });
+  assert.strictEqual(videos()[0], video, 'the same player');
+  await expectPixel(result.ctx, 40, 150, '#00ff00', { message: 'the frame' });
+  await expectPixel(result.ctx, 40, 180, '#ff0000', {
+    message: 'the dock, held there as the video scrolled under it',
+  });
+});
+
 test('a video under a box it cannot be painted again over keeps its poster', async () => {
   const asked: ResourceRequest[] = [];
   await renderVideo(
-    '<div style="position:relative;width:80px">' +
-      '<video src="a.mp4" style="display:block;position:relative;' +
-      'width:80px;height:40px"></video>' +
-      // faded: the document paints it as one group, which a second paint
-      // over the player is not
-      '<div style="position:absolute;z-index:1;right:0;bottom:0;' +
-      'width:20px;height:20px;background:#f00;opacity:.5"></div></div>' +
-      '<div style="position:relative;width:80px">' +
-      '<video src="b.mp4" style="display:block;position:relative;' +
-      'width:80px;height:40px"></video>' +
-      '<div style="position:absolute;z-index:1;right:0;bottom:0;' +
-      'width:20px;height:20px;background:#f00;transform:rotate(10deg)">' +
-      '</div></div>',
+    // faded with the box over it: the document fades the two as one
+    // group, which a player and a paint over it are two of
+    '<div style="opacity:.5">' +
+      videoUnder('a.mp4', square(4, 'background:#f00')) +
+      '</div>' +
+      // cut by a rounded box around it, where the canvas clips to a
+      // rectangle
+      videoUnder(
+        'b.mp4',
+        '<div style="position:absolute;left:4px;top:8px;width:24px;' +
+          'height:24px;overflow:hidden;border-radius:8px">' +
+          square(0, 'background:#f00') +
+          '</div>',
+      ) +
+      // more of them than are painted again
+      videoUnder(
+        'c.mp4',
+        [0, 12, 24, 36, 48].map((x) => square(x, 'background:#f00')).join(''),
+      ) +
+      // scaled with the box over it, which is painted again where it is
+      // laid out
+      '<div style="transform:scale(.5);transform-origin:0 0">' +
+      videoUnder('d.mp4', square(4, 'background:#f00')) +
+      '</div>',
     (_, app) => ({
       kind: 'video',
       frames: createVideoFrames(app, { width: 16, height: 16 }),

@@ -1380,17 +1380,22 @@ rest keep their posters:
   again.** A player is over the whole document, so a caption laid across a
   video, a play button in its corner or a gradient over a hero would be
   hidden under it. Up to four such boxes are painted a second time, on a
-  `<canvas>` mounted after the player, where each is laid out where it is
-  drawn — nothing turns, filters, masks or fades it or a box around it —
-  and what clips it is a rectangle. A video under any other keeps its
-  poster, and so does one in the flow under a positioned box, whose place
-  among what is painted around it is not one the test can tell. The test is
-  the one a [lifted animation](#what-renders)'s layer is held to, and what
-  it asks of a box is what it draws over the picture, not how far what it
-  holds reaches: an empty box laid over a video, or a header whose hidden
-  menu hangs over it, is over nothing. On macOS a player with a box over it
-  is drawn into the window, as core draws one with anything over it, rather
-  than on a layer of its own.
+  `<canvas>` mounted after the player, as the document paints them: through
+  a box's own transform, at its own opacity, through its own filter, blur
+  and all — diabrowser.com's hero plays under a dock whose arc a scroll
+  scales and whose halo is blurred and faded. The test is the one a
+  [lifted animation](#what-renders)'s layer is held to, and what it asks of
+  a box is what it draws over the picture, not how far what it holds
+  reaches: an empty box laid over a video, or a header whose hidden menu
+  hangs over it, is over nothing. A video in a box's flow is under what is
+  painted after that box, and under what its flow paints over it — a
+  caption pulled up across it — which no box after the player can paint
+  again, so that keeps its poster. So do a video and a box over it that a
+  box around both fades, which the document fades as one group, a box over
+  it that a box with round corners clips, more than four of them, and both
+  under a scale. On macOS a player with a box over it is drawn into the
+  window, as core draws one with anything over it, rather than on a layer
+  of its own.
 - **A box fixed to the viewport is asked about as the pane scrolls**: a
   header that comes over a playing video cuts the player where it reaches
   it, and one that reaches into its middle hides it for as long as it is

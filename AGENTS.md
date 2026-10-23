@@ -3266,12 +3266,23 @@ has a frame, goes over it, so nothing in the paint changes but the frame a
 mounted video with no poster is not drawn in. Four things are
 load-bearing. **What the document paints after the video over its picture
 is painted again over the player, or no player is mounted**, the sprite
-test (`paintedAfter`, `crowded`), because a sibling over the document hides
-what is drawn over the video. Up to four such boxes, laid out where they
-draw and cut by a rectangle, nothing fading, turning or filtering them, go
+test (`coverersOver`, `crowded`), because a sibling over the document hides
+what is drawn over the video. Up to four such boxes, cut by a rectangle, go
 on a `<canvas>` after the player (`coversOf`, `paintCovers`), as a sprite's
 coverers go on layers of their own (`overLiftOf`): GitHub's hero has a play
-button in its video's corner. A video under anything else keeps its poster,
+button in its video's corner. Each is painted as the document paints a
+layer (`paintCover`), through its own matrix, opacity and filter — not
+`paintLiftedBox`, which leaves those to the layer — and nothing around it
+may group it with the video: a cover is a layer of a context the video is
+in, so a box around it that fades or filters it fades or filters both, as
+one group, which a player and a paint over it are two of. The canvas takes
+no opacity of the video's for the same reason. A video in a box's flow —
+diabrowser.com's hero, under a sticky dock with a blurred, faded halo in
+it — is under what is painted after the box it is painted with
+(`flowLayerOf`), and under what that box's flow paints over it, in any pass
+(`flowMeets`), which keeps its poster. **Anything new the paint draws a
+layer through goes through `paintCover` as well**, or a cover over a
+player is drawn without it. A video under anything else keeps its poster,
 by design. **The walk asks what a later layer draws over the picture, not
 how far it reaches** (`inkMeets`, the rule the next paragraph states):
 taking a layer at its ink bounds, GitHub's empty box over its hero's video
@@ -3350,8 +3361,9 @@ the slide reached a frame drawn somewhere else. **The scale box is always
 there**, at 1 where nothing scales the element, so a frame whose stage
 comes to fit the window exactly is the same node, and its document is
 not started again. And **a cover is never painted over a scaled player**
-(`coversOf` is not asked): it is painted where it is laid out, which
-under a scale it is not, so such a video keeps its poster. A turn, a
+(`coversOf` is not asked): it is painted where it is laid out, through
+its own matrix and through no matrix around it, so such a video keeps
+its poster. A turn, a
 skew, a flip, two factors and a projection still refuse; a widget is not
 held to any of this, since `controls.ts` mounts it where the box was laid
 out.

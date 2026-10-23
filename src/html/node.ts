@@ -305,6 +305,7 @@ import {
   opaqueWithin,
   ownBounds,
   paintCapture,
+  paintCover,
   paintDocument,
   paintLiftedBox,
   paintOrderOf,
@@ -3347,9 +3348,10 @@ export class HtmlViewNode extends Node {
   /**
    * Paint over a video's player what the document paints after the video
    * and reaches it (`coversOf`): each box and all it holds, as the
-   * document paints it, cut to what of the player it reaches. `ctx` is a
-   * sibling's mounted after the player, at its origin, which is `at` in
-   * the window — `videos.ts`'s `<canvas>`.
+   * document paints it — through its own matrix, at its own opacity,
+   * through its own filter (`paintCover`) — cut to what of the player it
+   * reaches. `ctx` is a sibling's mounted after the player, at its origin,
+   * which is `at` in the window — `videos.ts`'s `<canvas>`.
    */
   paintCovers(
     element: Element,
@@ -3378,7 +3380,7 @@ export class HtmlViewNode extends Node {
       );
       c.clip();
       try {
-        paintLiftedBox(c, tree, box, options);
+        paintCover(c, tree, box, options);
       } finally {
         c.restore!();
       }

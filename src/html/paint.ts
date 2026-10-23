@@ -2465,6 +2465,39 @@ export function paintLiftedBox(
   });
 }
 
+/**
+ * A box the document paints over a video, painted again over its player
+ * (`HtmlViewNode.paintCovers`): as the document paints it as a layer — and
+ * not as a box on a layer of its own is, `paintLiftedBox` — through its
+ * matrix, at its opacity, through its filter, its mask and its clip path
+ * (`paintPositioned`), on a context in the window's coordinates, as the
+ * document's are. Nothing culls it, and nothing around it clips it but
+ * what the caller has.
+ */
+export function paintCover(
+  ctx: PaintContext,
+  tree: BoxTree,
+  box: Box,
+  options: PaintOptions,
+): void {
+  if (!canFill(ctx)) return;
+  const inner: PaintOptions = {
+    ...options,
+    damage: null,
+    clips: [],
+    lifted: null,
+    sprites: null,
+    matrix: undefined,
+    canvasSource: canvasBackground(tree)?.source,
+    negative: tree.negative,
+    fixed: FIXED_BOXES.get(tree) ?? null,
+    selectionStyler: options.selection ? tree.selectionStyler : null,
+    shapeStyler: tree.shapeStyler,
+  };
+  if (turns(box)) paintTransformed(ctx, box, inner);
+  else paintBox(ctx, box, inner);
+}
+
 /** `paintPlaced` at full opacity: a box drawn on a surface of its own, which
  *  is faded as it is composited (`paintRaster`). */
 function paintUnfaded(
@@ -6301,9 +6334,15 @@ export function drawsNothing(box: Box): boolean {
  * viewport, transparent until the menu opens, and GitHub lays an empty box
  * over its hero's video for a script to draw a gradient where it is. A box
  * with no rectangle of its own, an inline box, one drawn through a matrix
- * or a filter, and one with a list marker are taken at their ink.
+ * or a filter, and one with a list marker are taken at their ink. A child
+ * `apart` answers true for is not looked into: what is painted in another
+ * pass than its parent's flow, which the caller asks about where it is.
  */
-export function inkMeets(root: Box, extent: Rect): boolean {
+export function inkMeets(
+  root: Box,
+  extent: Rect,
+  apart: ((parent: Box, child: Box) => boolean) | null = null,
+): boolean {
   const stack: Box[] = [root];
   while (stack.length) {
     const at = stack.pop()!;
@@ -6365,7 +6404,9 @@ export function inkMeets(root: Box, extent: Rect): boolean {
     ) {
       continue;
     }
-    for (const child of at.children) stack.push(child);
+    for (const child of at.children) {
+      if (!apart?.(at, child)) stack.push(child);
+    }
   }
   return false;
 }
@@ -8048,6 +8089,96 @@ export function layersOver(
   return stopped === false ? found : null;
 }
 
+/**
+ * The layers `coverersAfter` finds, for a box in the flow of a layer as well
+ * as for one that is a layer: what is painted after the box it is painted
+ * with (`flowLayerOf`) is after it, and the box is under every layer of a
+ * context it is in the own flow of — diabrowser.com's hero video is in the
+ * flow of a box its scroll moves, under a sticky dock. What else that box's
+ * flow puts within `extent` is asked of whatever its place in the tree
+ * (`flowMeets`). Null where something there does, where the box it is
+ * painted with is in the top layer, where a context on the way up is
+ * painted from no list of layers, and where the outline of a context
+ * around it reaches the extent.
+ */
+export function coverersOver(box: Box, extent: Rect): Box[] | null {
+  const layer = flowLayerOf(box);
+  if (!layer || flowMeets(layer, box, extent)) return null;
+  const found: Box[] = [];
+  const stopped = walkPaintedAfter(
+    box,
+    extent,
+    null,
+    null,
+    (later) => {
+      found.push(later);
+      return false;
+    },
+    'once',
+  );
+  return stopped === false ? found : null;
+}
+
+/**
+ * The box `box` is painted with, as `walkPaintedAfter` finds it in its
+ * context's flow: `box` where it is one of its context's layers, the
+ * nearest box around it that is one, or the context, in whose own flow it
+ * is — the root where nothing above paints layers. Null where a box in the
+ * top layer is around it before any of those, which is painted over every
+ * context and from no list of one.
+ */
+function flowLayerOf(box: Box): Box | null {
+  let context: Box | null = box.parent;
+  while (context && !STACKED.has(context)) context = context.parent;
+  const list = context ? STACKED.get(context)! : null;
+  let at = box;
+  for (; at.parent && at !== context; at = at.parent) {
+    if (at.topLayer) return null;
+    if (list && layerIndex(list, at) >= 0) return at;
+  }
+  return at;
+}
+
+/**
+ * Whether anything painted in the flow of `layer` but `box` and the boxes
+ * around it puts ink within `extent`: what is painted with `box` rather
+ * than as a layer of its own, which `walkPaintedAfter` asks about in the
+ * order layers are painted. Asked of what is before `box` in the tree as
+ * well as after it, since a flow paints in passes (CSS 2.1 Appendix E) —
+ * the backgrounds of its blocks, its floats, then its lines and its
+ * replaced boxes — and a caption pulled up over a video by a negative
+ * margin is painted over it. An outline around `box` that reaches in is
+ * over it too.
+ */
+function flowMeets(layer: Box, box: Box, extent: Rect): boolean {
+  const path = new Set<Box>();
+  for (let at: Box | null = box; at; at = at.parent) {
+    path.add(at);
+    if (outlineMeets(at, extent)) return true;
+    if (at === layer) break;
+  }
+  const stack: Box[] = [layer];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at === box) continue;
+    if (path.has(at)) {
+      for (const child of at.children) {
+        if (path.has(child) || !apartFromFlow(at, child)) stack.push(child);
+      }
+      continue;
+    }
+    if (inkMeets(at, extent, apartFromFlow)) return true;
+  }
+  return false;
+}
+
+/** Whether a child is painted in no pass of its parent's flow: as a layer
+ *  of a context (`layered`), below one's flow (`HOISTED`), or in the top
+ *  layer. */
+function apartFromFlow(parent: Box, child: Box): boolean {
+  return child.topLayer || HOISTED.has(child) || layered(parent, child);
+}
+
 /** The walk `paintedAfter` and `coverersAfter` share: each layer painted
  *  after `box` whose ink is within the extent is handed to `meet`, which
  *  stops the walk by answering true. True where it was stopped, or an
@@ -8060,8 +8191,10 @@ function walkPaintedAfter(
   above: ReadonlySet<Box> | null,
   meet: (later: Box) => boolean,
   /** Whether a box in the flow is painted where its layer, or its
-   *  context's flow, is (`layersOver`), rather than answered with null. */
-  flow = false,
+   *  context's flow, is (`layersOver`), rather than answered with null;
+   *  `'once'` for `box` alone, and null for a context on the way up that
+   *  is painted from no list (`coverersOver`). */
+  flow: boolean | 'once' = false,
   /**
    * Whether the boxes around `box` may be drawn through a scale and a move
    * (`zoomBetween`), and `extent` is in `box`'s own coordinates, before its
@@ -8117,11 +8250,12 @@ function walkPaintedAfter(
       if (!z) return null;
       extent = zoomRect(z, extent);
     }
+    const inFlow = flow === true || (flow === 'once' && item === box);
     // no box above paints layers: nothing is painted over it but its flow
-    if (!context && flow) break;
+    if (!context && inFlow) break;
     const list = context ? STACKED.get(context)! : null;
     let index = list ? layerIndex(list, item) : -1;
-    if (index < 0 && flow && context) {
+    if (index < 0 && inFlow && context) {
       // painted with the nearest box around it that is one of the
       // context's layers, or in the context's own flow, before them all
       let at: Box | null = item.parent;
