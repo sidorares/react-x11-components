@@ -50,11 +50,16 @@ export interface Videos {
   render(): ReactNode[];
 }
 
-/** The players over a document, kept as the rects the element reported. */
-export function useVideos(view: {
-  readonly current: HtmlViewNode | null;
-}): Videos {
+/** The players over a document, kept as the rects the element reported.
+ *  `loaded` is told when a player has what it plays, for the page: what
+ *  its scripts read as ready, and what an `autoplay` waits for. */
+export function useVideos(
+  view: { readonly current: HtmlViewNode | null },
+  loaded: (element: Element) => void,
+): Videos {
   const [rects, setRects] = React.useState<MediaRect[]>([]);
+  const told = React.useRef(loaded);
+  told.current = loaded;
   const ids = React.useRef(new WeakMap<Element, number>()).current;
   const next = React.useRef(0);
   const idOf = (el: Element): number => {
@@ -86,7 +91,13 @@ export function useVideos(view: {
       rects.flatMap((rect) => {
         const id = `${idOf(rect.element)}`;
         const over = renderCovers(rect, id, view);
-        const video = renderVideo(rect, id, view, playerOf(rect.element));
+        const video = renderVideo(
+          rect,
+          id,
+          view,
+          playerOf(rect.element),
+          (el) => told.current(el),
+        );
         return over ? [video, over] : [video];
       }),
   };
@@ -130,6 +141,7 @@ function renderVideo(
   id: string,
   view: { readonly current: HtmlViewNode | null },
   ref: (node: VideoNode | null) => void,
+  loaded: (element: Element) => void,
 ): ReactNode {
   const el = rect.element;
   // on the device pixels the document drew the box on already: rounded
@@ -197,8 +209,10 @@ function renderVideo(
         }),
         style,
         ...(rect.label && { 'aria-label': rect.label }),
-        onLoadedMetadata: (ev) =>
-          view.current?.mediaLoaded(el, ev.width, ev.height),
+        onLoadedMetadata: (ev) => {
+          view.current?.mediaLoaded(el, ev.width, ev.height);
+          loaded(el);
+        },
         onError: () => view.current?.mediaFailed(el, rect.url),
         ...(rect.controls && {
           onClick: (ev: { currentTarget: VideoNode | null }) => {

@@ -46,7 +46,10 @@ export type HtmlDomEventType =
   // told after the fact: a `<link rel=stylesheet>`'s sheet applied, or not
   // to be had
   | 'load'
-  | 'error';
+  | 'error'
+  // and a `<video>`'s player has what it plays: its size, and from then
+  // its frames
+  | 'loadedmetadata';
 
 /**
  * Something that happened to a document, before `<Html>` does what it does

@@ -2065,8 +2065,18 @@ closes a way out a DOM binding opens by accident:
   is mounted paused, and `paused` is left out until something says, so
   `autoplay` still plays. **Anything new that tells a player what to do
   goes through `setMediaState`**, a press on `controls` included, or the
-  next prop a script sets is no change and the player is not told.
-  Nothing comes back from the player to the page yet.
+  next prop a script sets is no change and the player is not told. One
+  thing comes back: that the player has what it plays, its
+  `onLoadedMetadata` told as an `onDomEvent` of `loadedmetadata` after the
+  fact, as a sheet's `load` is (`mediaReady`). Until then the element reads
+  as a browser's does before it has the data — `readyState` 0, and
+  `paused`, `autoplay` or not — and from then it is ready, and an
+  `autoplay` no script played or paused plays. Read as playing from the
+  first, diabrowser.com's hero was paused for good by an effect that
+  pauses whatever is not paused yet at hydration, before it knows the
+  video is in view. **The cascade's `:playing` is the same rule**
+  (`isPaused`, `setMediaLoaded`), or a page reads one state and styles
+  another.
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its

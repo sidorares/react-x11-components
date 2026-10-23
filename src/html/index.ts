@@ -828,8 +828,13 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   });
   const mayHaveStops = useFocusableMarkup(source);
   // core's `<video>` over each video the document can show one over
-  // (`videos.ts`)
-  const videos = useVideos(viewNode);
+  // (`videos.ts`); a player that has what it plays is the page's news after
+  // the fact, as a sheet's `load` is: what its scripts read as ready, and
+  // what an `autoplay` waits for
+  const videos = useVideos(
+    viewNode,
+    (element) => void fireDomEvent(onDomEvent, 'loadedmetadata', element),
+  );
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };

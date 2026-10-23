@@ -8909,6 +8909,15 @@ export function installDom(
     /** How many times a `pause()` paused it: a `play()` whose task finds
      *  another count was paused since. */
     pauses: number;
+    /** Whether its player has what it plays (`__event`'s
+     *  `loadedmetadata`): HAVE_ENOUGH_DATA, where it had nothing. */
+    ready: boolean;
+    /** HTML's "can autoplay flag" (4.8.11.5): set until the page plays or
+     *  pauses it, and an `autoplay` plays it once it is ready only while it
+     *  is. */
+    canAutoplay: boolean;
+    /** Whether its `autoplay` played it, the page having asked nothing. */
+    autoplayed: boolean;
   }
   const mediaAsks = new WeakMap<Any, MediaAsk>();
   const askOf = (el: Any): MediaAsk => {
@@ -8922,6 +8931,9 @@ export function installDom(
         time: 0,
         pending: [],
         pauses: 0,
+        ready: false,
+        canAutoplay: true,
+        autoplayed: false,
       };
       mediaAsks.set(el, ask);
     }
@@ -8937,6 +8949,37 @@ export function installDom(
     ev.isTrusted = true;
     dispatch(el, ev);
   };
+  /**
+   * Its player has what it plays (HTML 4.8.11.7), in a task: HAVE_ENOUGH_DATA,
+   * where it had nothing, with the events HTML fires on the way there, and
+   * then an `autoplay` plays it where the page has neither played nor
+   * paused it, a handler of those events included — `play` and `playing`,
+   * which the player is doing already. Once: a new player for a new source
+   * is the same news.
+   */
+  const mediaReady = (el: Any): void => {
+    if (!(el instanceof HTMLMediaElement)) return;
+    mediaTask(() => {
+      const ask = askOf(el);
+      if (!ask.ready) {
+        ask.ready = true;
+        fireMedia(el, 'loadedmetadata');
+        fireMedia(el, 'loadeddata');
+        fireMedia(el, 'canplay');
+        fireMedia(el, 'canplaythrough');
+      }
+      if (
+        ask.canAutoplay &&
+        ask.paused === null &&
+        !ask.autoplayed &&
+        el.hasAttribute('autoplay')
+      ) {
+        ask.autoplayed = true;
+        fireMedia(el, 'play');
+        fireMedia(el, 'playing');
+      }
+    });
+  };
   /** A WebIDL `double`: a number that is finite, or a `TypeError`. */
   const mediaNumber = (v: Any, name: string): number => {
     const n = Number(v);
@@ -8949,17 +8992,29 @@ export function installDom(
   };
   class HTMLMediaElement extends HTMLElement {
     static readonly NETWORK_EMPTY = 0;
+    static readonly NETWORK_IDLE = 1;
+    static readonly NETWORK_LOADING = 2;
+    static readonly NETWORK_NO_SOURCE = 3;
     static readonly HAVE_NOTHING = 0;
-    // a media element here never loads (HTML 4.8.11): no data, no duration
-    // and no tracks. What it is told to do is the player's: `<Html>` mounts
-    // core's `<video>` over a video it can show, and hands it what the page
-    // asked here (`mediaState`), so `paused`, `muted`, `volume`,
-    // `playbackRate` and `currentTime` are what the page asked, and the
-    // events are the ones HTML fires as it asks.
-    /** Paused until the page plays it, but for one with `autoplay`, which
-     *  the player plays from the start. */
+    static readonly HAVE_METADATA = 1;
+    static readonly HAVE_CURRENT_DATA = 2;
+    static readonly HAVE_FUTURE_DATA = 3;
+    static readonly HAVE_ENOUGH_DATA = 4;
+    // a media element here loads nothing itself (HTML 4.8.11): no
+    // duration and no tracks. What it is told to do is the player's:
+    // `<Html>` mounts core's `<video>` over a video it can show, and hands
+    // it what the page asked here (`mediaState`), so `paused`, `muted`,
+    // `volume`, `playbackRate` and `currentTime` are what the page asked,
+    // and the events are the ones HTML fires as it asks. What comes back is
+    // that the player has what it plays (`mediaReady`).
+    /** Paused until the page plays it, or until its player has what it
+     *  plays where it has `autoplay` and the page asked nothing first —
+     *  as a browser's is until it has the data. A page's effect that pauses
+     *  whatever is not paused yet, at hydration, before it knows it is in
+     *  view, left diabrowser.com's hero paused for good. */
     get paused(): boolean {
-      return askOf(this).paused ?? !this.hasAttribute('autoplay');
+      const ask = askOf(this);
+      return ask.paused ?? !ask.autoplayed;
     }
     get ended(): boolean {
       return false;
@@ -8967,11 +9022,14 @@ export function installDom(
     get seeking(): boolean {
       return false;
     }
+    /** HAVE_ENOUGH_DATA once its player has what it plays, and
+     *  HAVE_NOTHING until then. */
     get readyState(): number {
-      return 0;
+      return askOf(this).ready ? 4 : 0;
     }
+    /** NETWORK_IDLE once it is ready, and NETWORK_EMPTY until then. */
     get networkState(): number {
-      return 0;
+      return askOf(this).ready ? 1 : 0;
     }
     get duration(): number {
       return NaN;
@@ -9070,6 +9128,7 @@ export function installDom(
       const was = this.paused;
       const pauses = ask.pauses;
       ask.paused = false;
+      ask.canAutoplay = false;
       call('mediaState', this._id, 'paused', false);
       const promise = new Promise<void>((resolve, reject) => {
         ask.pending.push({ resolve, reject });
@@ -9091,6 +9150,7 @@ export function installDom(
       const ask = askOf(this);
       const was = this.paused;
       ask.paused = true;
+      ask.canAutoplay = false;
       call('mediaState', this._id, 'paused', true);
       if (was) return;
       ask.pauses += 1;
@@ -21245,6 +21305,9 @@ export function installDom(
       case 'load':
       case 'error':
         return dispatch(target, trusted(new Event(e.type)));
+      case 'loadedmetadata':
+        mediaReady(target);
+        return true;
       default:
         return true;
     }

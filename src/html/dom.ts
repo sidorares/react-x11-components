@@ -695,13 +695,29 @@ export function setPaused(el: Element, paused: boolean): boolean {
   return was !== paused;
 }
 
+/** The media elements whose player has what it plays
+ *  (`HtmlViewNode.mediaLoaded`). */
+const LOADED = new WeakSet<Element>();
+
+/** A media element's player has what it plays: whether that changed its
+ *  `paused`, which it does for one with `autoplay` no script played or
+ *  paused first. */
+export function setMediaLoaded(el: Element): boolean {
+  if (LOADED.has(el)) return false;
+  const was = isPaused(el);
+  LOADED.add(el);
+  return isPaused(el) !== was;
+}
+
 /** Whether an `<audio>` or a `<video>` is paused (`:paused`, Selectors 4,
- *  12.2): what a script made it, or paused but for one with `autoplay`,
- *  which the player plays from the start. Not a media element: neither
- *  `:paused` nor `:playing`. */
+ *  12.2): what a script made it, or paused but for one with `autoplay`
+ *  whose player has what it plays, as a browser's is until it has the
+ *  data. Not a media element: neither `:paused` nor `:playing`. */
 export function isPaused(el: Element): boolean | null {
   if (el.name !== 'video' && el.name !== 'audio') return null;
-  return PAUSED.get(el) ?? el.attribs.autoplay === undefined;
+  return (
+    PAUSED.get(el) ?? !(el.attribs.autoplay !== undefined && LOADED.has(el))
+  );
 }
 
 /** Whether an element is in its document's top layer, as either. */

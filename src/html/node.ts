@@ -68,6 +68,7 @@ import {
   isElement,
   isInputButton,
   isText,
+  setMediaLoaded,
   ShadowRoot,
   shadowRootOf,
   tagOf,
@@ -3572,6 +3573,13 @@ export class HtmlViewNode extends Node {
    * takes its ratio.
    */
   mediaLoaded(element: Element, width: number, height: number): void {
+    // and one with `autoplay` that no script played or paused plays from
+    // now on: what `:playing` and `:paused` read, as a script's ask is told
+    if (setMediaLoaded(element)) {
+      this.touchDocument([
+        { type: 'attributes', target: element, attributeName: '-rx-paused' },
+      ]);
+    }
     if (!(width > 0 && height > 0)) return;
     const was = this._videoSizes.get(element);
     if (was?.width === width && was.height === height) return;

@@ -1854,7 +1854,8 @@ test("a video's play() and pause() are its player's, and paused, the events and 
       'var v = document.getElementById("v"), r = [];' +
       '["play", "playing", "pause", "timeupdate", "seeking", "seeked", "volumechange"].forEach(function (t) {' +
       '  v.addEventListener(t, function () { r.push(t) }) });' +
-      // an autoplaying video plays until the page says otherwise
+      // an autoplay video is paused until its player has what it plays,
+      // and a pause() before then keeps it so
       'r.push(v.paused); v.pause(); r.push(v.paused);' +
       'document.getElementById("go").addEventListener("click", function () {' +
       '  v.play().then(function () {' +
@@ -1885,10 +1886,8 @@ test("a video's play() and pause() are its player's, and paused, the events and 
   assert.equal(
     text,
     [
-      'false',
       'true',
-      'timeupdate',
-      'pause',
+      'true',
       'play',
       'playing',
       'kept',
@@ -1906,6 +1905,50 @@ test("a video's play() and pause() are its player's, and paused, the events and 
   assert.equal(video.props.paused, false);
   assert.equal(video.props.muted, false);
   assert.deepEqual(sought, [2.5]);
+});
+
+test('an autoplay video is paused until its player has what it plays, and is ready and plays then', async () => {
+  // diabrowser.com's hero: an effect at hydration pauses whatever is not
+  // paused yet, and plays it once it is in view and ready
+  const doc = await hosted(
+    '<video id="v" src="clip.mp4" autoplay muted ' +
+      'style="display:block;width:60px;height:30px"></video>' +
+      '<p id="out"></p><script>' +
+      'var v = document.getElementById("v"), r = [];' +
+      '["loadedmetadata", "loadeddata", "canplay", "canplaythrough", "play", "playing"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t + " " + v.readyState + " " + v.paused) }) });' +
+      'r.push(v.paused, v.matches(":paused"), v.readyState, v.networkState, HTMLMediaElement.HAVE_ENOUGH_DATA);' +
+      'if (!v.paused) v.pause();' +
+      'v.addEventListener("playing", function () {' +
+      '  r.push(v.matches(":playing"));' +
+      '  setTimeout(function () { document.getElementById("out").textContent = r.join(",") }, 0) });' +
+      '</script>',
+    { videos: true },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'true',
+      'true',
+      '0',
+      '0',
+      '4',
+      'loadedmetadata 4 true',
+      'loadeddata 4 true',
+      'canplay 4 true',
+      'canplaythrough 4 true',
+      'play 4 false',
+      'playing 4 false',
+      'true',
+    ].join(','),
+  );
+  const [video] = screen.all((n) => n.kind === 'video') as (DrawnNode & {
+    props: Record<string, unknown>;
+  })[];
+  assert.ok(video, 'a player is mounted');
+  assert.equal(video.props.paused, undefined, 'its autoplay left to it');
+  assert.equal(video.props.autoPlay, true);
 });
 
 test('a pause() before play()’s task turns its promise down, and volume, playbackRate and currentTime take what WebIDL lets them', async () => {
@@ -3416,14 +3459,15 @@ test(':muted matches a muted media element, by its attribute or a script’s say
 
 test(':playing and :paused follow a media element’s paused, as play(), pause() and load() set it, and the cascade with them', async () => {
   const doc = await hosted(
-    '<style>video:playing ~ #s { color: rgb(1, 2, 3) } video:paused ~ #s { color: rgb(4, 5, 6) }</style>' +
+    '<style>#v:playing ~ #s { color: rgb(1, 2, 3) } #v:paused ~ #s { color: rgb(4, 5, 6) }</style>' +
       '<p id="out"></p><video id="v"></video><video id="auto" autoplay></video><p id="s">s</p><script>' +
       'var v = document.getElementById("v"), s = document.getElementById("s"); var r = [];' +
       'r.push(CSS.supports("selector(:playing)"), CSS.supports("selector(:paused)"), CSS.supports("selector(:seeking)"), CSS.supports("selector(:buffering)"), CSS.supports("selector(:stalled)"));' +
-      // paused until it is played, but for one the player plays at once
+      // paused until it is played, and one with autoplay until its player
+      // has what it plays, which this one has none of
       'r.push(v.matches(":paused"), v.matches(":playing"), document.getElementById("auto").matches(":playing"), getComputedStyle(s).color);' +
       // both play now
-      'v.play(); r.push(v.matches(":playing"), document.querySelector("video:paused"), getComputedStyle(s).color);' +
+      'v.play(); r.push(v.matches(":playing"), document.querySelector("#v:paused"), getComputedStyle(s).color);' +
       'v.pause(); r.push(v.matches(":paused"));' +
       'v.play(); v.load(); r.push(v.paused, v.matches(":paused"));' +
       // nothing loads, so nothing seeks, buffers or stalls; and no other element plays
@@ -3433,7 +3477,7 @@ test(':playing and :paused follow a media element’s paused, as play(), pause()
   );
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
-    'true|true|true|true|true|true|false|true|rgb(4, 5, 6)|true||rgb(1, 2, 3)|true|true|true|0|0',
+    'true|true|true|true|true|true|false|false|rgb(4, 5, 6)|true||rgb(1, 2, 3)|true|true|true|0|0',
   );
 });
 

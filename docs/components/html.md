@@ -1313,10 +1313,17 @@ things about it are decisions:
 - **The page is told what it asked, as HTML tells it** — `paused` at once,
   `play`, `playing`, `pause`, `volumechange` and the seek's events in tasks
   after, and `play()`'s promise kept, or turned down by a `pause()` that
-  came before its task, as Chrome's is. **Nothing comes back from the
-  player**: `currentTime` is where the page last sought, a video that ends
-  is not paused, and a press on one with `controls` is not told to the
-  page. An `autoplay` video reads as playing from the first.
+  came before its task, as Chrome's is. **One thing comes back from the
+  player: that it has what it plays**, told as `loadedmetadata`. The video
+  is ready from then — `readyState` 4, and `loadedmetadata`, `loadeddata`,
+  `canplay` and `canplaythrough` — and an `autoplay` video the page has
+  neither played nor paused plays, `play` and `playing`. Until then it
+  reads as paused, as a browser's does until it has the data: a page that
+  pauses what is not paused yet, at hydration, before it knows its video is
+  in view, would pause it for good — diabrowser.com's hero. Nothing else
+  comes back: `currentTime` is where the page last sought, a video that
+  ends is not paused, and a press on one with `controls` is not told to the
+  page.
 - **A press on a video with `controls` is kept the same way**, so a script
   that pauses a video the press played changes what the player was told,
   and pauses it.
@@ -1581,6 +1588,7 @@ behaviour onto a document with `domutils` — dispatches them, and answers.
 | `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                  | —                                                |
 | `toggle`               | A `<details>` opened or closed                                              | —                                                |
 | `load`, `error`        | A `<link rel=stylesheet>`'s sheet applied, or not to be had                 | —                                                |
+| `loadedmetadata`       | A `<video>`'s player has what it plays, once a player                       | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
