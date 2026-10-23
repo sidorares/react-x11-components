@@ -228,8 +228,13 @@ import {
   wheelScrolls,
 } from './layout/scroll.js';
 import type { ScrollBar, ScrollOffset, ScrollState } from './layout/scroll.js';
-import { linesUp, resnap, snapTo } from './layout/snap.js';
-import type { SnapArea, SnapContainer } from './layout/snap.js';
+import { lineUp, linesUp, resnap, snapTo } from './layout/snap.js';
+import type {
+  SnapArea,
+  SnapContainer,
+  SnapScroll,
+  Snapped,
+} from './layout/snap.js';
 
 /** Both of a scroll container's bars, hidden by nothing. */
 const BARS_SHOWN = { x: false, y: false };
@@ -674,6 +679,9 @@ type ScrollPane = Node & {
   /** Its offsets, in device pixels. */
   scrollX: number;
   scrollY: number;
+  /** How far what it scrolls reaches, in device pixels. */
+  contentWidth: number;
+  contentHeight: number;
   /** Scroll it, in logical pixels. */
   scrollTo(to: { x?: number; y?: number }): void;
 };
@@ -2920,8 +2928,6 @@ export class HtmlViewNode extends Node {
         this._stickyMoved = false;
         // what was at the top of what can be seen stays there on screen
         if (!question) this._keepAnchor();
-        // and a snap container at rest where it was snapped to
-        if (!question && !result.partial) this._resnap();
         // A tree a crossing built and laid out down to where the layout
         // stops: what it set aside was never laid out, and is no height
         // to guess the document's from, so it is as tall as it was.
@@ -2962,6 +2968,9 @@ export class HtmlViewNode extends Node {
         this._laidOutWidth = target;
         this._laidOutUnder = viewport;
         this._layoutReadsViewport = result.readsViewportHeight;
+        // and a snap container at rest where it was snapped to, the
+        // viewport as far as the document reaches now
+        if (!question && !result.partial) this._resnap();
         this._sizes.delete(target);
         this._sizes.set(target, { width: result.width, height: result.height });
         if (this._sizes.size > SIZES_KEPT) {
@@ -8377,31 +8386,67 @@ export class HtmlViewNode extends Node {
     /** A relative scroll — `scrollBy()` — which snaps in the direction it
      *  moved (`snapTo`'s `from`). */
     relative = false,
+    /** The element a scroll brings into view — `scrollIntoView()`'s, a
+     *  fragment's, the focus's — which a snap container lines up as its
+     *  `scroll-snap-align` says where it is one of its areas, and a
+     *  container that does not snap too (`lineUp`). */
+    target: Element | null = null,
   ): ScrollOffset | null {
     this._prepare(this.abs.width || 1);
     const box = this._scrollerOf(element);
     if (!box) return null;
     const state = scrollStateOf(box);
     const s = this._scale;
-    let x = to.x ?? state.x / s;
-    let y = to.y ?? state.y / s;
-    // where a scroll snap container comes to rest
+    const at = this._snapScroll(
+      box,
+      (to.x ?? state.x / s) * s,
+      (to.y ?? state.y / s) * s,
+      relative ? { from: { x: state.x, y: state.y } } : {},
+      target,
+    );
+    // a scroll into view of what the container shows as it is moves
+    // nothing, and costs nothing
+    if (Math.abs(at.x - state.x) < 0.5 && Math.abs(at.y - state.y) < 0.5) {
+      return { x: state.x / s, y: state.y / s };
+    }
+    return this._scrollBox(box, at.x / s, at.y / s);
+  }
+
+  /**
+   * Where a scroll of a scroll container to `x`, `y`, in device pixels,
+   * comes to rest: where `snapTo` says in a snap container, which notes
+   * what it lined up, or with `target` lined up (`lineUp`); and where it
+   * was asked to be in one that does not snap, but where it brings an area
+   * into view, which it lines up.
+   */
+  private _snapScroll(
+    box: Box,
+    x: number,
+    y: number,
+    scroll: SnapScroll,
+    target: Element | null = null,
+  ): { x: number; y: number } {
+    const aim = this._targetBox(target);
     const snap = box.style.scrollSnapType && this._snapContainerOf(box);
-    if (snap) {
-      const at = snapTo(
-        snap,
-        x * s,
-        y * s,
-        relative ? { x: state.x, y: state.y } : null,
-      );
-      this._snapped.set(element, {
+    if (snap && box.el) {
+      const at = aim ? lineUp(snap, aim, x, y) : snapTo(snap, x, y, scroll);
+      this._snapped.set(box.el, {
         x: snapKey(at.targetX),
         y: snapKey(at.targetY),
       });
-      x = at.x / s;
-      y = at.y / s;
+      return at;
     }
-    return this._scrollBox(box, x, y);
+    const lone = aim && this._snapContainerOf(box, aim);
+    return lone ? lineUp(lone, aim, x, y) : { x, y };
+  }
+
+  /** The first box of the element a scroll brings into view, which is the
+   *  snap area it lines up where it is one. */
+  private _targetBox(target: Element | null): Box | null {
+    const tree = this._tree;
+    return target && tree
+      ? (this._firstBoxesOf(tree).get(target) ?? null)
+      : null;
   }
 
   // --- scroll snapping (CSS Scroll Snap 1, `layout/snap.ts`) ---------------
@@ -8410,9 +8455,12 @@ export class HtmlViewNode extends Node {
   // document, or the viewport — comes to rest where `snapTo` says, and the
   // area it lines up on each axis is noted by its element, so that a layout
   // that moves it scrolls the container to it again (`_resnap`). A scroll
-  // key snaps as it scrolls, and the wheel once it has rested on a
-  // container for `WHEEL_SNAP_MS`, each in the direction it went from where
-  // it started (`_snapUserScroll`).
+  // key snaps as it scrolls, by a page within a snapport where it can, and
+  // the wheel once it has rested on a container — or on the viewport, which
+  // takes the wheel itself where the root snaps (`canScroll`) — for
+  // `WHEEL_SNAP_MS`, each in the direction it went from where it started
+  // (`_snapUserScroll`). A scroll that brings an area into view lines it up
+  // (`lineUp`), in a container that snaps or not.
 
   /** The area each snap container was last snapped to on each axis, by
    *  the container's element, and the viewport's by the document. */
@@ -8422,67 +8470,89 @@ export class HtmlViewNode extends Node {
   >();
 
   /** A scroll container's snap container: its snap areas, where each is
-   *  at no scroll from its scrollport's corner, and its scrollport. */
-  private _snapContainerOf(box: Box): SnapContainer | null {
-    if (!box.style.scrollSnapType) return null;
+   *  at no scroll from its scrollport's corner, and its scrollport. With
+   *  `only`, a container of that box's area alone, whether or not it
+   *  snaps — what lines a scroll's target up where it does not — or null
+   *  where the box is no area of the container's. */
+  private _snapContainerOf(box: Box, only?: Box): SnapContainer | null {
+    if (!only && !box.style.scrollSnapType) return null;
     const state = scrollStateOf(box);
     const left = box.x + box.borderLeft;
     const top = box.y + box.borderTop;
+    const at = (child: Box) =>
+      scrollMoves(box, child)
+        ? { x: child.x - left + state.x, y: child.y - top + state.y }
+        : null;
+    const areas = only ? areaIn(box, only, at) : snapAreasIn(box, at);
+    if (!areas) return null;
     return {
       style: box.style,
-      areas: snapAreasIn(box, (child) =>
-        scrollMoves(box, child)
-          ? { x: child.x - left + state.x, y: child.y - top + state.y }
-          : null,
-      ),
+      areas,
       width: state.clientWidth,
       height: state.clientHeight,
       maxX: state.width - state.clientWidth,
       maxY: state.height - state.clientHeight,
-      prefer: this._snapPreferred,
+      focused: this._snapFocused,
+      targeted: this._snapTargeted,
     };
   }
 
-  /** Whether a snap area is one a snap prefers where several line up
-   *  (CSS Scroll Snap 1, 5.5): the focused element's, or the URL's
-   *  target's. */
-  private _snapPreferred = (box: Box): boolean => {
+  /** Whether a snap area is the focused element or holds it: the first a
+   *  snap prefers where several line up (CSS Scroll Snap 1, "selecting
+   *  between multiple aligned snap areas"), and what a re-snap keeps. */
+  private _snapFocused = (box: Box): boolean =>
+    !!box.el && this._focus.within.has(box.el);
+
+  /** The same of the URL's target, which comes after the focus. */
+  private _snapTargeted = (box: Box): boolean => {
     const el = box.el;
-    return !!el && (el === this._focus.element || el === this._target);
+    if (!el) return false;
+    for (let at = this._target; at; at = flatParentOf(at)) {
+      if (at === el) return true;
+    }
+    return false;
   };
+
+  /** The root element's box, under the tree's anonymous root, where the
+   *  root's style is the viewport's `scroll-snap-type` and
+   *  `scroll-padding`. */
+  private _rootBox(): Box | null {
+    const root = this._tree?.root;
+    return (
+      (root?.el
+        ? root
+        : root?.children.find((c) => c.el && tagOf(c.el) === 'html')) ?? null
+    );
+  }
 
   /** The viewport's snap container: the root's `scroll-snap-type`, and the
    *  areas no scroll container in the document holds, at their places in
    *  the document; null where the root's snaps on no axis or nothing
-   *  scrolls the document. */
-  private _viewportSnap(): SnapContainer | null {
+   *  scrolls the document. With `only`, that box's area alone, as
+   *  `_snapContainerOf` makes it. */
+  private _viewportSnap(only?: Box): SnapContainer | null {
     const tree = this._tree;
     const root = tree?.root;
-    // the root element's box, under the tree's anonymous root
-    const html = root?.el
-      ? root
-      : root?.children.find((c) => c.el && tagOf(c.el) === 'html');
-    const style = html?.style;
+    const style = this._rootBox()?.style;
     const port = this._viewport();
-    if (!tree || !root || !style?.scrollSnapType || !port) return null;
+    if (!tree || !root || !style || !port) return null;
+    if (!only && !style.scrollSnapType) return null;
+    const at = (child: Box) =>
+      fixedToViewport(child) ? null : { x: child.x, y: child.y };
+    const areas = only ? areaIn(root, only, at) : snapAreasIn(root, at);
+    if (!areas) return null;
     return {
       style,
-      areas: snapAreasIn(root, (child) =>
-        fixedToViewport(child) ? null : { x: child.x, y: child.y },
-      ),
+      areas,
       width: port.width,
       height: port.height,
       maxX: Math.max(0, this._documentWidth - port.width),
       maxY: Math.max(0, this._documentHeight - port.height),
-      prefer: this._snapPreferred,
+      focused: this._snapFocused,
+      targeted: this._snapTargeted,
     };
   }
 
-  /**
-   * Where a script's scroll of the viewport to `x`, `y`, in CSS pixels,
-   * comes to rest where the root makes it a snap container — noted as the
-   * viewport's snap — and where it was asked to be where not.
-   */
   /**
    * The CSS animations under way on an element, or on what it holds as
    * well — or every one in the document for null — as a page's
@@ -8829,17 +8899,57 @@ export class HtmlViewNode extends Node {
       }));
   }
 
-  snapViewport(x: number, y: number): { x: number; y: number } {
+  /**
+   * Where a script's scroll of the viewport to `x`, `y`, in CSS pixels,
+   * comes to rest where the root makes it a snap container — noted as the
+   * viewport's snap — and where it was asked to be where not; with
+   * `target`, the element it brings into view, lined up where it is an
+   * area of the viewport's (`lineUp`), whether or not the root snaps.
+   */
+  snapViewport(
+    x: number,
+    y: number,
+    target: Element | null = null,
+    /** A relative scroll — `scrollBy()` — which snaps the way it went
+     *  from where the pane is. */
+    relative = false,
+  ): { x: number; y: number } {
     this._prepare(this.abs.width || 1);
-    const snap = this._viewportSnap();
-    if (!snap) return { x, y };
     const s = this._scale;
-    const at = snapTo(snap, x * s, y * s);
+    const pane = relative ? this._pane() : null;
+    const at = this._snapViewportAt(
+      x * s,
+      y * s,
+      pane ? { from: { x: pane.scrollX, y: pane.scrollY } } : {},
+      target,
+    );
+    return { x: at.x / s, y: at.y / s };
+  }
+
+  /** `snapViewport` in device pixels, for a scroll of any kind. */
+  private _snapViewportAt(
+    x: number,
+    y: number,
+    scroll: SnapScroll,
+    target: Element | null = null,
+  ): { x: number; y: number } {
+    const aim = this._targetBox(target);
+    const snap = this._viewportSnap();
+    if (snap) {
+      const at = aim ? lineUp(snap, aim, x, y) : snapTo(snap, x, y, scroll);
+      this._noteViewportSnap(at);
+      return at;
+    }
+    const lone = aim && this._viewportSnap(aim);
+    return lone ? lineUp(lone, aim, x, y) : { x, y };
+  }
+
+  /** What the viewport was snapped to, as `_snapped` keeps it. */
+  private _noteViewportSnap(at: Snapped): void {
     this._snapped.set(this._source.document, {
       x: snapKey(at.targetX),
       y: snapKey(at.targetY),
     });
-    return { x: at.x / s, y: at.y / s };
   }
 
   /** After a layout: each snap container snapped to an area lined up with
@@ -8876,12 +8986,8 @@ export class HtmlViewNode extends Node {
           x: snapBox(snap, keys.x),
           y: snapBox(snap, keys.y),
         });
-        if (
-          Math.abs(at.x - pane.scrollX) >= 0.5 ||
-          Math.abs(at.y - pane.scrollY) >= 0.5
-        ) {
-          pane.scrollTo({ x: at.x / s, y: at.y / s });
-        }
+        this._noteViewportSnap(at);
+        this._scrollPaneTo(pane, at.x, at.y);
         continue;
       }
       const box = this._scrollerOf(el as Element);
@@ -8906,16 +9012,8 @@ export class HtmlViewNode extends Node {
     const pane = viewport?.style.scrollSnapType?.mandatory && this._pane();
     if (viewport && pane) {
       const at = snapTo(viewport, pane.scrollX, pane.scrollY);
-      this._snapped.set(doc, {
-        x: snapKey(at.targetX),
-        y: snapKey(at.targetY),
-      });
-      if (
-        Math.abs(at.x - pane.scrollX) >= 0.5 ||
-        Math.abs(at.y - pane.scrollY) >= 0.5
-      ) {
-        pane.scrollTo({ x: at.x / s, y: at.y / s });
-      }
+      this._noteViewportSnap(at);
+      this._scrollPaneTo(pane, at.x, at.y);
     }
     for (const box of snapContainersIn(tree.root)) {
       const el = box.el!;
@@ -8933,6 +9031,29 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /**
+   * Scroll the pane to where the viewport snapped, in device pixels. A
+   * layout that moved an area down the document grew it too, and the pane
+   * learns how far it reaches only in the pass the layout is in, so where
+   * it cannot reach the place yet it is asked again once the frame is
+   * over, as `_anchorFrame` ends a frame.
+   */
+  private _scrollPaneTo(pane: ScrollPane, x: number, y: number): void {
+    if (Math.abs(x - pane.scrollX) < 0.5 && Math.abs(y - pane.scrollY) < 0.5) {
+      return;
+    }
+    const s = this._scale;
+    pane.scrollTo({ x: x / s, y: y / s });
+    if (Math.abs(x - pane.scrollX) < 0.5 && Math.abs(y - pane.scrollY) < 0.5) {
+      return;
+    }
+    const again = () => {
+      if (this._pane() === pane) pane.scrollTo({ x: x / s, y: y / s });
+    };
+    if (timers.queueMicrotask) timers.queueMicrotask(again);
+    else void Promise.resolve().then(again);
+  }
+
   /** The wheel turned at a logical window point: what `canScroll` finds a
    *  scroll container under (`<Html>`'s `onWheelCapture`). */
   wheelAt(point: { x: number; y: number } | null): void {
@@ -8945,36 +9066,27 @@ export class HtmlViewNode extends Node {
    * that does: this element does where a scroll container under the
    * pointer can move that way, the innermost first, and the box around the
    * document has its turn where none can — a list scrolled to its end
-   * hands the wheel on to the page, as a browser's does.
+   * hands the wheel on to the page, as a browser's does. Where the root
+   * makes the viewport a snap container, the element scrolls the pane
+   * itself, so that it snaps once the wheel rests (`_viewportWheel`).
    */
   canScroll(dx: number, dy: number): boolean {
-    return this._wheelScroller(dx, dy) !== null;
+    return this._wheelScroller(dx, dy) !== null || this._viewportWheel(dx, dy);
   }
 
   /** Scroll the scroll container `canScroll` found, by logical pixels. */
   scrollBy(by: { x?: number; y?: number }): void {
     const box = this._wheelScroller(by.x ?? 0, by.y ?? 0);
-    if (!box) return;
+    if (!box) {
+      this._wheelViewport(by);
+      return;
+    }
     const state = scrollStateOf(box);
     const s = this._scale;
     // a snap container snaps once the wheel has rested on it, in the
     // direction it went from where it was when the wheel began
     if (box.style.scrollSnapType && box.el) {
-      const gesture = this._wheelGesture;
-      if (gesture?.box !== box) {
-        if (gesture) snapClock.disarm(gesture.timer);
-        this._wheelGesture = {
-          box,
-          from: { x: state.x, y: state.y },
-          timer: snapClock.arm(() => this._snapUserScroll(), WHEEL_SNAP_MS),
-        };
-      } else {
-        snapClock.disarm(gesture.timer);
-        gesture.timer = snapClock.arm(
-          () => this._snapUserScroll(),
-          WHEEL_SNAP_MS,
-        );
-      }
+      this._armWheelSnap(box, state.x, state.y);
     }
     this._scrollBox(
       box,
@@ -8983,10 +9095,67 @@ export class HtmlViewNode extends Node {
     );
   }
 
+  /** The wheel turned on a snap container — null for the viewport — that
+   *  was at `x`, `y`: it snaps once the wheel has rested on it for
+   *  `WHEEL_SNAP_MS`, from where it was when the wheel began. */
+  private _armWheelSnap(box: Box | null, x: number, y: number): void {
+    const gesture = this._wheelGesture;
+    if (gesture && gesture.box === box) {
+      snapClock.disarm(gesture.timer);
+      gesture.timer = snapClock.arm(
+        () => this._snapUserScroll(),
+        WHEEL_SNAP_MS,
+      );
+      return;
+    }
+    if (gesture) snapClock.disarm(gesture.timer);
+    this._wheelGesture = {
+      box,
+      from: { x, y },
+      timer: snapClock.arm(() => this._snapUserScroll(), WHEEL_SNAP_MS),
+    };
+  }
+
+  /**
+   * Whether the wheel scrolls the viewport here: where the root makes it a
+   * snap container and the pane around the document can move the way a
+   * delta goes — and the root lets it be scrolled on the axis. A document
+   * whose root does not snap leaves the pane its own wheel.
+   */
+  private _viewportWheel(dx: number, dy: number): boolean {
+    if (!this._rootBox()?.style.scrollSnapType) return false;
+    const pane = this._pane();
+    if (!pane) return false;
+    const overflow = this._tree?.viewportOverflow;
+    const box = pane.contentBox();
+    const room = (at: number, content: number, client: number, d: number) =>
+      d > 0 ? at < content - client - 0.5 : d < 0 ? at > 0.5 : false;
+    return (
+      (overflow?.x !== 'hidden' &&
+        room(pane.scrollX, pane.contentWidth, box.width, dx)) ||
+      (overflow?.y !== 'hidden' &&
+        room(pane.scrollY, pane.contentHeight, box.height, dy))
+    );
+  }
+
+  /** The wheel's scroll of the viewport `_viewportWheel` let it have, by
+   *  logical pixels: the pane moved, to snap once the wheel rests. */
+  private _wheelViewport(by: { x?: number; y?: number }): void {
+    const pane = this._pane();
+    if (!pane || !this._viewportWheel(by.x ?? 0, by.y ?? 0)) return;
+    const s = this._scale;
+    const overflow = this._tree?.viewportOverflow;
+    this._armWheelSnap(null, pane.scrollX, pane.scrollY);
+    pane.scrollTo({
+      x: pane.scrollX / s + (overflow?.x !== 'hidden' ? (by.x ?? 0) : 0),
+      y: pane.scrollY / s + (overflow?.y !== 'hidden' ? (by.y ?? 0) : 0),
+    });
+  }
+
   /** The wheel's scroll of a snap container, until it rests: where the
-   *  container was when it began. */
+   *  container was when it began, and which — null for the viewport. */
   private _wheelGesture: {
-    box: Box;
+    box: Box | null;
     from: { x: number; y: number };
     timer: unknown;
   } | null = null;
@@ -8996,18 +9165,20 @@ export class HtmlViewNode extends Node {
   private _snapUserScroll(): void {
     const gesture = this._wheelGesture;
     this._wheelGesture = null;
-    if (!gesture || !gesture.box.el) return;
-    const tree = this._tree;
-    if (!tree || this._scrollerOf(gesture.box.el) !== gesture.box) return;
-    const state = scrollStateOf(gesture.box);
+    if (!gesture || !this._tree) return;
     const s = this._scale;
-    const snap = this._snapContainerOf(gesture.box);
-    if (!snap) return;
-    const at = snapTo(snap, state.x, state.y, gesture.from);
-    this._snapped.set(gesture.box.el, {
-      x: snapKey(at.targetX),
-      y: snapKey(at.targetY),
-    });
+    const from = { from: gesture.from };
+    if (!gesture.box) {
+      const pane = this._pane();
+      if (!pane) return;
+      const at = this._snapViewportAt(pane.scrollX, pane.scrollY, from);
+      pane.scrollTo({ x: at.x / s, y: at.y / s });
+      return;
+    }
+    const el = gesture.box.el;
+    if (!el || this._scrollerOf(el) !== gesture.box) return;
+    const state = scrollStateOf(gesture.box);
+    const at = this._snapScroll(gesture.box, state.x, state.y, from);
     this._scrollBox(gesture.box, at.x / s, at.y / s);
   }
 
@@ -9028,6 +9199,12 @@ export class HtmlViewNode extends Node {
    * `end` goes to the end. Answers whether anything scrolled. The pane is
    * left alone where the document's root gave the viewport `overflow:
    * hidden` on the axis.
+   *
+   * A snap container — the viewport too, where the root snaps — comes to
+   * rest at a snap position the key's way (`snapTo`): a line or a page is
+   * a relative scroll, from where it was, and a page takes a place within
+   * a snapport before any farther, so that it skips no area; `end` is an
+   * absolute one, to the place nearest the end.
    */
   scrollForKey(
     axis: 'x' | 'y',
@@ -9042,6 +9219,9 @@ export class HtmlViewNode extends Node {
         how === 'line' ? 40 : how === 'page' ? client * 0.875 : Infinity;
       return Math.min(max, Math.max(0, at + sign * by));
     };
+    // how a key's scroll snaps, from where it was, in device pixels
+    const scroll = (x: number, y: number): SnapScroll =>
+      how === 'end' ? {} : { from: { x, y }, page: how === 'page' };
     for (let el = from ?? this._pressed; el; el = flatParentOf(el)) {
       const box = this._scrollerOf(el);
       if (!box || !wheelScrolls(box, axis)) continue;
@@ -9059,11 +9239,13 @@ export class HtmlViewNode extends Node {
       if (Math.abs(to - at) < 0.5) continue;
       // a snap container rests at the next snap point the key's way
       if (box.style.scrollSnapType && box.el) {
-        this.scrollElementTo(
-          box.el,
-          axis === 'x' ? { x: to, y } : { x, y: to },
-          true,
+        const snapped = this._snapScroll(
+          box,
+          (axis === 'x' ? to : x) * s,
+          (axis === 'y' ? to : y) * s,
+          scroll(state.x, state.y),
         );
+        this._scrollBox(box, snapped.x / s, snapped.y / s);
         return true;
       }
       this._scrollBox(box, axis === 'x' ? to : x, axis === 'y' ? to : y);
@@ -9093,6 +9275,18 @@ export class HtmlViewNode extends Node {
       );
       const to = step(at, max, client);
       if (Math.abs(to - at) < 0.5) return false;
+      // the viewport, where the root snaps, as a snap container does
+      if (this._rootBox()?.style.scrollSnapType) {
+        const x = axis === 'x' ? to : pane.scrollX / ps;
+        const y = axis === 'y' ? to : pane.scrollY / ps;
+        const snapped = this._snapViewportAt(
+          x * ps,
+          y * ps,
+          scroll(pane.scrollX, pane.scrollY),
+        );
+        pane.scrollTo({ x: snapped.x / ps, y: snapped.y / ps });
+        return true;
+      }
       pane.scrollTo(axis === 'x' ? { x: to } : { y: to });
       return true;
     }
@@ -13631,42 +13825,65 @@ function snapAreasIn(
   at: (box: Box) => { x: number; y: number } | null,
 ): SnapArea[] {
   const out: SnapArea[] = [];
-  // an area is the nearest scroll container's on its containing blocks: one
-  // positioned past a scroll container inside this one is this one's
-  const nearest = (box: Box): boolean => {
-    for (let a = box.parent; a && a !== container; a = a.parent) {
-      if (isScroller(a) && scrollMoves(a, box)) return false;
-    }
-    return true;
-  };
   const walk = (b: Box): void => {
     for (const child of b.children) {
-      // an element's box or a pseudo-element's, and not the text, nor an
-      // anonymous box, which takes its parent's `scroll-snap-align` with
-      // the rest of its style and is no area of its own
-      if (
-        child.style.scrollSnapAlign !== NO_SNAP_ALIGN &&
-        child.kind !== 'text' &&
-        (child.el !== null || child.pseudo !== null) &&
-        hasRect(child) &&
-        nearest(child)
-      ) {
-        const place = at(child);
-        if (place) {
-          out.push({
-            box: child,
-            x: place.x,
-            y: place.y,
-            width: child.width,
-            height: child.height,
-          });
-        }
+      if (canBeArea(child) && holdsArea(container, child)) {
+        const area = areaAt(child, at);
+        if (area) out.push(area);
       }
       walk(child);
     }
   };
   walk(container);
   return out;
+}
+
+/** The one snap area a box is under a container, as `snapAreasIn` would
+ *  find it, or null where it is none of the container's. */
+function areaIn(
+  container: Box,
+  box: Box,
+  at: (box: Box) => { x: number; y: number } | null,
+): SnapArea[] | null {
+  if (!canBeArea(box)) return null;
+  let a = box.parent;
+  while (a && a !== container) a = a.parent;
+  if (!a || !holdsArea(container, box)) return null;
+  const area = areaAt(box, at);
+  return area ? [area] : null;
+}
+
+/** Whether a box can be a snap area: an element's or a pseudo-element's,
+ *  and not the text, nor an anonymous box, which takes its parent's
+ *  `scroll-snap-align` with the rest of its style and is no area of its
+ *  own. */
+function canBeArea(box: Box): boolean {
+  return (
+    box.style.scrollSnapAlign !== NO_SNAP_ALIGN &&
+    box.kind !== 'text' &&
+    (box.el !== null || box.pseudo !== null) &&
+    hasRect(box)
+  );
+}
+
+/** Whether a container is a box's nearest scroll container on its
+ *  containing blocks: one positioned past a scroll container inside it is
+ *  its own. */
+function holdsArea(container: Box, box: Box): boolean {
+  for (let a = box.parent; a && a !== container; a = a.parent) {
+    if (isScroller(a) && scrollMoves(a, box)) return false;
+  }
+  return true;
+}
+
+function areaAt(
+  box: Box,
+  at: (box: Box) => { x: number; y: number } | null,
+): SnapArea | null {
+  const place = at(box);
+  return place
+    ? { box, x: place.x, y: place.y, width: box.width, height: box.height }
+    : null;
 }
 
 /** The scroll containers in a tree that snap on an axis. */

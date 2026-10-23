@@ -6802,6 +6802,84 @@ test('a root made a mandatory snap container snaps at once, read straight after,
   assert.strictEqual(doc.text('out'), '300|150|150|190', doc.logs.join('\n'));
 });
 
+test('scrollIntoView() lines a slide up across a carousel as its scroll-snap-align says, and focus() of a slide the carousel shows leaves it where it is', async () => {
+  // CSS Scroll Snap 1, "choosing snap positions": a scroll to a target
+  // snaps to one of its own places, whatever `block` and `inline` ask;
+  // and the focusing steps scroll nothing that already shows the element
+  const slides = Array.from(
+    { length: 8 },
+    (_, i) => `<button class="slide" id="slide${i}">${i}</button>`,
+  ).join('');
+  const doc = await hosted(
+    '<p id="out"></p><style>body { margin: 0 } #c { display: flex; width: 300px; height: 100px;' +
+      ' overflow-x: auto; scroll-snap-type: x mandatory } .slide { flex: 0 0 100px;' +
+      ' height: 80px; margin: 0; padding: 0; border: 0; scroll-snap-align: center }</style>' +
+      `<div id="c">${slides}</div><script>` +
+      'var c = document.getElementById("c"), r = [];' +
+      'var slide = function (i) { return document.getElementById("slide" + i); };' +
+      // the sixth slide, 500 to 600, brought in at the carousel's end, and
+      // lined up at its centre
+      'slide(5).scrollIntoView(); r.push(c.scrollLeft);' +
+      'slide(4).scrollIntoView({ inline: "start" }); r.push(c.scrollLeft);' +
+      // shown, from 300 to 600: the focus moves, and the carousel does not
+      'slide(5).focus(); r.push(c.scrollLeft, document.activeElement.id);' +
+      // and one it does not show is lined up, as scrollIntoView() lines it
+      'slide(7).focus(); r.push(c.scrollLeft);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    '400|300|300|slide5|500',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a target scrolled into view by scrollIntoView(), focus() or the URL fragment is lined up as its scroll-snap-align says where its container does not snap', async () => {
+  // CSS Scroll Snap 1, "choosing snap positions", which lets a container
+  // with no scroll-snap-type line its target up too, as WPT's
+  // scroll-target-align-001 to 003 have it: the target and its 10px
+  // scroll margin, 130 to 160, centred in the scrollport less its 10px
+  // scroll padding, 10 to 80
+  const box = (id: string, target: string) =>
+    `<div class="c" id="${id}"><div></div><div></div><div></div><div></div>` +
+    `<div></div><div></div><div></div>${target}<div></div><div></div>` +
+    '<div></div><div></div><div></div></div>';
+  const doc = await hosted(
+    '<p id="out"></p><style>body { margin: 0 } .c { height: 80px; overflow: auto;' +
+      ' scroll-padding-top: 10px } .c > * { display: block; height: 20px }' +
+      ' .t { scroll-margin-top: 10px; scroll-snap-align: center }</style>' +
+      box('a', '<div class="t" id="ta"></div>') +
+      box('b', '<a class="t" id="tb" href="#x"></a>') +
+      box('d', '<div class="t" id="td"></div>') +
+      '<script>var r = [];' +
+      'document.getElementById("ta").scrollIntoView(); r.push(document.getElementById("a").scrollTop);' +
+      'document.getElementById("tb").focus(); r.push(document.getElementById("b").scrollTop);' +
+      'location.hash = "#td"; r.push(document.getElementById("d").scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '100|100|100', doc.logs.join('\n'));
+});
+
+test('scrollBy() on a snapping root is a scroll with a direction, which rests at the next snap position the way it went', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>html { scroll-snap-type: y mandatory }' +
+      ' body { margin: 0 } .c { height: 300px; scroll-snap-align: start }</style></head><body>' +
+      '<div class="c"></div><div class="c"></div><div class="c"></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.scrollingElement, r = [];' +
+      // 100 on is nearer 0 than 300, and a relative scroll goes on to 300
+      'window.scrollBy(0, 100); r.push(s.scrollTop);' +
+      'document.documentElement.scrollBy(0, 100); r.push(s.scrollTop);' +
+      'window.scrollTo(0, 700); r.push(s.scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+    { pane: 300 },
+  );
+  assert.strictEqual(doc.text('out'), '300|600|600', doc.logs.join('\n'));
+});
+
 test('a point in the viewport past what the document lays out is the root element, and one outside it nothing', async () => {
   // CSSOM View 5: the root paints the canvas, all of the viewport, so
   // elementFromPoint answers it there — and a press there is outside every

@@ -5598,7 +5598,13 @@ export function installDom(
       nudgeFrames();
       if (this._viewport()) {
         const v = viewport();
-        call('scrollTo', ok(x) ? x : v.scrollX, ok(y) ? y : v.scrollY);
+        call(
+          'scrollTo',
+          ok(x) ? x : v.scrollX,
+          ok(y) ? y : v.scrollY,
+          undefined,
+          relative,
+        );
         return;
       }
       call(
@@ -5634,15 +5640,20 @@ export function installDom(
     /** Brought into view through every scroll container around it whose
      *  scroll moves it, the innermost first, and then the viewport (CSSOM
      *  View 7.1): its top at the top of each, or its middle, its end or
-     *  as little as shows it, as `block` asks. A container moves no box
-     *  positioned against something outside it, nor what that box holds,
-     *  so it is not scrolled for one: a box absolute in a `position:
-     *  relative` wrapper around a scrolling list scrolled the list as far
-     *  as the box was below its top. One fixed to the viewport, or in a
-     *  box that is, is moved by no scroll but that of a scroll container
-     *  inside that box, so the viewport is not scrolled either, as Chrome
-     *  has it: measured where the scroll draws it, a bar fixed `top:
-     *  30px` on a page scrolled 500px scrolled the page 30px on. */
+     *  as little as shows it, as `block` asks, and its left edge as
+     *  `inline` asks, as little as shows it unless it says. A container
+     *  moves no box positioned against something outside it, nor what
+     *  that box holds, so it is not scrolled for one: a box absolute in a
+     *  `position: relative` wrapper around a scrolling list scrolled the
+     *  list as far as the box was below its top. One fixed to the
+     *  viewport, or in a box that is, is moved by no scroll but that of a
+     *  scroll container inside that box, so the viewport is not scrolled
+     *  either, as Chrome has it: measured where the scroll draws it, a bar
+     *  fixed `top: 30px` on a page scrolled 500px scrolled the page 30px
+     *  on. Each scroll is told the element, which a snap container lines
+     *  up as its `scroll-snap-align` says where it is one of its areas
+     *  (CSS Scroll Snap 1, "choosing snap positions"), and a container
+     *  that does not snap too. */
     scrollIntoView(arg?: Any): void {
       const block =
         arg && typeof arg === 'object'
@@ -5650,10 +5661,26 @@ export function installDom(
           : arg === false
             ? 'end'
             : 'start';
-      const place = (top: number, height: number, port: number) => {
-        if (block === 'center') return top - (port - height) / 2;
-        if (block === 'end') return top - (port - height);
-        if (block === 'nearest') {
+      const inline =
+        arg && typeof arg === 'object'
+          ? str(arg.inline ?? 'nearest')
+          : 'nearest';
+      this._intoView(block, inline, false);
+    }
+    /** `scrollIntoView` as the focusing steps run it, and as it is
+     *  asked: where `quiet`, a container the element shows in already is
+     *  not scrolled at all, nor snapped again, so that a focus moved
+     *  within a snapped carousel leaves the slide it is on. */
+    _intoView(block: string, inline: string, quiet: boolean): void {
+      const place = (
+        how: string,
+        top: number,
+        height: number,
+        port: number,
+      ) => {
+        if (how === 'center') return top - (port - height) / 2;
+        if (how === 'end') return top - (port - height);
+        if (how === 'nearest') {
           if (top < 0) return top;
           if (top + height > port) return top + height - port;
           return 0;
@@ -5667,19 +5694,25 @@ export function installDom(
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
-        const top = me[1] - (port[1] + s[6]);
-        const by = place(top, me[3], s[5]);
-        if (by) call('scrollElement', at._id, undefined, s[1] + by);
+        const byX = place(inline, me[0] - (port[0] + s[7]), me[2], s[4]);
+        const byY = place(block, me[1] - (port[1] + s[6]), me[3], s[5]);
+        if (quiet && !byX && !byY) continue;
+        call(
+          'scrollElement',
+          at._id,
+          byX ? s[0] + byX : undefined,
+          byY ? s[1] + byY : undefined,
+          this._id,
+        );
       }
       if (call('atViewport', this._id) === true) return;
       const r = docRect(this);
       if (!r) return;
       const v = viewport();
-      call(
-        'scrollTo',
-        v.scrollX,
-        v.scrollY + place(r[1] - v.scrollY, r[3], v.height),
-      );
+      const byX = place(inline, r[0] - v.scrollX, r[2], v.width);
+      const byY = place(block, r[1] - v.scrollY, r[3], v.height);
+      if (quiet && !byX && !byY) return;
+      call('scrollTo', v.scrollX + byX, v.scrollY + byY, this._id);
     }
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
      *  host's boxes are the tree's, with the host's children in its
@@ -5974,7 +6007,7 @@ export function installDom(
       // 6.6.3, unless `preventScroll`): as little as shows it, and where a
       // container snaps, at a snap position
       if (!options?.preventScroll && document.activeElement === this) {
-        this.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        this._intoView('nearest', 'nearest', true);
       }
     }
     blur(): void {
@@ -22597,10 +22630,13 @@ export function installDom(
   define('scrollBy', (x: Any, y?: Any) => {
     const by = typeof x === 'object' && x ? x : { left: x, top: y };
     const v = viewport();
+    // a relative scroll, which a snapping root snaps the way it went
     call(
       'scrollTo',
       v.scrollX + (Number(by.left) || 0),
       v.scrollY + (Number(by.top) || 0),
+      undefined,
+      true,
     );
   });
   define('setTimeout', (fn: Any, ms?: Any, ...args: Any[]) =>
