@@ -99,6 +99,8 @@ handle.refresh();
 | `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                                                                                                                                                          |
 | `controlValue(el)`                                                                      | What a control holds: typed text, or its markup's value where nothing was typed; the option a `<select>` shows; whether a box or a radio is checked. Null for what is no control.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `controlSelection(el)`                                                                  | A text field's selection, as a script reads `selectionStart`, `selectionEnd` and `selectionDirection`: `{ start, end, direction }` in UTF-16 code units into what it holds — its widget's, the user's caret and what they selected, where core's field says, and else what was last set; a caret at the end of its text where nothing was. Null for what is no text field.                                                                                                                                                                                                                                        |
+| `setControlSelection(el, start, end, direction?)`                                       | Select in it, as `setSelectionRange()` does: clamped to its text, no event, shown by its widget while it has the focus where core's field takes a selection, and kept for the widget mounted next.                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `activeElement`                                                                         | The element whose widget or stop has the focus, or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `activate(el)`                                                                          | What a click on it does, with no click told of: a link followed through `onLink`, a button pressed, a `<details>` opened.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -970,9 +972,7 @@ tell: one read back is forward. `modify()` moves or extends the focus by a
 character or a word through the text the document draws, past white space
 it collapses and on from one element's text into the next's, as an arrow
 key moves a caret; a line or a coarser step moves nothing yet. A text
-field's selection is the page's alone: `select()` and `setSelectionRange()`
-are read back, and the widget does not show them, since core's
-`<textinput>` and `<textarea>` take no selection from outside.
+field's selection is its own widget's, as below.
 
 **A view transition draws its tree of pseudo-elements** (CSS View
 Transitions 1). `document.startViewTransition()` captures the old state
@@ -1128,13 +1128,31 @@ by `pause()` and `load()`. It is `:seeking` from a seek until it lands,
 `:stalled` where it is buffering and three seconds brought nothing — where
 the page's requests reach a network, which a media element loads its source
 through (see "What a page's script asks of a video" below), and never where
-they do not. A text field's `select()`, `setSelectionRange()` and its
-`selectionStart`, `selectionEnd` and `selectionDirection` are what a script
-set, kept to its value, which a value set moves to its end, and a change
-is told as `select`; an input type with no selection answers null and
-refuses one. The widget does not show such a selection yet: core says
-nothing of a field's own (`docs/prd-html-scripts.md`, "What core would be
-asked").
+they do not.
+
+**A text field's selection is its widget's** (HTML 4.10.5.2.10). A
+script's `select()`, `setSelectionRange()`, `setRangeText()` and the
+`selectionStart`, `selectionEnd` and `selectionDirection` setters select in
+the `<textinput>` or `<textarea>` mounted for the field. The widget draws
+the selection while it has the focus, Backspace deletes it and typing
+replaces it, so `onfocus="this.select()"` on a copy-link box does what it
+does in a browser. The getters read what the widget holds, which is where
+the user left the caret or what they selected. A selection set while no
+widget is mounted (a field under `display: none`, or one not laid out yet)
+is kept, and the widget mounted next starts from it, as one going away
+keeps its own for the next. A value set that changes the value moves the
+caret to its end. A change a script makes is told as `select` a task
+later, and text the user selects with a key or the pointer is told as
+`select` too, as Chrome tells it: a caret moved is not. An input type with
+no selection answers null and refuses one, and `select()` also selects in
+an `email` or a `number` field. Offsets are UTF-16 code units, as the
+DOM's are.
+
+The widget's half is core's (`selectionStart`, `selectionEnd`,
+`selectionDirection` and `setSelectionRange()` on its fields,
+react-x11#1006), read at run time. On a core without it the widget shows
+nothing a script selects, the getters read what a script last set, and
+the user's selection is told as nothing.
 
 **A popover is shown and hidden by the page** (HTML 6.12): an element with
 a `popover` attribute, by `showPopover()`, `hidePopover()` and
@@ -1684,6 +1702,7 @@ behaviour onto a document with `domutils` — dispatches them, and answers.
 | `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press | the press starts nothing                         |
 | `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`           | the key is not typed, nor does Tab move          |
 | `input`                | A field typed into, a box ticked, an option chosen                          | —                                                |
+| `select`               | Text the user selected in a field, by a key, a press or a release in it     | —                                                |
 | `change`               | A field left, or submitted from, with another value; a box; an option       | —                                                |
 | `submit`               | A form validated and about to be sent, with its `submitter`                 | nothing is sent                                  |
 | `reset`                | A reset button pressed                                                      | nothing is put back                              |
@@ -1730,7 +1749,8 @@ whose `detail` is 0. `x` and `y` are in the document's coordinates in
 logical pixels, as `elementRect` is, and `button` is the DOM's numbering.
 
 A host that runs a page's scripts has what it needs from the handle as well:
-`controlValue` and `setControlValue` for `value` and `checked`, `focus`,
+`controlValue` and `setControlValue` for `value` and `checked`,
+`controlSelection` and `setControlSelection` for a field's selection, `focus`,
 `blur` and `activeElement`, `activate` for a script's `el.click()` once its
 own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`

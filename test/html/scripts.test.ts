@@ -13,6 +13,7 @@ import {
   renderX11,
   screen,
   userEvent,
+  waitFor,
   waitForPixel,
 } from 'react-x11/test';
 import { ThemeProvider, createVideoFrames, useApp } from 'react-x11';
@@ -20,6 +21,7 @@ import {
   XK_BACKSPACE,
   XK_DELETE,
   XK_ESCAPE,
+  XK_LEFT,
   XK_RETURN,
 } from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
@@ -67,6 +69,7 @@ import {
   pixelsIn,
   rebuilt,
   snapshot,
+  withFieldSelection,
 } from './harness.js';
 import { animationClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -4119,6 +4122,101 @@ test('a text field’s selection is what a script set, kept to its value, and to
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
     '0|5|none|2|2|backward|5|2|2|b||InvalidStateError|true',
+  );
+});
+
+test("setRangeText edits a field's text and selects as its mode says, and a value set moves the caret to the end only where it changed the value", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><input id="i" value="0123456789"><textarea id="t">abc</textarea>' +
+      '<input id="n" type="number" value="5"><script>' +
+      'var i = document.getElementById("i"), t = document.getElementById("t"), n = document.getElementById("n"); var r = []; var told = 0;' +
+      'function at(f) { r.push(f.value + ":" + f.selectionStart + "-" + f.selectionEnd); }' +
+      'i.setSelectionRange(2, 5);' +
+      // `preserve`: an end inside what is replaced is the replacement's end
+      'i.setRangeText("ab", 3, 7); at(i);' +
+      'i.setRangeText("X", 0, 1, "select"); at(i);' +
+      'i.setRangeText("YY", 1, 1, "end"); at(i);' +
+      'i.setRangeText("Z"); at(i);' +
+      'i.setRangeText("", 0, 99, "start"); at(i);' +
+      't.select(); t.setRangeText("xyz"); at(t);' +
+      'try { i.setRangeText("q", 5, 2); } catch (e) { r.push(e.name); }' +
+      'try { i.setRangeText("q", 1); } catch (e) { r.push(e.name); }' +
+      'try { i.setRangeText("q", 0, 0, "middle"); } catch (e) { r.push(e.name); }' +
+      'try { n.setRangeText("1"); } catch (e) { r.push(e.name); }' +
+      'i.value = "hello"; i.setSelectionRange(1, 2); i.value = "hello"; at(i);' +
+      'i.value = "help"; at(i);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      '012ab789:2-5',
+      'X12ab789:0-1',
+      'XYY12ab789:3-3',
+      'XYYZ12ab789:3-3',
+      ':0-0',
+      'xyz:0-3',
+      'IndexSizeError',
+      'TypeError',
+      'TypeError',
+      'InvalidStateError',
+      'hello:1-2',
+      'help:4-4',
+    ].join('|'),
+  );
+});
+
+test("a script's select() is the field's widget's: shown, typed over, and read back where the user leaves the caret", async (t) => {
+  withFieldSelection(t);
+  const doc = await hosted(
+    '<p id="out"></p><input id="i" value="https://example.test/share" onfocus="this.select()">' +
+      '<script>' +
+      'var i = document.getElementById("i");' +
+      'i.addEventListener("input", function () {' +
+      "  document.getElementById('out').textContent = i.value + ':' + i.selectionStart; });" +
+      'i.focus();' +
+      '</script>',
+  );
+  await act();
+  const field = screen.getByRole('textbox') as unknown as DrawnNode & {
+    selectionStart: number;
+    selectionEnd: number;
+  };
+  await waitFor(() =>
+    assert.deepStrictEqual(
+      [field.selectionStart, field.selectionEnd],
+      [0, 26],
+      'select() on focus selected the whole of the widget’s text',
+    ),
+  );
+  await userEvent.type(field, 'z', { skipClick: true });
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'z:1',
+    'what was typed replaced it, and the caret is after it',
+  );
+});
+
+test('text the user selects in a field is the page’s select event', async (t) => {
+  withFieldSelection(t);
+  const doc = await hosted(
+    '<p id="out"></p><input id="i" value="abcdef"><script>' +
+      'var i = document.getElementById("i"), r = [];' +
+      'i.onselect = function (e) { r.push(e.isTrusted + ":" + i.selectionStart + "-" + i.selectionEnd);' +
+      "  document.getElementById('out').textContent = r.join('|'); };" +
+      'i.focus();' +
+      '</script>',
+  );
+  await act();
+  await waitFor(() =>
+    assert.ok((screen.getByRole('textbox') as DrawnNode).focused),
+  );
+  await userEvent.key(XK_LEFT, { modifiers: ['Shift'] });
+  await userEvent.key(XK_LEFT, { modifiers: ['Shift'] });
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t.includes('|')),
+    'true:5-6|true:4-6',
   );
 });
 

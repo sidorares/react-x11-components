@@ -72,7 +72,7 @@ import {
   optionValue,
   radioGroup,
 } from './form.js';
-import type { FormSubmission } from './form.js';
+import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 
 const h = React.createElement;
@@ -145,6 +145,17 @@ export interface Forms {
    *  widget shows it where it is, caret and focus kept. False for what is
    *  no control. */
   setValue(el: Element, value: string | boolean): boolean;
+  /** A text field's selection, as a script reads `selectionStart`,
+   *  `selectionEnd` and `selectionDirection`: its widget's, where one is
+   *  mounted that says, and else what was last set or kept of it — a caret
+   *  at the end of its text where nothing was. Null for what is no text
+   *  field. */
+  selection(el: Element): FieldSelection | null;
+  /** Select in a text field as a script's `setSelectionRange` does, its
+   *  offsets clamped to its text: no event, and its widget shows it where
+   *  one is mounted that takes it — as it does the next one mounted. False
+   *  for what is no text field. */
+  setSelection(el: Element, selection: FieldSelection): boolean;
   /** HTML's interactive validation: true where the form may go, and else
    *  false, with the reason shown at the first control that is wrong. */
   validate(form: Element, submitter: Element | null): boolean;
@@ -188,14 +199,51 @@ export function useForms(options: FormsOptions): Forms {
   // from under them. Nor by how many resets there have been: see `press`.
   const widgets = React.useMemo(
     () =>
-      new WidgetBoxes((el) => {
-        // a field that unmounts with the focus is forgotten rather than
-        // blurred, and the document is told it went
-        const node = view.current;
-        if (node?.focusedElement === el) node.setFocus(null);
+      new WidgetBoxes({
+        gone: (el) => {
+          // a field that unmounts with the focus is forgotten rather than
+          // blurred, and the document is told it went
+          const node = view.current;
+          if (node?.focusedElement === el) node.setFocus(null);
+        },
+        // A field's selection outlives its widget, as an input's outlives
+        // a `display: none`: what the widget had as it went is kept, and
+        // the next one mounted for the element starts from it, or from
+        // what a script set while none was.
+        leaving: (el) => {
+          const field = selectingField(widgets.fieldOf(el));
+          if (field) forms.keepSelection(el, selectionOf(field));
+        },
+        came: (el) => {
+          const kept = forms.selection(el);
+          const field = kept && selectingField(widgets.fieldOf(el));
+          if (!field) return;
+          field.setSelectionRange(kept.start, kept.end, kept.direction);
+          seen.current.set(el, selectionOf(field));
+        },
       }),
-    [view],
+    [view, forms],
   );
+
+  // What each field's selection was last seen as, by a script's setting it
+  // or a gesture's end: a key, a press or a release in the field that
+  // leaves another range selected is its `select`, as Chrome tells one
+  // (HTML 4.10.5.2.10, "user agents should fire select"), and one that
+  // only moves a caret is none. Looked at a microtask after the event, when
+  // core's default action has moved the selection.
+  const seen = React.useRef(new WeakMap<Element, FieldSelection>());
+  const watchSelection = (el: Element) => {
+    void Promise.resolve().then(() => {
+      const field = selectingField(widgets.fieldOf(el));
+      if (!field) return;
+      const now = selectionOf(field);
+      const was = seen.current.get(el);
+      seen.current.set(el, now);
+      if (now.start === now.end) return;
+      if (was && was.start === now.start && was.end === now.end) return;
+      fire('select', el);
+    });
+  };
 
   // Which element's field holds the focus, for `:focus` and its kin
   // (`HtmlViewNode.setFocus`). A blur is told a microtask later, and only
@@ -526,6 +574,7 @@ export function useForms(options: FormsOptions): Forms {
     click,
     focused,
     input: (el) => fire('input', el),
+    watchSelection,
     selected: (el) => {
       fire('input', el);
       fire('change', el);
@@ -583,6 +632,28 @@ export function useForms(options: FormsOptions): Forms {
       if (values.current.has(el)) values.current.set(el, text);
       const field = widgets.fieldOf(el);
       if (field) field.value = text;
+      return true;
+    },
+    selection: (el) => {
+      if (!isTextField(el)) return null;
+      const field = selectingField(widgets.fieldOf(el));
+      if (field) return selectionOf(field);
+      const end = forms.value(el).length;
+      return forms.selection(el) ?? { start: end, end, direction: 'none' };
+    },
+    setSelection: (el, selection) => {
+      if (!isTextField(el)) return false;
+      const length = forms.value(el).length;
+      const end = clampOffset(selection.end, length);
+      const kept: FieldSelection = {
+        start: clampOffset(selection.start, end),
+        end,
+        direction: selection.direction,
+      };
+      forms.keepSelection(el, kept);
+      const field = selectingField(widgets.fieldOf(el));
+      if (field) field.setSelectionRange(kept.start, kept.end, kept.direction);
+      seen.current.set(el, field ? selectionOf(field) : kept);
       return true;
     },
     validate,
@@ -677,8 +748,16 @@ class WidgetBoxes {
   private _elements = new WeakMap<DrawnNode, Element>();
   private _refs = new WeakMap<Element, (node: DrawnNode | null) => void>();
 
-  /** `gone` hears of each element whose widget's box unmounted. */
-  constructor(private readonly _gone: (el: Element) => void) {}
+  /** `came` hears of each element whose widget's box mounted, with the
+   *  widget in it; `leaving` of each whose box is unmounting, while the
+   *  widget can still be found; `gone` of it once it has. */
+  constructor(
+    private readonly _hooks: {
+      came: (el: Element) => void;
+      leaving: (el: Element) => void;
+      gone: (el: Element) => void;
+    },
+  ) {}
 
   idOf(el: Element): number {
     let id = this._ids.get(el);
@@ -694,9 +773,11 @@ class WidgetBoxes {
         if (node) {
           this._boxes.set(el, node);
           this._elements.set(node, el);
+          this._hooks.came(el);
         } else if (this._boxes.get(el)) {
+          this._hooks.leaving(el);
           this._boxes.delete(el);
-          this._gone(el);
+          this._hooks.gone(el);
         }
       };
       this._refs.set(el, ref);
@@ -781,6 +862,9 @@ interface ControlContext {
   focused: (el: Element, on: boolean) => void;
   /** Something was typed into a field: its `input`. */
   input: (el: Element) => void;
+  /** A key, a press or a release in a field, whose selection it may have
+   *  changed: its `select`, where it did. */
+  watchSelection: (el: Element) => void;
   /** A `<select>` was given another option: its `input` and `change`. */
   selected: (el: Element) => void;
   /** Enter in a text field: its form's implicit submission. */
@@ -859,6 +943,14 @@ function renderControl(
     forms.setTyped(el, value);
     ctx.changed(el, value, false);
     ctx.input(el);
+  };
+  // what may leave a field's text selected: a key, Shift+arrow or Ctrl+A;
+  // a press, a double click's word; a release, a drag's end
+  const watch = () => ctx.watchSelection(el);
+  const selectionWatch = {
+    onKeyDown: watch,
+    onMouseDown: watch,
+    onMouseUp: watch,
   };
 
   let widget: ReactNode;
@@ -963,6 +1055,7 @@ function renderControl(
         ...order,
         style: [field, FIELD_BOX],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
+        ...selectionWatch,
         onFocus: () => ctx.focused(el, true),
         onBlur: () => ctx.focused(el, false),
       });
@@ -992,6 +1085,7 @@ function renderControl(
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
         // Enter submits the field's form, as it does in a browser
         onSubmit: () => ctx.submitFrom(el),
+        ...selectionWatch,
         onFocus: () => ctx.focused(el, true),
         onBlur: () => ctx.focused(el, false),
       });
@@ -1380,4 +1474,45 @@ function controlState(el: Element, forms: FormState): string | boolean | null {
     return attr(el, 'checked') !== undefined;
   }
   return forms.value(el);
+}
+
+/**
+ * A field's selection API: core's `selectionStart`, `selectionEnd`,
+ * `selectionDirection` and `setSelectionRange()` on `<textinput>` and
+ * `<textarea>` (react-x11#1006), in UTF-16 code units as HTML's are. Asked
+ * at run time, so a core without it still mounts a field: one that shows
+ * nothing a script selects, whose selection is what `FormState` kept.
+ */
+interface SelectingField {
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  readonly selectionDirection: string;
+  setSelectionRange(
+    start: number,
+    end: number,
+    direction?: FieldSelection['direction'],
+  ): void;
+}
+
+function selectingField(node: TextInputNode | null): SelectingField | null {
+  const field = node as (TextInputNode & Partial<SelectingField>) | null;
+  return typeof field?.setSelectionRange === 'function'
+    ? (field as SelectingField)
+    : null;
+}
+
+function selectionOf(field: SelectingField): FieldSelection {
+  const direction = field.selectionDirection;
+  return {
+    start: field.selectionStart,
+    end: field.selectionEnd,
+    direction:
+      direction === 'forward' || direction === 'backward' ? direction : 'none',
+  };
+}
+
+/** An offset a host hands in, as a whole number from 0 to `limit`. */
+function clampOffset(offset: number, limit: number): number {
+  const n = Math.trunc(offset);
+  return Number.isNaN(n) ? 0 : Math.min(Math.max(0, n), limit);
 }

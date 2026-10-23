@@ -83,12 +83,13 @@ export function installDom(
     c?: Primitive,
     d?: Primitive,
   ): Any => {
-    // anything but reading a computed style, or a frame's document, may
-    // change one
+    // anything but reading a computed style, a frame's document or a
+    // field's selection may change one
     if (
       op !== 'computed' &&
       op !== 'customProperty' &&
-      op !== 'frameDocument'
+      op !== 'frameDocument' &&
+      op !== 'selection'
     ) {
       opEpoch += 1;
     }
@@ -6728,37 +6729,40 @@ export function installDom(
 
   /**
    * A text field's selection as a script reads and sets it (HTML
-   * 4.10.5.2.10): what a script last set, each end no further than the
-   * value goes, and the value's end where nothing was. The widget's own
-   * caret and selection are core's, which says neither, so a selection set
-   * here is the script's to read and tells the field `select`, and the
-   * widget does not show it.
+   * 4.10.5.2.10). The host's (`selection`, `setSelection`): the widget's,
+   * where core's field says — the caret the user left, the text they
+   * selected — and shown by it, and else what a script last set, kept to
+   * the value; the value's end where nothing was. A change a script makes
+   * is told as `select` a task later, and one the user makes is told by
+   * the host.
    */
-  const fieldSelections = new WeakMap<
-    Any,
-    { start: number; end: number; dir: string }
-  >();
-  const fieldSelectionOf = (
-    el: Any,
-  ): { start: number; end: number; dir: string } => {
-    const length = el.value.length;
-    const kept = fieldSelections.get(el);
-    if (!kept) return { start: length, end: length, dir: 'none' };
-    return {
-      start: Math.min(kept.start, length),
-      end: Math.min(kept.end, length),
-      dir: kept.dir,
-    };
+  type FieldSelection = { start: number; end: number; dir: string };
+  const fieldSelectionOf = (el: Any): FieldSelection => {
+    const answer = str(call('selection', el._id) ?? '');
+    if (!answer) {
+      const length = el.value.length;
+      return { start: length, end: length, dir: 'none' };
+    }
+    const [start, end, dir] = answer.split(' ');
+    return { start: Number(start), end: Number(end), dir };
   };
-  const selectField = (el: Any, start: Any, end: Any, dir: Any): void => {
+  /** HTML's "set the selection range": the offsets as WebIDL's `unsigned
+   *  long` takes them, clamped to the value and the start to the end, and
+   *  `select` where the start, the end or the direction moved from `was`. */
+  const selectField = (
+    el: Any,
+    start: Any,
+    end: Any,
+    dir: Any,
+    was: FieldSelection = fieldSelectionOf(el),
+  ): void => {
     const length = el.value.length;
     const to = Math.min(Number(end) >>> 0, length);
     let from = Math.min(Number(start) >>> 0, length);
     if (from > to) from = to;
     const direction = dir === 'forward' || dir === 'backward' ? dir : 'none';
-    const was = fieldSelectionOf(el);
-    fieldSelections.set(el, { start: from, end: to, dir: direction });
-    if (was.start === from && was.end === to) return;
+    call('setSelection', el._id, from, to, direction);
+    if (was.start === from && was.end === to && was.dir === direction) return;
     setTimer(
       () => dispatch(el, new Event('select', { bubbles: true })),
       0,
@@ -6766,10 +6770,88 @@ export function installDom(
       false,
     );
   };
+  /** A value set that changed it puts the caret at its end (HTML
+   *  4.10.5.4), and selects nothing. */
+  const valueSet = (el: Any, was: string): void => {
+    const length = el.value.length;
+    if (el.value !== was) call('setSelection', el._id, length, length, 'none');
+  };
+  /**
+   * HTML's `setRangeText()` (4.10.5.2.10): `replacement` in place of
+   * `[start, end)` — of the selection, where neither is given — and the
+   * selection after it as `selectionMode` says, `preserve` keeping it
+   * where it was around the edit. No `input`: the edit is the script's.
+   */
+  const setRangeText = (el: Any, args: Any[], kind: string): void => {
+    const fail = (why: string): string =>
+      `Failed to execute 'setRangeText' on '${kind}': ${why}`;
+    if (args.length === 0 || args.length === 2) {
+      throw new TypeError(
+        fail(
+          `${args.length === 0 ? 1 : 3} arguments required, but only ${args.length} present.`,
+        ),
+      );
+    }
+    const replacement = str(args[0]);
+    const value = el.value;
+    const now = fieldSelectionOf(el);
+    let start = now.start;
+    let end = now.end;
+    let mode = 'preserve';
+    if (args.length > 2) {
+      start = Number(args[1]) >>> 0;
+      end = Number(args[2]) >>> 0;
+      if (args[3] !== undefined) mode = str(args[3]);
+      if (!/^(select|start|end|preserve)$/.test(mode)) {
+        throw new TypeError(
+          fail(
+            `The provided value '${mode}' is not a valid enum value of type SelectionMode.`,
+          ),
+        );
+      }
+      if (start > end) {
+        throw new DOMException(
+          fail(
+            `The provided start index (${start}) is larger than the provided end index (${end}).`,
+          ),
+          'IndexSizeError',
+        );
+      }
+    }
+    start = Math.min(start, value.length);
+    end = Math.min(end, value.length);
+    call(
+      'setValue',
+      el._id,
+      value.slice(0, start) + replacement + value.slice(end),
+    );
+    const after = start + replacement.length;
+    let from = now.start;
+    let to = now.end;
+    if (mode === 'select') {
+      from = start;
+      to = after;
+    } else if (mode === 'start') {
+      from = to = start;
+    } else if (mode === 'end') {
+      from = to = after;
+    } else {
+      const delta = replacement.length - (end - start);
+      if (from > end) from += delta;
+      else if (from > start) from = start;
+      if (to > end) to += delta;
+      else if (to > start) to = after;
+    }
+    selectField(el, from, to, 'none', now);
+  };
   /** The input types a selection is part of (HTML 4.10.5.1, the table of
    *  the APIs each type has). */
   const selects = (el: Any): boolean =>
     /^(text|search|url|tel|password)$/.test(el.type);
+  /** The ones `select()` selects in besides: their text is a field's here,
+   *  though a script reads no offsets into it. */
+  const selectsAll = (el: Any): boolean =>
+    selects(el) || /^(email|number)$/.test(el.type);
   const notSelectable = (el: Any, name: string): Any =>
     new DOMException(
       `Failed to set the '${name}' property on 'HTMLInputElement': The input element's type ('${el.type}') does not support selection.`,
@@ -6802,9 +6884,9 @@ export function installDom(
       if (type === 'checkbox' || type === 'radio' || DEFAULT_MODE.has(type)) {
         this.setAttribute('value', v === null ? '' : v);
       } else if (type !== 'file') {
+        const was = this.value;
         call('setValue', this._id, v === null ? '' : str(v));
-        // a value set puts the selection at its end (HTML 4.10.5.4)
-        fieldSelections.delete(this);
+        valueSet(this, was);
       }
     }
     get valueAsNumber(): number {
@@ -6839,13 +6921,16 @@ export function installDom(
       return list([]);
     }
     select(): void {
-      if (selects(this)) selectField(this, 0, this.value.length, 'none');
+      if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
     }
     setSelectionRange(start: Any, end: Any, direction?: Any): void {
       if (!selects(this)) throw notSelectable(this, 'setSelectionRange');
       selectField(this, start, end, direction);
     }
-    setRangeText(): void {}
+    setRangeText(...args: Any[]): void {
+      if (!selects(this)) throw notSelectable(this, 'setRangeText');
+      setRangeText(this, args, 'HTMLInputElement');
+    }
     get selectionStart(): number | null {
       return selects(this) ? fieldSelectionOf(this).start : null;
     }
@@ -6948,9 +7033,9 @@ export function installDom(
       return typeof v === 'string' ? v : this.textContent;
     }
     set value(v: Any) {
+      const was = this.value;
       call('setValue', this._id, v === null ? '' : str(v));
-      // a value set puts the selection at its end (HTML 4.10.5.4)
-      fieldSelections.delete(this);
+      valueSet(this, was);
     }
     get defaultValue(): string {
       return this.textContent;
@@ -6966,6 +7051,9 @@ export function installDom(
     }
     setSelectionRange(start: Any, end: Any, direction?: Any): void {
       selectField(this, start, end, direction);
+    }
+    setRangeText(...args: Any[]): void {
+      setRangeText(this, args, 'HTMLTextAreaElement');
     }
     get selectionStart(): number {
       return fieldSelectionOf(this).start;
@@ -12791,6 +12879,7 @@ export function installDom(
     'keypress',
     'input',
     'change',
+    'select',
     'submit',
     'reset',
     'focus',
@@ -23133,6 +23222,12 @@ export function installDom(
         return dispatch(
           target,
           trusted(new Event('change', { bubbles: true })),
+        );
+      // text the user selected in a field (HTML 4.10.5.2.10)
+      case 'select':
+        return dispatch(
+          target,
+          trusted(new Event('select', { bubbles: true })),
         );
       case 'submit': {
         const submitter = e.submitter ? wrap(e.submitter) : null;

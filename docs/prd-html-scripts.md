@@ -1070,7 +1070,11 @@ the Interop 2026 focus areas through `<Html scripts>`
    `selectionStart` cannot say where a user's caret is. What is wanted is
    the DOM's shape on the node: `selectionStart`, `selectionEnd`,
    `selectionDirection` and `setSelectionRange()` (WPT's
-   `user-select-none-on-input` stops there).
+   `user-select-none-on-input` stops there). **Asked** in react-x11#1006,
+   with the DOM's names and its UTF-16 offsets. `<Html>` reads it at run
+   time (`selectingField` in `widgets.ts`), so the widget shows a script's
+   selection, the getters read the user's, and text the user selects is
+   told as `select`, once a core with it is installed.
 
 None of the four is needed for a first script to run. The first and the
 second are what makes "a page costs its own tab" true for a page that

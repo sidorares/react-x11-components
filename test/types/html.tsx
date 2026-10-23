@@ -8,6 +8,7 @@ import type {
   HtmlDocument,
   HtmlDomEvent,
   HtmlElement,
+  HtmlFieldSelection,
   HtmlProps,
   HtmlResourceRequest,
   HtmlResourceResult,
@@ -135,6 +136,11 @@ export function ScriptHost(): React.ReactElement {
     void value;
     const set: boolean = handle.setControlValue(el, 'x');
     void set;
+    // a field's selection, in UTF-16 code units, as a script's
+    const selected: HtmlFieldSelection | null = handle.controlSelection(el);
+    void selected?.direction;
+    const took: boolean = handle.setControlSelection(el, 0, 1, 'backward');
+    void took;
     void handle.focus(el);
     handle.blur();
     const active: HtmlElement | null = handle.activeElement;

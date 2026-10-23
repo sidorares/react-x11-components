@@ -3328,6 +3328,19 @@ export class DomHost {
           typeof b === 'boolean' ? b : text(b),
         );
       }
+      // a text field's selection, as `start end direction`, or '' for
+      // what has none; and set, from offsets the page's realm clamped
+      case 'selection': {
+        const s = this._seams.handle.controlSelection(this._element(a));
+        return s ? `${s.start} ${s.end} ${s.direction}` : '';
+      }
+      case 'setSelection':
+        return this._seams.handle.setControlSelection(
+          this._element(a),
+          Number(b),
+          Number(c),
+          d === 'forward' || d === 'backward' ? d : 'none',
+        );
       case 'focus': {
         this.flush();
         const el = this._element(a);

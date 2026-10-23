@@ -15,7 +15,12 @@ import {
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
-import { XK_RETURN } from 'react-x11/keysyms';
+import {
+  XK_BACKSPACE,
+  XK_LEFT,
+  XK_RETURN,
+  XK_SHIFT_L,
+} from 'react-x11/keysyms';
 import { appendChild, findOne } from 'domutils';
 import { Element as DomElement } from 'domhandler';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
@@ -37,6 +42,7 @@ import {
   mountBetweenFrames,
   render,
   view,
+  withFieldSelection,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
 
@@ -428,6 +434,138 @@ metric(
     api.setControlValue(doc.byId('s'), '2');
     assert.strictEqual(api.controlValue(doc.byId('s')), '2');
     assert.strictEqual(api.controlValue(doc.byId('p')), null, 'no control');
+  },
+);
+
+metric(
+  "a field's selection is set in its widget and read back from it, the user's caret included",
+  async (t) => {
+    withFieldSelection(t);
+    const doc = await hosted(
+      '<p id="p">p</p><input id="a" value="copy this link">',
+    );
+    const api = doc.el.interactive!;
+    const a = doc.byId('a');
+    assert.deepStrictEqual(
+      api.controlSelection(a),
+      { start: 14, end: 14, direction: 'none' },
+      'a caret at the end of the text, where nothing set one',
+    );
+    assert.strictEqual(api.controlSelection(doc.byId('p')), null);
+    const field = textbox();
+    field.focus();
+    await act();
+    assert.strictEqual(
+      api.setControlSelection(a, { start: 5, end: 10, direction: 'none' }),
+      true,
+    );
+    const widget = field as unknown as {
+      selectionStart: number;
+      selectionEnd: number;
+    };
+    assert.deepStrictEqual(
+      [widget.selectionStart, widget.selectionEnd],
+      [5, 10],
+      'the widget holds it',
+    );
+    await userEvent.key(XK_BACKSPACE);
+    assert.strictEqual(api.controlValue(a), 'copy link', 'Backspace takes it');
+    await userEvent.key(XK_LEFT);
+    assert.deepStrictEqual(
+      api.controlSelection(a),
+      { start: 4, end: 4, direction: 'none' },
+      'and the caret is where the user left it',
+    );
+    api.setControlSelection(a, { start: 7, end: 99, direction: 'backward' });
+    assert.deepStrictEqual(
+      api.controlSelection(a),
+      { start: 7, end: 9, direction: 'backward' },
+      'clamped to the text',
+    );
+    assert.strictEqual(
+      api.setControlSelection(doc.byId('p'), {
+        start: 0,
+        end: 1,
+        direction: 'none',
+      }),
+      false,
+    );
+  },
+);
+
+metric(
+  "a field's selection outlives its widget, and one set before a widget is mounted is the widget's",
+  async (t) => {
+    withFieldSelection(t);
+    const doc = await hosted(
+      '<style>.gone { display: none }</style>' +
+        '<input id="a" class="gone" value="abcdef">',
+    );
+    const api = doc.el.interactive!;
+    const a = doc.byId('a');
+    assert.strictEqual(screen.queryByRole('textbox'), null, 'no widget yet');
+    api.setControlSelection(a, { start: 1, end: 3, direction: 'backward' });
+    a.attribs.class = '';
+    doc.el.touchDocument();
+    await act();
+    const widget = () =>
+      textbox() as unknown as {
+        selectionStart: number;
+        selectionEnd: number;
+        selectionDirection: string;
+      };
+    assert.deepStrictEqual(
+      [widget().selectionStart, widget().selectionEnd],
+      [1, 3],
+      'the widget mounted starts from it',
+    );
+    assert.strictEqual(widget().selectionDirection, 'backward');
+    // the user's selection, kept while the field is hidden and back with it
+    textbox().focus();
+    await act();
+    await userEvent.key(XK_LEFT, { modifiers: ['Shift'] });
+    a.attribs.class = 'gone';
+    doc.el.touchDocument();
+    await act();
+    assert.strictEqual(screen.queryByRole('textbox'), null);
+    assert.deepStrictEqual(api.controlSelection(a), {
+      start: 0,
+      end: 3,
+      direction: 'backward',
+    });
+    a.attribs.class = '';
+    doc.el.touchDocument();
+    await act();
+    assert.deepStrictEqual(
+      [widget().selectionStart, widget().selectionEnd],
+      [0, 3],
+    );
+  },
+);
+
+metric(
+  'text the user selects in a field is told as select, and a caret moved is not',
+  async (t) => {
+    withFieldSelection(t);
+    const doc = await hosted('<input id="a" value="abcdef">');
+    const api = doc.el.interactive!;
+    textbox().focus();
+    await act();
+    await userEvent.key(XK_LEFT, { modifiers: ['Shift'] });
+    assert.deepStrictEqual(doc.told(['select']), ['select:a'], 'Shift+Left');
+    await userEvent.key(XK_LEFT);
+    assert.deepStrictEqual(doc.told(['select']), ['select:a'], 'Left');
+    await userEvent.key(0x61, { modifiers: ['Control'] }); // Ctrl+A
+    assert.deepStrictEqual(doc.told(['select']), ['select:a', 'select:a']);
+    // one a script made is the script's to tell, and a key after it that
+    // leaves it as it was tells nothing
+    api.setControlSelection(doc.byId('a'), {
+      start: 1,
+      end: 2,
+      direction: 'none',
+    });
+    await userEvent.key(XK_SHIFT_L);
+    assert.strictEqual(doc.told(['select']).length, 2);
   },
 );
 
@@ -980,6 +1118,12 @@ metric('the handle reaches all of it', async () => {
   assert.strictEqual(handle.controlValue(input), 'v');
   assert.strictEqual(handle.setControlValue(input, 'w'), true);
   assert.strictEqual(handle.controlValue(input), 'w');
+  assert.strictEqual(handle.setControlSelection(input, 0, 1), true);
+  assert.deepStrictEqual(handle.controlSelection(input), {
+    start: 0,
+    end: 1,
+    direction: 'none',
+  });
   assert.strictEqual(handle.focus(input), true);
   await act();
   assert.strictEqual(handle.activeElement, input);
