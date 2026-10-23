@@ -324,12 +324,26 @@ const UA_SCOPE = -1;
 const SCOPING = /:host|::?(?:slotted|part)\(/i;
 
 /** What the pointer entering or leaving an element can change
- *  (`Cascade.hoverTouches`): nothing, the element and what is in it, or
- *  those and the siblings after it. */
-export type HoverTouch = 0 | 1 | 2;
+ *  (`Cascade.hoverTouches`): nothing, the element and what is in it, those
+ *  and the siblings after it, or those through a rule at a shadow tree's
+ *  edge, which no restyle in place can answer (`StateRules.edge`). */
+export type HoverTouch = 0 | 1 | 2 | 3;
 export const HOVER_UNTOUCHED = 0;
 export const HOVER_TOUCHED = 1;
 export const HOVER_FOLLOWED = 2;
+export const HOVER_EDGE = 3;
+
+/**
+ * The elements under one whose state changed that a compound leading below
+ * reaches (`PointerCompounds.below`): those `match` names, among its
+ * children where `child`, and anywhere under it otherwise. One `match` a
+ * subject, so that a walk under an ancestor can be seen to cover a walk
+ * under an element in it.
+ */
+export interface BelowReach {
+  readonly match: (el: Element) => boolean;
+  readonly child: boolean;
+}
 
 /** Which pseudo-elements' rules test the pointer (`Cascade.hoverPseudo`). */
 export const HOVER_PSEUDO_NONE = 0;
@@ -749,8 +763,10 @@ export function pointerCompounds(
     nested: false,
     has: [],
     followed: [],
+    below: [],
+    host: false,
   };
-  scanComplex(selector, out, kind);
+  scanComplex(selector, out, kind, true);
   return out;
 }
 
@@ -785,6 +801,20 @@ export interface PointerCompounds {
   /** The compounds and anchors a sibling combinator follows: the ones
    *  whose elements' later siblings change with them. */
   followed: string[];
+  /**
+   * The compounds that test the state and lead below to the selector's
+   * subject, and are not it: `.anchor-link`'s `:hover > .anchor-link`,
+   * which changes the children of the element that matches `*` named so
+   * and nothing else. Each with its subject, without what tests a state or
+   * names a pseudo-element, and whether the subject is its child. The
+   * compound is not in `compounds`, which reach all that is in their
+   * element.
+   */
+  below: { compound: string; subject: string; child: boolean }[];
+  /** Whether a `:host()` tests the state: what the host's flip changes is
+   *  in its tree, matched by rules no restyle in place asks
+   *  (`StateRules.edge`). */
+  host: boolean;
 }
 
 /** The functions that take a selector list and match the element they are
@@ -1086,13 +1116,18 @@ function exportedNames(
   return out;
 }
 
-/** `pointerCompounds` for one complex selector, into `out`. */
+/** `pointerCompounds` for one complex selector, into `out` — `top` where it
+ *  is a rule's own, whose last compound is its subject, and not one nested
+ *  in a function. */
 function scanComplex(
   selector: string,
   out: PointerCompounds,
   kind: StateKind,
+  top = false,
 ): void {
-  for (const { text, next } of compoundsOf(selector)) {
+  const parts = compoundsOf(selector);
+  for (let p = 0; p < parts.length; p += 1) {
+    const { text, next } = parts[p];
     const compoundsFrom = out.compounds.length;
     const hasFrom = out.has.length;
     const found = scanCompound(text, out, kind);
@@ -1105,7 +1140,20 @@ function scanComplex(
         ),
       });
     }
-    if (found.pointer) out.compounds.push(found.bare.trim() || '*');
+    // a compound that leads below, by a descendant or a child combinator,
+    // reaches what in its element the subject names: every element in it
+    // can be one only where the subject is a compound this cannot read
+    const subject =
+      found.pointer && top && p < parts.length - 1 && !sibling
+        ? subjectOf(parts[parts.length - 1].text)
+        : null;
+    if (subject) {
+      out.below.push({
+        compound: found.bare.trim() || '*',
+        subject,
+        child: next === '>' && p === parts.length - 2,
+      });
+    } else if (found.pointer) out.compounds.push(found.bare.trim() || '*');
     // what follows the element this compound matches follows one whose
     // hover, or whose answer to a `:has()`, changed
     // — the one this compound matches, or one a selector nested in it
@@ -1120,6 +1168,48 @@ function scanComplex(
       }
     }
   }
+}
+
+/** The legacy pseudo-elements, written with one colon (CSS 2.1, 5.12). */
+const LEGACY_PSEUDO_ELEMENT =
+  /^:(?:before|after|first-line|first-letter)(?![\w-])/i;
+
+/**
+ * A subject compound as `PointerCompounds.below` matches elements by: what
+ * it asks of an element, without a pseudo-element and what follows it, and
+ * without the states this renderer keeps, so that it names every element
+ * that can match it in any state — or null where it has a function in it,
+ * which may ask of more than the element.
+ */
+function subjectOf(compound: string): string | null {
+  let bracket = 0;
+  let quote = '';
+  let end = compound.length;
+  for (let i = 0; i < compound.length; i += 1) {
+    const c = compound[i];
+    if (quote) {
+      if (c === quote && compound[i - 1] !== '\\') quote = '';
+      continue;
+    }
+    if (c === '\\') i = escapeEnd(compound, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '[') bracket += 1;
+    else if (c === ']') bracket = Math.max(0, bracket - 1);
+    else if (c === '(' && bracket === 0) return null;
+    else if (
+      c === ':' &&
+      bracket === 0 &&
+      (compound[i + 1] === ':' || LEGACY_PSEUDO_ELEMENT.test(compound.slice(i)))
+    ) {
+      end = i;
+      break;
+    }
+  }
+  const own = compound
+    .slice(0, end)
+    .replace(new RegExp(STATE_PSEUDO.source, 'gi'), '')
+    .trim();
+  return own || '*';
 }
 
 /**
@@ -1176,7 +1266,11 @@ function scanCompound(
           continue;
         }
         const name = fn[1].toLowerCase();
-        if (name === 'has') {
+        if (name === 'host') {
+          // the host's own state, whose flip changes its tree
+          out.host = true;
+          bare += whole;
+        } else if (name === 'has') {
           // the compound is kept without it: its argument is what the
           // pointer changes, and whatever holds the `:hover` in there, the
           // element it tests is in the anchor's subtree or a later
@@ -1534,6 +1628,16 @@ export const NO_FOCUS: FocusState = {
   within: new Set(),
 };
 
+/** Whether a rule at a shadow tree's edge can test `el`'s state: it hosts a
+ *  tree, is in one, or is a host's light child, which a slot may take. */
+function atShadowEdge(el: Element): boolean {
+  if (shadowRootOf(el) || shadowRootAround(el)) return true;
+  const parent = el.parent;
+  return (
+    !!parent && isTag(parent as Element) && !!shadowRootOf(parent as Element)
+  );
+}
+
 /**
  * What the selectors that test one state — the pointer, or the focus — say
  * of the elements a change of it can restyle: the compounds that test it,
@@ -1551,6 +1655,17 @@ class StateRules {
    *  state inside a functional pseudo-class, which reaches elements no
    *  compound names. */
   local = true;
+  /** Whether a rule at a shadow tree's edge tests the state: a flip of a
+   *  host, of an element in a tree or of one assigned to a slot is then
+   *  answered by building the boxes (`HOVER_EDGE`), since those rules are
+   *  in no index a restyle in place asks. */
+  edge = false;
+  /** The compounds that lead below (`PointerCompounds.below`), each with
+   *  its subjects and whether each is only ever a child; and their
+   *  matchers, compiled when a change first asks. */
+  private _below = new Map<string, Map<string, boolean>>();
+  private _belowMatchers:
+    { match: (el: Element) => boolean; reaches: BelowReach[] }[] | null = null;
   /** The compounds whose `:has()` tests the state, each without it,
    *  whether its argument starts at a sibling, and whether a sibling
    *  combinator follows it (`anchors`). */
@@ -1572,6 +1687,12 @@ class StateRules {
     if (!this._kind.mentions.test(selector)) return;
     const found = pointerCompounds(selector, this._kind);
     if (found.nested) this.local = false;
+    if (found.host) this.noteEdge(selector);
+    for (const { compound, subject, child } of found.below) {
+      let subjects = this._below.get(compound);
+      if (!subjects) this._below.set(compound, (subjects = new Map()));
+      subjects.set(subject, child && (subjects.get(subject) ?? true));
+    }
     const followed = new Set(found.followed);
     for (const c of found.compounds) {
       this._compounds.set(
@@ -1588,11 +1709,31 @@ class StateRules {
     }
   }
 
+  /**
+   * A rule at a shadow tree's edge that tests the state (`edge`): one that
+   * reads the state of an element no host, tree or slot holds — an
+   * ancestor of a host's, through `:host-context()`, `:has()` or a compound
+   * before a `::part()`'s host — is answered by no restyle at all.
+   */
+  noteEdge(selector: string): void {
+    if (!this._kind.mentions.test(selector)) return;
+    const part = /::part\(/i.exec(selector);
+    const before = part ? compoundsOf(selector.slice(0, part.index)) : [];
+    if (
+      /:host-context\(|:has\(/i.test(selector) ||
+      before.slice(0, -1).some((c) => this._kind.mentions.test(c.text))
+    ) {
+      this.local = false;
+    } else this.edge = true;
+  }
+
   /** `Cascade.hoverTouches`, for this state. */
   touches(
     el: Element,
     compile: (selector: string) => ((el: Element) => boolean) | null,
+    below?: BelowReach[],
   ): HoverTouch {
+    if (this.edge && atShadowEdge(el)) return HOVER_EDGE;
     // the followed ones first, so the first that matches is the answer
     this._matchers ??= [...this._compounds]
       .sort(([, a], [, b]) => Number(b) - Number(a))
@@ -1602,6 +1743,37 @@ class StateRules {
       });
     for (const { match, followed } of this._matchers) {
       if (match(el)) return followed ? HOVER_FOLLOWED : HOVER_TOUCHED;
+    }
+    if (!this._below.size) return HOVER_UNTOUCHED;
+    if (!this._belowMatchers) {
+      // one matcher a subject, shared by every compound that leads to it
+      const subjects = new Map<string, ((el: Element) => boolean) | null>();
+      const subjectMatch = (subject: string) => {
+        if (!subjects.has(subject)) subjects.set(subject, compile(subject));
+        return subjects.get(subject)!;
+      };
+      const reaches = new Map<string, BelowReach>();
+      this._belowMatchers = [];
+      for (const [compound, of] of this._below) {
+        const match = compile(compound);
+        if (!match) continue;
+        const list: BelowReach[] = [];
+        for (const [subject, child] of of) {
+          // one that compiles to nothing names no element: nor does its
+          // rule, which the cascade drops
+          const m = subjectMatch(subject);
+          if (!m) continue;
+          const key = `${child ? '>' : ' '}${subject}`;
+          let reach = reaches.get(key);
+          if (!reach) reaches.set(key, (reach = { match: m, child }));
+          list.push(reach);
+        }
+        if (list.length) this._belowMatchers.push({ match, reaches: list });
+      }
+    }
+    for (const { match, reaches } of this._belowMatchers) {
+      if (!match(el)) continue;
+      if (below) for (const r of reaches) if (!below.includes(r)) below.push(r);
     }
     return HOVER_UNTOUCHED;
   }
@@ -3054,16 +3226,29 @@ export class Cascade {
    * where a sibling combinator follows one that matches, so the element's
    * later siblings can change with it — those rules' elements alone: a
    * sheet with one `.peer:hover ~ *` in it does not make every row of a
-   * table restyle the rows after it.
+   * table restyle the rows after it. A compound that leads below to a
+   * subject touches only what in the element the subject names, pushed
+   * onto `below` (`BelowReach`): Bootstrap's docs write `:hover >
+   * .anchor-link`, and every element the pointer crossed reached all that
+   * was in it, the whole page of 7,800 elements built again a move.
+   * `HOVER_EDGE` where a rule at a shadow tree's edge can test it.
    */
-  hoverTouches(el: Element): HoverTouch {
-    return this._hoverRules.touches(el, (selector) => this._compile(selector));
+  hoverTouches(el: Element, below?: BelowReach[]): HoverTouch {
+    return this._hoverRules.touches(
+      el,
+      (selector) => this._compile(selector),
+      below,
+    );
   }
 
   /** `hoverTouches` for the focus: whether `el` taking the focus or giving
    *  it up, or its `:focus-within` changing, can change a style. */
-  focusTouches(el: Element): HoverTouch {
-    return this._focusRules.touches(el, (selector) => this._compile(selector));
+  focusTouches(el: Element, below?: BelowReach[]): HoverTouch {
+    return this._focusRules.touches(
+      el,
+      (selector) => this._compile(selector),
+      below,
+    );
   }
 
   /**
@@ -3783,11 +3968,11 @@ export class Cascade {
   private _noteEdge(selector: string): void {
     if (HOVER_STATE.mentions.test(selector)) {
       this._index.hoverSensitive = true;
-      this._hoverRules.local = false;
+      this._hoverRules.noteEdge(selector);
     }
     if (FOCUS_STATE.mentions.test(selector)) {
       this._index.focusSensitive = true;
-      this._focusRules.local = false;
+      this._focusRules.noteEdge(selector);
     }
     if (UNSHAREABLE.test(selector)) this._index.ownStyleEverywhere = true;
   }

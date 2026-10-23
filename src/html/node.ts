@@ -87,6 +87,7 @@ import {
   CHANGES_BELOW,
   CHANGES_LATER,
   CHANGES_SELF,
+  HOVER_EDGE,
   HOVER_FOLLOWED,
   HOVER_PSEUDO_GENERATED,
   HOVER_PSEUDO_NONE,
@@ -95,6 +96,7 @@ import {
   NO_FOCUS,
 } from './css/cascade.js';
 import type {
+  BelowReach,
   ChangeAnchors,
   FocusState,
   HoverTouch,
@@ -5013,14 +5015,15 @@ export class HtmlViewNode extends Node {
    */
   private _restyleHover(was: readonly Element[], now: readonly Element[]) {
     const cascade = this._cascade;
-    const reach = this._hoverReach(was, now);
-    if (reach !== null && cascade) {
-      if (!reach.size) return;
+    const found = this._hoverReach(was, now);
+    const reach = found?.reach ?? null;
+    if (found && !found.edge && cascade) {
+      if (!found.reach.size) return;
       const before = { hovered: new Set(was), active: EMPTY_SET };
       const focus = this._focus;
       if (
         this._restyleInPlace(
-          reach,
+          found.reach,
           (el) => cascade.pointerChanged(el, before, focus),
           cascade.hoverPseudo,
         )
@@ -5069,22 +5072,23 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     cascade?.setFocus(now);
     if (!cascade || !cascade.focusSensitive) return false;
-    const reach = cascade.focusLocal
+    const found = cascade.focusLocal
       ? this._stateReach(
           [...was.within],
           [...now.within],
           // one element, whose ring came or went
           was.element === element ? element : null,
-          (el) => cascade.focusTouches(el),
+          (el, below) => cascade.focusTouches(el, below),
           (el, into) => cascade.focusAnchors(el, into),
         )
       : null;
-    if (reach !== null) {
-      if (!reach.size) return true;
+    const reach = found?.reach ?? null;
+    if (found && !found.edge) {
+      if (!found.reach.size) return true;
       const pointer = { hovered: new Set(this._hovered), active: EMPTY_SET };
       if (
         this._restyleInPlace(
-          reach,
+          found.reach,
           (el) => cascade.pointerChanged(el, pointer, was),
           cascade.focusPseudo,
         )
@@ -5104,19 +5108,21 @@ export class HtmlViewNode extends Node {
 
   /**
    * The elements whose styles a move of the hovered chain can change, or
-   * null where that cannot be said (`Cascade.hoverLocal`).
+   * null where that cannot be said (`Cascade.hoverLocal`); and whether a
+   * rule at a shadow tree's edge can change them, which a restyle in place
+   * cannot answer (`StateReach`).
    */
   private _hoverReach(
     was: readonly Element[],
     now: readonly Element[],
-  ): Set<Element> | null {
+  ): StateReach | null {
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverLocal) return null;
     return this._stateReach(
       was,
       now,
       null,
-      (el) => cascade.hoverTouches(el),
+      (el, below) => cascade.hoverTouches(el, below),
       (el, into) => cascade.hoverAnchors(el, into),
     );
   }
@@ -5138,16 +5144,23 @@ export class HtmlViewNode extends Node {
     was: readonly Element[],
     now: readonly Element[],
     also: Element | null,
-    touches: (el: Element) => HoverTouch,
+    touches: (el: Element, below: BelowReach[]) => HoverTouch,
     anchors: (el: Element, into: Map<Element, HoverTouch>) => void,
-  ): Set<Element> {
+  ): StateReach {
     const before = new Set(was);
     const after = new Set(now);
     const roots = new Map<Element, HoverTouch>();
+    /** The elements a compound that leads below matched, and what it
+     *  reaches under each (`BelowReach`). */
+    const leading = new Map<Element, BelowReach[]>();
+    let edge = false;
     const flipped = (el: Element, other: Set<Element> | null): void => {
       if (other?.has(el)) return;
-      const touch = touches(el);
+      const below = leading.get(el) ?? [];
+      const touch = touches(el, below);
+      if (touch === HOVER_EDGE) edge = true;
       if (touch > (roots.get(el) ?? HOVER_UNTOUCHED)) roots.set(el, touch);
+      if (below.length) leading.set(el, below);
     };
     for (const el of was) flipped(el, after);
     for (const el of now) flipped(el, before);
@@ -5185,12 +5198,68 @@ export class HtmlViewNode extends Node {
     };
     for (const [root, touch] of roots) {
       collect(root);
-      if (touch !== HOVER_FOLLOWED) continue;
+      if (touch !== HOVER_FOLLOWED && touch !== HOVER_EDGE) continue;
       for (let s = root.nextSibling; s; s = s.nextSibling) {
         if (isElement(s)) collect(s);
       }
     }
-    return reach;
+    // What a compound that leads below reaches in its element: the
+    // subjects among its children or under it, with what is in each. The
+    // shallowest first, since every element of the chain can be one — the
+    // `*` of `:hover > .anchor-link` — and a walk under an ancestor covers
+    // one under an element in it that asks no more of what it finds.
+    if (leading.size) {
+      const depthOf = (el: Element): number => {
+        let depth = 0;
+        for (let at = flatParentOf(el); at; at = flatParentOf(at)) depth += 1;
+        return depth;
+      };
+      const order = [...leading.keys()]
+        .filter((el) => !reach.has(el))
+        .map((el) => [depthOf(el), el] as const)
+        .sort((a, b) => a[0] - b[0]);
+      const covered = new Set<Element>();
+      const stack: Element[] = [];
+      // A subject in an inline `<svg>` has no box of its own: the drawing
+      // is one, whose shapes are asked for again where it is in the reach
+      // (`_restyleInPlace`), and only there.
+      const subject = (at: Element): void => {
+        collect(at);
+        let drawing: Element | null = null;
+        for (let up = flatParentOf(at); up; up = flatParentOf(up)) {
+          if (tagOf(up) === 'svg') drawing = up;
+        }
+        if (drawing) reach.add(drawing);
+      };
+      for (const [, el] of order) {
+        if (reach.has(el) || covered.has(el)) continue;
+        const below = leading.get(el)!;
+        const deep = below.filter((r) => !r.child).map((r) => r.match);
+        for (const r of below) {
+          if (!r.child) continue;
+          for (const child of flatChildrenOf(el)) {
+            if (isElement(child) && r.match(child)) subject(child);
+          }
+        }
+        if (!deep.length) continue;
+        stack.push(el);
+        while (stack.length) {
+          const at = stack.pop()!;
+          if (at !== el) {
+            if (reach.has(at)) continue;
+            if (deep.some((match) => match(at))) {
+              subject(at);
+              continue;
+            }
+            const inner = leading.get(at);
+            if (inner?.every((r) => deep.includes(r.match))) covered.add(at);
+          }
+          for (const child of flatChildrenOf(at))
+            if (isElement(child)) stack.push(child);
+        }
+      }
+    }
+    return { reach, edge };
   }
 
   /**
@@ -11668,6 +11737,14 @@ function compareKeys(a: readonly number[], b: readonly number[]): number {
 
 // --- a pointer move restyled where it happened (`_hoverInPlace`) -----------
 
+/** What a change of the pointer or the focus can restyle
+ *  (`_stateReach`): the elements, and whether a rule at a shadow tree's
+ *  edge tests the change, which the boxes are built again for. */
+interface StateReach {
+  reach: Set<Element>;
+  edge: boolean;
+}
+
 /** How many elements a pointer move restyles in place before the document
  *  is built again instead: a link's subtree is a handful, and a compound
  *  that matches a container reaches everything in it. */
@@ -12464,12 +12541,17 @@ function hoverChange(
       // a group to fade before and after, or none either time: the order
       // its layers paint in is the same (`stacksLayers`) — as it is where
       // the opacity is named in `will-change` both times, which one in
-      // transition or animated is, a layer of its context at 1 as well
+      // transition or animated is, a layer of its context at 1 as well.
+      // Otherwise the box became a stacking context or stopped being one,
+      // which moves no box and contains nothing out of the flow: the order
+      // is worked out again from the styles, as a `z-index`'s is
+      // (`stackLayers`). BBC's and Bootstrap's `a:hover{opacity:.8}` built
+      // the page again a move.
       if (
         (a[key] as number) < 1 !== (b[key] as number) < 1 &&
         !(was.willChange & now.willChange & WILL_STACK)
       ) {
-        return false;
+        change.order = true;
       }
       change.fade = true;
       continue;

@@ -2471,7 +2471,17 @@ core's: a `:hover` on a node is a flag, and only a drawn element knows what
 answering costs it. `pointerCompounds` is where a selector is read for what
 a hover in it can reach; Tailwind 4 writes `:hover` inside `:is()` and
 `:where()` as a matter of course, so "nested" there means a function it
-cannot read a selector list in, and nothing more.
+cannot read a selector list in, and nothing more. A compound that leads
+below to a subject (`PointerCompounds.below`) reaches the elements in it
+the subject names, not all that is in it: Bootstrap's `:hover >
+.anchor-link` names every element the pointer crosses, and reached the
+whole page. **Anything that draws an element some other box's way has to
+bring that box into the reach** — a shape in an inline `<svg>` brings the
+drawing (`_stateReach`'s `subject`), since only an `<svg>` in the reach
+has its shapes asked for again. And a rule at a shadow tree's edge makes
+only the moves that flip a host, an element in a tree or a slotted one
+build (`HOVER_EDGE`, `StateRules.edge`), not every move: what it reads is
+in no index a restyle in place asks.
 
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
