@@ -1388,9 +1388,17 @@ class Handler extends DomHandler {
     if (stack[stack.length - 1] !== head) return;
     if (name && HEAD_CONTENT.has(name) && name !== 'noscript') return;
     // and the stand-ins for it an ignored `<html>` or `<head>` in it left
-    // (`_ignored`): a `<meta>` before `<html class>` left one, and the
-    // body's content went into the head
-    while (stack[stack.length - 1] === head) stack.pop();
+    // (`_ignored`) stand for what holds it, so that each one's end tag
+    // still closes one: left standing for the head, the one a `<meta>`
+    // before `<html class>` leaves kept it open, and the body's content
+    // went into the head
+    let standIns = 0;
+    while (stack[stack.length - 1] === head) {
+      stack.pop();
+      standIns += 1;
+    }
+    const holder = stack[stack.length - 1];
+    for (let i = 1; i < standIns; i += 1) stack.push(holder);
     this._impliedHead = null;
     this.lastNode = null;
   }

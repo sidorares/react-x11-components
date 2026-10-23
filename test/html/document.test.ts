@@ -330,6 +330,21 @@ test("a source with a doctype is a document, its <html>, head and body written o
     '!doctype() html(head(meta() title(t)) body(div(d)))',
     'and a written html after an implied one is no element',
   );
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><html><title>t</title><head><style></style></head>' +
+        '<body><p>a</p></body></html>',
+    ),
+    '!doctype() html(head(title(t) style()) body(p(a)))',
+    'and a written head after an implied one is no element, its end tag closing it',
+  );
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><meta name="t"><html class="w"><div>d</div></body></html><p>b</p>',
+    ),
+    '!doctype() html(head(meta()) body(div(d) p(b)))',
+    'and what comes after the end tags is the body',
+  );
   // a source with no doctype is a fragment, as it always was
   assert.strictEqual(shapeOf('<title>t</title><p>a</p>'), 'title(t) p(a)');
 });
