@@ -120,10 +120,21 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
 /** The schemes a link may take this browser to. */
 const OPENS = /^(?:https?|file|data|about|view-source):/i;
 
-/** What this browser says it is, to servers and to a page's scripts. */
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) react-x11-components/0.9 ' +
-  '(example browser; +https://github.com/sidorares/react-x11-components)';
+/**
+ * What this browser says it is, to servers and to a page's scripts: the
+ * machine it runs on, as Chrome names it in its reduced user agent — macOS
+ * as 10.15.7 and Windows as NT 10.0, whatever the version. A page offers
+ * what runs where the reader is: a Mac's reader of diabrowser.com was asked
+ * to join a waitlist for Linux. `navigator.platform` is the one this names
+ * (`<Html scripts>`).
+ */
+const USER_AGENT = `Mozilla/5.0 (${
+  process.platform === 'darwin'
+    ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : process.platform === 'win32'
+      ? 'Windows NT 10.0; Win64; x64'
+      : 'X11; Linux x86_64'
+}) react-x11-components/0.9 (example browser; +https://github.com/sidorares/react-x11-components)`;
 
 /** One process's network: a tab's own cache, where each tab is a process.
  *  `BROWSER_DEBUG=1` logs every request and what came of it. */

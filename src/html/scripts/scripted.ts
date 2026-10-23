@@ -105,7 +105,9 @@ export interface HtmlScripts {
   /** A script ran past `timeout` and was stopped. Default: nothing. */
   onTimeout?: () => void;
   /** `navigator.userAgent`. Default `HTML_USER_AGENT`, which
-   *  `HtmlNetwork` sends. */
+   *  `HtmlNetwork` sends. `navigator.platform` is the one it names, as a
+   *  browser's two agree: `MacIntel` for a Mac's, `Win32` for Windows',
+   *  and `Linux x86_64` where it names neither. */
   userAgent?: string;
   /** `navigator.language`. Default the runtime's locale. */
   language?: string;

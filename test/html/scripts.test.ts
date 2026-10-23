@@ -131,6 +131,7 @@ async function hosted(
     held?: HeldSheets;
     videos?: boolean;
     canPlayType?: (type: string) => '' | 'maybe' | 'probably';
+    userAgent?: string;
     scheme?: 'light' | 'dark';
     pane?: number;
     scale?: number;
@@ -148,7 +149,7 @@ async function hosted(
     pane: null,
   } as Hosted;
   const seams: ScriptsOptions = {
-    userAgent: 'test',
+    userAgent: options.userAgent ?? 'test',
     language: 'en-US',
     viewport: () => ({
       width: 400,
@@ -840,6 +841,43 @@ test('a shared worker is one thread for a script and a name, which each SharedWo
     await settled(doc, 'out', (t) => t !== '', 15000),
     'a 1 true true undefined w|a echo 42|b 2',
     doc.logs.join('\n'),
+  );
+});
+
+test('navigator.platform is the one the user agent names, in a worker as on the page', async () => {
+  // a page that reads one and then the other is told of one machine:
+  // diabrowser.com offers a Mac's reader the Mac build, and a Linux
+  // reader a waitlist
+  const page =
+    '<p id="out"></p><script>' +
+    'var src = "postMessage(navigator.platform + \' \' + navigator.userAgent.slice(0, 23));";' +
+    'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+    'w.onmessage = function (e) {' +
+    '  document.getElementById("out").textContent = navigator.platform + "|" + e.data; };' +
+    '</script>';
+  const mac = await hosted(page, {
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) react-x11-components/0.9',
+  });
+  assert.equal(
+    await settled(mac, 'out', (t) => t !== '', 15000),
+    'MacIntel|MacIntel Mozilla/5.0 (Macintosh;',
+    mac.logs.join('\n'),
+  );
+  cleanup();
+  const windows = await hosted(page, {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) whatever/1',
+  });
+  assert.equal(
+    (await settled(windows, 'out', (t) => t !== '', 15000)).split('|')[0],
+    'Win32',
+  );
+  cleanup();
+  // the default agent, `HTML_USER_AGENT`'s X11, and one that names nothing
+  const other = await hosted(page);
+  assert.equal(
+    (await settled(other, 'out', (t) => t !== '', 15000)).split('|')[0],
+    'Linux x86_64',
   );
 });
 
