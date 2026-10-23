@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: A, B, C, E and F are built; the rest is design.** Written 2026-10-24 after
+> **Status: A, B, C, E, F and the table rows are built; the rest is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -291,6 +291,18 @@ stacked, so the rows whose last layout started below the line could keep
 their heights and be set aside, as E would do a grid's — where no cell
 spans the cut and the table's height is its rows'.
 
+**Built**, as designed: `rowCut` finds the first row whose top in the
+table's last layout that was not a probe (`KEPT_TABLES`) is below the line,
+the cells from there on are not laid out and keep their content heights,
+those rows keep theirs, and the rows are set aside in their groups. A
+table with a height of its own or given, a least height, a cell spanning
+the cut, or a row past it holding a box placed against something outside
+it is laid out whole. On the Mac, a step of the list of countries' drag
+laid out 452 boxes where it laid out 2,069, its median frame went from
+20.3 ms to 5.16, its 95th percentile from 30.1 ms to 10.3, and the drag's
+processor time from 3.32 s to 1.74; Wikipedia's article on the United
+States, its tables smaller, from 7.30 ms to 6.53 at the median.
+
 ### And what draws nothing
 
 GitHub's five dropdowns are `visibility: hidden`, `opacity: 0` and absolutely
@@ -306,7 +318,7 @@ right one.
    the seven slowest pages and gives the rest something to keep.
 2. **C** — built: small, the same shape as `until`, and every docs page has
    a sidebar.
-3. **E** — built — then **D**, then a table's rows: the cut decided from the last
+3. **E** and a table's rows — built — then **D**: the cut decided from the last
    layout, which only a kept tree has — so after A.
 4. **F** — built — and what draws nothing: one page each in this set, and
    both common on news sites.
