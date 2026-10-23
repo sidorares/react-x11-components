@@ -371,6 +371,20 @@ function tree(element: React.ReactElement | null): React.ReactElement {
   );
 }
 
+/** The `act()` running now. A `test_driver` action pumps while the page's
+ *  own loop does, and a page is shown while it pumps; two `act()` scopes
+ *  that overlap restore React's scope depth out of order, so it stays
+ *  above zero for the rest of the process, every later update waits in
+ *  the act queue, and a later page times out or loops ("Maximum update
+ *  depth exceeded"). So each waits for the one before. */
+let acting: Promise<unknown> = Promise.resolve();
+
+function inTurn<T>(run: () => Promise<T>): Promise<T> {
+  const turn = acting.then(run);
+  acting = turn.catch(() => {});
+  return turn;
+}
+
 async function show(element: React.ReactElement | null): Promise<void> {
   if (!harness) {
     harness = await renderX11(tree(element), {
@@ -379,14 +393,15 @@ async function show(element: React.ReactElement | null): Promise<void> {
       fonts: FONTS,
     });
   } else {
-    await harness.rerender(tree(element));
+    const rendered = harness;
+    await inTurn(() => rendered.rerender(tree(element)));
   }
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function pump(ms: number): Promise<void> {
-  await act();
+  await inTurn(() => act());
   await wait(ms);
 }
 
