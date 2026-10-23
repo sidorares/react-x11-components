@@ -4900,6 +4900,80 @@ their cells' new style objects miss the key, which they then pay for on
 top. Parked; the box tree kept across a build for what no change reached
 is the change underneath it.
 
+## Round 49: on the Mac first
+
+Round 48's pages and sites again, measured on react-x11's native macOS
+backend first and on X11 against Xvfb after, in production React,
+interleaved A/B against master, three runs a side.
+
+### A drag that built the boxes
+
+A `vw` in a style is a number once computed, so every step of a dragged
+width restyles what holds one (#944). Two things made that a build of
+the whole document at most steps, and the build a layout of all of it.
+
+- **What holds a `vw` and inks, or draws nothing, is restyled in place**
+  (#956): Node's API pages hold a hidden picker `max-width: 75vw`, and a
+  drag across one went from 19.5 s to 0.9 s on a Mac.
+- **A tree a `vw` builds while the width moves is laid out down to what
+  can be seen** (#957), as a breakpoint's already was. A tree no layout
+  had laid out whole was laid out whole, so each step that built laid out
+  everything: Python's sidebar is a quarter of the viewport wide. The
+  exception is a tree whose predecessor set aside what something laid out
+  is placed against (`laidWhole`), which a layout that stops does again
+  whole: the Guardian's ad slots are `max-width` in `vw`, and paid for two
+  layouts a step until it was gated.
+
+| resize drag, 17 pages, summed | before | after #956, #957 |
+| ----------------------------- | -----: | ---------------: |
+| Cocoa, processor time         | 88.5 s |           55.4 s |
+| X11, processor time           | 69.2 s |           48.6 s |
+
+#957 alone took the drag's summed 95th-percentile frame on Cocoa from 767
+ms to 601.
+
+What is left of the drag is mostly flex layout. GitHub's repository page
+builds at 70 of 80 steps for five dropdowns, `visibility: hidden`,
+`opacity: 0` and placed by a `right` in `vw`, whose subtrees are past what
+an in-place restyle takes; the build is 17% of a step and the layout 44%,
+nearly all of it inside one flex container a layout that stops cannot set
+anything aside in. The Guardian's is the same shape.
+
+### What a page's selectors were
+
+`<Html scripts>` answered a page's `querySelectorAll` through css-select,
+which reads a query asked from an element as jQuery does: `:scope .a .b`.
+`el.querySelectorAll('.a .b')` found nothing whose `.a` was above `el`, and
+`> p` answered where the DOM throws (#958). Compiled as the DOM matches a
+selector, a query no longer depends on where it is asked from, so it is
+compiled once; the thirteen sites' loads came to 34.2 s of processor time
+from 34.7.
+
+### A gradient tile shaded once
+
+Tailwind's docs hatch their gutters with a `repeating-linear-gradient` ten
+pixels a side, and each tile a paint reached was its stops laid down
+again, their colours parsed again and the tile shaded again: 22 MB and
+half of every frame of a scroll on a Mac. Past `BLOCK_FROM` tiles, one is
+shaded on a raster kept for it and copied from a block of them, as a small
+image's tiles are (#959): a scroll's processor time went from 287 ms to
+134 on Cocoa and from 364 to 210 on X11, its median frame from 9.8 ms to
+4.4, and what it allocated from 409 MB to 43.
+
+### The images a page loads
+
+Under Node, core decodes a PNG, a JPEG and a WebP on the JavaScript
+thread, and that was a large part of a page's load: 538 of the Guardian's
+1,173 ms, 292 of react.dev's 651, 430 of svelte.dev's 949 with its
+scripts. `decodeImageBytes(bytes, { offThread: true })` (react-x11#1004)
+runs the same decoders on up to two workers for bytes of 8 KB or more, for
+a caller that waits for a promise anyway, as `<Html>` does. Overlaid on the
+installed core, the seventeen pages settled in 9.43 s from 9.95, the
+Guardian in 747 ms from 1,010 and react.dev in 308 from 536; the thirteen
+sites in 12.77 s from 13.72, svelte.dev in 338 ms from 674. The process
+spent more: 19.1 s of processor time from 17.9, since each worker
+evaluates and warms the decoders on its own.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -5336,6 +5410,25 @@ node_modules/react-x11/` puts any commit of it under a tree in a
     process holds made the second run worth reading. That refuted the
     image-per-draw guess and found the interpolation in one more patch.
 
+90. **A build costs what it forbids after it.** The build a `vw` asked for
+    was a fifth of a drag's step; the layout a fresh tree was then
+    forbidden to stop was the rest. Read what follows a step that looks
+    cheap before taking it for the cost.
+91. **A gate that is right for the first tree can double the cost of the
+    next one.** A layout that stops and finds a box it set aside placed by
+    something it laid out lays the tree out again whole. A tree built at
+    every step met that every step; the tree before it already knew.
+92. **A library's reading of a standard is a reading.** css-select's
+    `select` from an element is jQuery's, and every query from an element
+    the page made went through it for as long as there were scripts.
+    Write the browser's answer into a test before reaching for the cache
+    the bug was hiding.
+93. **A process's processor time counts its workers.** Moving a decode off
+    the JavaScript thread took a fifth off image-heavy loads and put
+    processor time on: two isolates evaluate and warm what one did. Read
+    the settle, the main thread's longest hold and the process's CPU
+    apart before calling either a win.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -5470,6 +5563,23 @@ round 15.
   the elements no change reached, with what they measured and how they
   were laid out, is the engine's next step for a page that its scripts
   change.
+- **A drag lays out all of a flex container** (`<Html>`): a layout that
+  stops (`until`) sets aside the children of a block, and none of a flex
+  container's, so GitHub's and the Guardian's drags lay out the page's
+  main container whole at every step, 29 ms a step on a Mac (round 49).
+  A column that does not wrap and has no free space to share could set
+  aside its items past the viewport as a block does its children.
+- **A hidden box placed in `vw` builds the boxes at every step of a drag**
+  (`<Html>`): GitHub's five dropdowns are `visibility: hidden` and
+  `opacity: 0`, and placed by a `right` in `vw`; their subtrees come to
+  more than an in-place restyle takes, and a change of an offset is no
+  hover's change. Placing what moved without a build is the step (round
+  49).
+- **Images decode on the JavaScript thread under Node** (core): until
+  react-x11#1004 is released, and `<Html>` asks for `offThread`, a page's
+  photographs hold the thread for a fifth to a half of its load (round
+  49). Native decoders on a Mac (ImageIO, which reads WebP) would take the
+  processor time a worker adds back off.
 - **A shadow root attached restyles the document** (`<Html scripts>`):
   `attachShadow` is a refresh of everything (`_refreshAll`), 1.1 s of the
   JS sites' loads (round 48). It would come down to the host's subtree,
