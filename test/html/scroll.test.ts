@@ -210,6 +210,48 @@ test('a snap container comes to rest where an area lines up, and follows it thro
   assert.equal(near.scrollElementTo(far, { y: 180 })?.y, 200, 'near enough');
 });
 
+test('snapping on both axes comes to rest where the areas it lines up are shown, their scroll margins included', async () => {
+  // CSS Scroll Snap 1, 5.1: the nearest place on each axis alone may show
+  // neither area there, and then one axis is snapped first and the other
+  // among the areas shown, whichever is nearer; an area is its border box
+  // with its scroll-margin, which may show where the box does not
+  const both = (areas: string) =>
+    '<style>body{margin:0}div{position:absolute;margin:0}' +
+    '#s{width:600px;height:600px;overflow:scroll;scroll-snap-type:both mandatory}' +
+    '#space{width:2000px;height:2000px}' +
+    '.a{width:200px;height:200px;scroll-snap-align:start}</style>' +
+    `<div id="s"><div id="space"></div>${areas}</div>`;
+  const { el: node } = await renderScrolled(
+    both(
+      '<div class="a" style="left:0;top:0"></div>' +
+        '<div class="a" style="left:0;top:800px"></div>' +
+        '<div class="a" style="left:800px;top:0"></div>',
+    ),
+    700,
+  );
+  const s = el(node, 's');
+  assert.deepEqual(node.scrollElementTo(s, { x: 500, y: 600 }), {
+    x: 0,
+    y: 800,
+  });
+  assert.deepEqual(node.scrollElementTo(s, { x: 600, y: 500 }), {
+    x: 800,
+    y: 0,
+  });
+  const { el: margins } = await renderScrolled(
+    both(
+      '<div class="a" style="left:0;top:0"></div>' +
+        '<div class="a" style="left:0;top:800px;scroll-margin-right:800px"></div>' +
+        '<div class="a" style="left:800px;top:0;scroll-margin-bottom:800px"></div>',
+    ),
+    700,
+  );
+  assert.deepEqual(
+    margins.scrollElementTo(el(margins, 's'), { x: 650, y: 750 }),
+    { x: 800, y: 800 },
+  );
+});
+
 test('a scroll with a direction snaps ahead of where it began: scrollBy, a scroll key, and the wheel once it rests', async () => {
   // CSS Scroll Snap 1, 5.1: a relative scroll rests at a snap position
   // ahead of it, the nearest one to where it would have gone, however
