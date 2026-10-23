@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: A, B, C and E are built; the rest is design.** Written 2026-10-24 after
+> **Status: A, B, C, E and F are built; the rest is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -265,6 +265,22 @@ beside the document reads its stale geometry. A fixed box whose offsets are
 `auto` on an axis takes its static position from that path, a width ago;
 that one still lays the tree out whole.
 
+**Built**, more simply than designed: the path is laid out, not kept as it
+was. `escapingHolders` — the boxes that hold a fixed box, or an absolute one
+placed against something outside them, which `keepAbove` already would not
+keep — is handed to the layout (`LayoutContext.holders`), and a flow that
+stops keeps such a child and lays it out after what it set aside; inside
+it, the first child is past the line too, so it is laid out the same way,
+down to the box, which is positioned as ever. So the path is at the new
+width, and a box whose offsets are `auto` across takes its static place
+from it rightly; one `auto` down is below the line either way. `setAside`
+leaves the path's heights out of the span it adds, since the flow adds them
+again, and a grid does not cut where an item from the cut on is on a path.
+`escapes` stays, for a holder the cached set missed. On the Mac, a step of
+the Guardian's drag laid out 416 boxes where it laid out 3,343, its median
+frame went from 34.4 ms to 6.99, its 95th percentile from 43.7 ms to 11.4,
+and the drag's processor time from 4.61 s to 1.78.
+
 ### And a table lays out every row
 
 Wikipedia's list of countries is one `wikitable` of some 250 rows, and
@@ -292,8 +308,8 @@ right one.
    a sidebar.
 3. **E** — built — then **D**, then a table's rows: the cut decided from the last
    layout, which only a kept tree has — so after A.
-4. **F**, and what draws nothing: one page each in this set, and both
-   common on news sites.
+4. **F** — built — and what draws nothing: one page each in this set, and
+   both common on news sites.
 
 Each is measured as round 48 and 49 were: the seventeen pages dragged on a
 Mac, interleaved against master, three runs a side, with X11 as the second

@@ -608,7 +608,8 @@ function cutAt(
       areas[i * 4 + 2] !== item.row ||
       areas[i * 4 + 3] !== item.rows ||
       SUBGRIDS.has(item.box) ||
-      (item.row < cut && item.row + item.rows > cut)
+      (item.row < cut && item.row + item.rows > cut) ||
+      (item.row >= cut && ctx.holders?.has(item.box))
     ) {
       return rows;
     }

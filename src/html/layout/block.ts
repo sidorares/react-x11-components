@@ -221,6 +221,10 @@ export interface LayoutContext {
    *  (`HELD_BACK`). */
   setAside?: Map<Box, Box[]>;
   pass?: number;
+  /** The boxes that hold one placed against something outside them
+   *  (`escapingHolders`), which a layout that stops lays out — with all
+   *  but such boxes set aside in each — rather than set aside. */
+  holders?: ReadonlySet<Box>;
   /**
    * How many of a box's first children a layout made while the width is
    * still moving keeps above where it starts (`keepAbove`), by box: they
@@ -358,24 +362,40 @@ function setAside(
   ctx: LayoutContext,
 ): number {
   const kept = children.slice(0, from);
+  const holders = ctx.holders;
   let first: Box | null = null;
   let last: Box | null = null;
+  // the holders kept among what is set aside, which the flow lays out
+  // after it and whose heights it adds again
+  let held = 0;
+  let heldSince = 0;
   for (let i = from; i < children.length; i += 1) {
     const child = children[i];
     if (child.outOfFlow) {
       kept.push(child);
       continue;
     }
+    if (holders?.has(child)) {
+      kept.push(child);
+      if (first)
+        heldSince += child.height + child.marginTop + child.marginBottom;
+      continue;
+    }
     HELD_BACK.set(child, ctx.pass!);
     if (child.isFloat || child.kind === 'text') continue;
     first ??= child;
     last = child;
+    held = heldSince;
   }
   if (!ctx.setAside!.has(box)) ctx.setAside!.set(box, children);
   box.children = kept;
   if (!first || !last) return 0;
   const span =
-    last.y + last.height + last.marginBottom - (first.y - first.marginTop);
+    last.y +
+    last.height +
+    last.marginBottom -
+    (first.y - first.marginTop) -
+    held;
   return Number.isFinite(span) && span > 0 ? span : 0;
 }
 
@@ -694,7 +714,10 @@ function placed(
  * what it is placed against went.
  */
 function escapingHolders(tree: BoxTree): Set<Box> {
-  const holders = new Set<Box>();
+  let holders = HOLDERS.get(tree);
+  if (holders) return holders;
+  holders = new Set<Box>();
+  HOLDERS.set(tree, holders);
   for (const box of outOfFlowOf(tree)) {
     const fixed = box.style.position === 'fixed' || box.topLayer;
     if (!fixed && box.style.top === AUTO && box.style.bottom === AUTO) {
@@ -708,6 +731,10 @@ function escapingHolders(tree: BoxTree): Set<Box> {
   }
   return holders;
 }
+
+/** By tree, what `escapingHolders` found, once: what is out of the flow is
+ *  the tree's (`outOfFlowOf`). */
+const HOLDERS = new WeakMap<BoxTree, Set<Box>>();
 
 /**
  * Lay the whole document out at a width — or, given `until`, what starts
@@ -753,6 +780,7 @@ export function layoutDocument(
           until,
           setAside: new Map<Box, Box[]>(),
           pass: ++setAsidePasses,
+          holders: escapingHolders(tree),
           scrollTopOf: (box: Box) => wantedScrollTop(tree, box),
           ...(keep ? { keep } : null),
           ...(seenAt ? { reach: seenAt } : null),
@@ -1496,7 +1524,9 @@ function layoutChildren(
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index];
     if (stopped) {
-      if (!child.outOfFlow) continue;
+      // what is set aside, but for what holds a box placed against
+      // something outside it, which is laid out to reach that box
+      if (!child.outOfFlow && !ctx.holders?.has(child)) continue;
     } else if (
       ctx.until !== undefined &&
       y > ctx.until &&
@@ -1511,7 +1541,7 @@ function layoutChildren(
       openFloats = Infinity;
       cleared = false;
       stopped = true;
-      if (!child.outOfFlow) continue;
+      if (!child.outOfFlow && !ctx.holders?.has(child)) continue;
     }
     if (child.kind === 'text' && isBlank(child.text)) continue;
     // Past a line-clamp container's clamp point, a box in flow or floating
