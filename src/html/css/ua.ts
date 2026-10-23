@@ -443,7 +443,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
    holds a group for each name, sized and placed by the transition, with
    its images faded across in it */
 :root { view-transition-name: root; }
-:root::view-transition { position: fixed; inset: 0; }
+:root::view-transition { position: absolute; inset: 0; }
 :root::view-transition-group(*) {
   position: absolute;
   top: 0;

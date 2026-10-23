@@ -8068,6 +8068,10 @@ function walkPaintedAfter(
   const over = (later: Box): boolean => {
     // a layer of its own over this one's, with all it holds (`above`)
     if (above?.has(later)) return false;
+    // a view transition's tree, whose images are the document's own: a
+    // widget or a frame mounted beside the document shows through the
+    // root's live one as it shows through the document
+    if (later.pseudo === 'view-transition') return false;
     // one fixed to the viewport is asked about at every frame, where the
     // scroll has it (`fixedWithin`), but by a box at the viewport too,
     // which it keeps its place against

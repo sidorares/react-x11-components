@@ -5803,6 +5803,46 @@ metric(
   },
 );
 
+test("a view transition's pseudo-elements answer getComputedStyle and getAnimations, and a CSS animation lists its keyframes", async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' #t { width: 40px; height: 40px; contain: paint; view-transition-name: t }' +
+      ' #t.big { width: 60px }' +
+      ' html::view-transition-group(*) { animation-play-state: paused }' +
+      ' @keyframes k { from { opacity: 0 } } #c { animation: k 1s }' +
+      '</style></head><body><div id="t"></div><div id="c"></div><p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, t = document.getElementById("t");' +
+      'function cs(p, prop) { return getComputedStyle(html, p)[prop]; }' +
+      // not there before a transition, as Chromium answers
+      'r.push(cs("::view-transition-group(t)", "position"));' +
+      'var vt = document.startViewTransition(function () {' +
+      '  t.classList.add("big");' +
+      // in its update, the old state's parts are there, and the new image is not
+      '  r.push(cs("::view-transition-group(t)", "position"), cs("::view-transition-new(t)", "animationName"));' +
+      '});' +
+      'vt.ready.then(function () {' +
+      '  r.push(cs("::view-transition", "position"), cs("::view-transition-group(t)", "animationName"),' +
+      '    cs("::view-transition-old(t)", "animationName"), cs("::view-transition-old(t)", "mixBlendMode"));' +
+      '  var group = document.getAnimations().filter(function (a) {' +
+      '    return a.effect.pseudoElement === "::view-transition-group(t)"; });' +
+      '  var kf = group[0].effect.getKeyframes();' +
+      '  r.push(group.length, kf.length, kf[0].width, "width" in kf[1]);' +
+      '  var c = document.getElementById("c").getAnimations()[0].effect.getKeyframes();' +
+      '  r.push(c.length, c[0].opacity, c[1].opacity, c[0].composite, c[1].composite);' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'static|absolute|none|absolute|-ua-view-transition-group-anim-t|' +
+      '-ua-view-transition-fade-out, -ua-mix-blend-mode-plus-lighter|plus-lighter|' +
+      '1|2|40px|true|2|0|1|auto|replace',
+    doc.logs.join('\n'),
+  );
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +

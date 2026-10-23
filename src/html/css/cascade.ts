@@ -4638,6 +4638,9 @@ export class Cascade {
     dynamic: readonly Declaration[],
     timeline: AnimationTimeline,
     key: string,
+    /** The style under its animations, which `getKeyframes()` reads an
+     *  end the rule has no frame at from. */
+    underlying = false,
   ): ComputedStyle {
     const candidates: Candidate[] = [];
     if (this._transitionRules.size > 0) {
@@ -4664,13 +4667,18 @@ export class Cascade {
         context: 0,
         tree: null,
         layer: null,
-        specificity: 1,
+        // as `:root::view-transition-group(name)` is, over the sheet's
+        // `(*)` rules
+        specificity: 1_001,
         order: -1,
         declarations: dynamic as Declaration[],
         only: -1,
       });
     }
     candidates.sort(byCascade);
+    if (underlying) {
+      return this._cascadeStyle(root, parentStyle, false, candidates, false);
+    }
     const was = this.timeline;
     this.timeline = timeline;
     try {
@@ -4685,6 +4693,22 @@ export class Cascade {
     } finally {
       this.timeline = was;
     }
+  }
+
+  /** An element's style under its animations and transitions: what an
+   *  animation's keyframes run from and to where they give no value. */
+  underlyingStyleFor(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+  ): ComputedStyle {
+    return this._cascadeStyle(
+      el,
+      parentStyle,
+      inFlexContainer,
+      this._candidates(el),
+      true,
+    );
   }
 
   /**

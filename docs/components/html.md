@@ -92,7 +92,7 @@ handle.refresh();
 | `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`.                                                                                                                                                                                                                                                                                                         |
+| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`, or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                                                                                                                                                                                    |
 | `customProperty(el, name, pseudo?)`                                                     | A custom property's computed value, as `getComputedStyle` reads it by its name — case and all, `--Tabs-x` and `--tabs-x` being two — with every `var()` in it replaced, and `''` where nothing sets it. Not in `computedStyle`'s record, which would carry every one a theme sets on the root to each element. Null as `computedStyle` is.                                                                                                                                                                                                                                                                        |
 | `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                                                                                                                                                                    |
 | `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                                                                                                                                                          |
@@ -839,7 +839,10 @@ where its time is, its `rangeStart` and `rangeEnd`, and its timeline, the
 document's, a `ScrollTimeline` or a `ViewTimeline` as `animation-timeline`
 names it, one object for one timeline — and it is the same object for as
 long as its run lasts. What a page does to it changes that object and not
-what is drawn. `getComputedStyle` answers the `animation-*` longhands and
+what is drawn. Its effect's `getKeyframes()` lists its `@keyframes`' frames,
+those at one offset and of one easing merged, with a frame made of the
+element's style under its animations at an end the rule leaves out.
+`getComputedStyle` answers the `animation-*` longhands and
 the `animation` shorthand, which is `''` where a timeline or a range is not
 the initial one, and an `auto` duration as `0s` on the document's timeline
 and `auto` where it may be a scroll's. `el.style.animation` is kept as its
@@ -945,9 +948,16 @@ until its animations are over, when it is finished.
   settles (after four seconds), and by `skipTransition()`.
 - **Elsewhere.** `types` is a set of strings, and
   `document.activeViewTransition` is the one running.
-- **Not yet.** The tree's styles in `getComputedStyle()`, its animations in
-  `getAnimations()`, rendering held while the update runs, and transitions
-  across documents.
+- **Script.** `getComputedStyle(root, '::view-transition-group(name)')`
+  answers each part's style from its box while the tree is drawn — the
+  transition's own styles and animations in it — and from the rules alone
+  inside the update callback, where the old state's parts are there; a
+  part that is not there answers as one no rule styles, as Chromium does.
+  The tree's CSS animations are `CSSAnimation`s in `getAnimations()`, with
+  their pseudo-element. A frame's document's transition is its own and is
+  drawn by the frame's view.
+- **Not yet.** Rendering held while the update runs, and transitions across
+  documents.
 
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their

@@ -2141,6 +2141,40 @@ export function installDom(
       : 'view-transition';
   };
 
+  /**
+   * A CSS animation's effect's keyframes (CSS Animations 2, 4.3), as the
+   * host reads them from its `@keyframes` — and from what its element has
+   * where the rule has no frame at either end — each property by the name
+   * a script reads it by.
+   */
+  const cssKeyframes = (effect: Any): Any[] => {
+    const target = effect._target;
+    if (!(target instanceof Element)) return [];
+    const raw = str(
+      call('cssKeyframes', target._id, effect._css.pseudo, effect._css.name),
+    );
+    if (!raw) return [];
+    return (JSON.parse(raw) as Any[]).map((frame) => {
+      const out: Any = {
+        offset: frame.offset,
+        computedOffset: frame.offset,
+        easing: frame.easing,
+        composite: frame.composite,
+      };
+      for (const [prop, value] of Object.entries(frame.values)) {
+        const name = prop.startsWith('--')
+          ? prop
+          : prop === 'float'
+            ? 'cssFloat'
+            : prop === 'offset'
+              ? 'cssOffset'
+              : prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        out[name] = value;
+      }
+      return out;
+    });
+  };
+
   class KeyframeEffect extends AnimationEffect {
     _target: Any;
     _pseudo: string | null;
@@ -2182,7 +2216,11 @@ export function installDom(
       this._framesJson = null;
       this._animation?._changed();
     }
+    /** The CSS animation it is of, where it is one's: its name and its
+     *  pseudo-element's key, by which the host answers its keyframes. */
+    _css: { name: string; pseudo: string } | null = null;
     getKeyframes(): Any[] {
+      if (this._css) return cssKeyframes(this);
       return this._frames.map((f) =>
         f.offset !== null && typeof f.offset === 'object'
           ? {
@@ -3921,6 +3959,10 @@ export function installDom(
           easing: info.easing,
           pseudoElement: info.pseudo || null,
         });
+        effect._css = {
+          name: info.name,
+          pseudo: String(info.pseudo || '').replace(/^:+/, ''),
+        };
         a = new CSSAnimation(effect, cssTimelineOf(info.timeline));
         a._name = info.name;
         cssAnimationObjects.set(info.key, a);
@@ -10458,10 +10500,10 @@ export function installDom(
       return animationsOf(this, true);
     }
     startViewTransition(options?: Any): Any {
-      return startViewTransition(options);
+      return startViewTransition(options, this);
     }
     get activeViewTransition(): Any {
-      return activeTransition;
+      return activeOf(this);
     }
     get activeElement(): Any {
       return wrap(Number(call('active'))) ?? this.body;
@@ -11279,17 +11321,33 @@ export function installDom(
   /** The document's active view transition told to the host, with its
    *  types — or none — for `:active-view-transition` to match the root by
    *  (CSS View Transitions 1, 3.3). */
-  const tellActive = (vt: Any): void => {
+  const tellActive = (doc: Any, vt: Any): void => {
     call(
       'vtActive',
-      0,
+      doc._id,
       vt ? [...setValues.call(vt._types._set)].map(str).join('\u0000') : null,
     );
   };
   /** A transition's types changed: told where it is the active one. */
   const typesChanged = (set: Any): void => {
-    if (set._owner && set._owner === activeTransition) tellActive(set._owner);
+    const vt = set._owner;
+    if (vt && activeOf(vt._doc) === vt) tellActive(vt._doc, vt);
   };
+  /** The active transition of a document of the realm's: the page's, or
+   *  a frame's the page reaches into, which the frame's view draws. */
+  const frameTransitions = new WeakMap<object, Any>();
+  const activeOf = (doc: Any): Any =>
+    doc === document ? activeTransition : (frameTransitions.get(doc) ?? null);
+  /** A transition no longer its document's active one, where it was. */
+  const leaveActive = (vt: Any): void => {
+    if (activeOf(vt._doc) !== vt) return;
+    if (vt._doc === document) activeTransition = null;
+    else frameTransitions.delete(vt._doc);
+    tellActive(vt._doc, null);
+    call('vtEnd', vt._doc._id);
+  };
+  /** A transition's step, asked of the view that draws its document. */
+  const transitionOp = (vt: Any, op: string): Any => call(op, vt._doc._id);
 
   /** How long an update callback may take before the transition is
    *  skipped (7.4, "implementation-defined"): Chrome's four seconds. */
@@ -11299,6 +11357,8 @@ export function installDom(
   class ViewTransition {
     _phase: 'pending' | 'update-callback-called' | 'animating' | 'done' =
       'pending';
+    /** The document it is of. */
+    _doc: Any = null;
     _callback: Any;
     _types = new ViewTransitionTypeSet();
     _done: Any;
@@ -11407,7 +11467,7 @@ export function installDom(
    *  its pseudo-elements are (7.9). */
   const activateTransition = (vt: Any): void => {
     if (vt._phase === 'done') return;
-    const shared = str(call('vtNew'));
+    const shared = str(transitionOp(vt, 'vtNew'));
     if (shared) {
       skipTransition(
         vt,
@@ -11426,9 +11486,9 @@ export function installDom(
     // element out of the rendering, which skips the transition (7.8, 7.9)
     const settle = (): void => {
       if (vt._phase !== 'animating') return;
-      let left = Number(call('vtRemaining'));
+      let left = Number(transitionOp(vt, 'vtRemaining'));
       // and the page's own animations of them, running or paused
-      if (left === 0 && scriptedTransition()) left = -1;
+      if (left === 0 && scriptedTransition(vt._doc)) left = -1;
       if (left === -2) {
         skipTransition(
           vt,
@@ -11441,11 +11501,7 @@ export function installDom(
       }
       if (left === 0) {
         vt._phase = 'done';
-        if (activeTransition === vt) {
-          activeTransition = null;
-          tellActive(null);
-        }
-        call('vtEnd');
+        leaveActive(vt);
         vt._resolveFinished();
         return;
       }
@@ -11461,11 +11517,11 @@ export function installDom(
 
   /** Whether a page's script animates one of the active transition's
    *  pseudo-elements, running or paused: what keeps it going (7.9). */
-  const scriptedTransition = (): boolean => {
+  const scriptedTransition = (doc: Any): boolean => {
     for (const a of liveAnimations) {
       const effect = a.effect;
       if (
-        effect?.target === document.documentElement &&
+        effect?.target === doc.documentElement &&
         typeof effect.pseudoElement === 'string' &&
         transitionPseudoKey(effect.pseudoElement) !== null &&
         (a.playState === 'running' || a.playState === 'paused')
@@ -11481,11 +11537,7 @@ export function installDom(
    *  update does. */
   const skipTransition = (vt: Any, reason: Any): void => {
     if (vt._phase === 'done') return;
-    if (activeTransition === vt) {
-      activeTransition = null;
-      tellActive(null);
-      call('vtEnd');
-    }
+    leaveActive(vt);
     const called = vt._called;
     vt._phase = 'done';
     if (!called) setTimer(() => callUpdate(vt), 0, [], false);
@@ -11496,8 +11548,8 @@ export function installDom(
     );
   };
 
-  /** `document.startViewTransition()` (7.2). */
-  const startViewTransition = (options: Any): Any => {
+  /** `document.startViewTransition()` (7.2), of the document asked. */
+  const startViewTransition = (options: Any, doc: Any = document): Any => {
     const callback =
       typeof options === 'function'
         ? options
@@ -11505,6 +11557,7 @@ export function installDom(
           ? (options.update ?? null)
           : null;
     const vt = new ViewTransition(callback, TRANSITION_KEY);
+    vt._doc = doc;
     if (options && typeof options === 'object' && options.types) {
       for (const t of options.types) vt._types.add(t);
     }
@@ -11515,20 +11568,22 @@ export function installDom(
       );
       return vt;
     }
-    if (activeTransition) {
+    const active = activeOf(doc);
+    if (active) {
       skipTransition(
-        activeTransition,
+        active,
         new DOMException('Skipped by a new transition', 'AbortError'),
       );
     }
-    activeTransition = vt;
-    tellActive(vt);
+    if (doc === document) activeTransition = vt;
+    else frameTransitions.set(doc, vt);
+    tellActive(doc, vt);
     // the old state is captured at the next frame, and the update called
     // straight after (7.4, "capture the old state")
     setTimer(
       () => {
         if (vt._phase === 'done') return;
-        const shared = str(call('vtOld'));
+        const shared = str(transitionOp(vt, 'vtOld'));
         if (shared) {
           skipTransition(
             vt,

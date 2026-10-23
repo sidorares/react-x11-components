@@ -565,6 +565,7 @@ function cssomAt(
     'pointer-events': style.pointerEvents,
     'user-select': style.userSelect,
     isolation: style.isolation,
+    'mix-blend-mode': style.mixBlendMode,
     'will-change': style.willChangeNames,
     ...animationProperties(style, scale),
     'animation-timeline': style.animationTimeline

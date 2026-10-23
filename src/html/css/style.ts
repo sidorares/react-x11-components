@@ -1006,6 +1006,9 @@ export interface ComputedStyle {
    *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
    *  it, a negative one over its own background. */
   isolation: 'auto' | 'isolate';
+  /** `mix-blend-mode` (CSS Compositing 1, 3.2), as it is read and written:
+   *  a view transition's images take `plus-lighter` between them. */
+  mixBlendMode: string;
   /** What `will-change` names, as what that makes of the element
    *  (`WILL_STACK` and the rest, CSS Will Change 1): what a value of each
    *  property other than its initial one would. And what the properties
@@ -1701,6 +1704,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     filter: null,
     backdropFilter: null,
     isolation: 'auto',
+    mixBlendMode: 'normal',
     willChangeNames: 'auto',
     viewTransitionName: 'none',
     viewTransitionClass: 'none',
@@ -2900,6 +2904,11 @@ export function applyDeclaration(
     case 'isolation': {
       const v = value.trim().toLowerCase();
       if (v === 'auto' || v === 'isolate') style.isolation = v;
+      return;
+    }
+    case 'mix-blend-mode': {
+      const v = value.trim().toLowerCase();
+      if (BLEND_MODES.has(v)) style.mixBlendMode = v;
       return;
     }
     case 'view-transition-name': {
@@ -4931,6 +4940,28 @@ export const WILL_CONTAIN = 64;
 
 const TRANSFORMING = WILL_STACK_BOX | WILL_HOLD_FIXED_BOX;
 const FILTERING = WILL_STACK | WILL_HOLD_FIXED;
+
+/** `mix-blend-mode`'s keywords (CSS Compositing 1, 3.2; 2, 3.1). */
+const BLEND_MODES = new Set([
+  'normal',
+  'multiply',
+  'screen',
+  'overlay',
+  'darken',
+  'lighten',
+  'color-dodge',
+  'color-burn',
+  'hard-light',
+  'soft-light',
+  'difference',
+  'exclusion',
+  'hue',
+  'saturation',
+  'color',
+  'luminosity',
+  'plus-darker',
+  'plus-lighter',
+]);
 
 /**
  * What naming a property in `will-change` makes of an element: what a value
@@ -8388,6 +8419,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
+  'mix-blend-mode': ['mixBlendMode'],
   'will-change': ['willChange', 'willChangeNames'],
   'view-transition-name': ['viewTransitionName'],
   'view-transition-class': ['viewTransitionClass'],

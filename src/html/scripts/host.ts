@@ -248,6 +248,20 @@ export interface HandleInternals {
    *  the name two elements share, which skips it, or '' — how long until
    *  its animations are over, and its end
    *  (`HtmlViewNode.transitionCaptureOld` and the rest). */
+  /** A CSS animation's keyframes, as `getKeyframes()` lists them
+   *  (`HtmlViewNode.cssKeyframesOf`). */
+  cssKeyframes(
+    element: Element,
+    pseudo: string,
+    name: string,
+  ):
+    | {
+        offset: number;
+        easing: string;
+        composite: 'auto' | 'replace';
+        values: Record<string, string>;
+      }[]
+    | null;
   transitionCaptureOld(): string;
   transitionCaptureNew(): string;
   transitionRemaining(): number | null;
@@ -2715,39 +2729,42 @@ export class DomHost {
       // script changed comes to; the time until its animations are over,
       // -1 for never
       case 'vtOld':
-        this.flush();
-        return (
-          this._seams.handle.transitionCaptureOld?.() ??
-          this._op('transitionNames', null, null, null, null)
-        );
       case 'vtNew':
+      case 'vtRemaining':
+      case 'vtEnd': {
         this.flush();
-        return (
-          this._seams.handle.transitionCaptureNew?.() ??
-          this._op('transitionNames', null, null, null, null)
-        );
-      case 'vtRemaining': {
-        this.flush();
-        const left = this._seams.handle.transitionRemaining
-          ? this._seams.handle.transitionRemaining()
-          : 0;
-        return left === null ? -2 : left === Infinity ? -1 : left;
+        // the view that draws the document the transition is of — the
+        // page's, or a frame's — or none, which answers as none would
+        const handle = (
+          a ? this._drawing(this._node(a)) : this._seams.handle
+        ) as Partial<HandleInternals> | null;
+        if (op === 'vtEnd') {
+          handle?.transitionEnd?.();
+          return null;
+        }
+        if (op === 'vtRemaining') {
+          const left = handle?.transitionRemaining
+            ? handle.transitionRemaining()
+            : 0;
+          return left === null ? -2 : left === Infinity ? -1 : left;
+        }
+        const capture =
+          op === 'vtOld'
+            ? handle?.transitionCaptureOld
+            : handle?.transitionCaptureNew;
+        return capture
+          ? capture.call(handle)
+          : this._op('transitionNames', null, null, null, null);
       }
-      case 'vtEnd':
-        this._seams.handle.transitionEnd?.();
-        return null;
       // a view transition active with its types, `\u0000`-joined — or,
       // given null, none: what `:active-view-transition` matches the root
       // by, told as a change of an attribute nothing has
       case 'vtActive': {
-        const root = DomUtils.findOne(
-          () => true,
-          this.document.children,
-          false,
-        );
+        const doc = (a ? this._node(a) : this.document) as Document;
+        const root = DomUtils.findOne(() => true, doc.children, false);
         const types =
           typeof b === 'string' ? (b ? b.split('\u0000') : []) : null;
-        if (setActiveTransition(this.document, types) && root) {
+        if (setActiveTransition(doc, types) && root) {
           this._tell(root, {
             type: 'attributes',
             target: root,
@@ -2829,6 +2846,14 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = b === 'before' || b === 'after' ? b : null;
+        // a view transition's, which the element answers for its root
+        if (typeof b === 'string' && b.startsWith('view-transition')) {
+          const style = this._seams.handle.computedStyle(
+            this._element(a),
+            b as `view-transition${string}`,
+          );
+          return style ? JSON.stringify(style) : '';
+        }
         // a frame's document's, which nothing draws
         if (!this._inDocument(this._element(a))) {
           const style = this._frameStyle(this._element(a), pseudo);
@@ -2916,6 +2941,15 @@ export class DomHost {
 
       // the CSS animations under way on an element, or on what it holds,
       // or in the whole document for 0: each with its element by its id
+      // a CSS animation's keyframes, by its element, its pseudo-element's
+      // key ('' for its own) and its name
+      case 'cssKeyframes': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const frames = handle?.cssKeyframes?.(el, text(b), text(c)) ?? null;
+        return frames ? JSON.stringify(frames) : '';
+      }
       case 'cssAnimations': {
         // what a script changed is styled before it is asked of
         this.flush();

@@ -9,7 +9,7 @@ import type { Element } from 'domhandler';
 import { AnimationTimeline } from './css/timeline.js';
 import { timingAt } from './css/animation.js';
 import type { ComputedStyle } from './css/style.js';
-import type { KeyframesRule } from './css/parse.js';
+import type { Declaration, KeyframesRule } from './css/parse.js';
 import type { Matrix } from './css/transform.js';
 import type { SurfaceLike } from './surfaces.js';
 
@@ -23,6 +23,7 @@ export interface Placement {
   height: number;
   matrix: Matrix;
   direction: string;
+  mixBlendMode: string;
 }
 
 /** An element as the old state had it: where it was, and a picture of it
@@ -63,6 +64,19 @@ export class ViewTransitionRun {
   readonly timeline = new AnimationTimeline();
   /** The `@keyframes` it makes for its groups (`Cascade.transitionKeyframes`). */
   readonly keyframes = new Map<string, KeyframesRule>();
+  /** How each of its pseudo-elements was last styled, by its key: what
+   *  its style under its animations is worked out from again. */
+  readonly styled = new Map<
+    string,
+    {
+      part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
+      name: string;
+      classes: readonly string[];
+      onlyChild: boolean;
+      parent: ComputedStyle;
+      dynamic: readonly Declaration[];
+    }
+  >();
   /** When its tree was first drawn, on the clock, which its animations
    *  start from. */
   started = 0;
@@ -151,4 +165,39 @@ export function groupTransform(
   const y = b * cx + d * cy + f - cy;
   const n = (v: number) => String(Math.round(v * 1e6) / 1e6);
   return `matrix(${[a, b, c, d, x / scale, y / scale].map(n).join(', ')})`;
+}
+
+/** A name as CSS writes it in an identifier (CSSOM 2.1, "serialize an
+ *  identifier"): what is no letter of one escaped, so that it reads back
+ *  as the name. */
+export function cssIdent(name: string): string {
+  let out = '';
+  const first = name.codePointAt(0);
+  for (let i = 0; i < name.length; i += 1) {
+    const c = name.charCodeAt(i);
+    const ch = name[i];
+    if (c === 0) out += '\uFFFD';
+    else if (
+      (c >= 0x1 && c <= 0x1f) ||
+      c === 0x7f ||
+      (i === 0 && c >= 0x30 && c <= 0x39) ||
+      (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)
+    ) {
+      out += `\\${c.toString(16)} `;
+    } else if (i === 0 && c === 0x2d && name.length === 1) {
+      out += '\\-';
+    } else if (
+      c >= 0x80 ||
+      c === 0x2d ||
+      c === 0x5f ||
+      (c >= 0x30 && c <= 0x39) ||
+      (c >= 0x41 && c <= 0x5a) ||
+      (c >= 0x61 && c <= 0x7a)
+    ) {
+      out += ch;
+    } else {
+      out += `\\${ch}`;
+    }
+  }
+  return out;
 }
