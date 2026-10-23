@@ -3737,6 +3737,9 @@ test('a media element loads its source where there is a network: its events, its
     4,
     3,
   ]);
+  // asked for from its start, as a browser asks for media
+  const asked = doc.fetched.find((r) => r.url.endsWith('/clip.mp4'));
+  assert.deepEqual(asked?.headers, [['range', 'bytes=0-']]);
 });
 
 test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {
