@@ -4697,8 +4697,16 @@ export class DomHost {
     const run = async (): Promise<void> => {
       let response: FetchResponse;
       try {
+        // from its start, as a browser asks for a media resource, so the
+        // server answers a range it can go on with (HTML 4.8.11.5)
         response = await this._seams.fetch(
-          { url, method: 'GET', headers: [], body: null, stream: true },
+          {
+            url,
+            method: 'GET',
+            headers: [['range', 'bytes=0-']],
+            body: null,
+            stream: true,
+          },
           controller.signal,
         );
       } catch {
