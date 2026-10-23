@@ -138,6 +138,37 @@ export function snapTo(
   y: number,
   from: { x: number; y: number } | null = null,
 ): Snapped {
+  const out = snapEach(c, x, y, from);
+  if (!out.targetX || !out.targetY || out.targetX === out.targetY) return out;
+  // on both axes, only an area the snapport shows where the other axis
+  // comes to is a snap position (5.1): where the nearest on each does not
+  // show the other's, one axis is snapped first and the other among the
+  // areas shown there, whichever way comes to rest nearer
+  const shows = (box: Box, axis: 'x' | 'y', at: number): boolean => {
+    const area = c.areas.find((a) => a.box === box);
+    return !!area && shownAcross(c, area, axis, at);
+  };
+  if (shows(out.targetX, 'x', out.y) && shows(out.targetY, 'y', out.x)) {
+    return out;
+  }
+  const yFirst = snapEach(c, x, out.y, from, 'y');
+  const xFirst = snapEach(c, out.x, y, from, 'x');
+  const far = (s: Snapped) => Math.hypot(s.x - x, s.y - y);
+  return far(yFirst) <= far(xFirst) ? yFirst : xFirst;
+}
+
+/**
+ * `snapTo` on each axis on its own; or, given `first`, with that axis held
+ * where it is asked to be, and the other snapped among the areas the
+ * snapport shows there.
+ */
+function snapEach(
+  c: SnapContainer,
+  x: number,
+  y: number,
+  from: { x: number; y: number } | null,
+  first: 'x' | 'y' | null = null,
+): Snapped {
   const out: Snapped = { x, y, targetX: null, targetY: null };
   const ties: Partial<Record<'x' | 'y', { at: number; boxes: Box[] }>> = {};
   for (const axis of ['x', 'y'] as const) {
@@ -153,9 +184,17 @@ export function snapTo(
       return !!place && dir * (place.to - start) > 0.5;
     };
     // only the areas the snapport shows across this axis, where it stays
-    // where it is on the other
+    // where it is on the other: an axis snapped first is where it was put
     const across = axis === 'x' ? y : x;
-    const shown = c.areas.filter((a) => visibleAcross(c, a, axis, across));
+    const shown =
+      first === (axis === 'x' ? 'y' : 'x')
+        ? c.areas.filter((a) => shownAcross(c, a, axis, across))
+        : first === axis
+          ? c.areas.filter((a) => {
+              const place = placeOf(c, a, axis);
+              return !!place && want > place.at - 0.5 && want < place.to + 0.5;
+            })
+          : c.areas.filter((a) => visibleAcross(c, a, axis, across));
     const areas = dir && shown.some(ahead) ? shown.filter(ahead) : shown;
     let best: { at: number; boxes: Box[] } | null = null;
     for (const area of areas) {
@@ -237,8 +276,24 @@ function visibleAcross(
 ): boolean {
   const other = axis === 'x' ? 'y' : 'x';
   if (snapsOn(c.style, other)) return true;
-  const start = other === 'x' ? area.x : area.y;
-  const size = other === 'x' ? area.width : area.height;
+  return shownAcross(c, area, axis, at);
+}
+
+/** Whether the snapport shows an area across an axis, scrolled to `at` on
+ *  the other: its snap area, its border box with its `scroll-margin`
+ *  (2.3), which may show where the box does not. */
+function shownAcross(
+  c: SnapContainer,
+  area: SnapArea,
+  axis: 'x' | 'y',
+  at: number,
+): boolean {
+  const other = axis === 'x' ? 'y' : 'x';
+  const st = area.box.style;
+  const before = other === 'x' ? st.scrollMarginLeft : st.scrollMarginTop;
+  const after = other === 'x' ? st.scrollMarginRight : st.scrollMarginBottom;
+  const start = (other === 'x' ? area.x : area.y) - before;
+  const size = (other === 'x' ? area.width : area.height) + before + after;
   const port = other === 'x' ? c.width : c.height;
   return start < at + port && start + size > at;
 }
