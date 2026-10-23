@@ -94,6 +94,8 @@ import {
   HOVER_PSEUDO_OTHER,
   HOVER_UNTOUCHED,
   NO_FOCUS,
+  VIEWPORT_HEIGHT,
+  VIEWPORT_WIDTH,
 } from './css/cascade.js';
 import type {
   BelowReach,
@@ -861,7 +863,7 @@ export class HtmlViewNode extends Node {
   /** The width the document was last laid out at. Not `_laidOutAt`: core's
    *  `Node` has a method of that name, which a field would hide. */
   private _laidOutWidth = -1;
-  private _mediaBand = -1;
+  private _mediaBand = '';
   /** The viewport the box tree's styles were computed at, for the ones
    *  that read it (`vw`, `vh`). */
   private _styledWidth = -1;
@@ -1717,7 +1719,7 @@ export class HtmlViewNode extends Node {
     });
     this._cascade.setFocus(this._focus);
     this._cascade.setTarget(this._target);
-    this._mediaBand = this._cascade.mediaBand(width);
+    this._mediaBand = this._cascade.mediaBand(width, this._viewportHeight());
   }
 
   /**
@@ -2454,7 +2456,7 @@ export class HtmlViewNode extends Node {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
       restyleOnly = null;
-    } else if (this._cascade.mediaBand(target) !== this._mediaBand) {
+    } else if (this._cascade.mediaBand(target, viewport) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
       // does have to restyle. Knowing which resizes those are is why the
       // breakpoints are collected at parse time — and which elements, is
@@ -2463,14 +2465,14 @@ export class HtmlViewNode extends Node {
       // out other than it was (`Cascade.crossed`, `KeptStyles.follow`),
       // where every element was. A crossing they match nothing of styles
       // nothing.
-      const reached = this._crossed(target);
+      const reached = this._crossed(target, viewport);
       crossing = reached !== null;
       if (reached === null) {
         this._restyle(target);
         this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
         restyleOnly = null;
       } else {
-        this._mediaBand = this._cascade.mediaBand(target);
+        this._mediaBand = this._cascade.mediaBand(target, viewport);
         if (reached.size && this._stale < Stale.Boxes) {
           this._stale = Stale.Boxes;
           restyleOnly = reached;
@@ -2507,15 +2509,48 @@ export class HtmlViewNode extends Node {
       }
     }
     // A `vw` or a `vh` is a number by the time a style holds it, so the
-    // styles computed for another viewport are wrong for this one: built
-    // again, where some style reads the side that moved. A document that
-    // reads neither — most — goes on skipping the cascade on a resize.
+    // styles computed for another viewport are wrong for this one: those
+    // that hold a length of the side that moved are computed again, and
+    // what inherits from them (`Cascade.viewportReaders`), and every style
+    // where something else reads it — a query on the viewport's height, a
+    // container query's `vw`. A document that reads neither — most — goes
+    // on skipping the cascade on a resize.
+    const sides =
+      (this._styledWidth !== target ? VIEWPORT_WIDTH : 0) |
+      (this._styledHeight !== viewport ? VIEWPORT_HEIGHT : 0);
     if (
-      (cascade.readsViewportWidth && this._styledWidth !== target) ||
-      (cascade.readsViewportHeight && this._styledHeight !== viewport)
+      (sides & VIEWPORT_WIDTH && cascade.queriesViewportWidth) ||
+      (sides & VIEWPORT_HEIGHT && cascade.queriesViewportHeight) ||
+      (!this._tree &&
+        ((sides & VIEWPORT_WIDTH && cascade.readsViewportWidth) ||
+          (sides & VIEWPORT_HEIGHT && cascade.readsViewportHeight)))
     ) {
       if (this._stale < Stale.Boxes) this._stale = Stale.Boxes;
       restyleOnly = null;
+    } else if (
+      this._tree &&
+      this._stale < Stale.Style &&
+      ((sides & VIEWPORT_WIDTH && cascade.readsViewportWidth) ||
+        (sides & VIEWPORT_HEIGHT && cascade.readsViewportHeight))
+    ) {
+      const tree = this._tree;
+      const readers = cascade.viewportReaders(tree.styles, sides);
+      // the root box, standing in for a body or an `<html>` the markup does
+      // not write, is styled in every build: one that holds such a length
+      // is built again with every element's style kept
+      if (
+        readers.size ||
+        cascade.holdsViewport(tree.root.style, sides) ||
+        (tree.impliedHtml && cascade.holdsViewport(tree.impliedHtml, sides))
+      ) {
+        if (this._stale < Stale.Boxes) {
+          this._stale = Stale.Boxes;
+          restyleOnly = readers;
+        } else if (restyleOnly) {
+          restyleOnly = new Set([...restyleOnly, ...readers]);
+        }
+        follow = true;
+      }
     }
 
     // Built and laid out — and, where an image whose `sizes` is its own
@@ -2739,10 +2774,13 @@ export class HtmlViewNode extends Node {
    * the document loads sits under a media query, which the width chooses as
    * it chooses a rule (`_restyle`).
    */
-  private _crossed(target: number): Set<Element> | null {
+  private _crossed(target: number, viewport: number): Set<Element> | null {
     const cascade = this._cascade;
     if (!cascade || !this._tree || this._styledWith !== cascade) return null;
-    if (cascade.mediaBand(cascade.viewportWidth) !== this._mediaBand) {
+    if (
+      cascade.mediaBand(cascade.viewportWidth, cascade.viewportHeight) !==
+      this._mediaBand
+    ) {
       return null;
     }
     if (this._sheetsRead?.faces.some((face) => face.rule.media)) return null;
@@ -2750,6 +2788,8 @@ export class HtmlViewNode extends Node {
       cascade.viewportWidth,
       target,
       this._source.document,
+      cascade.viewportHeight,
+      viewport,
     );
   }
 

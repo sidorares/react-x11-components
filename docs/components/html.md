@@ -5070,10 +5070,16 @@ passes over all of its text a frame. The size a width came to is kept
 instead, a few widths deep, and answers until anything a layout reads
 changes: the source, a stylesheet, a resource, the hover, the viewport
 height where the document reads it. A `vw` or a `vh` is a number once
-computed, so a document whose styles hold one is restyled when that side of
-the viewport moves, and one whose styles hold neither skips the cascade on a
-resize as before — whatever its sheets mention: Wikipedia's skin has a
-`75vw` under classes its pages are not served with. Only a size comes from it; paint and the selection read the boxes,
+computed, so the elements whose styles hold one are styled again when that
+side of the viewport moves — and under them only those whose parent's style
+came out other than it was, as a `font-size: 2vw` hands on — while every
+other element keeps its style, and a document whose styles hold neither
+skips the cascade on a resize — whatever its sheets mention: Wikipedia's
+skin has a `75vw` under classes its pages are not served with. Python's
+documentation holds a `vw` on one of its 19,680 elements, and every pixel
+of a drag styled them all again: a frame of the drag went from 208 to 93
+ms on X11. Only a container query's `vw`, which a rule's match turns on,
+styles everything again. Only a size comes from it; paint and the selection read the boxes,
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
 
@@ -5086,7 +5092,12 @@ breakpoint turns 55 rules over that match 27 of the article's 4,386
 elements, page grids at the top of every subtree; every element was
 styled again there, and a crossing's build went from 130 ms to 53 ms at 2x
 on macOS. A document with a `@keyframes` or a `@font-face` under a media
-query, or a shadow tree, is styled again whole, as before.
+query, or a shadow tree, is styled again whole, as before. A query on the
+viewport's height or its aspect ratio — `(orientation: portrait)`,
+`(min-height: 600px)` — is a breakpoint of the same kind: its answer is
+part of the band a viewport is in, so a drag restyles at the step where it
+turns and at no other. Tailwind's docs have an orientation query, and it
+had made every step of a drag style the page again.
 
 **A container's query restyles what it answers for, after the layout
 that sized it.** A container's size is layout's, and layout comes after

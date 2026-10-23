@@ -345,6 +345,13 @@ export interface BelowReach {
   readonly child: boolean;
 }
 
+/** The sides of the viewport a style reads (`Cascade.viewportReaders`). */
+export const VIEWPORT_WIDTH = 1;
+export const VIEWPORT_HEIGHT = 2;
+/** What sides of the viewport each style holds a length of, by the style:
+ *  a style is shared by every element alike in what it is computed from. */
+const VIEWPORT_SIDES = new WeakMap<ComputedStyle, number>();
+
 /** Which pseudo-elements' rules test the pointer (`Cascade.hoverPseudo`). */
 export const HOVER_PSEUDO_NONE = 0;
 export const HOVER_PSEUDO_GENERATED = 1;
@@ -2772,15 +2779,44 @@ export class Cascade {
    * a resize styled the whole article again and built its boxes again.
    */
   get readsViewportWidth(): boolean {
-    return this._queriesWidth || this._heldWidth;
+    return this._queriesWidth || this._heldWidth || this._mediaWidth;
   }
   get readsViewportHeight(): boolean {
-    return this._queriesHeight || this._heldHeight;
+    return this._queriesHeight || this._heldHeight || this._mediaHeight;
+  }
+  /**
+   * Whether what reads that side of the viewport is something no style
+   * holds and no media band says — a container query's length in a
+   * viewport unit — so that a move of it can change what any element
+   * matches, and every style is computed again. Where it is not, the
+   * styles to compute again are those that hold a length of it
+   * (`viewportReaders`), and the rules a `@media` on the height or the
+   * aspect ratio turns on or off (`mediaBand`, `crossed`).
+   */
+  get queriesViewportWidth(): boolean {
+    return this._queriesWidth;
+  }
+  get queriesViewportHeight(): boolean {
+    return this._queriesHeight;
   }
   private _queriesWidth = false;
   private _queriesHeight = false;
+  /** Whether a `@media` rule tests the viewport's height, or its aspect
+   *  ratio, which its width moves too: the conditions that do
+   *  (`Stylesheet.sized`). */
+  private _mediaWidth = false;
+  private _mediaHeight = false;
+  private _sized: MediaCondition[] = [];
   private _heldWidth = false;
   private _heldHeight = false;
+  /** The sides of the viewport read since the style being computed began
+   *  (`_computeStyle`): `VIEWPORT_WIDTH`, `VIEWPORT_HEIGHT`. */
+  private _sidesRead = 0;
+  /** The elements one of whose pseudo-elements' styles held a length of
+   *  the viewport, with the sides: a style kept for a pseudo-element is
+   *  kept by its element's (`pseudoStyleFor`), so the element is what is
+   *  styled again. */
+  private _pseudoSides = new Map<Element, number>();
   /** Whether a style of the document holds a length in `rem` (`remRead`),
    *  and whether this build found the root's `font-size` moved: then no
    *  style is kept, since one far from the root reads it. */
@@ -2790,9 +2826,53 @@ export class Cascade {
     this._readsRem = true;
   };
   private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
-    if (unit !== 'vh') this._heldWidth = true;
-    if (unit !== 'vw') this._heldHeight = true;
+    if (unit !== 'vh') {
+      this._heldWidth = true;
+      this._sidesRead |= VIEWPORT_WIDTH;
+    }
+    if (unit !== 'vw') {
+      this._heldHeight = true;
+      this._sidesRead |= VIEWPORT_HEIGHT;
+    }
   };
+  /** A viewport unit in a container query's length: read as rules are
+   *  matched, before any style is, so one that moves can change what any
+   *  element matches (`queriesViewportWidth`). */
+  private _queryViewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
+    if (unit !== 'vh') this._queriesWidth = true;
+    if (unit !== 'vw') this._queriesHeight = true;
+  };
+
+  /**
+   * The elements whose styles hold a length of a side of the viewport in
+   * `sides`, among `styles` — a build's — with the elements whose
+   * pseudo-elements' do: what a move of that side changes, where nothing
+   * else reads it (`queriesViewportWidth`). An element under one is
+   * computed again only where its parent's style came out other than it
+   * was (`KeptStyles.follow`), as a font size of `2vw` hands on. Python's
+   * documentation sets a `vw` on a few elements, and each pixel of a drag
+   * styled all 19,680 of them again, 46% of a frame.
+   */
+  /** Whether a style holds a length of a side of the viewport in `sides`:
+   *  the root box's, which belongs to no element and is computed again in
+   *  every build. */
+  holdsViewport(style: ComputedStyle, sides: number): boolean {
+    return ((VIEWPORT_SIDES.get(style) ?? 0) & sides) !== 0;
+  }
+
+  viewportReaders(
+    styles: ReadonlyMap<Element, { style: ComputedStyle }>,
+    sides: number,
+  ): Set<Element> {
+    const readers = new Set<Element>();
+    for (const [el, { style }] of styles) {
+      if ((VIEWPORT_SIDES.get(style) ?? 0) & sides) readers.add(el);
+    }
+    for (const [el, read] of this._pseudoSides) {
+      if (read & sides) readers.add(el);
+    }
+    return readers;
+  }
   /**
    * What an `if()` asks beyond the element's custom properties (`vars.ts`):
    * a `media()` is answered for the viewport, and read as a `vmin` is, so a
@@ -3119,9 +3199,11 @@ export class Cascade {
       }
     }
     for (const bp of sheet.breakpoints) breakpoints.add(bp);
-    // a query on the viewport's height reads it as a `vh` does
-    if (sheet.readsHeight) this._queriesHeight = true;
-    if (sheet.readsWidth) this._queriesWidth = true;
+    // a query on the viewport's height reads it, and one on its aspect
+    // ratio its width as well: each in the media band (`mediaBand`)
+    if (sheet.readsHeight) this._mediaHeight = true;
+    if (sheet.readsWidth) this._mediaWidth = true;
+    if (sheet.sized) this._sized.push(...sheet.sized);
   }
 
   /** Whether a pointer move can change what this cascade produces. */
@@ -3461,14 +3543,18 @@ export class Cascade {
     from: number,
     to: number,
     root: { children?: readonly unknown[] },
+    /** The viewport's height before and after, which a query on it or on
+     *  the aspect ratio reads. */
+    fromHeight = this.viewportHeight,
+    toHeight = this.viewportHeight,
   ): Set<Element> | null {
     if (this._scoped || this._mediaOutsideRules) return null;
-    const holds = (rule: StyleRule, width: number): boolean =>
+    const holds = (rule: StyleRule, width: number, height: number): boolean =>
       mediaMatches(
         rule.media,
         width / this.scale,
         this.look.colorScheme,
-        this.viewportHeight / this.scale,
+        height / this.scale,
         this.scale,
         this.reducedMotion,
         this.scripting,
@@ -3476,7 +3562,10 @@ export class Cascade {
     const turned = new RuleIndex();
     for (const index of [this._index, ...Object.values(this._pseudo)]) {
       for (const indexed of index.withMedia) {
-        if (holds(indexed.rule, from) !== holds(indexed.rule, to)) {
+        if (
+          holds(indexed.rule, from, fromHeight) !==
+          holds(indexed.rule, to, toHeight)
+        ) {
           turned.adopt(indexed);
         }
       }
@@ -3498,17 +3587,34 @@ export class Cascade {
     return reached;
   }
 
-  /** Which media band a device-pixel width falls in. Two widths in the same
-   *  band produce identical styles, which is what lets a resize skip
-   *  restyling. */
-  mediaBand(width: number): number {
+  /** Which media band a viewport of device pixels falls in: the width's
+   *  among the breakpoints, and the answer of each condition on the height
+   *  or the aspect ratio. Two viewports in the same band produce identical
+   *  styles, which is what lets a resize skip restyling. Tailwind's docs
+   *  have an `(orientation: portrait)`, and read as a `vw` it styled the
+   *  page again at every step of a drag. */
+  mediaBand(width: number, height: number): string {
     const cssWidth = width / this.scale;
     let band = 0;
     for (const bp of this.breakpoints) {
       if (cssWidth >= bp) band += 1;
       else break;
     }
-    return band;
+    let key = String(band);
+    for (const c of this._sized) {
+      key += mediaMatches(
+        [[c]],
+        cssWidth,
+        this.look.colorScheme,
+        height / this.scale,
+        this.scale,
+        this.reducedMotion,
+        this.scripting,
+      )
+        ? '1'
+        : '0';
+    }
+    return key;
   }
 
   /**
@@ -3661,6 +3767,7 @@ export class Cascade {
     if (!kept) {
       this._heldWidth = false;
       this._heldHeight = false;
+      this._pseudoSides.clear();
       this._readsRem = false;
     }
     this._remMoved = false;
@@ -4277,7 +4384,7 @@ export class Cascade {
           remRead: this._remRead,
           vw: this.viewportWidth * zoom,
           vh: this.viewportHeight * zoom,
-          viewport: this._viewportRead,
+          viewport: this._queryViewportRead,
           scale: this.scale * zoom,
         };
         const len = parseLength(text, ctx);
@@ -5340,6 +5447,37 @@ export class Cascade {
      *  are drawn at rest: a marker's, a first letter's or line's, and an
      *  element's that `rootStyle` made up. */
     target: string | null = null,
+  ): ComputedStyle {
+    // which sides of the viewport it reads, noted on the style
+    // (`viewportReaders`), and on any style being computed around it
+    const outer = this._sidesRead;
+    this._sidesRead = 0;
+    const style = this._computeStyleOf(
+      el,
+      parentStyle,
+      inFlexContainer,
+      candidates,
+      own,
+      target,
+    );
+    const sides = this._sidesRead;
+    this._sidesRead = outer | sides;
+    if (sides) {
+      VIEWPORT_SIDES.set(style, (VIEWPORT_SIDES.get(style) ?? 0) | sides);
+      if (!own) {
+        this._pseudoSides.set(el, (this._pseudoSides.get(el) ?? 0) | sides);
+      }
+    }
+    return style;
+  }
+
+  private _computeStyleOf(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+    candidates: Candidate[],
+    own: boolean,
+    target: string | null,
   ): ComputedStyle {
     let style = this._cascadeStyle(
       el,

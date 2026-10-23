@@ -1241,6 +1241,99 @@ test('a vw through a custom property, or on a pseudo-element, follows the width'
   assert.strictEqual(before()?.width, 80);
 });
 
+test('a resize styles again the elements that hold a vw, and what inherits from them, and keeps the rest', async () => {
+  // Every page of python.org's documentation, GitHub and Bootstrap sets a
+  // `vw` or a `vh` on a few elements, and each pixel of a drag styled every
+  // element again: 46% of a frame on Python's 19,680
+  const rows = Array.from(
+    { length: 40 },
+    (_, i) => `<p id="p${i}" class="row">row ${i} <b>bold</b></p>`,
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.row{height:10px;margin:0}' +
+      '#big{font-size:2vw;height:20px}#bar{width:25vw;height:5px}' +
+      '#tall{height:10vh}#side::after{content:"";display:block;' +
+      'width:10vw;height:5px}</style>' +
+      '<div id="big"><span id="in">inherits</span></div>' +
+      `<div id="bar"></div><div id="tall"></div><div id="side"></div>${rows}`,
+    300,
+    400,
+  );
+  const styleOf = (id: string) =>
+    (
+      treeOf(el) as {
+        styles: Map<unknown, { style: { fontSize: number } }>;
+      }
+    ).styles.get(findById(el.document, id))!.style;
+  const kept = ['p0', 'p20', 'p39'].map(styleOf);
+  const tall = styleOf('tall');
+  assert.strictEqual(styleOf('in').fontSize, 8);
+  assert.strictEqual(boxOf(el, 'bar').width, 100);
+  assert.strictEqual(boxOf(el, 'side').children[0]?.width, 40);
+
+  await resize(300, 600);
+  assert.strictEqual(styleOf('in').fontSize, 12, 'what inherits a 2vw');
+  assert.strictEqual(boxOf(el, 'bar').width, 150);
+  assert.strictEqual(boxOf(el, 'side').children[0]?.width, 60, '::after');
+  assert.deepStrictEqual(
+    ['p0', 'p20', 'p39'].map(styleOf),
+    kept,
+    'an element that reads no vw keeps its style',
+  );
+  assert.strictEqual(styleOf('tall'), tall, 'a vh, when only the width moved');
+  // and the height, which only the `vh` reads
+  await resize(500, 600);
+  assert.strictEqual(boxOf(el, 'tall').height, 50);
+  assert.deepStrictEqual(['p0', 'p20', 'p39'].map(styleOf), kept);
+});
+
+test('an orientation or a height in @media restyles where its answer turns, and nowhere else', async () => {
+  // Tailwind's docs have an `(orientation: portrait)`: read as a `vw`, every
+  // step of a drag styled the page again, where only the step that takes
+  // the width past the height changes what it matches
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#a{height:10px;width:10px}#b{height:10px}' +
+      '@media (orientation:portrait){#a{width:20px}}' +
+      '@media (min-height:400px){#b{height:30px}}</style>' +
+      '<div id="a"></div><div id="b"></div>' +
+      '<p id="p">text</p>',
+    300,
+    600,
+  );
+  assert.strictEqual(boxOf(el, 'a').width, 10);
+  let tree = treeOf(el);
+  await resize(300, 500);
+  assert.strictEqual(boxOf(el, 'a').width, 10, 'still landscape');
+  assert.ok(treeOf(el) === tree, 'a width that turns nothing builds nothing');
+  await resize(300, 250);
+  assert.strictEqual(boxOf(el, 'a').width, 20, 'portrait');
+  tree = treeOf(el);
+  await resize(300, 240);
+  assert.ok(treeOf(el) === tree, 'and nothing within it');
+  // the height's query the same way
+  await resize(350, 240);
+  assert.strictEqual(boxOf(el, 'b').height, 10);
+  assert.ok(treeOf(el) === tree, 'a height that turns nothing');
+  await resize(450, 240);
+  assert.strictEqual(boxOf(el, 'b').height, 30, 'past 400px');
+  assert.strictEqual(boxOf(el, 'a').width, 20);
+});
+
+test('a vw in a container query styles every element again on a resize', async () => {
+  // what a rule matches turns on it, which no style holds
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#c{container-type:inline-size;width:300px}' +
+      '#a{height:10px;width:10px}' +
+      '@container (min-width:50vw){#a{width:20px}}</style>' +
+      '<div id="c"><div id="a"></div></div>',
+    300,
+    800,
+  );
+  assert.strictEqual(boxOf(el, 'a').width, 10);
+  await resize(300, 500);
+  assert.strictEqual(boxOf(el, 'a').width, 20);
+});
+
 test('the small, large and dynamic viewports, and its inline and block axes, are the viewport', async () => {
   // melbcss.com's body is `min-height: 100svh`: an unread unit dropped the
   // declaration, and the page did not fill the window

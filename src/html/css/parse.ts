@@ -113,9 +113,13 @@ export interface Stylesheet {
    *  does. */
   readsHeight?: boolean;
   /** Whether one tests its aspect ratio, which a width that crosses no
-   *  breakpoint can change: the document restyles as one with a `vw`
-   *  does. */
+   *  breakpoint can change. */
   readsWidth?: boolean;
+  /** The conditions that test the viewport's height or its aspect ratio,
+   *  whose answers a resize's media band holds beside the width's
+   *  (`Cascade.mediaBand`): `(orientation: portrait)` changes its mind
+   *  where the width crosses the height, and at no other step of a drag. */
+  sized?: MediaCondition[];
   /** Whether a rule in it is under an `@container`. */
   containers?: boolean;
   /** The `@font-face` rules, in order (see `fonts.ts`). */
@@ -331,10 +335,11 @@ export function parseStylesheet(
       if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
       if (c.minHeight !== undefined || c.maxHeight !== undefined) {
         sheet.readsHeight = true;
-      }
-      if (c.minAspect !== undefined || c.maxAspect !== undefined) {
+        (sheet.sized ??= []).push(c);
+      } else if (c.minAspect !== undefined || c.maxAspect !== undefined) {
         sheet.readsHeight = true;
         sheet.readsWidth = true;
+        (sheet.sized ??= []).push(c);
       }
     }
   };
