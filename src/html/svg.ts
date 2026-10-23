@@ -23,7 +23,8 @@ import type { Stylesheet } from './css/parse.js';
 import { useHref } from './css/shapes.js';
 import type { ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
-import { inkColor, isTransparent, parseColor } from './css/values.js';
+import { parseMath } from './css/calc.js';
+import { inkColor, isTransparent, parseColor, resolve } from './css/values.js';
 
 export { isSvgRoot };
 
@@ -325,8 +326,8 @@ export class SvgDrawing {
   /** The `fill` and `stroke` the view's tree was last given its root's,
    *  and what the document's rules gave the elements in it. */
   private _seenPaint = '';
-  /** Whether a length in the tree is a percentage of the viewport; null
-   *  until the tree is first read. */
+  /** Whether a length in the tree is a percentage of the viewport, or a
+   *  math function (`viewportLength`); null until the tree is first read. */
   private _percent: boolean | null = null;
   /** Whether a `<use>` in the tree is one `SvgView` cannot draw as it
    *  stands (`needsExpanding`). */
@@ -914,6 +915,46 @@ const PERCENT_OF: Record<string, 'x' | 'y' | 'd'> = {
   'stroke-width': 'd',
 };
 
+/** A math function, which a geometry property takes as its value (SVG 2,
+ *  "Geometry Properties": a `<length-percentage>`) and `SvgView` reads as
+ *  no number at all: `width="calc(100% - 1px)"` drew nothing. */
+const MATH_FUNCTION = /^(?:calc|min|max|clamp)\(/i;
+
+/** What one of an absolute length's units is in user units, a CSS pixel
+ *  each (CSS Values 4, 6.2). */
+const USER_UNITS: Record<string, number> = {
+  px: 1,
+  in: 96,
+  cm: 96 / 2.54,
+  mm: 96 / 25.4,
+  q: 96 / 101.6,
+  pt: 96 / 72,
+  pc: 16,
+};
+
+/**
+ * A geometry attribute's value in user units where it is a percentage of
+ * the viewport (`of`) or a math function of one: `calc(100% - 1px)`, the
+ * percentage of `of` and the lengths in its absolute units. Null where it
+ * is neither, or is one this cannot read — a relative unit, a sum that does
+ * not add up — which is left as written.
+ */
+function viewportLength(value: string, of: number): number | null {
+  if (MATH_FUNCTION.test(value)) {
+    const len = parseMath(value, (token) => {
+      const m = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)([a-z]+)$/i.exec(
+        token,
+      );
+      const unit = m ? USER_UNITS[m[2].toLowerCase()] : undefined;
+      return m && unit !== undefined ? Number(m[1]) * unit : null;
+    });
+    return len === null || len === 'auto' ? null : resolve(len, of);
+  }
+  if (!value.endsWith('%')) return null;
+  const pct = parseFloat(value);
+  return Number.isFinite(pct) ? (pct / 100) * of : null;
+}
+
 /** What a percentage in it means is not the viewport's: a gradient's are
  *  of the box it paints, and `SvgView` reads those itself. */
 const OWN_UNITS = new Set(['lineargradient', 'radialgradient', 'pattern']);
@@ -925,7 +966,7 @@ function localName(name: string): string {
 
 /** Whether a length under the root is a percentage `SvgView` would read as
  *  a number: it resolves none against the viewport, so `width="100%"` was
- *  a hundred user units. */
+ *  a hundred user units — or a math function, which it reads as none. */
 function hasPercent(root: Element): boolean {
   const walk = (el: Element): boolean => {
     for (const child of el.children) {
@@ -933,9 +974,9 @@ function hasPercent(root: Element): boolean {
       const tag = child as Element;
       if (OWN_UNITS.has(localName(tag.name))) continue;
       for (const name in tag.attribs) {
-        if (PERCENT_OF[name] && tag.attribs[name].trim().endsWith('%')) {
-          return true;
-        }
+        if (!PERCENT_OF[name]) continue;
+        const value = tag.attribs[name].trim();
+        if (value.endsWith('%') || MATH_FUNCTION.test(value)) return true;
       }
       if (walk(tag)) return true;
     }
@@ -1346,13 +1387,11 @@ function copyTree(
     if (here && viewport && el !== root) {
       for (const name in attribs) {
         const axis = PERCENT_OF[name];
-        const value = attribs[name].trim();
-        if (!axis || !value.endsWith('%')) continue;
-        const pct = parseFloat(value);
-        if (!Number.isFinite(pct)) continue;
+        if (!axis) continue;
         const of =
           axis === 'x' ? viewport[0] : axis === 'y' ? viewport[1] : diagonal;
-        attribs[name] = String((pct / 100) * of);
+        const length = viewportLength(attribs[name].trim(), of);
+        if (length !== null) attribs[name] = String(length);
       }
     }
     const children: ChildNode[] = [];

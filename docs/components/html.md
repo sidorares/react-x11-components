@@ -3103,7 +3103,7 @@ icon set paints its icons, `.icon { fill: currentColor }`. A rule may name
 an element inside the drawing as well — `.logo path { fill: #fff }`,
 `a:hover svg path { fill: red }` — and sets its `fill`, `stroke`,
 `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`,
-`fill-rule`, `fill-opacity`, `stroke-opacity`, `opacity`, `color`,
+`stroke-dasharray`, `stroke-dashoffset`, `fill-rule`, `fill-opacity`, `stroke-opacity`, `opacity`, `color`,
 `display`, `visibility`, `clip-path` — a `url()` naming a `<clipPath>` —
 and `clip-rule`, and a gradient stop's `stop-color` and
 `stop-opacity`: over the element's presentation attributes and under its
@@ -3112,7 +3112,9 @@ included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
 — `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
 ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
-no others: a rule's `transform`, font or dash pattern is not. What is in
+no others: a rule's `transform` or font is not. A dash pattern, from an
+attribute or a rule, is lengths in user units, and a percentage of the
+viewport's diagonal is none. What is in
 a drawing has no box, so the pointer is over the drawing and never over a
 shape: `a:hover svg path` follows it, and `path:hover` matches nothing.
 
@@ -3167,8 +3169,10 @@ them or from its `viewBox`, which is fitted to its box as
 `preserveAspectRatio` says. An SVG image with no `viewBox` is laid out at
 its own size and stretched to its box, along each axis it has a size on,
 as a raster image is and as Chrome draws one. A percentage in
-its geometry is of its viewport, and `currentColor` is the `color` the
-element inherits. An inline drawing's `<use>` refers to an element anywhere
+its geometry is of its viewport, and so is one in a math function there —
+`width="calc(100% - 1px)"`, `min()`, `max()` and `clamp()` of a percentage
+and absolute lengths, as a geometry property's `<length-percentage>` is
+read — and `currentColor` is the `color` the element inherits. An inline drawing's `<use>` refers to an element anywhere
 in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
 `<svg>` at the top of the page — is drawn, in the colour of where it is
 used; a symbol's `viewBox` is fitted to the viewport the `<use>` gives it,

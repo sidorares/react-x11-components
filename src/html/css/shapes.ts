@@ -65,6 +65,8 @@ const PROPS: Record<string, boolean> = {
   'stroke-linecap': true,
   'stroke-linejoin': true,
   'stroke-miterlimit': true,
+  'stroke-dasharray': true,
+  'stroke-dashoffset': true,
   'fill-rule': true,
   'fill-opacity': true,
   'stroke-opacity': true,
@@ -104,6 +106,8 @@ const INITIAL: Record<string, string> = {
   'stroke-linecap': 'butt',
   'stroke-linejoin': 'miter',
   'stroke-miterlimit': '4',
+  'stroke-dasharray': 'none',
+  'stroke-dashoffset': '0',
   'fill-rule': 'nonzero',
   'fill-opacity': '1',
   'stroke-opacity': '1',
@@ -235,6 +239,28 @@ export function shapeValue(
     case 'stroke-miterlimit': {
       const n = NUMBER.test(value) ? Number(value) : NaN;
       return n >= 1 ? String(n) : null;
+    }
+    case 'stroke-dasharray': {
+      // `none`, or lengths split on commas and white space, each in user
+      // units as `stroke-width` takes one; a negative one is an error
+      // (SVG 2, 13.5.5), and so here is a percentage, of the viewport's
+      // diagonal, which only the drawing has
+      if (value.toLowerCase() === 'none') return 'none';
+      const parts = value.split(/[\s,]+/).filter(Boolean);
+      if (!parts.length) return null;
+      const out: number[] = [];
+      for (const part of parts) {
+        const px = NUMBER.test(part) ? Number(part) : lengthIn(part, ctx.units);
+        if (px === null || !(px >= 0)) return null;
+        out.push(px);
+      }
+      return out.join(' ');
+    }
+    case 'stroke-dashoffset': {
+      const px = NUMBER.test(value)
+        ? Number(value)
+        : lengthIn(value, ctx.units);
+      return px === null ? null : String(px);
     }
     case 'fill-opacity':
     case 'stroke-opacity':

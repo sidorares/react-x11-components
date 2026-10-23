@@ -1172,6 +1172,68 @@ metric(
 );
 
 metric(
+  'an SVG geometry attribute that is a math function is of the viewport, as a percentage is',
+  async () => {
+    // SVG 2's geometry properties take a <length-percentage>, and a
+    // presentation attribute is read as CSS: `width="calc(100% - 1px)"` is
+    // the viewport's width less a pixel. SvgView reads no math function,
+    // and a dashed border drawn as such a rect drew nothing.
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        // x 10% + 2px of 300 is 32, and the width 300 less 64 is 236
+        '<svg height="20" style="width:300px"><rect x="calc(10% + 2px)" ' +
+        'width="calc(100% - 64px)" height="calc(50% + 0.25in)" ' +
+        'fill="#00ff00"/></svg>' +
+        // the least of the two, 40
+        '<svg height="20" style="width:300px"><rect ' +
+        'width="min(100%, 40px)" height="100%" fill="#0000ff"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 31, 10, '#ffffff', { message: 'before 32' });
+    await expectPixel(ctx, 33, 10, '#00ff00', { message: 'from 32' });
+    await expectPixel(ctx, 267, 10, '#00ff00', { message: 'to 268' });
+    await expectPixel(ctx, 269, 10, '#ffffff', { message: 'past 268' });
+    // 50% of 20 and a quarter of an inch: past the viewport, and clipped
+    await expectPixel(ctx, 100, 19, '#00ff00', { message: 'all the way down' });
+    await expectPixel(ctx, 39, 30, '#0000ff', { message: 'min(), to 40' });
+    await expectPixel(ctx, 41, 30, '#ffffff', { message: 'min(), past 40' });
+  },
+);
+
+metric(
+  "a stroke is dashed as its stroke-dasharray and stroke-dashoffset say, from an attribute or a document's rule",
+  async () => {
+    // ntk's SvgView dashes a stroke from 8.25.0 (sidorares/ntk#548); a rule
+    // of the document's reaches a shape through the drawing's cascade
+    // (`shapes.ts`), which carries the two as user units
+    const line = (attrs = '') =>
+      '<svg width="100" height="10"><line x1="0" y1="5" x2="100" y2="5" ' +
+      `stroke="#000000" stroke-width="4" ${attrs}/></svg>`;
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block}' +
+        '.d line{stroke-dasharray:10px,10px;stroke-dashoffset:5}' +
+        '.e line{stroke-dasharray:4 -1}</style>' +
+        line('stroke-dasharray="10 10"') +
+        `<div class="d">${line()}</div>` +
+        `<div class="e">${line()}</div>`,
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 5, '#000000', { message: 'a dash' });
+    await expectPixel(ctx, 15, 5, '#ffffff', { message: 'a gap' });
+    await expectPixel(ctx, 25, 5, '#000000', { message: 'the next dash' });
+    // 5 into the pattern: a dash to 5, a gap to 15, a dash to 25
+    await expectPixel(ctx, 2, 15, '#000000', { message: 'offset, a dash' });
+    await expectPixel(ctx, 10, 15, '#ffffff', { message: 'offset, a gap' });
+    await expectPixel(ctx, 20, 15, '#000000', { message: 'offset, a dash' });
+    // a negative length is an error, and the stroke is solid
+    await expectPixel(ctx, 6, 25, '#000000', { message: 'solid' });
+    await expectPixel(ctx, 50, 25, '#000000', { message: 'solid' });
+  },
+);
+
+metric(
   'a <use> draws an element from anywhere in the document, a symbol fitted to its viewport',
   async () => {
     // SVG 2, 5.5: a `<use>` refers to an element of the document, and a
