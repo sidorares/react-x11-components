@@ -432,12 +432,15 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   assert.ok(!partial(el));
 });
 
-test('a dragged width lays out whole a document whose fixed box is set aside', async (t) => {
+test('a dragged width lays out the boxes on the way to a fixed box it would set aside, and sets aside the rest', async (t) => {
   // An out-of-flow box among the children set aside stays, and is placed
-  // as ever. One inside a box set aside would go with it — and a fixed
-  // box is drawn where the viewport is wherever the flow has it, so it
-  // would be missing from the window: such a tree is laid out whole.
-  holdClock(t, resizeClock);
+  // as ever. One inside a box set aside would go with it — and a fixed box
+  // is drawn where the viewport is wherever the flow has it, so it would be
+  // missing from the window. The boxes that hold it are laid out, with all
+  // but what holds it set aside in each, and the box is placed at the new
+  // width: the Guardian's banner, fixed to the bottom, laid its whole tree
+  // out at every step of a drag.
+  const clock = holdClock(t, resizeClock);
   const fixed =
     '<div id="fixed" style="position:fixed;top:0;right:0;width:20px;' +
     'height:20px;background:#ff0000"></div>';
@@ -460,10 +463,65 @@ test('a dragged width lays out whole a document whose fixed box is set aside', a
   );
   await inside.resize(300, 390);
   await inside.resize(300, 380);
-  assert.ok(!partial(inside.el), 'inside one: laid out whole');
-  assert.ok(reached(inside.el, 'fixed') && reached(inside.el, 'end'));
-  await inside.resize(300, 370);
-  assert.ok(!partial(inside.el), 'and whole from then on');
+  assert.ok(partial(inside.el), 'inside one: still stopped');
+  assert.ok(reached(inside.el, 'fixed'), 'and reached');
+  assert.ok(!reached(inside.el, 'end'), 'with the rest set aside');
+  assert.strictEqual(boxOf(inside.el, 'fixed').x, 360, 'placed at the width');
+  await cleanup();
+
+  // and an absolute box placed against the root from inside one, which is
+  // drawn at the document's top
+  const corner = await renderScrolled(
+    LONG.replace(
+      '</body>',
+      '<div id="foot"><div id="abs" style="position:absolute;top:5px;' +
+        'right:5px;width:20px;height:20px;background:#00ff00"></div></div>' +
+        '</body>',
+    ),
+    300,
+    400,
+  );
+  await corner.resize(300, 390);
+  await corner.resize(300, 380);
+  assert.ok(partial(corner.el), 'stopped');
+  assert.ok(reached(corner.el, 'abs') && !reached(corner.el, 'end'));
+  assert.deepStrictEqual(
+    [boxOf(corner.el, 'abs').x, boxOf(corner.el, 'abs').y],
+    [355, 5],
+    'placed at the width',
+  );
+  await cleanup();
+
+  // the banner's shape: `bottom: 0`, as wide as its holder, which is
+  // centred, so it takes its place across from the boxes that hold it; in
+  // the middle of what is set aside, which is as tall as it was
+  const banner =
+    '<div id="wrap" style="max-width:300px;margin:0 auto;padding:0 7%">' +
+    '<div id="holder"><div id="banner" style="position:fixed;bottom:0;' +
+    'width:100%;height:24px;background:#0000ff"></div></div></div>';
+  const doc = LONG.replace('<div id="r40"', `${banner}<div id="r40"`);
+  const { el, resize } = await renderScrolled(doc, 300, 400);
+  const tall = el.abs.height;
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el));
+  assert.ok(reached(el, 'banner') && !reached(el, 'r45'));
+  assert.strictEqual(el.abs.height, tall, 'as tall as it was');
+  const step = boxOf(el, 'banner');
+  const seen = shown(await fillsOf(el), 300);
+  await clock.finish();
+  assert.ok(!partial(el));
+  const rest = boxOf(el, 'banner');
+  assert.deepStrictEqual(
+    [step.x, step.y, step.width],
+    [rest.x, rest.y, rest.width],
+    'where the layout at rest puts it',
+  );
+  assert.deepStrictEqual(
+    shown(await fillsOf(el), 300),
+    seen,
+    'what can be seen drawn as the whole layout draws it',
+  );
 });
 
 test('a dragged width mounts no control past where the layout stops', async (t) => {
@@ -862,9 +920,9 @@ test('a dragged width that builds again what holds a vw goes on laying out what 
   assert.ok(partial(el), 'at every step');
   await cleanup();
 
-  // One whose layout that stopped set aside a fixed box was laid out whole
-  // after it, and the tree each step after builds is laid out whole at
-  // once, rather than once stopped and once whole
+  // and one that holds a fixed box below where it stops lays out what holds
+  // it, at every step, and stops: it had been laid out whole after its
+  // first step set the box aside, and once more at every step after that
   const fixed =
     '<div id="foot"><div id="fixed" style="position:fixed;top:0;' +
     'right:0;width:20px;height:20px"></div></div>';
@@ -878,13 +936,13 @@ test('a dragged width that builds again what holds a vw goes on laying out what 
   );
   const insideTree = (): BoxTree =>
     (inside.el as unknown as { _tree: BoxTree })._tree;
-  await inside.resize(300, 390);
-  assert.ok(!partial(inside.el), 'laid out whole');
-  assert.ok(laidWhole(insideTree()), 'after it stopped');
-  await inside.resize(300, 380);
-  assert.ok(!partial(inside.el));
-  assert.ok(!laidWhole(insideTree()), 'at once');
-  assert.ok(reached(inside.el, 'fixed') && reached(inside.el, 'end'));
+  for (const width of [390, 380]) {
+    await inside.resize(300, width);
+    assert.ok(partial(inside.el), `stopped at ${width}`);
+    assert.ok(!laidWhole(insideTree()));
+    assert.ok(reached(inside.el, 'fixed') && !reached(inside.el, 'end'));
+    assert.strictEqual(boxOf(inside.el, 'fixed').x, width - 20);
+  }
   assert.strictEqual(boxOf(inside.el, 'r0').x, 38);
   await cleanup();
 

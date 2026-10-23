@@ -2836,9 +2836,15 @@ the root asks `heldBack`**, as `controlRectsOf` and `mediaRectsOf` do: a
 box set aside is where it was a width ago, which may be over what is laid
 out there now. **A layout that cannot set a box aside leaves it laid out**:
 a multicol container's content is one strip its columns balance
-(`multicolAround`), and a tree with a fixed box, or an absolute one placed
-against something laid out, inside what is set aside is laid out whole from
-then on (`escapes`). And **a partial layout stands on intrinsic sizes the
+(`multicolAround`), and the boxes that hold a fixed box, or an absolute one
+placed against something outside them, are laid out where they would be set
+aside (`escapingHolders`, `LayoutContext.holders`), with all but what holds
+it set aside in each, so the box is placed at the new width and the paint
+reaches it; the span set aside leaves their heights out, since the flow adds
+them again. The Guardian's banner, fixed to the bottom, laid its whole tree
+out at every step. A tree that sets such a box aside anyway — a holder the
+cache missed — is laid out whole from then on (`escapes`). And **a partial
+layout stands on intrinsic sizes the
 tree's first, whole layout found**, which a box keeps for its lifetime: one
 no whole layout has laid out is laid out whole (`_wholeTree`), since a
 measure taken after a descendant was set aside would see less than is
