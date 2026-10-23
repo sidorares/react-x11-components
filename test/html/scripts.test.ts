@@ -1805,6 +1805,37 @@ test('what a polyfill or a tag manager feature-tests is there, or absent, but ne
   );
 });
 
+test('a buffer a message transfers is detached once the message is copied, and is then no IndexedDB key', async (t) => {
+  if (
+    typeof (ArrayBuffer.prototype as { transfer?: unknown }).transfer !==
+    'function'
+  ) {
+    t.skip('this runtime cannot detach a buffer');
+    return;
+  }
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], c = new MessageChannel(), a = new Uint8Array([1, 2, 3, 4]);' +
+      'c.port2.onmessage = function (e) {' +
+      '  r.push(Array.from(e.data).join(""));' +
+      '  document.getElementById("out").textContent = JSON.stringify(r); };' +
+      'c.port1.postMessage(a, [a.buffer]);' +
+      'r.push(a.byteLength);' +
+      'var w = new Uint8Array([5]); window.postMessage("x", { targetOrigin: "*", transfer: [w.buffer] });' +
+      'r.push(w.byteLength);' +
+      'try { IDBKeyRange.only(a); r.push("a key"); } catch (e) { r.push(e.name); }' +
+      'try { IDBKeyRange.only(new Uint8Array([1])); r.push("a key"); } catch (e) { r.push(e.name); }' +
+      '</script>',
+  );
+  assert.deepEqual(JSON.parse(await settled(doc, 'out', (t) => t !== '')), [
+    0,
+    0,
+    'DataError',
+    'a key',
+    '1234',
+  ]);
+});
+
 test('messages are tasks of their own, and a clone is a copy of what can be copied', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

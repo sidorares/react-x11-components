@@ -7705,8 +7705,8 @@ export function installDom(
         event.isTrusted = false;
         return dispatch(target, event);
       },
-      postMessage: (message: Any, options?: Any) =>
-        postTo(target, message, options),
+      postMessage: (message: Any, options?: Any, transfer?: Any) =>
+        postTo(target, message, options, transfer),
       scrollTo() {},
       scroll() {},
       scrollBy() {},
@@ -14818,6 +14818,25 @@ export function installDom(
   };
   /** A message as it crosses: a copy, the page's structured clone. */
   const cloneOf = (value: Any): Any => structuredCopy(value, new Map());
+  /**
+   * What a `postMessage` transfers given up by the sender once its message
+   * is copied (HTML 2.7.6, "StructuredSerializeWithTransfer"): an
+   * `ArrayBuffer` in the list is detached, through the runtime's own
+   * `transfer()`, so a view on it reads as empty, as a page that checks a
+   * transfer took place expects. A runtime without it keeps the buffer.
+   */
+  const giveUp = (transfer: Any): void => {
+    const list = Array.isArray(transfer) ? transfer : transfer?.transfer;
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (
+        item instanceof ArrayBuffer &&
+        typeof (item as Any).transfer === 'function'
+      ) {
+        (item as Any).transfer();
+      }
+    }
+  };
 
   /**
    * A value as text, for a message to a worker, which runs in a thread of
@@ -14995,10 +15014,11 @@ export function installDom(
     _started = false;
     _closed = false;
     _waiting: Any[] = [];
-    postMessage(message: Any): void {
+    postMessage(message: Any, transfer?: Any): void {
+      const data = cloneOf(message);
+      giveUp(transfer);
       const other = this._other;
       if (this._closed || !other || other._closed) return;
-      const data = cloneOf(message);
       setTimer(() => other._deliver(data), 0, [], false);
     }
     _deliver(data: Any): void {
@@ -15208,9 +15228,11 @@ export function installDom(
       this._id = Number(id);
       workers.set(this._id, this);
     }
-    postMessage(message: Any): void {
+    postMessage(message: Any, transfer?: Any): void {
+      const data = serializeClone(message);
+      giveUp(transfer);
       if (!this._id) return;
-      call('workerPost', this._id, serializeClone(message));
+      call('workerPost', this._id, data);
     }
     terminate(): void {
       if (!this._id) return;
@@ -16037,7 +16059,11 @@ export function installDom(
     if (typeof key === 'number') return Number.isNaN(key) ? 0 : 1;
     if (key instanceof Date) return Number.isNaN(key.getTime()) ? 0 : 2;
     if (typeof key === 'string') return 3;
-    if (key instanceof ArrayBuffer || ArrayBuffer.isView(key)) return 4;
+    if (key instanceof ArrayBuffer || ArrayBuffer.isView(key)) {
+      // a buffer a transfer detached is no key (IndexedDB 3, 2.5)
+      const buffer = key instanceof ArrayBuffer ? key : key.buffer;
+      return (buffer as Any).detached === true ? 0 : 4;
+    }
     if (Array.isArray(key)) {
       if (seen.has(key)) return 0;
       seen.add(key);
@@ -21418,9 +21444,20 @@ export function installDom(
   // a message to a window, this one's or a frame's: a task of its own,
   // after this one, where the origin it is meant for is this one's (HTML
   // 9.4.3), from the page, whose code is all that runs here
-  const postTo = (to: Any, message: Any, options?: Any): void => {
-    if (!originAllowed(options)) return;
+  const postTo = (
+    to: Any,
+    message: Any,
+    options?: Any,
+    transfer?: Any,
+  ): void => {
+    // the target origin checked first, which may throw, and matched only
+    // once the message is copied and its transfer given up (HTML 9.4.3)
+    const allowed = originAllowed(options);
     const data = cloneOf(message);
+    giveUp(
+      options !== null && typeof options === 'object' ? options : transfer,
+    );
+    if (!allowed) return;
     setTimer(
       () => {
         const ev = new MessageEvent('message', {
@@ -21436,8 +21473,8 @@ export function installDom(
       false,
     );
   };
-  define('postMessage', (message: Any, options?: Any) =>
-    postTo(windowTarget, message, options),
+  define('postMessage', (message: Any, options?: Any, transfer?: Any) =>
+    postTo(windowTarget, message, options, transfer),
   );
   Object.defineProperty(G, Symbol.toStringTag, {
     value: 'Window',
