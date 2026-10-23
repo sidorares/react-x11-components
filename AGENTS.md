@@ -3367,6 +3367,25 @@ widget** (`blockedByModal`): a widget is a node over the document, which
 the backdrop is drawn under, so the page's fields would be drawn over the
 backdrop and over the dialog where the two meet.
 
+**A view transition's tree is boxes in the top layer, and what it
+captured is a hole** (`src/html/transition.ts`). The page's realm runs
+the transition's steps and asks the element to capture each state; the
+element keeps the old state's pictures, and from the new state on the
+builder hangs `::view-transition` and its groups, pairs and images off
+the root element's box, over every other top-layer box, styled by
+`Cascade.transitionStyle`. So layout, borders, opacity and the hit test
+are the document's own. Four things are load-bearing. **A captured
+element is in `PaintOptions.captured`, never `lifted`**: `lifted` is the
+macOS presenter's, and a top-layer box inside a captured element is
+skipped with it. **The tree's animations run on the transition's own
+`AnimationTimeline`**, which the document's frames never see; the
+transition arms its own frame and builds again at it. **A new image is
+painted straight onto the context where it is drawn at its size**: a
+picture of it on a surface rounds a faded element a level off, which a
+reference drawn directly does not. And **a named element is a stacking
+context** (`stacksLayers`), or a capture of it leaves out its positioned
+descendants, which another context paints.
+
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
 moves each container's lines and boxes by the offset its element is

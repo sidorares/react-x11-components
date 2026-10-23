@@ -1083,6 +1083,9 @@ function isSelector(s: string): boolean {
   // pseudo-classes of its state, `:checked` among them (CSS Shadow Parts
   // 1, 4.2; CSS Scoping 1, 3.2.2)
   let shadowed: string | null = null;
+  // and a view transition's named one by `:only-child` alone (CSS View
+  // Transitions 1, 3.2)
+  let transition = false;
   while (i < n) {
     const c = s[i];
     if (isSpace(c)) {
@@ -1107,7 +1110,9 @@ function isSelector(s: string): boolean {
           (s[i + 1] !== ':'
             ? USER_ACTIONS.test(readIdent(s, i + 1).value) ||
               (shadowed === 'part' &&
-                !STRUCTURAL.test(readIdent(s, i + 1).value))
+                !STRUCTURAL.test(readIdent(s, i + 1).value)) ||
+              (transition &&
+                asciiLower(readIdent(s, i + 1).value) === 'only-child')
             : shadowed !== null && TREE_ABIDING.test(readIdent(s, i + 2).value))
         )
       ) {
@@ -1156,6 +1161,8 @@ function isSelector(s: string): boolean {
             element && !ended && (lower === 'part' || lower === 'slotted')
               ? lower
               : null;
+          transition =
+            element && !ended && lower.startsWith('view-transition-');
           ended = true;
         }
         i = name.end;
@@ -1251,6 +1258,12 @@ const PSEUDO_ELEMENTS = new Set([
   'target-text',
   'highlight',
   'details-content',
+  // a view transition's (CSS View Transitions 1, 3.2)
+  'view-transition',
+  'view-transition-group',
+  'view-transition-image-pair',
+  'view-transition-old',
+  'view-transition-new',
 ]);
 
 const PSEUDO_CLASSES = new Set([

@@ -1074,6 +1074,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
       cssAnimations: (element, subtree) =>
         nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
+      transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
+      transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
+      transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
+      transitionEnd: () => nodeRef.current?.transitionEnd(),
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
       movedPoint: (node, offset, granularity, back) =>

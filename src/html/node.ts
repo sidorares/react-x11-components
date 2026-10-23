@@ -102,7 +102,12 @@ import type {
   ShadowSheets,
   ViewportOverflow,
 } from './css/cascade.js';
-import { mediaMatches, parseMediaQuery, parseStylesheet } from './css/parse.js';
+import {
+  mediaMatches,
+  parseDeclarations,
+  parseMediaQuery,
+  parseStylesheet,
+} from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
@@ -157,6 +162,7 @@ import {
   SHAPE_STYLES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
+  TRANSITION_IMAGES,
   columned,
   intrinsicsOf,
   textFade,
@@ -168,6 +174,7 @@ import type {
   LineText,
   ReplacedKind,
   TextLayoutLike,
+  TransitionTree,
 } from './layout/boxes.js';
 import {
   ANCHOR_FALLBACK,
@@ -210,9 +217,19 @@ import {
   invert,
   mapPoint,
   mapRect,
+  multiply,
   outOfPlane,
   transformed,
 } from './css/transform.js';
+import type { Matrix } from './css/transform.js';
+import {
+  ViewTransitionRun,
+  animationsEnd,
+  captureClasses,
+  captureName,
+  groupTransform,
+} from './transition.js';
+import type { OldImage, Placement } from './transition.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
@@ -283,6 +300,7 @@ import {
   opaqueCanvas,
   opaqueWithin,
   ownBounds,
+  paintCapture,
   paintDocument,
   paintLiftedBox,
   paintOrderOf,
@@ -294,7 +312,12 @@ import {
   stacksLayers,
   topLayerBoxes,
 } from './paint.js';
-import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
+import type {
+  PaintContext,
+  PaintOptions,
+  SpriteSource,
+  TransitionDraw,
+} from './paint.js';
 import {
   AT_VIEWPORT,
   controlRectsOf,
@@ -1527,6 +1550,7 @@ export class HtmlViewNode extends Node {
       this._cascade = kept.cascade;
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
+      this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
       faces = kept.faces;
@@ -1627,6 +1651,7 @@ export class HtmlViewNode extends Node {
       );
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
+      this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
       this._sheetsRead = {
         look,
         scale: this._scale,
@@ -2507,6 +2532,8 @@ export class HtmlViewNode extends Node {
           buildBoxes(this._source.document, {
             cascade,
             kept,
+            transition:
+              this._vt?.phase === 'live' ? this._transitionTree : null,
             scale: this._scale,
             imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
             holdsDocument: (el) =>
@@ -2534,6 +2561,7 @@ export class HtmlViewNode extends Node {
         };
         this._tree = build();
         kept = null;
+        if (this._vt?.phase === 'live') this._armTransitionFrame();
         this._styledWith = cascade;
         this._styledWidth = target;
         this._styledHeight = viewport;
@@ -6868,6 +6896,9 @@ export class HtmlViewNode extends Node {
     reason?: string,
   ): void {
     this._claims += 1;
+    // a change anywhere under a view transition's tree may be drawn in any
+    // image of it, wherever its group puts it
+    if (this._vt?.phase === 'live' && damage && damage !== this) damage = this;
     super.invalidate(layout, damage, reason);
   }
 
@@ -8411,6 +8442,611 @@ export class HtmlViewNode extends Node {
     return cache.get(key, width, height, draw);
   }
 
+  // --- view transitions -----------------------------------------------------
+  //
+  // A view transition (CSS View Transitions 1) is the page's realm's to run,
+  // step by step (`scripts/dom.ts`); what it asks of the element is to
+  // capture the old state, to capture the new and to end. In between, the
+  // tree of its pseudo-elements is built as boxes in the top layer
+  // (`_transitionTree`), each element it captured is a hole where it is
+  // laid out (`PaintOptions.captured`), and each image in the tree draws
+  // its element (`_transitionImage`): the old one as it was captured, and
+  // the new one as it is, at every paint.
+
+  /** A view transition under way, from the capture of its old state. */
+  private _vt: ViewTransitionRun | null = null;
+  /** The timer for its tree's next frame. */
+  private _vtTimer: unknown = null;
+
+  /**
+   * Capture a view transition's old state (7.4): each element a name
+   * captures — the root's, by the user agent's — where it is and a picture
+   * of it and all it holds, but the elements in it captured on their own.
+   * The name two elements share, which skips the transition, or ''.
+   */
+  transitionCaptureOld(): string {
+    this.transitionEnd();
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return '';
+    const named = this._namedElements(tree);
+    if (typeof named === 'string') return named;
+    const run = new ViewTransitionRun();
+    const boxes = new Set(named.map((n) => n.box));
+    for (const { name, el, box, classes } of named) {
+      const others = new Set(boxes);
+      others.delete(box);
+      const root = isRootElement(el);
+      const placement = root
+        ? this._viewportPlacement(box)
+        : this._placementOf(box);
+      const shot = this._captureSurface(tree, root ? null : box, others);
+      const old: OldImage = {
+        ...placement,
+        surface: shot?.surface ?? null,
+        inkX: shot?.inkX ?? 0,
+        inkY: shot?.inkY ?? 0,
+        inkWidth: shot?.inkWidth ?? 0,
+        inkHeight: shot?.inkHeight ?? 0,
+      };
+      run.entries.set(name, {
+        name,
+        classes,
+        old,
+        el: null,
+        now: null,
+        anim: null,
+      });
+    }
+    this._vt = run;
+    return '';
+  }
+
+  /**
+   * Capture a view transition's new state (7.4) and draw its tree: each
+   * element a name captures now, added to the names the old state had, and
+   * for each name both have, the `@keyframes` its group runs from where the
+   * old element was. The name two elements share, which ends the
+   * transition, or ''.
+   */
+  transitionCaptureNew(): string {
+    const run = this._vt;
+    if (!run || run.phase !== 'old') return '';
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return '';
+    const named = this._namedElements(tree);
+    if (typeof named === 'string') {
+      this.transitionEnd();
+      return named;
+    }
+    for (const { name, el, box, classes } of named) {
+      let entry = run.entries.get(name);
+      if (!entry) {
+        entry = { name, classes, old: null, el: null, now: null, anim: null };
+        run.entries.set(name, entry);
+      }
+      entry.el = el;
+      entry.classes = classes;
+      entry.now = isRootElement(el)
+        ? this._viewportPlacement(box)
+        : this._placementOf(box);
+    }
+    const s = this._scale;
+    let i = 0;
+    for (const entry of run.entries.values()) {
+      i += 1;
+      const old = entry.old;
+      if (!old || !entry.el) continue;
+      const name = `-ua-view-transition-group-anim-${i}`;
+      const from =
+        `width: ${cssPx(old.width, s)}; height: ${cssPx(old.height, s)}; ` +
+        `transform: ${groupTransform(old.matrix, old.width, old.height, s)}`;
+      const rule = parseStylesheet(`@keyframes ${name} { from { ${from} } }`)
+        .keyframes?.[0];
+      if (rule) {
+        run.keyframes.set(name, rule);
+        entry.anim = name;
+      }
+    }
+    run.phase = 'live';
+    run.started = animationClock.now();
+    if (this._cascade) this._cascade.transitionKeyframes = run.keyframes;
+    this._sprites?.clear();
+    this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+    this.invalidateMeasure('content');
+    this.invalidate(true, this, 'view-transition');
+    return '';
+  }
+
+  /** End a view transition (7.9 and 7.6): its tree goes, and its elements
+   *  are drawn where they are laid out again. */
+  transitionEnd(): void {
+    const run = this._vt;
+    if (!run) return;
+    this._vt = null;
+    if (this._vtTimer !== null) {
+      animationClock.disarm(this._vtTimer);
+      this._vtTimer = null;
+    }
+    run.dispose();
+    if (this._cascade) this._cascade.transitionKeyframes = null;
+    if (run.phase === 'live') {
+      this._sprites?.clear();
+      this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+      this.invalidateMeasure('content');
+      this.invalidate(true, this, 'view-transition');
+    }
+  }
+
+  /** How long until a view transition's animations are all over, in
+   *  milliseconds: `Infinity` while one is paused or never ends, and 0
+   *  once they are, or where none is under way. Null where it cannot go
+   *  on (7.8): an element its new state captured is no longer rendered, or
+   *  is broken across columns. */
+  transitionRemaining(): number | null {
+    const run = this._vt;
+    if (!run || run.phase !== 'live') return 0;
+    // its tree as it is styled now: a page may have changed its rules
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (tree) {
+      const boxes = this._firstBoxesOf(tree);
+      for (const entry of run.entries.values()) {
+        if (!entry.el) continue;
+        const box = boxes.get(entry.el);
+        if (!box || COLUMN_PIECES.has(box)) return null;
+      }
+    }
+    return Math.max(0, run.endsAt - animationClock.now());
+  }
+
+  /** A timer for the next frame a view transition's tree changes at. */
+  private _armTransitionFrame(): void {
+    if (this._vtTimer !== null) {
+      animationClock.disarm(this._vtTimer);
+      this._vtTimer = null;
+    }
+    const run = this._vt;
+    if (!run || run.phase !== 'live' || this.destroyed) return;
+    const next = run.timeline.nextFrame();
+    if (next === null) return;
+    this._vtTimer = animationClock.arm(
+      () => {
+        this._vtTimer = null;
+        if (this._vt !== run || this.destroyed) return;
+        this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+        this.invalidateMeasure('content');
+        this.invalidate(true, this, 'view-transition');
+      },
+      Math.max(1, next - animationClock.now()),
+    );
+  }
+
+  /**
+   * The elements a state of a view transition captures, by name, in tree
+   * order — the order the user agent's walk of the paint finds them in,
+   * near enough — each with its principal box and its classes; or the name
+   * two of them share (7.4). One with no box is not rendered, and captured
+   * by nothing.
+   */
+  private _namedElements(
+    tree: BoxTree,
+  ): { name: string; el: Element; box: Box; classes: string[] }[] | string {
+    const boxes = this._firstBoxesOf(tree);
+    const out: { name: string; el: Element; box: Box; classes: string[] }[] =
+      [];
+    const seen = new Set<string>();
+    for (const [el, { style }] of tree.styles) {
+      const name = captureName(el, style);
+      if (name === null) continue;
+      const box = boxes.get(el);
+      // one broken across columns is not captured (7.4)
+      if (!box || COLUMN_PIECES.has(box)) continue;
+      if (seen.has(name)) return name;
+      seen.add(name);
+      out.push({ name, el, box, classes: captureClasses(style) });
+    }
+    return out;
+  }
+
+  /** The boxes of the elements a view transition draws in its tree now. */
+  private _capturedBoxes(tree: BoxTree): Set<Box> {
+    const out = new Set<Box>();
+    const run = this._vt;
+    if (!run) return out;
+    const boxes = this._firstBoxesOf(tree);
+    for (const entry of run.entries.values()) {
+      const box = entry.el && boxes.get(entry.el);
+      if (box) out.add(box);
+    }
+    return out;
+  }
+
+  /** Whether a view transition captured the root element, which its tree
+   *  draws the canvas in. */
+  private _rootCaptured(run: ViewTransitionRun): boolean {
+    for (const entry of run.entries.values()) {
+      if (entry.el && isRootElement(entry.el)) return true;
+    }
+    return false;
+  }
+
+  /** The viewport, as the root's capture is placed (7.4): its size, at
+   *  its own corner. */
+  private _viewportPlacement(box: Box): Placement {
+    const viewport = this._viewport() ?? this.abs;
+    return {
+      width: viewport.width,
+      height: viewport.height,
+      matrix: [1, 0, 0, 1, 0, 0],
+      direction: box.style.direction,
+    };
+  }
+
+  /**
+   * Where a box's border box is from the viewport's corner, as the matrix
+   * from its own corner, in device pixels (7.4): the place layout gave it,
+   * its transform and those of the boxes around it, and the scroll that
+   * moves it — none for one fixed to the viewport.
+   */
+  private _placementOf(box: Box): Placement {
+    let m: Matrix = [1, 0, 0, 1, box.x, box.y];
+    for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+      const placed = placedMatrix(at);
+      if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
+    }
+    if (!drawnAtViewport(box)) {
+      const viewport = this._viewport() ?? this.abs;
+      m = multiply(
+        [1, 0, 0, 1, this.abs.x - viewport.x, this.abs.y - viewport.y],
+        m,
+      );
+    }
+    return {
+      width: box.width,
+      height: box.height,
+      matrix: m,
+      direction: box.style.direction,
+    };
+  }
+
+  /**
+   * A picture of a box and all it holds, as laid out, but for `others` —
+   * the elements in it captured on their own — on a surface the size of
+   * what it draws, cut to the viewport and as far again on each side; or,
+   * for null, of the document in the viewport, the root's. Where the
+   * surface's corner is from the box's border box, and its size. Null where
+   * no surface can be had.
+   */
+  private _captureSurface(
+    tree: BoxTree,
+    box: Box | null,
+    others: ReadonlySet<Box>,
+  ): {
+    surface: SurfaceLike;
+    inkX: number;
+    inkY: number;
+    inkWidth: number;
+    inkHeight: number;
+  } | null {
+    const base = this._paintOptions(null, null);
+    const viewport = this._viewport() ?? this.abs;
+    if (!box) {
+      const w = Math.ceil(viewport.width);
+      const h = Math.ceil(viewport.height);
+      if (!(w > 0 && h > 0)) return null;
+      const surface = this._surface(w, h);
+      if (!surface) return null;
+      paintDocument(surface.getContext('2d') as PaintContext, tree, {
+        ...base,
+        originX: this.abs.x - viewport.x,
+        originY: this.abs.y - viewport.y,
+        canvas: base.canvas && {
+          ...base.canvas,
+          x: base.canvas.x - viewport.x,
+          y: base.canvas.y - viewport.y,
+        },
+        viewport: {
+          x: 0,
+          y: 0,
+          width: viewport.width,
+          height: viewport.height,
+        },
+        damage: { x: 0, y: 0, width: w, height: h },
+        selection: null,
+        captured: others,
+      });
+      return { surface, inkX: 0, inkY: 0, inkWidth: w, inkHeight: h };
+    }
+    // what it draws, in the document, cut to as far round the viewport
+    // again as the viewport is: where a box fixed to the viewport is laid
+    // out at the document's top, and any other one where it scrolls
+    const fixed = drawnAtViewport(box);
+    const vx = fixed ? 0 : viewport.x - this.abs.x;
+    const vy = fixed ? 0 : viewport.y - this.abs.y;
+    const x0 = Math.floor(
+      Math.max(Math.min(box.boundsX, box.x), vx - viewport.width),
+    );
+    const y0 = Math.floor(
+      Math.max(Math.min(box.boundsY, box.y), vy - viewport.height),
+    );
+    const x1 = Math.ceil(
+      Math.min(
+        Math.max(box.boundsX + box.boundsWidth, box.x + box.width),
+        vx + 2 * viewport.width,
+      ),
+    );
+    const y1 = Math.ceil(
+      Math.min(
+        Math.max(box.boundsY + box.boundsHeight, box.y + box.height),
+        vy + 2 * viewport.height,
+      ),
+    );
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;
+    const surface = this._surface(w, h);
+    if (!surface) return null;
+    paintCapture(surface.getContext('2d') as PaintContext, tree, box, {
+      ...base,
+      originX: -x0,
+      originY: -y0,
+      canvas: undefined,
+      viewport: {
+        x: -x0,
+        y: -y0,
+        width: viewport.width,
+        height: viewport.height,
+      },
+      damage: { x: 0, y: 0, width: w, height: h },
+      selection: null,
+      captured: others,
+    });
+    return {
+      surface,
+      inkX: x0 - box.x,
+      inkY: y0 - box.y,
+      inkWidth: w,
+      inkHeight: h,
+    };
+  }
+
+  /**
+   * A view transition's tree, as the builder makes it (`TransitionTree`):
+   * `::view-transition` over the root element, and for each name its group
+   * — the size of its element and where it is, from where it was where it
+   * has both — its image pair, isolated where it has both, and its old and
+   * new images, faded out and in; each styled by the user agent's sheet and
+   * the page's rules over what the transition gives it (7.8), at the time
+   * its timeline has come to. Notes when its animations are over.
+   */
+  private readonly _transitionTree = (
+    root: Element,
+    rootStyle: ComputedStyle,
+  ): TransitionTree | null => {
+    const run = this._vt;
+    const cascade = this._cascade;
+    if (!run || run.phase !== 'live' || !cascade) return null;
+    const s = this._scale;
+    const timeline = run.timeline;
+    timeline.now = animationClock.now();
+    const declarations = (text: string) =>
+      text ? parseDeclarations(text) : [];
+    const style = cascade.transitionStyle(
+      root,
+      'view-transition',
+      '',
+      [],
+      false,
+      rootStyle,
+      [],
+      timeline,
+      'view-transition',
+    );
+    let end = animationsEnd(style);
+    const groups: TransitionTree['groups'] = [];
+    const count = run.entries.size;
+    for (const entry of run.entries.values()) {
+      const at = entry.now ?? entry.old;
+      if (!at) continue;
+      const both = !!entry.old && !!entry.el;
+      const key = (part: string) => `view-transition-${part}(${entry.name})`;
+      const group = cascade.transitionStyle(
+        root,
+        'group',
+        entry.name,
+        entry.classes,
+        count === 1,
+        style,
+        declarations(
+          `width: ${cssPx(at.width, s)}; height: ${cssPx(at.height, s)}; ` +
+            `transform: ${groupTransform(at.matrix, at.width, at.height, s)}; ` +
+            `direction: ${at.direction}` +
+            (both && entry.anim ? `; animation-name: ${entry.anim}` : ''),
+        ),
+        timeline,
+        key('group'),
+      );
+      const pair = cascade.transitionStyle(
+        root,
+        'image-pair',
+        entry.name,
+        entry.classes,
+        true,
+        group,
+        declarations(both ? 'isolation: isolate' : ''),
+        timeline,
+        key('image-pair'),
+      );
+      const fade = (out: boolean) =>
+        declarations(
+          both
+            ? `animation-name: -ua-view-transition-fade-${out ? 'out' : 'in'}, ` +
+                '-ua-mix-blend-mode-plus-lighter'
+            : '',
+        );
+      const old = entry.old
+        ? cascade.transitionStyle(
+            root,
+            'old',
+            entry.name,
+            entry.classes,
+            !entry.el,
+            pair,
+            fade(true),
+            timeline,
+            key('old'),
+          )
+        : null;
+      const now =
+        entry.el && entry.now
+          ? cascade.transitionStyle(
+              root,
+              'new',
+              entry.name,
+              entry.classes,
+              !entry.old,
+              pair,
+              fade(false),
+              timeline,
+              key('new'),
+            )
+          : null;
+      end = Math.max(
+        end,
+        animationsEnd(group),
+        animationsEnd(pair),
+        old ? animationsEnd(old) : 0,
+        now ? animationsEnd(now) : 0,
+      );
+      groups.push({
+        name: entry.name,
+        group,
+        pair,
+        old:
+          old && entry.old
+            ? { style: old, width: entry.old.width, height: entry.old.height }
+            : null,
+        new:
+          now && entry.now
+            ? { style: now, width: entry.now.width, height: entry.now.height }
+            : null,
+      });
+    }
+    run.endsAt = run.started + end;
+    return { style, groups };
+  };
+
+  /**
+   * What a view transition's image draws (`PaintOptions.transitionImage`):
+   * the old one, its element as it was captured; the new one, its element
+   * as it is, painted now — the root's, the document in the viewport —
+   * each with its border box stretched over the image's box, and what it
+   * draws past it with it.
+   */
+  private readonly _transitionImage = (box: Box): TransitionDraw | null => {
+    const run = this._vt;
+    const tree = this._tree;
+    const info = TRANSITION_IMAGES.get(box);
+    if (!run || !tree || !info) return null;
+    const entry = run.entries.get(info.name);
+    if (!entry) return null;
+    if (info.which === 'old') {
+      const old = entry.old;
+      if (!old?.surface) return null;
+      return (ctx, x, y, w, h) =>
+        drawCaptured(ctx, old.surface!, old, x, y, w, h);
+    }
+    const el = entry.el;
+    if (!el) return null;
+    return (ctx, x, y, w, h, damage) => {
+      const root = isRootElement(el);
+      const own = this._firstBoxesOf(tree).get(el) ?? null;
+      if (!own) return;
+      const others = this._capturedBoxes(tree);
+      others.delete(own);
+      // the root's leaves the transition's own tree out
+      if (root) {
+        for (const top of topLayerBoxes(tree.root)) {
+          if (top.pseudo === 'view-transition') others.add(top);
+        }
+      }
+      const size = root ? this._viewportPlacement(own) : own;
+      // drawn at its size, as it is: straight onto the context, as the
+      // document would draw it there
+      if (Math.abs(w - size.width) < 1e-6 && Math.abs(h - size.height) < 1e-6) {
+        this._paintLive(ctx, tree, root ? null : own, x, y, damage, others);
+        return;
+      }
+      const shot = this._captureSurface(tree, root ? null : own, others);
+      if (!shot) return;
+      try {
+        drawCaptured(
+          ctx,
+          shot.surface,
+          { ...shot, width: size.width, height: size.height },
+          x,
+          y,
+          w,
+          h,
+        );
+      } finally {
+        shot.surface.destroy?.();
+      }
+    };
+  };
+
+  /** An element a view transition draws in its new image, at its size with
+   *  its border box's corner at (`x`, `y`) — or, for null, the document in
+   *  the viewport, its corner there — but for `others`. */
+  private _paintLive(
+    ctx: PaintContext,
+    tree: BoxTree,
+    box: Box | null,
+    x: number,
+    y: number,
+    damage: Rect | null,
+    others: ReadonlySet<Box>,
+  ): void {
+    const base = this._paintOptions(null, damage);
+    const viewport = this._viewport() ?? this.abs;
+    if (!box) {
+      const dx = x - viewport.x;
+      const dy = y - viewport.y;
+      paintDocument(ctx, tree, {
+        ...base,
+        originX: this.abs.x + dx,
+        originY: this.abs.y + dy,
+        canvas: base.canvas && {
+          ...base.canvas,
+          x: base.canvas.x + dx,
+          y: base.canvas.y + dy,
+        },
+        viewport: { ...viewport, x, y },
+        selection: null,
+        captured: others,
+      });
+      return;
+    }
+    const originX = x - box.x;
+    const originY = y - box.y;
+    paintCapture(ctx, tree, box, {
+      ...base,
+      originX,
+      originY,
+      canvas: undefined,
+      viewport: {
+        x: originX,
+        y: originY,
+        width: viewport.width,
+        height: viewport.height,
+      },
+      selection: null,
+      captured: others,
+    });
+  }
+
   private _paint(
     ctx: Context2D,
     tree: BoxTree,
@@ -8422,8 +9058,13 @@ export class HtmlViewNode extends Node {
     last.clear();
     this._drawnLast = this._drawnNow;
     this._drawnNow = last;
+    const vt = this._vt?.phase === 'live' ? this._vt : null;
+    const captured = vt ? this._capturedBoxes(tree) : null;
     paintDocument(ctx as PaintContext, tree, {
       ...this._paintOptions(range, damage),
+      captured,
+      noCanvas: !!vt && this._rootCaptured(vt),
+      transitionImage: vt ? this._transitionImage : undefined,
       lifted: this._liftedBoxes(tree),
       shadowless: this._shadowlessBoxes(tree),
       drag: this._liveResizing()
@@ -8574,6 +9215,54 @@ export class HtmlViewNode extends Node {
 }
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
+
+/** Whether an element is its document's root: its parent the document. */
+function isRootElement(el: Element): boolean {
+  return !!el.parent && !el.parent.parent;
+}
+
+/** Device pixels as a CSS length, for a style the transition writes. */
+function cssPx(device: number, scale: number): string {
+  return `${Math.round((device / scale) * 1e4) / 1e4}px`;
+}
+
+/** The most pixels a view transition's capture of one element takes: a
+ *  large window's worth twice over. */
+const CAPTURE_LIMIT = 16 * 1024 * 1024;
+
+/**
+ * A captured element drawn with its border box over `w` by `h` at (`x`,
+ * `y`): the surface, which reaches past the border box by `inkX`… of the
+ * element's pixels, stretched as the border box is, on whole pixels where
+ * it is drawn at its size.
+ */
+function drawCaptured(
+  ctx: PaintContext,
+  surface: SurfaceLike,
+  image: {
+    width: number;
+    height: number;
+    inkX: number;
+    inkY: number;
+    inkWidth: number;
+    inkHeight: number;
+  },
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  if (!ctx.drawImage || !(image.width > 0 && image.height > 0)) return;
+  const sx = w / image.width;
+  const sy = h / image.height;
+  const dx = x + image.inkX * sx;
+  const dy = y + image.inkY * sy;
+  if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
+    ctx.drawImage(surface, Math.round(dx), Math.round(dy));
+    return;
+  }
+  ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
+}
 
 /** A number for an object, the same for as long as it lives: what a tree
  *  or a box is in a sprite's stamp and version. */
