@@ -1,10 +1,10 @@
 # Laying out only what can be seen
 
-> **Status: design, measured, nothing built.** Written 2026-10-24 after round
-> 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen pages its
-> `htmlpage.mjs` loads, with the window's edge dragged 8 px a step for 40
-> steps and back, on react-x11's macOS backend at 2x. Every number here is
-> from that drag unless it says otherwise.
+> **Status: C is built; the rest is design.** Written 2026-10-24 after
+> round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
+> pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
+> for 40 steps and back, on react-x11's macOS backend at 2x. Every number
+> here is from that drag unless it says otherwise.
 
 A dragged width is the one change that lays a document out again at every
 frame, and what a reader sees of it is one viewport. `<Html>` already lays
@@ -144,6 +144,22 @@ slack, in the coordinates its children are laid out in. What it sets aside
 keeps its height, so its `scrollHeight` is what it was. `keepAbove` stays
 the document's: a sidebar scrolled far down still lays out from its top.
 
+**Built.** `layoutBox` hands a scroll container's flow its own `until`
+(`scrollerUntil`): its offset, from `wantedScrollTop`, plus the smaller of
+the document's stop line and a viewport past its scrollport, where its
+height or its `max-height` bounds the scrollport. `laidWholeAround` is
+multicol's alone. What a flow sets aside records how far below its content
+top it reaches (`ASIDE_REACH`), which `extentOf` counts, so a container's
+scroll height, and an offset that height clamps, stay what they were; and a
+container scrolled while the partial layout holds has the document laid out
+whole (`_scrollBox`). On the Mac, a drag of RFC 9110 went from 1.51 s of
+processor time to 0.94 and its 95th-percentile frame from 10.3 ms to 3.9;
+Wikipedia's article on the United States from 2.80 s to 2.46, its median
+frame from 10.2 ms to 6.7. Menus and sidebars laid out past the line went
+from some 900 boxes a step to 14 on Wikipedia, 565 to none on RFC 9110 and
+146 to 3 on Bootstrap. The layout at rest, which now lays out at the final
+width the part of a sidebar no step reached, costs what it did.
+
 ### D. A flex column lays out every item
 
 Tailwind's nav (323 boxes a step), GitHub's file box, React's and
@@ -186,6 +202,16 @@ beside the document reads its stale geometry. A fixed box whose offsets are
 `auto` on an axis takes its static position from that path, a width ago;
 that one still lays the tree out whole.
 
+### And a table lays out every row
+
+Wikipedia's list of countries is one `wikitable` of some 250 rows, and
+`layoutTable` lays out every row at every step: 80% of the boxes a step
+lays out there start below the line. A table's columns are sized from its
+cells' kept widths (`CELL_CONTENT`, `TABLE_CONTENT`) and its rows are
+stacked, so the rows whose last layout started below the line could keep
+their heights and be set aside, as E would do a grid's — where no cell
+spans the cut and the table's height is its rows'.
+
 ### And what draws nothing
 
 GitHub's five dropdowns are `visibility: hidden`, `opacity: 0` and absolutely
@@ -199,10 +225,10 @@ right one.
 
 1. **A**, then **B**: the enabler. It takes the build off five of the seven
    slowest pages and gives the rest something to keep.
-2. **C**: small, the same shape as `until`, and every docs page has a
-   sidebar.
-3. **E**, then **D**: the cut decided from the last layout, which only a
-   kept tree has — so after A.
+2. **C** — built: small, the same shape as `until`, and every docs page has
+   a sidebar.
+3. **E**, then **D**, then a table's rows: the cut decided from the last
+   layout, which only a kept tree has — so after A.
 4. **F**, and what draws nothing: one page each in this set, and both
    common on news sites.
 

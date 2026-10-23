@@ -63,6 +63,7 @@ import {
   translation4,
 } from '../css/transform.js';
 import {
+  ASIDE_REACH,
   STUCK,
   applyScrollOffsets,
   clearDefaultAnchors,
@@ -73,6 +74,7 @@ import {
   updatePositionVisibility,
   scrollStateOf,
   scrolledBy,
+  wantedScrollTop,
 } from './scroll.js';
 import type { Placed } from '../css/transform.js';
 import {
@@ -237,6 +239,10 @@ export interface LayoutContext {
    *  (`probeWhole`, `measureIntrinsicWidth`): a probe keeps nothing, stops
    *  nowhere, and leaves the places the flow keeps by (`FLOW_PLACE`). */
   probing?: boolean;
+  /** How far down a scroll container's content is scrolled once the layout
+   *  is done (`wantedScrollTop`), where a layout stops: one stops where
+   *  what it shows ends (`layoutBox`). */
+  scrollTopOf?: (box: Box) => number;
 }
 
 /**
@@ -317,7 +323,10 @@ function putBack(tree: BoxTree): void {
   const aside = SET_ASIDE.get(tree);
   if (!aside) return;
   SET_ASIDE.delete(tree);
-  for (const [box, children] of aside.boxes) box.children = children;
+  for (const [box, children] of aside.boxes) {
+    box.children = children;
+    ASIDE_REACH.delete(box);
+  }
 }
 
 /**
@@ -386,14 +395,13 @@ function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
   }
 }
 
-/** Whether a box is a multicol container or a scroll container, or in
- *  one: laid out whole. A multicol container's content is one strip its
- *  columns balance, and what a scroll container holds is where it is
- *  scrolled to, not where the document's viewport is, so neither stops
- *  where the viewport ends nor keeps what is above it. */
+/** Whether a box is a multicol container, or in one: laid out whole. Its
+ *  content is one strip its columns balance, so it neither stops where
+ *  the viewport ends nor keeps what is above it. A scroll container stops
+ *  where what it shows ends (`layoutBox`). */
 function laidWholeAround(box: Box): boolean {
   for (let at: Box | null = box; at; at = at.parent) {
-    if (at.style.columns || isScroller(at)) return true;
+    if (at.style.columns) return true;
   }
   return false;
 }
@@ -706,6 +714,7 @@ export function layoutDocument(
           until,
           setAside: new Map<Box, Box[]>(),
           pass: ++setAsidePasses,
+          scrollTopOf: (box: Box) => wantedScrollTop(tree, box),
           ...(keep ? { keep } : null),
           ...(seenAt ? { reach: seenAt } : null),
         }
@@ -1404,6 +1413,7 @@ function layoutChildren(
   if (whole) {
     for (const child of whole) HELD_BACK.delete(child);
     ctx.setAside!.delete(box);
+    ASIDE_REACH.delete(box);
     box.children = children = whole;
   }
   let stopped = false;
@@ -1463,6 +1473,7 @@ function layoutChildren(
     ) {
       // the rest as tall as it was, after the margin hanging above it
       y += marginOf(pendingMargin) + setAside(box, children, index, ctx);
+      ASIDE_REACH.set(box, y - contentTop);
       pendingMargin = NO_MARGIN;
       open = false;
       openFloats = Infinity;
@@ -2498,6 +2509,55 @@ function autoFloor(box: Box, y: number): number {
 }
 
 function layoutBox(
+  box: Box,
+  ctx: LayoutContext,
+  borderBoxWidth: number,
+  x: number,
+  y: number,
+  outerFloats?: FloatContext,
+): void {
+  const until = ctx.until;
+  if (until === undefined || ctx.probing || !isScroller(box)) {
+    layoutBoxAt(box, ctx, borderBoxWidth, x, y, outerFloats);
+    return;
+  }
+  // What a scroll container holds is where it is scrolled to, not where
+  // the document's viewport is: it stops a viewport past what its
+  // scrollport shows, or past where the document stops if that is sooner,
+  // scrolled — the coordinates its content is laid out in are no scroll's
+  ctx.until = scrollerUntil(box, ctx, until, y);
+  try {
+    layoutBoxAt(box, ctx, borderBoxWidth, x, y, outerFloats);
+  } finally {
+    ctx.until = until;
+  }
+}
+
+/**
+ * Where a layout that stops at `until` stops inside a scroll container laid
+ * out at `y`: as far below what its scrollport shows as the document's
+ * layout stops below what the viewport shows, where its height bounds the
+ * scrollport, and where the document's stops otherwise — each moved down
+ * by how far the container is scrolled. Wikipedia's menus, RFC 9110's
+ * contents and every docs site's sidebar are scroll containers a window
+ * tall, and were laid out whole at every step of a drag.
+ */
+function scrollerUntil(
+  box: Box,
+  ctx: LayoutContext,
+  until: number,
+  y: number,
+): number {
+  const scrolled = ctx.scrollTopOf?.(box) ?? 0;
+  const own = percentBaseInside(box);
+  const client = Number.isFinite(own)
+    ? own
+    : clampHeight(box, Infinity) - box.verticalExtra;
+  const shows = y + box.borderTop + box.padTop + client;
+  return scrolled + Math.min(until, shows + ctx.viewportHeight);
+}
+
+function layoutBoxAt(
   box: Box,
   ctx: LayoutContext,
   borderBoxWidth: number,
