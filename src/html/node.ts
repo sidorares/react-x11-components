@@ -189,6 +189,7 @@ import {
   anchorAt,
   containmentApplies,
   containsOutOfFlow,
+  forgetSizes,
   heldBack,
   laidWhole,
   layoutDocument,
@@ -2615,18 +2616,21 @@ export class HtmlViewNode extends Node {
       // — up to an eighth of the document, past which the build of all of
       // it the other way costs less
       const limit = Math.max(HOVER_RESTYLE_LIMIT, tree.styles.size >> 3);
-      const reach =
-        readers.size && !rootReads && !cascade.pseudoReadsViewport(sides)
-          ? withDescendants(readers, limit)
-          : null;
+      const inPlace =
+        readers.size > 0 && !rootReads && !cascade.pseudoReadsViewport(sides);
+      // what holds it and all that holds, or where that is more than a
+      // restyle in place takes, followed down from them (`from`)
+      const reach = inPlace ? withDescendants(readers, limit) : null;
       if (
-        reach &&
+        inPlace &&
         this._stale === Stale.Nothing &&
         this._restyleInPlace(
-          reach,
+          reach ?? EMPTY_SET,
           (el) => readers.has(el),
           HOVER_PSEUDO_NONE,
           limit,
+          reach ? null : readers,
+          true,
         )
       ) {
         this._styledWidth = target;
@@ -5451,6 +5455,11 @@ export class HtmlViewNode extends Node {
      *  place of `given`, a reach worked out before: what a change to the
      *  root reaches is everything, and what it changes, mostly nothing. */
     from: ReadonlySet<Element> | null = null,
+    /** Whether a layout follows, as one does at a new width: a block's
+     *  change of lengths alone — its width, its margins, its offsets — is
+     *  taken in place, and laid out again from them, where it builds the
+     *  boxes otherwise (`lengthsOnly`). */
+    lengths = false,
   ): boolean {
     const cascade = this._cascade;
     const tree = this._tree;
@@ -5481,6 +5490,10 @@ export class HtmlViewNode extends Node {
     // the ones whose ink is what it was: only their custom properties
     // changed, which the elements under them read
     const quiet = new Set<Element>();
+    /** The ones whose lengths alone changed, taken in place where a layout
+     *  follows (`lengths`), and their boxes. */
+    const resized = new Set<Element>();
+    const resizedBoxes: Box[] = [];
     let refused = false;
     // what changed beyond ink (`hoverChange`): how far some box's ink
     // reaches, the order its layer paints in, where one is
@@ -5542,6 +5555,13 @@ export class HtmlViewNode extends Node {
           style = made;
           changed.set(el, made);
           quiet.add(el);
+        } else if (diff !== null && lengths && lengthsOnly(kept.style, made)) {
+          // what is laid out next lays it out at these lengths: its ink is
+          // what it was, and where it moves is the layout's to say
+          style = made;
+          changed.set(el, made);
+          quiet.add(el);
+          resized.add(el);
         } else if (diff === false) refused = true;
         else if (diff) {
           style = made;
@@ -5652,8 +5672,9 @@ export class HtmlViewNode extends Node {
     }
     for (const el of changed.keys()) {
       const tag = tagOf(el);
-      // their backgrounds are the canvas's
-      if (tag === 'html' || tag === 'body') return false;
+      // their backgrounds are the canvas's, which lengths do not change:
+      // Next.js's `body` is `max-width` in `vw`
+      if ((tag === 'html' || tag === 'body') && !resized.has(el)) return false;
     }
 
     // The boxes, each under its parent: what a box takes depends on what
@@ -5766,6 +5787,14 @@ export class HtmlViewNode extends Node {
         // any.
         if (box.style !== kept) return false;
         if (box.marker) return false;
+        // lengths a block's own flow, a flex box's or a grid's lays it out
+        // at; a replaced box's, a table's and an inline box's are read as
+        // their boxes are built
+        if (resized.has(el)) {
+          if (box.kind !== 'block' && box.kind !== 'flex') return false;
+          if (box.replaced !== 'none') return false;
+          resizedBoxes.push(box);
+        }
         // an input button the page took to styling, or stopped, is drawn
         // by the document or mounted as the palette's widget: another box
         if (kept.styledControl !== style.styledControl && isInputButton(el)) {
@@ -5868,6 +5897,9 @@ export class HtmlViewNode extends Node {
     // a container whose snap type changed, which may have to come to rest
     // at a snap position it was not at (`_resnap`)
     let snapTyped = false;
+    // what was kept of the sizes of a box at other lengths, and of every
+    // box it is in, which take it in
+    for (const box of resizedBoxes) forgetSizes(box);
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
@@ -12752,6 +12784,51 @@ function coverChange(was: ComputedStyle, now: ComputedStyle): boolean {
 function opaqueGround(style: ComputedStyle): boolean {
   const bg = style.backgroundColor;
   return !!bg && !isTransparent(bg) && alphaOf(inkColor(bg, style.color)) === 1;
+}
+
+/**
+ * The lengths of a box's style its layout reads as it lays the box out
+ * (`layoutBox`, `resolveEdges`), and nothing builds a box from: a change of
+ * them alone is laid out again in place where a layout follows
+ * (`_restyleInPlace`'s `lengths`). Not a font's size or a line's height,
+ * which a block's runs are made of, and not a sizing keyword, which says
+ * how the box is measured.
+ */
+const LENGTH_FIELDS: ReadonlySet<string> = new Set([
+  'width',
+  'height',
+  'minWidth',
+  'maxWidth',
+  'minHeight',
+  'maxHeight',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'rowGap',
+  'columnGap',
+  'flexBasis',
+]);
+
+/** Whether two styles of one element differ, and only in `LENGTH_FIELDS`. */
+function lengthsOnly(was: ComputedStyle, now: ComputedStyle): boolean {
+  const a = was as unknown as Record<string, unknown>;
+  const b = now as unknown as Record<string, unknown>;
+  let any = false;
+  for (const key in b) {
+    if (sameValue(a[key], b[key])) continue;
+    if (!LENGTH_FIELDS.has(key)) return false;
+    any = true;
+  }
+  return any;
 }
 
 /**

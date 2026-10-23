@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: C is built; the rest is design.** Written 2026-10-24 after
+> **Status: A and C are built; the rest is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -118,6 +118,27 @@ same width, box for box.
 their probes go (12–23 ms a step on GitHub, Next.js and MDN), and with the
 boxes kept, `keepAbove` and the heights `setAside` keeps work on them.
 
+**Built.** `_restyleInPlace` takes a `lengths` flag, which the `vw` path
+passes, and with it a change that `lengthsOnly` finds is of the lengths
+alone becomes a quiet restyle of the box (`resized`): only on a box of kind
+`block` or `flex` that is not replaced, and on `html` and `body` as well,
+whose lengths are none of the canvas's. The boxes take their new styles and
+`forgetSizes` forgets, for each and every box above it, the six things a
+box's layouts keep for its life of its sizes (the audit found
+`intrinsicMinContent`, `intrinsicMaxContent`, `PREFERRED`, `MAX_CONTENT`,
+`PERCENT_HEIGHTS` and `FLOW_PLACE`; `NATURAL` is a pass's, and the table
+and stretch caches are written by every layout). Readers too many for a
+restyle in place are followed down from (`from`). On the Mac the
+seventeen drags went from 52.8 s of processor time to 45.0: Python's from
+6.40 s to 2.06, its 95th-percentile frame from 47.8 ms to 8.4; the
+Guardian's from 6.54 s to 4.69; GitHub's from 7.01 s to 5.49; MDN's from
+3.33 s to 2.76. Of twenty steps, MDN, Python, GitHub, Next.js and the
+Guardian now keep their boxes at 16 to 20. `test/html/viewport.test.ts`
+holds a resize taken in place to a build of the whole document at the same
+width, box for box, over thirty generated documents of floats, flex rows
+and columns, grids and absolute boxes with lengths in `vw`; it fails with
+`forgetSizes` taken out.
+
 ### B. An image's density builds the boxes (BBC)
 
 BBC's images have a `srcset` of `w` candidates and a `sizes` in `vw`, so at
@@ -223,8 +244,8 @@ right one.
 
 ## Order
 
-1. **A**, then **B**: the enabler. It takes the build off five of the seven
-   slowest pages and gives the rest something to keep.
+1. **A** — built — then **B**: the enabler. It takes the build off five of
+   the seven slowest pages and gives the rest something to keep.
 2. **C** — built: small, the same shape as `until`, and every docs page has
    a sidebar.
 3. **E**, then **D**, then a table's rows: the cut decided from the last

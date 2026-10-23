@@ -1516,7 +1516,21 @@ boxes are kept: a change only of ink, or of what nothing draws — under
 `display: none` before and after, which `_restyleInPlace` takes whatever
 the change is, since no box shows it. Node's API pages hold a hidden picker
 `max-width: 75vw`, and every step of a drag built the whole document's
-boxes for it. **Anything new that resolves a viewport unit outside a style's
+boxes for it. And since a layout follows, a change of a block's lengths
+alone is taken in place too (`lengths`, `lengthsOnly`): its width and its
+limits, its margins, paddings, offsets and gaps, on a block or a flex or
+grid box that is not replaced — never a font's size, a line's height or a
+sizing keyword, which a box's runs and its measuring are built from. The
+box takes the new style, and what its layouts keep of its sizes for its
+life is forgotten for it and every box it is in (`forgetSizes`), so the
+layout after measures them again: MDN's, Python's, GitHub's, Next.js's and
+the Guardian's builds at every step of a drag were each a length in `vw`.
+**Anything new a box's layouts keep for its life that a length decides is
+forgotten in `forgetSizes`**, or a drag lays the box out at the lengths it
+had; `test/html/viewport.test.ts` holds the resize to a build of the whole
+document over generated documents. Readers too many for a restyle in place
+are followed down from (`_restyleInPlace`'s `from`), as a change to the
+tree is. **Anything new that resolves a viewport unit outside a style's
 computation goes through `_queryViewportRead`**, as a container query's
 length does, which styles every element again: what reads it is no style
 the build can find. The viewport
@@ -2695,9 +2709,10 @@ builds the boxes again around kept styles where layout reads what changed;
 build of the whole document draws, which is how the `::before` a frame
 never reached was found. And a transform keeps what each of its functions
 was (`Primitive`): a matrix cannot tell a full turn from none. Layout's
-per-box caches assume a box's style never changes, so a frame that changes
-a length builds boxes rather than restyling them and laying out again — at
-once, so that where everything it changed is positioned out of the flow
+per-box caches assume a box's style never changes (only the `vw` path
+drops them yet, through `forgetSizes`), so a frame that changes a length
+builds boxes rather than restyling them and laying out again — at once, so
+that where everything it changed is positioned out of the flow
 and no other box moved, it repaints only those boxes' ink
 (`_rebuildFrame`). Compare where a box is laid out there, not how far it
 draws: an ancestor's ink bounds take in the marquee scrolling inside it.

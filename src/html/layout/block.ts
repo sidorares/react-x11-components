@@ -138,7 +138,7 @@ import {
 } from './inline.js';
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
 import type { TextRun } from '../../richtext/index.js';
-import { layoutFlex } from './flex.js';
+import { forgetMaxContent, layoutFlex } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
 import {
@@ -3887,6 +3887,27 @@ function shrinkToFitWidth(
  *  (`shrinkToFitWidth`); a box's lifetime is the cache's, as for
  *  `Box.intrinsicMaxContent`. */
 const PREFERRED = new WeakMap<Box, number>();
+
+/**
+ * Forget what a box's layouts keep for its life of how big it is — the
+ * widths it is measured to (`intrinsicMinContent`, `intrinsicMaxContent`,
+ * `PREFERRED`, a flex item's `MAX_CONTENT`), whether what it holds takes a
+ * percentage of a height (`PERCENT_HEIGHTS`), and the place its flow keeps
+ * it at (`FLOW_PLACE`) — and the same of every box it is in, which take it
+ * in: a box restyled in place to other lengths, laid out again from them
+ * (`_restyleInPlace`'s `lengths`). Each is worked out again where it is
+ * next asked for.
+ */
+export function forgetSizes(box: Box): void {
+  for (let at: Box | null = box; at; at = at.parent) {
+    at.intrinsicMinContent = -1;
+    at.intrinsicMaxContent = -1;
+    PREFERRED.delete(at);
+    PERCENT_HEIGHTS.delete(at);
+    FLOW_PLACE.delete(at);
+    forgetMaxContent(at);
+  }
+}
 
 /**
  * A box's min-content width as its words give it, laid out at no width

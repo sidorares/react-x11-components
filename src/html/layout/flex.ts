@@ -1389,6 +1389,12 @@ function applyItem(
  *  is the cache's: any change to what is in it rebuilds it. */
 const MAX_CONTENT = new WeakMap<Box, number>();
 
+/** Forget an item's max-content width, kept for its life: its lengths, or
+ *  those of something in it, changed in place (`forgetSizes`). */
+export function forgetMaxContent(box: Box): void {
+  MAX_CONTENT.delete(box);
+}
+
 /** The width and height of the layout an item was last given, its border
  *  box's: what the final pass keeps where the width is the same. */
 interface Laid {

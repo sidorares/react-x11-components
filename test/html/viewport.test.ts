@@ -1271,6 +1271,114 @@ test('a vw on what is drawn still builds what it sizes', async () => {
   assert.strictEqual(boxOf(el, 'b').width, 300);
 });
 
+test('a vw length a block is laid out at is taken in place at a new width, and lays out as a build of the document does, box for box', async () => {
+  // MDN's, Python's, Next.js's and the Guardian's builds at every step of a
+  // drag were each a length in `vw` on a block: a `max-width`, a `width`, a
+  // `right`. Taken in place, the boxes keep what they measured, so what the
+  // lengths changed is measured again: here a flex item's max-content, of a
+  // padding and a child in `vw`
+  const source =
+    '<style>body{margin:0}#m{max-width:80vw;margin:0 auto;padding:0 2vw}' +
+    '#row{display:flex;gap:1vw}#i1{padding:0 5vw;flex:none}' +
+    '#c{width:20vw;height:10px}#m{position:relative}' +
+    '#abs{position:absolute;top:0;right:calc(100% - 50vw);width:10px;' +
+    'height:10px}p{margin:0 0 4px}</style><div id="m"><p id="p1">The quick ' +
+    'brown fox jumps over the lazy dog, and over the lazy dog again.</p>' +
+    '<div id="row"><div id="i1"><div id="c"></div></div><div id="i2">a ' +
+    'second item</div></div><div id="abs"></div></div>';
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const ids = ['m', 'p1', 'row', 'i1', 'c', 'i2', 'abs'];
+  const laid = () =>
+    ids.map((id) => {
+      const b = boxOf(el, id);
+      return [id, b.x, b.y, b.width, b.height];
+    });
+  assert.strictEqual(boxOf(el, 'i1').width, 120, '20vw and two 5vw');
+  const tree = treeOf(el);
+  await resize(300, 360);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.strictEqual(boxOf(el, 'i1').width, 108, 'measured again');
+  const inPlace = laid();
+  // and the document styled and built again whole, at the same width
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+  el.layoutNow();
+  assert.ok(treeOf(el) !== tree);
+  assert.deepStrictEqual(inPlace, laid());
+});
+
+test('vw lengths taken in place at a new width lay out as a build does, over generated documents', async () => {
+  // what a box's layouts keep of its sizes for its life, of every kind of
+  // box a length in `vw` can be on — a float's preferred width, a flex
+  // item's max-content, a grid item's — has to be forgotten where it moves
+  // (`forgetSizes`): each document is resized, and laid out again as a
+  // build of all of it at the same width lays it out
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
+  const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
+  let ids = 0;
+  const length = () => pick(['0', `${1 + Math.floor(random() * 8)}vw`, '4px']);
+  const box = (depth: number): string => {
+    const id = `e${ids++}`;
+    const display = pick(['block', 'flex', 'flex-col', 'grid', 'float', 'abs']);
+    const css = [
+      `padding:${length()} ${length()}`,
+      `margin:${length()} ${pick(['0', 'auto', `${Math.floor(random() * 6)}vw`])}`,
+    ];
+    if (random() < 0.5) css.push(`width:${pick(['30vw', '45%', 'auto'])}`);
+    if (random() < 0.4) css.push(`max-width:${pick(['60vw', '80%'])}`);
+    if (display === 'flex') css.push('display:flex', `gap:${length()}`);
+    if (display === 'flex-col') {
+      css.push('display:flex;flex-direction:column', `gap:${length()}`);
+    }
+    if (display === 'grid') {
+      css.push(
+        'display:grid;grid-template-columns:1fr auto',
+        `gap:${length()}`,
+      );
+    }
+    if (display === 'float') css.push('float:left');
+    if (display === 'abs') {
+      css.push('position:absolute', `left:${length()}`, `top:${length()}`);
+    }
+    const text = Array.from({ length: 1 + Math.floor(random() * 6) }, () =>
+      pick(words),
+    ).join(' ');
+    const kids =
+      depth < 3
+        ? Array.from({ length: Math.floor(random() * 3) }, () => box(depth + 1))
+        : [];
+    return `<div id="${id}" style="${css.join(';')}">${text}${kids.join('')}</div>`;
+  };
+  let inPlace = 0;
+  for (let doc = 0; doc < 30; doc += 1) {
+    ids = 0;
+    const source =
+      '<style>body{margin:0}</style><div style="position:relative">' +
+      box(0) +
+      box(0) +
+      '</div>';
+    const { el, resize } = await renderScrolled(source, 300, 400);
+    const tree = treeOf(el);
+    await resize(300, 352);
+    if (treeOf(el) === tree) inPlace += 1;
+    const laid = () =>
+      Array.from({ length: ids }, (_, i) => {
+        const b = boxOf(el, `e${i}`);
+        return b ? [i, b.x, b.y, b.width, b.height] : [i];
+      });
+    const resized = laid();
+    (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+    el.layoutNow();
+    assert.deepStrictEqual(resized, laid(), `document ${doc}: ${source}`);
+    await cleanup();
+  }
+  assert.ok(inPlace >= 10, `${inPlace} of 30 restyled in place`);
+});
+
 test('a vw that comes to hold follows the width, and one that stops does not', async () => {
   // under a `@media` band: crossing into it styles the page again, which
   // finds the `vw`, and every resize in the band after it does too

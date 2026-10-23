@@ -660,12 +660,12 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
 });
 
 test('a dragged width that builds again what holds a vw goes on laying out what can be seen', async (t) => {
-  // A `vw` a box is laid out by builds the boxes again at every step, and
+  // A `vw` a box's text is set by builds the boxes again at every step, and
   // the tree it builds is laid out as a crossing's is: down to what can be
   // seen, sized from all it holds. Laid out whole, a long page was all of
   // it at every step.
   holdClock(t, resizeClock);
-  const vw = '<style>#r0{margin-left:10vw}</style>';
+  const vw = '<style>#r0{margin-left:10vw;font-size:4vw}</style>';
   const { el, resize } = await renderScrolled(
     LONG.replace('<body style="margin:0">', `${vw}<body style="margin:0">`),
     300,
@@ -709,6 +709,26 @@ test('a dragged width that builds again what holds a vw goes on laying out what 
   assert.ok(!laidWhole(insideTree()), 'at once');
   assert.ok(reached(inside.el, 'fixed') && reached(inside.el, 'end'));
   assert.strictEqual(boxOf(inside.el, 'r0').x, 38);
+  await cleanup();
+
+  // and a `vw` that moves nothing but a block's lengths builds nothing: the
+  // boxes are kept, and laid out down to what can be seen at every step
+  const lengths = await renderScrolled(
+    LONG.replace(
+      '<body style="margin:0">',
+      '<style>#r0{margin-left:10vw}</style><body style="margin:0">',
+    ),
+    300,
+    400,
+  );
+  const lengthsTree = (): BoxTree =>
+    (lengths.el as unknown as { _tree: BoxTree })._tree;
+  const kept = lengthsTree();
+  await lengths.resize(300, 390);
+  await lengths.resize(300, 380);
+  assert.strictEqual(lengthsTree(), kept, 'built again');
+  assert.strictEqual(boxOf(lengths.el, 'r0').x, 38);
+  assert.ok(partial(lengths.el), 'laid out down to what can be seen');
 });
 
 // A dragged width lays out from the top of what can be seen: the blocks
