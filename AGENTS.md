@@ -2850,6 +2850,22 @@ and once whole. **Anything new that builds the boxes while the width moves
 says whether its tree may stop**, through `crossing` in `_update`, or a
 long page is laid out whole at every step of the drag.
 
+**A grid stops at a row, where its rows' sizes are their own.** A layout
+that stops keeps the rows of a grid whose last layout started below where
+it stops at the sizes they had, and sets their items aside (`cutAt`,
+`setAsideOf`), from what the grid's last layout that was not a probe made
+of them (`KEPT_ROWS`): the same items in the same areas, or nothing is
+kept. A row's size is its items' alone but where something shares the
+grid's height out among its rows — a share (`fr`), a percentage, a
+percentage gap, a height of its own or a least one — or an item spans the
+cut, or one is a subgrid; any of those lays the grid out whole. Where the
+rows above come out shorter and the first row kept starts above where the
+layout stops, it is laid out after all, as a block's child would be.
+Next.js's blog is a grid of cards, and a step of a drag laid out every
+card. **Anything new that sets a box's children aside takes them back with
+`wholeAgain` where the box's layout starts**, or a layout of it later in
+the same pass — a probe, a flex item measured — finds them cut short.
+
 **What is above the viewport is kept as well, and the viewport holds
 still.** A pane that can follow what it shows (`anchorScrollBy`, react-x11
 2.45.0, CSS Scroll Anchoring 1) keeps the block at the top of its viewport
