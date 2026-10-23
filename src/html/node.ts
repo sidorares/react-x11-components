@@ -508,6 +508,11 @@ export interface DocumentInteraction {
   controlValue(el: Element): string | boolean | null;
   setControlValue(el: Element, value: string | boolean): boolean;
   focus(el: Element): boolean;
+  /** Tell the document an element has the focus before its widget or its
+   *  stop is there to take it — a control just put in, an element a modal
+   *  dialog gave back to as it closed — as a script's `focus()` tells it
+   *  before it returns (HTML 6.6.3); `focus` gives it core's once it can. */
+  told(el: Element): void;
   blur(): void;
   activeElement(): Element | null;
   activate(el: Element): boolean;

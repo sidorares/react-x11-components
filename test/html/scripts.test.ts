@@ -2791,6 +2791,30 @@ test(':defined is false for a custom element no definition has upgraded, and res
   assert.equal(doc.view.computedStyle(doc.byId('late'))?.color, 'rgb(1, 2, 3)');
 });
 
+test('a focus a script asks for is told before focus() returns: a control just put in, and what a modal dialog gives the focus back to', async () => {
+  const doc = await hosted(
+    '<dl><dt id="dt" contenteditable>x</dt><dialog id="d"></dialog></dl><p id="out"></p><script>' +
+      'var log = [], d = document.getElementById("d"), dt = document.getElementById("dt");' +
+      'document.addEventListener("focusin", function (e) { log.push("in:" + (e.target.id || e.target.nodeName)); });' +
+      'requestAnimationFrame(function () {' +
+      // a button put in this task has no stop yet
+      '  var b = document.createElement("button"); b.id = "b"; b.textContent = "b"; document.body.appendChild(b);' +
+      '  b.focus(); log.push("focused b:" + (document.activeElement === b));' +
+      // a modal dialog with nothing to focus takes the focus from what had
+      // it, and gives it back as it closes, in the same task
+      '  dt.focus(); d.showModal(); d.close();' +
+      '  log.push("back:" + (document.activeElement === dt));' +
+      '  document.getElementById("out").textContent = JSON.stringify(log);' +
+      '});</script>',
+  );
+  for (let i = 0; i < 40 && !doc.text('out'); i += 1) await settle(20);
+  assert.deepEqual(
+    JSON.parse(doc.text('out') || 'null'),
+    ['in:b', 'focused b:true', 'in:dt', 'in:dt', 'back:true'],
+    doc.logs.join('\n'),
+  );
+});
+
 test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
   const doc = await hosted(
     '<style>body{margin:0;font-size:16px}</style>' +
