@@ -476,8 +476,9 @@ function fuzzyOf(source: string): {
   totalPixels: number;
 } {
   let allowed = { maxDifference: 0, totalPixels: 0 };
+  // the name's quotes are optional, as an attribute's are
   for (const tag of source.match(
-    /<meta\b[^>]*name\s*=\s*["']fuzzy["'][^>]*>/gi,
+    /<meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
   ) ?? []) {
     let spec = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
     if (!spec) continue;

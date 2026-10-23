@@ -11180,14 +11180,15 @@ export function installDom(
   };
   // --- view transitions -------------------------------------------------
   //
-  // `document.startViewTransition()` as CSS View Transitions 1, 7 runs it,
-  // drawn as no transition: the update callback is called at the next
-  // frame, and once what it returns settles the transition is ready and,
-  // its animations nothing, finished. What it asks of the page — the order
-  // of the callback and the promises, one transition skipping another, a
-  // name two elements share skipping it, a callback that never settles
-  // timing out — is the specification's, so a page that waits on one
-  // goes on.
+  // `document.startViewTransition()` as CSS View Transitions 1, 7 runs it:
+  // the old state is captured at the next frame and the update callback
+  // called, and once what it returns settles the new state is captured,
+  // the transition is ready and `<Html>` draws its tree of pseudo-elements;
+  // once their animations are over it is finished. What it asks of the
+  // page — the order of the callback and the promises, one transition
+  // skipping another, a name two elements share skipping it, a callback
+  // that never settles timing out — is the specification's, so a page
+  // that waits on one goes on.
 
   /** A transition's types (CSS View Transitions 2, 3.4.2): a set of
    *  strings, worked through the built-ins as a highlight's ranges are. */
@@ -11338,10 +11339,11 @@ export function installDom(
   };
 
   /** The new state captured (7.4, "activate"): skipped where two elements
-   *  share a name, and otherwise ready, and over at the next frame. */
+   *  share a name, and otherwise ready, and over once the animations of
+   *  its pseudo-elements are (7.9). */
   const activateTransition = (vt: Any): void => {
     if (vt._phase === 'done') return;
-    const shared = str(call('transitionNames'));
+    const shared = str(call('vtNew'));
     if (shared) {
       skipTransition(
         vt,
@@ -11354,17 +11356,37 @@ export function installDom(
     }
     vt._phase = 'animating';
     vt._resolveReady();
-    setTimer(
-      () => {
-        if (vt._phase !== 'animating') return;
+    // asked again when they would be over, and at least every quarter of
+    // a second: a page may change their rules, or take an element out of
+    // the rendering, which skips the transition (7.8)
+    const settle = (): void => {
+      if (vt._phase !== 'animating') return;
+      const left = Number(call('vtRemaining'));
+      if (left === -2) {
+        skipTransition(
+          vt,
+          new DOMException(
+            'An element of the transition is no longer rendered',
+            'InvalidStateError',
+          ),
+        );
+        return;
+      }
+      if (left === 0) {
         vt._phase = 'done';
         if (activeTransition === vt) activeTransition = null;
+        call('vtEnd');
         vt._resolveFinished();
-      },
-      16,
-      [],
-      false,
-    );
+        return;
+      }
+      setTimer(
+        settle,
+        left < 0 ? 250 : Math.min(250, Math.max(16, left)),
+        [],
+        false,
+      );
+    };
+    setTimer(settle, 16, [], false);
   };
 
   /** Skip a transition (7.6): it is no longer the active one, its update
@@ -11372,7 +11394,10 @@ export function installDom(
    *  update does. */
   const skipTransition = (vt: Any, reason: Any): void => {
     if (vt._phase === 'done') return;
-    if (activeTransition === vt) activeTransition = null;
+    if (activeTransition === vt) {
+      activeTransition = null;
+      call('vtEnd');
+    }
     const called = vt._called;
     vt._phase = 'done';
     if (!called) setTimer(() => callUpdate(vt), 0, [], false);
@@ -11414,7 +11439,7 @@ export function installDom(
     setTimer(
       () => {
         if (vt._phase === 'done') return;
-        const shared = str(call('transitionNames'));
+        const shared = str(call('vtOld'));
         if (shared) {
           skipTransition(
             vt,

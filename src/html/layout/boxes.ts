@@ -457,6 +457,7 @@ export class Box {
     | 'first-letter'
     | 'backdrop'
     | 'details-content'
+    | 'view-transition'
     | null = null;
 
   /**
@@ -870,6 +871,36 @@ export const SHAPE_STYLES = new WeakMap<Box, ShapeStyles | null>();
  *  when the host is asked for them. */
 export const GENERATED_FROM = new WeakMap<Box, Element>();
 
+/**
+ * What a view transition's tree is built from (CSS View Transitions 1,
+ * 3.4): the style of its root, and for each name a group, an image pair
+ * and an old and a new image — an image's style and the size of the
+ * element it shows, its natural size; null for one the transition has
+ * not got, or that is not displayed.
+ */
+export interface TransitionTree {
+  style: ComputedStyle;
+  groups: {
+    name: string;
+    group: ComputedStyle;
+    pair: ComputedStyle;
+    old: TransitionImageBox | null;
+    new: TransitionImageBox | null;
+  }[];
+}
+
+export interface TransitionImageBox {
+  style: ComputedStyle;
+  width: number;
+  height: number;
+}
+
+/** The box of a view transition's old or new image, by what it shows. */
+export const TRANSITION_IMAGES = new WeakMap<
+  Box,
+  { name: string; which: 'old' | 'new' }
+>();
+
 /** The blocks that broke an inline box under full opacity in pieces, and
  *  the opacity they take from it — from each such inline box around them,
  *  multiplied. They stand outside it (CSS 2.1 9.2.1.1) and are still its
@@ -1085,6 +1116,10 @@ export interface BoxTree {
 
 export interface BuildOptions {
   cascade: Cascade;
+  /** A view transition's tree, where one is under way: what hangs off the
+   *  root element in the top layer (`TransitionTree`). */
+  transition?:
+    ((root: Element, rootStyle: ComputedStyle) => TransitionTree | null) | null;
   /** The styles of the tree this one replaces, where only some elements'
    *  can have changed since (`Cascade.beginSharing`). */
   kept?: KeptStyles | null;
@@ -1849,6 +1884,9 @@ class Builder {
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
       this._pseudo(el, 'after', style, box);
+      if (this._options.transition && !el.parent?.parent) {
+        this._viewTransition(el, box);
+      }
     }
     this._depth -= depth;
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
@@ -1986,6 +2024,56 @@ class Builder {
     GENERATED_FROM.set(box, el);
     if (namesImages(style)) this._backgrounds.push(box);
     if (into.kind === 'inline') this._nestedOutOfLine = true;
+  }
+
+  /**
+   * A view transition's tree, after all the root element holds (CSS View
+   * Transitions 1, 3.4): `::view-transition` in the top layer, over
+   * everything, and in it a group for each name, an image pair in that and
+   * the old and the new image in the pair — each a box of the style the
+   * transition gives it, and each image a replaced box of the size of the
+   * element it shows (`TRANSITION_IMAGES`). Each is the root element's to
+   * the pointer, as a pseudo-element is its element's (`GENERATED_FROM`).
+   */
+  private _viewTransition(el: Element, into: Box): void {
+    const tree = this._options.transition?.(el, into.style);
+    if (!tree || tree.style.display === 'none') return;
+    const make = (style: ComputedStyle, parent: Box): Box => {
+      if (style.translate || style.transform) this._relative = true;
+      if (outOfPlane(style)) this._tilted = true;
+      const box = new Box(boxKindFor(style.display), null, style);
+      box.pseudo = 'view-transition';
+      placeInFlow(box, style, parent);
+      parent.append(box);
+      GENERATED_FROM.set(box, el);
+      if (namesImages(style)) this._backgrounds.push(box);
+      return box;
+    };
+    const root = make(tree.style, into);
+    root.topLayer = true;
+    for (const g of tree.groups) {
+      if (g.group.display === 'none') continue;
+      const group = make(g.group, root);
+      if (g.pair.display === 'none') continue;
+      const pair = make(g.pair, group);
+      for (const which of ['old', 'new'] as const) {
+        const image = g[which];
+        if (!image || image.style.display === 'none') continue;
+        const box = new Box('replaced', null, image.style);
+        box.pseudo = 'view-transition';
+        box.replaced = 'image';
+        box.intrinsic = {
+          width: image.width,
+          height: image.height,
+          missing: 0,
+          ratio: image.height > 0 ? image.width / image.height : 0,
+        };
+        placeInFlow(box, image.style, pair);
+        pair.append(box);
+        GENERATED_FROM.set(box, el);
+        TRANSITION_IMAGES.set(box, { name: g.name, which });
+      }
+    }
   }
 
   /**

@@ -899,18 +899,47 @@ field's selection is the page's alone: `select()` and `setSelectionRange()`
 are read back, and the widget does not show them, since core's
 `<textinput>` and `<textarea>` take no selection from outside.
 
-**A view transition runs and draws as none** (CSS View Transitions 1).
-`document.startViewTransition()` calls its update at the next frame, and
-once what the update returns settles, the transition is ready and then
-finished, its animations nothing: `updateCallbackDone`, `ready` and
-`finished` settle in the specification's order, a transition started
-while one is active skips it, two elements of one `view-transition-name`
-skip it, an update that throws or never settles — after four seconds —
-skips it, and `skipTransition()` does. `types` is a set of strings and
-`document.activeViewTransition` the one running. `view-transition-name`
-and `view-transition-class` are read and serialized, and the
-`::view-transition` pseudo-elements are selectors that match nothing; the
-pseudo-element tree, its styles and its animations are not made.
+**A view transition draws its tree of pseudo-elements** (CSS View
+Transitions 1). `document.startViewTransition()` captures the old state
+at the next frame and calls its update; once what the update returns
+settles, it captures the new state, is ready, and `<Html>` draws its tree
+until its animations are over, when it is finished.
+
+- **What a state captures.** Each element with a `view-transition-name` and
+  a box is captured by that name, the root element among them by the user
+  agent's `root`. `auto` takes the element's `id`, and `match-element` and
+  an `auto` with no `id` make a name of the element. The old state is the
+  element's border box, where it is from the viewport's corner — its
+  transform and those around it included — and a picture of it and all it
+  holds, as laid out, with its opacity, filter, mask and clip, past its
+  border box as far as it draws and the viewport reaches again, leaving out
+  the elements in it captured on their own. A named element is a stacking
+  context, as in a browser.
+- **The tree.** `::view-transition`, in the top layer over everything, holds
+  a group for each name, in the order the names were found: the old
+  state's, the root's first, then the new state's. Each group holds an
+  image pair, which holds an old image and a new one where the transition
+  has each. These are boxes styled by the user agent's sheet and the page's
+  rules, a name or a class in a selector's argument counting as a type
+  selector and `*` alone as none. Under them is what the transition gives
+  each: a group is its element's size and is placed where it is, animated
+  from where it was by a `@keyframes` of its own, and the images fade
+  across. The old image draws its picture; the new image draws its element
+  as it is now, at every paint, at its size or stretched to the image's.
+  The element itself is a hole where it is laid out, and with the root
+  captured, the canvas is too.
+- **Timing.** The tree's animations run on a timeline of their own, and the
+  transition is finished once they are all over, which one paused or
+  without end never is.
+- **Skipping.** `updateCallbackDone`, `ready` and `finished` settle in the
+  specification's order. A transition is skipped by one started while it is
+  active, by two elements sharing a name, by an update that throws or never
+  settles (after four seconds), and by `skipTransition()`.
+- **Elsewhere.** `types` is a set of strings, and
+  `document.activeViewTransition` is the one running.
+- **Not yet.** The tree's styles in `getComputedStyle()`, its animations in
+  `getAnimations()`, `:active-view-transition`, rendering held while the
+  update runs, and transitions across documents.
 
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their

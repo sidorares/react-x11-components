@@ -58,6 +58,7 @@ import {
   mediaMatches,
   parseMediaQuery,
   readIdent,
+  specificityOf,
   startsIdent,
   supportsCondition,
 } from './parse.js';
@@ -617,6 +618,74 @@ function splitPseudoElement(rule: StyleRule): {
         : name) as PseudoElement,
     rule: { ...rule, selector },
   };
+}
+
+/**
+ * Which of a view transition's pseudo-elements a rule styles (CSS View
+ * Transitions 1, 3.2): the tree's root, a group, an image pair, an old or
+ * a new image — the name its argument names, `*` for any, the classes it
+ * asks the element to have had, and whether it asks to be the only child
+ * of its parent (`:only-child`, the one pseudo-class it may take).
+ */
+export interface TransitionPart {
+  part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
+  name: string;
+  classes: readonly string[];
+  onlyChild: boolean;
+}
+
+const TRANSITION_PART =
+  /::view-transition(?:-(group|image-pair|old|new)\(\s*([^()]*?)\s*\))?(:only-child)?$/i;
+
+/** What each rule for a view transition's pseudo-element styles, by the
+ *  rule for its originating element (`splitTransitionPart`). */
+const TRANSITION_PARTS = new WeakMap<StyleRule, TransitionPart>();
+
+/**
+ * A rule for a view transition's pseudo-element, as the part it styles and
+ * a rule for its originating element, which is what gets matched — `*`
+ * where the selector names none. A name or a class in its argument makes
+ * it as specific as a type selector, and `*` alone as no selector at all
+ * (CSS View Transitions 1, 3.2; 2, 3.2). Null for a rule for none, or one
+ * whose argument is no name or class list.
+ */
+function splitTransitionPart(
+  rule: StyleRule,
+): { rule: StyleRule; part: TransitionPart } | null {
+  const m = TRANSITION_PART.exec(rule.selector);
+  if (!m) return null;
+  const head = rule.selector.slice(0, m.index).trimEnd();
+  const selector = !head ? '*' : /[>+~]$/.test(head) ? `${head} *` : head;
+  let name = '*';
+  const classes: string[] = [];
+  let typed = true;
+  if (m[1]) {
+    const arg = m[2];
+    let i = 0;
+    if (arg[0] === '*') i = 1;
+    else if (arg[0] !== '.') {
+      if (!startsIdent(arg, 0)) return null;
+      const ident = readIdent(arg, 0);
+      name = ident.value;
+      i = ident.end;
+    }
+    while (i < arg.length) {
+      if (arg[i] !== '.' || !startsIdent(arg, i + 1)) return null;
+      const ident = readIdent(arg, i + 1);
+      classes.push(ident.value);
+      i = ident.end;
+    }
+    typed = name !== '*' || classes.length > 0;
+  }
+  const part: TransitionPart = {
+    part: (m[1]?.toLowerCase() ?? 'view-transition') as TransitionPart['part'],
+    name,
+    classes,
+    onlyChild: !!m[3],
+  };
+  const specificity =
+    specificityOf(head) + (typed ? 1 : 0) + (m[3] ? 1_000 : 0);
+  return { rule: { ...rule, selector, specificity }, part };
 }
 
 /**
@@ -2372,6 +2441,13 @@ export class Cascade {
   /** The rules for each custom highlight's `::highlight()`, by its name
    *  (CSS Highlight API 1, 3): a document with none asks nothing. */
   private _highlights = new Map<string, RuleIndex>();
+  /** The rules for a view transition's pseudo-elements, by their
+   *  originating element, each part's own (`TRANSITION_PARTS`). */
+  private _transitionRules = new RuleIndex(true);
+  /** The `@keyframes` a view transition under way makes, each group's
+   *  from where its element was to where it is (CSS View Transitions 1,
+   *  7.8), found before any sheet's. */
+  transitionKeyframes: ReadonlyMap<string, KeyframesRule> | null = null;
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
    *  is no element of HTML's alone. They are in `_index` too, for the
@@ -2788,6 +2864,12 @@ export class Cascade {
               : 2,
           rule.declarations,
         );
+        continue;
+      }
+      const transition = splitTransitionPart(rule);
+      if (transition) {
+        TRANSITION_PARTS.set(transition.rule, transition.part);
+        this._transitionRules.add(transition.rule, undefined, scope);
         continue;
       }
       const pseudo = splitPseudoElement(rule);
@@ -3226,6 +3308,8 @@ export class Cascade {
     name: string,
     tree: ShadowRoot | null = null,
   ): KeyframesRule | null {
+    const made = this.transitionKeyframes?.get(name);
+    if (made) return made;
     for (let root = tree; root; root = shadowRootAround(root.host)) {
       const found = this._keyframesIn(this._rootInfo(root).rules, name);
       if (found) return found;
@@ -4528,6 +4612,74 @@ export class Cascade {
     // a stylesheet made up, which no browser selects or copies
     if (style.userSelect === 'auto') style.userSelect = 'none';
     return style;
+  }
+
+  /**
+   * The style of one of a view transition's pseudo-elements (CSS View
+   * Transitions 1, 3): the rules for its part whose argument it answers —
+   * its name or `*`, and classes its element had — over what the
+   * transition gives it itself (`dynamic`: the user agent's, after its
+   * sheet, 7.8), inheriting from `parentStyle`, the style of the part it
+   * hangs in, and the root element's for the tree's root. Its animations
+   * run on `timeline`, which is the transition's, as `key`.
+   */
+  transitionStyle(
+    root: Element,
+    part: TransitionPart['part'],
+    name: string,
+    classes: readonly string[],
+    onlyChild: boolean,
+    parentStyle: ComputedStyle,
+    dynamic: readonly Declaration[],
+    timeline: AnimationTimeline,
+    key: string,
+  ): ComputedStyle {
+    const candidates: Candidate[] = [];
+    if (this._transitionRules.size > 0) {
+      this._matchInto(
+        this._transitionRules,
+        root,
+        candidates,
+        undefined,
+        (indexed) => {
+          const p = TRANSITION_PARTS.get(indexed.rule);
+          return (
+            !!p &&
+            p.part === part &&
+            (p.name === '*' || p.name === name) &&
+            p.classes.every((c) => classes.includes(c)) &&
+            (!p.onlyChild || onlyChild)
+          );
+        },
+      );
+    }
+    if (dynamic.length) {
+      candidates.push({
+        origin: Origin.UserAgent,
+        context: 0,
+        tree: null,
+        layer: null,
+        specificity: 1,
+        order: -1,
+        declarations: dynamic as Declaration[],
+        only: -1,
+      });
+    }
+    candidates.sort(byCascade);
+    const was = this.timeline;
+    this.timeline = timeline;
+    try {
+      return this._computeStyle(
+        root,
+        parentStyle,
+        false,
+        candidates,
+        false,
+        key,
+      );
+    } finally {
+      this.timeline = was;
+    }
   }
 
   /**

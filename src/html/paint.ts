@@ -128,6 +128,7 @@ import {
   SHIFTED_LINES,
   TEXT_RAISES,
   TEXT_SHIFTS,
+  TRANSITION_IMAGES,
   inlineFade,
   textFade,
 } from './layout/boxes.js';
@@ -420,6 +421,11 @@ export interface PaintOptions {
   }[];
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** What a view transition's old or new image draws (`TRANSITION_IMAGES`):
+   *  the element it shows, its border box stretched over `w` by `h` at
+   *  (`x`, `y`) and what it draws past its border box with it, under the
+   *  paint's damage. Null where there is nothing to draw. */
+  transitionImage?(box: Box): TransitionDraw | null;
   /** Which of a scroll container's bars a page's `::-webkit-scrollbar`
    *  hides (`Cascade.scrollbarHidden`). */
   scrollbarHidden?(box: Box): { x: boolean; y: boolean };
@@ -495,6 +501,13 @@ export interface PaintOptions {
   shadowless?: ReadonlySet<Box> | null;
   /** Set while the window's edge is dragged (`liveResizing`). */
   drag?: DragPaint | null;
+  /** Leave the canvas unpainted: a view transition has captured the root
+   *  element, whose image its tree draws it in. */
+  noCanvas?: boolean;
+  /** The boxes of the elements a view transition captured (CSS View
+   *  Transitions 1, 3.5): each is drawn in its image in the transition's
+   *  tree, it and all it holds, and is a hole where it is laid out. */
+  captured?: ReadonlySet<Box> | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal What a box with a `backdrop-filter` paints what is behind
@@ -1049,7 +1062,11 @@ export function paintDocument(
   const scheme = rootScheme(tree);
   // under a canvas of a colour of its own with no transparency, which
   // covers all of it, the scheme's is a fill nobody sees
-  if (scheme !== tree.paletteScheme && !coloursCanvas(canvas)) {
+  if (
+    scheme !== tree.paletteScheme &&
+    !coloursCanvas(canvas) &&
+    !options.noCanvas
+  ) {
     // A document is drawn on the window's own ground, the palette's, as an
     // embedded one is on a transparent canvas. Where its root's colour
     // scheme is not the scheme of what it is embedded in, its canvas is
@@ -1071,7 +1088,9 @@ export function paintDocument(
     until: null,
     matrix: options.matrix,
   };
-  if (canvas) paintCanvas(ctx, canvas, tree, { ...options, backdrop });
+  if (canvas && !options.noCanvas) {
+    paintCanvas(ctx, canvas, tree, { ...options, backdrop });
+  }
   const painted: PaintOptions = {
     ...options,
     canvasSource: canvas?.source,
@@ -1089,6 +1108,11 @@ export function paintDocument(
   // context of its own that nothing around it clips, fades or moves (CSS
   // Position 4, 3.3), with the bars in it over it
   for (const box of topLayerBoxes(tree.root)) {
+    // one in an element a view transition captured is in its image, and a
+    // transition's tree is in no element's
+    if (box.pseudo !== 'view-transition' && capturedAround(box, options)) {
+      continue;
+    }
     paintStacked(ctx, box, painted);
     if (!options.backdrop) paintScrollBars(ctx, tree, options, box);
   }
@@ -1097,6 +1121,66 @@ export function paintDocument(
     for (const made of backdrop.made.values()) made?.surface.destroy?.();
     backdrop.canvas?.surface.destroy?.();
   }
+}
+
+/**
+ * One box and all it holds, as laid out — its opacity, its filter, its
+ * mask and its clip with it, and not its transform — which is what a view
+ * transition captures of an element (CSS View Transitions 1, 3.5): painted
+ * as `paintDocument` paints the tree, over nothing, but for `options.lifted`
+ * — the elements in it captured on their own — which it leaves out.
+ */
+export function paintCapture(
+  ctx: PaintContext,
+  tree: BoxTree,
+  box: Box,
+  options: PaintOptions,
+): void {
+  if (!canFill(ctx)) return;
+  ctx.save();
+  const backdrop: BackdropPaint = {
+    tree,
+    root: options,
+    made: new Map<Box, Backdrop | null>(),
+    until: null,
+    matrix: options.matrix,
+  };
+  const painted: PaintOptions = {
+    ...options,
+    negative: tree.negative,
+    fixed: FIXED_BOXES.get(tree) ?? null,
+    selectionStyler: options.selection ? tree.selectionStyler : null,
+    shapeStyler: tree.shapeStyler,
+    backdrop,
+  };
+  paintBox(ctx, box, painted);
+  // the bars of the scroll containers in it, over it, as the document's
+  // are over the document
+  paintScrollBars(ctx, tree, painted, box);
+  ctx.restore();
+  for (const made of backdrop.made.values()) made?.surface.destroy?.();
+  backdrop.canvas?.surface.destroy?.();
+}
+
+/** How a view transition's image is drawn (`PaintOptions.transitionImage`). */
+export type TransitionDraw = (
+  ctx: PaintContext,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  damage: Rect | null,
+) => void;
+
+/** Whether a box is in one a view transition captured
+ *  (`PaintOptions.captured`). */
+function capturedAround(box: Box, options: PaintOptions): boolean {
+  const captured = options.captured;
+  if (!captured?.size) return false;
+  for (let at = box.parent; at; at = at.parent) {
+    if (captured.has(at)) return true;
+  }
+  return false;
 }
 
 /** What covers the canvas: a style's background, the box that would have
@@ -1694,6 +1778,7 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
   if (
     options.lifted?.has(box) ||
+    options.captured?.has(box) ||
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
@@ -1786,6 +1871,7 @@ function paintTransformed(
   }
   if (
     options.lifted?.has(box) ||
+    options.captured?.has(box) ||
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
@@ -3965,6 +4051,8 @@ function paintScrollBars(
       if (child.kind === 'text' || child.kind === 'break') continue;
       // its own pass, over everything before it
       if (child.topLayer) continue;
+      // and one a view transition captured, in its image
+      if (options.captured?.has(child)) continue;
       stack.push([child, ox, oy, fixed]);
     }
   }
@@ -7806,10 +7894,14 @@ export function stackLayers(root: Box): void {
     TOP_LAYER.delete(root);
     return;
   }
-  // in the order the elements went in, each `::backdrop` under its own
+  // in the order the elements went in, each `::backdrop` under its own,
+  // and a view transition's tree over all of them (CSS View Transitions 1,
+  // 3.4)
   const order = (box: Box): number =>
-    2 * topLayerOrder(box.el ?? GENERATED_FROM.get(box)!) +
-    (box.pseudo === 'backdrop' ? 0 : 1);
+    box.pseudo === 'view-transition'
+      ? Infinity
+      : 2 * topLayerOrder(box.el ?? GENERATED_FROM.get(box)!) +
+        (box.pseudo === 'backdrop' ? 0 : 1);
   top.sort((a, b) => order(a) - order(b));
   TOP_LAYER.set(root, top);
 }
@@ -8127,6 +8219,16 @@ export function stacksLayers(box: Box): boolean {
   // and isolation, whose whole purpose that is (CSS Compositing 1, 3.2)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (style.isolation === 'isolate' && box.kind !== 'inline') return true;
+  // and a view transition's name, which a transition captures it by with
+  // all it holds (CSS View Transitions 1, 3.5) — but on the root element,
+  // which the user agent names and which is the root of them all already
+  if (
+    style.viewTransitionName !== 'none' &&
+    box.kind !== 'inline' &&
+    !!box.parent?.parent
+  ) {
+    return true;
+  }
   // and a transform (CSS Transforms 1, 3), on a box one applies to: what it
   // holds is painted with it, through its matrix, and not by a context
   // outside it
@@ -11920,6 +12022,20 @@ function paintMarker(
 }
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  if (TRANSITION_IMAGES.has(box)) {
+    const draw = options.transitionImage?.(box);
+    if (draw) {
+      draw(
+        ctx,
+        box.contentX + options.originX,
+        box.contentY + options.originY,
+        box.contentWidth,
+        box.contentHeight,
+        options.damage,
+      );
+    }
+    return;
+  }
   const image = options.imageFor(box);
   const left = box.contentX + options.originX;
   const top = box.contentY + options.originY;

@@ -241,6 +241,15 @@ export interface HandleInternals {
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
   cssAnimations(element: Element | null, subtree: boolean): CssAnimationInfo[];
+  /** A view transition's steps, as the page's realm runs them: its old
+   *  state captured, its new captured and its tree drawn — each answering
+   *  the name two elements share, which skips it, or '' — how long until
+   *  its animations are over, and its end
+   *  (`HtmlViewNode.transitionCaptureOld` and the rest). */
+  transitionCaptureOld(): string;
+  transitionCaptureNew(): string;
+  transitionRemaining(): number | null;
+  transitionEnd(): void;
   /** Whether an element is drawn where the viewport is — fixed to it, or
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
@@ -2699,6 +2708,32 @@ export class DomHost {
       case 'disabled':
         return isDisabled(this._element(a));
 
+      // a view transition's steps, which the element draws (CSS View
+      // Transitions 1, 7.4 to 7.9): what is captured, by the layout what a
+      // script changed comes to; the time until its animations are over,
+      // -1 for never
+      case 'vtOld':
+        this.flush();
+        return (
+          this._seams.handle.transitionCaptureOld?.() ??
+          this._op('transitionNames', null, null, null, null)
+        );
+      case 'vtNew':
+        this.flush();
+        return (
+          this._seams.handle.transitionCaptureNew?.() ??
+          this._op('transitionNames', null, null, null, null)
+        );
+      case 'vtRemaining': {
+        this.flush();
+        const left = this._seams.handle.transitionRemaining
+          ? this._seams.handle.transitionRemaining()
+          : 0;
+        return left === null ? -2 : left === Infinity ? -1 : left;
+      }
+      case 'vtEnd':
+        this._seams.handle.transitionEnd?.();
+        return null;
       // the names a view transition would capture elements by, where two
       // elements have one: what skips it (CSS View Transitions 1, 7.3)
       case 'transitionNames': {

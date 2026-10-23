@@ -5721,8 +5721,8 @@ metric(
 );
 
 test('document.startViewTransition calls its update at the next frame, and settles updateCallbackDone, ready and finished in order; a new one, a shared name and a throw skip it', async () => {
-  // CSS View Transitions 1, 7: drawn as no transition, but run as the
-  // specification has it, which is what a page waits on
+  // CSS View Transitions 1, 7: run as the specification has it, which is
+  // what a page waits on
   const doc = await hosted(
     '<p id="out"></p><div id="a"></div><div id="b"></div><script>' +
       'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
@@ -5764,6 +5764,44 @@ test('document.startViewTransition calls its update at the next frame, and settl
     doc.logs.join('\n'),
   );
 });
+
+metric(
+  "a view transition draws its tree over the page: each element's old image where it was, its pseudo-elements styled by the page, until it ends",
+  async () => {
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { position: absolute; top: 0; left: 0; width: 40px; height: 40px;' +
+        '   background: rgb(0, 128, 0); view-transition-name: a }' +
+        ' html::view-transition { background: rgb(255, 0, 0) }' +
+        ' html::view-transition-group(*) { animation-duration: 300s }' +
+        ' html::view-transition-group(root) { animation: unset; opacity: 0 }' +
+        ' html::view-transition-old(a) { animation: unset; opacity: 1 }' +
+        ' html::view-transition-new(a) { animation: unset; opacity: 0 }</style>' +
+        '</head><body><div id="a"></div><p id="out" style="margin-top: 100px"></p><script>' +
+        'var a = document.getElementById("a"), t;' +
+        'requestAnimationFrame(function () {' +
+        '  t = document.startViewTransition(function () {' +
+        '    a.style.left = "100px"; a.style.background = "rgb(0, 0, 255)"; });' +
+        '  t.ready.then(function () { requestAnimationFrame(function () {' +
+        '    document.getElementById("out").textContent = "ready"; }); });' +
+        '});' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'ready');
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = (x: number, y: number) => colourAt(doc, abs.x + x, abs.y + y);
+    // its group runs from where it was for five minutes, and its old image
+    // is all that shows of it, over the tree's own ground: the root's
+    // group is hidden, and the page under it with it
+    assert.equal(await at(10, 10), '#008000', 'the old image, where it was');
+    assert.equal(await at(110, 10), '#ff0000', "the tree's ground");
+    doc.run('t.skipTransition();');
+    await settle(60);
+    assert.equal(await at(110, 10), '#0000ff', 'the element, where it is');
+    assert.equal(await at(10, 10), '#ffffff', 'and the page, under it');
+  },
+);
 
 test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
   const doc = await hosted(
