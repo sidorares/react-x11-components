@@ -83,8 +83,15 @@ export function installDom(
     c?: Primitive,
     d?: Primitive,
   ): Any => {
-    // anything but reading a computed style may change one
-    if (op !== 'computed' && op !== 'customProperty') opEpoch += 1;
+    // anything but reading a computed style, or a frame's document, may
+    // change one
+    if (
+      op !== 'computed' &&
+      op !== 'customProperty' &&
+      op !== 'frameDocument'
+    ) {
+      opEpoch += 1;
+    }
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
@@ -105,9 +112,13 @@ export function installDom(
   /** Set while a copy is made whose registries are pinned after the op
    *  (`copyOf`), so its upgrades wait for them. */
   let copying = false;
-  /** Counts the ops but the reads of a computed style, which a computed
-   *  style read again since none ran answers as it was
-   *  (`getComputedStyle`). */
+  /** Counts the ops but the reads of a computed style and of a frame's
+   *  document, which a computed style read again since none ran answers as
+   *  it was (`getComputedStyle`), and a frame's document (`frameDocumentOf`).
+   *  A frame's counted as a change: the Guardian's ad wrapper reads every
+   *  frame's window from a `String.prototype` method it replaces, which
+   *  `getComputedStyle` calls, so each read moved the count, and the next
+   *  read of the style read all of it again — 17.7 million ops in a load. */
   let opEpoch = 0;
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
@@ -4938,10 +4949,20 @@ export function installDom(
       : name
           .replace(/^(webkit|moz|ms)(?=[A-Z])/, '-$1')
           .replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
-  const camel = (name: string): string =>
-    name
-      .replace(/^-(webkit|moz|ms)-/, '$1-')
-      .replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  const camel = (name: string): string => {
+    let out = camelNames.get(name);
+    if (out === undefined) {
+      out = name
+        .replace(/^-(webkit|moz|ms)-/, '$1-')
+        .replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      camelNames.set(name, out);
+    }
+    return out;
+  };
+  /** What `camel` made of each name: a computed style is read by every
+   *  name it has, and a page may have put its own hand in the `String`
+   *  methods that make them. */
+  const camelNames = new Map<string, string>();
   /** A property's name as a declaration keeps it: a custom property's as
    *  written, since `--Tabs-x` and `--tabs-x` are two (CSS Variables 1,
    *  2), and any other's in lower case. */
@@ -7760,9 +7781,26 @@ export function installDom(
   /** A frame's document, the page's own origin's, and null for another's
    *  (`frameDocument`). */
   const frameDocumentOf = (frame: Any): Any => {
-    const id = Number(call('frameDocument', frame._id));
+    if (frameDocsAt !== opEpoch || frameDocsIn !== taskEpoch) {
+      frameDocs.clear();
+      frameDocsAt = opEpoch;
+      frameDocsIn = taskEpoch;
+    }
+    let id = frameDocs.get(frame._id);
+    if (id === undefined) {
+      id = Number(call('frameDocument', frame._id));
+      frameDocs.set(frame._id, id);
+    }
     return id ? wrap(id) : null;
   };
+  /** The document each frame holds, as last asked, while no op has run in
+   *  this task: one is another only by an op of the page's — the frame put
+   *  in, taken out, written into — or by a navigation, which the host
+   *  finishes in a task of its own. Every read of a frame's window asks
+   *  it (`frameProxyOf`), and an ad library scans every frame's. */
+  const frameDocs = new Map<number, number>();
+  let frameDocsAt = -1;
+  let frameDocsIn = -1;
 
   // --- a frame's window ------------------------------------------------------
   //
