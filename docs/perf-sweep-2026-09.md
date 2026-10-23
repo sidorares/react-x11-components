@@ -2199,7 +2199,20 @@ Every GL cell is now at the display's rate or within a frame or two of it. The
 2D cells are where they were. They are paced by the vblank clock, and on this
 machine that clock is ntk #402.
 
-### Still open on this machine
+#90. **Attribute a whole restyle before narrowing it.** Counting what
+raised each one on the JS sites — a shadow root, a sheet, a `<meta>` —
+told which were worth taking apart, and measuring the narrowed ones
+told that none was: what a frame restyles is little of what it costs
+while it builds every box and lays out the whole document anyway. 91. **A key that holds everything shares nothing.** Style sharing had been
+off on fifteen of seventeen pages, and turning it on changed nothing:
+every element of a Wikipedia article has an `id`, and the key held it.
+Count the hits a cache gets on the real page before counting what it
+would save. 92. **`git reset --soft` onto a moved master reverts what moved.** A
+release landed between a fetch and a squash, and the squash took back
+its version and its changelog; it was caught in the commit's file list
+before a PR. Read `git show --stat` before pushing a rewritten branch.
+
+## Still open on this machine
 
 - **The vblank clock (ntk #402).** It is a decision, not a bug. Typing latency
   and every 2D rate on this machine depend on it.
@@ -4758,6 +4771,135 @@ nothing, so there is nothing for the tiles to change. The preamble's
 phases are a handful of paints of 140 to 240 ms each, made where the
 layers change at a transition's start and end, and the next thing to read.
 
+## Round 48: a page as it is lived with, and with its scripts
+
+Round 44 measured many documents a stage at a time. This round measured
+them as a reader has them: `htmlpage.mjs` (#942) loads each page until its
+arrivals settle, loads it again, scrolls it a wheel notch a frame to its
+end, drags its window's edge 8 px a frame for 40 frames and back, and moves
+the pointer over a grid of twenty points, and reports for each step the
+frames (median, 95th, longest), the processor time, the collector's time,
+the megabytes allocated, the boxes built and the longest the event loop was
+held. Seventeen pages: three Wikipedia articles, MDN, Node's and Python's
+API references, the HTML standard, an RFC, GitHub's repository page,
+Tailwind's and Bootstrap's docs, react.dev, Next.js's blog, Hacker News,
+BBC News, the Guardian and Lobsters. `htmlfetch.ts --scripts` and
+`SCRIPTS=1` (#950) mount thirteen sites whose scripts hydrate, render or
+fetch what they show, with their scripts running and answered from a
+cache, and `htmljs.mjs` (#945) runs synthetic pages whose own scripts
+change the DOM a step at a time. Everything on X11 against Xvfb at 1x, in
+production React, interleaved A/B against master, three runs a side.
+
+### What the reader felt, and what it cost
+
+| 17 pages, summed            |  master | after #943–#947 |
+| --------------------------- | ------: | --------------: |
+| hover, processor time       |   9.5 s |           2.7 s |
+| resize drag, processor time | 107.9 s |          75.6 s |
+| resize drag, median frames  | 1192 ms |          631 ms |
+| scroll, processor time      |  19.1 s |          14.2 s |
+
+- **A hover reached what its compound leads to** (#943): `.group:hover
+.x` restyled every element under the group, and a shadow tree's edge
+  rules every element that crossed one; it now reaches the subjects the
+  compound names, and an opacity that makes a group restyles in place.
+- **A resize styled again what holds a `vw`** (#944), and a query on the
+  height or the orientation where its answer turns, where every resize
+  across a breakpoint styled the whole document.
+- **A scroll worked out the ink of the sticky boxes it moved** (#946), not
+  the whole document's: Wikipedia's United States article went from 9.0 to
+  1.8 ms a frame.
+- **A script's churn** (#945): a parent's children cleared at once,
+  `:nth-child()` counted once a parent, `replaceChildren` told as one
+  record. js-framework-benchmark's clear of 10,000 rows went from 72 ms to
+  3.9.
+- **An image arriving for generated content** built the boxes again with
+  every style kept (#947), where it styled the document again.
+
+### With the scripts running
+
+A JS site's load is mostly `<Html>`'s, not its scripts': on GitHub's
+repository page the page's own code was 0.15 s of 4.2 s of the main
+thread and the DOM bridge 0.09 s; the cascade was 1.8 s, css-select and
+Yoga 0.6 s, layout 0.5 s. Its scripts restyle it a dozen times as it loads,
+and each restyle paid for the whole page.
+
+- **Custom property sets compared once a pair** (#948): every element of a
+  Tailwind page carries the same chain of thirty-five, and a compare of two
+  styles walked it again for each restyled element. Next.js's blog settled
+  2.93 s → 2.76 s, allocating 3.9 GB → 3.2 GB.
+- **A cascade made again takes the sheets the one before parsed** (#949).
+  GitHub carries 3.7 MB of CSS, most of it in Primer's layers, and each
+  sheet its scripts add made the cascade again from all of it: 210 ms a
+  time, 85 now. A layered sheet is the same parse where the layers ranked
+  before it are. GitHub settled 1.69 s → 1.55 s.
+- **A rule with no class, id or type at its subject is filed under the
+  attribute it tests, or `:root`** (#951). GitHub's universal bucket held
+  1,443 rules — Primer's themes, its `:root` tokens, `[hidden]`,
+  `[popover]` — asked of every element; 295 are left. Its load went from
+  1.54 to 1.41 s of processor time, with its scripts from 5.89 to 5.45 s,
+  and over the 17 pages hover cost 12% less and the drag's 95th-percentile
+  frame 7% less.
+
+### Why a restyle was whole
+
+Counted by what raised it, on the thirteen sites with their scripts:
+
+| trigger                                             | sites                           |  total |
+| --------------------------------------------------- | ------------------------------- | -----: |
+| a shadow root attached (`_refreshAll`)              | GitHub, MDN, Next, Tailwind     |  1.1 s |
+| a sheet's rules written, a sheet put in or arriving | BBC, Angular, Next, npm, GitHub |  1.5 s |
+| an adopted sheet (the `stylesheet` prop)            | Next                            | 0.23 s |
+| a `<meta>` written, put in or taken out             | Next, Tailwind, npm             | 0.24 s |
+| a drawing's path under a `:has()`                   | GitHub                          | 0.19 s |
+
+Two of these rows were tried and parked, and both for the same reason. A
+change of the sheets alone restyled what the rules it gained and lost
+matched — paired by element, told apart rule by rule in order, keyframes
+and all — and narrowed nearly every such restyle (BBC's 1,343 rules to
+1,521 elements, Angular's to 4 and 12); a `<meta>` the cascade reads
+nothing of, written, put in or taken out, became an element as any
+other, and the 105–113 ms restyles it caused on Next.js and Tailwind's
+docs were gone. Neither moved a load — the 13 sites' CPU went from 27.62
+to 27.67 s with the first, and from 28.20 to 28.31 s with the second: the
+same frames' other changes reached most of the
+document anyway (GitHub's 2,260 of 2,611 elements), and every update
+builds all the boxes and lays out all of the document whatever it
+restyled. The shadow roots' row would land on the same wall.
+
+### What sharing a style was worth
+
+Measuring the cascade found style sharing off on fifteen of the seventeen
+pages: one rule in the universal bucket that reads an element's place —
+`.mw-body blockquote > :first-child`, `.markdown-body > :first-child`,
+Tailwind's `.prose :where(…) + :where(…)` — set `ownStyleEverywhere`, and
+`span[rel~='mw:referencedBy']` made every `<span>` of an article compute
+its own, its `~=` read as a sibling combinator. Gating such a rule by the
+ancestor and the parent it names turned sharing back on for 18,678 of
+Wikipedia's 21,396 elements, and the load did not move: the key a style
+is shared under holds every attribute, and Parsoid gives every element an
+`id` (`mwBg`, `mwiw`, …), so no two keys meet and nothing below them can.
+Parked with the measurement; a key of the attributes some rule reads is
+the change that would make it count, and styling is 12% of Wikipedia's
+load, where layout is 40%.
+
+### A table a script changes
+
+js-framework-benchmark's operations on 1,000 rows (`htmljs.mjs`) put the
+rest of the gap in one place. Every tenth row's text changed costs a frame
+of 34 ms, two rows swapped 40 and one removed 41, where the script's part
+of each is under a millisecond: the frame lays the whole table out again,
+and a table's layout measures each cell's widths by laying it out at no
+width and at every width before laying it out in its column
+(`measureCell`, half of `layoutTable`'s time). A box keeps its widths for
+as long as it lives, and a build makes every box again. Keeping them by the
+cell's element, with every box under it as the key, took the update of
+every tenth row to 25 ms and the swap to 35, and the remove to 55: the
+rows after the one removed change their stripe, `tr:nth-child(odd)`, and
+their cells' new style objects miss the key, which they then pay for on
+top. Parked; the box tree kept across a build for what no change reached
+is the change underneath it.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -5321,6 +5463,23 @@ round 15.
   building and laying out only those boxes, and keeping the surfaces of
   the boxes that did not change across the build, is the engine's next
   step for a page that moves.
+- **A build and a layout of the whole document at every update**
+  (`<Html>`): the cost under every change a page's scripts make, from a
+  row's text to a sheet put in, and why narrowing what a change restyles
+  saved nothing on the JS sites (round 48). Boxes kept across a build for
+  the elements no change reached, with what they measured and how they
+  were laid out, is the engine's next step for a page that its scripts
+  change.
+- **A shadow root attached restyles the document** (`<Html scripts>`):
+  `attachShadow` is a refresh of everything (`_refreshAll`), 1.1 s of the
+  JS sites' loads (round 48). It would come down to the host's subtree,
+  and is worth doing with the step above, not before it.
+- **A style's share key holds every attribute** (`<Html>`): Wikipedia's
+  `id`s make every key unique, so no element shares a style, and gating
+  the unshareable rules by what they name above their subject (parked in
+  round 48) turned sharing on and saved nothing. A key of the attributes
+  some rule reads is the change that would make it count; styling is 12%
+  of an article's load, where layout is 40%.
 - **The tree probe's keys on Cocoa** (`treesweep.tsx`): its key presses
   reach no tree there. On both trees it scrolls no row, at 2–3% CPU, and
   paints one to three frames in a run, so its frame rate and median
