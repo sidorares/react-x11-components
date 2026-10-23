@@ -285,6 +285,7 @@ import {
 } from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
+  boundsAfterMove,
   clipFor,
   clipsOverflow,
   computePaintBounds,
@@ -2055,7 +2056,11 @@ export class HtmlViewNode extends Node {
       height: viewport.height,
     });
     if (!moved) return;
-    computePaintBounds(tree.root, tree.movedInline);
+    // what moved, and the boxes around it as far as they have to grow
+    // (`boundsAfterMove`); the whole tree where that cannot be said
+    if (!moved.every((box) => boundsAfterMove(box, tree.movedInline))) {
+      computePaintBounds(tree.root, tree.movedInline);
+    }
     for (const box of moved) this._dropSprites(box, false);
     // a layer may now be over a box that moved, or hold one
     if (this._lifted.size) {

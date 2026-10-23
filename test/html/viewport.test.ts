@@ -900,6 +900,31 @@ const STICKY =
   '<section><div class="t" id="t2"></div></section>' +
   '<div style="height:600px"></div><div id="foot"></div>';
 
+/** Sticky boxes the viewport holds a level down, one casting a shadow past
+ *  itself, and one in a flex row its section lets go of half way down:
+ *  what a pane's scroll moves, and the boxes around them grown to hold
+ *  them (`boundsAfterMove`). */
+const STICKY_DEEP =
+  '<style>body{margin:0}.page{padding:0 0 40px}#head{position:sticky;' +
+  'top:0;height:20px;background:#0000ff;box-shadow:0 6px 0 #000000}' +
+  '.row{display:flex;height:400px;margin:10px 0;background:#eeeeee}' +
+  '.side{position:sticky;top:30px;width:60px;height:40px;' +
+  'background:#ff00ff;align-self:flex-start}.main{flex:1}' +
+  '.main div{height:30px;margin:10px;background:#00aaaa}' +
+  '.pin{position:sticky;top:30px;height:10px;width:30px;' +
+  'margin-left:200px;background:#ff8800}.item{height:10px;margin:2px 0;' +
+  'width:100px;background:#88cc88}</style>' +
+  '<div class="page"><div id="head"></div>' +
+  '<div class="row"><div class="side"></div><div class="main">' +
+  '<div></div><div></div><div></div><div></div><div></div></div></div>' +
+  '<div class="row"><div class="main"><div></div><div></div></div>' +
+  '<div class="side"></div></div>' +
+  // one among more children than a box indexes by where they are
+  // (`PAINT_INDEX_MIN`), whose parent's index it moves in
+  '<div class="list"><div class="pin"></div>' +
+  '<div class="item"></div>'.repeat(80) +
+  '</div><div style="height:300px"></div></div>';
+
 /** The pane around a document: what scrolls it. */
 function paneOf(node: HtmlViewNode): { scrollTo(y: number): void } {
   type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
@@ -1054,9 +1079,13 @@ test('a box fixed to the viewport stays where the viewport has it, whatever a st
   }
 });
 
-for (const measured of [false, true]) {
+for (const [measured, source, every] of [
+  [false, STICKY, false],
+  [true, STICKY, false],
+  [false, STICKY_DEEP, true],
+] as const) {
   metric(
-    `a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does${measured ? ', measured between each scroll and its pass' : ''}`,
+    `a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does${measured ? ', measured between each scroll and its pass' : ''}${every ? ', a level down and casting a shadow' : ''}`,
     async () => {
       // A step of a pane's scroll copies what it shows and paints the strip
       // it exposed, and the copy drags a held box with the text. The document
@@ -1076,7 +1105,7 @@ for (const measured of [false, true]) {
           h(
             'box',
             { ref: pane, style: { width: W, height: H, overflow: 'scroll' } },
-            h(Html, { source: STICKY, partial: false, 'data-testname': 'doc' }),
+            h(Html, { source, partial: false, 'data-testname': 'doc' }),
           ),
           { width: W, height: H, fonts: FONTS! },
         );
@@ -1096,6 +1125,13 @@ for (const measured of [false, true]) {
         ...Array.from({ length: 30 }, (_, i) => 10 + i * 10),
         ...Array.from({ length: 30 }, (_, i) => 310 + i * 10),
         ...Array.from({ length: 15 }, (_, i) => 590 - i * 10),
+        // and through the list, and back up a little
+        ...(every
+          ? [
+              ...Array.from({ length: 100 }, (_, i) => 460 + i * 10),
+              ...Array.from({ length: 20 }, (_, i) => 1450 - i * 10),
+            ]
+          : []),
       ];
       const stops = new Map<number, Uint8ClampedArray>();
       for (const [i, y] of path.entries()) {
@@ -1105,7 +1141,7 @@ for (const measured of [false, true]) {
           stepped.el.elementAtPoint(50, 10);
           stepped.el.cursorAt(50, 10);
         });
-        if (y === 300 || i === path.length - 1) {
+        if (y === 300 || i === path.length - 1 || (every && i % 7 === 0)) {
           stops.set(y, await pixelsIn(stepped.result.ctx, region));
         }
       }
