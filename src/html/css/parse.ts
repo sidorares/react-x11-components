@@ -122,6 +122,9 @@ export interface Stylesheet {
   sized?: MediaCondition[];
   /** Whether a rule in it is under an `@container`. */
   containers?: boolean;
+  /** Whether it names a cascade layer, whose rank is the document's
+   *  (`layers`): a sheet that names none parses the same in any place. */
+  layered?: boolean;
   /** The `@font-face` rules, in order (see `fonts.ts`). */
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
@@ -363,6 +366,7 @@ export function parseStylesheet(
     layer: readonly number[] | null,
     path: string,
   ): [number[], string] => {
+    sheet.layered = true;
     const ranks = layer ? [...layer] : [];
     let full = path;
     for (const part of name.split('.')) {

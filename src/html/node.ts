@@ -689,6 +689,10 @@ export class HtmlViewNode extends Node {
   private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
+  /** The sheets the cascade in force was made from, parsed, by their text
+   *  (`_parseSheet`), and those the one being made takes. */
+  private _parsed = new Map<string, ParsedSheet[]>();
+  private _parsing: Map<string, ParsedSheet[]> | null = null;
   /** Each `<link>` and `<style>` whose sheet the cascade in force read,
    *  with the `href` a link's was read from and what the sheet imports
    *  (`_noteSheetsInForce`). */
@@ -1583,6 +1587,7 @@ export class HtmlViewNode extends Node {
       // author's, so it is written from the look in CSS pixels: from the
       // device one, a control's size and a button's chrome were doubled at 2x
       const sheets: Stylesheet[] = [uaStylesheet(props.look)];
+      this._parsing = new Map();
       const imports: ImportRead[][] = [];
       faces = [];
       let order = 0;
@@ -1602,7 +1607,7 @@ export class HtmlViewNode extends Node {
         // a sheet under its `media` is under it as an imported one is
         // under its import's: each rule, each face and each import in it
         const under = media ? [media] : null;
-        const sheet = parseStylesheet(text, 0, layers, base, under);
+        const sheet = this._parseSheet(text, layers, base, under);
         const seen: ImportRead[] = [];
         this._placeImports(
           sheet,
@@ -1640,7 +1645,7 @@ export class HtmlViewNode extends Node {
         };
         for (const { text, encoding, element, base, media } of own) {
           const under = media ? [media] : null;
-          const sheet = parseStylesheet(text, 0, treeLayers, base, under);
+          const sheet = this._parseSheet(text, treeLayers, base, under);
           const seen: ImportRead[] = [];
           this._placeImports(
             sheet,
@@ -1659,6 +1664,8 @@ export class HtmlViewNode extends Node {
         shadows.push({ key, sheets: tree });
         shadowImports.set(key, treeImports);
       }
+      this._parsed = this._parsing;
+      this._parsing = null;
       this._cascade = new Cascade(
         sheets,
         look,
@@ -1759,7 +1766,7 @@ export class HtmlViewNode extends Node {
       seen.push({ url, text: fetched?.text ?? null, base });
       const key = base ?? url;
       if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
-      const imported = parseStylesheet(fetched.text, 0, layers, base, media);
+      const imported = this._parseSheet(fetched.text, layers, base, media);
       chain.add(key);
       this._placeImports(
         imported,
@@ -1775,6 +1782,58 @@ export class HtmlViewNode extends Node {
       chain.delete(key);
       place(imported, element);
     }
+  }
+
+  /**
+   * A sheet parsed, or the one the cascade in force was made from where it
+   * reads the same: its text, its base and the media it is under — and, for
+   * one that names a cascade layer, the layers ranked before it, whose
+   * names it ranks after them (`ParsedSheet.layers`). A script that puts a
+   * sheet in makes the cascade again, and GitHub's repository page parsed
+   * all of its 3.7 MB of CSS again for each of the three its scripts bring.
+   * Each is taken once a cascade, since its rules' `order` is their place
+   * in it, which `_restyle` sets.
+   */
+  private _parseSheet(
+    text: string,
+    layers: Map<string, number>,
+    base: string | null,
+    under: MediaCondition[][] | null,
+  ): Stylesheet {
+    const kept = this._parsed.get(text);
+    let found: ParsedSheet | null = null;
+    if (kept) {
+      for (let i = 0; i < kept.length; i += 1) {
+        const at = kept[i];
+        if (at.base !== base || !sameValue(at.under, under)) continue;
+        if (at.layers && !sameNames(at.layers.before, layers)) continue;
+        kept.splice(i, 1);
+        found = at;
+        break;
+      }
+    }
+    if (found?.layers) {
+      // the names it ranks, as its parse ranked them
+      for (const name of found.layers.added) layers.set(name, layers.size);
+    }
+    if (!found) {
+      const before = [...layers.keys()];
+      const sheet = parseStylesheet(text, 0, layers, base, under);
+      found = {
+        base,
+        under,
+        sheet,
+        layers: sheet.layered
+          ? { before, added: [...layers.keys()].slice(before.length) }
+          : null,
+      };
+    }
+    if (this._parsing) {
+      let taken = this._parsing.get(text);
+      if (!taken) this._parsing.set(text, (taken = []));
+      taken.push(found);
+    }
+    return found.sheet;
   }
 
   /** Whether the sheets read the same as the ones `kept` was built from,
@@ -9998,6 +10057,29 @@ interface ScriptWait {
  *  second: domutils' `DocumentPosition` is a `const enum`, which an
  *  isolated module cannot read. */
 const BEFORE = 2;
+
+/** A sheet as `_parseSheet` keeps it: what it was parsed under. */
+interface ParsedSheet {
+  base: string | null;
+  under: MediaCondition[][] | null;
+  sheet: Stylesheet;
+  /** For a sheet that names a cascade layer, the layers ranked before its
+   *  parse, in their order, and the names it ranked after them: a layer's
+   *  rank is the document's, the order its sheets first name them in. */
+  layers: { before: string[]; added: string[] } | null;
+}
+
+/** Whether `layers` ranks the names of `before`, in that order, and no
+ *  others. */
+function sameNames(
+  before: readonly string[],
+  layers: ReadonlyMap<string, number>,
+): boolean {
+  if (before.length !== layers.size) return false;
+  let i = 0;
+  for (const name of layers.keys()) if (name !== before[i++]) return false;
+  return true;
+}
 
 /** What a cascade was built from, to tell whether the next would be the
  *  same one: the look, scale and fonts, each sheet's text, encoding, base

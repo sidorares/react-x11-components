@@ -1761,7 +1761,12 @@ cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
 `changesCascade` lists the attributes `DocumentSource.facts` reads of
-them: anything new read there joins it. A `<meta>`, a `<base>`, a sheet in
+them: anything new read there joins it. Where the sheets do read
+otherwise, **the cascade made again takes the parses of the one before**
+(`_parseSheet`), each once, since `place` sets its rules' `order`: so
+anything new a parse comes to read besides its text, its base, the media
+it is under and the layers ranked before it joins `ParsedSheet`, and
+nothing after a parse changes a sheet but that `order`. A `<meta>`, a `<base>`, a sheet in
 a shadow tree, a `:has()` every element could anchor that reaches past it
 (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)` are refreshes of
 everything: the scope says null, and nothing is skipped. And the

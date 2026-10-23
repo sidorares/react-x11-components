@@ -580,6 +580,70 @@ test('an append to a streamed document keeps its stylesheet parsed', async () =>
   assert.notStrictEqual(cascadeOf(), before);
 });
 
+test('a cascade made again takes the sheets it parsed, and parses again one whose layers rank otherwise', async () => {
+  // GitHub's scripts put in three sheets as its repository page loads, and
+  // each made the cascade again from all 3.7 MB of its CSS, parsed again
+  const layered =
+    '<style>@layer base { p { color: #010101 } } ' +
+    '@layer top { p { color: #020202 } }</style>';
+  const plain = '<style>p.x { color: #030303 }</style>';
+  const body = '<p id="x" class="x">x</p><p id="y">y</p>';
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, 'data-testname': 'doc' }),
+    );
+  const result = await renderX11(doc(layered + plain + body), {
+    backend: 'mock',
+  });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  type Parsed = Map<string, { sheet: object }[]>;
+  const parsed = () => (el() as unknown as { _parsed: Parsed })._parsed;
+  const cascadeOf = () => (el() as unknown as { _cascade: unknown })._cascade;
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  assert.strictEqual(color('x'), '#030303');
+  assert.strictEqual(color('y'), '#020202');
+  const sheetOf = (text: string) => {
+    const kept = parsed().get(text);
+    assert.strictEqual(kept?.length, 1, `one sheet kept for ${text}`);
+    return kept[0].sheet;
+  };
+  const textOf = (style: string) => style.slice(7, -8);
+  const first = cascadeOf();
+  const layeredSheet = sheetOf(textOf(layered));
+  const plainSheet = sheetOf(textOf(plain));
+
+  // a sheet more, after them: a new cascade, made of the same two
+  const after = '<style>p { margin: 1px }</style>';
+  await act(() => result.rerender(doc(layered + plain + after + body)));
+  assert.strictEqual(color('y'), '#020202');
+  assert.notStrictEqual(cascadeOf(), first, 'a new cascade');
+  assert.strictEqual(sheetOf(textOf(layered)), layeredSheet);
+  assert.strictEqual(sheetOf(textOf(plain)), plainSheet);
+
+  // the same sheet twice: two parses, since a rule's order is its place
+  await act(() => result.rerender(doc(layered + plain + after + plain + body)));
+  assert.strictEqual(parsed().get(textOf(plain))?.length, 2);
+  assert.strictEqual(color('x'), '#030303');
+
+  // one before them that ranks the layers the other way round: the layered
+  // sheet is parsed again, under the new ranks, and the plain one is not
+  const order = '<style>@layer top, base;</style>';
+  await act(() => result.rerender(doc(order + layered + plain + body)));
+  assert.strictEqual(color('y'), '#010101', 'base ranks over top');
+  assert.strictEqual(color('x'), '#030303');
+  assert.notStrictEqual(sheetOf(textOf(layered)), layeredSheet);
+  assert.strictEqual(sheetOf(textOf(plain)), plainSheet);
+  // and back: the ranks the first parse had are not the ones now kept
+  await act(() => result.rerender(doc(layered + plain + body)));
+  assert.strictEqual(color('y'), '#020202');
+});
+
 test(":target is the element the fragment of the document's URL names, and moves with it", async () => {
   const source =
     '<style>p { color: #000000 } :target { color: #00ff00 } ' +
