@@ -22,6 +22,7 @@ import {
   FONTS,
   boxOf,
   fillsOf,
+  findById,
   h,
   render,
   render2x,
@@ -1097,6 +1098,42 @@ test('a breakpoint over @keyframes under a media query restyles the document who
     node._cascade.crossed(400, 250, node._source.document),
     null,
   );
+});
+
+test('a breakpoint restyles what it reaches past @keyframes under a media query no width turns', async () => {
+  // GitHub keeps its `@keyframes` under `prefers-reduced-motion`, which no
+  // resize turns, and every breakpoint a drag crossed styled the whole page
+  // again: the crossing restyles the elements its rules reach, keeps the
+  // rest's styles, and comes out as a style of the whole document does
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}@media (prefers-reduced-motion:no-preference){' +
+      '@keyframes k{to{opacity:.5}}}' +
+      '@media (max-width:300px){#i3{margin-left:4px}}' +
+      '#i2{animation:k 1s paused}</style>' +
+      '<div id="i1">a</div><div id="i2">b</div><div id="i3">c</div>',
+    300,
+    400,
+  );
+  const node = el as unknown as {
+    _cascade: Cascade;
+    _source: { document: { children: unknown[] } };
+    _tree: { styles: Map<unknown, { style: unknown }> };
+  };
+  const reached = node._cascade.crossed(400, 250, node._source.document);
+  assert.ok(reached, 'told, where it was null');
+  assert.deepStrictEqual(
+    [...reached].map((e) => e.attribs.id),
+    ['i3'],
+  );
+  const styleOf = (id: string) =>
+    node._tree.styles.get(findById(el.document, id))!.style;
+  const [one, two, three] = ['i1', 'i2', 'i3'].map(styleOf);
+  await resize(300, 250);
+  assert.strictEqual(styleOf('i1'), one, 'kept');
+  assert.strictEqual(styleOf('i2'), two, 'kept, its animation and all');
+  assert.notStrictEqual(styleOf('i3'), three, 'the one reached');
+  assert.strictEqual(boxOf(el, 'i3').x, 4);
+  assert.deepStrictEqual(againstWhole(el), []);
 });
 
 test('a map is the same as another only with the same entries', () => {

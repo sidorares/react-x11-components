@@ -1503,8 +1503,11 @@ style being a function of the rules that match it and its parent's
 style**: anything new that makes a style read more — a sibling's style, an
 ancestor's past the parent — has to say so to `follow`, or a crossing keeps
 a style that changed. And `crossed` answers null, a whole restyle, for
-what is under a media query outside the rule indexes: a `@keyframes`, a
-rule at a shadow tree's edge, a shadow tree, a `@font-face`. The viewport
+what is under a media query outside the rule indexes — a `@keyframes`, a
+rule at a shadow tree's edge — where that query's answer turns between the
+two widths, and for a shadow tree: GitHub keeps its `@keyframes` under
+`prefers-reduced-motion`, which no resize turns, and every breakpoint a
+drag crossed styled the whole page again. The viewport
 units are the other exception, handled the same way: a `vw` or a `vh` is a
 number once computed, so the cascade notes as a length is resolved which
 sides a style holds (`_viewportRead`, by the style, since a style is

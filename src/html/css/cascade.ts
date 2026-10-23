@@ -2836,10 +2836,13 @@ function faceKey(style: FaceSource): string {
  */
 export class Cascade {
   private _index = new RuleIndex();
-  /** Whether something under a media query is no rule of an index here —
-   *  a `@keyframes`, a rule at a shadow tree's edge — which a width that
-   *  crosses a breakpoint changes in ways `crossed` does not look for. */
-  private _mediaOutsideRules = false;
+  /** The media queries over what is no rule of an index here — a
+   *  `@keyframes`, a rule at a shadow tree's edge — which a width that
+   *  turns one of them changes in ways `crossed` does not look for. Those
+   *  that turn on no width a resize moves through are no matter: GitHub
+   *  keeps its `@keyframes` under `prefers-reduced-motion`, and every
+   *  breakpoint a drag crossed styled the whole page again. */
+  private _mediaOutsideRules: MediaCondition[][][] = [];
   /** The rules for pseudo-elements, kept apart: they never style the
    *  element itself, and a document with none of them asks nothing. */
   private _pseudo: Record<PseudoElement, RuleIndex> = {
@@ -3372,7 +3375,7 @@ export class Cascade {
       }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
-        if (rule.media) this._mediaOutsideRules = true;
+        if (rule.media) this._mediaOutsideRules.push(rule.media);
         const split = splitPseudoElement(rule);
         this._changeRules.noteEdge(
           (split?.rule ?? rule).selector,
@@ -3428,7 +3431,7 @@ export class Cascade {
       if (!named) rules.keyframes.set(rule.name, (named = []));
       named.push(rule);
       this._anyKeyframes = true;
-      if (rule.media) this._mediaOutsideRules = true;
+      if (rule.media) this._mediaOutsideRules.push(rule.media);
       for (const frame of rule.frames) {
         const declarations = frame.declarations;
         if (!this._vars && usesVars(declarations)) this._vars = true;
@@ -3799,10 +3802,14 @@ export class Cascade {
     fromHeight = this.viewportHeight,
     toHeight = this.viewportHeight,
   ): Set<Element> | null {
-    if (this._scoped || this._mediaOutsideRules) return null;
-    const holds = (rule: StyleRule, width: number, height: number): boolean =>
+    if (this._scoped) return null;
+    const answers = (
+      media: MediaCondition[][] | null,
+      width: number,
+      height: number,
+    ): boolean =>
       mediaMatches(
-        rule.media,
+        media,
         width / this.scale,
         this.look.colorScheme,
         height / this.scale,
@@ -3810,6 +3817,13 @@ export class Cascade {
         this.reducedMotion,
         this.scripting,
       );
+    for (const media of this._mediaOutsideRules) {
+      if (answers(media, from, fromHeight) !== answers(media, to, toHeight)) {
+        return null;
+      }
+    }
+    const holds = (rule: StyleRule, width: number, height: number): boolean =>
+      answers(rule.media, width, height);
     const turned = new RuleIndex();
     for (const index of [this._index, ...Object.values(this._pseudo)]) {
       for (const indexed of index.withMedia) {
