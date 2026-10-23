@@ -4676,7 +4676,8 @@ function anchorBoxFor(
     const found = new Map<string, Box[]>();
     // an element's first box, which is its own: the boxes inside it that
     // carry its style — a button's label, an anonymous block — are not
-    // the anchor
+    // the anchor; and a `::before`'s or an `::after`'s, which is one too
+    // (CSS Anchor Positioning 1, 2.1)
     const seen = new Set<object>();
     const order = new Map<Box, number>();
     const stack: Box[] = [ctx.anchorRoot];
@@ -4684,8 +4685,13 @@ function anchorBoxFor(
       const at = stack.pop()!;
       order.set(at, order.size);
       const names = at.style.anchorNames;
-      if (names && at.pseudo === null && at.el && !seen.has(at.el)) {
-        seen.add(at.el);
+      const own =
+        at.pseudo === null
+          ? !!at.el && !seen.has(at.el)
+          : (at.pseudo === 'before' || at.pseudo === 'after') &&
+            at.parent?.pseudo !== at.pseudo;
+      if (names && own) {
+        if (at.el) seen.add(at.el);
         for (const n of names) {
           let list = found.get(n);
           if (!list) found.set(n, (list = []));
