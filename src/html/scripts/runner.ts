@@ -171,7 +171,7 @@ export class ScriptRunner {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
       log: _options.log,
-      settled: () => this.host.flush(),
+      settled: () => this.host.settled(),
       load: (url) => _options.load(url, null).catch(() => null),
       base: () => this.host.url,
       entered: holdAnimationClock,
@@ -303,14 +303,18 @@ export class ScriptRunner {
     });
   }
 
-  /** The runners of the documents no frame in this one shows any more. */
+  /** The runners of the documents no frame in this one shows any more,
+   *  each of which unloads as it goes: once this one's code is done, where
+   *  it is running, so that what a frame's `unload` reaches of this one is
+   *  never in the middle of one of its ops. */
   private _dropFrames(): void {
     if (!this._seats.size) return;
     const shown = new Set(this.host.frames().map((f) => f.document));
     for (const [document, seat] of this._seats) {
       if (shown.has(document)) continue;
       this._seats.delete(document);
-      seat.runner.dispose();
+      if (this.engine.running) queueMicrotask(() => seat.runner.dispose());
+      else seat.runner.dispose();
     }
   }
 
@@ -478,6 +482,30 @@ export class ScriptRunner {
     }, FRAME_MS);
   }
 
+  /**
+   * Whether the document may be left, asked before the host goes to
+   * another (HTML 7.4.2.4, "checking if unloading is canceled"): its
+   * `beforeunload`, then its frames' in realms of their own, each of which
+   * stays only where it asks to be confirmed, the page has been used, and
+   * `promptToUnload` says to stay. True to leave it.
+   */
+  beforeUnload(): boolean {
+    if (this._disposed) return true;
+    if (this.engine.call('__beforeUnload', null) === 'stay') return false;
+    for (const seat of this._seats.values()) {
+      if (!seat.runner.beforeUnload()) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The document is left, and its scripts stop: the frames' documents in
+   * realms of their own unload first, then this one (HTML 7.4.2.4, "unload
+   * a document and its descendants") — its `beforeunload` where nothing
+   * asked it as its navigation started, `pagehide`, `visibilitychange` to
+   * hidden and `unload` — each under the timeout every entry has, and
+   * nothing they change is drawn.
+   */
   dispose(): void {
     if (this._disposed) return;
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
@@ -486,6 +514,8 @@ export class ScriptRunner {
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();
     this._seatsWatched?.();
+    this.host.leaving();
+    this.engine.call('__unload', null);
     this._workers?.dispose();
     this._disposed = true;
     if (this._link) this._link.parent.engine.unlink(this._frameId());

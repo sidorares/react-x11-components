@@ -605,6 +605,17 @@ export interface HtmlHandle {
    */
   scriptsUnblocked(script?: Element | null): Promise<void>;
   /**
+   * Ask the document whether it may be left, before the host goes to
+   * another — a typed address, Reload, a tab closed — as a browser asks
+   * (HTML 7.4.2.4): with `scripts` on, its `beforeunload` is told, and it
+   * stays only where it asks to be confirmed, the user has pressed or typed
+   * in it, and `scripts.promptToUnload` says to stay. True to leave it, and
+   * true with no scripts. A navigation the page starts itself is asked as
+   * it starts, and a document left without asking hears its
+   * `beforeunload` as it goes, with nothing it can keep.
+   */
+  beforeUnload(): boolean;
+  /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
    * shows, whether a checkbox or a radio is checked. Null for what is no
@@ -779,10 +790,17 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     [],
   );
   const outerRef = props.ref;
+  // what the handle's `beforeUnload` asks: the document's scripts, where
+  // they run (`_unloadCheck`)
+  const unloadCheck = React.useRef(props._unloadCheck);
+  unloadCheck.current = props._unloadCheck;
   const viewRef = React.useCallback(
     (node: HtmlViewNode | null) => {
       viewNode.current = node;
-      if (node) node.interactive = interactive;
+      if (node) {
+        node.interactive = interactive;
+        node.unloadCheck = () => unloadCheck.current?.() ?? true;
+      }
       if (typeof outerRef === 'function') outerRef(node);
       else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
     },
@@ -1132,6 +1150,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.matchMedia(query) ?? false,
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
+      beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
       controlValue: (element: Element) =>
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>

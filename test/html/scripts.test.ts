@@ -107,6 +107,8 @@ interface Hosted {
   result: Awaited<ReturnType<typeof renderX11>>;
   /** Run a script in the page, as a task of its own. */
   run(code: string): void;
+  /** The page's runner, while it has one. */
+  runner(): ScriptRunner | null;
 }
 
 /** A scroll pane of core's, as `hosted` puts a page in one. */
@@ -135,6 +137,9 @@ async function hosted(
     network?: boolean;
     /** Whether the page may register service workers. */
     serviceWorkers?: boolean;
+    /** The prompt a page that asks to be confirmed before it is left is
+     *  answered with: whether to leave it. */
+    prompt?: () => boolean;
     userAgent?: string;
     scheme?: 'light' | 'dark';
     pane?: number;
@@ -185,6 +190,7 @@ async function hosted(
     canPlayType: options.canPlayType,
     network: options.network,
     serviceWorkers: options.serviceWorkers,
+    promptToUnload: options.prompt,
   };
   function Page() {
     const app = useApp();
@@ -193,6 +199,7 @@ async function hosted(
     const scripts = useScripts(true, handle, PAGE, seams);
     out.scrolled = () => scripts.scrolled?.();
     out.run = (code) => scripts.runner?.()?.engine.exec(code, 'test', 0);
+    out.runner = () => scripts.runner?.() ?? null;
     return h(Html, {
       source,
       partial: false,
@@ -3564,6 +3571,198 @@ test('an intercepted navigation scrolls where it ends, a traversal restores wher
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
     '0|true|handler true|success true|0||0|true|InvalidStateError|manual',
+  );
+});
+
+test('a document is shown after its load, and as it goes hears beforeunload, pagehide, visibilitychange to hidden and unload, and runs nothing after', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var log = function (s) { console.log("life " + s); };' +
+      'addEventListener("load", function () { log("load " + document.visibilityState); });' +
+      'addEventListener("pageshow", function (e) { log("pageshow " + e.persisted + " " + (e instanceof PageTransitionEvent)); });' +
+      'addEventListener("beforeunload", function (e) { log("beforeunload " + (e instanceof BeforeUnloadEvent) + " " + e.cancelable); });' +
+      'addEventListener("pagehide", function (e) {' +
+      '  log("pagehide " + e.persisted + " " + document.visibilityState);' +
+      // a navigation while it unloads is refused, as the document is
+      '  navigation.navigate("elsewhere").finished.catch(function (err) { log("navigate " + err.name); });' +
+      // and what an address assigned would start goes nowhere
+      '  navigation.onnavigate = function () { log("a navigate event"); };' +
+      '  location.href = "elsewhere";' +
+      '});' +
+      'document.onvisibilitychange = function () { log("visibilitychange " + document.visibilityState + " " + document.hidden); };' +
+      'onunload = function () {' +
+      '  log("unload");' +
+      '  setTimeout(function () { log("a timer set as it went"); }, 0);' +
+      '};' +
+      'try { new BeforeUnloadEvent("beforeunload"); } catch (e) { log("constructed " + e.name); }' +
+      'log("made " + (document.createEvent("BeforeUnloadEvent") instanceof BeforeUnloadEvent) + " " +' +
+      '  new PageTransitionEvent("pageshow", { persisted: true }).persisted + " " +' +
+      '  ("persisted" in PageTransitionEvent.prototype));' +
+      '</script>',
+  );
+  const life = () =>
+    doc.logs
+      .filter((line) => line.includes('life '))
+      .map((line) => line.slice(line.indexOf('life ') + 5));
+  assert.deepEqual(life(), [
+    'constructed TypeError',
+    'made true true true',
+    'load visible',
+    'pageshow false true',
+  ]);
+  await doc.result.unmount();
+  await new Promise((r) => setTimeout(r, 30));
+  const went = life().slice(4);
+  assert.deepEqual(
+    went.filter((line) => !line.startsWith('navigate')),
+    [
+      // nothing asked it as its navigation started, so it is told as it goes
+      'beforeunload true true',
+      'pagehide false visible',
+      'visibilitychange hidden true',
+      'unload',
+    ],
+  );
+  assert.ok(went.includes('navigate InvalidStateError'), went.join('\n'));
+  assert.deepEqual(
+    doc.links,
+    [],
+    'nothing it asked for as it went was followed',
+  );
+});
+
+test('a navigation the page starts asks it first, after navigate, and it stays only where it asks to be confirmed, has been used, and the prompt says so', async () => {
+  let answer = false;
+  let prompts = 0;
+  const doc = await hosted(
+    '<input type="button" id="go" value="go"><script>' +
+      'var log = function (s) { console.log("life " + s); }, keep = "";' +
+      'navigation.onnavigate = function (e) { log("navigate " + e.destination.url.split("/").pop()); };' +
+      'onbeforeunload = function (e) {' +
+      '  log("beforeunload");' +
+      '  if (keep === "cancel") e.preventDefault();' +
+      '  if (keep === "value") e.returnValue = "sure?";' +
+      '  if (keep === "return") return "sure?";' +
+      '};' +
+      'function go(how, to) { keep = how; location.href = to; }' +
+      '</script>',
+    {
+      prompt: () => {
+        prompts += 1;
+        return answer;
+      },
+    },
+  );
+  const at = (name: string) => `https://example.test/dir/${name}`;
+  // a page nobody has used is left without a prompt, whatever it asks
+  doc.run('go("cancel", "a.html")');
+  await settle();
+  assert.deepEqual(doc.links, [at('a.html')]);
+  assert.equal(prompts, 0);
+  // used: each way of asking is prompted, and the prompt keeps it
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  doc.run('go("cancel", "b.html")');
+  doc.run('go("value", "c.html")');
+  doc.run('go("return", "d.html")');
+  await settle();
+  assert.equal(prompts, 3);
+  assert.deepEqual(doc.links, [at('a.html')], 'it stayed each time');
+  // and the host asks it the same way
+  doc.run('keep = "cancel"');
+  assert.equal(doc.runner()!.beforeUnload(), false);
+  assert.equal(prompts, 4);
+  answer = true;
+  doc.run('go("return", "e.html")');
+  // one that asks for nothing is not prompted
+  doc.run('go("", "f.html")');
+  await settle();
+  assert.equal(prompts, 5);
+  assert.deepEqual(doc.links, [at('a.html'), at('e.html'), at('f.html')]);
+  const life = doc.logs
+    .filter((line) => line.includes('life '))
+    .map((line) => line.slice(line.indexOf('life ') + 5));
+  assert.deepEqual(life, [
+    'navigate a.html',
+    'beforeunload',
+    'navigate b.html',
+    'beforeunload',
+    'navigate c.html',
+    'beforeunload',
+    'navigate d.html',
+    'beforeunload',
+    'beforeunload',
+    'navigate e.html',
+    'beforeunload',
+    'navigate f.html',
+    'beforeunload',
+  ]);
+});
+
+test('a frame’s document a navigation leaves is asked as it starts and unloaded as the next one goes in, refusing its navigation meanwhile and after, and one taken out of the page goes too', async () => {
+  const doc = await hosted(
+    '<iframe id="i" src="blank.html"></iframe><p id="out"></p><script>' +
+      'var r = [], i = document.getElementById("i");' +
+      'function refused(res) { return res.committed.then(function () { return "committed"; }, function (e) { return e.name; }); }' +
+      'void i.contentDocument; i.onload = async function () {' +
+      '  var w = i.contentWindow, nav = w.navigation, count = 0, inBefore, inHide = [];' +
+      '  nav.onnavigate = function () { count += 1; };' +
+      '  w.onbeforeunload = function () { r.push("beforeunload"); inBefore = refused(nav.navigate("#x")); };' +
+      '  w.onpagehide = function (e) {' +
+      '    r.push("pagehide " + e.persisted + " " + w.document.visibilityState);' +
+      // refused as it unloads, each after what it is refused for first
+      '    inHide.push(refused(nav.navigate("?2")), refused(nav.reload()),' +
+      '      refused(nav.navigate("https://example.com\\u0000x")), refused(nav.navigate("?3", { state: document.body })));' +
+      '  };' +
+      '  w.document.onvisibilitychange = function () { r.push("hidden " + w.document.hidden); };' +
+      '  w.onunload = function () { r.push("unload"); };' +
+      '  var loaded = new Promise(function (ok) { i.onload = ok; });' +
+      '  nav.navigate("?1");' +
+      '  r.push("asked " + (inBefore !== undefined));' +
+      '  await loaded;' +
+      '  r.push(await inBefore, (await Promise.all(inHide)).join(","), count);' +
+      // what the window had is gone with the document it was of
+      '  r.push(await refused(nav.navigate("#y")), i.contentWindow.location.search);' +
+      // taken out, the frame's document goes as the task ends
+      '  var w2 = i.contentWindow, nav2 = w2.navigation;' +
+      '  w2.onpagehide = function () { r.push("out: pagehide"); };' +
+      '  w2.onunload = function () { r.push("out: unload"); };' +
+      '  i.remove(); r.push("removed");' +
+      '  setTimeout(async function () {' +
+      '    r.push(await refused(nav2.navigate("?4")));' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  }, 0);' +
+      '};' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'text/html']],
+        body: '<title>t</title>',
+      }),
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'beforeunload',
+      'asked true',
+      'pagehide false visible',
+      'hidden true',
+      'unload',
+      'InvalidStateError',
+      'InvalidStateError,InvalidStateError,SyntaxError,DataCloneError',
+      '1',
+      'InvalidStateError',
+      '?1',
+      'removed',
+      'out: pagehide',
+      'out: unload',
+      'InvalidStateError',
+    ].join('|'),
+    doc.logs.join('\n'),
   );
 });
 
@@ -7817,6 +8016,44 @@ test('a frame of another origin runs at its own origin, and the two reach each o
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '1:https://example.test');
+});
+
+test('a frame in a realm of its own is shown after its load, and the document it leaves for another is asked first and unloads in that realm as it goes', async () => {
+  const lifecycle =
+    'var tell = function (s) { parent.r.push(s); };' +
+    'addEventListener("pageshow", function (e) { tell("pageshow " + e.persisted); });' +
+    'addEventListener("beforeunload", function () { tell("beforeunload"); });' +
+    'addEventListener("pagehide", function (e) { tell("pagehide " + e.persisted); });' +
+    'document.addEventListener("visibilitychange", function () { tell("hidden " + document.hidden); });' +
+    'addEventListener("unload", function () { tell("unload"); });';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function done() { document.getElementById("out").textContent = r.join("|"); }' +
+      'f.onload = function () { f.onload = null;' +
+      '  setTimeout(function () { f.contentWindow.location.href = "next.html"; }, 0); };' +
+      '</script>',
+    {
+      'frame.html': '<p>one</p><script>' + lifecycle + '</script>',
+      'next.html':
+        '<p>two</p><script>parent.r.push("next " + document.visibilityState); parent.done();</script>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    [
+      'pageshow false',
+      'beforeunload',
+      'pagehide false',
+      'hidden true',
+      'unload',
+      'next visible',
+    ].join('|'),
+    logs.join('\n'),
+  );
 });
 
 test('a frame the page lays out no box for runs all the same, and keeps its realm once it has one', async () => {

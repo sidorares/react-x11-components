@@ -1020,6 +1020,12 @@ export class ScriptEngine {
     }
   }
 
+  /** Whether the page's code is running: an entry under way, inside which
+   *  the host is in one of its ops, or in what the page called. */
+  get running(): boolean {
+    return this._depth > 0;
+  }
+
   /** An entry begins: the outermost one is a task (`entered`). */
   private _enter(): void {
     if (this._depth++ === 0) this._options.entered?.();

@@ -661,6 +661,36 @@ export function installDom(
       this.newURL = String(init.newURL ?? '');
     }
   }
+  /** `pageshow` and `pagehide` (HTML 7.4.6.5): whether the document is
+   *  kept to be shown again, which none is here. */
+  class PageTransitionEvent extends Event {
+    _persisted: boolean;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._persisted = !!init?.persisted;
+    }
+    get persisted(): boolean {
+      return this._persisted;
+    }
+  }
+  /** What only the user agent makes a `BeforeUnloadEvent` with: it has no
+   *  constructor of a page's (HTML 7.4.2.4), but `createEvent`. */
+  const UNLOADING = Symbol('beforeunload');
+  /** `beforeunload` (HTML 7.4.2.4): a page that would be asked before it
+   *  is left cancels it or sets `returnValue`. */
+  class BeforeUnloadEvent extends Event {
+    _returnValue = '';
+    constructor(token?: Any, type = '', init: Any = {}) {
+      if (token !== UNLOADING) throw new TypeError('Illegal constructor');
+      super(type, init);
+    }
+    override get returnValue(): Any {
+      return this._returnValue;
+    }
+    override set returnValue(v: Any) {
+      this._returnValue = v === null || v === undefined ? '' : String(v);
+    }
+  }
   /** What a document is told as it is swapped out for another and as it
    *  is first shown (HTML 7.4.6.4, 8.1.7.1): the cross-document view
    *  transition, which a navigation here never makes, so only a page's
@@ -875,7 +905,19 @@ export function installDom(
       if (typeof handler === 'function') {
         try {
           const result = handler.call(self, event);
-          if (result === false) event.preventDefault();
+          // `onbeforeunload` answers a string, which asks to be confirmed
+          // (HTML 8.1.8.1, "the event handler processing algorithm")
+          if (
+            event instanceof BeforeUnloadEvent &&
+            event._type === 'beforeunload'
+          ) {
+            if (result !== undefined && result !== null) {
+              event._canceled = true;
+              if (event._returnValue === '') {
+                event._returnValue = String(result);
+              }
+            }
+          } else if (result === false) event.preventDefault();
         } catch (error) {
           report(error);
         }
@@ -4317,6 +4359,11 @@ export function installDom(
     if (Kind === Document || Kind === XMLDocument) {
       node._ready = 'loading';
       node._current = null;
+      node._pageShowing = false;
+      node._hidden = false;
+      node._unloadCounter = 0;
+      node._leaveChecked = false;
+      node._unloaded = false;
     }
     wrappers.set(id, node);
     return node;
@@ -7854,11 +7901,22 @@ export function installDom(
   /** Each frame document's session history: its entries are the frame's,
    *  and what leaves them is the frame's navigation (`frameNavigate`). */
   const frameSessions = new WeakMap<object, Any>();
+  /** Where each frame document's window hears its events: the target its
+   *  `on…` handlers and listeners are kept on, which a navigation that
+   *  leaves the document tells (`documentTree`). */
+  const frameTargets = new WeakMap<object, Any>();
   const frameSessionOf = (frame: Any, doc: Any, target: Any): Any => {
     let made = frameSessions.get(doc);
     if (!made) {
       const at = (): string => String(call('frameLocation', frame._id));
+      // the document the session is of, which its initial `about:blank`'s
+      // hands on to the frame's first (`frameWindowOf`)
+      const owner = { doc };
       made = makeSession({
+        owner: () => owner.doc,
+        // in the document while its document is the frame's (HTML 7.3.3,
+        // "fully active"): one a navigation left is unloaded
+        active: () => frame.isConnected && !owner.doc._unloaded,
         url: at,
         // a frame's document's address, or for `about:blank` its creator's
         base: () => (/^about:/.test(at()) ? document.baseURI : at()),
@@ -7871,7 +7929,11 @@ export function installDom(
         target,
         away: (url) => void call('frameNavigate', frame._id, url),
         tellsFragments: false,
-        reload: () => void call('frameNavigate', frame._id, at()),
+        reload: () => {
+          if (unloadAllowed(owner.doc, target)) {
+            call('frameNavigate', frame._id, at());
+          }
+        },
         go: () => {},
         // a frame's scroll is its own document's, which no entry keeps
         scroll: () => [0, 0],
@@ -7879,6 +7941,7 @@ export function installDom(
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
       });
+      made.owner = owner;
       frameSessions.set(doc, made);
     }
     return made;
@@ -7918,8 +7981,12 @@ export function installDom(
           sessionEntry(String(call('frameLocation', frame._id))),
         ];
         made.session.index = 0;
+        made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
+      frameTargets.set(doc, frameTargets.get(last.doc));
+      // shown once it is the frame's, which it is only once it is in
+      if (!last.initial) doc._pageShowing = true;
       last.doc = doc;
       frameWindows.set(doc, last.win);
       return last.win;
@@ -8018,7 +8085,16 @@ export function installDom(
         configurable: true,
       });
     }
-    for (const type of ['load', 'error', 'message', 'resize', 'unload']) {
+    for (const type of [
+      'load',
+      'error',
+      'message',
+      'resize',
+      'beforeunload',
+      'pagehide',
+      'pageshow',
+      'unload',
+    ]) {
       Object.defineProperty(win, `on${type}`, {
         get: () => target._handlers[type] ?? null,
         set: (fn: Any) => {
@@ -8032,10 +8108,15 @@ export function installDom(
       configurable: true,
     });
     frameWindows.set(doc, win);
+    frameTargets.set(doc, target);
+    const initial = call('frameInitialBlank', frame._id) === true;
+    // a frame's document is put in once it has loaded, and is shown from
+    // then on (HTML 7.4.6.5): its initial `about:blank` is never
+    if (!initial) doc._pageShowing = true;
     keptFrameWindows.set(frame, {
       win,
       doc,
-      initial: call('frameInitialBlank', frame._id) === true,
+      initial,
       setDoc: (d: Any) => {
         current = d;
       },
@@ -8205,6 +8286,15 @@ export function installDom(
           pushOrReplace(made.session, href, replace),
         );
       } else {
+        // a window no session was made for yet still hears it is left
+        const target = doc && frameTargets.get(doc);
+        if (
+          target &&
+          !fragmentOf(String(call('frameLocation', frame._id)), href) &&
+          !unloadAllowed(doc, target)
+        ) {
+          return;
+        }
         call('frameNavigate', frame._id, href);
       }
     };
@@ -11430,6 +11520,16 @@ export function installDom(
     /** What `document.write` has written since `open`, where a page
      *  opened a document of its own: parsed at `close`. */
     _written: string | null = null;
+    /** Where the document is in its life as a navigation leaves it (HTML
+     *  7.4.2.4, "unload a document"): its `pageshow` told and no
+     *  `pagehide` since ("page showing"), its visibility, how many of the
+     *  steps that unload it are running ("unload counter"), whether a
+     *  check that it may be left went on, and whether it is gone. */
+    _pageShowing = false;
+    _hidden = false;
+    _unloadCounter = 0;
+    _leaveChecked = false;
+    _unloaded = false;
     get documentElement(): Any {
       return wrap(Number(call('root', this._id)));
     }
@@ -11518,10 +11618,10 @@ export function installDom(
       return 'CSS1Compat';
     }
     get visibilityState(): string {
-      return 'visible';
+      return this._hidden ? 'hidden' : 'visible';
     }
     get hidden(): boolean {
-      return false;
+      return this._hidden;
     }
     get timeline(): Any {
       return documentTimeline;
@@ -11691,6 +11791,7 @@ export function installDom(
     }
     createEvent(kind: Any): Any {
       const k = str(kind).toLowerCase();
+      if (k === 'beforeunloadevent') return new BeforeUnloadEvent(UNLOADING);
       const Kind = k.startsWith('mouse')
         ? MouseEvent
         : k.startsWith('keyboard')
@@ -12837,6 +12938,15 @@ export function installDom(
     Object.defineProperty(HTMLElement.prototype, `on${type}`, property);
     Object.defineProperty(Document.prototype, `on${type}`, property);
   }
+  Object.defineProperty(Document.prototype, 'onvisibilitychange', {
+    get(this: Any): Any {
+      return this._handlers.visibilitychange ?? null;
+    },
+    set(this: Any, fn: Any) {
+      this._handlers.visibilitychange = typeof fn === 'function' ? fn : null;
+    },
+    configurable: true,
+  });
 
   // --- fullscreen -------------------------------------------------------------------
   //
@@ -13065,8 +13175,9 @@ export function installDom(
     replace(url: Any): void {
       navigateDocument(String(call('resolve', str(url))), true);
     },
+    // another document, which unloads this one
     reload(): void {
-      call('reload');
+      pageSession.session.ctx.reload();
     },
     toString(): string {
       return this.href;
@@ -19095,6 +19206,11 @@ export function installDom(
      *  its frame's initial `about:blank`, or of an opaque origin, has no
      *  entries and tells no navigation of its. Absent, false. */
     disabled?(): boolean;
+    /** The document the session is of, whose unload counter a method
+     *  reads, and where it is a frame's, whether it is still fully active
+     *  (HTML 7.3.3): in the document, and not left for another. */
+    owner(): Any;
+    active(): boolean;
   }
   /** A navigation an API method started, and the two promises it hands
    *  back (HTML 7.2.6.10, "navigation API method tracker"). */
@@ -19161,6 +19277,17 @@ export function installDom(
     if (a.origin !== 'null') return true;
     return from.split(/[?#]/)[0] === to.split(/[?#]/)[0];
   };
+
+  /** What a navigation API method is refused with where its document is
+   *  not fully active, or is being unloaded (HTML 7.2.6.4, "navigate()"
+   *  and its kin): null where it may go on. */
+  const unloadingRefusal = (s: Session, method: string): Any =>
+    !s.ctx.active() || s.ctx.owner()._unloadCounter > 0
+      ? new DOMException(
+          `Failed to execute '${method}' on 'Navigation': The document is not fully active, or is being unloaded.`,
+          'InvalidStateError',
+        )
+      : null;
 
   const makeTracker = (): Tracker => {
     let commit: Any;
@@ -19776,6 +19903,9 @@ export function installDom(
       form?: { formData: Any };
     } = {},
   ): 'same' | 'canceled' | 'other' => {
+    // a document that is unloading, or gone, goes nowhere, and tells no
+    // `navigate` of it (HTML 7.4.2.2, "navigate")
+    if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'canceled';
     const from = currentOf(s).url;
     const fragment = !options.form && fragmentOf(from, url);
     const went = navigateWith(
@@ -19801,6 +19931,12 @@ export function installDom(
         }
       },
     );
+    // another document unloads this one, which is asked first, after its
+    // `navigate` (HTML 7.4.2.2, "navigate"), and may stay where a prompt
+    // says so
+    if (went === 'other' && !unloadAllowed(s.ctx.owner(), s.ctx.target)) {
+      return 'canceled';
+    }
     // the host hears of a fragment as it did, and of another document where
     // nothing kept the navigation in this one
     if (
@@ -20133,6 +20269,8 @@ export function installDom(
           ),
         );
       }
+      const refused = unloadingRefusal(s, 'navigate');
+      if (refused) return earlyError(refused);
       const type =
         historyMode === 'push'
           ? 'push'
@@ -20143,9 +20281,6 @@ export function installDom(
     }
     reload(options: Any = {}): Any {
       const s = this._s;
-      // nothing is told of a reload of a document whose navigations go
-      // untold, and what it hands back never settles
-      if (s.ctx.disabled?.()) return resultOf(makeTracker());
       let navState = currentOf(s).navState;
       if (options?.state !== undefined) {
         try {
@@ -20154,6 +20289,11 @@ export function installDom(
           return earlyError(error);
         }
       }
+      const refused = unloadingRefusal(s, 'reload');
+      if (refused) return earlyError(refused);
+      // nothing is told of a reload of a document whose navigations go
+      // untold, and what it hands back never settles
+      if (s.ctx.disabled?.()) return resultOf(makeTracker());
       const tracker = makeTracker();
       const url = currentOf(s).url;
       const went = navigateWith(
@@ -20193,6 +20333,8 @@ export function installDom(
           ),
         );
       }
+      const refused = unloadingRefusal(s, 'traverseTo');
+      if (refused) return earlyError(refused);
       const tracker = makeTracker();
       if (index === s.index) {
         const entry = apiEntryOf(s, currentOf(s));
@@ -20323,13 +20465,20 @@ export function installDom(
     loaded: () => completelyLoaded,
     setUrl: (url) => void call('setLocation', url),
     doc: () => document,
+    owner: () => document,
+    active: () => !document._unloaded,
     get target() {
       return windowTarget;
     },
     away: (url, replace) => void call('navigate', url, replace),
     tellsFragments: true,
-    reload: () => void call('reload'),
-    go: (delta) => void call('go', delta),
+    // each of them another document, which unloads this one
+    reload: () => {
+      if (unloadAllowed(document, windowTarget)) call('reload');
+    },
+    go: (delta) => {
+      if (unloadAllowed(document, windowTarget)) call('go', delta);
+    },
     scroll: () => [Number(G.scrollX) || 0, Number(G.scrollY) || 0],
     scrollTo: (x, y) => G.scrollTo?.(x, y),
   });
@@ -20341,6 +20490,124 @@ export function installDom(
   const navigateDocument = (url: string, replace: boolean): void => {
     const s = pageSession.session;
     navigateTo(s, url, pushOrReplace(s, url, replace || !s.ctx.loaded()));
+  };
+
+  // --- unloading a document (HTML 7.4.2.4) ------------------------------------
+  //
+  // A navigation to another document asks the one it leaves first:
+  // `beforeunload` at its window and at its frames', after its `navigate`,
+  // which keeps it only where one asks to be confirmed, the page has been
+  // used and the host's prompt says to stay (`promptToUnload`). As it goes,
+  // its frames' documents and then it hear `pagehide`, `visibilitychange`
+  // to hidden and `unload`, and it is fully active no longer, so a method of
+  // its `navigation` is refused (`unloadingRefusal`). The page's document
+  // goes with its engine (`__unload`); a frame's in this realm as the host
+  // puts another in its place or the frame leaves the document
+  // (`__unloadDocument`). What its handlers start after that runs nowhere:
+  // the page's engine is gone, and a frame's window is another document's.
+
+  /** Whether the page has been used: a press or a key of the user's in it
+   *  (HTML 6.4.1, "sticky activation"), which its frames of the same origin
+   *  share. A prompt to unload is asked for only where it has. */
+  let stickyActivation = false;
+
+  /** A document and the documents its frames hold in this realm, each with
+   *  where its window hears events, a parent before its frames: a frame
+   *  with a realm of its own unloads in it, a frame's initial `about:blank`
+   *  is never shown, and a document whose window was never made has nobody
+   *  to tell, so none of them is here. */
+  const documentTree = (
+    doc: Any,
+    target: Any,
+    out: [Any, Any][] = [],
+  ): [Any, Any][] => {
+    out.push([doc, target]);
+    for (const frame of Array.from(
+      doc.querySelectorAll('iframe, frame'),
+    ) as Any[]) {
+      if (crossLinked.has(frame._id) || linkedFrames.has(frame._id)) continue;
+      const kept = keptFrameWindows.get(frame);
+      if (!kept || kept.initial || kept.doc._unloaded) continue;
+      const at = frameTargets.get(kept.doc);
+      if (at) documentTree(kept.doc, at, out);
+    }
+    return out;
+  };
+
+  /**
+   * HTML 7.4.2.4, "checking if unloading is canceled": `beforeunload` at
+   * each document a navigation would unload, and where one asks to be
+   * confirmed — it canceled the event, or gave it a `returnValue` — and the
+   * page has been used, the host's prompt, once, whose answer is whether to
+   * go on. `mayStay` false tells them and keeps none: a document going that
+   * nothing asked as its navigation started. True where it goes on.
+   */
+  const unloadAllowed = (doc: Any, target: Any, mayStay = true): boolean => {
+    // one already unloading, or gone, goes nowhere
+    if (doc._unloadCounter > 0 || doc._unloaded) return false;
+    const tree = documentTree(doc, target);
+    let prompted = false;
+    for (const [d, at] of tree) {
+      if (d._unloaded) continue;
+      const ev = asTrusted(
+        new BeforeUnloadEvent(UNLOADING, 'beforeunload', { cancelable: true }),
+      );
+      d._unloadCounter += 1;
+      dispatch(at, ev);
+      d._unloadCounter -= 1;
+      if (
+        mayStay &&
+        !prompted &&
+        stickyActivation &&
+        (ev._canceled || ev._returnValue !== '')
+      ) {
+        prompted = true;
+        if (call('promptToUnload') === false) return false;
+      }
+    }
+    for (const [d] of tree) d._leaveChecked = true;
+    return true;
+  };
+
+  /** HTML 7.4.2.4, "unload a document": `pagehide` and the visibility
+   *  hidden where it was shown, then `unload`, and it is gone. */
+  const unloadOne = (doc: Any, target: Any): void => {
+    if (doc._unloaded) return;
+    doc._unloadCounter += 1;
+    if (doc._pageShowing) {
+      doc._pageShowing = false;
+      dispatch(
+        target,
+        asTrusted(
+          new PageTransitionEvent('pagehide', {
+            persisted: false,
+            bubbles: true,
+            cancelable: true,
+          }),
+        ),
+      );
+      if (!doc._hidden) {
+        doc._hidden = true;
+        dispatch(
+          doc,
+          asTrusted(new Event('visibilitychange', { bubbles: true })),
+        );
+      }
+    }
+    dispatch(target, asTrusted(new Event('unload')));
+    doc._unloaded = true;
+    doc._unloadCounter -= 1;
+  };
+
+  /** A document and its frames' going (HTML 7.4.2.4, "unload a document
+   *  and its descendants"): asked first where nothing asked as its
+   *  navigation started, then its frames' unloaded before it. */
+  const unloadTree = (doc: Any, target: Any): void => {
+    if (doc._unloaded) return;
+    if (!doc._leaveChecked) unloadAllowed(doc, target, false);
+    for (const [d, at] of documentTree(doc, target).reverse()) {
+      unloadOne(d, at);
+    }
   };
 
   // An accessor of a base interface answers for any node, as a browser's
@@ -21910,6 +22177,8 @@ export function installDom(
     CustomEvent,
     ErrorEvent,
     HashChangeEvent,
+    PageTransitionEvent,
+    BeforeUnloadEvent,
     PageSwapEvent,
     PageRevealEvent,
     PopStateEvent,
@@ -22802,6 +23071,14 @@ export function installDom(
   let hovered: Any = null;
   entry('__event', () => {
     const e = input();
+    // a user's press or key has used the page (HTML 6.4.1, "activation
+    // triggering input event")
+    if (
+      e.type === 'mousedown' ||
+      (e.type === 'keydown' && e.key !== 'Escape')
+    ) {
+      stickyActivation = true;
+    }
     let target = wrap(e.target);
     if (!target) return true;
     const v = viewport();
@@ -23551,7 +23828,43 @@ export function installDom(
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
       completelyLoaded = true;
+      // and shown, after its `load` (HTML 8.4, "the end")
+      if (!document._pageShowing && !document._unloaded) {
+        document._pageShowing = true;
+        dispatch(
+          windowTarget,
+          asTrusted(
+            new PageTransitionEvent('pageshow', {
+              persisted: false,
+              bubbles: true,
+              cancelable: true,
+            }),
+          ),
+        );
+      }
     }
+    return true;
+  });
+
+  // the host is about to leave the document: whether it may
+  // (`ScriptRunner.beforeUnload`)
+  entry('__beforeUnload', () =>
+    unloadAllowed(document, windowTarget) ? 'leave' : 'stay',
+  );
+  // the document is going, its engine with it (`ScriptRunner.dispose`)
+  entry('__unload', () => {
+    unloadTree(document, windowTarget);
+    return true;
+  });
+  // a frame's document in this realm is going: the host puts another in
+  // its place, or its frame left the document
+  entry('__unloadDocument', () => {
+    const [id] = input();
+    const doc = wrap(id);
+    if (!doc) return false;
+    const target = frameTargets.get(doc);
+    if (target) unloadTree(doc, target);
+    else doc._unloaded = true;
     return true;
   });
 

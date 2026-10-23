@@ -2310,6 +2310,17 @@ closes a way out a DOM binding opens by accident:
   never answers a property read from the other realm. `postMessage`'s
   `targetOrigin` is held to the window posted to (`__origin`), which is
   not the sender's once two origins are linked.
+- **A document that goes is unloaded first, whatever replaces it.** The
+  page's runner unloads its document as it is disposed (`__unload`), after
+  its frames' realms; a frame's document in the page's realm unloads as
+  the host puts another in its place, while the frame still shows it, or as
+  the task that took the frame out of the document ends
+  (`_unloadFrameDocument`) — never from inside an op, since what it tells
+  runs the page's listeners. And a navigation to another document asks the
+  one it leaves first, after its `navigate` (`unloadAllowed`). **Anything
+  new that swaps a frame's document, drops a runner or hands the host a
+  navigation goes through these**, or a page never hears its `pagehide`,
+  and its window's `navigation` answers for a document that is gone.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

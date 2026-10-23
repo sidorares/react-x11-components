@@ -148,6 +148,7 @@ export function useScripts(
     navigate: (to, how) => latest.current.navigate(to, how),
     reload: () => latest.current.reload(),
     go: (delta) => latest.current.go(delta),
+    promptToUnload: () => latest.current.promptToUnload?.() ?? true,
     log: (level, text) => latest.current.log(level, text),
     title: (title) => latest.current.title(title),
     fetch: (request, signal) => latest.current.fetch(request, signal),
