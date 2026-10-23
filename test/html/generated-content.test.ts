@@ -2,7 +2,16 @@
 // markers, ::first-letter and ::first-line.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, expectPixel, isNear, pixelAt } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  expectPixel,
+  isNear,
+  pixelAt,
+  renderX11,
+  screen,
+} from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
 import {
   CounterStyles,
   counterStyleRule,
@@ -23,6 +32,7 @@ import {
   documentText,
   drawnText,
   findById,
+  h,
   linesOf,
   metric,
   pixelsIn,
@@ -32,10 +42,12 @@ import {
   renderWithImages,
   solidPng,
   svgBytes,
+  treeOf,
   view,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
+import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
 
@@ -1295,3 +1307,58 @@ metric(
     await result.unmount();
   },
 );
+
+test('an image generated content names, arriving after the build, builds the boxes again with every style kept', async () => {
+  // Wikipedia's interlanguage links carry a `list-style-image` star, which
+  // arrives after the first build: every element of the article was matched
+  // again for it, 600 ms on the article on the United States
+  let answer: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => (answer = resolve));
+  const rows = Array.from({ length: 30 }, (_, i) => `<p>row ${i}</p>`).join('');
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>.star{list-style-image:url(star.png)}' +
+          'b::before{content:url(icon.png)}</style>' +
+          `<ul><li id="s" class="star">a</li><li>b</li></ul><b id="b">x</b>${rows}`,
+        partial: false,
+        'data-testname': 'doc',
+        onResource: async (r: { url: string; kind: string }) => {
+          if (r.kind !== 'image') return null;
+          await held;
+          return { kind: 'image' as const, bytes: SMALL };
+        },
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const styles = () =>
+    (treeOf(el) as { styles: Map<unknown, { style: unknown }> }).styles;
+  const before = new Map(
+    [...styles()].map(([element, { style }]) => [element, style]),
+  );
+  const marker = () =>
+    (boxOf(el, 's') as unknown as { marker: { image?: unknown } | null }).marker
+      ?.image;
+  assert.strictEqual(marker(), undefined, 'no image yet');
+  answer!();
+  await held;
+  for (let i = 0; i < 4; i += 1) await act();
+  assert.ok(marker(), "the item's marker is the image");
+  const icon: number[][] = [];
+  const walk = (box: LaidBox & { kind?: string }) => {
+    if (box.kind === 'replaced') icon.push([box.width, box.height]);
+    for (const child of box.children) walk(child);
+  };
+  walk(boxOf(el, 'b'));
+  assert.deepStrictEqual(icon, [[20, 10]], 'the ::before is the image');
+  const kept = [...styles()].filter(
+    ([element, { style }]) => before.get(element) === style,
+  ).length;
+  assert.strictEqual(kept, before.size, 'every element kept its style');
+});

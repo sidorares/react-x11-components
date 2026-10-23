@@ -1378,7 +1378,11 @@ export class HtmlViewNode extends Node {
           this._resources.holdsDocument(imageUrlOf(el) ?? ''),
       )
     ) {
-      this._invalidate(Stale.Boxes);
+      // built again for the boxes an image makes, and no style: an image
+      // changes none, and every element was matched again for Wikipedia's
+      // interlanguage stars, `list-style-image`s that arrive after the
+      // first build, 600 ms of the article on the United States
+      this._invalidate(Stale.Boxes, EMPTY_SET);
       return;
     }
     let moves = false;
