@@ -391,11 +391,16 @@ const LONG =
   ).join('') +
   '<div id="end" style="height:10px"></div></body>';
 
-/** The fills that reach the top `height` of the document. */
+/** The fills that reach the top `height` of the document, cut to it: what
+ *  of each can be seen. A box set aside is as tall as it was a width ago,
+ *  so a border down the side of one runs another length below. */
 const shown = (fills: Fill[], height: number): string[] =>
   fills
     .filter((f) => f.y < height)
-    .map((f) => `${String(f.style)} ${f.x},${f.y} ${f.w}x${f.h}`);
+    .map(
+      (f) =>
+        `${String(f.style)} ${f.x},${f.y} ${f.w}x${Math.min(f.h, height - f.y)}`,
+    );
 
 test('a dragged width lays out what can be seen, and the rest once it rests', async (t) => {
   const clock = holdClock(t, resizeClock);
