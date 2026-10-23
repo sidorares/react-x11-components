@@ -6437,6 +6437,57 @@ test('a point in the viewport past what the document lays out is the root elemen
   assert.strictEqual(doc.text('out'), 'HTML|null', doc.logs.join('\n'));
 });
 
+test('showModal() and requestFullscreen() refuse a showing popover and hide the popovers they are not in, and the fullscreen element is in the top layer, all of the viewport', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><body>' +
+      '<div id="outer" popover="auto"><div id="inner" popover="auto"></div></div>' +
+      '<div id="other" popover="auto"></div><div id="fs" style="width:10px"></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], outer = document.getElementById("outer"), inner = document.getElementById("inner");' +
+      'var dialog = document.createElement("dialog"); inner.appendChild(dialog);' +
+      'outer.showPopover(); inner.showPopover();' +
+      // a modal dialog inside the popovers keeps them showing, and one shown
+      // as a popover itself is refused
+      'dialog.showModal(); r.push(outer.matches(":popover-open"), inner.matches(":popover-open"), dialog.matches(":modal"));' +
+      'dialog.close(); dialog.popover = "manual"; dialog.showPopover();' +
+      'try { dialog.showModal(); r.push("shown"); } catch (e) { r.push(e.name); }' +
+      'dialog.hidePopover();' +
+      'var fs = document.getElementById("fs"), other = document.getElementById("other"), events = [];' +
+      'document.addEventListener("fullscreenchange", function (e) { events.push(e.target.id); });' +
+      'other.showPopover();' +
+      'other.requestFullscreen().then(function () { r.push("fullscreen"); }, function (e) { r.push(e.name); })' +
+      '.then(function () { other.hidePopover(); outer.showPopover(); return fs.requestFullscreen(); }).then(function () {' +
+      // an element outside the popovers closes them all
+      '  r.push(outer.matches(":popover-open"), document.fullscreenElement === fs, fs.matches(":fullscreen"),' +
+      '    getComputedStyle(fs).position, getComputedStyle(fs).width !== "10px");' +
+      '  return document.exitFullscreen();' +
+      '}).then(function () {' +
+      '  r.push(document.fullscreenElement, fs.matches(":fullscreen"), events.join(","));' +
+      '  document.getElementById("out").textContent = JSON.stringify(r);' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.deepStrictEqual(
+    JSON.parse(await settled(doc, 'out', (t) => t !== '')),
+    [
+      true,
+      true,
+      true,
+      'InvalidStateError',
+      'TypeError',
+      false,
+      true,
+      true,
+      'fixed',
+      true,
+      null,
+      false,
+      'fs,fs',
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +

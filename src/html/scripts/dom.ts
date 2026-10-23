@@ -6336,8 +6336,16 @@ export function installDom(
           'InvalidStateError',
         );
       }
+      // a dialog showing as a popover is in the top layer as one already
+      if (popoverShowing(this)) {
+        throw new DOMException(
+          "Failed to execute 'showModal' on 'HTMLDialogElement': The dialog is already open as a Popover, and therefore cannot be opened as a modal dialog.",
+          'InvalidStateError',
+        );
+      }
       if (!beforeToggle(this, 'closed', 'open')) return;
       if (this.hasAttribute('open') || !this.isConnected) return;
+      if (popoverShowing(this)) return;
       queueToggle(this, 'closed');
       this.setAttribute('open', '');
       call('modal', this._id, true);
@@ -6347,6 +6355,9 @@ export function installDom(
       modalDialogs.push(this);
       dialogOpened(this);
       dialogState(this).previous = document.activeElement;
+      // the popovers it is not in close, as it goes over them (HTML
+      // 4.11.4.2, "hide all popovers until" its topmost popover ancestor)
+      hidePopoversUntil(topmostPopoverAncestor(this, null), false, true);
       focusDialog(this);
     }
     close(result?: Any): void {
@@ -12476,6 +12487,8 @@ export function installDom(
     'seeked',
     'volumechange',
     'ratechange',
+    'fullscreenchange',
+    'fullscreenerror',
   ]) {
     const property = {
       get(this: Any): Any {
@@ -12489,6 +12502,105 @@ export function installDom(
     Object.defineProperty(HTMLElement.prototype, `on${type}`, property);
     Object.defineProperty(Document.prototype, `on${type}`, property);
   }
+
+  // --- fullscreen -------------------------------------------------------------------
+  //
+  // Fullscreen 2, inside the window: the element is shown over all of the
+  // viewport, in its document's top layer (`fullscreen`, `:fullscreen`
+  // and the UA sheet's rules), and the window itself stays as it is —
+  // nothing here asks the host to make it fill the screen.
+
+  /** The document's fullscreen elements, the last the fullscreen one. */
+  const fullscreenStack: Any[] = [];
+  const fullscreenNow = (): Any => {
+    for (let i = fullscreenStack.length - 1; i >= 0; i -= 1) {
+      if (call('fullscreen', fullscreenStack[i]._id) === true) {
+        return fullscreenStack[i];
+      }
+      fullscreenStack.splice(i, 1);
+    }
+    return null;
+  };
+  /** `fullscreenchange` or `fullscreenerror`, in a task of its own, at the
+   *  element where it is still in the document, and at the document where
+   *  it is not (Fullscreen 2, "run the fullscreen steps"). */
+  const fullscreenEvent = (el: Any, type: string, then: () => void): void => {
+    setTimer(
+      () => {
+        const ev = new Event(type, { bubbles: true, composed: true });
+        ev.isTrusted = true;
+        dispatch(el.isConnected ? el : document, ev);
+        then();
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  Object.defineProperty(Element.prototype, 'requestFullscreen', {
+    /** Fullscreen 2, `requestFullscreen()`: refused for an element out of
+     *  the document, a showing popover or a modal dialog; else the
+     *  popovers it is not in hidden, as a modal dialog hides them, and it
+     *  the fullscreen element. */
+    value(this: Any): Promise<void> {
+      const el = this;
+      return new Promise<void>((resolve, reject) => {
+        const refused =
+          !el.isConnected ||
+          popoverShowing(el) ||
+          (el instanceof HTMLDialogElement && isModalDialog(el));
+        if (refused) {
+          fullscreenEvent(el, 'fullscreenerror', () =>
+            reject(new TypeError('Fullscreen request denied.')),
+          );
+          return;
+        }
+        hidePopoversUntil(topmostPopoverAncestor(el, null), false, true);
+        call('fullscreen', el._id, true);
+        const at = fullscreenStack.indexOf(el);
+        if (at >= 0) fullscreenStack.splice(at, 1);
+        fullscreenStack.push(el);
+        fullscreenEvent(el, 'fullscreenchange', () => resolve(undefined));
+      });
+    },
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperties(Document.prototype, {
+    fullscreenElement: {
+      get: () => fullscreenNow(),
+      configurable: true,
+      enumerable: true,
+    },
+    fullscreenEnabled: {
+      get: () => true,
+      configurable: true,
+      enumerable: true,
+    },
+    fullscreen: {
+      get: () => !!fullscreenNow(),
+      configurable: true,
+      enumerable: true,
+    },
+    exitFullscreen: {
+      /** Fullscreen 2, `exitFullscreen()`: the fullscreen element out, the
+       *  one before it fullscreen again where there is one. */
+      value(): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+          const el = fullscreenNow();
+          if (!el) {
+            reject(new TypeError('Document not active'));
+            return;
+          }
+          fullscreenStack.pop();
+          call('fullscreen', el._id, false);
+          fullscreenEvent(el, 'fullscreenchange', () => resolve(undefined));
+        });
+      },
+      writable: true,
+      configurable: true,
+    },
+  });
 
   /** `CSS.escape` (CSSOM 2.1.1), for the selectors built here. */
   const cssEscape = (value: string): string => {

@@ -32,6 +32,7 @@ import {
   isInputButton,
   inActiveTransition,
   isModal,
+  isFullscreen,
   isPopoverOpen,
   isMuted,
   hasMediaFlag,
@@ -1804,7 +1805,7 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   // a dialog `showModal()` opened, which the script engine tells as a
   // change of this attribute nothing has (`DomHost`'s `modal`)
   modal: ['a:-rx-modal'],
-  fullscreen: [],
+  fullscreen: ['a:-rx-fullscreen'],
   autofill: [],
   '-webkit-autofill': [],
   host: [],
@@ -5632,7 +5633,12 @@ export class Cascade {
     // given: `static`, `relative` and `sticky` are `absolute` (CSS Position
     // 4, 3.1), as Chrome computes them. A dialog `showModal()` opened is in
     // one here, and a popover shown.
-    if (own && ((el.name.length === 6 && isModal(el)) || isPopoverOpen(el))) {
+    if (
+      own &&
+      ((el.name.length === 6 && isModal(el)) ||
+        isPopoverOpen(el) ||
+        isFullscreen(el))
+    ) {
       style.overlay = 'auto';
       if (style.position !== 'absolute' && style.position !== 'fixed') {
         style.position = 'absolute';
@@ -6600,6 +6606,8 @@ const PSEUDOS = {
   // a media element muted, by its attribute or a page's script (`isMuted`)
   muted: (el: Element) => isMuted(el),
   'volume-locked': (_el: Element) => false,
+  // the document's fullscreen element (`isFullscreen`, Fullscreen 2, 4)
+  fullscreen: (el: Element) => isFullscreen(el),
   // a media element playing or paused, as its `paused` is (`isPaused`),
   // and seeking, buffering or stalled as the page's script engine loads
   // it (`hasMediaFlag`)

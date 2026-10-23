@@ -1035,6 +1035,17 @@ open: a press around the dialog is its backdrop's, which is the
 dialog's, as in a browser, and a field of the page gets no widget,
 since a widget is a node of its own over the document, which would be
 drawn over the backdrop and the dialog where the document draws neither.
+`showModal()` refuses a dialog shown as a popover, and hides every popover
+the dialog is not inside, as HTML has it.
+
+**An element `requestFullscreen()` was called on is shown fullscreen
+inside the window** (Fullscreen 2): `:fullscreen` matches it, it goes in
+the top layer as a modal dialog does, and the spec's UA rules make it all
+of the viewport over a black `::backdrop`. `document.fullscreenElement`,
+`exitFullscreen()` and the `fullscreenchange` and `fullscreenerror` events
+are the spec's. The window itself does not go fullscreen: the host is not
+asked. Like `showModal()`, a request hides the popovers the element is not
+in, and refuses a showing popover or a modal dialog.
 Escape, where the page lets the key be, fires `cancel` at the last one
 opened and closes it unless that is cancelled; `close()` and
 `requestClose()` close one, `toggle` and `close` come in tasks of their
