@@ -107,6 +107,12 @@ import {
 } from './layout/block.js';
 import { isScroller, scrollBarsOf, thumbRect } from './layout/scroll.js';
 import {
+  FRAME_ROOTS,
+  allUpright,
+  framed,
+  uprightCells,
+} from './layout/writing.js';
+import {
   BOX_RAISES,
   LINE_BOX_RAISES,
   PADDED_FACES,
@@ -1122,6 +1128,8 @@ export function paintDocument(
   options: PaintOptions,
 ): void {
   if (!canFill(ctx)) return;
+  // whether any box's paint asks whether it is a vertical flow's
+  framed.any = tree.vertical;
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
@@ -1202,6 +1210,7 @@ export function paintCapture(
   options: PaintOptions,
 ): void {
   if (!canFill(ctx)) return;
+  framed.any = tree.vertical;
   ctx.save();
   const backdrop: BackdropPaint = {
     tree,
@@ -1937,6 +1946,13 @@ function paintTransformed(
   box: Box,
   options: PaintOptions,
 ): void {
+  paintTurned(ctx, box, options);
+  // what a vertical flow sets upright, over its frame (`paintUpright`)
+  if (framed.any && FRAME_ROOTS.has(box)) paintUpright(ctx, box, options);
+}
+
+/** `paintTransformed`'s box, through its matrix. */
+function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const matrix = placedMatrix(box);
   if (!matrix) {
     paintBox(ctx, box, options);
@@ -2040,6 +2056,68 @@ function paintTransformed(
   ctx.transform(a, b, c, d, through[4], through[5]);
   paintPlaced(ctx, box, inside);
   ctx.restore();
+}
+
+/**
+ * The characters a vertical flow's frame sets upright (`setUpright`),
+ * drawn over the frame once it is drawn, each glyph level with the page and
+ * in the middle of where the frame's turn puts its cell — so that no context
+ * is asked to turn text back, which ntk's cannot, and a frame drawn on a
+ * surface keeps its upright glyphs sharp. The frame left them out
+ * (`paintLinePart`). Where the context draws through no matrix — the
+ * headless mock, which draws nothing — the frame was drawn as laid out,
+ * and so are they.
+ */
+function paintUpright(
+  ctx: PaintContext,
+  frame: Box,
+  options: PaintOptions,
+): void {
+  if (typeof ctx.transform !== 'function') return;
+  if (options.lifted?.has(frame) || options.captured?.has(frame)) return;
+  const matrix = placedMatrix(frame);
+  if (!matrix || matrix.length === 9) return;
+  // as `paintTurned` places it: about the pixel its corner is drawn from
+  const left = frame.x + options.originX;
+  const top = frame.y + options.originY;
+  const ox = options.originX + Math.round(left) - left;
+  const oy = options.originY + Math.round(top) - top;
+  const [a, b, c, d] = matrix;
+  const e = matrix[4] + ox - (a * ox + c * oy);
+  const f = matrix[5] + oy - (b * ox + d * oy);
+  const damage = options.damage;
+  const stack: Box[] = [frame];
+  while (stack.length) {
+    const box = stack.pop()!;
+    for (const child of box.children) stack.push(child);
+    const lines = box.lines;
+    if (!lines || opacityOf(box) <= 0 || box.style.visibility !== 'visible') {
+      continue;
+    }
+    for (const line of lines) {
+      for (const text of line.texts) {
+        const cells = uprightCells(text.layout)?.[text.layoutLine];
+        if (!cells) continue;
+        for (const cell of cells) {
+          const glyph = cell.glyph;
+          const x = text.drawX + cell.x + cell.width / 2 + options.originX;
+          const y = text.drawY + cell.middle + options.originY;
+          const px = a * x + c * y + e - glyph.width / 2;
+          const py = b * x + d * y + f - glyph.height / 2;
+          if (
+            damage &&
+            (px > damage.x + damage.width ||
+              py > damage.y + damage.height ||
+              px + glyph.width < damage.x ||
+              py + glyph.height < damage.y)
+          ) {
+            continue;
+          }
+          glyph.draw(ctx, Math.round(px), Math.round(py));
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -2498,6 +2576,7 @@ export function paintLiftedBox(
   holes: ReadonlySet<Box> | null = null,
 ): void {
   if (!canFill(ctx)) return;
+  framed.any = tree.vertical;
   // where the document draws it: at the viewport, for one fixed to it or in
   // one that is (`atViewport`)
   const viewport = options.viewport;
@@ -2537,6 +2616,7 @@ export function paintCover(
   options: PaintOptions,
 ): void {
   if (!canFill(ctx)) return;
+  framed.any = tree.vertical;
   const inner: PaintOptions = {
     ...options,
     damage: null,
@@ -12916,6 +12996,16 @@ function paintLinePart(
         // thrown from the protocol encoder.
         continue;
       }
+      // what a vertical line sets upright is drawn over its frame, level
+      // with the page (`paintUpright`), and left out here
+      const cells =
+        framed.any && box.style.writingMode !== 'horizontal-tb'
+          ? uprightCells(text.layout)
+          : null;
+      if (cells) {
+        drawSideways(ctx, text, text.drawX + dx, top);
+        continue;
+      }
       const bands = recolored?.get(text.layout);
       const clipped =
         rows !== undefined && clipToRows(ctx, text, rows, text.drawX + dx, top);
@@ -12950,6 +13040,53 @@ function paintLinePart(
       if (faded) ctx.restore();
     }
   }
+}
+
+/**
+ * A layout of a vertical line's text without the characters it sets
+ * upright (`paintUpright`): drawn whole, clipped to the runs it turns on
+ * their sides, and not at all where it turns none.
+ */
+function drawSideways(
+  ctx: PaintContext,
+  text: LineText,
+  x: number,
+  y: number,
+): void {
+  const layout = text.layout;
+  if (allUpright(layout)) return;
+  if (
+    typeof ctx.clip !== 'function' ||
+    typeof ctx.rect !== 'function' ||
+    typeof ctx.beginPath !== 'function'
+  ) {
+    layout.draw(ctx, x, y);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  const cells = uprightCells(layout)!;
+  for (let i = 0; i < layout.lines.length; i += 1) {
+    const line = layout.lines[i];
+    // the line's height, and past it at the layout's ends, for the glyphs
+    // that reach past it there — not into a line beside it, whose upright
+    // characters it would draw on their sides
+    const reach = line.height;
+    const top = y + line.y - (i === 0 ? reach : 0);
+    const bottom =
+      y + line.y + line.height + (i === layout.lines.length - 1 ? reach : 0);
+    const height = bottom - top;
+    let from = x + line.x;
+    for (const cell of cells[i]) {
+      if (x + cell.x > from) ctx.rect(from, top, x + cell.x - from, height);
+      from = Math.max(from, x + cell.x + cell.width);
+    }
+    const end = x + line.x + Math.max(line.width, line.advance ?? 0);
+    if (end > from) ctx.rect(from, top, end - from, height);
+  }
+  ctx.clip();
+  layout.draw(ctx, x, y);
+  ctx.restore();
 }
 
 /** Whether an atomic on a line is painted with the positioned boxes, and

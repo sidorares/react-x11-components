@@ -141,6 +141,7 @@ import type { TextRun } from '../../richtext/index.js';
 import { forgetMaxContent, layoutFlex } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
+import { FRAMES, framed, reflectFrame, reflects, turnsUp } from './writing.js';
 import {
   clipsFor,
   computePaintBounds,
@@ -665,6 +666,7 @@ function reachOf(box: Box): number {
  * next. Null for a document with no block reaching below `top`.
  */
 export function anchorAt(tree: BoxTree, top: number): Box | null {
+  framed.any = tree.vertical;
   return anchorIn(tree.root, top, 0);
 }
 
@@ -675,6 +677,9 @@ function anchorIn(box: Box, top: number, depth: number): Box | null {
     if (isInlineLevel(child) || !(child.height > 0)) continue;
     if (child.y + reachOf(child) <= top) continue;
     if (child.y >= top) return child;
+    // what a vertical flow holds is laid out across the page, and moves
+    // with its root (`layoutFramed`)
+    if (framed.any && FRAMES.has(child)) return child;
     const inside = anchorIn(child, top, depth + 1);
     if (inside) return inside;
     if (establishesInlineContext(child) || child.kind === 'replaced') {
@@ -758,6 +763,8 @@ export function layoutDocument(
 ): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
+  // whether any box's layout asks whether it holds a frame
+  framed.any = tree.vertical;
   const cuts =
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
@@ -2645,6 +2652,14 @@ function layoutBoxAt(
     finishCaptions(box);
     return;
   }
+  // the root of a flow in a vertical writing mode, which holds its frame
+  if (framed.any) {
+    const frame = FRAMES.get(box);
+    if (frame) {
+      layoutFramed(box, frame, ctx);
+      return;
+    }
+  }
 
   // A multicol container's content is laid out as one column, all of it,
   // and then set in the columns there are (`layoutColumns`)
@@ -2746,6 +2761,101 @@ function layoutBoxAt(
   if (isButtonBlock(box)) {
     BUTTON_CONTENT.set(box, { height: withFloats, down: 0 });
     centreButton(box);
+  }
+}
+
+/**
+ * The root of an orthogonal flow (CSS Writing Modes 4, 7.3), laid out by its
+ * parent in the page's axes and holding its frame, which is laid out in the
+ * flow's: across the frame is down the page (`layout/writing.ts`).
+ *
+ * The frame is as wide as the root's height where the root has one of its
+ * own, and else as wide as its content asks within the room there is down
+ * the page — its containing block's height where that is definite, and the
+ * viewport's where it is not (7.3.1), less the root's own margins, borders
+ * and padding down it: fit-content, its max-content where that fits and no
+ * narrower than its min-content. The root is as tall as that, and as wide
+ * as its parent's layout made it, which asks it for what the frame came to
+ * down its own block axis (`intrinsicWidth`); the frame's corner goes where
+ * the turn puts the flow's start, the right of the root's content box for
+ * the modes turned clockwise and its bottom left for `sideways-lr`.
+ *
+ * The frame is laid out whole: what a layout that stops would stop at is a
+ * height down the page, and the frame's heights are across it.
+ */
+function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
+  const mode = box.style.writingMode;
+  const inline = frameInlineSize(box, frame, ctx);
+  const across = box.contentWidth;
+  const { until, reach, keep } = ctx;
+  ctx.until = undefined;
+  ctx.reach = undefined;
+  ctx.keep = undefined;
+  try {
+    resolveEdges(frame, inline);
+    frame.percentHeightBase = Number.isFinite(across) ? across : NaN;
+    layoutInternals(frame, ctx, inline, 0, 0);
+  } finally {
+    ctx.until = until;
+    ctx.reach = reach;
+    ctx.keep = keep;
+  }
+  const block = frame.height;
+  // an orthogonal flow is as wide as its block size, at its least and its
+  // most alike (7.3.2): what its parent sizes it from
+  box.intrinsicMinContent = block + box.horizontalExtra;
+  finishHeight(box, inline);
+  const room = Number.isFinite(across) ? across : block;
+  if (turnsUp(mode)) {
+    moveTo(frame, box.contentX, box.contentY + box.contentHeight);
+  } else moveTo(frame, box.contentX + room, box.contentY);
+  if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+}
+
+/** How wide a frame is laid out, which is how tall its root's content box
+ *  is (`layoutFramed`). */
+function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
+  const own = percentBaseInside(box);
+  if (Number.isFinite(own)) return own;
+  // the initial containing block's, which is the viewport's height, read
+  // as a percentage height on the root reads it (`readsViewportHeight`)
+  let base = box.percentHeightBase;
+  if (!Number.isFinite(base)) {
+    base = ctx.viewportHeight;
+    ctx.readViewportHeight = true;
+  }
+  const room = clampHeight(
+    box,
+    Math.max(0, base - box.marginTop - box.marginBottom),
+  );
+  const available = Math.max(0, room - box.verticalExtra);
+  if (frame.intrinsicMaxContent < 0) {
+    frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
+  }
+  let size = frame.intrinsicMaxContent;
+  if (size > available) {
+    if (frame.intrinsicMinContent < 0) {
+      frame.intrinsicMinContent = measureIntrinsicWidth(
+        frame,
+        ctx,
+        MIN_CONTENT_PROBE,
+      );
+    }
+    size = Math.max(frame.intrinsicMinContent, available);
+  }
+  // within its own `min-height` and `max-height`
+  return clampHeight(box, size + box.verticalExtra) - box.verticalExtra;
+}
+
+/** Move a line and what is on it down by `dy`, as `translate` moves a
+ *  block's lines. */
+function moveLine(line: LineBox, dy: number): void {
+  if (!dy) return;
+  line.y += dy;
+  for (const text of line.texts) text.drawY += dy;
+  for (const placed of line.atomics) {
+    placed.y += dy;
+    translate(placed.box, 0, dy);
   }
 }
 
@@ -3989,6 +4099,8 @@ export function exactMinContent(box: Box, fonts: FontsLike): number | null {
   // in a flex column's item was as narrow as the wider of them
   if (box.kind !== 'block' && box.kind !== 'table-cell') return null;
   if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
+  // an orthogonal flow is as wide as its block size, which no word says
+  if (framed.any && FRAMES.has(box)) return null;
   const inner = exactWords(box, fonts);
   return inner === null ? null : inner + box.horizontalExtra;
 }
@@ -4061,6 +4173,7 @@ function plainInline(box: Box): boolean {
  */
 function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
   if (box.kind !== 'block') return Infinity;
+  if (framed.any && FRAMES.has(box)) return Infinity;
   let widest = 0;
   // a line that does not wrap is one word: a `nowrap` tooltip in a narrow
   // containing block was cut to its width, the rest of the line out of it
@@ -4136,6 +4249,13 @@ export function intrinsicWidth(
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
   if (contained(box, CONTAIN_WIDTH)) {
     return box.style.containIntrinsicWidth ?? 0;
+  }
+  // the root of an orthogonal flow is as wide as its frame came to down
+  // its block axis, at its least and its most (CSS Writing Modes 4, 7.3.2),
+  // which every layout of it lays out (`layoutFramed`)
+  if (framed.any) {
+    const frame = FRAMES.get(box);
+    if (frame) return Number.isFinite(frame.height) ? frame.height : 0;
   }
   // a table is as wide as its layout made it: its columns, the spacing
   // either side of them and between, and its captions' least (`layoutTable`)
@@ -6139,6 +6259,8 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (scrolls(style)) return true;
   if (style.flowRoot) return true;
+  // the root of a flow in another writing mode (CSS Writing Modes 4, 3.1)
+  if (framed.any && FRAMES.has(box)) return true;
   // layout and paint containment make an independent formatting context,
   // and so does being a size container (CSS Conditional 5, 3.1), where
   // its containment applies

@@ -3172,6 +3172,11 @@ export class Cascade {
   /** Whether a declaration anywhere sets `zoom`, which only then is looked
    *  for ahead of an element's other declarations (`_ownZoom`). */
   private _zoom = false;
+  /** Whether any sheet or `style` attribute declares a writing mode: what
+   *  the writing mode and the direction are applied ahead of the rest for
+   *  (`_cascadeStyle`), so that a logical property among them maps by the
+   *  element's own, wherever it is declared (CSS Writing Modes 4, 6.4). */
+  private _writing = false;
   /** The pseudo-classes css-select is handed: `:root` this cascade's, and
    *  the focus's three answered from `_focus`. */
   private _pseudos: typeof PSEUDOS;
@@ -3357,6 +3362,9 @@ export class Cascade {
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
       if (!this.snaps && usesSnap(rule.declarations)) this.snaps = true;
       if (!this._zoom && usesZoom(rule.declarations)) this._zoom = true;
+      if (!this._writing && usesWritingMode(rule.declarations)) {
+        this._writing = true;
+      }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
         if (rule.media) this._mediaOutsideRules = true;
@@ -6045,6 +6053,22 @@ export class Cascade {
       paletteScheme: this.look.colorScheme,
       systemColors: this._systemColors,
     };
+    // The writing mode and the direction first, where a sheet declares a
+    // writing mode: a logical property maps by the element's own
+    // (CSS Writing Modes 4, 6.4), and is read before the declaration that
+    // sets it wherever that comes later in cascade order — `margin-block:
+    // 8px` in a rule ahead of the one that makes the element `vertical-rl`
+    // was its top and bottom margins. Applied again in their places below,
+    // which comes to what this does.
+    if (this._writing) {
+      for (const c of candidates) {
+        for (const d of pick(c)) {
+          if (MAPPING_PROPS.has(d.prop)) {
+            this._apply(style, parentStyle, d, ctxParent);
+          }
+        }
+      }
+    }
     // The family, the weight, the slant and the width go with the size:
     // together they pick the face an `ex`, a `ch` or an `lh` in any
     // declaration is measured in, however the declarations are ordered. A
@@ -6237,6 +6261,17 @@ export class Cascade {
       }
     }
     blockify(style, inFlexContainer);
+    // a box in another writing mode than its parent's is no inline box: an
+    // inline one is an inline-block, the root of a flow of its own (CSS
+    // Writing Modes 4, 3.1)
+    if (
+      this._writing &&
+      style.writingMode !== parentStyle.writingMode &&
+      style.display === 'inline' &&
+      !root
+    ) {
+      style.display = 'inline-block';
+    }
     // the answer that took the palette's chrome from the control, if it
     // had any (`_candidates`), for what draws its box (`styledField`)
     if (
@@ -7032,6 +7067,9 @@ export class Cascade {
       if (!this._lh && usesLh(declarations)) this._lh = true;
       if (!this._zoom && usesZoom(declarations)) this._zoom = true;
       if (!this.snaps && usesSnap(declarations)) this.snaps = true;
+      if (!this._writing && usesWritingMode(declarations)) {
+        this._writing = true;
+      }
       pushInline(out, declarations, tree.depth, tree.root);
     }
 
@@ -7450,6 +7488,21 @@ const LH = /\d\.?r?lh\b/i;
 
 function usesZoom(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (d.prop === 'zoom') return true;
+  return false;
+}
+
+/** The names a writing mode is declared by, its prefixed ones among them,
+ *  and the direction's, which a logical property maps by as well. */
+const WRITING_PROPS = new Set([
+  'writing-mode',
+  '-webkit-writing-mode',
+  '-ms-writing-mode',
+  '-epub-writing-mode',
+]);
+const MAPPING_PROPS = new Set([...WRITING_PROPS, 'direction']);
+
+function usesWritingMode(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (WRITING_PROPS.has(d.prop)) return true;
   return false;
 }
 

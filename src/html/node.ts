@@ -212,6 +212,7 @@ import {
   translationOf,
   VIEWPORT_STICKY,
 } from './layout/block.js';
+import { frameModeOf, pageSides } from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -4777,7 +4778,7 @@ export class HtmlViewNode extends Node {
     // the width of the block that holds it
     const across = box.parent ? box.parent.contentWidth : this.abs.width;
     const margin = (len: Len) => resolveLength(len, across);
-    return {
+    const used: UsedBox = {
       width: box.width,
       height: box.height,
       margin: [
@@ -4795,6 +4796,27 @@ export class HtmlViewNode extends Node {
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
     };
+    // a box laid out in a vertical flow's frame has the frame's sides,
+    // which are drawn at the page's others (`layout/writing.ts`)
+    const mode = this._tree?.vertical ? frameModeOf(box) : null;
+    if (mode) {
+      used.width = box.height;
+      used.height = box.width;
+      used.border = pageSides(used.border, mode);
+      used.padding = pageSides(used.padding, mode);
+      if (used.insets) {
+        used.insets = pageSides(
+          used.insets as [
+            number | 'auto' | null,
+            number | 'auto' | null,
+            number | 'auto' | null,
+            number | 'auto' | null,
+          ],
+          mode,
+        );
+      }
+    }
+    return used;
   }
 
   /**

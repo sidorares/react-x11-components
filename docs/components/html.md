@@ -3771,16 +3771,74 @@ query reads its container in the container's CSS pixels.
 **Logical properties:** `margin-inline`, `padding-block`, `inset-inline`,
 `border-inline-start`, `inline-size`, `border-start-end-radius` and the
 rest of CSS Logical Properties 1's, as the physical properties they are in
-the horizontal writing mode `<Html>` lays out: the inline axis's start is
-the left of a left-to-right element and the right of a right-to-left one.
-Tailwind 4 writes its spacing in them — `px-4` is `padding-inline` and
-`mx-auto` is `margin-inline: auto` — and its `inset-0` in the `inset`
-shorthand, which is read too, as is a single corner's radius. A logical and
-a physical declaration for the same side are one property: whichever comes
-later in the cascade wins. The direction is the element's as the cascade
-has it when the declaration is read — its parent's, or its own from `dir`
-— so a `direction` declared later in cascade order than a logical property
-on the same element does not move it.
+the element's writing mode and direction. In a horizontal writing mode the
+inline axis's start is the left of a left-to-right element and the right of
+a right-to-left one, and the block axis runs down; in a vertical one the
+inline axis runs down the page — up it in `sideways-lr`, and up it too for
+a right-to-left element in the other three — and the block axis starts at
+the right of `vertical-rl` and `sideways-rl` and at the left of
+`vertical-lr` and `sideways-lr`, so `inline-size` is a vertical element's
+height and `margin-block-start` its right or left margin. Tailwind 4 writes
+its spacing in them — `px-4` is `padding-inline` and `mx-auto` is
+`margin-inline: auto` — and its `inset-0` in the `inset` shorthand, which
+is read too, as is a single corner's radius. A logical and a physical
+declaration for the same side are one property: whichever comes later in
+the cascade wins. Where a document declares a writing mode anywhere, an
+element's writing mode and direction are read ahead of its other
+declarations, so a logical property maps by the element's own wherever it
+comes in cascade order; in a document that declares none, the direction is
+the element's as the cascade has it when the declaration is read — its
+parent's, or its own from `dir` — so a `direction` declared later in
+cascade order than a logical property on the same element does not move
+it.
+
+**Writing modes:** `writing-mode` — `horizontal-tb`, `vertical-rl`,
+`vertical-lr`, `sideways-rl` and `sideways-lr`, SVG 1.1's `tb-rl`, `tb`
+and `lr-tb` with them, and its `-webkit-`, `-ms-` and `-epub-` names — and
+`text-orientation` (`mixed`, `upright`, `sideways`, `sideways-right`), both
+inherited (CSS Writing Modes 4). A block container whose writing mode is
+vertical in a parent whose writing mode is horizontal is the root of an
+orthogonal flow (7.3): its lines run down the page and stack right to left
+in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
+run up the page in `sideways-lr`. An inline element in a writing mode its
+parent is not in is an inline-block (3.1). The root is laid out by its
+parent as any box is, in the page's axes: a block is as wide as its
+containing block, a float, an inline-block, a table cell or an absolute box
+as wide as its lines come to, and its height is its own where it has one,
+and else as tall as its text runs, no taller than its containing block's
+height where that is definite, or the viewport's where it is not, and no
+shorter than its longest word. So `th { writing-mode: vertical-rl }` makes
+a header a line wide and as tall as its label, and with `transform:
+rotate(180deg)` beside it, as tables usually write it, the label reads up
+the page. It has no baseline across the line it is on, and an inline-block
+one sits on its bottom margin edge.
+
+Under `text-orientation: mixed` a vertical line sets Latin and the other
+horizontal scripts on their sides, turned a quarter clockwise, and keeps
+Han, kana, Hangul, the CJK punctuation and symbols, fullwidth forms and the
+pictographs upright (Unicode's Vertical_Orientation, UAX #50); `upright`
+keeps every character upright, and `sideways` — and both `sideways-*` modes
+— turns them all. An upright character takes an em down the line, whatever
+its width across, and is drawn in the face's vertical forms (`vert`), so a
+full stop sits in the top right of its cell. What a vertical flow holds is
+drawn turned with it: on X11 it is drawn on a surface of its own and the
+surface turned, as any box with text in it that turns is, and its upright
+characters drawn over it level with the page, so they stay sharp on every
+backend. The pointer finds what is under it where it is drawn, `elementRect`
+measures it there, and `getComputedStyle` reads its boxes by the page's
+sides.
+
+Not yet: a horizontal flow inside a vertical one (`text-combine-upright`
+and its kin), the root element in a vertical writing mode scrolled from its
+block start, a vertical flex box, grid or table, images and form controls
+set in a vertical line (a control is mounted where the flow's turn puts its
+box, and is drawn level), backgrounds and gradients of the boxes inside a
+vertical flow (drawn turned with them, where the root's own are drawn as
+written), `vertical-lr`'s blocks with block-axis margins or borders that are
+not alike on both sides (laid out as `vertical-rl`'s, put back in the other
+order), a list item's marker where the item is itself the root of a vertical
+flow, and the vertical axes of scroll-driven animations, anchor
+positioning and view transitions.
 
 **Custom properties:** `--name` declarations and `var()`, with fallbacks
 (CSS Custom Properties 1), which is how Tailwind and most design systems

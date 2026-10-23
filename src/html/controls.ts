@@ -30,10 +30,11 @@ import {
 } from './form.js';
 import { fadeColor } from './css/color.js';
 import type { ComputedStyle } from './css/style.js';
-import { invert } from './css/transform.js';
+import { invert, mapRect } from './css/transform.js';
 import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightOf } from './layout/inline.js';
+import { frameOf } from './layout/writing.js';
 import type { FontsLike } from './layout/inline.js';
 import {
   clipAround,
@@ -197,6 +198,17 @@ export function controlRectsOf(
       colorScheme: box.style.colorScheme,
       ...(drawnAtViewport(box) && { atViewport: true as const }),
     };
+    // one in a vertical flow is mounted where the flow's turn draws its box,
+    // across what it is down the frame (`layout/writing.ts`)
+    const frame = tree.vertical ? frameOf(box) : null;
+    const turn = frame && placedMatrix(frame);
+    if (turn && turn.length === 6) {
+      const at = mapRect(turn, box.x, box.y, box.width, box.height);
+      rect.x = at.x;
+      rect.y = at.y;
+      rect.width = at.width;
+      rect.height = at.height;
+    }
     let opacity = 1;
     // A box scaled to nothing draws nothing of what it holds (CSS
     // Transforms 1, 6), which is how a page keeps a menu it has not opened.
