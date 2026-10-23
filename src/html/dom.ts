@@ -475,6 +475,14 @@ export function parsedWithNullRegistry(el: Element): boolean {
   return NULL_REGISTRY.has(el);
 }
 
+/** Whether the parser has made anything whose registry is null — an
+ *  element with `customelementregistry` or a root with
+ *  `shadowrootcustomelementregistry` — in any document. */
+let nullRegistriesParsed = false;
+export function parsedNullRegistries(): boolean {
+  return nullRegistriesParsed;
+}
+
 /** The shadow root an element hosts, or null — open or closed. */
 export function shadowRootOf(el: Element): ShadowRoot | null {
   return SHADOW_ROOTS.get(el) ?? null;
@@ -1325,7 +1333,10 @@ class Handler extends DomHandler {
     if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
-    if (attribs.customelementregistry !== undefined) NULL_REGISTRY.add(opened);
+    if (attribs.customelementregistry !== undefined) {
+      NULL_REGISTRY.add(opened);
+      nullRegistriesParsed = true;
+    }
     if (name === 'head') this._headSeen = true;
     if (name === 'html' && !this._html && opened.parent === this.root) {
       this._html = opened;
@@ -1444,6 +1455,7 @@ class Handler extends DomHandler {
     const delegates = attribs.shadowrootdelegatesfocus !== undefined;
     const root = new ShadowRoot(host, mode, delegates);
     root.registryNull = attribs.shadowrootcustomelementregistry !== undefined;
+    if (root.registryNull) nullRegistriesParsed = true;
     root.clonable = attribs.shadowrootclonable !== undefined;
     root.serializable = attribs.shadowrootserializable !== undefined;
     root.declarative = true;
