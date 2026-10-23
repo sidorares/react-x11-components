@@ -30,6 +30,7 @@ import {
   isText,
   inImpliedHead,
   NON_RENDERED,
+  ShadowRoot,
   tagOf,
 } from '../dom.js';
 import {
@@ -894,6 +895,15 @@ export interface TransitionImageBox {
   width: number;
   height: number;
 }
+
+/** Each box of a view transition's tree, by the pseudo-element it is as
+ *  its styles are keyed: `view-transition`, `view-transition-group(a)`… */
+export const TRANSITION_KEYS = new WeakMap<Box, string>();
+
+/** The style a box of a view transition's tree has, where the box is laid
+ *  out by another: `::view-transition`, absolute against the snapshot
+ *  containing block, which is the viewport's, and so laid out fixed. */
+export const TRANSITION_STYLES = new WeakMap<Box, ComputedStyle>();
 
 /** The box of a view transition's old or new image, by what it shows. */
 export const TRANSITION_IMAGES = new WeakMap<
@@ -1884,7 +1894,12 @@ class Builder {
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
       this._pseudo(el, 'after', style, box);
-      if (this._options.transition && !el.parent?.parent) {
+      if (
+        this._options.transition &&
+        el.parent &&
+        !el.parent.parent &&
+        !(el.parent instanceof ShadowRoot)
+      ) {
         this._viewTransition(el, box);
       }
     }
@@ -2038,7 +2053,7 @@ class Builder {
   private _viewTransition(el: Element, into: Box): void {
     const tree = this._options.transition?.(el, into.style);
     if (!tree || tree.style.display === 'none') return;
-    const make = (style: ComputedStyle, parent: Box): Box => {
+    const make = (style: ComputedStyle, parent: Box, key: string): Box => {
       if (style.translate || style.transform) this._relative = true;
       if (outOfPlane(style)) this._tilted = true;
       const box = new Box(boxKindFor(style.display), null, style);
@@ -2046,16 +2061,23 @@ class Builder {
       placeInFlow(box, style, parent);
       parent.append(box);
       GENERATED_FROM.set(box, el);
+      TRANSITION_KEYS.set(box, key);
       if (namesImages(style)) this._backgrounds.push(box);
       return box;
     };
-    const root = make(tree.style, into);
+    // absolute against the snapshot containing block (CSS View Transitions
+    // 1, 3.4), the viewport's whatever the scroll: laid out fixed
+    const fixed =
+      tree.style.position === 'absolute' ? copyStyle(tree.style) : null;
+    if (fixed) fixed.position = 'fixed';
+    const root = make(fixed ?? tree.style, into, 'view-transition');
+    if (fixed) TRANSITION_STYLES.set(root, tree.style);
     root.topLayer = true;
     for (const g of tree.groups) {
       if (g.group.display === 'none') continue;
-      const group = make(g.group, root);
+      const group = make(g.group, root, `view-transition-group(${g.name})`);
       if (g.pair.display === 'none') continue;
-      const pair = make(g.pair, group);
+      const pair = make(g.pair, group, `view-transition-image-pair(${g.name})`);
       for (const which of ['old', 'new'] as const) {
         const image = g[which];
         if (!image || image.style.display === 'none') continue;
@@ -2071,6 +2093,7 @@ class Builder {
         placeInFlow(box, image.style, pair);
         pair.append(box);
         GENERATED_FROM.set(box, el);
+        TRANSITION_KEYS.set(box, `view-transition-${which}(${g.name})`);
         TRANSITION_IMAGES.set(box, { name: g.name, which });
       }
     }

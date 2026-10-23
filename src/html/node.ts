@@ -81,6 +81,7 @@ import {
 } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
+import type { UsedBox } from './computed.js';
 import {
   Cascade,
   CHANGES_BELOW,
@@ -100,6 +101,7 @@ import type {
   KeptStyles,
   MetricFace,
   ShadowSheets,
+  TransitionPart,
   ViewportOverflow,
 } from './css/cascade.js';
 import {
@@ -108,7 +110,7 @@ import {
   parseMediaQuery,
   parseStylesheet,
 } from './css/parse.js';
-import type { MediaCondition, Stylesheet } from './css/parse.js';
+import type { Declaration, MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
@@ -163,6 +165,8 @@ import {
   SHIFTED_LINES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
+  TRANSITION_KEYS,
+  TRANSITION_STYLES,
   columned,
   intrinsicsOf,
   textFade,
@@ -3456,11 +3460,27 @@ export class HtmlViewNode extends Node {
       animationClock.now(),
     );
     if (!touched.length) return;
+    // a view transition's pseudo-element is styled as its tree is built,
+    // on the transition's timeline
+    if (touched.some((pseudo) => pseudo.startsWith('view-transition'))) {
+      if (this._vt?.phase === 'live') {
+        this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+        this.invalidateMeasure('content');
+        this.invalidate(true, this, 'props');
+      }
+      if (touched.every((pseudo) => pseudo.startsWith('view-transition'))) {
+        return;
+      }
+    }
     if (!this._animating()) {
       this._invalidate(Stale.Boxes, new Set([element]), true);
       return;
     }
-    for (const pseudo of touched) this._timeline.oweScripts(element, pseudo);
+    for (const pseudo of touched) {
+      if (!pseudo.startsWith('view-transition')) {
+        this._timeline.oweScripts(element, pseudo);
+      }
+    }
     this._scheduleFrame();
   }
 
@@ -4306,7 +4326,7 @@ export class HtmlViewNode extends Node {
    */
   computedStyle(
     element: Element,
-    pseudo: 'before' | 'after' | null = null,
+    pseudo: string | null = null,
   ): Record<string, string> | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
@@ -4314,7 +4334,10 @@ export class HtmlViewNode extends Node {
     if (!tree || !cascade) return null;
     const style = this._styledNow(element);
     if (!style) return null;
-    if (pseudo) {
+    if (pseudo?.startsWith('view-transition')) {
+      return this._transitionComputed(tree, cascade, element, style, pseudo);
+    }
+    if (pseudo === 'before' || pseudo === 'after') {
       const own = this._atNow(element, () =>
         cascade.pseudoStyleFor(element, pseudo, style),
       );
@@ -4326,13 +4349,19 @@ export class HtmlViewNode extends Node {
         null,
       );
     }
+    if (pseudo) return null;
     const box = boxFor(tree.root, element);
     if (!box) return cssomStyle(style, this._scale, null);
+    return cssomStyle(style, this._scale, this._usedBox(box, style));
+  }
+
+  /** What layout made of a box, as `getComputedStyle` reads it. */
+  private _usedBox(box: Box, style: ComputedStyle): UsedBox {
     // margins are no part of a box: worked out again, as layout did, from
     // the width of the block that holds it
     const across = box.parent ? box.parent.contentWidth : this.abs.width;
     const margin = (len: Len) => resolveLength(len, across);
-    return cssomStyle(style, this._scale, {
+    return {
       width: box.width,
       height: box.height,
       margin: [
@@ -4348,7 +4377,88 @@ export class HtmlViewNode extends Node {
         box.borderLeft,
       ],
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
-    });
+    };
+  }
+
+  /**
+   * A view transition's pseudo-element as `getComputedStyle` reads it (CSS
+   * View Transitions 1, 3.2): its box's, where the transition's tree has
+   * one — the transition's own styles and animations in it — and otherwise
+   * what the rules alone make of it, its parts' chain to the root
+   * element's style: the user agent's sheet and the page's rules, as
+   * inside an update callback, before the pseudo-elements are styled by
+   * the transition. The root element's alone; null for another element's,
+   * or one that is none of them.
+   */
+  private _transitionComputed(
+    tree: BoxTree,
+    cascade: Cascade,
+    element: Element,
+    rootStyle: ComputedStyle,
+    pseudo: string,
+  ): Record<string, string> | null {
+    const m =
+      /^view-transition(?:-(group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/.exec(
+        pseudo,
+      );
+    if (!m || !isRootElement(element)) return null;
+    const key = m[1] ? `view-transition-${m[1]}(${m[2]})` : 'view-transition';
+    if (this._vt?.phase === 'live') {
+      for (const top of topLayerBoxes(tree.root)) {
+        if (top.pseudo !== 'view-transition') continue;
+        const stack = [top];
+        while (stack.length) {
+          const box = stack.pop()!;
+          if (TRANSITION_KEYS.get(box) === key) {
+            const style = TRANSITION_STYLES.get(box) ?? box.style;
+            return cssomStyle(style, this._scale, this._usedBox(box, style));
+          }
+          stack.push(...box.children);
+        }
+      }
+    }
+    const name = m[2] ?? '';
+    const entry = this._vt?.entries.get(name);
+    // one that is not there has the style it would be made with, its
+    // element's inherited, as Chromium answers: before a transition, after
+    // it, and for an image the transition has none of. In an update
+    // callback, the old state's parts are there.
+    const there =
+      this._vt?.phase === 'old' && (!m[1] || (!!entry?.old && m[1] !== 'new'));
+    if (!there) {
+      return cssomStyle(inherit(rootStyle, cascade.initial), this._scale, null);
+    }
+    const timeline = new AnimationTimeline();
+    timeline.now = animationClock.now();
+    const classes = entry?.classes ?? [];
+    const at = (
+      part: TransitionPart['part'],
+      parent: ComputedStyle,
+      onlyChild: boolean,
+    ) =>
+      cascade.transitionStyle(
+        element,
+        part,
+        part === 'view-transition' ? '' : name,
+        classes,
+        onlyChild,
+        parent,
+        [],
+        timeline,
+        part === 'view-transition' ? part : `view-transition-${part}(${name})`,
+      );
+    let style = at('view-transition', rootStyle, false);
+    const part = m[1] as TransitionPart['part'] | undefined;
+    if (part) {
+      style = at('group', style, (this._vt?.entries.size ?? 1) === 1);
+      if (part !== 'group') {
+        style = at('image-pair', style, true);
+        if (part !== 'image-pair') {
+          style = at(part, style, part === 'old' ? !entry?.el : !entry?.old);
+        }
+      }
+    }
+    return cssomStyle(style, this._scale, null);
   }
 
   /**
@@ -7595,6 +7705,126 @@ export class HtmlViewNode extends Node {
    * subject's view, or none — and range, and where its time is on the
    * clock's. Keyed by its run, which a page's `CSSAnimation` is kept by.
    */
+  /**
+   * A CSS animation's keyframes as `getKeyframes()` lists them (CSS
+   * Animations 2, 4.3): its `@keyframes`' frames in order of offset, each
+   * with its easing — `ease` where it gives none — and its properties'
+   * values as written, frames at one offset and of one easing merged, the
+   * later's values over the earlier's; and where the rule has no frame at
+   * 0 or at 1, one made of the values the element has there, which the
+   * animation runs from or to (`composite: 'replace'`). Of the element's
+   * own animation, its `::before`'s or `::after`'s, or a view transition's
+   * pseudo-element's (`pseudo`, '' for its own); null where there is none.
+   */
+  cssKeyframesOf(
+    element: Element,
+    pseudo: string,
+    name: string,
+  ):
+    | {
+        offset: number;
+        easing: string;
+        composite: 'auto' | 'replace';
+        values: Record<string, string>;
+      }[]
+    | null {
+    this._prepare(this.abs.width || 1);
+    const cascade = this._cascade;
+    const rule = cascade?.keyframes(name) ?? null;
+    if (!rule) return null;
+    const frames: {
+      offset: number;
+      easing: string;
+      composite: 'auto' | 'replace';
+      values: Record<string, string>;
+    }[] = [];
+    const animated = new Set<string>();
+    for (const frame of rule.frames) {
+      const easing = frame.easing ?? 'ease';
+      for (const offset of frame.offsets) {
+        let into = frames.find(
+          (f) => f.offset === offset && f.easing === easing,
+        );
+        if (!into) {
+          into = { offset, easing, composite: 'auto', values: {} };
+          frames.push(into);
+        }
+        for (const d of frame.declarations) {
+          into.values[d.prop] = d.value;
+          animated.add(d.prop);
+        }
+      }
+    }
+    frames.sort((a, b) => a.offset - b.offset);
+    // the values it runs from and to where the rule has no frame there:
+    // the style under its animations
+    const record = this._underlyingRecord(element, pseudo) ?? {};
+    const underlying = (): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const prop of animated) {
+        if (record[prop] !== undefined) out[prop] = record[prop];
+      }
+      return out;
+    };
+    if (!frames.some((f) => f.offset === 0)) {
+      frames.unshift({
+        offset: 0,
+        easing: 'ease',
+        composite: 'replace',
+        values: underlying(),
+      });
+    }
+    if (!frames.some((f) => f.offset === 1)) {
+      frames.push({
+        offset: 1,
+        easing: 'ease',
+        composite: 'replace',
+        values: underlying(),
+      });
+    }
+    return frames;
+  }
+
+  /** An element's style under its animations, or a view transition's
+   *  pseudo-element's, as `getComputedStyle` writes it: its `::before`'s
+   *  and `::after`'s as they are drawn. Null where it has none. */
+  private _underlyingRecord(
+    element: Element,
+    pseudo: string,
+  ): Record<string, string> | null {
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade) return null;
+    if (pseudo.startsWith('view-transition')) {
+      const how = this._vt?.styled.get(pseudo);
+      if (!how) return this.computedStyle(element, pseudo);
+      const style = cascade.transitionStyle(
+        element,
+        how.part,
+        how.name,
+        how.classes,
+        how.onlyChild,
+        how.parent,
+        how.dynamic,
+        this._vt!.timeline,
+        pseudo,
+        true,
+      );
+      return cssomStyle(style, this._scale, null);
+    }
+    if (pseudo) return this.computedStyle(element, pseudo);
+    const parent = flatParentOf(element);
+    const parentStyle =
+      (parent && isElement(parent) ? tree.styles.get(parent)?.style : null) ??
+      tree.root.style;
+    const style = cascade.underlyingStyleFor(
+      element,
+      parentStyle,
+      parentStyle.display === 'flex' || parentStyle.display === 'inline-flex',
+    );
+    return cssomStyle(style, this._scale, null);
+  }
+
   cssAnimationsOf(
     element: Element | null,
     subtree: boolean,
@@ -7646,11 +7876,49 @@ export class HtmlViewNode extends Node {
           (order.get(x.el) ?? 0) - (order.get(y.el) ?? 0) ||
           PSEUDO_ORDER.indexOf(x.pseudo) - PSEUDO_ORDER.indexOf(y.pseudo) ||
           x.index - y.index,
+      )
+      .map((a) => ({ ...a, timeline: this._timeline }));
+    // and a view transition's tree's, on its own timeline, in the order
+    // its boxes are (CSS View Transitions 1, 3.4), by their keys
+    const transitionBoxes = new Map<string, Box>();
+    const vt = this._vt;
+    if (vt?.phase === 'live') {
+      for (const top of topLayerBoxes(tree.root)) {
+        if (top.pseudo !== 'view-transition') continue;
+        const stack = [top];
+        while (stack.length) {
+          const box = stack.pop()!;
+          const key = TRANSITION_KEYS.get(box);
+          if (key) transitionBoxes.set(key, box);
+          for (let i = box.children.length - 1; i >= 0; i -= 1) {
+            stack.push(box.children[i]);
+          }
+        }
+      }
+      const keys = [...transitionBoxes.keys()];
+      listed.push(
+        ...vt.timeline
+          .cssAnimations()
+          .filter((a) => transitionBoxes.has(a.pseudo))
+          .sort(
+            (x, y) =>
+              keys.indexOf(x.pseudo) - keys.indexOf(y.pseudo) ||
+              x.index - y.index,
+          )
+          .map((a) => ({ ...a, timeline: vt.timeline })),
       );
+    }
     for (const a of listed) {
       const el = a.el as Element;
       if (!within(el)) continue;
-      const style = tree.styles.get(el)?.style;
+      // the style the animation is of: the element's, its `::before`'s or
+      // `::after`'s, or a box of a view transition's tree
+      const style =
+        a.pseudo === ''
+          ? tree.styles.get(el)?.style
+          : a.pseudo === 'before' || a.pseudo === 'after'
+            ? this._pseudoBoxOf(tree, el, a.pseudo)?.style
+            : transitionBoxes.get(a.pseudo)?.style;
       if (!style) continue;
       const lists = style.animations;
       const i = a.index;
@@ -7692,7 +7960,7 @@ export class HtmlViewNode extends Node {
               }
             : { kind: 'scroll', source: named.el, axis: named.axis };
       }
-      const now = this._timeline.now;
+      const now = a.timeline.now;
       out.push({
         key: a.key,
         element: el,
@@ -8533,19 +8801,25 @@ export class HtmlViewNode extends Node {
         : this._placementOf(box);
     }
     const s = this._scale;
-    let i = 0;
+    let index = 0;
     for (const entry of run.entries.values()) {
-      i += 1;
+      index += 1;
       const old = entry.old;
       if (!old || !entry.el) continue;
-      const name = `-ua-view-transition-group-anim-${i}`;
+      // named after the name where that is a name as written, and by its
+      // place where it would have to be escaped, which `animation-name`
+      // does not read back
+      const name = /^[-\w\u0080-\uffff]+$/.test(entry.name)
+        ? `-ua-view-transition-group-anim-${entry.name}`
+        : `-ua-view-transition-group-anim-${index}`;
       const from =
         `width: ${cssPx(old.width, s)}; height: ${cssPx(old.height, s)}; ` +
         `transform: ${groupTransform(old.matrix, old.width, old.height, s)}`;
       const rule = parseStylesheet(`@keyframes ${name} { from { ${from} } }`)
         .keyframes?.[0];
       if (rule) {
-        run.keyframes.set(name, rule);
+        // by the name it reads back as, and written as it is read
+        run.keyframes.set(rule.name, rule);
         entry.anim = name;
       }
     }
@@ -8555,7 +8829,7 @@ export class HtmlViewNode extends Node {
     this._sprites?.clear();
     this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
     this.invalidateMeasure('content');
-    this.invalidate(true, this, 'view-transition');
+    this.invalidate(true, this, 'props');
     return '';
   }
 
@@ -8575,7 +8849,7 @@ export class HtmlViewNode extends Node {
       this._sprites?.clear();
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
       this.invalidateMeasure('content');
-      this.invalidate(true, this, 'view-transition');
+      this.invalidate(true, this, 'props');
     }
   }
 
@@ -8617,7 +8891,7 @@ export class HtmlViewNode extends Node {
         if (this._vt !== run || this.destroyed) return;
         this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
         this.invalidateMeasure('content');
-        this.invalidate(true, this, 'view-transition');
+        this.invalidate(true, this, 'props');
       },
       Math.max(1, next - animationClock.now()),
     );
@@ -8681,6 +8955,7 @@ export class HtmlViewNode extends Node {
       height: viewport.height,
       matrix: [1, 0, 0, 1, 0, 0],
       direction: box.style.direction,
+      mixBlendMode: box.style.mixBlendMode,
     };
   }
 
@@ -8708,6 +8983,7 @@ export class HtmlViewNode extends Node {
       height: box.height,
       matrix: m,
       direction: box.style.direction,
+      mixBlendMode: box.style.mixBlendMode,
     };
   }
 
@@ -8756,6 +9032,7 @@ export class HtmlViewNode extends Node {
         damage: { x: 0, y: 0, width: w, height: h },
         selection: null,
         captured: others,
+        groundCanvas: true,
       });
       return { surface, inkX: 0, inkY: 0, inkWidth: w, inkHeight: h };
     }
@@ -8833,17 +9110,32 @@ export class HtmlViewNode extends Node {
     timeline.now = animationClock.now();
     const declarations = (text: string) =>
       text ? parseDeclarations(text) : [];
-    const style = cascade.transitionStyle(
-      root,
-      'view-transition',
-      '',
-      [],
-      false,
-      rootStyle,
-      [],
-      timeline,
-      'view-transition',
-    );
+    // each part styled, and how, for its style under its animations
+    run.styled.clear();
+    const styled = (
+      part: TransitionPart['part'],
+      name: string,
+      classes: readonly string[],
+      onlyChild: boolean,
+      parent: ComputedStyle,
+      dynamic: readonly Declaration[],
+    ): ComputedStyle => {
+      const key =
+        part === 'view-transition' ? part : `view-transition-${part}(${name})`;
+      run.styled.set(key, { part, name, classes, onlyChild, parent, dynamic });
+      return cascade.transitionStyle(
+        root,
+        part,
+        name,
+        classes,
+        onlyChild,
+        parent,
+        dynamic,
+        timeline,
+        key,
+      );
+    };
+    const style = styled('view-transition', '', [], false, rootStyle, []);
     let end = animationsEnd(style);
     const groups: TransitionTree['groups'] = [];
     const count = run.entries.size;
@@ -8851,33 +9143,27 @@ export class HtmlViewNode extends Node {
       const at = entry.now ?? entry.old;
       if (!at) continue;
       const both = !!entry.old && !!entry.el;
-      const key = (part: string) => `view-transition-${part}(${entry.name})`;
-      const group = cascade.transitionStyle(
-        root,
+      const { name, classes } = entry;
+      const group = styled(
         'group',
-        entry.name,
-        entry.classes,
+        name,
+        classes,
         count === 1,
         style,
         declarations(
           `width: ${cssPx(at.width, s)}; height: ${cssPx(at.height, s)}; ` +
             `transform: ${groupTransform(at.matrix, at.width, at.height, s)}; ` +
-            `direction: ${at.direction}` +
+            `direction: ${at.direction}; mix-blend-mode: ${at.mixBlendMode}` +
             (both && entry.anim ? `; animation-name: ${entry.anim}` : ''),
         ),
-        timeline,
-        key('group'),
       );
-      const pair = cascade.transitionStyle(
-        root,
+      const pair = styled(
         'image-pair',
-        entry.name,
-        entry.classes,
+        name,
+        classes,
         true,
         group,
         declarations(both ? 'isolation: isolate' : ''),
-        timeline,
-        key('image-pair'),
       );
       const fade = (out: boolean) =>
         declarations(
@@ -8887,31 +9173,11 @@ export class HtmlViewNode extends Node {
             : '',
         );
       const old = entry.old
-        ? cascade.transitionStyle(
-            root,
-            'old',
-            entry.name,
-            entry.classes,
-            !entry.el,
-            pair,
-            fade(true),
-            timeline,
-            key('old'),
-          )
+        ? styled('old', name, classes, !entry.el, pair, fade(true))
         : null;
       const now =
         entry.el && entry.now
-          ? cascade.transitionStyle(
-              root,
-              'new',
-              entry.name,
-              entry.classes,
-              !entry.old,
-              pair,
-              fade(false),
-              timeline,
-              key('new'),
-            )
+          ? styled('new', name, classes, !entry.old, pair, fade(false))
           : null;
       end = Math.max(
         end,
@@ -8921,7 +9187,7 @@ export class HtmlViewNode extends Node {
         now ? animationsEnd(now) : 0,
       );
       groups.push({
-        name: entry.name,
+        name,
         group,
         pair,
         old:
@@ -9026,6 +9292,7 @@ export class HtmlViewNode extends Node {
         viewport: { ...viewport, x, y },
         selection: null,
         captured: others,
+        groundCanvas: true,
       });
       return;
     }
@@ -9218,7 +9485,7 @@ const EMPTY_SET: ReadonlySet<Element> = new Set();
 
 /** Whether an element is its document's root: its parent the document. */
 function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent;
+  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */

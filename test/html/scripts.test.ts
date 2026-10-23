@@ -5841,6 +5841,134 @@ metric(
   },
 );
 
+test("a view transition's pseudo-elements answer getComputedStyle and getAnimations, and a CSS animation lists its keyframes", async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' #t { width: 40px; height: 40px; contain: paint; view-transition-name: t }' +
+      ' #t.big { width: 60px }' +
+      ' html::view-transition-group(*) { animation-play-state: paused }' +
+      ' @keyframes k { from { opacity: 0 } } #c { animation: k 1s }' +
+      '</style></head><body><div id="t"></div><div id="c"></div><p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, t = document.getElementById("t");' +
+      'function cs(p, prop) { return getComputedStyle(html, p)[prop]; }' +
+      // not there before a transition, as Chromium answers
+      'r.push(cs("::view-transition-group(t)", "position"));' +
+      'var vt = document.startViewTransition(function () {' +
+      '  t.classList.add("big");' +
+      // in its update, the old state's parts are there, and the new image is not
+      '  r.push(cs("::view-transition-group(t)", "position"), cs("::view-transition-new(t)", "animationName"));' +
+      '});' +
+      'vt.ready.then(function () {' +
+      '  r.push(cs("::view-transition", "position"), cs("::view-transition-group(t)", "animationName"),' +
+      '    cs("::view-transition-old(t)", "animationName"), cs("::view-transition-old(t)", "mixBlendMode"));' +
+      '  var group = document.getAnimations().filter(function (a) {' +
+      '    return a.effect.pseudoElement === "::view-transition-group(t)"; });' +
+      '  var kf = group[0].effect.getKeyframes();' +
+      '  r.push(group.length, kf.length, kf[0].width, "width" in kf[1]);' +
+      '  var c = document.getElementById("c").getAnimations()[0].effect.getKeyframes();' +
+      '  r.push(c.length, c[0].opacity, c[1].opacity, c[0].composite, c[1].composite);' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'static|absolute|none|absolute|-ua-view-transition-group-anim-t|' +
+      '-ua-view-transition-fade-out, -ua-mix-blend-mode-plus-lighter|plus-lighter|' +
+      '1|2|40px|true|2|0|1|auto|replace',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a view transition's name is read unescaped, and a shadow tree's top element is no root of it", async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' #t { width: 40px; height: 40px; contain: paint; view-transition-name: a\\.b }' +
+      ' html::view-transition-group(a\\.b) { animation-duration: 7s }' +
+      '</style></head><body><div id="t"></div>' +
+      '<div id="h"><template shadowrootmode="open"><div id="s" style="view-transition-name: s">s</div></template></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, s = document.getElementById("h").shadowRoot.firstElementChild;' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  var g = getComputedStyle(html, "::view-transition-group(a\\.b)");' +
+      '  r.push(g.position, g.animationDuration, s.matches(":active-view-transition"),' +
+      '    html.matches(":active-view-transition"));' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'absolute|7s|false|true',
+    doc.logs.join('\n'),
+  );
+});
+
+test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +
+      ' html:active-view-transition-type(none) #x, html:active-view-transition-type(-ua-a) #x { color: rgb(255, 0, 0) }' +
+      ' html:active-view-transition-type(b) #x { color: rgb(0, 0, 255) }</style></head><body>' +
+      '<p id="x">x</p><p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, x = document.getElementById("x");' +
+      'function m() { return [html.matches(":active-view-transition"), html.matches(":active-view-transition-type(a)"),' +
+      '  html.matches(":active-view-transition-type(c, b)"), x.matches(":active-view-transition")].join(","); }' +
+      'r.push(m());' +
+      'var t = document.startViewTransition({ update: function () {}, types: ["a"] });' +
+      'r.push(m(), getComputedStyle(x).color);' +
+      't.types.add("b");' +
+      'r.push(m(), getComputedStyle(x).color);' +
+      't.finished.then(function () {' +
+      '  r.push(m(), getComputedStyle(x).color);' +
+      '  document.getElementById("out").textContent = r.join("|"); });' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false,false,false,false|true,true,false,false|rgb(0, 0, 0)|' +
+      'true,true,true,false|rgb(0, 0, 255)|false,false,false,false|rgb(0, 0, 0)',
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  "a script animates a view transition's pseudo-element by its name, which keeps the transition going",
+  async () => {
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { width: 40px; height: 40px; background: rgb(0, 128, 0); contain: paint;' +
+        '   view-transition-name: a }' +
+        ' html::view-transition-group(*), html::view-transition-image-pair(*),' +
+        ' html::view-transition-old(*), html::view-transition-new(*) { animation: unset }' +
+        ' html::view-transition-group(root) { opacity: 0 }</style></head><body>' +
+        '<div id="a"></div><p id="out" style="margin-top: 100px"></p><script>' +
+        'var t;' +
+        'requestAnimationFrame(function () {' +
+        '  t = document.startViewTransition(function () {' +
+        '    requestAnimationFrame(function () {' +
+        '      document.documentElement.animate({ transform: ["translate(100px)", "translate(100px)"] },' +
+        '        { duration: 10000, pseudoElement: "::view-transition-group( a" });' +
+        '      requestAnimationFrame(function () { document.getElementById("out").textContent = "moved"; });' +
+        '    });' +
+        '  });' +
+        '});' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'moved');
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = (x: number, y: number) => colourAt(doc, abs.x + x, abs.y + y);
+    // the group, which its own animations leave where its element is, is
+    // where the script's puts it; and the page under the root's hidden
+    // group, the element in it among it, is not drawn
+    assert.equal(await at(110, 10), '#008000', 'the group, moved');
+    assert.equal(await at(10, 10), '#ffffff', 'and nothing where it was');
+  },
+);
+
 test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
   const doc = await hosted(
     '<p id="out"></p><style id="s"></style><script>' +

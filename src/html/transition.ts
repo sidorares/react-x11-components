@@ -7,9 +7,10 @@
 
 import type { Element } from 'domhandler';
 import { AnimationTimeline } from './css/timeline.js';
+import { readIdent } from './css/parse.js';
 import { timingAt } from './css/animation.js';
 import type { ComputedStyle } from './css/style.js';
-import type { KeyframesRule } from './css/parse.js';
+import type { Declaration, KeyframesRule } from './css/parse.js';
 import type { Matrix } from './css/transform.js';
 import type { SurfaceLike } from './surfaces.js';
 
@@ -23,6 +24,7 @@ export interface Placement {
   height: number;
   matrix: Matrix;
   direction: string;
+  mixBlendMode: string;
 }
 
 /** An element as the old state had it: where it was, and a picture of it
@@ -63,6 +65,19 @@ export class ViewTransitionRun {
   readonly timeline = new AnimationTimeline();
   /** The `@keyframes` it makes for its groups (`Cascade.transitionKeyframes`). */
   readonly keyframes = new Map<string, KeyframesRule>();
+  /** How each of its pseudo-elements was last styled, by its key: what
+   *  its style under its animations is worked out from again. */
+  readonly styled = new Map<
+    string,
+    {
+      part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
+      name: string;
+      classes: readonly string[];
+      onlyChild: boolean;
+      parent: ComputedStyle;
+      dynamic: readonly Declaration[];
+    }
+  >();
   /** When its tree was first drawn, on the clock, which its animations
    *  start from. */
   started = 0;
@@ -101,7 +116,8 @@ export function captureName(el: Element, style: ComputedStyle): string | null {
     }
     return made;
   }
-  return name;
+  // as a selector's argument reads it: `first\!` is `first!`
+  return name.includes('\\') ? readIdent(name, 0).value : name;
 }
 
 /** The classes an element is captured with (CSS View Transitions 2, 3.2). */

@@ -622,6 +622,42 @@ export function isModal(el: Element): boolean {
   return IN_TOP_LAYER.get(el)?.modal === true;
 }
 
+/** Each document's active view transition, by its types (CSS View
+ *  Transitions 1, 3.3): what `:active-view-transition` and
+ *  `:active-view-transition-type()` match its root element by. */
+const ACTIVE_TRANSITIONS = new WeakMap<AnyNode, ReadonlySet<string>>();
+
+/** A document's active view transition begun, its types changed — or, for
+ *  null, it ended. Whether that changed what its root matches. */
+export function setActiveTransition(
+  doc: AnyNode,
+  types: readonly string[] | null,
+): boolean {
+  const was = ACTIVE_TRANSITIONS.get(doc);
+  if (!types) {
+    ACTIVE_TRANSITIONS.delete(doc);
+    return !!was;
+  }
+  const next = new Set(types);
+  ACTIVE_TRANSITIONS.set(doc, next);
+  return !was || was.size !== next.size || [...next].some((t) => !was.has(t));
+}
+
+/** Whether `:active-view-transition` matches an element — its document's
+ *  root, while a view transition is active — and, given types, whether
+ *  `:active-view-transition-type()` does: the transition has one of them. */
+export function inActiveTransition(
+  el: Element,
+  types: readonly string[] | null = null,
+): boolean {
+  const doc = el.parent;
+  if (!doc || doc.parent || doc.type !== 'root') return false;
+  if (doc instanceof ShadowRoot) return false;
+  const active = ACTIVE_TRANSITIONS.get(doc);
+  if (!active) return false;
+  return !types || types.some((t) => active.has(t));
+}
+
 /** Whether `:popover-open` matches an element: one shown as a popover and
  *  not hidden or taken out of the document since. */
 export function isPopoverOpen(el: Element): boolean {

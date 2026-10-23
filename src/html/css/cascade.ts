@@ -30,6 +30,7 @@ import {
   isDefinedElement,
   isElement,
   isInputButton,
+  inActiveTransition,
   isModal,
   isPopoverOpen,
   isMuted,
@@ -1818,6 +1819,10 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   open: ['a:open'],
   closed: ['a:open'],
   'popover-open': ['a:popover', 'a:-rx-popover-open'],
+  // a view transition begun, ended or given other types, which the script
+  // engine tells as a change of this attribute nothing has (`vtActive`)
+  'active-view-transition': ['a:-rx-view-transition'],
+  'active-view-transition-type': ['a:-rx-view-transition'],
   muted: ['a:muted', 'a:-rx-muted'],
   'volume-locked': [],
   playing: ['a:autoplay', 'a:-rx-paused'],
@@ -4633,6 +4638,9 @@ export class Cascade {
     dynamic: readonly Declaration[],
     timeline: AnimationTimeline,
     key: string,
+    /** The style under its animations, which `getKeyframes()` reads an
+     *  end the rule has no frame at from. */
+    underlying = false,
   ): ComputedStyle {
     const candidates: Candidate[] = [];
     if (this._transitionRules.size > 0) {
@@ -4659,13 +4667,18 @@ export class Cascade {
         context: 0,
         tree: null,
         layer: null,
-        specificity: 1,
+        // as `:root::view-transition-group(name)` is, over the sheet's
+        // `(*)` rules
+        specificity: 1_001,
         order: -1,
         declarations: dynamic as Declaration[],
         only: -1,
       });
     }
     candidates.sort(byCascade);
+    if (underlying) {
+      return this._cascadeStyle(root, parentStyle, false, candidates, false);
+    }
     const was = this.timeline;
     this.timeline = timeline;
     try {
@@ -4680,6 +4693,22 @@ export class Cascade {
     } finally {
       this.timeline = was;
     }
+  }
+
+  /** An element's style under its animations and transitions: what an
+   *  animation's keyframes run from and to where they give no value. */
+  underlyingStyleFor(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+  ): ComputedStyle {
+    return this._cascadeStyle(
+      el,
+      parentStyle,
+      inFlexContainer,
+      this._candidates(el),
+      true,
+    );
   }
 
   /**
@@ -6533,6 +6562,18 @@ const PSEUDOS = {
   modal: (el: Element) => isModal(el),
   // a popover a page's scripts showed (`isPopoverOpen`)
   'popover-open': (el: Element) => isPopoverOpen(el),
+  // the root while a view transition is active, and of one of the types
+  // named (CSS View Transitions 1, 3.3; 2, 3.3), which are case-sensitive
+  'active-view-transition': (el: Element) => inActiveTransition(el),
+  'active-view-transition-type': (el: Element, types: string | null) =>
+    !!types &&
+    inActiveTransition(
+      el,
+      types
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
+    ),
   // a media element muted, by its attribute or a page's script (`isMuted`)
   muted: (el: Element) => isMuted(el),
   'volume-locked': (_el: Element) => false,

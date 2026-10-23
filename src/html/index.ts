@@ -566,11 +566,13 @@ export interface HtmlHandle {
    * An element's style as `getComputedStyle` reads it, laid out first:
    * the properties a script reads, by name, lengths in CSS pixels and
    * colours as `rgb()`. `pseudo` asks for a `::before` or an `::after`, and
-   * is null where no rule gives the element one.
+   * is null where no rule gives the element one; or, for the root element,
+   * for one of a view transition's pseudo-elements, written without its
+   * colons — `view-transition-group(name)`.
    */
   computedStyle(
     element: Element,
-    pseudo?: 'before' | 'after' | null,
+    pseudo?: 'before' | 'after' | `view-transition${string}` | null,
   ): Record<string, string> | null;
   /**
    * A custom property's computed value, as `getComputedStyle` reads it by
@@ -1074,6 +1076,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
       cssAnimations: (element, subtree) =>
         nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
+      cssKeyframes: (element, pseudo, name) =>
+        nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
       transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
       transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
       transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,

@@ -504,10 +504,18 @@ export interface PaintOptions {
   /** Leave the canvas unpainted: a view transition has captured the root
    *  element, whose image its tree draws it in. */
   noCanvas?: boolean;
+  /** Fill the canvas in its scheme's `Canvas` colour under all of it: the
+   *  root element's image in a view transition, which is opaque as a
+   *  browser's window is (CSS View Transitions 1, 3.5). */
+  groundCanvas?: boolean;
   /** The boxes of the elements a view transition captured (CSS View
    *  Transitions 1, 3.5): each is drawn in its image in the transition's
-   *  tree, it and all it holds, and is a hole where it is laid out. */
+   *  tree, it and all it holds, and is a hole where it is laid out — a
+   *  layer in it that a context outside it paints too. */
   captured?: ReadonlySet<Box> | null;
+  /** @internal The box a capture paints (`paintCapture`), which the
+   *  boxes around it do not leave out of it. */
+  captureTop?: Box | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal What a box with a `backdrop-filter` paints what is behind
@@ -1063,7 +1071,7 @@ export function paintDocument(
   // under a canvas of a colour of its own with no transparency, which
   // covers all of it, the scheme's is a fill nobody sees
   if (
-    scheme !== tree.paletteScheme &&
+    (scheme !== tree.paletteScheme || options.groundCanvas) &&
     !coloursCanvas(canvas) &&
     !options.noCanvas
   ) {
@@ -1152,6 +1160,7 @@ export function paintCapture(
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
     backdrop,
+    captureTop: box,
   };
   paintBox(ctx, box, painted);
   // the bars of the scroll containers in it, over it, as the document's
@@ -1173,11 +1182,13 @@ export type TransitionDraw = (
 ) => void;
 
 /** Whether a box is in one a view transition captured
- *  (`PaintOptions.captured`). */
+ *  (`PaintOptions.captured`), short of the box a capture paints. */
 function capturedAround(box: Box, options: PaintOptions): boolean {
   const captured = options.captured;
   if (!captured?.size) return false;
-  for (let at = box.parent; at; at = at.parent) {
+  const top = options.captureTop;
+  if (box === top) return false;
+  for (let at = box.parent; at && at !== top; at = at.parent) {
     if (captured.has(at)) return true;
   }
   return false;
@@ -1785,6 +1796,11 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
+  // a layer a context outside a captured element paints, which is in the
+  // element's image
+  if (options.captured?.size && box.pseudo !== 'view-transition') {
+    if (capturedAround(box, options)) return;
+  }
   // An element under full opacity is painted whole, as the group it is
   // (it is a stacking context, CSS Color 4 3.2; `layered`): at
   // 0 not at all — the control a page keeps invisible until its row is
@@ -1875,6 +1891,13 @@ function paintTransformed(
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
+  ) {
+    return;
+  }
+  if (
+    options.captured?.size &&
+    box.pseudo !== 'view-transition' &&
+    capturedAround(box, options)
   ) {
     return;
   }
@@ -8049,6 +8072,10 @@ function walkPaintedAfter(
   const over = (later: Box): boolean => {
     // a layer of its own over this one's, with all it holds (`above`)
     if (above?.has(later)) return false;
+    // a view transition's tree, whose images are the document's own: a
+    // widget or a frame mounted beside the document shows through the
+    // root's live one as it shows through the document
+    if (later.pseudo === 'view-transition') return false;
     // one fixed to the viewport is asked about at every frame, where the
     // scroll has it (`fixedWithin`), but by a box at the viewport too,
     // which it keeps its place against
