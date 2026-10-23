@@ -10130,14 +10130,31 @@ export function installDom(
     }
   }
 
+  /** Where a rule's block opens: its first `{` that no backslash
+   *  escapes, outside a string and a bracket, or -1 for a statement. */
+  const blockStart = (text: string): number => {
+    let depth = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === '\\') i += 1;
+      else if (c === '"' || c === "'") {
+        const end = text.indexOf(c, i + 1);
+        if (end < 0) return -1;
+        i = end;
+      } else if (c === '(' || c === '[') depth += 1;
+      else if (c === ')' || c === ']') depth -= 1;
+      else if (c === '{' && depth <= 0) return i;
+    }
+    return -1;
+  };
   /** What a rule's text says before its block, or all of a statement. */
   const preludeOf = (text: string): string => {
-    const open = text.indexOf('{');
+    const open = blockStart(text);
     return (open < 0 ? text.replace(/;\s*$/, '') : text.slice(0, open)).trim();
   };
   /** What is inside a rule's block. */
   const blockOf = (text: string): string => {
-    const open = text.indexOf('{');
+    const open = blockStart(text);
     if (open < 0) return '';
     const close = text.lastIndexOf('}');
     return text.slice(open + 1, close > open ? close : text.length);

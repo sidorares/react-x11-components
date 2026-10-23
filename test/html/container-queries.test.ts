@@ -13,6 +13,8 @@ import {
   parseContainerPrelude,
 } from '../../src/html/css/containers.js';
 import { substitute } from '../../src/html/css/vars.js';
+import { parseColor, parseLength } from '../../src/html/css/values.js';
+import { lightDark } from '../../src/html/css/color.js';
 import {
   FONTS,
   boxOf,
@@ -182,6 +184,87 @@ test('a style query compares with its var()s substituted, holds nowhere where a 
   assert.strictEqual(holds('style(not (unknown))'), false);
   assert.strictEqual(holds('style(--nope: unset)'), true);
   assert.strictEqual(holds('style(--a: unset)'), false);
+});
+
+test('a style range compares values of one type each, a registered length or colour compares as one, and what is no feature is unknown', () => {
+  // CSS Conditional 5, 3.3: each side of a range a number or a dimension,
+  // its math worked out, of one type — a zero with no unit a length — and
+  // what a query holds that is no feature `<general-enclosed>`, unknown
+  const custom = new Map([
+    ['--x', '2'],
+    ['--y', '3'],
+    ['--reg', '10px'],
+    ['--color', 'light-dark(white, black)'],
+    ['--back', 'revert-rule'],
+  ]);
+  const get = (name: string) => custom.get(name);
+  const length = (text: string) => {
+    const px = parseLength(text, {
+      em: 20,
+      rem: 16,
+      vw: 800,
+      vh: 600,
+      scale: 1,
+    });
+    return typeof px === 'number' ? px : null;
+  };
+  const registered = (name: string) =>
+    name === '--reg'
+      ? { syntax: '<length>', initial: '0px' }
+      : name === '--color'
+        ? { syntax: '<color>', initial: 'red' }
+        : null;
+  const color = (text: string) => {
+    const picked = lightDark(text, 'light');
+    return picked === null ? null : parseColor(picked);
+  };
+  const holds = (prelude: string) =>
+    containerHolds(
+      parseContainerPrelude(prelude)![0],
+      null,
+      get,
+      length,
+      null,
+      (text) => substitute(text, get),
+      registered,
+      color,
+    );
+  for (const [query, want] of [
+    ['style(5 >= calc(3 + 1))', true],
+    ['style(1px <= 1em)', true],
+    ['style(1em > 21px)', false],
+    ['style(0 = 0px)', true],
+    ['style(0 = 0deg)', false],
+    ['style(3turn > 3deg)', true],
+    ['style(3s > 3ms)', true],
+    ['style(3dppx > 96dpi)', true],
+    ['style(1px < 2 < 3px)', false],
+    ['style(calc(var(--x) + 1) >= var(--y))', true],
+    ['style(0px <= env(safe-area-inset-top))', true],
+    ['style(--x: 2 !important)', true],
+    ['style(--nope: var(--unknown))', true],
+    ['style(--back: revert-rule)', false],
+    ['style(--reg: 0.5em)', true],
+    ['style(--reg: initial)', false],
+    ['style(--color: white)', true],
+    ['style(--color: black)', false],
+  ] as const) {
+    assert.strictEqual(holds(query), want, query);
+  }
+  // known either way, a test or its negation holds; unknown, neither does
+  const either = (feature: string) =>
+    holds(`(style(${feature})) or (not (style(${feature})))`);
+  assert.strictEqual(either('--x: 2'), true);
+  assert.strictEqual(either('10px < 10em < 10'), true);
+  for (const unknown of [
+    '--x: 2;',
+    'style(--x: 2)',
+    '10px < 10em > 10',
+    ' < 10em',
+    '10px < 10em !',
+  ]) {
+    assert.strictEqual(either(unknown), false, unknown);
+  }
 });
 
 test('an @container prelude is a name, a condition, or both, and a list of them', () => {

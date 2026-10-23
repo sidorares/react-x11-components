@@ -3941,7 +3941,20 @@ first, and the element never asks itself. A query's lengths are measured
 against the container's content box, and its `em` is the container's own.
 `style()` asks a container's custom properties as `if()` does (see
 `if()`), of any element, since every element is a style container. Where
-none is the container a query asks for, the query holds nowhere.
+none is the container a query asks for, the query holds nowhere. In a
+container query a range's sides are any values of one type, their math,
+`var()`, `attr()` and `env()` worked out: numbers, lengths in the
+container's units — a zero with no unit is one — angles, times and
+resolutions, so `1px <= 1em` and `3turn > 3deg` hold. A property
+registered as a `<length>` or a `<color>` (`@property`) is compared as
+one, so `--gap: 0.5em` holds of a `10px` gap in a `20px` font, and a
+`light-dark()` colour by the container's scheme; `initial` is a
+registered property's initial value. A value's `!important` asks nothing
+more, a `var()` that comes to nothing matches a property nothing set,
+and `revert`, `revert-layer` and `revert-rule` match nothing. What is no
+feature at all — a stray `;` or `!`, a function where a name should be, a
+range pointing both ways — is unknown, so neither it nor its negation
+holds.
 `container-type: inline-size` applies inline-size containment and `size`
 size containment, both with style containment, and makes the box a
 formatting context of its own: it holds its floats and keeps its
