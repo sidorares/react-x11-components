@@ -2960,6 +2960,30 @@ test('querySelector and matches answer the pseudo-classes a browser does, where 
   assert.equal(doc.text('out'), 't|1|true|d|true|true|req|0|true');
 });
 
+test('an element’s querySelectorAll matches its selector against the whole document, and :scope is the element', async () => {
+  // DOM 4.2.6: the selector is matched as it is in the document, and the
+  // elements it finds that are under the element are the answer; only
+  // `:scope` names the element. css-select reads a query from an element
+  // as jQuery does, `:scope .a .b`, and found none of these.
+  const doc = await hosted(
+    '<div class="a"><section id="e"><p class="b" id="p1"></p>' +
+      '<div><p class="b" id="p2"></p></div></section>' +
+      '<p class="b" id="p3"></p></div><i id="sib"></i>' +
+      '<p id="out"></p><script>' +
+      'var e = document.getElementById("e"), r = [];' +
+      'r.push(e.querySelectorAll(".a .b").length, e.querySelector(".a .b").id);' +
+      'r.push(e.querySelectorAll(":scope > .b").length, e.querySelectorAll(":scope .b").length);' +
+      'r.push(e.querySelectorAll("section .b").length, e.querySelectorAll(".a > .b").length);' +
+      'r.push(e.querySelectorAll("div .b").length, document.getElementById("p2").closest(".a").className);' +
+      'r.push(e.querySelectorAll(".a .b").length);' +
+      'r.push(document.querySelectorAll("div.a + i, section > i").length);' +
+      'try { e.querySelectorAll("> p"); r.push("no") } catch (x) { r.push(x.name) }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), '2|p1|1|2|2|0|2|a|2|1|SyntaxError');
+});
+
 test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {
   const doc = await hosted(
     '<style>x-late:not(:defined) { display: none } x-late:defined { color: rgb(1, 2, 3) }</style>' +
