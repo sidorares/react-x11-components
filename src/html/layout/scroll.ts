@@ -88,6 +88,27 @@ const SCROLLED = new WeakSet<BoxTree>();
  *  (`extentOf`): what its content comes to doesn't change as it scrolls. */
 let extents = new WeakMap<Box, { width: number; height: number }>();
 
+/**
+ * How far below a box's content top what a layout that stopped set aside
+ * of its children ends (`setAside`): what it set aside is as tall as it
+ * was, and a scroll container's scrollable overflow reaches as far
+ * (`extentOf`), so a container scrolled down its content stays where it
+ * was while a drag lays out only what it shows. From the content top, and
+ * not as a place, since what moves a box after its layout — a relative
+ * offset, a scroll around it — moves its content top with it.
+ */
+export const ASIDE_REACH = new WeakMap<Box, number>();
+
+/** How far down a tree's next layout scrolls a scroll container's content,
+ *  in the device pixels its boxes are laid out in: what the node handed
+ *  over for its element (`setScrollOffsets`), before `applyScrollOffsets`
+ *  keeps it within how far the container can be scrolled. */
+export function wantedScrollTop(tree: BoxTree, box: Box): number {
+  const given = OFFSETS.get(tree);
+  const want = box.el ? given?.offsets.get(box.el) : undefined;
+  return want ? want.y * given!.scale : 0;
+}
+
 /** Hand a tree the offsets its layouts move its scroll containers by, in
  *  CSS pixels, and the scale its boxes are laid out at. */
 export function setScrollOffsets(
@@ -360,9 +381,19 @@ function extentOf(
     if (clipsOverflow(child)) return;
     linesOf(child.lines, outOfFlow, dx, dy);
     for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
+    aside(child, outOfFlow, dy);
+  };
+  // and what a layout that stopped set aside, which reaches as far below
+  // its holder's content as it did: the container's own content is where
+  // it is scrolled to, and what is in it moved with it
+  const aside = (holder: Box, outOfFlow: boolean, dy: number) => {
+    const reach = ASIDE_REACH.get(holder);
+    if (reach !== undefined)
+      take(left, holder.contentY + reach + dy, outOfFlow);
   };
   linesOf(box.lines, false, 0, 0);
   for (const child of box.children) walk(child, false, true, 0, 0);
+  aside(box, false, -(at?.y ?? 0));
   const shift = { x: at?.x ?? 0, y: at?.y ?? 0 };
   // the end padding is past the in-flow content, and the out-of-flow boxes
   // reach as far as they reach

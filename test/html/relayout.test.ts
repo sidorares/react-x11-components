@@ -25,6 +25,7 @@ import {
   bytesApart,
   FONTS,
   fillsOf,
+  findById,
   h,
   imagesIn,
   metric,
@@ -548,6 +549,44 @@ test('a dragged width lays a multicol container out whole', async (t) => {
   assert.ok(reached(el, 'c39'), 'and none of it');
   assert.strictEqual(boxOf(el, 'c20').y, 0, 'the second column at the top');
   assert.ok(!reached(el, 'end'));
+});
+
+test('a dragged width stops inside a scroll container where what it shows ends, scrolled or not, and keeps how far it scrolls', async (t) => {
+  // A sidebar, a table of contents or a menu a window tall is a scroll
+  // container, which was laid out whole at every step: what it holds is
+  // where it is scrolled to, so it stops a viewport past its scrollport,
+  // moved down by its scroll, and what it set aside keeps its scroll height
+  const clock = holdClock(t, resizeClock);
+  const side =
+    '<div id="side" style="height:200px;overflow:auto">' +
+    Array.from(
+      { length: 80 },
+      (_, i) => `<div id="s${i}" style="height:20px"></div>`,
+    ).join('') +
+    '</div>';
+  const { el, resize } = await renderScrolled(
+    LONG.replace('<body style="margin:0">', `<body style="margin:0">${side}`),
+    300,
+    400,
+  );
+  const sidebar = findById(el.document, 'side')!;
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'a step of the drag');
+  assert.ok(reached(el, 's20'), 'what it shows, and a viewport more');
+  assert.ok(!reached(el, 's40'), 'and no further');
+  assert.strictEqual(el.scrollStateOf(sidebar)?.height, 1600, 'as tall');
+  await clock.finish();
+  assert.ok(reached(el, 's79'), 'all of it once the width rests');
+
+  // scrolled down, it lays out where it is scrolled to, and stays there
+  el.scrollElementTo(sidebar, { y: 1000 });
+  await resize(300, 370);
+  await resize(300, 360);
+  assert.ok(partial(el));
+  assert.ok(reached(el, 's50') && reached(el, 's58'), 'what it shows there');
+  assert.strictEqual(el.scrollStateOf(sidebar)?.y, 1000, 'where it was');
+  assert.strictEqual(el.scrollStateOf(sidebar)?.height, 1600);
 });
 
 test('a layout that stops measures the boxes it sizes from all they hold', async () => {

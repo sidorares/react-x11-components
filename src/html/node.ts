@@ -8898,6 +8898,9 @@ export class HtmlViewNode extends Node {
     if (offset.x || offset.y) this._scrollOffsets.set(el, offset);
     else this._scrollOffsets.delete(el);
     if (to.x === was.x && to.y === was.y) return offset;
+    // what a layout that stopped set aside in a scroll container may be
+    // what it is scrolled to now: the document is laid out whole
+    if (this._partial) this._invalidate(Stale.Layout);
     this._scrolledLast.set(el, scrolledTowards(to.x - was.x, to.y - was.y));
     const tree = this._tree!;
     computePaintBounds(tree.root, tree.movedInline);

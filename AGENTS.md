@@ -3518,10 +3518,19 @@ outside it, and a fixed one, stay, as they are not clipped by it either.
 document coordinates; it moves the boxes, then reports the controls, the
 media, the embedded rects and the stops again. Anything new that keeps a
 box's position past a layout is redone there too, or a scroll leaves it
-where the content was. **A layout that stops where the viewport ends does
-not stop inside a scroll container** (`laidWholeAround`, and `keepIn`
-returns at one): what a container holds is where it is scrolled to, and a
-drag's partial layout set aside what a scrolled `main` was showing. And
+where the content was. **A layout that stops where the viewport ends
+stops inside a scroll container where its scrollport ends** (`layoutBox`,
+`scrollerUntil`): what a container holds is where it is scrolled to, so it
+stops a viewport past what it shows, moved down by its offset — the one
+the node hands the tree before the layout (`wantedScrollTop`) — and a
+drag's partial layout once set aside what a scrolled `main` was showing,
+measured against the document's viewport. What it set aside keeps its
+scroll height (`ASIDE_REACH`, which `extentOf` counts), or the offset
+would be cut back to a shorter content and the sidebar would jump; and a
+container scrolled while a layout that stopped holds has the document laid
+out whole (`_scrollBox`). It keeps nothing above (`keepIn` returns at
+one). Wikipedia's menus, RFC 9110's contents and the docs sites' sidebars
+were laid out whole at every step of a drag. And
 **a layout puts the boxes back where no scroll has them**, so the offset a
 box was moved by is cleared for every box the layout visits
 (`APPLIED`), or the next scroll moves it by the difference from an offset
