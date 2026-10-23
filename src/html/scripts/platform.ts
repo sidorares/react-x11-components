@@ -59,7 +59,7 @@ export type UrlClass = new (url: string, base?: string | UrlLike) => UrlLike;
 
 /** `Buffer`, for base64 both ways. */
 export interface BufferClass {
-  from(text: string, encoding: 'base64'): Uint8Array;
+  from(text: string, encoding: 'base64' | 'latin1'): Uint8Array;
   from(
     buffer: ArrayBufferLike,
     offset?: number,

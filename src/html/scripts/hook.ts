@@ -145,6 +145,9 @@ export function useScripts(
     log: (level, text) => latest.current.log(level, text),
     title: (title) => latest.current.title(title),
     fetch: (request, signal) => latest.current.fetch(request, signal),
+    get network() {
+      return latest.current.network;
+    },
     load: (src, element) => latest.current.load(src, element),
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,

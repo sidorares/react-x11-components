@@ -5162,6 +5162,10 @@ export function installDom(
         );
       }
       call('setAttr', this._id, n, str(value));
+      // a media element's `src` set or changed loads it (HTML 4.8.11.2)
+      if (n === 'src' && this instanceof HTMLMediaElement && mediaLoads()) {
+        mediaLoad(this);
+      }
     }
     setAttributeNS(_ns: Any, name: Any, value: Any): void {
       this.setAttribute(String(name).replace(/^.*:/, ''), value);
@@ -9004,11 +9008,38 @@ export function installDom(
     muted: boolean | null;
     volume: number;
     playbackRate: number;
+    defaultPlaybackRate: number;
     time: number;
     pending: { resolve: (v?: Any) => void; reject: (e: Any) => void }[];
     /** How many times a `pause()` paused it: a `play()` whose task finds
      *  another count was paused since. */
     pauses: number;
+    // what loading it came to, where it loads (`mediaLoads`)
+    network: number;
+    ready: number;
+    duration: number;
+    width: number;
+    height: number;
+    src: string;
+    error: Any;
+    seeking: boolean;
+    /** HTML's "is currently stalled": nothing arrived for three seconds. */
+    stalled: boolean;
+    ended: boolean;
+    /** HTML's "can autoplay flag". */
+    autoplaying: boolean;
+    /** Which run of the load algorithm this is: a fetch or a timer of an
+     *  earlier one finds another and does nothing. */
+    load: number;
+    abort: (() => void) | null;
+    /** When the clock last started, on `now()`, while it runs. */
+    since: number | null;
+    ticker: number | null;
+    stallTimer: number | null;
+    /** When `progress` was last fired, on `now()`. */
+    progressed: number;
+    /** What `:seeking`, `:buffering` and `:stalled` were last told. */
+    flags: string;
   }
   const mediaAsks = new WeakMap<Any, MediaAsk>();
   const askOf = (el: Any): MediaAsk => {
@@ -9019,9 +9050,28 @@ export function installDom(
         muted: null,
         volume: 1,
         playbackRate: 1,
+        defaultPlaybackRate: 1,
         time: 0,
         pending: [],
         pauses: 0,
+        network: 0,
+        ready: 0,
+        duration: NaN,
+        width: 0,
+        height: 0,
+        src: '',
+        error: null,
+        seeking: false,
+        stalled: false,
+        ended: false,
+        autoplaying: true,
+        load: 0,
+        abort: null,
+        since: null,
+        ticker: null,
+        stallTimer: null,
+        progressed: 0,
+        flags: '',
       };
       mediaAsks.set(el, ask);
     }
@@ -9047,46 +9097,439 @@ export function installDom(
     }
     return n;
   };
+
+  // --- loading -------------------------------------------------------------------
+  //
+  // Where the page's requests reach a network (`hasNetwork`), a media
+  // element loads its source as HTML 4.8.11.5 has it: fetched through the
+  // page's network as far as its container says how long it is and how
+  // large, and a little past that, then suspended, since the player fetches
+  // what it plays itself. Its network and ready states, its events, and
+  // the clock `currentTime` reads are this model's — nothing comes back
+  // from the player. Where there is no network it never loads, and it is
+  // ready as soon as it is asked, as it was before.
+
+  let networkAnswer: boolean | null = null;
+  const mediaLoads = (): boolean =>
+    (networkAnswer ??= call('hasNetwork') === true);
+  /** The clock: where it is now, while it runs (HTML's "current playback
+   *  position"). */
+  const mediaTime = (ask: MediaAsk): number => {
+    if (ask.since === null) return ask.time;
+    const t = ask.time + ((now() - ask.since) / 1000) * ask.playbackRate;
+    return Number.isFinite(ask.duration) ? Math.min(t, ask.duration) : t;
+  };
+  /** Whether the clock runs: playing, with enough to go on, not seeking
+   *  and not at its end. */
+  const mediaRuns = (ask: MediaAsk): boolean =>
+    ask.paused === false && ask.ready >= 3 && !ask.seeking && !ask.ended;
+  /** The clock started or stopped as `mediaRuns` says, and the flags
+   *  `:seeking`, `:buffering` and `:stalled` read told to the host. */
+  const mediaSync = (el: Any): void => {
+    const ask = askOf(el);
+    const runs = mediaRuns(ask);
+    if (!runs && ask.since !== null) {
+      ask.time = mediaTime(ask);
+      ask.since = null;
+    }
+    if (runs && ask.since === null) ask.since = now();
+    if (!runs && ask.ticker !== null) {
+      clearTimer(ask.ticker);
+      ask.ticker = null;
+    }
+    if (runs && ask.ticker === null) {
+      ask.ticker = setTimer(() => mediaTick(el), 250, [], true);
+    }
+    // HTML 4.8.11.6: playing with too little to go on, as it loads
+    const buffering =
+      ask.paused === false && ask.network === 2 && ask.ready <= 2;
+    const flags = `${ask.seeking}${buffering}${buffering && ask.stalled}`;
+    if (flags === ask.flags) return;
+    ask.flags = flags;
+    call('mediaState', el._id, 'seeking', ask.seeking);
+    call('mediaState', el._id, 'buffering', buffering);
+    call('mediaState', el._id, 'stalled', buffering && ask.stalled);
+  };
+  /** A quarter second of play: `timeupdate`, and the end, where it loops
+   *  back to the start or stops (HTML 4.8.11.8, "reaches the end"). */
+  const mediaTick = (el: Any): void => {
+    const ask = askOf(el);
+    if (!mediaRuns(ask)) return;
+    fireMedia(el, 'timeupdate');
+    if (!Number.isFinite(ask.duration) || mediaTime(ask) < ask.duration) {
+      return;
+    }
+    if (el.hasAttribute('loop')) {
+      mediaSeek(el, 0);
+      return;
+    }
+    ask.time = ask.duration;
+    ask.since = null;
+    ask.ended = true;
+    ask.paused = true;
+    call('mediaState', el._id, 'paused', true);
+    mediaSync(el);
+    fireMedia(el, 'timeupdate');
+    fireMedia(el, 'pause');
+    fireMedia(el, 'ended');
+  };
+  /** HTML 4.8.11.9, seeking: `seeking` at once, and in a later task, once
+   *  what is there can be played, the time, `timeupdate` and `seeked`. */
+  const mediaSeek = (el: Any, to: number): void => {
+    const ask = askOf(el);
+    const time = Math.max(
+      0,
+      Number.isFinite(ask.duration) ? Math.min(to, ask.duration) : to,
+    );
+    if (ask.since !== null) ask.time = mediaTime(ask);
+    ask.since = null;
+    ask.seeking = true;
+    ask.ended = false;
+    ask.time = time;
+    mediaSync(el);
+    const load = ask.load;
+    mediaTask(() => {
+      if (ask.load !== load || !ask.seeking) return;
+      fireMedia(el, 'seeking');
+      const done = () => {
+        if (ask.load !== load || !ask.seeking || ask.time !== time) return;
+        if (ask.ready < 3) {
+          setTimer(done, 50, [], false);
+          return;
+        }
+        ask.seeking = false;
+        mediaSync(el);
+        fireMedia(el, 'timeupdate');
+        fireMedia(el, 'seeked');
+      };
+      mediaTask(done);
+    });
+  };
+  /** HTML's "notify about playing": `playing`, and the promises kept. */
+  const notifyPlaying = (el: Any): void => {
+    const ask = askOf(el);
+    fireMedia(el, 'playing');
+    const pending = ask.pending;
+    ask.pending = [];
+    for (const p of pending) p.resolve();
+  };
+  /** The ready state moved on to `ready`, and the events HTML has for each
+   *  step up it (4.8.11.7), with autoplay where it is eligible. */
+  const mediaReady = (el: Any, ready: number): void => {
+    const ask = askOf(el);
+    const was = ask.ready;
+    if (ready <= was) return;
+    ask.ready = ready;
+    mediaSync(el);
+    const load = ask.load;
+    mediaTask(() => {
+      if (ask.load !== load) return;
+      if (was < 1) {
+        fireMedia(el, 'durationchange');
+        if (ask.width && el instanceof HTMLVideoElement)
+          fireMedia(el, 'resize');
+        fireMedia(el, 'loadedmetadata');
+      }
+      if (was < 2 && ready >= 2) fireMedia(el, 'loadeddata');
+      if (was < 3 && ready >= 3) {
+        fireMedia(el, 'canplay');
+        if (ask.paused === false) notifyPlaying(el);
+      }
+      if (ready >= 4) {
+        if (
+          ask.autoplaying &&
+          ask.paused !== false &&
+          el.hasAttribute('autoplay')
+        ) {
+          ask.paused = false;
+          ask.autoplaying = false;
+          call('mediaState', el._id, 'paused', false);
+          mediaSync(el);
+          fireMedia(el, 'play');
+          notifyPlaying(el);
+        }
+        if (was < 4) fireMedia(el, 'canplaythrough');
+      }
+    });
+  };
+  /** HTML's "dedicated media source failure steps", and those of a
+   *  `<source>` that was the last: an error, `error`, and the promises
+   *  turned down. */
+  const mediaFailed = (el: Any, load: number): void => {
+    const ask = askOf(el);
+    if (ask.load !== load) return;
+    ask.abort?.();
+    ask.abort = null;
+    ask.error = new MediaError(4);
+    ask.network = 3;
+    mediaSync(el);
+    mediaTask(() => {
+      if (ask.load !== load) return;
+      fireMedia(el, 'error');
+      const pending = ask.pending;
+      ask.pending = [];
+      for (const p of pending) {
+        p.reject(
+          new DOMException(
+            'Failed to load because no supported source was found.',
+            'NotSupportedError',
+          ),
+        );
+      }
+    });
+  };
+  /** Three seconds from now, `stalled`, where nothing comes before
+   *  (HTML 4.8.11.5, "is currently stalled"). */
+  const mediaWatch = (el: Any): void => {
+    const ask = askOf(el);
+    mediaUnwatch(ask);
+    const load = ask.load;
+    ask.stallTimer = setTimer(
+      () => {
+        ask.stallTimer = null;
+        if (ask.load !== load || ask.network !== 2) return;
+        ask.stalled = true;
+        mediaSync(el);
+        fireMedia(el, 'stalled');
+      },
+      3000,
+      [],
+      false,
+    );
+  };
+  const mediaUnwatch = (ask: MediaAsk): void => {
+    if (ask.stallTimer !== null) clearTimer(ask.stallTimer);
+    ask.stallTimer = null;
+  };
+  /** The resource fetch algorithm (HTML 4.8.11.5), as far as the host
+   *  reads the source for it (`mediaFetch`), which never hands the page
+   *  its bytes: another origin's are not the page's to read. */
+  const mediaFetch = (el: Any, url: string): void => {
+    const ask = askOf(el);
+    ask.progressed = 0;
+    ask.abort = () => call('mediaAbort', el._id);
+    mediaWatch(el);
+    call('mediaFetch', el._id, ask.load, url);
+  };
+  /** What the host's read of a source came to (`__media`): bytes in, so
+   *  `progress` and nothing stalled; its head read, its data past it, or
+   *  enough of it, each a step up the ready state; or a failure. */
+  const mediaHeard = (
+    el: Any,
+    load: number,
+    kind: string,
+    a: string,
+    b: string,
+    c: string,
+  ): void => {
+    const ask = askOf(el);
+    if (ask.load !== load || ask.network !== 2) return;
+    if (kind === 'progress') {
+      mediaWatch(el);
+      if (ask.stalled) {
+        ask.stalled = false;
+        mediaSync(el);
+      }
+      const at = now();
+      if (at - ask.progressed >= 350) {
+        ask.progressed = at;
+        mediaTask(() => {
+          if (ask.load === load) fireMedia(el, 'progress');
+        });
+      }
+    } else if (kind === 'info') {
+      ask.duration = Number(a);
+      ask.width = Number(b);
+      ask.height = Number(c);
+      mediaReady(el, 1);
+    } else if (kind === 'data') {
+      mediaReady(el, 2);
+    } else if (kind === 'enough') {
+      // as much as it wants: what is not read is let go, `suspend`
+      mediaUnwatch(ask);
+      mediaReady(el, 4);
+      ask.abort = null;
+      ask.network = 1;
+      ask.stalled = false;
+      mediaSync(el);
+      mediaTask(() => {
+        if (ask.load === load) fireMedia(el, 'suspend');
+      });
+    } else if (kind === 'failed') {
+      mediaUnwatch(ask);
+      mediaFailed(el, load);
+    }
+  };
+  /** The resource selection algorithm (HTML 4.8.11.5): its `src`, or else
+   *  the first `<source>` whose type can play, fetched; neither, and it is
+   *  empty again. */
+  const mediaSelect = (el: Any): void => {
+    const ask = askOf(el);
+    ask.network = 3;
+    mediaSync(el);
+    const load = ask.load;
+    mediaTask(() => {
+      if (ask.load !== load) return;
+      let url: string | null = null;
+      if (el.hasAttribute('src')) {
+        const raw = el.getAttribute('src');
+        url = raw ? String(call('resolve', raw)) : '';
+      } else {
+        for (const source of Array.from(el.children as ArrayLike<Any>)) {
+          if (source.localName !== 'source' || !source.hasAttribute('src')) {
+            continue;
+          }
+          const type = source.getAttribute('type');
+          if (type && !el.canPlayType(type) && !READ_TYPES.test(type)) {
+            continue;
+          }
+          url = String(call('resolve', source.getAttribute('src')));
+          break;
+        }
+        if (url === null) {
+          ask.network = 0;
+          mediaSync(el);
+          return;
+        }
+      }
+      if (!url) {
+        mediaFailed(el, load);
+        return;
+      }
+      ask.src = url;
+      ask.network = 2;
+      mediaSync(el);
+      fireMedia(el, 'loadstart');
+      mediaFetch(el, url);
+    });
+  };
+  /** The types a source is read here for whatever the player says. */
+  const READ_TYPES =
+    /^\s*(?:video|audio)\/(?:mp4|webm|mpeg|mp3|ogg|wav|x-wav|wave|x-m4a)\b/i;
+  /** HTML 4.8.11.5, the media element load algorithm: what it was doing
+   *  ends — its fetch, its clock, a seek — it is paused, its pending
+   *  `play()`s turned down, and it selects a source again. */
+  const mediaLoad = (el: Any): void => {
+    const ask = askOf(el);
+    const network = ask.network;
+    ask.load += 1;
+    ask.abort?.();
+    ask.abort = null;
+    mediaUnwatch(ask);
+    const load = ask.load;
+    if (network === 2 || network === 1) {
+      mediaTask(() => {
+        if (ask.load === load) fireMedia(el, 'abort');
+      });
+    }
+    if (network !== 0) {
+      mediaTask(() => {
+        if (ask.load === load) fireMedia(el, 'emptied');
+      });
+      ask.network = 0;
+      ask.ready = 0;
+      if (ask.paused === false) {
+        ask.paused = true;
+        call('mediaState', el._id, 'paused', true);
+        const pending = ask.pending;
+        ask.pending = [];
+        for (const p of pending) {
+          p.reject(
+            new DOMException(
+              'The play() request was interrupted by a new load request.',
+              'AbortError',
+            ),
+          );
+        }
+      }
+      ask.seeking = false;
+      const time = mediaTime(ask);
+      ask.since = null;
+      ask.time = 0;
+      if (time !== 0) {
+        mediaTask(() => {
+          if (ask.load === load) fireMedia(el, 'timeupdate');
+        });
+      }
+      ask.duration = NaN;
+    }
+    ask.playbackRate = ask.defaultPlaybackRate;
+    ask.error = null;
+    ask.ended = false;
+    ask.stalled = false;
+    ask.autoplaying = true;
+    mediaSelect(el);
+  };
+  class MediaError {
+    static readonly MEDIA_ERR_ABORTED = 1;
+    static readonly MEDIA_ERR_NETWORK = 2;
+    static readonly MEDIA_ERR_DECODE = 3;
+    static readonly MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+    _code: number;
+    constructor(code: number) {
+      this._code = code;
+    }
+    get code(): number {
+      return this._code;
+    }
+    get message(): string {
+      return this._code === 4 ? 'MEDIA_ELEMENT_ERROR: Format error' : '';
+    }
+  }
+
   class HTMLMediaElement extends HTMLElement {
     static readonly NETWORK_EMPTY = 0;
+    static readonly NETWORK_IDLE = 1;
+    static readonly NETWORK_LOADING = 2;
+    static readonly NETWORK_NO_SOURCE = 3;
     static readonly HAVE_NOTHING = 0;
-    // a media element here never loads (HTML 4.8.11): no data, no duration
-    // and no tracks. What it is told to do is the player's: `<Html>` mounts
-    // core's `<video>` over a video it can show, and hands it what the page
-    // asked here (`mediaState`), so `paused`, `muted`, `volume`,
-    // `playbackRate` and `currentTime` are what the page asked, and the
-    // events are the ones HTML fires as it asks.
-    /** Paused until the page plays it, but for one with `autoplay`, which
-     *  the player plays from the start. */
+    static readonly HAVE_METADATA = 1;
+    static readonly HAVE_CURRENT_DATA = 2;
+    static readonly HAVE_FUTURE_DATA = 3;
+    static readonly HAVE_ENOUGH_DATA = 4;
+    // what it is told to do is the player's as well: `<Html>` mounts core's
+    // `<video>` over a video it can show, and hands it what the page asked
+    // here (`mediaState`)
+    /** Paused until the page plays it, or until it loads with `autoplay`.
+     *  Where nothing loads it, one with `autoplay` is playing from the
+     *  start, as the player plays it. */
     get paused(): boolean {
-      return askOf(this).paused ?? !this.hasAttribute('autoplay');
+      const ask = askOf(this);
+      if (ask.paused !== null) return ask.paused;
+      return mediaLoads() || !this.hasAttribute('autoplay');
     }
     get ended(): boolean {
-      return false;
+      return askOf(this).ended;
     }
     get seeking(): boolean {
-      return false;
+      return askOf(this).seeking;
     }
     get readyState(): number {
-      return 0;
+      return askOf(this).ready;
     }
     get networkState(): number {
-      return 0;
+      return askOf(this).network;
     }
     get duration(): number {
-      return NaN;
+      return askOf(this).duration;
     }
-    /** Where the page last sought to: nothing reports where the player
-     *  has come to since. */
+    /** Where the clock is: where the page last sought to where nothing
+     *  loads it, since nothing reports where the player has come to. */
     get currentTime(): number {
-      return askOf(this).time;
+      return mediaTime(askOf(this));
     }
     /** HTML 4.8.11.9, seeking: `seeking`, then `timeupdate` and `seeked`
-     *  once it is there. */
+     *  once it is there; before its metadata, only where it starts. */
     set currentTime(v: Any) {
       const time = Math.max(0, mediaNumber(v, 'currentTime'));
-      askOf(this).time = time;
+      const ask = askOf(this);
       call('mediaState', this._id, 'currentTime', time);
+      if (mediaLoads()) {
+        if (ask.ready === 0) ask.time = time;
+        else mediaSeek(this, time);
+        return;
+      }
+      ask.time = time;
       mediaTask(() => {
         fireMedia(this, 'seeking');
         fireMedia(this, 'timeupdate');
@@ -9117,11 +9560,25 @@ export function installDom(
       const rate = mediaNumber(v, 'playbackRate');
       const ask = askOf(this);
       if (ask.playbackRate === rate) return;
+      if (ask.since !== null) {
+        ask.time = mediaTime(ask);
+        ask.since = now();
+      }
       ask.playbackRate = rate;
       call('mediaState', this._id, 'playbackRate', rate);
       mediaTask(() => fireMedia(this, 'ratechange'));
     }
-    defaultPlaybackRate = 1;
+    /** The rate a load starts it at (HTML 4.8.11.8). */
+    get defaultPlaybackRate(): number {
+      return askOf(this).defaultPlaybackRate;
+    }
+    set defaultPlaybackRate(v: Any) {
+      const rate = mediaNumber(v, 'defaultPlaybackRate');
+      const ask = askOf(this);
+      if (ask.defaultPlaybackRate === rate) return;
+      ask.defaultPlaybackRate = rate;
+      mediaTask(() => fireMedia(this, 'ratechange'));
+    }
     /** Its own state from the first, which the `muted` attribute only
      *  starts it in (HTML 4.8.11.12): `defaultMuted` is the attribute. */
     get muted(): boolean {
@@ -9136,10 +9593,10 @@ export function installDom(
       if (was !== muted) mediaTask(() => fireMedia(this, 'volumechange'));
     }
     get currentSrc(): string {
-      return '';
+      return askOf(this).src;
     }
     get error(): Any {
-      return null;
+      return askOf(this).error;
     }
     get buffered(): Any {
       return noTimeRanges;
@@ -9160,27 +9617,48 @@ export function installDom(
       return trackListOf(this, VideoTrackList);
     }
     /**
-     * HTML 4.8.11.8, the internal play steps, for media that is ready as
-     * soon as it is asked: playing at once, and in a task `play` where it
-     * was paused, then `playing` and the promise kept — unless a `pause()`
-     * came between, which turns the promise down.
+     * HTML 4.8.11.8, the play steps: a source selected where it has none
+     * yet, playing at once, and in a task `play` where it was paused, then
+     * `waiting` where too little is in, or `playing` and the promise kept —
+     * unless a `pause()` came between, which turns the promise down. Where
+     * nothing loads it, it is ready as soon as it is asked.
      */
     play(): Promise<void> {
       const ask = askOf(this);
+      const loads = mediaLoads();
+      if (loads && ask.error?.code === 4) {
+        return Promise.reject(
+          new DOMException(
+            'The element has no supported sources.',
+            'NotSupportedError',
+          ),
+        );
+      }
+      if (loads && ask.network === 0) mediaSelect(this);
+      if (loads && ask.ended) mediaSeek(this, 0);
       const was = this.paused;
       const pauses = ask.pauses;
       ask.paused = false;
+      ask.autoplaying = false;
       call('mediaState', this._id, 'paused', false);
+      mediaSync(this);
       const promise = new Promise<void>((resolve, reject) => {
         ask.pending.push({ resolve, reject });
       });
+      const load = ask.load;
       mediaTask(() => {
         if (was) fireMedia(this, 'play');
-        if (ask.pauses !== pauses) return;
-        if (was) fireMedia(this, 'playing');
-        const pending = ask.pending;
-        ask.pending = [];
-        for (const p of pending) p.resolve();
+        if (ask.pauses !== pauses || ask.load !== load) return;
+        if (loads && ask.ready < 3) {
+          fireMedia(this, 'waiting');
+          return;
+        }
+        if (was) notifyPlaying(this);
+        else {
+          const pending = ask.pending;
+          ask.pending = [];
+          for (const p of pending) p.resolve();
+        }
       });
       return promise;
     }
@@ -9189,9 +9667,12 @@ export function installDom(
      *  turned down, as Chrome turns them down. */
     pause(): void {
       const ask = askOf(this);
+      if (mediaLoads() && ask.network === 0) mediaSelect(this);
       const was = this.paused;
       ask.paused = true;
+      ask.autoplaying = false;
       call('mediaState', this._id, 'paused', true);
+      mediaSync(this);
       if (was) return;
       ask.pauses += 1;
       const pending = ask.pending;
@@ -9210,8 +9691,12 @@ export function installDom(
       });
     }
     /** HTML 4.8.11.5, the media element load algorithm: whatever it was
-     *  doing ends, and it is paused. */
+     *  doing ends, it is paused, and it loads its source again. */
     load(): void {
+      if (mediaLoads()) {
+        mediaLoad(this);
+        return;
+      }
       if (this.paused) return;
       askOf(this).paused = true;
       call('mediaState', this._id, 'paused', true);
@@ -9248,11 +9733,12 @@ export function installDom(
   }
   Object.defineProperty(HTMLMediaElement.prototype, 'src', urlProperty('src'));
   class HTMLVideoElement extends HTMLMediaElement {
+    /** Its source's size, as its container says it, once that is read. */
     get videoWidth(): number {
-      return 0;
+      return askOf(this).ready > 0 ? askOf(this).width : 0;
     }
     get videoHeight(): number {
-      return 0;
+      return askOf(this).ready > 0 ? askOf(this).height : 0;
     }
   }
   Object.defineProperty(
@@ -20325,6 +20811,7 @@ export function installDom(
     HTMLIFrameElement,
     HTMLCanvasElement,
     HTMLMediaElement,
+    MediaError,
     HTMLVideoElement,
     HTMLAudioElement,
     HTMLSourceElement,
@@ -21708,10 +22195,32 @@ export function installDom(
     return true;
   });
 
+  // what the host's read of a media element's source came to
+  entry('__media', () => {
+    const [id, load, kind, a, b, c] = input();
+    const el = wrap(id);
+    if (el) mediaHeard(el, Number(load), String(kind), a, b, c);
+    return true;
+  });
+
   // where the document has got to: `DOMContentLoaded`, then `load`
   entry('__ready', () => {
     const [state] = input();
     document._ready = state;
+    // the media the markup made select a source, as each would have as
+    // the parser put it in (HTML 4.8.11.5), but one that loads nothing
+    // until it is played
+    if (state === 'interactive' && mediaLoads()) {
+      for (const el of document.querySelectorAll('video, audio')) {
+        if (
+          askOf(el).network === 0 &&
+          el.getAttribute('preload')?.toLowerCase() !== 'none' &&
+          (el.hasAttribute('src') || el.querySelector('source'))
+        ) {
+          mediaSelect(el);
+        }
+      }
+    }
     const change = new Event('readystatechange');
     change.isTrusted = true;
     dispatch(document, change);

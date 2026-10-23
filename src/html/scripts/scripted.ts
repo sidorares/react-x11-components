@@ -276,6 +276,7 @@ export function useScriptedHtml(
     log: config.log ?? nothing,
     title: config.title ?? nothing,
     fetch: config.fetch ?? NO_NETWORK,
+    network: config.fetch !== undefined,
     load:
       config.load ??
       (async (url, element) => {

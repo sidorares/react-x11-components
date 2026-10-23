@@ -704,6 +704,38 @@ export function isPaused(el: Element): boolean | null {
   return PAUSED.get(el) ?? el.attribs.autoplay === undefined;
 }
 
+/** What a page's media element is doing as it loads and plays (HTML
+ *  4.8.11.6, 4.8.11.9): seeking, buffering — playing with too little to
+ *  go on — and stalled, buffering with nothing arriving. */
+export type MediaFlag = 'seeking' | 'buffering' | 'stalled';
+const MEDIA_FLAGS = new WeakMap<Element, Set<MediaFlag>>();
+
+/** One of a media element's flags, as its page's script engine worked it
+ *  out: whether it changed. */
+export function setMediaFlag(
+  el: Element,
+  flag: MediaFlag,
+  on: boolean,
+): boolean {
+  let flags = MEDIA_FLAGS.get(el);
+  if (!flags) {
+    if (!on) return false;
+    flags = new Set();
+    MEDIA_FLAGS.set(el, flags);
+  }
+  if (flags.has(flag) === on) return false;
+  if (on) flags.add(flag);
+  else flags.delete(flag);
+  return true;
+}
+
+/** Whether a media element is seeking, buffering or stalled
+ *  (`:seeking`, `:buffering`, `:stalled`, Selectors 4, 12.2): none of
+ *  them where nothing loads it. */
+export function hasMediaFlag(el: Element, flag: MediaFlag): boolean {
+  return MEDIA_FLAGS.get(el)?.has(flag) ?? false;
+}
+
 /** Whether an element is in its document's top layer, as either. */
 export function inTopLayer(el: Element): boolean {
   return IN_TOP_LAYER.has(el);

@@ -1040,8 +1040,12 @@ attribute says or a script set `muted`, which holds whatever the attribute
 comes to after; `:volume-locked` matches nothing, since a page cannot lock
 a volume. It is `:playing` or `:paused` (12.2) as its `paused` is: paused
 from the first, but for one with `autoplay`, played by `play()` and paused
-by `pause()` and `load()`. `:seeking`, `:buffering` and `:stalled` match
-nothing, since nothing comes back from the player yet. A text field's `select()`, `setSelectionRange()` and its
+by `pause()` and `load()`. It is `:seeking` from a seek until it lands,
+`:buffering` while it is playing with too little loaded to go on, and
+`:stalled` where it is buffering and three seconds brought nothing — where
+the page's requests reach a network, which a media element loads its source
+through (see "What a page's script asks of a video" below), and never where
+they do not. A text field's `select()`, `setSelectionRange()` and its
 `selectionStart`, `selectionEnd` and `selectionDirection` are what a script
 set, kept to its value, which a value set moves to its end, and a change
 is told as `select`; an input type with no selection answers null and
@@ -1314,9 +1318,26 @@ things about it are decisions:
   `play`, `playing`, `pause`, `volumechange` and the seek's events in tasks
   after, and `play()`'s promise kept, or turned down by a `pause()` that
   came before its task, as Chrome's is. **Nothing comes back from the
-  player**: `currentTime` is where the page last sought, a video that ends
-  is not paused, and a press on one with `controls` is not told to the
-  page. An `autoplay` video reads as playing from the first.
+  player**: where there is no network, `currentTime` is where the page
+  last sought, a video that ends is not paused, and a press on one with
+  `controls` is not told to the page. An `autoplay` video reads as playing
+  from the first.
+- **Where the page's requests reach a network, the page loads the media
+  itself, as far as its metadata** (HTML 4.8.11.5). Setting `src`,
+  `load()`, `play()` on an element that has selected no source, and the
+  markup's media at `DOMContentLoaded` (but for `preload="none"`) fetch the
+  source through `scripts.fetch`. The host reads the container's head, MP4,
+  WebM, MP3, WAV or Ogg, for the duration and the video's size, and
+  `64 KiB` past it, then lets the rest go: the player fetches what it
+  plays. The page hears `loadstart`, `progress`, `loadedmetadata`,
+  `loadeddata`, `canplay`, `canplaythrough` and `suspend`; `stalled` after
+  three seconds with nothing; a source no container is read from is an
+  `error`. Its `readyState`, `duration`, `videoWidth` and `currentTime`
+  are this model's, and the clock runs while it plays, `timeupdate` four
+  times a second, looping or ending at its duration. The bytes are read
+  host-side and never reach the page's realm, since another origin's are
+  not the page's to read. It is still not the player's state: a player
+  that falls behind is not heard.
 - **A press on a video with `controls` is kept the same way**, so a script
   that pauses a video the press played changes what the player was told,
   and pauses it.

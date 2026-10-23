@@ -45,8 +45,10 @@ import {
   setActiveTransition,
   isPopoverOpen,
   isMuted,
+  hasMediaFlag,
   isPaused,
   setMuted,
+  setMediaFlag,
   setPaused,
   markCustomized,
   setModal,
@@ -87,6 +89,7 @@ import {
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
 import { navigableFor } from './target.js';
+import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import * as ntk from 'react-x11/ntk';
 import type {
   AbortControllerClass,
@@ -365,6 +368,10 @@ export interface HostSeams {
   /** What a media element's `canPlayType` answers: whether what plays the
    *  page's media can play the type. None, `''` for every type. */
   canPlayType?(type: string): string;
+  /** Whether `fetch` is a network the host was given: a media element
+   *  fetches its source through it to know its duration and when it can
+   *  play, and with none is ready as soon as it is asked. */
+  network?: boolean;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -1004,6 +1011,11 @@ export class DomHost {
   private _next = 2;
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
+  /** What each media element's source is being read for (`_mediaFetch`). */
+  private _mediaFetches = new Map<
+    Element,
+    InstanceType<AbortControllerClass>
+  >();
   /** The bodies being handed to the page a chunk at a time (`_pump`). */
   private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
   private _contents = new Map<number, number>();
@@ -1400,6 +1412,8 @@ export class DomHost {
     this._timers.clear();
     for (const fetch of this._fetches.values()) fetch.abort();
     this._fetches.clear();
+    for (const fetch of this._mediaFetches.values()) fetch.abort();
+    this._mediaFetches.clear();
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
@@ -2994,6 +3008,19 @@ export class DomHost {
             });
           }
         } else if (
+          name === 'seeking' ||
+          name === 'buffering' ||
+          name === 'stalled'
+        ) {
+          // `:seeking`, `:buffering` and `:stalled` read them
+          if (setMediaFlag(el, name, c === true)) {
+            this._tell(el, {
+              type: 'attributes',
+              target: el,
+              attributeName: `-rx-${name}`,
+            });
+          }
+        } else if (
           (name === 'volume' ||
             name === 'playbackRate' ||
             name === 'currentTime') &&
@@ -3129,6 +3156,10 @@ export class DomHost {
         return performance.now();
       case 'navigator':
         return `${this._seams.userAgent}\u0000${this._seams.language}`;
+      // whether the page's requests reach a network, which a media element
+      // loads its source through
+      case 'hasNetwork':
+        return this._seams.network === true;
       case 'canPlayType': {
         // the three answers HTML has, and none other (4.8.11.3)
         const answer = this._seams.canPlayType?.(text(a)) ?? '';
@@ -3260,6 +3291,15 @@ export class DomHost {
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
+      case 'mediaFetch':
+        this._mediaFetch(this._element(a), Number(b), text(c));
+        return null;
+      case 'mediaAbort': {
+        const el = this._element(a);
+        this._mediaFetches.get(el)?.abort();
+        this._mediaFetches.delete(el);
+        return null;
+      }
       case 'abortFetch':
         this._fetches.get(Number(a))?.abort();
         this._fetches.delete(Number(a));
@@ -3678,9 +3718,9 @@ export class DomHost {
       muted: (el) => isMuted(el),
       playing: (el) => isPaused(el) === false,
       paused: (el) => isPaused(el) === true,
-      seeking: nothing,
-      buffering: nothing,
-      stalled: nothing,
+      seeking: (el) => hasMediaFlag(el, 'seeking'),
+      buffering: (el) => hasMediaFlag(el, 'buffering'),
+      stalled: (el) => hasMediaFlag(el, 'stalled'),
       // a page cannot lock a volume, and nothing here does
       'volume-locked': nothing,
       fullscreen: nothing,
@@ -4613,6 +4653,103 @@ export class DomHost {
 
   /** What CORS remembers of the preflights this page made. */
   private _preflights = new Map<string, PreflightEntry>();
+
+  /**
+   * A media element's source, fetched through the page's network as a
+   * browser fetches one — `no-cors`, read by the browser and never by the
+   * page — until its container's head says how long it is and a little
+   * past that (`MediaReader`), and let go: the rest is the player's to
+   * fetch. The page is told what it came to (`__media`): how much has
+   * arrived, the duration and the size, that there is data past the
+   * head, that there is enough, or that it failed.
+   */
+  private _mediaFetch(el: Element, load: number, url: string): void {
+    this._mediaFetches.get(el)?.abort();
+    const controller = new AbortController();
+    this._mediaFetches.set(el, controller);
+    const id = this.idOf(el);
+    const tell = (kind: string, ...args: string[]): void => {
+      if (controller.signal.aborted || this._disposed) return;
+      this.entries?.call('__media', [id, load, kind, ...args]);
+    };
+    const run = async (): Promise<void> => {
+      let response: FetchResponse;
+      try {
+        response = await this._seams.fetch(
+          { url, method: 'GET', headers: [], body: null, stream: true },
+          controller.signal,
+        );
+      } catch {
+        tell('failed');
+        return;
+      }
+      if (controller.signal.aborted) {
+        release(response);
+        return;
+      }
+      if (response.status && (response.status < 200 || response.status > 299)) {
+        release(response);
+        tell('failed');
+        return;
+      }
+      const length = Number(
+        response.headers.find(
+          ([k]) => k.toLowerCase() === 'content-length',
+        )?.[1],
+      );
+      const reader = new MediaReader(length > 0 ? length : null);
+      let told = 0;
+      /** What has arrived told, as far as it goes: true where it is all
+       *  that is wanted. */
+      const step = (complete: boolean): boolean => {
+        const head = reader.read(complete);
+        if (head === null) {
+          tell('failed');
+          return true;
+        }
+        if (head === 'more') return false;
+        if (told < 1) {
+          told = 1;
+          tell(
+            'info',
+            String(head.duration),
+            String(head.width),
+            String(head.height),
+          );
+        }
+        if (told < 2 && (reader.received > head.end || complete)) {
+          told = 2;
+          tell('data');
+        }
+        if (complete || reader.received >= head.end + MEDIA_ENOUGH) {
+          tell('enough');
+          return true;
+        }
+        return false;
+      };
+      const chunks = response.chunks ?? [
+        response.bytes ?? Buffer.from(response.body ?? '', 'latin1'),
+      ];
+      try {
+        for await (const chunk of chunks) {
+          if (controller.signal.aborted) return;
+          reader.add(chunk);
+          tell('progress', String(reader.received));
+          if (step(false)) return;
+        }
+      } catch {
+        tell('failed');
+        return;
+      }
+      step(true);
+    };
+    void run().finally(() => {
+      controller.abort();
+      if (this._mediaFetches.get(el) === controller) {
+        this._mediaFetches.delete(el);
+      }
+    });
+  }
 
   /**
    * A page's request through the browser's network, under the same-origin
