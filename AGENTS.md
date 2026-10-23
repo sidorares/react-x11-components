@@ -1745,7 +1745,13 @@ What only inks is restyled in place, as a hover is; a box out of the flow
 that moved goes through a frame's build (`_rebuildFrame`); anything else
 is a build keeping every other element's style with `follow`, so what is
 under a restyled element is styled again only where its parent's style
-came out other than it was. Three things are load-bearing. **A
+came out other than it was. A restyle in place does the same where the
+elements a change reaches and all they hold are more than it takes
+(`_restyleInPlace`'s `from`): it walks down from the top through what is
+above them, a parent before its children, and on below an element only
+where its style moved. A `:root:has(…)` puts the root among what a
+`<script>` put in the `<head>` reaches, and each was a build of the whole
+document on Next.js. Three things are load-bearing. **A
 pseudo-class css-select knows is in `PSEUDO_READS` with what it reads**:
 one missing there reads nothing, which is right only for one css-select
 refuses, since that drops the rule. **An attribute anything but the
