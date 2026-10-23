@@ -407,6 +407,9 @@ export class SvgDrawing {
     shapes: ShapeStyles | null = null,
     surface: SurfaceMaker | null = null,
     font: DrawingFont | null = null,
+    /** What else its root inherits from the document around it, as
+     *  declarations: `stroke-width: 6px;` and the like. */
+    inherited = '',
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -460,8 +463,8 @@ export class SvgDrawing {
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
     const view = box
-      ? this._viewFor(box[2], box[3], paint, shapes)
-      : this._viewFor(vw, vh, paint, shapes);
+      ? this._viewFor(box[2], box[3], paint, shapes, inherited)
+      : this._viewFor(vw, vh, paint, shapes, inherited);
     if (!view) return;
     ctx.save();
     // the view draws on the context lent, which counts its saves and keeps
@@ -661,6 +664,8 @@ export class SvgDrawing {
     /** The root's `fill` and `stroke` as declarations, or none. */
     paint = '',
     shapes: ShapeStyles | null = null,
+    /** What else the root inherits, as declarations (`draw`). */
+    inherited = '',
   ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
@@ -678,7 +683,7 @@ export class SvgDrawing {
     }
     const sized = this._percent || this._uses;
     const viewport = sized ? `${width}x${height}` : '';
-    const painted = shapes ? `${paint}|${shapes.key}` : paint;
+    const painted = `${paint}|${inherited}|${shapes?.key ?? ''}`;
     if (
       this._view &&
       !grown &&
@@ -699,7 +704,9 @@ export class SvgDrawing {
         sized || shapes || root.name.includes(':')
           ? copyTree(root, sized ? [width, height] : null, reached, shapes)
           : root;
-      view.setSvgDom(paint ? withPaint(tree, paint) : tree);
+      view.setSvgDom(
+        paint || inherited ? withPaint(tree, paint, inherited) : tree,
+      );
       this._missingAt = reached.missing
         ? lastNode(documentOf(root))
         : undefined;
@@ -724,13 +731,20 @@ export class SvgDrawing {
  * its `style` — where `SvgView` reads a root's paint, over its presentation
  * attributes, for what is under it to inherit.
  */
-function withPaint(root: Element, paint: string): Element {
+function withPaint(root: Element, paint: string, inherited = ''): Element {
   const style = root.attribs.style;
-  return new Element(
-    root.name,
-    { ...root.attribs, style: style ? `${style};${paint}` : paint },
-    root.children,
-  );
+  const attribs: Record<string, string> = { ...root.attribs };
+  if (paint) attribs.style = style ? `${style};${paint}` : paint;
+  // what it inherits is under what it says itself: an attribute of its
+  // own, and its style and the rules that reach it, which beat attributes
+  for (const declaration of inherited.split(';')) {
+    const colon = declaration.indexOf(':');
+    if (colon < 0) continue;
+    const name = declaration.slice(0, colon);
+    if (attribs[name] === undefined)
+      attribs[name] = declaration.slice(colon + 1);
+  }
+  return new Element(root.name, attribs, root.children);
 }
 
 /**

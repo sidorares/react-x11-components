@@ -1234,6 +1234,30 @@ metric(
 );
 
 metric(
+  "an inline drawing inherits its stroke's width and dashes from the document around it, its math worked out",
+  async () => {
+    // SVG 2, 13: `stroke-width`, `stroke-dasharray` and their kin inherit,
+    // so a rule on a `<div>` reaches the lines of an `<svg>` in it — WPT's
+    // zoom/stroke sets them so, its reference with `calc()` and a `var()`
+    const line =
+      '<svg width="100" height="20"><line x1="0" y1="10" x2="100" y2="10"/></svg>';
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block}' +
+        '.d{--k:2;stroke:#000000;stroke-width:calc(5px * var(--k));stroke-dasharray:calc(5px * var(--k))}</style>' +
+        `<div class="d">${line}${line.replace('<svg ', '<svg stroke-width="2" ')}</div>`,
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 6, '#000000', { message: 'ten wide, a dash' });
+    await expectPixel(ctx, 15, 10, '#ffffff', { message: 'a gap' });
+    await expectPixel(ctx, 25, 14, '#000000', { message: 'the next dash' });
+    // an attribute of the drawing's own is over what it inherits
+    await expectPixel(ctx, 5, 30, '#000000', { message: 'its own width' });
+    await expectPixel(ctx, 5, 26, '#ffffff', { message: 'two wide' });
+  },
+);
+
+metric(
   'a <use> draws an element from anywhere in the document, a symbol fitted to its viewport',
   async () => {
     // SVG 2, 5.5: a `<use>` refers to an element of the document, and a
