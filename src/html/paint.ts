@@ -504,6 +504,10 @@ export interface PaintOptions {
   /** Leave the canvas unpainted: a view transition has captured the root
    *  element, whose image its tree draws it in. */
   noCanvas?: boolean;
+  /** Fill the canvas in its scheme's `Canvas` colour under all of it: the
+   *  root element's image in a view transition, which is opaque as a
+   *  browser's window is (CSS View Transitions 1, 3.5). */
+  groundCanvas?: boolean;
   /** The boxes of the elements a view transition captured (CSS View
    *  Transitions 1, 3.5): each is drawn in its image in the transition's
    *  tree, it and all it holds, and is a hole where it is laid out — a
@@ -1067,7 +1071,7 @@ export function paintDocument(
   // under a canvas of a colour of its own with no transparency, which
   // covers all of it, the scheme's is a fill nobody sees
   if (
-    scheme !== tree.paletteScheme &&
+    (scheme !== tree.paletteScheme || options.groundCanvas) &&
     !coloursCanvas(canvas) &&
     !options.noCanvas
   ) {

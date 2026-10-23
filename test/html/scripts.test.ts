@@ -5843,6 +5843,32 @@ test("a view transition's pseudo-elements answer getComputedStyle and getAnimati
   );
 });
 
+test("a view transition's name is read unescaped, and a shadow tree's top element is no root of it", async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' #t { width: 40px; height: 40px; contain: paint; view-transition-name: a\\.b }' +
+      ' html::view-transition-group(a\\.b) { animation-duration: 7s }' +
+      '</style></head><body><div id="t"></div>' +
+      '<div id="h"><template shadowrootmode="open"><div id="s" style="view-transition-name: s">s</div></template></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, s = document.getElementById("h").shadowRoot.firstElementChild;' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  var g = getComputedStyle(html, "::view-transition-group(a\\.b)");' +
+      '  r.push(g.position, g.animationDuration, s.matches(":active-view-transition"),' +
+      '    html.matches(":active-view-transition"));' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'absolute|7s|false|true',
+    doc.logs.join('\n'),
+  );
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +

@@ -7,6 +7,7 @@
 
 import type { Element } from 'domhandler';
 import { AnimationTimeline } from './css/timeline.js';
+import { readIdent } from './css/parse.js';
 import { timingAt } from './css/animation.js';
 import type { ComputedStyle } from './css/style.js';
 import type { Declaration, KeyframesRule } from './css/parse.js';
@@ -115,7 +116,8 @@ export function captureName(el: Element, style: ComputedStyle): string | null {
     }
     return made;
   }
-  return name;
+  // as a selector's argument reads it: `first\!` is `first!`
+  return name.includes('\\') ? readIdent(name, 0).value : name;
 }
 
 /** The classes an element is captured with (CSS View Transitions 2, 3.2). */
@@ -165,39 +167,4 @@ export function groupTransform(
   const y = b * cx + d * cy + f - cy;
   const n = (v: number) => String(Math.round(v * 1e6) / 1e6);
   return `matrix(${[a, b, c, d, x / scale, y / scale].map(n).join(', ')})`;
-}
-
-/** A name as CSS writes it in an identifier (CSSOM 2.1, "serialize an
- *  identifier"): what is no letter of one escaped, so that it reads back
- *  as the name. */
-export function cssIdent(name: string): string {
-  let out = '';
-  const first = name.codePointAt(0);
-  for (let i = 0; i < name.length; i += 1) {
-    const c = name.charCodeAt(i);
-    const ch = name[i];
-    if (c === 0) out += '\uFFFD';
-    else if (
-      (c >= 0x1 && c <= 0x1f) ||
-      c === 0x7f ||
-      (i === 0 && c >= 0x30 && c <= 0x39) ||
-      (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)
-    ) {
-      out += `\\${c.toString(16)} `;
-    } else if (i === 0 && c === 0x2d && name.length === 1) {
-      out += '\\-';
-    } else if (
-      c >= 0x80 ||
-      c === 0x2d ||
-      c === 0x5f ||
-      (c >= 0x30 && c <= 0x39) ||
-      (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x61 && c <= 0x7a)
-    ) {
-      out += ch;
-    } else {
-      out += `\\${ch}`;
-    }
-  }
-  return out;
 }

@@ -231,7 +231,6 @@ import {
   animationsEnd,
   captureClasses,
   captureName,
-  cssIdent,
   groupTransform,
 } from './transition.js';
 import type { OldImage, Placement } from './transition.js';
@@ -8802,10 +8801,17 @@ export class HtmlViewNode extends Node {
         : this._placementOf(box);
     }
     const s = this._scale;
+    let index = 0;
     for (const entry of run.entries.values()) {
+      index += 1;
       const old = entry.old;
       if (!old || !entry.el) continue;
-      const name = `-ua-view-transition-group-anim-${cssIdent(entry.name)}`;
+      // named after the name where that is a name as written, and by its
+      // place where it would have to be escaped, which `animation-name`
+      // does not read back
+      const name = /^[-\w\u0080-\uffff]+$/.test(entry.name)
+        ? `-ua-view-transition-group-anim-${entry.name}`
+        : `-ua-view-transition-group-anim-${index}`;
       const from =
         `width: ${cssPx(old.width, s)}; height: ${cssPx(old.height, s)}; ` +
         `transform: ${groupTransform(old.matrix, old.width, old.height, s)}`;
@@ -9026,6 +9032,7 @@ export class HtmlViewNode extends Node {
         damage: { x: 0, y: 0, width: w, height: h },
         selection: null,
         captured: others,
+        groundCanvas: true,
       });
       return { surface, inkX: 0, inkY: 0, inkWidth: w, inkHeight: h };
     }
@@ -9285,6 +9292,7 @@ export class HtmlViewNode extends Node {
         viewport: { ...viewport, x, y },
         selection: null,
         captured: others,
+        groundCanvas: true,
       });
       return;
     }
@@ -9477,7 +9485,7 @@ const EMPTY_SET: ReadonlySet<Element> = new Set();
 
 /** Whether an element is its document's root: its parent the document. */
 function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent;
+  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */

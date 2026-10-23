@@ -652,6 +652,7 @@ export function inActiveTransition(
 ): boolean {
   const doc = el.parent;
   if (!doc || doc.parent || doc.type !== 'root') return false;
+  if (doc instanceof ShadowRoot) return false;
   const active = ACTIVE_TRANSITIONS.get(doc);
   if (!active) return false;
   return !types || types.some((t) => active.has(t));

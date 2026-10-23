@@ -30,6 +30,7 @@ import {
   isText,
   inImpliedHead,
   NON_RENDERED,
+  ShadowRoot,
   tagOf,
 } from '../dom.js';
 import {
@@ -1893,7 +1894,12 @@ class Builder {
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
       this._pseudo(el, 'after', style, box);
-      if (this._options.transition && !el.parent?.parent) {
+      if (
+        this._options.transition &&
+        el.parent &&
+        !el.parent.parent &&
+        !(el.parent instanceof ShadowRoot)
+      ) {
         this._viewTransition(el, box);
       }
     }
