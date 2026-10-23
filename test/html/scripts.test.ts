@@ -2826,6 +2826,29 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test('a computed style is live: it answers what the element is styled now', async () => {
+  // CSSOM 9: getComputedStyle returns a live declaration block, read again
+  // as the element changes, by name, by its camel-case name and by index
+  const doc = await hosted(
+    '<p id="out"></p><div id="d" style="width: 10px"></div><script>' +
+      'var r = [], d = document.getElementById("d"), cs = getComputedStyle(d);' +
+      'r.push(cs.width, cs["margin-top"]);' +
+      'd.style.width = "20px"; d.style.marginTop = "3px";' +
+      'r.push(cs.width, cs.marginTop, cs.getPropertyValue("margin-top"));' +
+      'd.className = "x"; r.push(cs.width);' +
+      'r.push("width" in cs, cs.length === cs.length && cs.length > 10, typeof cs[0], cs.item(0) === cs[0]);' +
+      'setTimeout(function () { r.push(cs.width);' +
+      "  document.getElementById('out').textContent = r.join('|'); }, 0);" +
+      'd.style.width = "30px";' +
+      '</script><style>.x { padding: 1px }</style>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    '10px|0px|20px|3px|3px|20px|true|true|string|true|30px',
+    doc.logs.join('\n'),
+  );
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +

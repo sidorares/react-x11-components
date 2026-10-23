@@ -83,6 +83,8 @@ export function installDom(
     c?: Primitive,
     d?: Primitive,
   ): Any => {
+    // anything but reading a computed style may change one
+    if (op !== 'computed' && op !== 'customProperty') opEpoch += 1;
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
@@ -103,6 +105,10 @@ export function installDom(
   /** Set while a copy is made whose registries are pinned after the op
    *  (`copyOf`), so its upgrades wait for them. */
   let copying = false;
+  /** Counts the ops but the reads of a computed style, which a computed
+   *  style read again since none ran answers as it was
+   *  (`getComputedStyle`). */
+  let opEpoch = 0;
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
@@ -18499,33 +18505,90 @@ export function installDom(
    *  answers by a property's name, either spelling — and a custom
    *  property's by its name alone, asked for as it is read, since a theme
    *  sets hundreds of them on the root. */
+  /** A computed style, which is live (CSSOM 9): read again after an op
+   *  that may have changed it — a style set, a class, an element moved —
+   *  or in a later task, it is asked for again (`opEpoch`, `taskEpoch`).
+   *  A page that keeps one and changes the element read the old values. */
   const getComputedStyle = (el: Any, pseudo?: Any): Any => {
     const which = pseudo ? String(pseudo).replace(/^:+/, '') : '';
     const id = idOf(el, 'element');
-    const json = call('computed', id, which);
-    const values: Record<string, string> =
-      typeof json === 'string' && json ? JSON.parse(json) : {};
-    const out: Any = {
+    let json = '';
+    let values: Record<string, string> = {};
+    let byName = new Map<string, string>();
+    let names: string[] = [];
+    let readAt = -1;
+    let readIn = -1;
+    const read = (): void => {
+      if (readAt === opEpoch && readIn === taskEpoch) return;
+      const r = call('computed', id, which);
+      json = typeof r === 'string' ? r : '';
+      values = json ? JSON.parse(json) : {};
+      names = Object.keys(values);
+      byName = new Map();
+      for (const name of names) {
+        byName.set(name, values[name]);
+        byName.set(camel(name), values[name]);
+      }
+      readAt = opEpoch;
+      readIn = taskEpoch;
+    };
+    read();
+    const methods: Any = {
       getPropertyValue: (name: Any) => {
+        read();
         const n = cssName(name);
         if (!n.startsWith('--')) return values[n] ?? '';
         if (!json) return '';
         return String(call('customProperty', id, which, n) ?? '');
       },
       getPropertyPriority: () => '',
-      length: Object.keys(values).length,
-      item: (i: number) => Object.keys(values)[i] ?? '',
+      item: (i: number) => {
+        read();
+        return names[i] ?? '';
+      },
       cssText: '',
+      // its names in order, as a declaration's are
+      [Symbol.iterator]: () => {
+        read();
+        return names.slice()[Symbol.iterator]();
+      },
     };
-    const names = Object.keys(values);
-    for (const [name, value] of Object.entries(values)) {
-      out[name] = value;
-      out[camel(name)] = value;
-    }
-    // its names by index, as a declaration's are, and in order
-    names.forEach((name, i) => (out[i] = name));
-    out[Symbol.iterator] = () => names[Symbol.iterator]();
-    return out;
+    const own = (key: string | symbol): Any => {
+      if (typeof key !== 'string') return undefined;
+      if (key === 'length') return names.length;
+      if (/^\d+$/.test(key)) return names[Number(key)];
+      return byName.get(key);
+    };
+    return new Proxy(methods, {
+      get(target, key) {
+        if (typeof key === 'string' && !(key in target)) {
+          read();
+          return own(key);
+        }
+        return target[key as Any];
+      },
+      has(target, key) {
+        if (key in target) return true;
+        read();
+        return own(key) !== undefined;
+      },
+      ownKeys(target) {
+        read();
+        return [
+          ...names.map((_, i) => String(i)),
+          ...byName.keys(),
+          ...Reflect.ownKeys(target),
+        ];
+      },
+      getOwnPropertyDescriptor(target, key) {
+        if (key in target) return Reflect.getOwnPropertyDescriptor(target, key);
+        read();
+        const value = own(key);
+        return value === undefined
+          ? undefined
+          : { value, writable: false, enumerable: true, configurable: true };
+      },
+    });
   };
 
   const base64 =
