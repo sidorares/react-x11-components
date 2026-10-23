@@ -305,6 +305,13 @@ export interface HandleInternals {
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
   drawnAtViewport(element: Element): boolean;
+  /** An element's padding box and its top and left borders, in CSS
+   *  pixels, where it is no scroll container, as `clientWidth` and its
+   *  kin read it; null where its box is none or inline
+   *  (`HtmlViewNode.clientBoxOf`). */
+  clientBox(
+    element: Element,
+  ): { width: number; height: number; top: number; left: number } | null;
   /** Whether a scroll container's scroll moves an element: not where the
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
@@ -3103,6 +3110,11 @@ export class DomHost {
               s.clientLeft,
             ].join(',')
           : '';
+      }
+      case 'clientBox': {
+        this.flush();
+        const r = this._seams.handle.clientBox?.(this._element(a));
+        return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
       }
       // and scrolled, an axis left where it is where it is not a number
       case 'scrollElement': {

@@ -188,6 +188,7 @@ import {
   heldBack,
   layoutDocument,
   placedMatrix,
+  resolvedInsets,
   restickToViewport,
   restickWithin,
   retranslate,
@@ -4408,6 +4409,7 @@ export class HtmlViewNode extends Node {
         box.borderLeft,
       ],
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
+      insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
     };
   }
 
@@ -7728,6 +7730,37 @@ export class HtmlViewNode extends Node {
       clientHeight: state.clientHeight / s,
       clientTop: state.clientTop / s,
       clientLeft: state.clientLeft / s,
+    };
+  }
+
+  /**
+   * An element's padding box, as `clientWidth`, `clientHeight`,
+   * `clientTop` and `clientLeft` read it where it is no scroll container
+   * (CSSOM View 6): its size, and its border's widths at the top and the
+   * left, in CSS pixels, laid out first. Null for an element with no box,
+   * and for one whose box is inline, which has no client box.
+   */
+  clientBoxOf(
+    element: Element,
+  ): { width: number; height: number; top: number; left: number } | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree ? boxOf(tree, element) : null;
+    if (!box || box.kind === 'inline') return null;
+    const s = this._scale;
+    return {
+      width: Math.max(0, box.width - box.borderLeft - box.borderRight) / s,
+      height:
+        Math.max(
+          0,
+          box.height -
+            box.captionTop -
+            box.captionBottom -
+            box.borderTop -
+            box.borderBottom,
+        ) / s,
+      top: box.borderTop / s,
+      left: box.borderLeft / s,
     };
   }
 

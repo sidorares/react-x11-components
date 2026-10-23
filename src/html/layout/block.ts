@@ -72,6 +72,7 @@ import {
   noteVisibility,
   updatePositionVisibility,
   scrollStateOf,
+  scrolledBy,
 } from './scroll.js';
 import type { Placed } from '../css/transform.js';
 import {
@@ -5326,17 +5327,21 @@ interface CbRect {
 function containingRect(containing: Box, ctx: LayoutContext): CbRect {
   // a layout that reads the viewport's height lays out differently in
   // another (`LayoutResult.readsViewportHeight`)
-  // The root box's is the initial containing block, the viewport at the
-  // document's top (CSS 2.1 10.1): not the box of the element the root box
-  // stands in for, inside its margins and its border (`layoutDocument`)
+  if (!containing.parent) ctx.readViewportHeight = true;
+  return paddingRectOf(containing, ctx.viewportWidth, ctx.viewportHeight);
+}
+
+/** A box's padding box, where the boxes it positions are placed: the root
+ *  box's is the initial containing block, the viewport at the document's
+ *  top (CSS 2.1 10.1), not the box of the element the root box stands in
+ *  for, inside its margins and its border (`layoutDocument`). */
+function paddingRectOf(
+  containing: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): CbRect {
   if (!containing.parent) {
-    ctx.readViewportHeight = true;
-    return {
-      x: 0,
-      y: 0,
-      width: ctx.viewportWidth,
-      height: ctx.viewportHeight,
-    };
+    return { x: 0, y: 0, width: viewportWidth, height: viewportHeight };
   }
   return {
     x: containing.x + containing.borderLeft,
@@ -6253,6 +6258,77 @@ function relativeOffset(box: Box): [number, number] {
   const dy = top ?? (bottom !== null ? -bottom : 0);
   return [dx, dy];
 }
+
+/** An inset as `getComputedStyle` answers it: a length in device pixels,
+ *  `auto`, or null where the computed value is the answer. */
+export type ResolvedInset = number | 'auto' | null;
+
+/**
+ * The insets `getComputedStyle` answers for a positioned box: the used
+ * values (CSSOM 9, "resolved value"), top, right, bottom and left. A
+ * relative box's are its offsets, each side its own where it is set and
+ * the negation of the side opposite where it is `auto`; a sticky box's
+ * keep `auto`, and a percentage resolves. An absolute or a fixed box's are
+ * where layout put its margin box in its containing block's padding box —
+ * an `anchor()`, a `position-area` and a fallback included — but on an
+ * axis both of whose insets are lengths, which may be over-constrained and
+ * are then their computed values, a percentage resolved. Null for a box
+ * that is not positioned, or is placed in an inline box.
+ */
+export function resolvedInsets(
+  box: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): ResolvedInset[] | null {
+  const style = box.style;
+  const { position } = style;
+  if (position === 'static') return null;
+  const sides = [style.top, style.right, style.bottom, style.left];
+  if (position === 'relative' || position === 'sticky') {
+    const across = box.parent ? box.parent.contentWidth : 0;
+    const set = sides.map((len, i) =>
+      resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
+    );
+    if (position === 'sticky') {
+      return set.map((v, i) => (sides[i] === AUTO ? 'auto' : v));
+    }
+    return set.map((v, i) => {
+      if (v !== null) return v;
+      // a percentage of an indefinite height is the computed value
+      if (sides[i] !== AUTO) return null;
+      const opposite = set[(i + 2) % 4];
+      return opposite === null ? 0 : -opposite;
+    });
+  }
+  const containing = containingBlockFor(box);
+  if (!containing || containing.kind === 'inline') return null;
+  const cb = paddingRectOf(containing, viewportWidth, viewportHeight);
+  // where layout placed them, before a scroll moved either: a scroll
+  // moves a box back by its offset, which is added back
+  const [bx, by] = scrolledBy(box);
+  const [cx, cy] = containing.parent ? scrolledBy(containing) : [0, 0];
+  const top = box.y + by - box.marginTop - (cb.y + cy);
+  const left = box.x + bx - box.marginLeft - (cb.x + cx);
+  const used = [
+    top,
+    cb.width - left - box.marginLeft - box.width - box.marginRight,
+    cb.height - top - box.marginTop - box.height - box.marginBottom,
+    left,
+  ];
+  const anchored = style.anchorInsets;
+  const lengths = (i: number): boolean =>
+    sides[i] !== AUTO &&
+    !anchored?.[INSET_SIDES[i]] &&
+    sides[i + 2] !== AUTO &&
+    !anchored?.[INSET_SIDES[i + 2]];
+  return used.map((v, i) => {
+    const axis = i % 2;
+    if (!lengths(axis)) return v;
+    return resolveOrNull(sides[i], axis ? cb.width : cb.height) ?? v;
+  });
+}
+
+const INSET_SIDES = ['top', 'right', 'bottom', 'left'] as const;
 
 /**
  * Where `position: sticky` puts a box at rest (CSS Positioned Layout 3,
