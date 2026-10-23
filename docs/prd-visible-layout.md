@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: A and C are built; the rest is design.** Written 2026-10-24 after
+> **Status: A, B and C are built; the rest is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -149,6 +149,28 @@ as wide as `sizes` says whatever it holds, so the box is the same box:
 density and its new natural size in place**, and the layout that follows
 sizes it.
 
+**Built.** `ImageSources.choose` says which images show another source, and
+`_showInPlace` takes each into its box as a build would make it — the size
+its source gives at its density, or its attributes' while nothing it chose
+has arrived — with `forgetSizes` for the box and every box around it. The
+boxes come from a list the builder keeps (`BoxTree.images`), since a box a
+layout that stops set aside is out of reach from the root, and laid out at
+rest at the size it was last given. The layout the width's move asks for
+anyway lays it out, and stops where what can be seen ends: asking for a
+layout of its own made the step stale, which `_stopAt` lays out whole, and
+the first cut laid out 1,156 boxes a step where a build had laid out 550,
+and was slower than the build it saved. Only an image whose `<source>`
+sizes it another way now builds. On the Mac, BBC's drag went from 2.72 s of
+processor time to 2.10, its median frame from 10.2 ms to 6.6 and its 95th
+percentile from 25.4 ms to 19.4; it keeps its boxes at 76 of 80 steps,
+where it built at every one. The list is the builder's because the index
+of first boxes is not: walking the boxes set aside as well doubled each of
+its rebuilds, and Node's API page, which rebuilds it three times a drag,
+lost a millisecond at its 95th percentile. The same fix found that an image arriving
+after the first layout left the flex item, inline-block or float that
+shrank to it as narrow as no image: `_imageArrived` forgets their sizes
+too.
+
 ### C. A scroll container is laid out whole
 
 A sidebar, a table of contents or a menu is a scroll container as tall as the
@@ -244,7 +266,7 @@ right one.
 
 ## Order
 
-1. **A** — built — then **B**: the enabler. It takes the build off five of
+1. **A** and **B** — built: the enabler. It takes the build off five of
    the seven slowest pages and gives the rest something to keep.
 2. **C** — built: small, the same shape as `until`, and every docs page has
    a sidebar.

@@ -34,6 +34,7 @@ import {
   render,
   renderScrolled,
   snapshot,
+  solidPng,
   view,
 } from './harness.js';
 import type { Fill } from './harness.js';
@@ -587,6 +588,56 @@ test('a dragged width stops inside a scroll container where what it shows ends, 
   assert.ok(reached(el, 's50') && reached(el, 's58'), 'what it shows there');
   assert.strictEqual(el.scrollStateOf(sidebar)?.y, 1000, 'where it was');
   assert.strictEqual(el.scrollStateOf(sidebar)?.height, 1600);
+});
+
+test('a dragged width takes the density an image below where it stops shows into its box, which the layout at rest lays out', async (t) => {
+  // BBC's images are `w` candidates with a `sizes` in `vw`: each step of a
+  // drag shows another density, taken into the box in place — the box of
+  // an image the layout set aside too, or the layout at rest lays it out
+  // at the size of the step it was last laid out at
+  const clock = holdClock(t, resizeClock);
+  const images = {
+    'small.png': solidPng(20, 10, [255, 0, 0]),
+    'large.png': solidPng(40, 20, [0, 0, 255]),
+  };
+  const img = (id: string) =>
+    `<img id="${id}" style="display:block" srcset="small.png 20w, large.png 40w" sizes="10vw">`;
+  const { el, resize } = await renderScrolled(
+    LONG.replace(
+      '<body style="margin:0">',
+      `<body style="margin:0">${img('top')}`,
+    ).replace('<div id="end"', `${img('low')}<div id="end"`),
+    300,
+    400,
+    {
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'image' && r.url in images
+          ? {
+              kind: 'image' as const,
+              bytes: images[r.url as keyof typeof images],
+            }
+          : null,
+    },
+  );
+  await waitFor(() => assert.strictEqual(boxOf(el, 'low').width, 40));
+  const tree = (el as unknown as { _tree: unknown })._tree;
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'a step of the drag');
+  assert.strictEqual(
+    (el as unknown as { _tree: unknown })._tree,
+    tree,
+    'the same boxes',
+  );
+  assert.strictEqual(boxOf(el, 'top').width, 38, '10vw');
+  assert.ok(!reached(el, 'low'), 'set aside');
+  await clock.finish();
+  assert.ok(!partial(el));
+  assert.strictEqual(
+    boxOf(el, 'low').width,
+    38,
+    'laid out at the density it shows',
+  );
 });
 
 test('a layout that stops measures the boxes it sizes from all they hold', async () => {

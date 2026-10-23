@@ -171,6 +171,7 @@ import {
   TRANSITION_IMAGES,
   TRANSITION_KEYS,
   TRANSITION_STYLES,
+  awaitedIntrinsics,
   columned,
   intrinsicsOf,
   textFade,
@@ -1403,6 +1404,10 @@ export class HtmlViewNode extends Node {
       const next = intrinsicsOf(size, s * box.style.effectiveZoom);
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
         moves = true;
+        // what the boxes around it measured of it, for their lives, is
+        // measured again: a flex item shrunk to an image that had not come
+        // was as narrow as none
+        forgetSizes(box);
       }
       box.intrinsic = next;
       return true;
@@ -1416,12 +1421,11 @@ export class HtmlViewNode extends Node {
     // resize or a laid-out `sizes`, and showed the one before until now
     const pictures = this._source.facts().pictures;
     if (pictures.length) {
-      const boxes = this._firstBoxesOf(tree);
+      // set aside by a layout that stops or not, which lays it out later
+      const boxes = this._imageBoxesOf(tree);
       for (const el of pictures) {
         const box = boxes.get(el);
-        if (box?.kind === 'replaced' && !tree.awaiting.includes(box)) {
-          take(box);
-        }
+        if (box && !tree.awaiting.includes(box)) take(box);
       }
     }
     this._imagePainted();
@@ -2563,14 +2567,28 @@ export class HtmlViewNode extends Node {
     cascade.viewportHeight = viewport;
     cascade.dimensionSource = this._dimensionSource;
     // An image chosen for this viewport (`_choose`) that shows another
-    // candidate, or the same one at another density, is another size: the
-    // boxes are built again, keeping every style but those of the images
-    // whose `<source>` sizes them another way now (`dimensionSource`), as a
-    // `vw` has them built again — and as for a `vw`, the sizes other widths
-    // came to stand, since what a width chooses is the same each time it
-    // is asked.
+    // candidate, or the same one at another density, is another size: its
+    // box takes the size in place and the document is laid out again
+    // (`_showInPlace`) — or, where an image's `<source>` sizes it another
+    // way now (`dimensionSource`), the boxes are built again, keeping every
+    // style but those images', as a `vw` has them built again. Either way
+    // the sizes other widths came to stand, since what a width chooses is
+    // the same each time it is asked.
     const chose = this._choose(target, viewport);
-    if (chose && (chose.shown || chose.restyle.length)) {
+    let relayout = false;
+    if (
+      chose &&
+      chose.shown.length &&
+      !chose.restyle.length &&
+      this._tree &&
+      this._stale < Stale.Boxes
+    ) {
+      this._showInPlace(this._tree, chose.shown);
+      // laid out again — where the width or the viewport moved, as that
+      // layout is anyway, which may stop where what can be seen ends
+      // (`_stopAt`): a stale layout is laid out whole
+      relayout = this._laidOutWidth === target && !viewportMoved;
+    } else if (chose && (chose.shown.length || chose.restyle.length)) {
       if (this._stale < Stale.Boxes) {
         this._stale = Stale.Boxes;
         restyleOnly = new Set(chose.restyle);
@@ -2654,6 +2672,8 @@ export class HtmlViewNode extends Node {
         if (!laidWhole(tree)) crossing = true;
       }
     }
+
+    if (relayout && this._stale < Stale.Layout) this._stale = Stale.Layout;
 
     // Built and laid out — and, where an image whose `sizes` is its own
     // laid-out width (`auto`) draws another candidate for the width it was
@@ -3266,6 +3286,62 @@ export class HtmlViewNode extends Node {
       decodes: decodesImageType,
     });
   }
+
+  /**
+   * Take what each of `images` shows now into its box, as a build would
+   * make it: the size of the source it shows, at the density it was
+   * chosen at, or the size its attributes give while nothing it chose has
+   * arrived — and what the boxes around it measured of it, for their
+   * lives, is forgotten (`forgetSizes`). An image with no box draws
+   * nothing. BBC's images are `w` candidates with a `sizes` in `vw`, so at
+   * every step of a drag each showed the candidate it showed at another
+   * density, and the boxes were built for it.
+   */
+  private _showInPlace(tree: BoxTree, images: readonly Element[]): void {
+    // the tree's image boxes, which a layout that stops does not hide as it
+    // hides them from the root
+    const boxes = this._imageBoxesOf(tree);
+    const taken: Box[] = [];
+    for (const el of images) {
+      const box = boxes.get(el);
+      if (box) taken.push(box);
+    }
+    const s = this._scale;
+    for (const box of taken) {
+      const el = box.el!;
+      const scale = s * box.style.effectiveZoom;
+      const size = this._imageSize(el);
+      const next = size
+        ? intrinsicsOf(size, scale)
+        : awaitedIntrinsics(this._dimensionSource(el), scale);
+      // and it waits for what it chose, as a box built now would
+      if ((!size || this._imagePending(el)) && !tree.awaiting.includes(box)) {
+        tree.awaiting.push(box);
+      }
+      if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
+        forgetSizes(box);
+      }
+      box.intrinsic = next;
+      this._dropSprites(box, true);
+      if (this._lifted.size && this._insideLifted(box)) {
+        this._spriteGen += 1;
+        this.spritesChanged();
+      }
+    }
+  }
+
+  /** The boxes of a tree's images, by element (`BoxTree.images`). */
+  private _imageBoxesOf(tree: BoxTree): Map<Element, Box> {
+    let index = this._imageBoxes;
+    if (index?.tree !== tree) {
+      const of = new Map<Element, Box>();
+      for (const box of tree.images) if (!of.has(box.el!)) of.set(box.el!, box);
+      index = this._imageBoxes = { tree, of };
+    }
+    return index.of;
+  }
+
+  private _imageBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
 
   /**
    * Pick the candidates of the images whose `sizes` is their laid-out
