@@ -20,7 +20,10 @@
 //   DRAG_STEP    pixels a step of the drag (default 8); DRAG_STEPS each
 //            way (default 40)
 //   SCRIPTS  1: the page's scripts run, as the browser example's JS
-//            switch has them
+//            switch has them, their sources and their requests answered
+//            from what `htmlfetch.ts --scripts` kept (node needs
+//            `--experimental-vm-modules`); a request it did not keep is a
+//            404
 //   PROFILE  a directory: a CPU profile of each step of each page,
 //            <name>-<step>.cpuprofile, for cpuprofile.ts
 //   ALLOC    a directory: an allocation sampling profile of each step,
@@ -286,6 +289,26 @@ function resultOf(kept, kind) {
   return null;
 }
 
+/** A page's request answered from the cache, as `htmlfetch.ts` keeps it
+ *  (`fetchKey`), or a 404. */
+function fetchFrom(cache) {
+  return async (request) => {
+    const key = `fetch:${request.method.toUpperCase()} ${request.url}\n${request.body ?? ''}`;
+    const kept = cache.get(key);
+    if (!kept)
+      return {
+        url: request.url,
+        status: 404,
+        statusText: 'Not Found',
+        redirected: false,
+        headers: [],
+        body: '',
+      };
+    const { bytes, ...head } = kept;
+    return { ...head, bytes, body: new TextDecoder().decode(bytes) };
+  };
+}
+
 function cachedPage(cache, name, urls) {
   for (const url of urls) {
     const kept = cache.get(`document:${url}`);
@@ -299,6 +322,7 @@ function cachedPage(cache, name, urls) {
         request.kind === 'video'
           ? null
           : resultOf(cache.get(request.url), request.kind),
+      fetch: fetchFrom(cache),
     };
   }
   console.error(`no ${urls[0]} in the cache`);
@@ -410,7 +434,18 @@ function view(doc, width = W) {
               fontSize: 16,
               fontFamily: 'serif',
               monoFamily: 'monospace',
-              scripts: SCRIPTS,
+              scripts: SCRIPTS
+                ? {
+                    timeout: 10_000,
+                    fetch: (request) => {
+                      pending += 1;
+                      return doc.fetch(request).finally(() => {
+                        pending -= 1;
+                        lastArrival = performance.now();
+                      });
+                    },
+                  }
+                : false,
               onResource,
               style: { flexGrow: 1 },
             })
