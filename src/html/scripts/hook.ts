@@ -19,7 +19,7 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
-import type { TransitionEventInfo } from '../node.js';
+import type { CssEventInfo } from '../node.js';
 import type { FramePost } from './host.js';
 import type { FrameLink, RunnerSeams, ScriptRunner } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
@@ -61,6 +61,8 @@ interface Early {
   scripts: ScriptRequest[];
   parsed: boolean;
   loaded: boolean;
+  /** The CSS events the document owed before the engine was here. */
+  css: CssEventInfo[];
 }
 
 /** What `useScripts` hands back: `<Html>`'s props, and a few that are the
@@ -82,7 +84,7 @@ export interface ScriptProps {
   /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
   onElementScroll?: (element: Element) => void;
   /** The document's CSS transition events, which the page hears. */
-  transitionEvents?: (events: TransitionEventInfo[]) => void;
+  cssEvents?: (events: CssEventInfo[]) => void;
   /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
   canvasImage?: (element: Element) => unknown | null;
   /** The document's runner, where its scripts run: what a frame in it is
@@ -126,6 +128,7 @@ export function useScripts(
     scripts: [],
     parsed: false,
     loaded: false,
+    css: [],
   });
 
   // the seams the host is made with read the latest options, so a render
@@ -251,6 +254,7 @@ export function useScripts(
         scripts: [],
         parsed: false,
         loaded: false,
+        css: [],
       };
     }
   }, []);
@@ -280,11 +284,10 @@ export function useScripts(
     (element: Element) => runner.current?.elementScrolled(element),
     [],
   );
-  const transitionEvents = useCallback(
-    (events: TransitionEventInfo[]) =>
-      runner.current?.host.transitionEvents(events),
-    [],
-  );
+  const cssEvents = useCallback((events: CssEventInfo[]) => {
+    if (runner.current) runner.current.cssEvents(events);
+    else if (early.current.document) early.current.css.push(...events);
+  }, []);
   const getRunner = useCallback(() => runner.current, []);
 
   // the engine, fetched the first time scripts are on; what the document
@@ -302,10 +305,12 @@ export function useScripts(
           scripts: [],
           parsed: false,
           loaded: false,
+          css: [],
         };
         if (!loaded.SCRIPTS_CONTAINED || !kept.document) return;
         start(loaded, kept.document);
         for (const request of kept.scripts) runner.current?.add(request);
+        if (kept.css.length) runner.current?.cssEvents(kept.css);
         if (kept.parsed) void runner.current?.parsed();
         if (kept.loaded) runner.current?.loaded();
       },
@@ -350,7 +355,7 @@ export function useScripts(
     navigateFrame,
     scrolled,
     onElementScroll,
-    transitionEvents,
+    cssEvents,
     canvasImage,
     runner: getRunner,
     runtime: engine,

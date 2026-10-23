@@ -895,7 +895,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onViewportOverflow,
     onElementScroll: props.onElementScroll,
     onViewportScroll: props._onViewportScroll,
-    onTransitionEvents: props._onTransitionEvents,
+    onCssEvents: props._onCssEvents,
     canvasImage: props.canvasImage,
     domRevision,
     animate,
@@ -1082,6 +1082,9 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
       seekTransition: (key, currentTime) =>
         nodeRef.current?.seekTransition(key, currentTime),
+      seekAnimation: (key, currentTime, paused) =>
+        nodeRef.current?.seekAnimation(key, currentTime, paused),
+      cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
       cssKeyframes: (element, pseudo, name) =>
         nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
       transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',

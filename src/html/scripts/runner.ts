@@ -28,6 +28,7 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
+import type { CssEventInfo } from '../node.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
@@ -367,7 +368,29 @@ export class ScriptRunner {
     // frame's document comes over a network slower than the parser
     if (this._options.drawsFrames) this.host.loadFrames();
     this._advance('interactive');
+    // and the CSS events the document owed meanwhile, which a page's
+    // listeners hear at the next rendering update after its scripts ran
+    if (this._heldCss.length) {
+      const held = this._heldCss;
+      this._heldCss = [];
+      setTimeout(() => {
+        if (!this._disposed) this.host.cssEvents(held);
+      }, 0);
+    }
     if (this._loaded) this._complete();
+  }
+
+  /** The CSS events the document owed before the scripts its parser met
+   *  had run (`cssEvents`). */
+  private _heldCss: CssEventInfo[] = [];
+
+  /** The document's CSS animations and transitions owe these events:
+   *  told now, or once the parse's scripts have run, which a browser runs
+   *  before its first rendering update. */
+  cssEvents(events: CssEventInfo[]): void {
+    if (this._disposed) return;
+    if (this._ready === 'loading') this._heldCss.push(...events);
+    else this.host.cssEvents(events);
   }
 
   /** Everything the document asked for is in: `load`, once the scripts the

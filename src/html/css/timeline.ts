@@ -17,7 +17,7 @@
 // what it restyles on the next one (`live`, `nextFrame`).
 
 import { ease, progressAt, timingAt, tracksOf } from './animation.js';
-import type { Animations, Easing, Transitions } from './animation.js';
+import type { Animations, Easing, Timing, Transitions } from './animation.js';
 import {
   discreteField,
   interpolateField,
@@ -47,6 +47,20 @@ import type { ComputedStyle, TimelineRef } from './style.js';
  *  kept by it (`cssAnimations`). */
 const RUN_KEYS = new WeakMap<Running, number>();
 const TRANSIT_KEYS = new WeakMap<Transit, number>();
+
+/** A CSS animation run's key, for as long as the run lasts. */
+function runKey(run: Running): number {
+  let key = RUN_KEYS.get(run);
+  if (key === undefined) RUN_KEYS.set(run, (key = ++runKeys));
+  return key;
+}
+
+/** A transition's key, kept across a seek (`seekTransition`). */
+function transitKey(run: Transit): number {
+  let key = TRANSIT_KEYS.get(run);
+  if (key === undefined) TRANSIT_KEYS.set(run, (key = ++runKeys));
+  return key;
+}
 let runKeys = 0;
 
 /** How long a frame is: what an animation under way waits for its next. */
@@ -79,6 +93,12 @@ export interface Running {
   /** Where it waits for a trigger (`animation-trigger`): what the
    *  triggers it hears have made of it. */
   trig?: TriggerRun;
+  /** Whether a page's script paused it (`CSSAnimation.pause()`), which
+   *  holds it whatever `animation-play-state` says. */
+  pagePaused?: boolean;
+  /** Whether a page's script cancelled it (`CSSAnimation.cancel()`): it
+   *  draws nothing while `animation-name` still names it. */
+  pageCancelled?: boolean;
 }
 
 /**
@@ -139,6 +159,9 @@ interface Target {
   /** What the properties its current animations set make of the element,
    *  as `will-change` naming them would (`animatedWillChange`). */
   willChange: number;
+  /** Whether one of them runs on the clock rather than on a scroll's
+   *  timeline (`animatesOnClock`). */
+  clocked?: boolean;
 }
 
 export class AnimationTimeline {
@@ -164,11 +187,17 @@ export class AnimationTimeline {
    *  owes (`_seenAt`). This timeline's own: a fork shares the runs. */
   private _phases = new WeakMap<Transit, TransitPhase>();
   /** The transition events owed the page, in the order they came about
-   *  (`takeTransitionEvents`). */
-  private _transitionEvents: TransitionEventRecord[] = [];
+   *  (`takeCssEvents`). */
+  private _cssEvents: CssEventRecord[] = [];
+  /** Where each CSS animation's run was last seen to be, and in which
+   *  iteration, for the events its moving owes (`_animationAt`). */
+  private _runPhases = new WeakMap<
+    Running,
+    { phase: TransitPhase; iteration: number; delay: number; active: number }
+  >();
   /** Told as an event is owed, so the element that tells them knows to
-   *  (`HtmlViewNode._oweTransitionEvents`). A fork has none. */
-  onTransitionEvent: (() => void) | null = null;
+   *  (`HtmlViewNode._oweCssEvents`). A fork has none. */
+  onCssEvent: (() => void) | null = null;
   /** Each element's animations a script made, or a pseudo-element's, as
    *  the cascade last sampled them (`noteScripts`): when they next change.
    *  The animations themselves are `ScriptAnimations`', the page's to make
@@ -219,7 +248,11 @@ export class AnimationTimeline {
     if (!seen) return;
     for (const [el, targets] of this._targets) {
       for (const [pseudo, target] of targets) {
-        if (!seen.has(target)) targets.delete(pseudo);
+        if (seen.has(target)) continue;
+        for (const run of target.running) {
+          if (run) this._animationCancelled(el, pseudo, run);
+        }
+        targets.delete(pseudo);
       }
       if (!targets.size) this._targets.delete(el);
     }
@@ -254,6 +287,7 @@ export class AnimationTimeline {
     let willChange = 0;
     let out: Sample[] | null = null;
     let scrolled: Target['scrolled'] = undefined;
+    let clocked = false;
     const { names, easings, playStates, triggers } = animations;
     for (let i = 0; i < names.length; i += 1) {
       const name = names[i];
@@ -265,6 +299,7 @@ export class AnimationTimeline {
       if (!run) run = { name, start: now, hold: null };
       taken.add(run);
       running.push(run);
+      if (run.pageCancelled) continue;
       // one on a scroll's timeline, or on none, is where the scroll has
       // it, and its clock is no part of it
       const ref = timelines.length ? timelines[i % timelines.length] : null;
@@ -345,6 +380,7 @@ export class AnimationTimeline {
         continue;
       }
       const timing = timingAt(animations, i);
+      clocked = true;
       // one that waits for a trigger is held at its start until one does
       // something to it, and plays as its triggers have it after that
       const heard = triggers[i % triggers.length];
@@ -374,6 +410,7 @@ export class AnimationTimeline {
       }
       const paused =
         playStates[i % playStates.length] === 'paused' ||
+        !!run.pagePaused ||
         (!!trig && trig.state !== 'playing');
       if (paused && run.hold === null) {
         run.hold = rate * (now - run.start);
@@ -395,6 +432,7 @@ export class AnimationTimeline {
       if (!inherits) inherits = animatesInherited(rule);
       const time = run.hold ?? rate * (now - run.start);
       const at = progressAt(timing, time);
+      this._animationAt(el, pseudo, run, timing, time);
       const { progress, phase } = at;
       // played backwards, it changes the other way, and goes on until its
       // start
@@ -426,6 +464,10 @@ export class AnimationTimeline {
         left: !held && phase === 'active' ? left : 0,
       });
     }
+    // one the list no longer names is cancelled
+    for (const run of was) {
+      if (run && !taken.has(run)) this._animationCancelled(el, pseudo, run);
+    }
     if (!taken.size) {
       this.drop(el, pseudo);
       return null;
@@ -440,6 +482,7 @@ export class AnimationTimeline {
       inherits,
       willChange,
       scrolled,
+      clocked,
     };
     targets.set(pseudo, target);
     this._seen?.add(target);
@@ -501,9 +544,14 @@ export class AnimationTimeline {
       for (const [pseudo, target] of targets) {
         target.running.forEach((run, index) => {
           if (!run) return;
-          let key = RUN_KEYS.get(run);
-          if (key === undefined) RUN_KEYS.set(run, (key = ++runKeys));
-          out.push({ el, pseudo, index, name: run.name, run, key });
+          out.push({
+            el,
+            pseudo,
+            index,
+            name: run.name,
+            run,
+            key: runKey(run),
+          });
         });
       }
     }
@@ -708,7 +756,12 @@ export class AnimationTimeline {
    *  name none. */
   drop(el: object, pseudo: string): void {
     const targets = this._targets.get(el);
-    if (!targets?.delete(pseudo)) return;
+    const target = targets?.get(pseudo);
+    if (!targets || !target) return;
+    for (const run of target.running) {
+      if (run) this._animationCancelled(el, pseudo, run);
+    }
+    targets.delete(pseudo);
     if (!targets.size) this._targets.delete(el);
   }
 
@@ -1087,9 +1140,7 @@ export class AnimationTimeline {
       for (const [pseudo, state] of states) {
         for (const run of state.running.values()) {
           if (now >= run.start + run.duration) continue;
-          let key = TRANSIT_KEYS.get(run);
-          if (key === undefined) TRANSIT_KEYS.set(run, (key = ++runKeys));
-          out.push({ el, pseudo, run, key });
+          out.push({ el, pseudo, run, key: transitKey(run) });
         }
       }
     }
@@ -1145,29 +1196,31 @@ export class AnimationTimeline {
     const delay = run.start - run.created;
     const begin = Math.max(Math.min(-delay, run.duration), 0);
     const end = run.duration;
-    const owe = (type: TransitionEventRecord['type'], elapsed: number) => {
-      this._transitionEvents.push({
+    const owe = (type: CssEventRecord['type'], elapsed: number, at: number) => {
+      this._cssEvents.push({
         el,
         pseudo,
         type,
-        property: run.property,
+        name: run.property,
         elapsed,
+        key: transitKey(run),
+        at,
       });
-      this.onTransitionEvent?.();
+      this.onCssEvent?.();
     };
-    if (was === undefined) owe('transitionrun', begin);
+    if (was === undefined) owe('transitionrun', begin, run.created);
     const from = was === undefined ? 0 : PHASE_RANK[was];
     const to = PHASE_RANK[phase];
     if (to > from) {
-      if (from < 1 && to >= 1) owe('transitionstart', begin);
-      if (to === 2) owe('transitionend', end);
+      if (from < 1 && to >= 1) owe('transitionstart', begin, run.start);
+      if (to === 2) owe('transitionend', end, run.start + run.duration);
     } else if (to < from) {
       // taken back by a seek
-      if (from === 2 && to === 1) owe('transitionstart', end);
+      if (from === 2 && to === 1) owe('transitionstart', end, now);
       else if (from === 2) {
-        owe('transitionstart', end);
-        owe('transitionend', begin);
-      } else owe('transitionend', begin);
+        owe('transitionstart', end, now);
+        owe('transitionend', begin, now);
+      } else owe('transitionend', begin, now);
     }
   }
 
@@ -1178,19 +1231,31 @@ export class AnimationTimeline {
     const was = this._phases.get(run);
     if (was === undefined || was === 'after') return;
     this._phases.set(run, 'after');
-    this._transitionEvents.push({
+    this._cssEvents.push({
       el,
       pseudo,
       type: 'transitioncancel',
-      property: run.property,
+      name: run.property,
+      key: transitKey(run),
+      at: this.now,
       elapsed: Math.max(0, Math.min(this.now - run.start, run.duration)),
     });
-    this.onTransitionEvent?.();
+    this.onCssEvent?.();
   }
 
-  /** The transitions of the elements `styled` does not hold are over,
-   *  cancelled: they are out of the document (CSS Transitions 1, 3). */
-  endTransitionsOutside(styled: ReadonlyMap<object, unknown>): void {
+  /** The transitions and animations of the elements `styled` does not
+   *  hold are over, cancelled: they are out of the document (CSS
+   *  Transitions 1, 3; CSS Animations 1, 3). */
+  endOutside(styled: ReadonlyMap<object, unknown>): void {
+    for (const [el, targets] of this._targets) {
+      if (styled.has(el)) continue;
+      for (const [pseudo, target] of targets) {
+        for (const run of target.running) {
+          if (run) this._animationCancelled(el, pseudo, run);
+        }
+      }
+      this._targets.delete(el);
+    }
     for (const [el, states] of this._transitions) {
       if (styled.has(el)) continue;
       for (const [pseudo, state] of states) {
@@ -1202,11 +1267,174 @@ export class AnimationTimeline {
     }
   }
 
+  /**
+   * A CSS animation's run sampled at `time`, from its start: the events
+   * its phase or its iteration moving since it was last sampled owes (CSS
+   * Animations 1, 4.2) — `animationstart` into its active phase,
+   * `animationiteration` into another iteration, `animationend` out of it
+   * at its end, and the other way where it was taken back — with the
+   * elapsed time the interval it crossed gives.
+   */
+  private _animationAt(
+    el: object,
+    pseudo: string,
+    run: Running,
+    timing: Timing,
+    time: number,
+  ): void {
+    const { duration, delay, iterations } = timing;
+    const active =
+      duration === 0 || iterations === 0 ? 0 : duration * iterations;
+    const end = Math.max(delay + active, 0);
+    const beforeActive = Math.max(Math.min(delay, end), 0);
+    const activeAfter = Math.max(Math.min(delay + active, end), 0);
+    const phase: TransitPhase =
+      time < beforeActive ? 'before' : time >= activeAfter ? 'after' : 'active';
+    const iteration =
+      phase === 'active' && duration > 0
+        ? Math.min(
+            Math.floor((time - delay) / duration),
+            Math.ceil(iterations) - 1,
+          )
+        : 0;
+    const was = this._runPhases.get(run);
+    this._runPhases.set(run, { phase, iteration, delay, active });
+    if (was?.phase === phase && was.iteration === iteration) return;
+    const begin = Math.max(Math.min(-delay, active), 0);
+    const finish = Math.max(Math.min(end - delay, active), 0);
+    // where on the timeline its time was nought, which places each event
+    // where it was due
+    const origin = this.now - time;
+    const owe = (type: CssEventRecord['type'], elapsed: number, at: number) => {
+      this._cssEvents.push({
+        el,
+        pseudo,
+        type,
+        name: run.name,
+        elapsed,
+        key: runKey(run),
+        at,
+      });
+      this.onCssEvent?.();
+    };
+    const from = was ? PHASE_RANK[was.phase] : 0;
+    const to = PHASE_RANK[phase];
+    if (to > from) {
+      if (from < 1) owe('animationstart', begin, origin + beforeActive);
+      if (to === 2) owe('animationend', finish, origin + activeAfter);
+    } else if (to < from) {
+      // taken back
+      if (from === 2) owe('animationstart', finish, this.now);
+      if (to === 0) owe('animationend', begin, this.now);
+    } else if (phase === 'active' && was && was.iteration !== iteration) {
+      owe(
+        'animationiteration',
+        iteration * duration,
+        origin + delay + iteration * duration,
+      );
+    }
+  }
+
+  /** A CSS animation's run cancelled before its end — no longer named, or
+   *  its element not displayed: `animationcancel`, with the active time it
+   *  had come to, where it had started and not ended (CSS Animations 2,
+   *  4.2). */
+  private _animationCancelled(el: object, pseudo: string, run: Running): void {
+    const was = this._runPhases.get(run);
+    if (!was || was.phase === 'after') return;
+    this._runPhases.delete(run);
+    const time = run.hold ?? this.now - run.start;
+    this._cssEvents.push({
+      el,
+      pseudo,
+      type: 'animationcancel',
+      name: run.name,
+      key: runKey(run),
+      at: this.now,
+      elapsed: Math.max(0, Math.min(time - was.delay, was.active)),
+    });
+    this.onCssEvent?.();
+  }
+
   /** The transition events owed since this was last asked, in order. */
-  takeTransitionEvents(): TransitionEventRecord[] {
-    const out = this._transitionEvents;
-    this._transitionEvents = [];
+  takeCssEvents(): CssEventRecord[] {
+    const out = this._cssEvents;
+    this._cssEvents = [];
     return out;
+  }
+
+  /**
+   * A page set where a CSS animation's time is (`CSSAnimation`'s
+   * `currentTime`): its run is held there where it is paused, and runs
+   * from there where it plays, restyled at the next frame. The element it
+   * is on, or null where no run under way has the key.
+   */
+  seekAnimation(
+    key: number,
+    currentTime: number,
+    paused = false,
+  ): object | null {
+    for (const [el, targets] of this._targets) {
+      for (const target of targets.values()) {
+        for (const run of target.running) {
+          if (!run || RUN_KEYS.get(run) !== key) continue;
+          // played again after a cancel, it starts over from there
+          run.pageCancelled = false;
+          run.pagePaused = paused;
+          if (paused || run.hold !== null) run.hold = currentTime;
+          else run.start = this.now - (run.trig?.rate ?? 1) * currentTime;
+          target.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** A page cancelled a CSS animation (`CSSAnimation.cancel()`):
+   *  `animationcancel`, and it draws nothing until the style names it
+   *  again. The element it is on, or null. */
+  cancelAnimation(key: number): object | null {
+    for (const [el, targets] of this._targets) {
+      for (const [pseudo, target] of targets) {
+        for (const run of target.running) {
+          if (!run || RUN_KEYS.get(run) !== key) continue;
+          this._animationCancelled(el, pseudo, run);
+          run.pageCancelled = true;
+          target.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** A page cancelled a CSS transition (`CSSTransition.cancel()`):
+   *  `transitioncancel`, and the property is at its end value. The element
+   *  it is on, or null. */
+  cancelTransition(key: number): object | null {
+    for (const [el, states] of this._transitions) {
+      for (const [pseudo, state] of states) {
+        for (const [field, run] of state.running) {
+          if (TRANSIT_KEYS.get(run) !== key) continue;
+          this._cancelled(el, pseudo, run);
+          state.running.delete(field);
+          state.completed.set(field, run.to);
+          state.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Whether an element has a CSS animation on the clock, of its own or
+   *  of a pseudo-element's, rather than on a scroll's timeline. */
+  animatesOnClock(el: object): boolean {
+    const targets = this._targets.get(el);
+    if (!targets) return false;
+    for (const target of targets.values()) if (target.clocked) return true;
+    return false;
   }
 
   /**
@@ -1331,13 +1559,26 @@ const PHASE_RANK: Record<TransitPhase, number> = {
 /** A CSS transition event owed the page (CSS Transitions 2, 6.1): its
  *  element and pseudo-element, its type, the longhand and the elapsed
  *  time, in milliseconds. */
-export interface TransitionEventRecord {
+export interface CssEventRecord {
   el: object;
   pseudo: string;
   type:
-    'transitionrun' | 'transitionstart' | 'transitionend' | 'transitioncancel';
-  property: string;
+    | 'transitionrun'
+    | 'transitionstart'
+    | 'transitionend'
+    | 'transitioncancel'
+    | 'animationstart'
+    | 'animationiteration'
+    | 'animationend'
+    | 'animationcancel';
+  /** The longhand a transition is of, or an animation's name. */
+  name: string;
   elapsed: number;
+  /** Its run's key, which `getAnimations()` knows its object by. */
+  key: number;
+  /** When on the timeline it was due, which orders the events of a frame
+   *  (Web Animations 1, 4.4.18, "update animations and send events"). */
+  at: number;
 }
 
 /** An element's transitions, or a pseudo-element's, by field. */
