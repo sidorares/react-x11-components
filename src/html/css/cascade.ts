@@ -53,7 +53,12 @@ import type {
   ContainerSize,
   ScrollStates,
 } from './containers.js';
-import { systemColorTable, usedColorScheme } from './color.js';
+import {
+  LIGHT_DARK,
+  lightDark,
+  systemColorTable,
+  usedColorScheme,
+} from './color.js';
 import {
   asciiLower,
   escapeEnd,
@@ -125,7 +130,12 @@ import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
-import { FIXED_SIZE, keywordFontSize, parseLength } from './values.js';
+import {
+  FIXED_SIZE,
+  keywordFontSize,
+  parseColor,
+  parseLength,
+} from './values.js';
 import {
   CustomProps,
   customProperties,
@@ -2786,8 +2796,13 @@ export class Cascade {
         if (style) counterStyles.set(style.name, style.rule);
       }
       // and a registration, so: the last valid one for a name
-      for (const { name, inherits, initial } of sheet.properties ?? []) {
-        (this._registered ??= new Map()).set(name, { inherits, initial });
+      for (const { name, inherits, initial, syntax } of sheet.properties ??
+        []) {
+        (this._registered ??= new Map()).set(name, {
+          inherits,
+          initial,
+          syntax,
+        });
       }
       // and a position option, the last of a name
       for (const { name, declarations } of sheet.positionTries ?? []) {
@@ -4088,6 +4103,13 @@ export class Cascade {
               }
             : null,
         );
+      },
+      (name) => this._registered?.get(name) ?? null,
+      (text) => {
+        const picked = LIGHT_DARK.test(text)
+          ? lightDark(text, style.colorScheme)
+          : text;
+        return picked === null ? null : parseColor(picked);
       },
     );
   }

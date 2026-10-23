@@ -680,6 +680,8 @@ test('an @container rule is a CSSContainerRule, its name and its query serialize
       'style(((--FOO: BAR)) and (--bar: foo))',
     ],
     ['style(100px  > --foo >10px)', 'style(100px > --foo > 10px)'],
+    // an escaped brace is part of a name, not the rule's block
+    ['style(--\\{foo: bar)', 'style(--\\{foo: bar)'],
   ];
   const doc = await hosted(
     '<p id="out">-</p><script>' +

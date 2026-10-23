@@ -71,6 +71,9 @@ const FOLD_DEPTH = 16;
 export interface Registration {
   inherits: boolean;
   initial: string | null;
+  /** The syntax it was registered with, which a style query compares
+   *  its values by (`styleQuery`). */
+  syntax?: string;
 }
 
 /**

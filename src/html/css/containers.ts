@@ -160,10 +160,21 @@ export function containerHolds(
    *  the container's custom properties (CSS Conditional 5, 3.3); absent,
    *  as written. */
   value?: (text: string) => string | null,
+  /** A custom property's registration, which a style feature compares
+   *  its values by. */
+  registered: (name: string) => {
+    syntax?: string;
+    initial: string | null;
+  } | null = () => null,
+  /** A colour as the container computes it, which a registered colour
+   *  is compared as. */
+  color: (text: string) => string | null = () => null,
 ): boolean {
   if (!query.condition) return true;
   const answer = evaluateCondition(query.condition, (fn, inner) => {
-    if (fn === 'style') return styleQuery(inner, custom, value);
+    if (fn === 'style') {
+      return styleQuery(inner, custom, value, length, registered, color);
+    }
     if (fn === 'scroll-state') {
       return scroll
         ? (scrollStateHolds(inner, scroll) ?? undefined)
