@@ -21061,11 +21061,17 @@ export function installDom(
       if (root.nodeType === 1) elements.unshift(root);
       withReactions(() => {
         for (const el of elements) {
-          if (registryOf(el) !== null) continue;
-          elementRegistries.set(el, this);
+          // one with no registry takes this one, and one this one already
+          // is is tried too; one of another registry is that one's
+          const was = registryOf(el);
+          if (was === null) elementRegistries.set(el, this);
+          else if (was !== this) continue;
           const custom = customOf.get(el);
           if (custom && custom.state !== 'undefined') continue;
-          const def = el.isConnected ? definitionFor(el) : null;
+          // "try to upgrade" (HTML 4.13.6): the definition this registry
+          // has for it, wherever the element is, connected or not
+          if (el.namespaceURI !== HTML_NS) continue;
+          const def = lookUp(this, el.localName, el.getAttribute('is'));
           if (def) enqueueUpgrade(el, def);
         }
       });
