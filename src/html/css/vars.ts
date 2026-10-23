@@ -31,7 +31,7 @@ export class CustomProps {
   /** Its own, where `null` is none over an inherited one (`initial`). */
   readonly own: Map<string, string | null>;
   readonly parent: CustomProps | null;
-  private readonly depth: number;
+  readonly depth: number;
 
   constructor(parent: CustomProps | null) {
     // a lookup walks the chain, so a long one is folded into one map

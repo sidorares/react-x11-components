@@ -37,7 +37,7 @@ import { parseUrl, readIdent, startsIdent } from './parse.js';
 import { decodesImageType } from '../image-types.js';
 import { pick } from '../srcset.js';
 import type { ImageSource } from '../srcset.js';
-import { closingParen } from './vars.js';
+import { closingParen, CustomProps } from './vars.js';
 import { validName } from './containers.js';
 import {
   parseContent,
@@ -46,7 +46,6 @@ import {
   parseQuotes,
 } from './content.js';
 import type { ContentItem, CounterChange } from './content.js';
-import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction, Turn } from './transform.js';
 import { parseFilter } from './filter.js';
@@ -8848,6 +8847,9 @@ export function sameValue(x: unknown, y: unknown): boolean {
     return Number.isNaN(x) && Number.isNaN(y);
   }
   if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+  if (x instanceof CustomProps && y instanceof CustomProps) {
+    return sameCustom(x, y);
+  }
   // a map has no keys of its own to compare, and any two came out the same
   if (x instanceof Map || y instanceof Map) {
     if (!(x instanceof Map && y instanceof Map) || x.size !== y.size) {
@@ -8865,6 +8867,37 @@ export function sameValue(x: unknown, y: unknown): boolean {
   if (keys.length !== Object.keys(b).length) return false;
   for (const key of keys) if (!sameValue(a[key], b[key])) return false;
   return true;
+}
+
+/**
+ * Two custom property sets the same, link for link, remembered by the pair:
+ * a set is made once and not changed after (`customProperties`), and the
+ * sets of a page share their chains, which a compare of every restyled
+ * element's style walked again and again — 150 ms of a load of Next.js's
+ * blog, whose elements each carry Tailwind's thirty-five (`_changedOutOfFlow`).
+ */
+const SAME_CUSTOM = new WeakMap<CustomProps, WeakMap<CustomProps, boolean>>();
+
+function sameCustom(a: CustomProps, b: CustomProps): boolean {
+  if (a === b) return true;
+  let row = SAME_CUSTOM.get(a);
+  const known = row?.get(b);
+  if (known !== undefined) return known;
+  let same = a.own.size === b.own.size && a.depth === b.depth;
+  if (same) {
+    for (const [name, value] of a.own) {
+      if (b.own.get(name) !== value || !b.own.has(name)) {
+        same = false;
+        break;
+      }
+    }
+  }
+  if (same && a.parent !== b.parent) {
+    same = !!a.parent && !!b.parent && sameCustom(a.parent, b.parent);
+  }
+  if (!row) SAME_CUSTOM.set(a, (row = new WeakMap()));
+  row.set(b, same);
+  return same;
 }
 
 /**
