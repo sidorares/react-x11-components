@@ -1501,7 +1501,13 @@ number once computed, so the cascade notes as a length is resolved which
 sides a style holds (`_viewportRead`, by the style, since a style is
 shared), and a move of that side styles again those elements, with
 `follow` (`viewportReaders`), and the root box, whose style is no
-element's. **Anything new that resolves a viewport unit outside a style's
+element's. They are restyled in place where that is all they need, as a
+hover is (`_restyleInPlace`, up to an eighth of the document), and the
+boxes are kept: a change only of ink, or of what nothing draws — under
+`display: none` before and after, which `_restyleInPlace` takes whatever
+the change is, since no box shows it. Node's API pages hold a hidden picker
+`max-width: 75vw`, and every step of a drag built the whole document's
+boxes for it. **Anything new that resolves a viewport unit outside a style's
 computation goes through `_queryViewportRead`**, as a container query's
 length does, which styles every element again: what reads it is no style
 the build can find. The viewport
