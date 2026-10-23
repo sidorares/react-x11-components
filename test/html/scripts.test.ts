@@ -2721,6 +2721,31 @@ test('initialize() upgrades, in tree order, what its registry defines, connected
   assert.strictEqual(doc.text('out'), 'a1|a2|true|b|true', doc.logs.join('\n'));
 });
 
+test("upgrade() upgrades its own registry's elements, and a copy of no registry keeps none until it is adopted", async () => {
+  // HTML 4.13.4: upgrade() leaves an element of another registry alone;
+  // DOM 4.5: a copy of a root written with no registry, and what is in
+  // it, have none, which a move inside the document keeps and an
+  // adoption into another replaces with that one's global registry
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="host"><template shadowrootmode="open" shadowrootclonable shadowrootcustomelementregistry><a-b></a-b></template></div>' +
+      '<script>' +
+      'var r = [], one = new CustomElementRegistry(), two = new CustomElementRegistry();' +
+      'var el = document.createElement("a-b", { customElementRegistry: one });' +
+      'one.define("a-b", class extends HTMLElement {});' +
+      'two.upgrade(el); r.push(el.matches(":defined"));' +
+      'one.upgrade(el); r.push(el.matches(":defined"));' +
+      'var ab = document.getElementById("host").cloneNode(true).shadowRoot.querySelector("a-b");' +
+      'document.body.append(ab); r.push(ab.customElementRegistry);' +
+      'var f = document.createElement("iframe"); document.body.append(f);' +
+      'f.contentDocument.body.append(ab);' +
+      'r.push(ab.customElementRegistry === f.contentWindow.customElements);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), 'false|true||true', doc.logs.join('\n'));
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +

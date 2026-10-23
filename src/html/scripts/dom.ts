@@ -4459,7 +4459,7 @@ export function installDom(
       return old;
     }
     cloneNode(deep = false): Any {
-      if (!registriesMatter || this.nodeType === 9) {
+      if (this.nodeType === 9 || !registriesMatterNow()) {
         return wrap(call('clone', this._id, !!deep));
       }
       return copyOf('clone', this, !!deep, null, this.ownerDocument);
@@ -11563,7 +11563,7 @@ export function installDom(
         if (made) return made;
       }
       const el = wrap(Number(call('create', 'element', name, this._id, ns)));
-      elementRegistries.set(el, registry);
+      pinRegistry(el, registry);
       return el;
     }
     /** An element in a namespace, its name a qualified one (DOM 4.5,
@@ -11612,7 +11612,7 @@ export function installDom(
       const el = wrap(
         Number(call('create', 'element', qualified, this._id, ns ?? '~')),
       );
-      elementRegistries.set(el, registry);
+      pinRegistry(el, registry);
       return el;
     }
     createTextNode(data: Any): Any {
@@ -11684,7 +11684,7 @@ export function installDom(
       }
       // a copy keeps its original's registry, and takes this one where
       // that is none (DOM 4.5, "clone a node")
-      if (given === undefined && !registriesMatter) {
+      if (given === undefined && !registriesMatterNow()) {
         return wrap(Number(call('import', idOf(node), deep, this._id)));
       }
       return copyOf('import', node, deep, given ?? own, this);
@@ -20367,6 +20367,15 @@ export function installDom(
    * `shadowrootcustomelementregistry`, until a page initializes one.
    */
   const elementRegistries = new WeakMap<Any, Any>();
+  /** The document an element of no registry had it in: adopted into
+   *  another, it takes that one's global registry (DOM 4.5, "adopt"),
+   *  where in its own it keeps none wherever it is put. */
+  const noneIn = new WeakMap<Any, Any>();
+  const pinRegistry = (el: Any, registry: Any): void => {
+    elementRegistries.set(el, registry);
+    if (registry === null) noneIn.set(el, el.ownerDocument);
+    else noneIn.delete(el);
+  };
   const shadowRegistries = new WeakMap<Any, Any>();
   /** A document's registry, where it is not this window's: one a page
    *  initialized it with, or its own window's. */
@@ -20405,6 +20414,12 @@ export function installDom(
    *  copy keeps its original's registry (`pinCopies`). Before, every
    *  element's is its document's, and a copy's would be the same. */
   let registriesMatter = false;
+  /** `registriesMatter`, asked of the parser as well: an element or a root
+   *  it made with no registry keeps none wherever it is moved, which only
+   *  a copy whose registries are pinned keeps too. */
+  const registriesMatterNow = (): boolean =>
+    registriesMatter ||
+    (registriesMatter = call('registriesParsedNull') === true);
   const isGlobalRegistry = (registry: Any): boolean =>
     !!registry && !registryStates.get(registry)?.scoped;
   /** What a copy is made with (DOM 4.5, "clone a node"): each element
@@ -20426,7 +20441,7 @@ export function installDom(
       if (a instanceof Element && b instanceof Element) {
         let registry = registryOf(a) ?? fallback;
         if (isGlobalRegistry(registry)) registry = globalOfDoc();
-        elementRegistries.set(b, registry);
+        pinRegistry(b, registry);
         const rootA = wrap(Number(call('shadowRoot', a._id, true)));
         const rootB = wrap(Number(call('shadowRoot', b._id, true)));
         if (rootA && rootB) {
@@ -20484,8 +20499,16 @@ export function installDom(
     if (now === registry) return registry;
     return now && !registryStates.get(now)?.scoped ? now : null;
   };
-  const registryOf = (el: Any): Any =>
-    adoptedRegistry(pinnedRegistryOf(el), el.ownerDocument);
+  const registryOf = (el: Any): Any => {
+    const pinned = pinnedRegistryOf(el);
+    if (pinned !== null) return adoptedRegistry(pinned, el.ownerDocument);
+    const was = noneIn.get(el);
+    if (!was || was === el.ownerDocument) return null;
+    const now = documentRegistryOf(el.ownerDocument);
+    const registry = isGlobalRegistry(now) ? now : null;
+    pinRegistry(el, registry);
+    return registry;
+  };
   /** The registry an element was made with. What the parser made has
    *  its intended parent's (HTML 13.2.6.1, "create an element for a
    *  token"), its parent's here, and none where it wrote
@@ -20522,7 +20545,7 @@ export function installDom(
             );
       break;
     }
-    if (keep) for (const at of chain) elementRegistries.set(at, registry);
+    if (keep) for (const at of chain) pinRegistry(at, registry);
     return registry;
   };
   /** A registry an element, a shadow root or an import is given (DOM 4.5,
@@ -20755,7 +20778,7 @@ export function installDom(
         Number(call('create', 'element', def.localName, document._id, '')),
       );
       Object.setPrototypeOf(el, target.prototype);
-      elementRegistries.set(el, registry);
+      pinRegistry(el, registry);
       customOf.set(el, { state: 'custom', def, queue: [], internals: null });
       call('ceDefined', el._id);
       return el;
@@ -20817,13 +20840,13 @@ export function installDom(
           Number(call('create', 'element', local, document._id, '')),
         );
         Object.setPrototypeOf(el, HTMLUnknownElement.prototype);
-        elementRegistries.set(el, registry);
+        pinRegistry(el, registry);
         customFor(el).state = 'failed';
         return el;
       }
     }
     const el = wrap(Number(call('create', 'element', local, document._id, '')));
-    elementRegistries.set(el, registry);
+    pinRegistry(el, registry);
     try {
       upgrade(el, def);
     } catch (error) {
@@ -21064,7 +21087,7 @@ export function installDom(
           // one with no registry takes this one, and one this one already
           // is is tried too; one of another registry is that one's
           const was = registryOf(el);
-          if (was === null) elementRegistries.set(el, this);
+          if (was === null) pinRegistry(el, this);
           else if (was !== this) continue;
           const custom = customOf.get(el);
           if (custom && custom.state !== 'undefined') continue;
@@ -21084,6 +21107,8 @@ export function installDom(
       withReactions(() => {
         for (const found of idList(call('ceCandidates', id))) {
           const el = wrap(found);
+          // an element of another registry is that registry's to upgrade
+          if (registryOf(el) !== this) continue;
           const custom = customOf.get(el);
           if (custom && custom.state !== 'undefined') continue;
           const def = definitionFor(el);

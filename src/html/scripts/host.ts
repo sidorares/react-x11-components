@@ -57,6 +57,7 @@ import {
   setMediaFlag,
   setPaused,
   markCustomized,
+  parsedNullRegistries,
   parsedWithNullRegistry,
   setModal,
   setPopoverOpen,
@@ -2264,6 +2265,9 @@ export class DomHost {
       // registries are kept by
       case 'shadowRegistryNull':
         return (this._node(a) as ShadowRoot).registryNull;
+      // whether the parser has made an element or a root of no registry
+      case 'registriesParsedNull':
+        return parsedNullRegistries();
       // whether an element has no registry where its parent would give it
       // one: the parser wrote it with `customelementregistry` (true), or
       // it is a top element of a template's contents, whose document has
