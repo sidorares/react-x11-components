@@ -5803,6 +5803,68 @@ metric(
   },
 );
 
+test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +
+      ' html:active-view-transition-type(none) #x, html:active-view-transition-type(-ua-a) #x { color: rgb(255, 0, 0) }' +
+      ' html:active-view-transition-type(b) #x { color: rgb(0, 0, 255) }</style></head><body>' +
+      '<p id="x">x</p><p id="out"></p><script>' +
+      'var r = [], html = document.documentElement, x = document.getElementById("x");' +
+      'function m() { return [html.matches(":active-view-transition"), html.matches(":active-view-transition-type(a)"),' +
+      '  html.matches(":active-view-transition-type(c, b)"), x.matches(":active-view-transition")].join(","); }' +
+      'r.push(m());' +
+      'var t = document.startViewTransition({ update: function () {}, types: ["a"] });' +
+      'r.push(m(), getComputedStyle(x).color);' +
+      't.types.add("b");' +
+      'r.push(m(), getComputedStyle(x).color);' +
+      't.finished.then(function () {' +
+      '  r.push(m(), getComputedStyle(x).color);' +
+      '  document.getElementById("out").textContent = r.join("|"); });' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false,false,false,false|true,true,false,false|rgb(0, 0, 0)|' +
+      'true,true,true,false|rgb(0, 0, 255)|false,false,false,false|rgb(0, 0, 0)',
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  "a script animates a view transition's pseudo-element by its name, which keeps the transition going",
+  async () => {
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { width: 40px; height: 40px; background: rgb(0, 128, 0); contain: paint;' +
+        '   view-transition-name: a }' +
+        ' html::view-transition-group(*), html::view-transition-image-pair(*),' +
+        ' html::view-transition-old(*), html::view-transition-new(*) { animation: unset }' +
+        ' html::view-transition-group(root) { opacity: 0 }</style></head><body>' +
+        '<div id="a"></div><p id="out" style="margin-top: 100px"></p><script>' +
+        'var t;' +
+        'requestAnimationFrame(function () {' +
+        '  t = document.startViewTransition(function () {' +
+        '    requestAnimationFrame(function () {' +
+        '      document.documentElement.animate({ transform: ["translate(100px)", "translate(100px)"] },' +
+        '        { duration: 10000, pseudoElement: "::view-transition-group( a" });' +
+        '      requestAnimationFrame(function () { document.getElementById("out").textContent = "moved"; });' +
+        '    });' +
+        '  });' +
+        '});' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'moved');
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = (x: number, y: number) => colourAt(doc, abs.x + x, abs.y + y);
+    // the group, which its own animations leave where its element is, is
+    // where the script's puts it; and the page under the root's hidden
+    // group, the element in it among it, is not drawn
+    assert.equal(await at(110, 10), '#008000', 'the group, moved');
+    assert.equal(await at(10, 10), '#ffffff', 'and nothing where it was');
+  },
+);
+
 test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
   const doc = await hosted(
     '<p id="out"></p><style id="s"></style><script>' +

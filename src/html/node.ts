@@ -3456,11 +3456,27 @@ export class HtmlViewNode extends Node {
       animationClock.now(),
     );
     if (!touched.length) return;
+    // a view transition's pseudo-element is styled as its tree is built,
+    // on the transition's timeline
+    if (touched.some((pseudo) => pseudo.startsWith('view-transition'))) {
+      if (this._vt?.phase === 'live') {
+        this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+        this.invalidateMeasure('content');
+        this.invalidate(true, this, 'props');
+      }
+      if (touched.every((pseudo) => pseudo.startsWith('view-transition'))) {
+        return;
+      }
+    }
     if (!this._animating()) {
       this._invalidate(Stale.Boxes, new Set([element]), true);
       return;
     }
-    for (const pseudo of touched) this._timeline.oweScripts(element, pseudo);
+    for (const pseudo of touched) {
+      if (!pseudo.startsWith('view-transition')) {
+        this._timeline.oweScripts(element, pseudo);
+      }
+    }
     this._scheduleFrame();
   }
 
@@ -8555,7 +8571,7 @@ export class HtmlViewNode extends Node {
     this._sprites?.clear();
     this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
     this.invalidateMeasure('content');
-    this.invalidate(true, this, 'view-transition');
+    this.invalidate(true, this, 'props');
     return '';
   }
 
@@ -8575,7 +8591,7 @@ export class HtmlViewNode extends Node {
       this._sprites?.clear();
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
       this.invalidateMeasure('content');
-      this.invalidate(true, this, 'view-transition');
+      this.invalidate(true, this, 'props');
     }
   }
 
@@ -8617,7 +8633,7 @@ export class HtmlViewNode extends Node {
         if (this._vt !== run || this.destroyed) return;
         this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
         this.invalidateMeasure('content');
-        this.invalidate(true, this, 'view-transition');
+        this.invalidate(true, this, 'props');
       },
       Math.max(1, next - animationClock.now()),
     );

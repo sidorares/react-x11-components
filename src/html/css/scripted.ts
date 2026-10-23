@@ -35,7 +35,17 @@ import type { Sample } from './timeline.js';
 
 /** Which of an element's boxes an animation is of: its own, or its
  *  `::before`'s or `::after`'s (`KeyframeEffect.pseudoElement`). */
-export type ScriptPseudo = '' | 'before' | 'after';
+export type ScriptPseudo =
+  | ''
+  | 'before'
+  | 'after'
+  // one of a view transition's, by its key (`HtmlViewNode._transitionTree`)
+  | `view-transition${string}`;
+
+/** A view transition's pseudo-element as an effect names it: the tree's
+ *  root, or a part and its name. */
+const TRANSITION_PSEUDO =
+  /^view-transition(?:-(?:group|image-pair|old|new)\([^()\s]+\))?$/;
 
 /** A script animation's effect timing (Web Animations 1, 4.11), checked:
  *  a `fill` of `auto` is `none` for a keyframe effect, and a duration of
@@ -189,7 +199,12 @@ export function readEffect(
   }
   if (!Array.isArray(given) || given.length !== 3) return null;
   const [p, f, t] = given as unknown[];
-  const pseudo = p === 'before' || p === 'after' ? p : p === '' ? '' : null;
+  const pseudo =
+    p === 'before' || p === 'after' || p === ''
+      ? p
+      : typeof p === 'string' && TRANSITION_PSEUDO.test(p)
+        ? (p as ScriptPseudo)
+        : null;
   if (pseudo === null || !Array.isArray(f) || !Array.isArray(t)) return null;
   const timing = readTiming(t);
   if (!timing) return null;

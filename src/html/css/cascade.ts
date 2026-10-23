@@ -30,6 +30,7 @@ import {
   isDefinedElement,
   isElement,
   isInputButton,
+  inActiveTransition,
   isModal,
   isPopoverOpen,
   isMuted,
@@ -1818,6 +1819,10 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   open: ['a:open'],
   closed: ['a:open'],
   'popover-open': ['a:popover', 'a:-rx-popover-open'],
+  // a view transition begun, ended or given other types, which the script
+  // engine tells as a change of this attribute nothing has (`vtActive`)
+  'active-view-transition': ['a:-rx-view-transition'],
+  'active-view-transition-type': ['a:-rx-view-transition'],
   muted: ['a:muted', 'a:-rx-muted'],
   'volume-locked': [],
   playing: ['a:autoplay', 'a:-rx-paused'],
@@ -6533,6 +6538,18 @@ const PSEUDOS = {
   modal: (el: Element) => isModal(el),
   // a popover a page's scripts showed (`isPopoverOpen`)
   'popover-open': (el: Element) => isPopoverOpen(el),
+  // the root while a view transition is active, and of one of the types
+  // named (CSS View Transitions 1, 3.3; 2, 3.3), which are case-sensitive
+  'active-view-transition': (el: Element) => inActiveTransition(el),
+  'active-view-transition-type': (el: Element, types: string | null) =>
+    !!types &&
+    inActiveTransition(
+      el,
+      types
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
+    ),
   // a media element muted, by its attribute or a page's script (`isMuted`)
   muted: (el: Element) => isMuted(el),
   'volume-locked': (_el: Element) => false,

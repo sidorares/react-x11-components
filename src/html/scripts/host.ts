@@ -40,7 +40,9 @@ import {
   isCustomized,
   assignedSlot,
   isDefinedElement,
+  inActiveTransition,
   isModal,
+  setActiveTransition,
   isPopoverOpen,
   isMuted,
   isPaused,
@@ -2734,6 +2736,26 @@ export class DomHost {
       case 'vtEnd':
         this._seams.handle.transitionEnd?.();
         return null;
+      // a view transition active with its types, `\u0000`-joined — or,
+      // given null, none: what `:active-view-transition` matches the root
+      // by, told as a change of an attribute nothing has
+      case 'vtActive': {
+        const root = DomUtils.findOne(
+          () => true,
+          this.document.children,
+          false,
+        );
+        const types =
+          typeof b === 'string' ? (b ? b.split('\u0000') : []) : null;
+        if (setActiveTransition(this.document, types) && root) {
+          this._tell(root, {
+            type: 'attributes',
+            target: root,
+            attributeName: '-rx-view-transition',
+          });
+        }
+        return null;
+      }
       // the names a view transition would capture elements by, where two
       // elements have one: what skips it (CSS View Transitions 1, 7.3)
       case 'transitionNames': {
@@ -3609,6 +3631,16 @@ export class DomHost {
       state: (_el, _name) => false,
       modal: (el) => isModal(el),
       'popover-open': (el) => isPopoverOpen(el),
+      'active-view-transition': (el) => inActiveTransition(el),
+      'active-view-transition-type': (el, types) =>
+        !!types &&
+        inActiveTransition(
+          el,
+          String(types)
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean),
+        ),
       muted: (el) => isMuted(el),
       playing: (el) => isPaused(el) === false,
       paused: (el) => isPaused(el) === true,

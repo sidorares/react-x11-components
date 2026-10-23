@@ -930,7 +930,15 @@ until its animations are over, when it is finished.
   captured, the canvas is too.
 - **Timing.** The tree's animations run on a timeline of their own, and the
   transition is finished once they are all over, which one paused or
-  without end never is.
+  without end never is. A page's own animation of a pseudo-element —
+  `animate()` with a `pseudoElement` of `::view-transition-group(name)`,
+  its argument trimmed and its parenthesis closed as CSS reads it — is
+  drawn over the tree's, and keeps the transition going while it runs or
+  is paused, asked at the end of a frame, after its callbacks.
+- **`:active-view-transition`** matches the root element while a transition
+  is active, and `:active-view-transition-type()` while it is of one of the
+  types named, as its `types` change; a type named `none` or starting
+  `-ua-` makes the selector none.
 - **Skipping.** `updateCallbackDone`, `ready` and `finished` settle in the
   specification's order. A transition is skipped by one started while it is
   active, by two elements sharing a name, by an update that throws or never
@@ -938,8 +946,8 @@ until its animations are over, when it is finished.
 - **Elsewhere.** `types` is a set of strings, and
   `document.activeViewTransition` is the one running.
 - **Not yet.** The tree's styles in `getComputedStyle()`, its animations in
-  `getAnimations()`, `:active-view-transition`, rendering held while the
-  update runs, and transitions across documents.
+  `getAnimations()`, rendering held while the update runs, and transitions
+  across documents.
 
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their

@@ -1193,6 +1193,16 @@ function isSelector(s: string): boolean {
  */
 function argumentFits(name: string, argument: string): boolean {
   if (name.startsWith('-')) return true;
+  // a list of a transition's types, each a name of the page's: neither
+  // `none` nor the user agent's `-ua-` (CSS View Transitions 2, 3.3)
+  if (name === 'active-view-transition-type') {
+    return argument.split(',').every((type) => {
+      const t = type.trim();
+      if (!startsIdent(t, 0) || identEnd(t, 0) !== t.length) return false;
+      const lower = asciiLower(readIdent(t, 0).value);
+      return lower !== 'none' && !lower.startsWith('-ua-');
+    });
+  }
   if (NEEDS_ARGUMENT.has(name)) {
     return name === 'is' || name === 'where' || /\S/.test(argument);
   }
@@ -1206,6 +1216,7 @@ export function asciiLower(name: string): string {
 
 /** The pseudo-classes that are functions, and are nothing without it. */
 const NEEDS_ARGUMENT = new Set([
+  'active-view-transition-type',
   'contains',
   'dir',
   'has',
@@ -1323,6 +1334,9 @@ const PSEUDO_CLASSES = new Set([
   'local-link',
   'matches',
   'modal',
+  // a view transition's (CSS View Transitions 1, 3.3; 2, 3.3)
+  'active-view-transition',
+  'active-view-transition-type',
   'muted',
   'not',
   'nth-child',

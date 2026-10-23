@@ -506,8 +506,12 @@ export interface PaintOptions {
   noCanvas?: boolean;
   /** The boxes of the elements a view transition captured (CSS View
    *  Transitions 1, 3.5): each is drawn in its image in the transition's
-   *  tree, it and all it holds, and is a hole where it is laid out. */
+   *  tree, it and all it holds, and is a hole where it is laid out — a
+   *  layer in it that a context outside it paints too. */
   captured?: ReadonlySet<Box> | null;
+  /** @internal The box a capture paints (`paintCapture`), which the
+   *  boxes around it do not leave out of it. */
+  captureTop?: Box | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal What a box with a `backdrop-filter` paints what is behind
@@ -1152,6 +1156,7 @@ export function paintCapture(
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
     backdrop,
+    captureTop: box,
   };
   paintBox(ctx, box, painted);
   // the bars of the scroll containers in it, over it, as the document's
@@ -1173,11 +1178,13 @@ export type TransitionDraw = (
 ) => void;
 
 /** Whether a box is in one a view transition captured
- *  (`PaintOptions.captured`). */
+ *  (`PaintOptions.captured`), short of the box a capture paints. */
 function capturedAround(box: Box, options: PaintOptions): boolean {
   const captured = options.captured;
   if (!captured?.size) return false;
-  for (let at = box.parent; at; at = at.parent) {
+  const top = options.captureTop;
+  if (box === top) return false;
+  for (let at = box.parent; at && at !== top; at = at.parent) {
     if (captured.has(at)) return true;
   }
   return false;
@@ -1785,6 +1792,11 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
+  // a layer a context outside a captured element paints, which is in the
+  // element's image
+  if (options.captured?.size && box.pseudo !== 'view-transition') {
+    if (capturedAround(box, options)) return;
+  }
   // An element under full opacity is painted whole, as the group it is
   // (it is a stacking context, CSS Color 4 3.2; `layered`): at
   // 0 not at all — the control a page keeps invisible until its row is
@@ -1875,6 +1887,13 @@ function paintTransformed(
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
+  ) {
+    return;
+  }
+  if (
+    options.captured?.size &&
+    box.pseudo !== 'view-transition' &&
+    capturedAround(box, options)
   ) {
     return;
   }
