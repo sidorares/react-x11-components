@@ -2189,6 +2189,20 @@ closes a way out a DOM binding opens by accident:
   its case wherever the facade carries one: `el.style` lowercased
   `--brand-Tabs-slider-width`, a property Primer's sheet never reads, and
   the pill came out as wide as its borders.
+- **The facade runs in the page's realm, so its own work calls what a page
+  replaced, and an op that only reads moves no count.** `opEpoch` counts
+  the ops that may change a computed style (`getComputedStyle`'s cache) or
+  the document a frame holds (`frameDocumentOf`'s): a read — `computed`,
+  `customProperty`, `frameDocument` — leaves it, or a page that reads
+  between two reads of a style has the whole style read again. And a
+  builtin the facade calls on a path a page runs in a loop is one the page
+  may have put its own hand in: the Guardian's ad wrapper replaces
+  `String.prototype.replace` and reads every frame's window from it, and
+  `getComputedStyle` made each property's name with `replace`, so each read
+  of a style ran the wrapper hundreds of times, each frame read moved the
+  count, and the next read read the style again — 17.7 million ops in a
+  load. **Anything new on such a path keeps what it works out** (`camel`
+  does) rather than asking the page's builtins again.
 - **Nothing the runtime settles from a task of its own may be a page's
   promise.** The context runs its microtasks only when the engine enters
   it (`afterEvaluate`), so a promise V8 resolves from a platform task —

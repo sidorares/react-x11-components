@@ -37,7 +37,8 @@
 // What each line holds, times in milliseconds:
 //   load.first   the source handed over to the first frame that drew the
 //                document; load.settle to the last frame of its arrivals,
-//                nothing painted for 300 ms after
+//                nothing painted for 300 ms after — and with SCRIPTS=1,
+//                after the document's `load`, nothing arriving for 1.5 s
 //   *.cpu        this process's processor time over the step
 //   *.gc         the collector's time over it (GCProfiler), *.majors its
 //                mark-compacts, *.alloc megabytes allocated
@@ -400,6 +401,17 @@ const PALETTE = {
 
 let pending = 0;
 let lastArrival = 0;
+/** When the document's `load` was told (`onLoaded`), 0 until it is: with
+ *  its scripts on, a page settles only after it, since a page whose first
+ *  frame is long, and whose scripts' engine is still loading, is quiet for
+ *  300 ms before anything of its scripts has run. */
+let loadedAt = 0;
+/** How long nothing may arrive before a page is settled, beside 300 ms
+ *  with no frame: with its scripts on, longer, since a page's ad and
+ *  analytics scripts start on a timer after `load` — the Guardian's header
+ *  bidding a second after it. A page with nothing late pays only the wait:
+ *  `settle` is its last frame, and the processor time is the work done. */
+const QUIET_MS = SCRIPTS ? 1500 : 300;
 const pane = { current: null };
 let mounts = 0;
 function view(doc, width = W) {
@@ -447,6 +459,9 @@ function view(doc, width = W) {
                   }
                 : false,
               onResource,
+              onLoaded: () => {
+                loadedAt = performance.now();
+              },
               style: { flexGrow: 1 },
             })
           : null,
@@ -494,6 +509,7 @@ const countBoxes = (box) => {
  *  painted for 300 ms. */
 async function load(doc, name) {
   pending = 0;
+  loadedAt = 0;
   mounts += 1;
   const stop = await costOf(name);
   root.render(view(doc));
@@ -502,7 +518,11 @@ async function load(doc, name) {
     await wait(25);
     const since = frames.length > 0 ? frames[frames.length - 1].end : 0;
     const now = performance.now();
-    if (pending === 0 && now - Math.max(since, lastArrival) > 300) break;
+    // a frame a caret's blink paints is no news; an arrival, or the load,
+    // may be the start of what a page's scripts do next
+    const quiet =
+      now - since > 300 && now - Math.max(lastArrival, loadedAt) > QUIET_MS;
+    if (pending === 0 && quiet && (!SCRIPTS || loadedAt > 0)) break;
     if (now > deadline) break;
   }
   const { from, t0, step } = await stop();

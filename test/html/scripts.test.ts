@@ -2849,6 +2849,35 @@ test('a computed style is live: it answers what the element is styled now', asyn
   );
 });
 
+test('a computed style read again calls none of the String methods a page replaced, and a frame read between reads reads it no more', async () => {
+  // The Guardian's ad wrapper replaces `String.prototype.replace` and reads
+  // every frame's window from it. `getComputedStyle` made each property's
+  // name with it, and a frame's window read counted as a change, so every
+  // read of the style read all of it again: 17.7 million ops in a load.
+  const doc = await hosted(
+    '<p id="out"></p><div id="d" style="width: 10px"></div><iframe id="f"></iframe><script>' +
+      'var d = document.getElementById("d"), f = document.getElementById("f");' +
+      'getComputedStyle(d).width;' +
+      'var calls = 0, own = String.prototype.replace;' +
+      'String.prototype.replace = function () { calls++; f.contentWindow.document; return own.apply(this, arguments); };' +
+      'var cs = getComputedStyle(d), w = [];' +
+      'for (var i = 0; i < 50; i++) { w.push(cs.getPropertyValue("width")); f.contentWindow.location; }' +
+      'var during = calls;' +
+      'd.style.width = "20px"; w.push(cs.width);' +
+      'String.prototype.replace = own;' +
+      // and the frame's document follows the frame: taken out, put back in
+      'var was = f.contentDocument; f.remove(); var gone = f.contentDocument;' +
+      'document.body.appendChild(f);' +
+      'document.getElementById("out").textContent = [during < 5, w[0], w[49], w[50], was !== null, gone, f.contentDocument !== null].join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'true|10px|10px|20px|true||true',
+    doc.logs.join('\n'),
+  );
+});
+
 test("an element's internals reach its shadow root, closed or open, where the page cannot", async () => {
   const doc = await hosted(
     '<p id="out"></p><x-h id="h"><template shadowrootmode="closed"><b>in</b></template></x-h><script>' +
