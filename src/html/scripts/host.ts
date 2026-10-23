@@ -901,6 +901,52 @@ export function cssRulesOf(css: string): string[] {
   return out;
 }
 
+/** How a fragment is serialized (HTML 8.5.2): an empty attribute's value
+ *  written, `disabled=""`, as a browser writes it. */
+const SERIALIZE = { emptyAttrs: true } as const;
+
+/**
+ * A copy of what a node holds, each shadow tree in it that `getHTML()`
+ * writes put first in its host as the `<template shadowrootmode>` that
+ * would make it again (HTML 8.5.2, "serializing HTML fragments"): one that
+ * is serializable where `serializable`, and one `listed` either way.
+ */
+function withShadowTemplates(
+  node: ParentNode,
+  serializable: boolean,
+  listed: ReadonlySet<AnyNode>,
+  /** The shadow roots whose custom element registry is not their host
+   *  document's, which the page's realm knows: written with
+   *  `shadowrootcustomelementregistry`. */
+  ownRegistry: ReadonlySet<AnyNode>,
+): ParentNode {
+  const shadowOf = (el: Element): ChildNode | null => {
+    const root = shadowRootOf(el);
+    if (!root || !((serializable && root.serializable) || listed.has(root))) {
+      return null;
+    }
+    const attribs: Record<string, string> = { shadowrootmode: root.mode };
+    if (root.delegatesFocus) attribs.shadowrootdelegatesfocus = '';
+    if (root.serializable) attribs.shadowrootserializable = '';
+    if (root.clonable) attribs.shadowrootclonable = '';
+    if (ownRegistry.has(root)) attribs.shadowrootcustomelementregistry = '';
+    return new Element('template', attribs, root.children.map(copy));
+  };
+  const copy = (child: ChildNode): ChildNode => {
+    if (!(child instanceof Element)) return child.cloneNode(false) as ChildNode;
+    const kids = child.children.map(copy);
+    const shadow = shadowOf(child);
+    return new Element(
+      child.name,
+      { ...child.attribs },
+      shadow ? [shadow, ...kids] : kids,
+    );
+  };
+  const kids = node.children.map(copy);
+  const shadow = node instanceof Element ? shadowOf(node) : null;
+  return new Document(shadow ? [shadow, ...kids] : kids);
+}
+
 /** A `<style>`'s rules as CSSOM has them (`sheetRules`), and which edit of
  *  them this is, so the page asks for them again only when they change. */
 interface SheetState {
@@ -1509,24 +1555,41 @@ export class DomHost {
     return clone;
   }
 
+  /** A deep copy of a child: a clone's, or a template content's with
+   *  every shadow root in it (`_cloneShadows`'s `every`). */
+  private _copyOf(child: ChildNode, every: boolean): ChildNode {
+    if (!every) return this._clone(child, true);
+    const copy = child.cloneNode(true) as ChildNode;
+    this._cloneShadows(child, copy, true, true);
+    return copy;
+  }
+
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
    *  whose shadow root is clonable gives its copy a root of the same kind
    *  and a copy of the tree in it, whether or not the clone is deep, and
-   *  a deep clone does so for every host in what it copies. */
-  private _cloneShadows(node: AnyNode, copy: AnyNode, deep: boolean): void {
+   *  a deep clone does so for every host in what it copies. `every` is a
+   *  template's content, which stands for what the template's children
+   *  are and so takes every root as it is, clonable or not. */
+  private _cloneShadows(
+    node: AnyNode,
+    copy: AnyNode,
+    deep: boolean,
+    every = false,
+  ): void {
     if (node instanceof Element && copy instanceof Element) {
       const root = shadowRootOf(node);
-      if (root?.clonable && !shadowRootOf(copy)) {
+      if (root && (every || root.clonable) && !shadowRootOf(copy)) {
         const made = attachShadow(copy, {
           mode: root.mode,
           delegatesFocus: root.delegatesFocus,
-          clonable: true,
+          clonable: root.clonable,
           serializable: root.serializable,
         });
         if (made) {
           made.registryNull = root.registryNull;
+          if (every) made.declarative = root.declarative;
           for (const child of root.children) {
-            DomUtils.appendChild(made, this._clone(child, true));
+            DomUtils.appendChild(made, this._copyOf(child, every));
           }
         }
       }
@@ -1535,7 +1598,7 @@ export class DomHost {
     const from = (node as { children?: AnyNode[] }).children ?? [];
     const to = (copy as { children?: AnyNode[] }).children ?? [];
     for (let i = 0; i < from.length && i < to.length; i += 1) {
-      this._cloneShadows(from[i], to[i], true);
+      this._cloneShadows(from[i], to[i], true, every);
     }
   }
 
@@ -2085,7 +2148,16 @@ export class DomHost {
       // document again at the next flush, as a new tree to draw
       case 'attachShadow': {
         const host = this._element(a);
-        if (shadowRootOf(host)) {
+        const mode = b === 'closed' ? 'closed' : 'open';
+        const current = shadowRootOf(host);
+        // a declarative root is the script's to take, emptied, where it
+        // asks for its mode (DOM 4.9, "attach a shadow root", step 4)
+        if (current?.declarative && current.mode === mode) {
+          this._replaceAll(current, []);
+          current.declarative = false;
+          return this.idOf(current);
+        }
+        if (current) {
           throw new DomError(
             'NotSupportedError',
             "Failed to execute 'attachShadow' on 'Element': Shadow root cannot be created on a host which already hosts a shadow tree.",
@@ -2093,7 +2165,7 @@ export class DomHost {
         }
         const [clonable, serializable] = text(d).split(',');
         const root = attachShadow(host, {
-          mode: b === 'closed' ? 'closed' : 'open',
+          mode,
           delegatesFocus: c === true,
           clonable: clonable === '1',
           serializable: serializable === '1',
@@ -2291,7 +2363,28 @@ export class DomHost {
       // --- markup
       case 'html': {
         const node = this._node(a);
-        return b ? DomUtils.getOuterHTML(node) : DomUtils.getInnerHTML(node);
+        // an attribute with no value written `=""`, as HTML's fragment
+        // serialization writes every one (HTML 8.5.2)
+        return b
+          ? DomUtils.getOuterHTML(node, SERIALIZE)
+          : DomUtils.getInnerHTML(node, SERIALIZE);
+      }
+      // `getHTML()` (HTML 8.5.2): what a node holds, with the shadow trees
+      // it asks for written as the declarative templates that make them —
+      // the serializable ones where `b`, and those `c` lists
+      case 'getHTML': {
+        const node = this._node(a) as ParentNode;
+        const nodes = (list: string) =>
+          new Set<AnyNode>(
+            list
+              .split(',')
+              .filter(Boolean)
+              .map((id) => this._node(Number(id))),
+          );
+        return DomUtils.getInnerHTML(
+          withShadowTemplates(node, b === true, nodes(text(c)), nodes(text(d))),
+          SERIALIZE,
+        );
       }
       case 'setHtml': {
         const parent = this._parent(a);
@@ -2325,7 +2418,7 @@ export class DomHost {
         if (fragment === undefined) {
           const template = this._element(a);
           const holder = new Document(
-            template.children.map((k) => k.cloneNode(true) as ChildNode),
+            template.children.map((kid) => this._copyOf(kid, true)),
           );
           for (const kid of holder.children) kid.parent = holder;
           this._templateContents.add(holder);

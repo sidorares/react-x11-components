@@ -4569,6 +4569,59 @@ export function installDom(
     }
   }
   Object.defineProperty(DocumentFragment.prototype, 'nodeType', nodeTypeOf(11));
+  /** `getHTML()` (HTML 8.5.2): what a node holds, with its shadow trees
+   *  written as the declarative templates that make them — the
+   *  serializable ones where `serializableShadowRoots`, and those
+   *  `shadowRoots` lists. */
+  const getHTML = (node: Any, options: Any): string => {
+    if (
+      options !== undefined &&
+      options !== null &&
+      typeof options !== 'object'
+    ) {
+      throw new TypeError(
+        "Failed to execute 'getHTML': The provided value is not of type 'GetHTMLOptions'.",
+      );
+    }
+    const roots: Any[] = options?.shadowRoots ?? [];
+    // the shadow roots in it written with `shadowrootcustomelementregistry`
+    // (HTML 8.5.2), closed ones too: one whose registry is scoped, and one
+    // with none where its host's document has one
+    const own: number[] = [];
+    const visit = (at: Any): void => {
+      const elements = [
+        ...(at instanceof Element ? [at] : []),
+        ...Array.from(at.querySelectorAll('*') as ArrayLike<Any>),
+      ];
+      for (const el of elements) {
+        const id = Number(call('shadowRoot', el._id, true));
+        const root = id ? wrap(id) : null;
+        if (!root) continue;
+        const registry = shadowRegistryOf(root);
+        if (
+          registry === null
+            ? documentRegistryOf(el.ownerDocument) !== null
+            : !!registryStates.get(registry)?.scoped
+        ) {
+          own.push(id);
+        }
+        visit(root);
+      }
+    };
+    visit(node);
+    return String(
+      call(
+        'getHTML',
+        node._id,
+        !!options?.serializableShadowRoots,
+        Array.from(roots as ArrayLike<Any>)
+          .map((root) => root?._id)
+          .filter(Boolean)
+          .join(','),
+        own.join(','),
+      ),
+    );
+  };
   class ShadowRoot extends DocumentFragment {
     get host(): Any {
       return wrap(Number(call('shadowHost', this._id)));
@@ -4597,6 +4650,9 @@ export function installDom(
     set innerHTML(v: Any) {
       call('setHtml', this._id, v === null ? '' : str(v));
       upgradeParsed(this);
+    }
+    getHTML(options?: Any): string {
+      return getHTML(this, options);
     }
     setHTMLUnsafe(html: Any): void {
       call('setHtml', this._id, str(html), true);
@@ -5193,6 +5249,9 @@ export function installDom(
       call('setHtml', this._id, v === null ? '' : str(v));
       upgradeParsed(this);
     }
+    getHTML(options?: Any): string {
+      return getHTML(this, options);
+    }
     setHTMLUnsafe(html: Any): void {
       call('setHtml', this._id, str(html), true);
       upgradeParsed(this);
@@ -5436,6 +5495,9 @@ export function installDom(
       // named (HTML 4.13.4, scoped registries)
       const own = this.ownerDocument === document ? customElements : null;
       const given = registryGiven(init, own, 'attachShadow');
+      // a declarative root the call takes back keeps its registry (DOM
+      // 4.9, "attach a shadow root", step 4)
+      const had = Number(call('shadowRoot', this._id, true)) !== 0;
       const root = wrap(
         Number(
           call(
@@ -5447,7 +5509,14 @@ export function installDom(
           ),
         ),
       );
-      shadowRegistries.set(root, given === undefined ? own : given);
+      if (!had) {
+        shadowRegistries.set(
+          root,
+          given === undefined
+            ? initializedRegistryOf(this.ownerDocument, own)
+            : given,
+        );
+      }
       return root;
     }
     get shadowRoot(): Any {
@@ -11313,7 +11382,8 @@ export function installDom(
           : '~';
       const own = this === document ? customElements : null;
       const given = registryGiven(options, own, 'createElement');
-      const registry = given === undefined ? own : given;
+      const registry =
+        given === undefined ? initializedRegistryOf(this, own) : given;
       const is = isOption(options);
       if (is !== null && registry && stateOf(registry).scoped) {
         throw new DOMException(
@@ -11362,7 +11432,8 @@ export function installDom(
       }
       const own = this === document ? customElements : null;
       const given = registryGiven(options, own, 'createElementNS');
-      const registry = given === undefined ? own : given;
+      const registry =
+        given === undefined ? initializedRegistryOf(this, own) : given;
       if (
         ns === HTML_NS &&
         prefix === null &&
@@ -20128,6 +20199,12 @@ export function installDom(
     if (documentRegistries.has(doc)) return documentRegistries.get(doc);
     return doc.defaultView?.customElements ?? null;
   };
+  /** A document's registry where it makes an element or a shadow root
+   *  (DOM 4.5, "look up a custom element registry"): the one this realm
+   *  initialized it with, or `own`, the window's for the window's
+   *  document. A frame's document is another realm's to answer for. */
+  const initializedRegistryOf = (doc: Any, own: Any): Any =>
+    documentRegistries.has(doc) ? documentRegistries.get(doc) : own;
   const shadowRegistryOf = (root: Any): Any => {
     if (shadowRegistries.has(root)) return shadowRegistries.get(root);
     const registry =
