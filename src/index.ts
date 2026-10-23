@@ -420,6 +420,7 @@ export type {
   ControlRect as HtmlControlRect,
   Document as HtmlDocument,
   Element as HtmlElement,
+  FieldSelection as HtmlFieldSelection,
   FormSubmission as HtmlFormSubmission,
   HtmlChange,
   HtmlDomEvent,

@@ -864,6 +864,18 @@ export function firstInvalid(
 
 // --- the live state ----------------------------------------------------------------
 
+/**
+ * A text control's selection as HTML's `selectionStart`, `selectionEnd` and
+ * `selectionDirection` read it (4.10.5.2.10): offsets into what the control
+ * holds, in UTF-16 code units, the start never past the end, and the end
+ * the caret's where the direction is not `'backward'`.
+ */
+export interface FieldSelection {
+  start: number;
+  end: number;
+  direction: 'forward' | 'backward' | 'none';
+}
+
 /** What a control's attributes were before anything was typed or chosen. */
 interface Snapshot {
   attribs: Record<string, string | undefined>;
@@ -887,6 +899,7 @@ interface Snapshot {
 export class FormState {
   private _typed = new WeakMap<Element, string>();
   private _markup = new WeakMap<Element, Snapshot>();
+  private _selections = new WeakMap<Element, FieldSelection>();
 
   /** Typed text, where the field has any — the `live` a submission reads. */
   typed(el: Element): string | undefined {
@@ -901,6 +914,31 @@ export class FormState {
   setTyped(el: Element, text: string): void {
     this.remember(el);
     this._typed.set(el, text);
+  }
+
+  /**
+   * A text field's selection where no widget holds it: what a script set
+   * before the field's widget was mounted, or what the widget had as it
+   * went — kept to what the field holds now. Null where nothing was kept,
+   * which a widget mounts as a caret at the end of its text.
+   */
+  selection(el: Element): FieldSelection | null {
+    const kept = this._selections.get(el);
+    if (!kept) return null;
+    const length = this.value(el).length;
+    const end = Math.min(kept.end, length);
+    return {
+      start: Math.min(kept.start, end),
+      end,
+      direction: kept.direction,
+    };
+  }
+
+  /** Keep a field's selection for its widget's next mount; null forgets it,
+   *  which leaves the caret at the end of the field's text. */
+  keepSelection(el: Element, selection: FieldSelection | null): void {
+    if (selection) this._selections.set(el, { ...selection });
+    else this._selections.delete(el);
   }
 
   /** Keep what `el`'s markup says, before a change to its attributes. */

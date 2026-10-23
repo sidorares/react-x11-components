@@ -73,6 +73,7 @@ import {
   tagOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
+import type { FieldSelection } from './form.js';
 import {
   alphaOf,
   inkColor,
@@ -516,6 +517,8 @@ export interface OffsetRect {
 export interface DocumentInteraction {
   controlValue(el: Element): string | boolean | null;
   setControlValue(el: Element, value: string | boolean): boolean;
+  controlSelection(el: Element): FieldSelection | null;
+  setControlSelection(el: Element, selection: FieldSelection): boolean;
   focus(el: Element): boolean;
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal

@@ -1591,6 +1591,17 @@ widget draws in reads its colours from the theme in force, or from
 control rules name system colours rather than the look's values, so a
 control the page styles builds on its scheme's colours as well.
 
+**A field's selection is its widget's, and `FormState` holds it only
+between widgets.** A script's `setSelectionRange()` selects in the
+`<textinput>` mounted for the field, through core's selection API, which is
+read at run time (`selectingField`). The getters read the widget, so they
+answer where the user left the caret. A selection set while no widget is
+mounted, and the one a widget had as it went (`WidgetBoxes`' `leaving` and
+`came`), is kept for the next widget. **Anything new that sets a field's
+selection goes through `Forms.setSelection`.** It keeps the selection for a
+widget not mounted yet, and it notes it as `seen`, so the user's next key
+is not told as `select` for the script's selection.
+
 **A widget is cut by what the document paints over its control.** A menu
 opened over a form is painted over its fields, and a widget drawn whole
 came out over the menu. `controlRectsOf` asks the layers painted after the

@@ -74,7 +74,7 @@ import type { RootLook } from './css/style.js';
 import type { ViewportOverflow } from './css/cascade.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
-import type { FormSubmission } from './form.js';
+import type { FieldSelection, FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import type { MediaState } from './media.js';
@@ -113,6 +113,7 @@ export type {
 } from './media.js';
 export type { RenderEmbedded } from './embedded.js';
 export type {
+  FieldSelection,
   FormEnctype,
   FormMethod,
   FormSubmission,
@@ -616,6 +617,29 @@ export interface HtmlHandle {
    *  event, and a field's widget shows it where it is, its focus kept.
    *  False for what is no control. */
   setControlValue(element: Element, value: string | boolean): boolean;
+  /**
+   * A text field's selection, as a script reads `selectionStart`,
+   * `selectionEnd` and `selectionDirection` (HTML 4.10.5.2.10): offsets
+   * into what it holds in UTF-16 code units, and the end the caret's but
+   * for `'backward'`. Its widget's, where core's field says (react-x11
+   * with `setSelectionRange` on a `<textinput>`), and else the last set —
+   * a caret at the end of its text where none was. Null for what is no
+   * text field.
+   */
+  controlSelection(element: Element): FieldSelection | null;
+  /**
+   * Select in a text field, as a script's `setSelectionRange` does: the
+   * offsets clamped to what it holds, the start to the end, and no event.
+   * Its widget shows it while it has the focus, where core's field takes
+   * a selection; and it is kept for the widget mounted next. False for
+   * what is no text field.
+   */
+  setControlSelection(
+    element: Element,
+    start: number,
+    end: number,
+    direction?: FieldSelection['direction'],
+  ): boolean;
   /** Give an element the focus, as Tab gives it: a control's widget, a
    *  link, a button, an element with a `tabindex`. False where it takes
    *  none. */
@@ -1136,6 +1160,22 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>
         nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
+      controlSelection: (element: Element) =>
+        nodeRef.current?.interactive?.controlSelection(element) ?? null,
+      setControlSelection: (
+        element: Element,
+        start: number,
+        end: number,
+        direction?: FieldSelection['direction'],
+      ) =>
+        nodeRef.current?.interactive?.setControlSelection(element, {
+          start,
+          end,
+          direction:
+            direction === 'forward' || direction === 'backward'
+              ? direction
+              : 'none',
+        }) ?? false,
       focus: (element: Element) =>
         nodeRef.current?.interactive?.focus(element) ?? false,
       toldFocus: (element: Element) =>
@@ -1212,6 +1252,9 @@ function documentInteraction(
     controlValue: (el) => live.current?.forms.value(el) ?? null,
     setControlValue: (el, value) =>
       live.current?.forms.setValue(el, value) ?? false,
+    controlSelection: (el) => live.current?.forms.selection(el) ?? null,
+    setControlSelection: (el, selection) =>
+      live.current?.forms.setSelection(el, selection) ?? false,
     focus: (el) => {
       const now = live.current;
       if (!now) return false;
