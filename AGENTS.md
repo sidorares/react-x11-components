@@ -2987,6 +2987,18 @@ before — so on macOS a stop between two runs filled holds where its
 centre is. **Shade a run as the whole is shaded, cut to the run**: shaded
 on its own, a narrower rectangle put a stop in another column.
 
+**A small gradient repeated is shaded once** (`gradientBlocks`): past
+`BLOCK_FROM` tiles in a paint, one tile is shaded on a raster kept by its
+key (`tilesKept`) and copied from a block of them (`tileBlock`), as a
+small image's tiles are, where the context draws in whole pixels of its
+own. Tailwind's docs hatch their gutters with a repeating gradient ten
+pixels a side, and every tile a frame of a scroll reached was its stops
+laid down again, their colours read again and the tile shaded again: 22 MB
+and half of each frame on a Mac. **The key is everything the tile is
+shaded from** — the gradient, the current colour and the tile's device
+size — and a gradient that came to read anything else would have to join
+it.
+
 **A group goes only to a context where it pays** (`groupsOnSurfaces`):
 ntk's, and a native one that says a faded surface is cheap
 (`fadesSurfacesCheaply`). CoreGraphics draws an image under an alpha below
