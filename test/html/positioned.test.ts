@@ -1544,6 +1544,30 @@ test('a ::before or an ::after is an anchor, as its element is', async () => {
   assert.deepStrictEqual(at('tb'), [100, text.y + text.height]);
 });
 
+test("a box is placed against where its anchor's relative offset moved it", async () => {
+  // CSS Anchor Positioning 1, 2: an anchor's box is where layout put it,
+  // relative positioning included, which is applied after the boxes
+  // positioned against it are laid out; the anchor's and the boxes'
+  // around it below the containing block, which move only the anchor
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '#wrap{position:relative;left:10px}' +
+      '#a{position:relative;top:100px;left:100px;width:100px;height:100px;anchor-name:--a}' +
+      '.t{position:absolute;position-anchor:--a;width:100px;height:200px}' +
+      '#by{top:anchor(bottom);left:anchor(right)}' +
+      // a fallback tried against the anchor where it is: above, it would
+      // leave the containing block, and below it fits
+      '#area{position-area:top center;position-try-fallbacks:flip-block}</style>' +
+      '<div id="cb"><div id="wrap"><div id="a"></div></div>' +
+      '<div class="t" id="by"></div><div class="t" id="area"></div></div>',
+    500,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('by'), [210, 200]);
+  assert.deepStrictEqual(at('area'), [110, 200]);
+});
+
 test('a box anchored to something a scroller scrolls moves with it, on the axes its anchors share that scroller, and only an anchor laid out before it is one', async () => {
   const { node } = await render(
     '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +

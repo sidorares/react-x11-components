@@ -4652,15 +4652,40 @@ function anchorFor(
 ): CbRect | null {
   const anchor = anchorBoxFor(box, name, ctx);
   if (!anchor) return null;
-  if (anchor.kind === 'inline') {
-    return inlineContainingBlock(anchor, box, ctx);
+  const rect =
+    anchor.kind === 'inline'
+      ? inlineContainingBlock(anchor, box, ctx)
+      : {
+          x: anchor.x,
+          y: anchor.y,
+          width: anchor.width,
+          height: anchor.height,
+        };
+  const [dx, dy] = relativeShift(anchor, box);
+  return { ...rect, x: rect.x + dx, y: rect.y + dy };
+}
+
+/**
+ * How far relative positioning moves an anchor that it does not move the
+ * box placed against it, which the box is laid out before
+ * (`applyRelativeOffsets`): the offsets of the anchor and the boxes around
+ * it below the box's containing block. Those of the containing block and
+ * what is around it move the two alike, and a relative box between them
+ * is the containing block of what is absolute in it, and moves nothing
+ * fixed (`escapes`). An anchor `position: relative; top: 100px` was where
+ * the flow had it.
+ */
+function relativeShift(anchor: Box, box: Box): [number, number] {
+  const containing = containingBlockFor(box);
+  let dx = 0;
+  let dy = 0;
+  for (let at: Box | null = anchor; at && at !== containing; at = at.parent) {
+    if (at.style.position !== 'relative') continue;
+    const [x, y] = relativeOffset(at);
+    dx += x;
+    dy += y;
   }
-  return {
-    x: anchor.x,
-    y: anchor.y,
-    width: anchor.width,
-    height: anchor.height,
-  };
+  return [dx, dy];
 }
 
 /** The box an anchor name finds for `box` (`anchorFor`), or null. */
