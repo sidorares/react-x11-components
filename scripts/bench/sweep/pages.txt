@@ -1,0 +1,25 @@
+# The real pages htmlsweep.mjs's `SUITE=pages` mounts: what a browser is
+# asked for every day, heavy where it is heavy. One URL a line; `#` starts a
+# comment. `htmlfetch.ts` fills the cache from this list.
+#
+# long articles: a few thousand elements of text, tables and images
+https://en.wikipedia.org/wiki/United_States
+https://en.wikipedia.org/wiki/X_Window_System
+https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_population
+# reference documentation: long, deep, many code blocks
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+https://nodejs.org/api/fs.html
+https://docs.python.org/3/library/stdtypes.html
+https://html.spec.whatwg.org/multipage/parsing.html
+https://www.rfc-editor.org/rfc/rfc9110.html
+# a framework's stylesheet over an application page
+https://github.com/facebook/react
+https://tailwindcss.com/docs/installation/using-vite
+https://getbootstrap.com/docs/5.3/components/card/
+https://react.dev/
+https://nextjs.org/blog
+# news and lists
+https://news.ycombinator.com/
+https://www.bbc.com/news
+https://www.theguardian.com/international
+https://lobste.rs/

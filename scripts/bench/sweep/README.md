@@ -30,6 +30,8 @@ every cell after the crash failing to connect.
 | `docgen.ts`       | the documents                                           | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
 | `htmlanim.mjs`    | `<Html>`, a Zen Garden design moving                    | `PAGE` (219), `TARGETS`: its animations running, frames with the pointer away, then on each target and off it again; plain `node` on `dist/`                                              |
 | `htmlgen.mjs`     | `<Html>`'s synthetic documents                          | one a feature — `text`, `inline`, `table`, `flex`, `grid`, `float`, `selectors`, `positioned`, `paint`, `anim` — at an everyday size and a stress size, deterministic by seed             |
+| `htmlpage.mjs`    | `<Html>`, a page as it is lived with                    | `SUITE=pages` (real sites from `pages.txt`), `corpus` or `synthetic`: loaded, scrolled to its end, its window dragged narrower and back, hovered, loaded again; see below                 |
+| `htmlfetch.ts`    | the real pages, kept                                    | fills a disk cache with every document, stylesheet, font and image a list of pages asks for (`pages.txt`, or `zengarden`)                                                                 |
 
 What the fields mean: `fps` — frames that painted, per second; `frame50`,
 `frame95` — the window's flush time; `lat50`, `lat95` — from an input to the
@@ -81,6 +83,35 @@ headless X server (Xvfb) is enough for the X11 backend; the Cocoa one
 needs its window uncovered. `htmltab.mjs` prints the totals — the time to
 render every document — each measurement's distribution, the documents
 that cost the most of it, and with a second file what moved.
+
+## A page as it is lived with
+
+`htmlsweep.mjs` forces each stage of the pipeline apart, which says where a
+document's time goes; `htmlpage.mjs` does what a reader does and measures
+what they wait for and what the process paid. Each page is loaded until its
+arrivals settle, scrolled a wheel notch a frame to its end, its window
+narrowed 8 px a frame for 40 frames and widened back, hovered at a grid of
+twenty points, and loaded again. Each step reports its frames (median,
+95th, longest, and how many took longer than a 60 Hz frame), the processor
+time, the collector's time and mark-compacts (`GCProfiler`), the megabytes
+allocated, the boxes built, and the longest the event loop was held — the
+most a 1 ms timer was late, which is what a click waits behind.
+
+```bash
+npx tsx scripts/bench/sweep/htmlfetch.ts ~/bench-cache            # pages.txt
+npx tsx scripts/bench/sweep/htmlfetch.ts ~/bench-cache zengarden  # 221 designs
+npm run build
+NODE_ENV=production REACT_X11_BACKEND=x11 DISPLAY=:99 CACHE=~/bench-cache \
+  node --expose-gc scripts/bench/sweep/htmlpage.mjs > now.jsonl
+node scripts/bench/sweep/htmlpagetab.mjs now.jsonl [was.jsonl]
+```
+
+`htmlpagetab.mjs` prints a page a row; files joined with `+` are read as
+repetitions and each cell is their median, so an A/B is three interleaved
+runs a side: `BENCH_ROOT` at a second checkout's tree, built, for the base.
+`STEPS` narrows the steps, `ONLY` the pages, `PROFILE=dir` writes a CPU
+profile a step and `ALLOC=dir` an allocation sampling profile a step,
+which `heapprofile.ts self|callers` reads.
 
 ## Running one
 
