@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.30.0](https://github.com/sidorares/react-x11-components/compare/v0.29.0...v0.30.0) (2026-10-24)
+
+
+### Features
+
+* **html:** a computed colour keeps the space it was written or mixed in, for getComputedStyle ([#985](https://github.com/sidorares/react-x11-components/issues/985)) ([a5ada13](https://github.com/sidorares/react-x11-components/commit/a5ada138af0ceef1883882570a9da6707a4c8c47))
+* **html:** a document a navigation leaves hears beforeunload, pagehide, visibilitychange and unload ([#973](https://github.com/sidorares/react-x11-components/issues/973)) ([baa1120](https://github.com/sidorares/react-x11-components/commit/baa1120286a247148c354fda5b8f2e6a2012021a))
+* **html:** a frame's window answers for its own viewport, and every window hears its resize and its media queries' change in HTML's order ([#977](https://github.com/sidorares/react-x11-components/issues/977)) ([218d4e8](https://github.com/sidorares/react-x11-components/commit/218d4e8ab4ee367ba8fd42d35393254aa51c04df))
+* **html:** a highlight's computed style, highlightsFromPoint to the spec, a frame's own CSS.highlights, and highlights over replaced elements ([#992](https://github.com/sidorares/react-x11-components/issues/992)) ([aef30ab](https://github.com/sidorares/react-x11-components/commit/aef30ab193af9523a664ac1dca435e33e2dfa43c))
+* **html:** a page's select() and setSelectionRange() reach the field's widget, the getters read the user's caret, and text the user selects is its select ([#972](https://github.com/sidorares/react-x11-components/issues/972)) ([9ad4d55](https://github.com/sidorares/react-x11-components/commit/9ad4d551e858754981ef14312af9ad6cf2c205a8))
+* **html:** a scoped registry upgrades in each document it was associated with, in the order each was, and a frame's registry in the frame's document ([#988](https://github.com/sidorares/react-x11-components/issues/988)) ([99b94ea](https://github.com/sidorares/react-x11-components/commit/99b94ea839e28e5bcc9ca2c270e46b8508224b19))
+* **html:** a select's menu is its picker, :open while it is down, and a page's showPicker() drops it ([#983](https://github.com/sidorares/react-x11-components/issues/983)) ([9089f64](https://github.com/sidorares/react-x11-components/commit/9089f6495b998ad11a1bedeb75e38e24606dd0cb))
+* **html:** a tab's documents are one session history, and a document hears how it was shown and where it goes ([#980](https://github.com/sidorares/react-x11-components/issues/980)) ([1a486ec](https://github.com/sidorares/react-x11-components/commit/1a486ecb983b87f3503d940563d2848ea74c1b6a))
+* **html:** anchor-center, abspos self-alignment, anchor() in calc(), anchored boxes that follow a scroll and try their fallbacks again, and CSSPositionTryRule ([#984](https://github.com/sidorares/react-x11-components/issues/984)) ([9eec4f3](https://github.com/sidorares/react-x11-components/commit/9eec4f3d95d3d7f38f55588eaa512290c3b666c4))
+* **html:** attr()-tainting keeps an attribute out of a URL, background-image computes in full, and attr() takes a var() name and a namespace ([#993](https://github.com/sidorares/react-x11-components/issues/993)) ([f35e65d](https://github.com/sidorares/react-x11-components/commit/f35e65dda32118f04bd19025cd4e3a3a98178cdd))
+* **html:** CSS animations on a scroll timeline tell the page as they run and follow what it does to them, and a scroll timeline holds its time until the next frame ([#986](https://github.com/sidorares/react-x11-components/issues/986)) ([db95d3a](https://github.com/sidorares/react-x11-components/commit/db95d3ab2f8952c1c0e48a83960f613b4e8a11f5))
+* **html:** scroll snapping by pages, past no scroll-snap-stop, under the viewport's wheel and keys, and lined up with what a scroll brings into view ([#976](https://github.com/sidorares/react-x11-components/issues/976)) ([1c6c512](https://github.com/sidorares/react-x11-components/commit/1c6c512b6291a3d220c0f15dc3426b1ccc94e091))
+* **html:** style queries take inherit from the container's parent, their container units from the container's container, and follow the root's font wherever it moves ([#990](https://github.com/sidorares/react-x11-components/issues/990)) ([2218e1e](https://github.com/sidorares/react-x11-components/commit/2218e1e6d0b15b4731f1851ee9036235faea0c08))
+* **html:** text fragments, lit in ::target-text ([#971](https://github.com/sidorares/react-x11-components/issues/971)) ([8442044](https://github.com/sidorares/react-x11-components/commit/844204439daa95300128365d4a41395e193421d4))
+* **html:** the HTML in an SVG foreignObject is laid out in the object and drawn in the drawing's order ([#979](https://github.com/sidorares/react-x11-components/issues/979)) ([78c44d5](https://github.com/sidorares/react-x11-components/commit/78c44d541f9331df4decd00ca6d8f2bada3e28a2))
+* **html:** the parse yields to the scripts that block it, and document.write writes into it ([#978](https://github.com/sidorares/react-x11-components/issues/978)) ([f610176](https://github.com/sidorares/react-x11-components/commit/f610176dea83d8a49dae21606b505cc9248e7682))
+* **html:** vertical writing modes, as a frame turned a quarter ([#975](https://github.com/sidorares/react-x11-components/issues/975)) ([b8ea939](https://github.com/sidorares/react-x11-components/commit/b8ea939ff88a7b5ff9865543857cec2c47163d7c))
+* **maps:** a cold view is drawn from its overview while its own tiles arrive, and so is a pan onto new ground ([#981](https://github.com/sidorares/react-x11-components/issues/981)) ([e1c63d5](https://github.com/sidorares/react-x11-components/commit/e1c63d54bbeab4dc4e8f69aca40124826d33f897))
+
+
+### Bug Fixes
+
+* **html:** a page's stream body is sent once, so a 421 is the page's answer ([#991](https://github.com/sidorares/react-x11-components/issues/991)) ([54cebd8](https://github.com/sidorares/react-x11-components/commit/54cebd8a61758acdf19e9ce0ed555b03280cf408))
+* **html:** an element's querySelectorAll matches its selector against the whole document ([#958](https://github.com/sidorares/react-x11-components/issues/958)) ([b27a8fb](https://github.com/sidorares/react-x11-components/commit/b27a8fb4fad01e3d279ce3f3d75b7705aabb30f5))
+* **html:** what a drag's layout set aside is laid out at rest in the style a restyle in place gave its elements ([#995](https://github.com/sidorares/react-x11-components/issues/995)) ([fbe37a8](https://github.com/sidorares/react-x11-components/commit/fbe37a811d9e9c1037ab5e57e8ae0ea76a08615f))
+* **html:** zoom draws an inline drawing and nested frames whole ([#987](https://github.com/sidorares/react-x11-components/issues/987)) ([40b00be](https://github.com/sidorares/react-x11-components/commit/40b00beaecf681c606121e25cd5b43496fc58d70))
+
+
+### Performance Improvements
+
+* **html:** a breakpoint in a document with shadow trees restyles what it reaches ([#997](https://github.com/sidorares/react-x11-components/issues/997)) ([b0e1a56](https://github.com/sidorares/react-x11-components/commit/b0e1a5635e76bb6573d2e6e5864e3414eb94ece7))
+* **html:** a breakpoint past [@keyframes](https://github.com/keyframes) under a media query no width turns restyles only what it reaches ([#989](https://github.com/sidorares/react-x11-components/issues/989)) ([664b231](https://github.com/sidorares/react-x11-components/commit/664b231aba3149d624345d8cf413a7970672fe6c))
+* **html:** a change a :has() anchors at the root is restyled in place, followed down from what changed ([#961](https://github.com/sidorares/react-x11-components/issues/961)) ([4a0dac3](https://github.com/sidorares/react-x11-components/commit/4a0dac38d510d7ffa15de64acfbe4d0688ca2648))
+* **html:** a child put in reaches its new siblings' later siblings, and its holder's own only through what the holder holds ([#955](https://github.com/sidorares/react-x11-components/issues/955)) ([dbbed9a](https://github.com/sidorares/react-x11-components/commit/dbbed9a2cd196e59dfa9242e121de6f5df9c4a71))
+* **html:** a document's images decode off the JavaScript thread, on react-x11 2.54.0 ([#962](https://github.com/sidorares/react-x11-components/issues/962)) ([da02b17](https://github.com/sidorares/react-x11-components/commit/da02b178bbfcc1d708d8fe7df439c9e10f75a7bc))
+* **html:** a drag lays out no absolute box that draws nothing, until it rests ([#996](https://github.com/sidorares/react-x11-components/issues/996)) ([e32797c](https://github.com/sidorares/react-x11-components/commit/e32797cbfab40bca65ffeeadaf25928ba2d9b20e))
+* **html:** a dragged width keeps the rows of a grid below where it stops as they were ([#968](https://github.com/sidorares/react-x11-components/issues/968)) ([fd13ef0](https://github.com/sidorares/react-x11-components/commit/fd13ef00245ae771415f910980927a99e6d35bf4))
+* **html:** a dragged width keeps the rows of a table below where it stops as they were ([#970](https://github.com/sidorares/react-x11-components/issues/970)) ([ec501a3](https://github.com/sidorares/react-x11-components/commit/ec501a3781415687ec07d5c03ec0358700bc6ca5))
+* **html:** a dragged width lays out the boxes on the way to a fixed box it would set aside ([#969](https://github.com/sidorares/react-x11-components/issues/969)) ([86954ac](https://github.com/sidorares/react-x11-components/commit/86954ac8074540bcad36527611ea26ecc205c21f))
+* **html:** a dragged width stops inside a scroll container where what it shows ends ([#965](https://github.com/sidorares/react-x11-components/issues/965)) ([17cf2d0](https://github.com/sidorares/react-x11-components/commit/17cf2d09258279579368c81d9a55b1df10070ae6))
+* **html:** a read of a frame's window moves no count, and a computed style is read without the page's String methods ([#954](https://github.com/sidorares/react-x11-components/issues/954)) ([d7651a3](https://github.com/sidorares/react-x11-components/commit/d7651a39c378fbfdc5352daeca7f045c1c09b8a7))
+* **html:** a resize restyles what holds a vw in place where it only inks or nothing draws it ([#956](https://github.com/sidorares/react-x11-components/issues/956)) ([bb6590c](https://github.com/sidorares/react-x11-components/commit/bb6590c517fa0c38c368ed3a8fd840dd1cf78830))
+* **html:** a rule with no class, id or type at its subject is filed under the attribute it tests, or :root ([#951](https://github.com/sidorares/react-x11-components/issues/951)) ([7e31ff3](https://github.com/sidorares/react-x11-components/commit/7e31ff390db58b5d1e46ae0a21110755f56a9335))
+* **html:** a small gradient repeated is shaded once and copied from a block of its tiles ([#959](https://github.com/sidorares/react-x11-components/issues/959)) ([527fd16](https://github.com/sidorares/react-x11-components/commit/527fd16ed7ef2b87c868b8a3966b91dcdb7a26e9))
+* **html:** a tree a vw builds while the width moves is laid out down to what can be seen ([#957](https://github.com/sidorares/react-x11-components/issues/957)) ([cef000c](https://github.com/sidorares/react-x11-components/commit/cef000c37c9da153a06e1fb0a56b61dd878eb05c))
+* **html:** a vw change of a block's lengths is taken in place at a new width, and laid out again from them ([#966](https://github.com/sidorares/react-x11-components/issues/966)) ([6ff76f3](https://github.com/sidorares/react-x11-components/commit/6ff76f3f636e8048799d928f364f17badddc0fb6))
+* **html:** an image that shows its candidate at another density takes its size in place at a new width ([#967](https://github.com/sidorares/react-x11-components/issues/967)) ([f4aa571](https://github.com/sidorares/react-x11-components/commit/f4aa57158e50222e5d319f7ed740d2ba2a341b53))
+* **html:** fluid type in vw is taken in place at a new width, and its text set at it by the layout that follows ([#974](https://github.com/sidorares/react-x11-components/issues/974)) ([f156477](https://github.com/sidorares/react-x11-components/commit/f1564773f2d743ad0215f00ec044220ced4a31f8))
+
 ## [0.29.0](https://github.com/sidorares/react-x11-components/compare/v0.28.0...v0.29.0) (2026-10-23)
 
 
