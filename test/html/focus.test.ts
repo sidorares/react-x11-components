@@ -25,7 +25,19 @@ import {
   stepFrom,
 } from '../../src/html/focus.js';
 import type { FocusStop } from '../../src/html/focus.js';
-import { FONTS, boxOf, h, metric, view } from './harness.js';
+import {
+  FONTS,
+  boxOf,
+  bytesApart,
+  findById,
+  h,
+  metric,
+  rebuilt,
+  render,
+  snapshot,
+  treeOf,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -337,6 +349,41 @@ metric(
 );
 
 metric(
+  'a ring that stands past its line is drawn whole by a focus restyled in place',
+  async () => {
+    // The palette's ring stands two pixels round the link, past the line
+    // a tight `line-height` gives it: a block's ink took in a box's
+    // outline only where the box has a rect of its own, so the repaint of
+    // a focus in place left the ring's top and bottom rows undrawn
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0;line-height:1}</style>' +
+        '<p>one</p><p>before <a id="a" href="#a">the link</a> after</p>' +
+        '<p>three</p>',
+      300,
+    );
+    const el = view(node);
+    const link = findById(el.document, 'a')!;
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+    el.setFocus(link as never);
+    const ringed = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the focus built the document again');
+    assert.deepStrictEqual(outlineOf(el, 'a').slice(0, 2), ['auto', 2]);
+    assert.strictEqual(
+      bytesApart(ringed, await rebuilt(result, el)),
+      0,
+      'the ring is drawn as a rebuild draws it',
+    );
+    // and taken away whole
+    const again = treeOf(el);
+    el.setFocus(null);
+    const gone = await snapshot(result, el);
+    assert.ok(treeOf(el) === again, 'the blur built the document again');
+    assert.strictEqual(bytesApart(gone, quiet), 0, 'the ring is left behind');
+  },
+);
+
+metric(
   "a script's focus is ringed where the user's last input in the document was no press, as browsers decide it",
   async () => {
     // github.blog's header menus: a click opens one, and its script
@@ -601,14 +648,15 @@ metric(
     await act();
     assert.strictEqual(el.focusedElement?.attribs.id, 'l2');
     const to = el.elementRect(el.focusedElement!)!;
-    // the rows the two rings are drawn in, each link at the top of its own:
-    // core repainted the whole viewport of a pane a focus moved inside
-    // until react-x11#813
+    // the rows the two rings are drawn in, each link at the top of its own
+    // and its ring two pixels round it, which the damage rounds out a
+    // pixel: core repainted the whole viewport of a pane a focus moved
+    // inside until react-x11#813
     const top = (el as unknown as DrawnNode).abs.y;
     assert.ok(damages.length > 0, 'the rings repainted');
     for (const d of damages) {
       assert.ok(
-        d && d.y >= top + from.y - 1 && d.y + d.height <= top + to.y + 31,
+        d && d.y >= top + from.y - 3 && d.y + d.height <= top + to.y + 31,
         `${JSON.stringify(d)} past the rows at ${from.y} and ${to.y}`,
       );
     }

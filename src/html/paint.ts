@@ -675,12 +675,15 @@ export function computePaintBounds(box: Box, moved = false): number {
   // above or below its text can reach past its lines. And the shadows its
   // fragments cast are ink past them, as a block's are, and no overflow:
   // a repaint of the strip under a link's has to reach it, and so does
-  // the cull of the lines it is under (`LINE_CASTS`).
+  // the cull of the lines it is under (`LINE_CASTS`). So does the outline
+  // each fragment draws round itself (`paintOutline`): a link's focus ring
+  // stands a pixel or two past its text, and a focus restyled in place
+  // repainted the block's ink and left the ring's top and bottom undrawn.
   if (box.kind === 'inline') {
     const padded =
       box.padTop + box.padBottom + box.borderTop + box.borderBottom > 0;
     const shadows = box.style.boxShadow;
-    const out = shadows ? shadowOutsets(shadows) : null;
+    const out = inlineInkOutsets(box.style, shadows);
     const reach = padded || out ? inlineFragmentsReach(box, out) : null;
     if (reach) {
       x1 = Math.min(x1, reach.x1 - (out?.left ?? 0));
@@ -970,6 +973,27 @@ export function hasRect(box: Box): boolean {
   if (box.kind !== 'block') return true;
   const display = box.style.display;
   return display !== 'table-column' && display !== 'table-column-group';
+}
+
+/** How far past its fragments an inline box draws: its outer shadows, and
+ *  its outline, which is a ring round each fragment as wide as its width
+ *  and its offset together (CSS UI 4, 5.1); null for neither. */
+function inlineInkOutsets(
+  style: ComputedStyle,
+  shadows: readonly BoxShadow[] | null,
+): Outsets | null {
+  const out = shadows ? shadowOutsets(shadows) : null;
+  const ring =
+    style.outlineStyle !== 'none' && style.outlineWidth > 0
+      ? Math.max(0, style.outlineOffset + style.outlineWidth)
+      : 0;
+  if (!ring) return out;
+  return {
+    left: Math.max(out?.left ?? 0, ring),
+    top: Math.max(out?.top ?? 0, ring),
+    right: Math.max(out?.right ?? 0, ring),
+    bottom: Math.max(out?.bottom ?? 0, ring),
+  };
 }
 
 /**
