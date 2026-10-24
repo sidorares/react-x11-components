@@ -529,6 +529,101 @@ test('a dragged width lays out the boxes on the way to a fixed box it would set 
   );
 });
 
+test('a dragged width leaves a menu that draws nothing where it was, and places it once it rests', async (t) => {
+  // GitHub keeps its menus in the page, absolute, shrink-to-fit, hidden and
+  // faded to nothing, and laid out at every step of a drag they were a
+  // third of the step. One that draws nothing all through is set aside
+  // where it was until the layout at rest; one that draws is placed at
+  // every step. In a box a relative offset moves, so a menu left in the
+  // tree would be moved by it again at each step.
+  const clock = holdClock(t, resizeClock);
+  const items = Array.from(
+    { length: 30 },
+    (_, i) => `<li style="height:10px">item ${i}</li>`,
+  ).join('');
+  const menu = (id: string, how: string) =>
+    `<div id="${id}" class="menu" style="position:absolute;top:40px;` +
+    `left:10%;background:#00ff00;${how}"><ul style="margin:0;list-style:none">${items}` +
+    '</ul></div>';
+  const doc = LONG.replace(
+    '<body style="margin:0">',
+    '<body style="margin:0"><style>.open{visibility:visible !important}</style>' +
+      '<div id="wrap" style="position:relative;top:3px;height:20px">' +
+      menu('hidden', 'visibility:hidden') +
+      menu('faded', 'opacity:0') +
+      menu('shown', 'left:20%') +
+      '</div>',
+  );
+  const { el, resize } = await renderScrolled(doc, 300, 400);
+  await resize(300, 330);
+  assert.ok(!partial(el), 'a jump, laid out whole');
+  const hidden = boxOf(el, 'hidden');
+  const faded = boxOf(el, 'faded');
+  const was = geometry(hidden);
+  assert.deepStrictEqual(was.slice(0, 2), [33, 43], 'placed at 330');
+  await resize(300, 320);
+  assert.ok(partial(el), 'a step');
+  for (const [id, box] of [
+    ['hidden', hidden],
+    ['faded', faded],
+  ] as const) {
+    assert.ok(held(el, box), `${id}: set aside`);
+    assert.ok(!reached(el, id), `${id}: nothing finds it`);
+  }
+  assert.ok(!held(el, boxOf(el, 'shown')) && reached(el, 'shown'));
+  assert.strictEqual(boxOf(el, 'shown').x, 64, 'what draws is placed');
+  await resize(300, 310);
+  assert.deepStrictEqual(
+    geometry(hidden),
+    was,
+    'where it was, moved by no offset again',
+  );
+  assert.strictEqual(boxOf(el, 'shown').x, 62);
+  const seen = shown(await fillsOf(el), 300);
+  await clock.finish();
+  assert.ok(!partial(el), 'rested');
+  for (const id of ['hidden', 'faded']) {
+    assert.ok(reached(el, id), `${id}: put back`);
+    assert.deepStrictEqual(
+      geometry(boxOf(el, id)).slice(0, 2),
+      [31, 43],
+      `${id}: placed at the width it rests at`,
+    );
+  }
+  assert.deepStrictEqual(
+    shown(await fillsOf(el), 300),
+    seen,
+    'what can be seen drawn as the whole layout draws it',
+  );
+
+  // and one a restyle in place shows while it is set aside is laid out
+  await resize(300, 300);
+  assert.ok(held(el, hidden), 'set aside again');
+  const tree = (el as unknown as { _tree: BoxTree })._tree;
+  const target = findById(el.document, 'hidden') as unknown as {
+    attribs: Record<string, string>;
+  };
+  const oldValue = target.attribs.class;
+  target.attribs.class = 'menu open';
+  await act(() =>
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: target as never,
+        attributeName: 'class',
+        oldValue,
+      },
+    ]),
+  );
+  await act();
+  assert.ok(
+    (el as unknown as { _tree: BoxTree })._tree === tree,
+    'restyled in place',
+  );
+  assert.ok(reached(el, 'hidden'), 'shown, and found');
+  assert.strictEqual(boxOf(el, 'hidden').x, 30, 'placed at the width');
+});
+
 test('a dragged width mounts no control past where the layout stops', async (t) => {
   // its box is where it was a width ago, which may be over what the
   // layout put in view since: it is mounted again once the width rests

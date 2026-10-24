@@ -164,6 +164,7 @@ import {
   containingBlockOf,
   DOCUMENT_FLOW,
   drawnAtViewport,
+  drawsNothing,
   FIXED_BOXES,
   fixedToViewport,
   hoistNegative,
@@ -360,6 +361,7 @@ function putBack(tree: BoxTree): void {
   const aside = SET_ASIDE.get(tree);
   if (!aside) return;
   SET_ASIDE.delete(tree);
+  UNSEEN.delete(tree);
   for (const [box, children] of aside.boxes) {
     box.children = children;
     ASIDE_REACH.delete(box);
@@ -387,11 +389,42 @@ export function asideIn(tree: BoxTree): boolean {
   return SET_ASIDE.has(tree);
 }
 
-/** Whether the tree's last layout set aside some of a box's children: a
- *  walk down `children` passes them (`asideOf`). */
+/** Whether the tree's last layout set aside some of a box's children in
+ *  its flow: a walk down `children` passes them (`asideOf`). One it set
+ *  aside for drawing nothing is `unseenIn`'s. */
 export function setAsideIn(tree: BoxTree, box: Box): boolean {
-  return SET_ASIDE.get(tree)?.boxes.has(box) ?? false;
+  const whole = SET_ASIDE.get(tree)?.boxes.get(box);
+  if (!whole) return false;
+  const unseen = UNSEEN.get(tree);
+  if (!unseen) return true;
+  for (const child of whole) {
+    if (!unseen.has(child) && !box.children.includes(child)) return true;
+  }
+  return false;
 }
+
+/** The children of a box its tree's last layout set aside for drawing
+ *  nothing (`unseenWhileStopped`). */
+export function unseenIn(tree: BoxTree, box: Box): readonly Box[] {
+  const unseen = UNSEEN.get(tree);
+  if (!unseen) return NO_BOXES;
+  const whole = SET_ASIDE.get(tree)?.boxes.get(box);
+  return whole ? whole.filter((child) => unseen.has(child)) : NO_BOXES;
+}
+
+/** Whether a box was set aside for drawing nothing, or is in one that
+ *  was, and in nothing set aside for another reason. */
+export function unseenHeld(tree: BoxTree, box: Box): boolean {
+  const unseen = UNSEEN.get(tree);
+  const aside = SET_ASIDE.get(tree);
+  if (!unseen || !aside) return false;
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (HELD_BACK.get(at) === aside.pass) return unseen.has(at);
+  }
+  return false;
+}
+
+const NO_BOXES: readonly Box[] = [];
 
 /**
  * Whether a box was set aside by its tree's last layout, or is in one that
@@ -496,6 +529,78 @@ export function setAsideOf(
   }
   box.children = kept;
   ASIDE_REACH.set(box, reach);
+}
+
+/**
+ * By tree, the absolute boxes its last layout left where they were, with
+ * what they hold, for drawing nothing (`unseenWhileStopped`).
+ */
+const UNSEEN = new WeakMap<BoxTree, Set<Box>>();
+
+/** By tree, the boxes that hold a widget — a control, a player, an
+ *  embedded element — and the widget's own: found once. */
+const WIDGET_HOLDERS = new WeakMap<BoxTree, Set<Box>>();
+
+function widgetHolders(tree: BoxTree): Set<Box> {
+  let holders = WIDGET_HOLDERS.get(tree);
+  if (holders) return holders;
+  holders = new Set();
+  for (const list of [tree.controls, tree.media, tree.embedded]) {
+    for (const box of list) {
+      for (let at: Box | null = box; at && !holders.has(at); at = at.parent) {
+        holders.add(at);
+      }
+    }
+  }
+  WIDGET_HOLDERS.set(tree, holders);
+  return holders;
+}
+
+/**
+ * Whether a layout that stops (`until`) may leave an absolute box where
+ * its last layout put it, set aside with all it holds as what is below
+ * the viewport is: one that draws nothing all through (`drawsNothing`) —
+ * hidden, or faded to nothing — that a layout has placed, and that holds
+ * no widget, which is mounted over the document wherever the box is. Where
+ * it is matters to nothing a reader sees, and the layout at rest gives it
+ * its place. GitHub keeps its menus so, laid out shrink-to-fit, and they
+ * were a third of every step of a drag. Not a fixed box, which the paint
+ * finds by a list of its own (`FIXED_BOXES`), nor one in the top layer, nor
+ * any in a tree that anchors, where a box may be placed against it.
+ */
+function unseenWhileStopped(tree: BoxTree, box: Box): boolean {
+  if (box.style.position !== 'absolute' || box.topLayer) return false;
+  if (box.layoutSerial === 0 || !box.parent || tree.anchors) return false;
+  return drawsNothing(box) && !widgetHolders(tree).has(box);
+}
+
+/** Set an absolute box aside from its parent (`unseenWhileStopped`), and
+ *  note how far below the parent's content it reached, which a scroll
+ *  container's extent counts (`ASIDE_REACH`). */
+function holdUnseen(box: Box, ctx: LayoutContext): void {
+  const parent = box.parent!;
+  const children = parent.children;
+  if (!ctx.setAside!.has(parent)) ctx.setAside!.set(parent, children);
+  parent.children = children.filter((child) => child !== box);
+  HELD_BACK.set(box, ctx.pass!);
+  const reach =
+    (OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height) - parent.contentY;
+  const was = ASIDE_REACH.get(parent);
+  if (Number.isFinite(reach) && !(was !== undefined && was >= reach)) {
+    ASIDE_REACH.set(parent, reach);
+  }
+}
+
+/**
+ * Whether a box the tree's last layout left where it was for drawing
+ * nothing draws now: a restyle in place showed it, and the document is
+ * laid out again to place it.
+ */
+export function showsUnseen(tree: BoxTree): boolean {
+  const boxes = UNSEEN.get(tree);
+  if (!boxes) return false;
+  for (const box of boxes) if (!drawsNothing(box)) return true;
+  return false;
 }
 
 /** A shrink-to-fit box's content laid out at no width limit, all of it:
@@ -954,9 +1059,24 @@ export function layoutDocument(
 
   // Positioned boxes last, and in the order they were found, so a later one
   // can be positioned against an earlier one's resolved rectangle.
+  // Where the layout stops, one that draws nothing waits for the layout
+  // at rest (`unseenWhileStopped`).
+  const stopped = aside !== undefined && ctx.until !== undefined;
+  let unseen: Set<Box> | null = null;
   for (let i = 0; i < ctx.positioned.length; i += 1) {
     const { box, containing } = ctx.positioned[i];
+    if (stopped && unseenWhileStopped(tree, box)) {
+      holdUnseen(box, ctx);
+      (unseen ??= new Set()).add(box);
+      continue;
+    }
     layoutPositioned(box, containing, ctx);
+  }
+  if (unseen) {
+    UNSEEN.set(tree, unseen);
+    if (!SET_ASIDE.has(tree)) {
+      SET_ASIDE.set(tree, { pass: ctx.pass!, boxes: aside! });
+    }
   }
 
   // `position: relative` moves a box after everything else has been placed
