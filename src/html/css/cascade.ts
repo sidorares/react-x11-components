@@ -8004,6 +8004,12 @@ function presentationHints(
         out.push({ prop, value, important: false, vars: true });
       }
     }
+  } else if (tag === 'foreignobject') {
+    // what it holds is cut to it, as SVG's UA sheet has it (SVG 2,
+    // appendix D) — a hint and not a rule of the UA sheet's, since a type
+    // selector here matches no element with a capital in its name — unless
+    // its `overflow` attribute, a presentation attribute, says otherwise
+    push('overflow', attr(el, 'overflow') ?? 'hidden');
   }
 
   if (tag === 'table') {

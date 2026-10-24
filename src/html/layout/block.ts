@@ -10,6 +10,7 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
+import type { Element } from 'domhandler';
 import { isInputButton } from '../dom.js';
 import {
   AUTO,
@@ -118,6 +119,7 @@ import {
 import type {
   BoxTree,
   FirstLineStyler,
+  ForeignObject,
   Intrinsic,
   InlineDecoration,
   LineBox,
@@ -125,6 +127,7 @@ import type {
   Marker,
 } from './boxes.js';
 import { FloatContext } from './floats.js';
+import { drawingViewport, foreignRect } from '../svg.js';
 import {
   emptyLinePoint,
   faceExtentOf,
@@ -936,12 +939,57 @@ export function layoutDocument(
   }
   if (fixed) FIXED_BOXES.set(tree, fixed);
   else FIXED_BOXES.delete(tree);
+  if (tree.foreign) layoutForeign(tree.foreign, fonts, scale);
   return {
     width: viewportWidth,
     height: bottom,
     readsViewportHeight: readsViewportHeight || ctx.readViewportHeight === true,
     partial: (aside?.size ?? 0) > 0,
   };
+}
+
+/**
+ * The HTML of each `<foreignObject>` in the document's drawings, laid out
+ * as a document of its own (`ForeignObject`): the object's `width` and
+ * `height` its viewport, in device pixels — a user unit is a CSS pixel of
+ * the drawing's, zoomed as its box is, and the drawing's `viewBox` and
+ * transforms are a matrix the paint draws it through. Laid out again only
+ * where that size moved, since nothing in the object is laid out against
+ * anything outside it: its box is the containing block of all it holds,
+ * fixed boxes among them (SVG 2, 23.2). Before the drawing's box is laid
+ * out it has no size, and a percentage of its viewport is of none.
+ */
+function layoutForeign(
+  objects: ReadonlyMap<Element, ForeignObject>,
+  fonts: FontsLike | null,
+  scale: number,
+): void {
+  for (const object of objects.values()) {
+    const svg = object.svg;
+    if (!svg.el) continue;
+    const unit = scale * svg.style.effectiveZoom;
+    const viewport = drawingViewport(
+      svg.el,
+      svg.contentWidth / unit,
+      svg.contentHeight / unit,
+    );
+    const rect = foreignRect(object.el, viewport);
+    const width = rect.width * unit;
+    const height = rect.height * unit;
+    if (
+      object.scale === unit &&
+      object.width === width &&
+      object.height === height
+    ) {
+      continue;
+    }
+    object.scale = unit;
+    object.width = width;
+    object.height = height;
+    if (width > 0 && height > 0) {
+      layoutDocument(object.tree, fonts, width, height, scale);
+    }
+  }
 }
 
 /**

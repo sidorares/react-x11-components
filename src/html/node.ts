@@ -188,6 +188,7 @@ import {
 import type {
   Box,
   BoxTree,
+  ForeignObject,
   LineBox,
   LineText,
   ReplacedKind,
@@ -2876,7 +2877,7 @@ export class HtmlViewNode extends Node {
         let again = this._contentImagesArrived(this._tree);
         // the faces the styles just asked for, of the families the document
         // loads itself — which, answered at once, change the styles asking
-        if (this._webFonts.request(this._tree.text)) {
+        if (this._webFonts.request(textOfTree(this._tree))) {
           this._layouts = null;
           again = true;
         }
@@ -5741,6 +5742,11 @@ export class HtmlViewNode extends Node {
     if (!cascade || !tree || !layouts) return false;
     if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
     if ((from ?? given).size > limit) return false;
+    // what a `<foreignObject>` holds is a tree of its own, which nothing
+    // here restyles: a change in it builds the boxes
+    if (tree.foreign && inForeignObject(tree.foreign, from ?? given)) {
+      return false;
+    }
     const grown = from ? new Set<Element>() : null;
     const reach: ReadonlySet<Element> = grown ?? given;
     // a first line's, a first letter's and a marker's styles are layout's
@@ -8113,6 +8119,13 @@ export class HtmlViewNode extends Node {
     const drawing = drawingAround(change.target);
     if (drawing) {
       if (cascade.asksWhatElementsHold) return false;
+      // but what its `<foreignObject>`s hold is styled from its elements
+      // down, and laid out at each object's size: a change in a drawing
+      // with any builds the boxes
+      if (tree.foreign && drawsForeign(tree.foreign, drawing)) {
+        scope.boxes = true;
+        return true;
+      }
       scope.drawings.add(drawing);
       return true;
     }
@@ -10608,6 +10621,49 @@ export class HtmlViewNode extends Node {
 }
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
+
+/** A tree's text, and the text of the HTML in its `<foreignObject>`s,
+ *  which is no part of it (`ForeignObject`): what a document's faces are
+ *  loaded for the characters of. */
+function textOfTree(tree: BoxTree): string {
+  if (!tree.foreign) return tree.text;
+  let text = tree.text;
+  for (const object of tree.foreign.values()) {
+    text += `\n${textOfTree(object.tree)}`;
+  }
+  return text;
+}
+
+/** Whether a drawing has a `<foreignObject>` with HTML built for it. */
+function drawsForeign(
+  objects: ReadonlyMap<Element, ForeignObject>,
+  drawing: Element,
+): boolean {
+  for (const object of objects.values()) {
+    if (object.svg.el === drawing) return true;
+  }
+  return false;
+}
+
+/** Whether any of `els` is a `<foreignObject>` with HTML built for it, or
+ *  in one: what an element of a drawing is under, in the document's tree. */
+function inForeignObject(
+  objects: ReadonlyMap<Element, ForeignObject>,
+  els: ReadonlySet<Element>,
+): boolean {
+  for (const el of els) {
+    for (let at: Element | null = el; at; at = elementParent(at)) {
+      if (objects.has(at)) return true;
+    }
+  }
+  return false;
+}
+
+/** An element's parent, where that is an element. */
+function elementParent(el: Element): Element | null {
+  const parent = el.parent;
+  return parent && parent.type === 'tag' ? (parent as Element) : null;
+}
 
 /** Whether an element is its document's root: its parent the document. */
 function isRootElement(el: Element): boolean {

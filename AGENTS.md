@@ -2654,6 +2654,76 @@ hid what it cut. It stays a use, and an element it names outside the root
 is copied into a `<defs>` at the end of the tree (`bring`), since `SvgView`
 looks a reference up in the tree it is given.
 
+**What a `<foreignObject>` holds is a document of its own, which the
+drawing paints.** Its HTML is a `BoxTree` of its own (`ForeignObject`,
+`BoxTree.foreign`, by the object): built by a builder of its own inside
+the document's build, so it is matched under the document's sharing and
+rules, styled through the drawing's elements from the `<svg>`'s box down
+(`_foreignObjects`); laid out by `layoutDocument` at the object's size in
+device pixels, at the end of the document's layout (`layoutForeign`); and
+painted by `paintDocument` from inside `SvgView`, where the drawing
+reaches the object in its order, its transforms, opacity, mask and clip
+already on the context (`ForeignPainter`, `paintForeign`). Five things are
+load-bearing:
+
+- **`tree.foreign` is absent where the document has none, and every path
+  asks it first** — the layout, the paint, the restyle, the scope of a
+  change. A document with none takes the paths it took: keep any new
+  work for objects behind it.
+- **No walk of the document's boxes reaches an object's**, and that is
+  the design rather than a gap: what it holds is laid out against the
+  object and nothing else (it is the containing block of all of it, fixed
+  boxes among them), and it has no place in the document's flow. So
+  anything that finds what it acts on from `tree.root` — the hit test,
+  the selection, the widgets, the stops, the text — knows nothing of it
+  yet, and a change in it, or in the drawing around it, builds the boxes
+  (`_scopeOf`, and `_restyleInPlace` refusing): nothing restyles it in
+  place. What the document asks of a build for its images and faces is
+  handed up (the backgrounds, the generated images, `textStyles`, and an
+  `<img>` built before its image arrived as `awaitingKind`, since nothing
+  lays an object out again in place), and its text joins the document's
+  for the faces it loads (`textOfTree`). **Anything new that a build
+  collects for the host joins that list**, or an object never asks for it.
+- **An object is painted with options of its own** (`foreignOptions`): the
+  images, surfaces and rasters the document paints with, and none of what
+  the document keeps by its own boxes — kept surfaces, filters' reads,
+  lifted and captured boxes, the drag — nor its selection. **Anything new
+  on `PaintOptions` keyed by a box is left out of them**, and anything a
+  paint needs from the host goes in. Its tree's palette scheme is the
+  object's own, so no opaque canvas is drawn under it (`paintDocument`):
+  an object is transparent.
+- **Where the matrix to the context is a move and no more, it is painted
+  with none** (`setTransform`, the move in its origin), so its text is set
+  on the pixel grid and the damage culls it. Otherwise it is drawn through
+  the matrix where the context sets text through one or it is paths
+  (`scalesText`, `drawnAsPaths`), and on a surface drawn through the
+  matrix elsewhere, as `paintRaster` draws a transformed box; on a surface
+  too wherever the drawing fades it, as the group it is. A picture of it
+  scaled up is soft: laying it out at the drawing's scale would be a zoom
+  on the object, which the box tree it is built in does not know yet.
+- **`SvgView` has no seam for an object, and this stands on two of its
+  private methods** (`foreignViewClass`): `_renderElement`, which it
+  draws an element with in its order, and `_bbox`, which a clip path in
+  `objectBoundingBox` units measures with. Both are feature-detected, and
+  where either is missing an object draws nothing, as before; the view is
+  used only for a drawing that has one. That is an escape hatch of the
+  kind "No escape hatches" warns of, kept because the drawing's order,
+  clips and masks are `SvgView`'s to apply: the seam belongs upstream, as
+  a `draw()` option ntk calls for an object (the shape `ForeignPainter`
+  already has), and this goes when it lands. A copy of the tree the view
+  is handed (`copyTree`, which a drawing with objects always is) holds
+  none of an object's HTML and maps each copy to its element
+  (`FOREIGN_COPIES`), and takes `Extensibility` out of a
+  `requiredFeatures`, which `SvgView` holds of nothing.
+
+And one finding it made: **a type selector matches no element with a
+capital in its name.** The parser keeps SVG's camelCase (`foreignObject`,
+`clipPath`, `linearGradient`), css-select lowercases the selector, and
+`getName` hands it the name as parsed. So SVG's UA rule for an object,
+`overflow: hidden`, is a presentation hint (`presentationHints`), under
+its own `overflow` attribute and every rule, where it is in no worse
+place.
+
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
 and what it holds, so everything that reads a box finds it moved — and what

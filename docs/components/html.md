@@ -3405,6 +3405,38 @@ cannot read — a colour it does not know, such as a root's own
 among those above — is left undrawn, an empty box, and the rest of the
 document is drawn.
 
+The HTML a `<foreignObject>` in an inline `<svg>` holds is drawn, which is
+how Mermaid sets the labels of its flowcharts and draw.io the text of its
+shapes. It is laid out as a document of its own, the object its initial
+containing block: as wide and as tall as the object's `width` and
+`height` — user units, which are CSS pixels of what it holds, and 0 where
+they are missing or `auto`, which draws nothing — at its `x` and `y`. It is
+styled by the document's style sheets, a `<style>` inside the drawing
+among them, and inherits through the drawing's elements around it, so
+`.label { color: #333 }` on a group reaches a label's text. It is painted
+where the drawing reaches the object in its order, over what the drawing
+drew before it and under what it draws after, through the drawing's
+`viewBox` and every `transform` around it, at the opacity of the groups
+around it, and cut to the `clip-path` on it or on a group around it — one
+in `objectBoundingBox` units is of the object's rectangle — and to the
+object itself, as SVG's UA sheet has `overflow: hidden` on one: an
+`overflow` of `visible`, in a rule or in its presentation attribute, lets
+what it holds spill out of it, as far as the drawing's own box. On X11,
+whose glyphs are set as they were shaped, an object the drawing scales,
+turns or skews is drawn on a surface as it was laid out and the surface
+through the matrix, as a box with a `transform` is: a `viewBox` that
+enlarges a drawing enlarges a picture of its labels. Under a `<switch>`,
+an object, or a group around it, that asks for SVG 1.1's `Extensibility`
+in `requiredFeatures` is drawn, and the fallback after it is not, as a
+browser draws draw.io's exports.
+
+What an object holds draws, and does nothing else yet: it takes no press,
+no focus and no part in the document's text — the pointer is over the
+drawing, a link in it is not followed, a selection does not reach it and
+`textContent()` leaves it out — and a form control in it gets no widget. A
+change in it, or in the drawing it is in, builds the document's boxes
+again, where most changes are taken in place.
+
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>`, and an `image-set()` as the one option it
 chooses ([Image sets](#image-sets)) — with `background-repeat`, `space` and
