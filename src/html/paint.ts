@@ -152,6 +152,7 @@ import type {
   ShapeStyler,
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
+import type { DrawingUnits } from './css/shapes.js';
 import type { Element } from './dom.js';
 import { topLayerOrder, treeGeneration } from './dom.js';
 import {
@@ -550,6 +551,9 @@ export interface PaintOptions {
   /** @internal What the rules give the shapes in each drawing, where one
    *  could reach any (`BoxTree.shapeStyler`). */
   shapeStyler?: ShapeStyler | null;
+  /** @internal What a `rem` and a `vw` in a drawing's geometry are of
+   *  (`BoxTree.drawingUnits`). */
+  drawingUnits?: (() => DrawingUnits) | null;
   /** @internal The HTML of the tree's `<foreignObject>`s, where it has
    *  any (`BoxTree.foreign`), which its drawings paint (`paintForeign`). */
   foreign?: ReadonlyMap<Element, ForeignObject> | null;
@@ -1180,6 +1184,7 @@ export function paintDocument(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
     backdrop,
   };
@@ -1235,6 +1240,7 @@ export function paintCapture(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
     backdrop,
     captureTop: box,
@@ -2608,6 +2614,7 @@ export function paintLiftedBox(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   });
 }
@@ -2641,6 +2648,7 @@ export function paintCover(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   };
   if (turns(box)) paintTransformed(ctx, box, inner);
@@ -12635,6 +12643,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
     options.foreign && inlineDrawing(box.el).foreignObjects().length
       ? foreignPainter(options.foreign, options)
       : null,
+    options.drawingUnits?.() ?? null,
   );
 }
 

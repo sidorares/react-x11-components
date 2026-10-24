@@ -1779,7 +1779,9 @@ no realm of its own has animation frame callbacks of its own, which run
 after the page's in tree order, as each document's do in a browser. Not
 yet: such a frame's document scrolls nothing (`scrollX` is 0, `scrollTo`
 does nothing, and nothing tells its `scroll`), and a realm of its own runs
-its frames on its own clock, apart from the page's.
+its frames on its own clock, apart from the page's. A frame whose
+`scrolling` is `no`, `off` or `noscroll` shows no scroll bars, whatever its
+document's `overflow` (HTML 15.4.4).
 
 ## Focus and the keyboard
 
@@ -3528,14 +3530,20 @@ an element inside the drawing as well — `.logo path { fill: #fff }`,
 `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`,
 `stroke-dasharray`, `stroke-dashoffset`, `fill-rule`, `fill-opacity`, `stroke-opacity`, `opacity`, `color`,
 `display`, `visibility`, `clip-path` — a `url()` naming a `<clipPath>` —
-and `clip-rule`, and a gradient stop's `stop-color` and
-`stop-opacity`: over the element's presentation attributes and under its
+and `clip-rule`, a text's `font`, `font-family`, `font-size`, `font-style`
+and `font-weight` — `text { font: 10px/1 Ahem }` — and a gradient stop's
+`stop-color` and `stop-opacity`: over the element's presentation attributes and under its
 `style` attribute, as the cascade orders them, `!important` and `var()`
 included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
 — `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
 ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
-no others: a rule's `transform` or font is not. A dash pattern, from an
+no others: a rule's `transform` is not. A length in the drawing's
+geometry is worked out as CSS has it, where ntk's `SvgView` would read it
+as the number before its unit: `x2="2.5em"` is of the element's font
+size, `5rem` of the root element's, `1vw` of the viewport and `1in` 96
+user units, a math function of any of them too, and a `font-size` in
+`rem` or `vw` likewise. A dash pattern, from an
 attribute or a rule, is lengths in user units, and a percentage of the
 viewport's diagonal is none. What is in
 a drawing has no box, so the pointer is over the drawing and never over a
@@ -4035,8 +4043,12 @@ down multiplied, so layout and paint read zoomed values and know nothing of
 it. A child sees its parent's lengths at its own zoom, so what it inherits,
 an `inherit`, an `em` in its `font-size` and a `rem` are zoomed where it
 is; an image's, an SVG's, a canvas's and a frame's natural size are zoomed
-with it, and a frame's document is laid out at its CSS size and drawn
-zoomed. `getComputedStyle` answers as an unzoomed element's, as Chrome
+with it. An inline drawing is drawn at its zoom as a whole: its user unit
+is a CSS pixel, so its geometry, its strokes and its text, in whatever
+unit they are, are its zoom times the size they are unzoomed. A frame's
+document is laid out at its CSS size and drawn zoomed, at the product of
+the zooms where frames nest, and laid out again when a zoom around it
+moves — a frame's script zooming the `<iframe>` it holds. `getComputedStyle` answers as an unzoomed element's, as Chrome
 does, while `getBoundingClientRect` answers what is drawn; and a container
 query reads its container in the container's CSS pixels.
 

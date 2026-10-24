@@ -30,6 +30,7 @@ import {
   RED_PNG,
   SVG_NS,
   boxOf,
+  bytesApart,
   fillsOf,
   findById,
   h,
@@ -1316,6 +1317,91 @@ metric(
     await expectPixel(ctx, 5, 26, '#ffffff', { message: 'two wide' });
   },
 );
+
+for (const scale of [1, 2]) {
+  metric(
+    `zoom draws an inline drawing as one four times its size, its lengths in every unit, its strokes and its text with it, at ${scale}x`,
+    async () => {
+      // WPT's zoom/svg.html: a drawing under two zooms of 2 is the drawing
+      // four times the size with every number in it four times as large.
+      // Its user unit is a CSS pixel, so a `2.5em` is of its font size, a
+      // `5rem` of the root's and a `1vw` of the viewport, all unzoomed, and
+      // a rule's stroke and font are in user units too. SvgView read the
+      // three units as the number before them, and a rule's `font` was
+      // none: the text was set in what it inherited, 80px here and 20 in
+      // the reference
+      const style = (k: number) =>
+        `<style>:root{font-size:10px${k === 1 ? ';zoom:2' : ''}}` +
+        'body{margin:0}svg{display:block;background:#ff0000}' +
+        '.container{font-size:20px}' +
+        (k === 1 ? '.child{zoom:2}' : '') +
+        `line{stroke:#00ff00;stroke-width:${10 * k}px}` +
+        `.e{stroke-width:${0.5 * k}em}` +
+        `polygon,text{fill:#00ff00}text{font:${10 * k}px/1 sans-serif}</style>`;
+      const test =
+        style(1) +
+        '<div class="container"><div class="child">' +
+        '<svg width="100" height="100">' +
+        '<rect width="10rem" height="100" fill="#0000ff"/>' +
+        '<line y1="0" y2="0" x1="0" x2="50"/>' +
+        '<line y1="10" y2="10" x1="0" x2="2.5em"/>' +
+        '<line y1="20" y2="20" x1="0" x2="5rem"/>' +
+        '<line y1="30" y2="30" x1="0" x2="50%"/>' +
+        '<line y1="40" y2="40" x1="0" x2="1vw"/>' +
+        '<line class="e" y1="55" y2="55" x1="60" x2="70"/>' +
+        '<polygon points="0,60 50,60 50,70 0,70"/>' +
+        '<text x="80" y="60">X</text></svg></div></div>';
+      const reference =
+        style(4) +
+        '<div class="container"><svg width="400" height="400">' +
+        '<rect width="400" height="400" fill="#0000ff"/>' +
+        '<line y1="0" y2="0" x1="0" x2="200"/>' +
+        '<line y1="40" y2="40" x1="0" x2="10em"/>' +
+        '<line y1="80" y2="80" x1="0" x2="20rem"/>' +
+        '<line y1="120" y2="120" x1="0" x2="50%"/>' +
+        '<line y1="160" y2="160" x1="0" x2="4vw"/>' +
+        '<line class="e" y1="220" y2="220" x1="240" x2="280"/>' +
+        '<polygon points="0,240 200,240 200,280 0,280"/>' +
+        '<text x="320" y="240">X</text></svg></div>';
+      const area = { x: 0, y: 0, width: 400 * scale, height: 400 * scale };
+      const drawn = async (source: string) => {
+        const { result } = await renderWithBytes(source, {}, 400, scale);
+        await act();
+        const pixels = await pixelsIn(result.ctx, area);
+        cleanup();
+        return pixels;
+      };
+      const ours = await drawn(test);
+      const theirs = await drawn(reference);
+      const at = (px: Uint8ClampedArray, x: number, y: number): string => {
+        const i = (y * scale * area.width + x * scale) * 4;
+        return [px[i], px[i + 1], px[i + 2]]
+          .map((c) => c.toString(16).padStart(2, '0'))
+          .join('');
+      };
+      // what the reference draws is what CSS has it draw: an em of 20px,
+      // a rem of 10 and a vw of 4, a stroke 40 wide, the text 40px tall
+      assert.strictEqual(at(theirs, 190, 45), '00ff00', 'ten ems');
+      assert.strictEqual(at(theirs, 210, 45), '0000ff', 'and no more');
+      assert.strictEqual(at(theirs, 190, 85), '00ff00', 'twenty rems');
+      assert.strictEqual(at(theirs, 14, 165), '00ff00', 'four vw');
+      assert.strictEqual(at(theirs, 18, 165), '0000ff', 'of 400px');
+      assert.strictEqual(at(theirs, 260, 202), '00ff00', 'two ems wide');
+      let rows = 0;
+      for (let y = 180; y < 260; y += 1) {
+        for (let x = 300; x < 380; x += 1) {
+          if (at(theirs, x, y) === '00ff00') {
+            rows += 1;
+            break;
+          }
+        }
+      }
+      assert.ok(rows > 24 && rows < 34, `an X 40px tall, not ${rows} rows`);
+      // and the zoomed drawing is that, pixel for pixel
+      assert.strictEqual(bytesApart(ours, theirs), 0, 'drawn as the reference');
+    },
+  );
+}
 
 metric(
   'a <use> draws an element from anywhere in the document, a symbol fitted to its viewport',

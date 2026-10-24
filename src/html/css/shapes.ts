@@ -14,8 +14,30 @@
 // properties for the dozen a shape has, on a page of hundreds of icons.
 import type { Element } from 'domhandler';
 import { LIGHT_DARK, SYSTEM_COLOR, lightDark, systemColors } from './color.js';
-import { inkColor, parseAlpha, parseColor, parseLength } from './values.js';
+import {
+  inkColor,
+  parseAlpha,
+  parseColor,
+  parseLength,
+  splitCommas,
+  splitValue,
+} from './values.js';
 import type { UnitContext } from './values.js';
+
+/**
+ * What a length in a drawing is of besides its own font size and its
+ * viewport, in CSS pixels, which are its user units: the root element's
+ * font size, a `rem`, and the sides of the document's viewport, a `vw` and
+ * its kin (`Cascade.drawingUnits`). Unzoomed, since what zooms a drawing
+ * is the scale it is drawn at (`paintSvg`): a `1vw` in a drawing under
+ * `zoom: 4` is a hundredth of the viewport in user units, drawn four
+ * device pixels to each.
+ */
+export interface DrawingUnits {
+  rem: number;
+  vw: number;
+  vh: number;
+}
 
 /** What the rules give one element of a drawing: each property they set,
  *  as `SvgView` reads it — `inherit` for one they put back to what the
@@ -73,6 +95,13 @@ const PROPS: Record<string, boolean> = {
   'clip-rule': true,
   color: true,
   visibility: true,
+  // what a `<text>` is set in: `text { font: 10px/1 Ahem }` sets it as a
+  // paragraph's, and its `em`s are of it
+  font: true,
+  'font-family': true,
+  'font-size': true,
+  'font-style': true,
+  'font-weight': true,
   opacity: false,
   display: false,
   'clip-path': false,
@@ -96,6 +125,12 @@ export const ROOT_BOX_PROPS: ReadonlySet<string> = new Set([
   'visibility',
   'opacity',
   'clip-path',
+  // and its font, which its text inherits (`SvgDrawing.draw`'s `font`)
+  'font',
+  'font-family',
+  'font-size',
+  'font-style',
+  'font-weight',
 ]);
 
 /** Each at its initial value (SVG 2, 13; CSS Color 4; CSS Display 3). */
@@ -118,6 +153,9 @@ const INITIAL: Record<string, string> = {
   'clip-path': 'none',
   'stop-color': '#000000',
   'stop-opacity': '1',
+  'font-size': 'medium',
+  'font-style': 'normal',
+  'font-weight': '400',
 };
 
 /** The elements a rule's subject can be, where it names one by its type,
@@ -199,12 +237,15 @@ export function shapeValue(
   const wide = value.toLowerCase();
   if (wide === 'inherit') return PROPS[prop] ? 'inherit' : null;
   if (wide === 'initial') {
+    if (prop === 'font-family') {
+      return quotedFamilies(ctx.units.initial?.fontFamily ?? 'sans-serif');
+    }
     return prop === 'color'
       ? (ctx.units.initial?.color ?? '#000000')
-      : INITIAL[prop];
+      : (INITIAL[prop] ?? null);
   }
   if (wide === 'unset' || wide === 'revert' || wide === 'revert-layer') {
-    return PROPS[prop] ? 'inherit' : INITIAL[prop];
+    return PROPS[prop] ? 'inherit' : (INITIAL[prop] ?? null);
   }
   if (SHAPE_COLORS.has(prop) && SYSTEM_COLOR.test(value)) {
     value = systemColors(value, ctx.units.systemColors);
@@ -300,9 +341,197 @@ export function shapeValue(
         ? 'inline'
         : null;
     }
+    case 'font-size': {
+      // a keyword, and a size of what the element inherits — an `em`, an
+      // `ex`, a percentage — `SvgView` works out against the size it has
+      // for the parent, as the drawing's own lengths in them are worked out
+      // (`copyTree`); any other length is user units
+      const v = value.toLowerCase();
+      if (FONT_SIZE_WORDS.has(v) || INHERITED_SIZE.test(v)) return v;
+      const px = lengthIn(value, ctx.units);
+      return px !== null && px >= 0 ? String(px) : null;
+    }
+    case 'font-family': {
+      const names = splitCommas(value);
+      if (!names.length || !names.every(isFamilyName)) return null;
+      const list = names
+        .map((name) =>
+          /^['"]/.test(name)
+            ? name.slice(1, -1)
+            : name.trim().replace(/\s+/g, ' '),
+        )
+        .join(', ');
+      // the families the document loads itself, as the text engine knows
+      // them (`fonts.ts`): a page's `Ahem` is no name the engine has
+      return quotedFamilies(ctx.units.families?.(list) ?? list);
+    }
+    case 'font-weight': {
+      const v = value.toLowerCase();
+      if (/^(?:normal|bold|bolder|lighter)$/.test(v)) return v;
+      const n = NUMBER.test(v) ? Number(v) : NaN;
+      return n >= 1 && n <= 1000 ? String(n) : null;
+    }
+    case 'font-style': {
+      const v = value.toLowerCase();
+      if (v === 'normal' || v === 'italic') return v;
+      return /^oblique\b/.test(v) ? 'oblique' : null;
+    }
     default:
       return null;
   }
+}
+
+/** The `font-size` keywords, which `SvgView` reads as they are. */
+const FONT_SIZE_WORDS = new Set([
+  'xx-small',
+  'x-small',
+  'small',
+  'medium',
+  'large',
+  'x-large',
+  'xx-large',
+  'xxx-large',
+  'larger',
+  'smaller',
+]);
+
+/** A size in a unit of the font the element inherits, or a percentage of
+ *  it. */
+const INHERITED_SIZE = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?(?:em|ex|%)$/;
+
+/** A family name: quoted, or identifiers (CSS Fonts 4, 2.1). */
+function isFamilyName(name: string): boolean {
+  const n = name.trim();
+  if (/^(['"]).*\1$/s.test(n)) return n.length >= 2;
+  return (
+    n !== '' &&
+    n
+      .split(/\s+/)
+      .every((word) =>
+        /^-?(?:[_a-z\u00a0-\uffff]|\\.)(?:[-\w\u00a0-\uffff]|\\.)*$/i.test(
+          word,
+        ),
+      )
+  );
+}
+
+/**
+ * The longhands a `font` shorthand gives a shape (CSS Fonts 4, 2.8), each
+ * as `shapeValue` writes it: its style, its weight, its size and its
+ * family, the first two back to their initial values where it names
+ * neither. Null for a value that is no font — a size and a family are what
+ * it must have — and for a system font, which nothing here has a table
+ * for. Its line height and its variants are nothing a drawing reads.
+ */
+export function shapeFont(
+  raw: string,
+  ctx: ShapeContext,
+): Record<string, string> | null {
+  const value = raw.trim();
+  const wide = value.toLowerCase();
+  if (
+    wide === 'inherit' ||
+    wide === 'initial' ||
+    wide === 'unset' ||
+    wide === 'revert' ||
+    wide === 'revert-layer'
+  ) {
+    const out: Record<string, string> = {};
+    for (const prop of FONT_LONGHANDS) {
+      const one = shapeValue(prop, wide, ctx);
+      if (one !== null) out[prop] = one;
+    }
+    return out;
+  }
+  const parts = splitValue(value);
+  if (parts.length < 2) return null;
+  let style = 'normal';
+  let weight = '400';
+  let i = 0;
+  for (; i < parts.length; i += 1) {
+    const v = parts[i].toLowerCase();
+    if (v === 'normal' || v === 'small-caps' || FONT_WIDTHS.has(v)) continue;
+    if (v === 'italic' || v === 'oblique') style = v;
+    else if (/^(?:bold|bolder|lighter|\d+)$/.test(v)) {
+      const w = shapeValue('font-weight', v, ctx);
+      if (w === null) return null;
+      weight = w;
+    } else break;
+  }
+  // `12px/1.5`, or the same with space round the slash
+  const slash = (parts[i] ?? '').indexOf('/');
+  const sizeText = slash < 0 ? parts[i] : parts[i].slice(0, slash);
+  let next = i + 1;
+  if (slash < 0 && parts[next]?.startsWith('/')) {
+    next += parts[next] === '/' ? 2 : 1;
+  } else if (slash === parts[i]?.length - 1) next += 1;
+  const size = sizeText ? shapeValue('font-size', sizeText, ctx) : null;
+  const family = shapeValue('font-family', parts.slice(next).join(' '), ctx);
+  if (size === null || size === 'inherit' || family === null) return null;
+  return {
+    'font-style': style,
+    'font-weight': weight,
+    'font-size': size,
+    'font-family': family,
+  };
+}
+
+const FONT_LONGHANDS = [
+  'font-style',
+  'font-weight',
+  'font-size',
+  'font-family',
+];
+
+/** A width by its keyword, which a `font` may name and a drawing does not
+ *  read (CSS Fonts 4, 2.7's `<font-width-css3>`). */
+const FONT_WIDTHS = new Set([
+  'ultra-condensed',
+  'extra-condensed',
+  'condensed',
+  'semi-condensed',
+  'semi-expanded',
+  'expanded',
+  'extra-expanded',
+  'ultra-expanded',
+]);
+
+/** The generic families, which a font list names without quotes. */
+const GENERIC_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'emoji',
+  'math',
+  'fangsong',
+]);
+
+/**
+ * A style's family list as a `font` shorthand names it, for `SvgView` to
+ * set its text in: each family quoted but the generic ones. The list a
+ * style holds has its quotes taken off (`familyList`), and a name that is
+ * not identifiers — `Font Awesome 6 Free` — makes a shorthand that a
+ * context's parser drops whole, and the text is set in whatever font the
+ * context had last.
+ */
+export function quotedFamilies(list: string): string {
+  return list
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) =>
+      GENERIC_FAMILIES.has(name.toLowerCase())
+        ? name
+        : `"${name.replace(/["\\]/g, '\\$&')}"`,
+    )
+    .join(', ');
 }
 
 /** A length in user units, which are CSS pixels; null for none, and for a

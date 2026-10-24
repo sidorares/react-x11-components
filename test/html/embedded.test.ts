@@ -19,7 +19,7 @@ import { Image } from 'react-x11/ntk';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type { Element, HtmlViewNode } from '../../src/html/index.js';
 import type { EmbeddedRect, HtmlDomEvent } from '../../src/html/index.js';
-import { FONTS, h, metric } from './harness.js';
+import { FONTS, boxOf, h, metric, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -289,6 +289,66 @@ test('a press on a scaled mount reaches the point of its document it is drawn ov
       });
     }
     assert.deepStrictEqual(clicks, ['#two', '#one'], `${scale}x`);
+    cleanup();
+  }
+});
+
+test("a frame's document is laid out again at a zoom that changes, drawn at the zooms it is under, at 1x and 2x", async () => {
+  // WPT's zoom/iframe-zoom-nested.html: a frame's script sets the zoom of
+  // the `<iframe>` it holds once the document in it is laid out. Core lays
+  // the document out again under the new scale, at the width it now has
+  // in device pixels, and nothing told the document its lengths were
+  // device pixels of another scale: laid out with the styles it had, a box
+  // 20px wide in a frame zoomed by 3 was 40 device pixels wide, not 60
+  for (const scale of [1, 2]) {
+    const tree = (zoom: number) =>
+      h(
+        'box',
+        { style: { width: 300, height: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}iframe{border:0;display:block;' +
+            'width:100px;height:50px}</style>' +
+            '<div style="zoom:1.5"><iframe id="f"></iframe></div>',
+          stylesheet: `iframe{zoom:${zoom}}`,
+          partial: false,
+          renderEmbedded: () =>
+            h(Html, {
+              'data-testname': 'leaf',
+              partial: false,
+              source:
+                '<style>body{margin:0}</style><div id="t" style="' +
+                'width:20px;height:10px;margin-left:5px;background:#ff0000">' +
+                '</div>',
+            }),
+        }),
+      );
+    const result = await renderX11(tree(1), {
+      width: 340,
+      height: 340,
+      scale,
+      ...(FONTS && { fonts: FONTS }),
+    });
+    await act();
+    const across = (): number[] => {
+      const t = boxOf(view(screen.getByTestName('leaf') as DrawnNode), 't');
+      return [t.x, t.width, t.height];
+    };
+    assert.deepStrictEqual(
+      across(),
+      [7.5 * scale, 30 * scale, 15 * scale],
+      `at the zoom it is drawn at, ${scale}x`,
+    );
+    await act(async () => result.rerender(tree(2)));
+    await act();
+    assert.deepStrictEqual(
+      across(),
+      [15 * scale, 60 * scale, 30 * scale],
+      `at the zooms' product once one changes, ${scale}x`,
+    );
+    // and drawn there: red to 75 across and 30 down, and not past
+    await expectPixel(result.ctx, 70 * scale, 25 * scale, '#ff0000');
+    await expectPixel(result.ctx, 80 * scale, 25 * scale, '#ffffff');
     cleanup();
   }
 });

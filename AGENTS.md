@@ -2767,7 +2767,14 @@ the drawing rather than matched from each of its elements
 set's `.icon { fill }` is not matched a second time. GitHub's repository
 page, a hundred drawings and no rule for any shape in them, went from a
 tenth of a millisecond a drawing to a few microseconds. A property added to
-`shapes.ts` has to be one `SvgView` reads. An SVG _image_ is the same
+`shapes.ts` has to be one `SvgView` reads, or a shorthand the cascade
+writes out as some (`shapeFont`). **A length `SvgView` reads otherwise
+than CSS is worked out in the drawing's copy** (`geometryLength`,
+`fontSizeOf`): a percentage, a math function, a length in any unit but
+`px` — it read `x2="2.5em"` as 2.5 and a `rem` as 16 — in user units,
+which are CSS pixels unzoomed, since a zoom is the scale the drawing is
+drawn at; a rule's lengths are read at the drawing's zoom and come to the
+same (`DrawingUnits`). An SVG _image_ is the same
 cascade over a document of its own: `SvgDrawing.drawImage` builds a
 `Cascade` over the image's `<style>` sheets alone, one per colour scheme,
 tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
@@ -3774,7 +3781,11 @@ and `crowded` asks what each box on the path holds in that box's own
 the slide reached a frame drawn somewhere else. **The scale box is always
 there**, at 1 where nothing scales the element, so a frame whose stage
 comes to fit the window exactly is the same node, and its document is
-not started again. And **a cover is never painted over a scaled player**
+not started again — and is styled again when the factor moves
+(`_followScale`): a frame's script zooms the `<iframe>` its document is
+drawn in once it was laid out, and core lays the document out again at a
+width it may have had, under styles whose lengths are device pixels of
+the old scale. And **a cover is never painted over a scaled player**
 (`coversOf` is not asked): it is painted where it is laid out, through
 its own matrix and through no matrix around it, so such a video keeps
 its poster. A turn, a

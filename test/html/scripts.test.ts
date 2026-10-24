@@ -9302,6 +9302,82 @@ metric(
 );
 
 metric(
+  "frames nested under zoom draw each document at the zooms' product, one a frame's script sets included, and a frame that does not scroll shows no bars",
+  async () => {
+    // WPT's zoom/iframe-zoom-nested.html, at three eighths of its size: a
+    // frame of a page, zoomed by 1.5 or not, holds a frame its script zooms
+    // by 2, which holds a leaf. Each is drawn as the reference draws it with
+    // every length multiplied by the zooms above it instead. The leaf was
+    // laid out at the scale it had before its frame's script zoomed it, and
+    // the leaf's scroll bars, which `scrolling="no"` hides, were drawn
+    // through the zoom where the reference draws them unzoomed
+    const nested =
+      '<!DOCTYPE html><style>body{--top:1;--sub:1;' +
+      'margin:calc(6px * var(--top));background:#ffa500}' +
+      'iframe{display:block;border:0;' +
+      'width:calc(48px * var(--top) * var(--sub));' +
+      'height:calc(24px * var(--top) * var(--sub))}</style>' +
+      '<iframe id="target" scrolling="no"></iframe><script>' +
+      'var target = document.getElementById("target");' +
+      'var params = new URLSearchParams(location.search), scale = 1;' +
+      'if (params.has("zoom")) target.style.zoom = params.get("zoom");' +
+      '["top", "sub"].forEach(function (name) {' +
+      '  if (!params.has(name)) return;' +
+      '  document.body.style.setProperty("--" + name, params.get(name));' +
+      '  scale *= parseFloat(params.get(name));' +
+      '});' +
+      'target.src = scale !== 1 ? "leaf.html?scale=" + scale : "leaf.html";' +
+      '</script>';
+    const leaf =
+      '<!DOCTYPE html><style>body{--scale:1;margin:calc(9px * var(--scale));' +
+      'background:#00ffff}#t{width:calc(16px * var(--scale));' +
+      'height:calc(12px * var(--scale));background:#ff69b4}</style>' +
+      '<div id="t"></div><script>' +
+      'var p = new URLSearchParams(location.search);' +
+      'if (p.has("scale"))' +
+      '  document.body.style.setProperty("--scale", p.get("scale"));' +
+      '</script>';
+    const files: Record<string, string> = {
+      'nested.html?zoom=2': nested,
+      'nested.html?top=1.5&sub=2': nested,
+      'nested.html?sub=2': nested,
+      'leaf.html': leaf,
+      'leaf.html?scale=2': leaf,
+      'leaf.html?scale=3': leaf,
+    };
+    const frames = (top: string, child: string, scaled: string) =>
+      '<style>body{margin:0}iframe{display:block;border:0;' +
+      'width:calc(128px * var(--s, 1));height:calc(64px * var(--s, 1))}' +
+      `${scaled}</style>` +
+      `<iframe class="z" src="${top}" scrolling="no"></iframe>` +
+      `<iframe src="${child}" scrolling="no"></iframe>`;
+    const area = { x: 0, y: 0, width: 200, height: 170 };
+    const drawn = async (source: string): Promise<Uint8ClampedArray> => {
+      const { result, logs } = await hostedFrames(source, files);
+      // each leaf's box: 27 in from its frame zoomed by three, and 18
+      // from the one zoomed by two, 96 down
+      await waitForPixel(result.ctx, 80, 68, '#ff69b4', {
+        message: `the leaf zoomed by three\n${logs.join('\n')}`,
+      });
+      await waitForPixel(result.ctx, 52, 140, '#ff69b4', {
+        message: 'the leaf zoomed by two',
+      });
+      await settle(100);
+      const pixels = await pixelsIn(result.ctx, area);
+      cleanup();
+      return pixels;
+    };
+    const ours = await drawn(
+      frames('nested.html?zoom=2', 'nested.html?zoom=2', '.z{zoom:1.5}'),
+    );
+    const theirs = await drawn(
+      frames('nested.html?top=1.5&sub=2', 'nested.html?sub=2', '.z{--s:1.5}'),
+    );
+    assert.strictEqual(bytesApart(ours, theirs), 0, 'drawn as the reference');
+  },
+);
+
+metric(
   "a canvas's script draws pixels the page reads back at once, and the document draws them in the canvas's box",
   async () => {
     const { result, text, logs } = await hostedFrames(
