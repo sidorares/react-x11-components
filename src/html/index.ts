@@ -671,6 +671,15 @@ export interface HtmlHandle {
     end: number,
     direction?: FieldSelection['direction'],
   ): boolean;
+  /**
+   * Drop a control's picker, as a script's `showPicker()` does once it is
+   * allowed to: a drop-down `<select>`'s menu, which its widget drops
+   * where core's `<Select>` takes `open` (react-x11 with the select's open
+   * state), and which `:open` matches while it is down. No focus moves.
+   * False where nothing drops: a list box, a disabled select, an `<input>`,
+   * none of whose pickers is a widget here, or an older core's select.
+   */
+  showPicker(element: Element): boolean;
   /** Give an element the focus, as Tab gives it: a control's widget, a
    *  link, a button, an element with a `tabindex`. False where it takes
    *  none. */
@@ -1226,6 +1235,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
               ? direction
               : 'none',
         }) ?? false,
+      showPicker: (element: Element) =>
+        nodeRef.current?.interactive?.showPicker(element) ?? false,
       focus: (element: Element) =>
         nodeRef.current?.interactive?.focus(element) ?? false,
       toldFocus: (element: Element) =>
@@ -1305,6 +1316,7 @@ function documentInteraction(
     controlSelection: (el) => live.current?.forms.selection(el) ?? null,
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
+    showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
     focus: (el) => {
       const now = live.current;
       if (!now) return false;

@@ -582,6 +582,7 @@ export interface DocumentInteraction {
   setControlValue(el: Element, value: string | boolean): boolean;
   controlSelection(el: Element): FieldSelection | null;
   setControlSelection(el: Element, selection: FieldSelection): boolean;
+  showPicker(el: Element): boolean;
   focus(el: Element): boolean;
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal
@@ -12820,9 +12821,11 @@ function isSheetLink(el: Element): boolean {
  *  focus stop or a presentational hint. `-rx-defined` is no attribute: it
  *  is a custom element's upgrade, which only `:defined` reads; nor is
  *  `-rx-modal`, a dialog going into the top layer or out, which only
- *  `:modal` reads — and the style it gives, which the boxes follow. */
+ *  `:modal` reads — and the style it gives, which the boxes follow — nor
+ *  `-rx-picker-open`, a `<select>`'s menu dropping or going, which only
+ *  `:open` and `:closed` read. */
 const STYLE_ONLY_ATTRIBUTE =
-  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined|-rx-modal)$/;
+  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined|-rx-modal|-rx-picker-open)$/;
 
 /**
  * The attribute changes in a list that changed nothing: an attribute set to

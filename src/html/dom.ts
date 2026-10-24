@@ -781,6 +781,32 @@ export function isPopoverOpen(el: Element): boolean {
   return IN_TOP_LAYER.get(el)?.kind === 'popover';
 }
 
+/** The controls whose picker is open: a `<select>`'s menu, down. */
+const PICKER_OPEN = new WeakSet<Element>();
+
+/** A control's picker opened or shut, as its widget says (`useForms`):
+ *  whether that changed what `:open` answers for it. */
+export function setPickerOpen(el: Element, open: boolean): boolean {
+  if (PICKER_OPEN.has(el) === open) return false;
+  if (open) PICKER_OPEN.add(el);
+  else PICKER_OPEN.delete(el);
+  return true;
+}
+
+/** Whether a control's picker is open (HTML's `:open`, 16.6.1): a
+ *  `<select>` whose drop-down box is down. */
+export function isPickerOpen(el: Element): boolean {
+  return PICKER_OPEN.has(el);
+}
+
+/** Whether a `<select>` is a drop-down box, which has a picker to open, and
+ *  not a list box (HTML 4.10.7: no `multiple`, and a display size of 1). */
+export function isDropDown(el: Element): boolean {
+  if (el.name !== 'select' || el.attribs.multiple !== undefined) return false;
+  const size = el.attribs.size;
+  return size === undefined || !(parseInt(size, 10) > 1);
+}
+
 /** What a page's scripts set a media element's `muted` to, from the first
  *  time they do; the `muted` attribute only starts it (HTML 4.8.11.12). */
 const MUTED = new WeakMap<Element, boolean>();

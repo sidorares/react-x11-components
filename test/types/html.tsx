@@ -141,6 +141,9 @@ export function ScriptHost(): React.ReactElement {
     void selected?.direction;
     const took: boolean = handle.setControlSelection(el, 0, 1, 'backward');
     void took;
+    // a select's menu dropped, as a script's showPicker() drops it
+    const dropped: boolean = handle.showPicker(el);
+    void dropped;
     void handle.focus(el);
     handle.blur();
     const active: HtmlElement | null = handle.activeElement;

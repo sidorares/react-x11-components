@@ -4543,6 +4543,76 @@ test('text the user selects in a field is the page’s select event', async (t) 
   );
 });
 
+test("showPicker() wants the user's press behind it and spends it, refuses what is immutable and a select not rendered, and drops a select's menu, :open while it is down", async () => {
+  // HTML 4.10.5.4's steps, and WPT's show-picker-*: `InvalidStateError`
+  // for a disabled control or a read-only one its `readonly` applies to,
+  // `NotAllowedError` with no transient activation, `NotSupportedError`
+  // for a `<select>` that is not rendered — none of which spends the
+  // activation — and otherwise the activation spent and the picker shown,
+  // where there is one: a drop-down's menu, which core's `<Select>` drops
+  // where it takes `open`, and which an older core's keeps to itself.
+  const doc = await hosted(
+    '<p id="out"></p><input type="button" id="b" value="open">' +
+      '<select id="s"><option>one</option><option>two</option></select>' +
+      '<select id="d" disabled><option>x</option></select>' +
+      '<select id="n" style="display:none"><option>x</option></select>' +
+      '<input id="ro" type="date" readonly><input id="c" type="color" readonly>' +
+      '<script>' +
+      'var $ = function (id) { return document.getElementById(id); }, clicks = 0;' +
+      'var act = function () { return navigator.userActivation.isActive; };' +
+      'function show(id) { try { $(id).showPicker(); return "ok"; } catch (e) { return e.name; } }' +
+      '$("out").textContent = [show("s"), show("d"), act(),' +
+      '  navigator.userActivation.hasBeenActive,' +
+      '  navigator.userActivation instanceof UserActivation].join("|");' +
+      '$("b").onclick = function () {' +
+      '  clicks += 1;' +
+      '  $("out").textContent = (clicks === 1' +
+      '    ? [act(), show("n"), show("ro"), act(), show("c"), act(), show("s")]' +
+      '    : [show("s"), act(), $("s").matches(":open"), show("s")]).join("|");' +
+      '};' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'NotAllowedError|InvalidStateError|false|false|true',
+    'no press yet, and a disabled select refused before that is asked',
+  );
+  const [trigger] = screen.getAllByRole('combobox') as DrawnNode[];
+  const holds = !(
+    'onOpenChange' in (trigger as unknown as { props: object }).props
+  );
+  const button = screen.getByRole('button') as DrawnNode;
+  await userEvent.click(button);
+  assert.equal(
+    await settled(doc, 'out', (t) => t.startsWith('true|')),
+    // a color input has a picker readonly does not reach, spent here on
+    // nothing drawn, and the select after it has no activation left
+    'true|NotSupportedError|InvalidStateError|true|ok|false|NotAllowedError',
+  );
+  await userEvent.click(button);
+  assert.equal(
+    await settled(doc, 'out', (t) => t.startsWith('ok')),
+    `ok|false|${holds}|NotAllowedError`,
+    'a second call in the same click is refused',
+  );
+  await act();
+  const menu = () =>
+    (trigger.children as DrawnNode[]).some(
+      (c) => (c as unknown as { isWindow?: boolean }).isWindow,
+    );
+  assert.equal(menu(), holds, holds ? 'the menu is down' : 'no menu drops');
+  assert.equal(trigger.focused, false, 'and no focus moved');
+  // a press anywhere else takes it up, as it takes a browser's
+  await userEvent.clickOutside({ target: trigger });
+  await act();
+  assert.equal(menu(), false);
+  doc.run('$("out").textContent = "after " + $("s").matches(":open");');
+  assert.equal(
+    await settled(doc, 'out', (t) => t.startsWith('after')),
+    'after false',
+  );
+});
+
 test('a response resolves at its headers and its body arrives as the network hands it on, and an abort or a cancel lets the network go', async () => {
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));

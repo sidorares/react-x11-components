@@ -102,6 +102,7 @@ handle.refresh();
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `controlSelection(el)`                                                                  | A text field's selection, as a script reads `selectionStart`, `selectionEnd` and `selectionDirection`: `{ start, end, direction }` in UTF-16 code units into what it holds — its widget's, the user's caret and what they selected, where core's field says, and else what was last set; a caret at the end of its text where nothing was. Null for what is no text field.                                                                                                                                                                                                                                        |
 | `setControlSelection(el, start, end, direction?)`                                       | Select in it, as `setSelectionRange()` does: clamped to its text, no event, shown by its widget while it has the focus where core's field takes a selection, and kept for the widget mounted next.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `showPicker(el)`                                                                        | Drop a control's picker, as a page's `showPicker()` does once it is allowed to: a drop-down `<select>`'s menu, which `:open` matches while it is down. No focus moves. False where nothing drops: a list box, a disabled select, an `<input>`, or an older core's select.                                                                                                                                                                                                                                                                                                                                         |
 | `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `activeElement`                                                                         | The element whose widget or stop has the focus, or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `activate(el)`                                                                          | What a click on it does, with no click told of: a link followed through `onLink`, a button pressed, a `<details>` opened.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -1187,6 +1188,26 @@ react-x11#1006), read at run time. On a core without it the widget shows
 nothing a script selects, the getters read what a script last set, and
 the user's selection is told as nothing.
 
+**A drop-down `<select>`'s menu is its picker** (HTML 4.10.7). Whether it
+is down is the document's: the widget drops it as the user presses or
+types, or as a script's `showPicker()` asks, and while it is down the
+select matches `:open` (and a shut one `:closed`), restyled in place where
+that only changes ink, as a hover is. `showPicker()` is refused as HTML
+refuses it: `InvalidStateError` for a disabled control, or a read-only one
+whose type `readonly` applies to; `NotAllowedError` where no press or key
+of the user's is behind it, which a browser calls transient activation and
+which lasts five seconds and is spent by the call; and `NotSupportedError`
+for a `<select>` that is not rendered. None of them spends the activation.
+A list box, and an `<input>`, whose pickers have no widget here, drop
+nothing and are not refused. No focus moves, as none does in a browser.
+`navigator.userActivation` says whether the page has been used and whether
+the activation is live.
+
+The widget's half is core's (`open` and `onOpenChange` on its `<Select>`),
+which `<Html>` learns from the first select it mounts: a core without them
+keeps its menu to itself, so `:open` never matches a select, and
+`showPicker()` drops nothing.
+
 **A popover is shown and hidden by the page** (HTML 6.12): an element with
 a `popover` attribute, by `showPopover()`, `hidePopover()` and
 `togglePopover()`, or by a button whose `popovertarget` names it, which
@@ -1796,7 +1817,8 @@ logical pixels, as `elementRect` is, and `button` is the DOM's numbering.
 
 A host that runs a page's scripts has what it needs from the handle as well:
 `controlValue` and `setControlValue` for `value` and `checked`,
-`controlSelection` and `setControlSelection` for a field's selection, `focus`,
+`controlSelection` and `setControlSelection` for a field's selection,
+`showPicker` for a control's `showPicker()`, `focus`,
 `blur` and `activeElement`, `activate` for a script's `el.click()` once its
 own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
@@ -2000,7 +2022,8 @@ rules style — `display: block`, and while it is shut `content-visibility:
 hidden`, which keeps the box and draws nothing in it, from the UA sheet —
 so an accordion can transition its height open and shut (see
 `interpolate-size` under Transitions). `:open` and `:closed` match a
-`<details>` or a `<dialog>` open and shut. A `<dialog>` is not drawn
+`<details>` or a `<dialog>` open and shut, and a drop-down `<select>`
+whose menu is down or up (see [Scripts](#scripts)). A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred
 across its containing block; one a page's scripts opened with
 `showModal()` is in the top layer, centred in the viewport over all of
