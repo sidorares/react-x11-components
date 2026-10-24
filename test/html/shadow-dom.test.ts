@@ -397,6 +397,31 @@ test(":lang() in a shadow tree reads its host's language", async () => {
   assert.strictEqual(styleOf(view(node), 'b').color, '#00ff00');
 });
 
+test("a rem is the document root's size, whatever shadow tree the element is in", async () => {
+  // The cascade took the top of a shadow tree for the document's root, so
+  // every `rem` styled after it measured from that element. GitHub's sizes
+  // are `rem`s of elements a shadow tree's top sizes in `rem`s again, and
+  // each build measured the next from the last: rows restyled by a hover
+  // came out a tenth of a pixel high.
+  const { node } = await render(
+    '<!doctype html><html><head><style>html{font-size:16px}' +
+      ' #host{font-size:.5rem}</style></head><body>' +
+      '<div id="host"><template shadowrootmode="open">' +
+      '<span id="top">top</span></template></div>' +
+      '<p id="after" style="font-size:2rem">after</p></body></html>',
+  );
+  const el = view(node);
+  assert.strictEqual(styleOf(el, 'top').fontSize, 8);
+  assert.strictEqual(styleOf(el, 'after').fontSize, 32);
+  // and in the builds after it, which start from the root the last left
+  el.touchDocument();
+  await act();
+  el.touchDocument();
+  await act();
+  assert.strictEqual(styleOf(el, 'host').fontSize, 8);
+  assert.strictEqual(styleOf(el, 'after').fontSize, 32);
+});
+
 test('an application attaches a shadow root, and refresh draws it', async () => {
   const { node } = await render('<div id="host"><b id="light">light</b></div>');
   const el = view(node);
