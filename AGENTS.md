@@ -2407,6 +2407,26 @@ closes a way out a DOM binding opens by accident:
   new that swaps a frame's document, drops a runner or hands the host a
   navigation goes through these**, or a page never hears its `pagehide`,
   and its window's `navigation` answers for a document that is gone.
+- **A tab's session is the host's object, and the engine keeps it**
+  (`HtmlSessionHistory`, `scripts/session.ts`). The page's realm holds a
+  copy of every entry, its own and the other documents', and writes the
+  list back at each change (`persist`, `sessionWrite`); a navigation to
+  another document is planned there before the host's seam is called
+  (`planAway`), and the next document shown with the session takes the
+  plan as it starts (`arriveAt`, in `useScripts`'s `start`), which is also
+  where the document shown before it is told where it goes and goes — its
+  `pageswap`, then its unload — whichever `<Html>` it was in. **Anything new
+  that changes an entry of the page's session — a field, the list, the
+  index — ends in `persist`, and anything new that leaves for another
+  document calls `planAway` before the host hears of it**, or the next
+  document is shown at the wrong entry, with another's states. Only the
+  document shown last may write (`shown`): one that goes runs its listeners
+  after the next is in. And **the Navigation API's entries are a slice of
+  the session, never `s.entries`** (`navEntriesOf`: the run around the
+  current entry of its origin) — an index, a key looked up, `canGoBack`,
+  `back()` — while `history` counts and steps through all of them; with no
+  session the two are one list, which is why every test of a document's
+  own history passed either way.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

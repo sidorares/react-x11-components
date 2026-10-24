@@ -43,6 +43,7 @@ import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
 import type { ScriptsOptions } from './runner.js';
 import type { FrameContext } from './frames.js';
+import type { HtmlSessionHistory } from './session.js';
 import { linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
@@ -92,8 +93,24 @@ export interface HtmlScripts {
   /** `location.reload()`. Default: nothing. */
   reload?: () => void;
   /** `history.go`, `back` and `forward`, past the page's own
-   *  `pushState` steps. Default: nothing. */
+   *  `pushState` steps — or, with a `session`, to an entry of another
+   *  document's, `delta` entries from the current one, which the host
+   *  shows: `session.go(delta)` answers which. Default: nothing. */
   go?: (delta: number) => void;
+  /**
+   * The session history the document is shown in, across the documents
+   * the host shows here (HTML 7.4.1): one `HtmlSessionHistory` for each
+   * place the host shows pages — a tab — handed to every document shown
+   * there. With it, each document the host shows is the next of the
+   * history — a push, or what the page asked for: a replace, a reload, a
+   * step back or forward — and a page's `history.length`,
+   * `navigation.entries()`, `back()`, `forward()` and `traverseTo()`
+   * reach the documents' entries before and after it; it hears how it was
+   * shown (`navigation.activation`), and the document it replaces hears
+   * where it goes (`pageswap`). Default: none, and each document's
+   * history is its own.
+   */
+  session?: HtmlSessionHistory;
   /**
    * A page being left — a link, a form, `location`, `history`, or the
    * handle's `beforeUnload` — asked to be confirmed first: its
@@ -305,6 +322,7 @@ export function useScriptedHtml(
     reload: config.reload ?? nothing,
     go: config.go ?? nothing,
     promptToUnload: config.promptToUnload,
+    session: config.session ?? null,
     log: config.log ?? nothing,
     title: config.title ?? nothing,
     fetch: config.fetch ?? NO_NETWORK,

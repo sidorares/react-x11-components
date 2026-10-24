@@ -694,8 +694,9 @@ export function installDom(
     }
   }
   /** What a document is told as it is swapped out for another and as it
-   *  is first shown (HTML 7.4.6.4, 8.1.7.1): the cross-document view
-   *  transition, which a navigation here never makes, so only a page's
+   *  is first shown (HTML 7.4.6.4, 8.1.7.1): how the navigation goes, where
+   *  the host's session says (`firePageSwap`), and the cross-document view
+   *  transition, which no navigation here sets up yet, so only a page's
    *  own `new` makes one. */
   class PageSwapEvent extends Event {
     _transition: Any;
@@ -868,7 +869,9 @@ export function installDom(
     'offline',
     'online',
     'pagehide',
+    'pagereveal',
     'pageshow',
+    'pageswap',
     'popstate',
     'rejectionhandled',
     'resize',
@@ -3020,11 +3023,33 @@ export function installDom(
     quietFrames = 0;
     if (scrollLinked.size) wantFrame();
   };
+  /**
+   * Whether the document is yet to be revealed (HTML 8.1.7.1, "reveal"):
+   * `pagereveal`, at the first frame after the scripts the parser met have
+   * run, and before that frame's animation frame callbacks, as the first
+   * "update the rendering" a document has tells it. `<Html>` lays a
+   * document out and draws it before any of its scripts runs, so what a
+   * browser draws after the event this draws before it; the frame a page
+   * hears it in is still the first its callbacks run in. No transition
+   * across documents is handed in yet, so its `viewTransition` is null.
+   */
+  let revealOwed = false;
+  const reveal = (): void => {
+    revealOwed = false;
+    if (document._unloaded) return;
+    dispatch(
+      windowTarget,
+      asTrusted(new PageRevealEvent('pagereveal', { viewTransition: null })),
+    );
+  };
   const runFrame = (): void => {
     // in the frame: a frame its steps ask for is the next one
     // (`nextFrame`), and not one more beside this
     frameTimer = -1;
     renderingOwed = false;
+    // the documents shown for the first time are revealed before the
+    // rest of the rendering steps (HTML's "update the rendering")
+    if (revealOwed) reveal();
     const time = taskNow();
     let shown: Viewport[] = [ownViewport];
     try {
@@ -8284,6 +8309,8 @@ export function installDom(
       'beforeunload',
       'pagehide',
       'pageshow',
+      'pageswap',
+      'pagereveal',
       'unload',
     ]) {
       Object.defineProperty(win, `on${type}`, {
@@ -19681,6 +19708,12 @@ export function installDom(
     /** Where the document was scrolled to as it left the entry (HTML
      *  7.4.1, "scroll position data"), which going back to it restores. */
     scroll?: [number, number];
+    /** An entry of another document's, which the host's session holds
+     *  beside this document's (`HtmlSessionHistory`): going to it is
+     *  going to that document. */
+    other?: boolean;
+    /** Its URL's origin, worked out once. */
+    origin?: string;
   }
   /** What a window's session history stands on. */
   interface SessionContext {
@@ -19700,8 +19733,18 @@ export function installDom(
     /** Whether the host hears of a fragment navigation too: the page's
      *  does, which a browser keeps an entry of its own for and scrolls. */
     tellsFragments: boolean;
-    reload(): void;
+    /** A reload, with the Navigation API state its entry is to have where
+     *  `navigation.reload({ state })` gave one. */
+    reload(navState?: string): void;
     go(delta: number): void;
+    /** Where the session is the host's, across documents: a navigation to
+     *  another document planned (`sessionPlan`), which the next document
+     *  shown takes; a step to an entry of another document's, once it is
+     *  planned and its document asked; and what the session holds now,
+     *  written as it changes (`sessionWrite`). */
+    plan?(plan: { type: string; key?: string; navState?: string }): void;
+    traverseAway?(delta: number): void;
+    changed?(s: Session): void;
     /** Where the document is scrolled to, and a scroll of it. */
     scroll(): [number, number];
     scrollTo(x: number, y: number): void;
@@ -19745,6 +19788,17 @@ export function installDom(
     /** `history.scrollRestoration`: whether a traversal restores where the
      *  entry it goes to was scrolled to. */
     restoration: 'auto' | 'manual';
+    /** Whether the entries are the host's session's, the documents' before
+     *  and after this one among them (`HtmlSessionHistory`), rather than
+     *  this document's alone. */
+    host: boolean;
+    /** How the document came to be shown, where the session is the
+     *  host's: what `navigation.activation` says. */
+    arrived: {
+      type: string;
+      fromIndex: number;
+      from: SessionEntry | null;
+    } | null;
   }
   const sessionEntry = (url: string, key?: string): SessionEntry => ({
     url,
@@ -19755,6 +19809,56 @@ export function installDom(
     api: null,
   });
   const currentOf = (s: Session): SessionEntry => s.entries[s.index];
+
+  /** An entry's origin, as the entries the API shows are told apart by. */
+  const entryOrigin = (entry: SessionEntry): string => {
+    if (entry.origin === undefined) {
+      try {
+        entry.origin = new URL(entry.url).origin;
+      } catch {
+        entry.origin = 'null';
+      }
+    }
+    return entry.origin;
+  };
+  /**
+   * The entries the Navigation API shows (HTML, "getting session history
+   * entries for the navigation API"): the run around the current
+   * one whose documents are of its origin. A document's own are all of
+   * them where the session is its own, and where it is the host's, the
+   * documents before and after it of its origin, up to one that is not.
+   */
+  const navEntriesOf = (s: Session): SessionEntry[] => {
+    if (!s.host) return s.entries;
+    const origin = entryOrigin(currentOf(s));
+    let lo = s.index;
+    let hi = s.index;
+    while (lo > 0 && entryOrigin(s.entries[lo - 1]) === origin) lo -= 1;
+    while (
+      hi < s.entries.length - 1 &&
+      entryOrigin(s.entries[hi + 1]) === origin
+    ) {
+      hi += 1;
+    }
+    return s.entries.slice(lo, hi + 1);
+  };
+  /** The session changed: the host's is told what it holds now, where it
+   *  is the host's. */
+  const persist = (s: Session): void => {
+    if (s.host) s.ctx.changed?.(s);
+  };
+  /** A navigation to another document, where the session is the host's:
+   *  where this document was scrolled to is its entry's, and the next
+   *  document shown takes the plan (`HtmlSessionHistory`). */
+  const planAway = (
+    s: Session,
+    plan: { type: string; key?: string; navState?: string },
+  ): void => {
+    if (!s.host) return;
+    currentOf(s).scroll = s.ctx.scroll();
+    persist(s);
+    s.ctx.plan?.(plan);
+  };
 
   /** Whether a URL is a fragment of the document's (HTML 7.4.2.3.3): the
    *  same but for a fragment it has. */
@@ -19849,6 +19953,9 @@ export function installDom(
   class NavigationHistoryEntry extends EventTarget {
     _entry!: SessionEntry;
     _session!: Session;
+    /** One of no list: an activation's entry of a document that is not
+     *  among the entries (`looseEntryOf`), whose key and id it has. */
+    _loose = false;
     constructor(token?: Any, entry?: SessionEntry, session?: Session) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       super();
@@ -19859,16 +19966,16 @@ export function installDom(
       return this._entry.url;
     }
     get key(): string {
-      return this.index < 0 ? '' : this._entry.key;
+      return this.index < 0 && !this._loose ? '' : this._entry.key;
     }
     get id(): string {
-      return this.index < 0 ? '' : this._entry.id;
+      return this.index < 0 && !this._loose ? '' : this._entry.id;
     }
     get index(): number {
-      return this._session.entries.indexOf(this._entry);
+      return navEntriesOf(this._session).indexOf(this._entry);
     }
     get sameDocument(): boolean {
-      return this.index >= 0;
+      return !this._entry.other && this.index >= 0;
     }
     getState(): Any {
       const state = this._entry.navState;
@@ -19877,6 +19984,13 @@ export function installDom(
   }
   const apiEntryOf = (s: Session, entry: SessionEntry): Any =>
     (entry.api ??= new NavigationHistoryEntry(TOKEN, entry, s));
+  /** An entry of no list, for an activation's (`_loose`): one a replace
+   *  took the place of, one a navigation is about to make. */
+  const looseEntryOf = (s: Session, entry: SessionEntry): Any => {
+    const made = new NavigationHistoryEntry(TOKEN, entry, s);
+    made._loose = true;
+    return made;
+  };
 
   class NavigationDestination {
     readonly url: string;
@@ -20059,13 +20173,39 @@ export function installDom(
     readonly from: Any;
     readonly entry: Any;
     readonly navigationType: string;
-    constructor(token: Any, entry: Any) {
+    constructor(token: Any, entry: Any, from: Any = null, type = 'push') {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
-      this.from = null;
+      this.from = from;
       this.entry = entry;
-      this.navigationType = 'push';
+      this.navigationType = type;
     }
   }
+  /**
+   * How a document came to be shown (HTML, "update document for history
+   * step application"): its current entry, how it got there, and
+   * the entry it came from where that one is among the entries the API
+   * shows — or, where a replace took its place, one of the same origin
+   * standing for it. A document whose session is its own is a push from
+   * nowhere.
+   */
+  const activationOf = (s: Session): Any => {
+    const entry = apiEntryOf(s, currentOf(s));
+    const arrived = s.arrived;
+    if (!arrived) return new NavigationActivation(TOKEN, entry);
+    let from: Any = null;
+    const before = arrived.fromIndex >= 0 ? s.entries[arrived.fromIndex] : null;
+    if (before && navEntriesOf(s).includes(before)) {
+      from = apiEntryOf(s, before);
+    } else if (
+      arrived.type === 'replace' &&
+      arrived.from &&
+      entryOrigin(arrived.from) === entryOrigin(currentOf(s)) &&
+      !/^about:blank(?:[?#]|$)/i.test(arrived.from.url)
+    ) {
+      from = looseEntryOf(s, arrived.from);
+    }
+    return new NavigationActivation(TOKEN, entry, from, arrived.type);
+  };
 
   /** End a session's ongoing navigation as aborted: its signal,
    *  `navigateerror`, and its promises rejected. */
@@ -20141,7 +20281,7 @@ export function installDom(
     const destination = new NavigationDestination(
       TOKEN,
       params.url,
-      params.target ? s.entries.indexOf(params.target) : -1,
+      params.target ? navEntriesOf(s).indexOf(params.target) : -1,
       params.target ?? null,
       params.sameDocument,
       params.navState ?? params.target?.navState,
@@ -20327,6 +20467,7 @@ export function installDom(
       s.entries[s.index] = entry;
     }
     s.ctx.setUrl(url);
+    persist(s);
     entryChanged(s, type, from);
     for (const gone of dropped) {
       if (gone.api) dispatch(gone.api, asTrusted(new Event('dispose')));
@@ -20440,6 +20581,9 @@ export function installDom(
     if (went === 'other' && !unloadAllowed(s.ctx.owner(), s.ctx.target)) {
       return 'canceled';
     }
+    // the document it goes to is the next of the host's session, where the
+    // session is the host's, with the state the page gave it
+    if (went === 'other') planAway(s, { type, navState: options.navState });
     // the host hears of a fragment as it did, and of another document where
     // nothing kept the navigation in this one
     if (
@@ -20593,6 +20737,7 @@ export function installDom(
     index: number,
     info?: Any,
     tracker?: Tracker | null,
+    userInitiated = false,
   ): void => {
     setTimer(
       () => {
@@ -20601,6 +20746,10 @@ export function installDom(
           tracker?.fail(
             new DOMException('The entry is gone.', 'InvalidStateError'),
           );
+          return;
+        }
+        if (target.other) {
+          traverseAway(s, target, info, tracker);
           return;
         }
         const fromUrl = currentOf(s).url;
@@ -20612,6 +20761,7 @@ export function installDom(
             target,
             info,
             tracker,
+            userInitiated,
             sameDocument: true,
           },
           (intercepted) => {
@@ -20620,6 +20770,7 @@ export function installDom(
             leaving.scroll = s.ctx.scroll();
             s.index = s.entries.indexOf(target);
             s.ctx.setUrl(target.url);
+            persist(s);
             entryChanged(s, 'traverse', from);
             dispatch(
               s.ctx.target,
@@ -20643,10 +20794,52 @@ export function installDom(
       false,
     );
   };
-  /** Past the window's own entries, the host's history. */
+  /**
+   * Go to an entry of another document's, where the session is the host's
+   * (HTML, "apply the traverse history step"): that document
+   * unloads this one, which is asked first and then hears `navigate`,
+   * where the entry is of its origin — neither cancelable nor one a
+   * handler can take — and the host is asked for the step (`go`), which
+   * the next document it shows is at. What a method handed back never
+   * settles here: the document it is of goes.
+   */
+  const traverseAway = (
+    s: Session,
+    target: SessionEntry,
+    info?: Any,
+    tracker?: Tracker | null,
+  ): void => {
+    if (!unloadAllowed(s.ctx.owner(), s.ctx.target)) {
+      tracker?.fail(
+        new DOMException('The navigation was canceled.', 'AbortError'),
+      );
+      return;
+    }
+    if (entryOrigin(target) === entryOrigin(currentOf(s))) {
+      const went = navigateWith(
+        s,
+        {
+          url: target.url,
+          type: 'traverse',
+          target,
+          info,
+          tracker,
+          sameDocument: false,
+        },
+        () => {},
+      );
+      if (went !== 'other') return;
+    }
+    const delta = s.entries.indexOf(target) - s.index;
+    planAway(s, { type: 'traverse', key: target.key });
+    s.ctx.traverseAway?.(delta);
+  };
+  /** Past the window's own entries, the host's history; where the session
+   *  is the host's, every entry is in it, and past them is nowhere. */
   const traverseBy = (s: Session, delta: number): void => {
     const index = s.index + delta;
     if (index >= 0 && index < s.entries.length) traverseTo(s, index);
+    else if (s.host) return;
     else if (index < 0) s.ctx.go(index);
     else s.ctx.go(index - (s.entries.length - 1));
   };
@@ -20704,7 +20897,7 @@ export function installDom(
     entries(): Any[] {
       const s = this._s;
       if (s.ctx.disabled?.()) return [];
-      return s.entries.map((e) => apiEntryOf(s, e));
+      return navEntriesOf(s).map((e) => apiEntryOf(s, e));
     }
     get currentEntry(): Any {
       if (this._s.ctx.disabled?.()) return null;
@@ -20715,18 +20908,17 @@ export function installDom(
     }
     get activation(): Any {
       const s = this._s;
-      return (s.activation ??= new NavigationActivation(
-        TOKEN,
-        apiEntryOf(s, s.entries[0]),
-      ));
+      return (s.activation ??= activationOf(s));
     }
     get canGoBack(): boolean {
-      return !this._s.ctx.disabled?.() && this._s.index > 0;
+      const s = this._s;
+      return !s.ctx.disabled?.() && navEntriesOf(s).indexOf(currentOf(s)) > 0;
     }
     get canGoForward(): boolean {
-      return (
-        !this._s.ctx.disabled?.() && this._s.index < this._s.entries.length - 1
-      );
+      const s = this._s;
+      if (s.ctx.disabled?.()) return false;
+      const list = navEntriesOf(s);
+      return list.indexOf(currentOf(s)) < list.length - 1;
     }
     navigate(url: Any, options: Any = {}): Any {
       const s = this._s;
@@ -20819,15 +21011,18 @@ export function installDom(
             'reload',
           ),
       );
-      if (went === 'other') s.ctx.reload();
+      if (went === 'other') s.ctx.reload(navState);
       return resultOf(tracker);
     }
     traverseTo(key: Any, options: Any = {}): Any {
       const s = this._s;
       const k = str(key);
-      const index = s.ctx.disabled?.()
-        ? -1
-        : s.entries.findIndex((e) => e.key === k);
+      // among the entries the API shows, which a key of another origin's
+      // document is not
+      const found = s.ctx.disabled?.()
+        ? undefined
+        : navEntriesOf(s).find((e) => e.key === k);
+      const index = found ? s.entries.indexOf(found) : -1;
       if (index < 0) {
         return earlyError(
           new DOMException(
@@ -20857,7 +21052,9 @@ export function installDom(
           ),
         );
       }
-      return this.traverseTo(this._s.entries[this._s.index - 1].key, options);
+      const list = navEntriesOf(this._s);
+      const at = list.indexOf(currentOf(this._s));
+      return this.traverseTo(list[at - 1].key, options);
     }
     forward(options: Any = {}): Any {
       if (!this.canGoForward) {
@@ -20868,7 +21065,9 @@ export function installDom(
           ),
         );
       }
-      return this.traverseTo(this._s.entries[this._s.index + 1].key, options);
+      const list = navEntriesOf(this._s);
+      const at = list.indexOf(currentOf(this._s));
+      return this.traverseTo(list[at + 1].key, options);
     }
     /** The current entry's state, set in place (HTML 7.2.6.4). */
     updateCurrentEntry(options: Any): void {
@@ -20882,6 +21081,7 @@ export function installDom(
       const entry = currentOf(s);
       const from = apiEntryOf(s, entry);
       entry.navState = serialized;
+      persist(s);
       entryChanged(s, null, from);
     }
   }
@@ -20911,9 +21111,43 @@ export function installDom(
     configurable: true,
   });
 
+  /** An entry of the host's session, as its JSON has it (`SessionRecord`):
+   *  this document's own, or another's. */
+  const seedEntry = (r: Any, mine: boolean): SessionEntry => ({
+    url: str(r.url),
+    key: str(r.key),
+    id: str(r.id),
+    state: typeof r.state === 'string' ? r.state : null,
+    navState: typeof r.navState === 'string' ? r.navState : undefined,
+    api: null,
+    scroll: Array.isArray(r.scroll)
+      ? [Number(r.scroll[0]) || 0, Number(r.scroll[1]) || 0]
+      : undefined,
+    other: !mine,
+  });
+  const seedEntries = (seed: Any): SessionEntry[] | null => {
+    if (!Array.isArray(seed.entries) || !seed.entries.length) return null;
+    const entries = seed.entries.map((r: Any) => seedEntry(r, !!r.mine));
+    const current = entries[Number(seed.index)];
+    if (!current) return null;
+    current.other = false;
+    return entries;
+  };
+  /** An entry as the host's session keeps it (`sessionWrite`). */
+  const sessionRecordOf = (e: SessionEntry): Any => ({
+    url: e.url,
+    key: e.key,
+    id: e.id,
+    state: e.state,
+    navState: e.navState ?? null,
+    scroll: e.scroll ?? null,
+    mine: !e.other,
+  });
+
   /** A window's session history, and its `history` and `navigation`. */
   const makeSession = (
     ctx: SessionContext,
+    seed: Any = null,
   ): { session: Session; history: Any; navigation: Any } => {
     const s: Session = {
       ctx,
@@ -20924,7 +21158,29 @@ export function installDom(
       transition: null,
       activation: null,
       navigation: null,
+      host: false,
+      arrived: null,
     };
+    // the host's session, where it keeps one across documents: its
+    // entries, this document's own and the others', at the entry the
+    // document was shown at (`HtmlSessionHistory`)
+    const seeded = seed ? seedEntries(seed) : null;
+    if (seeded) {
+      s.entries = seeded;
+      s.index = Math.max(0, Math.min(seeded.length - 1, Number(seed.index)));
+      s.host = true;
+      const fromIndex = Number(seed.fromIndex);
+      s.arrived = {
+        type: str(seed.type),
+        fromIndex: fromIndex >= 0 && fromIndex < seeded.length ? fromIndex : -1,
+        from: seed.from ? seedEntry(seed.from, false) : null,
+      };
+      // the document is where the host showed it
+      const entry = currentOf(s);
+      entry.url = ctx.url();
+      entry.origin = undefined;
+      persist(s);
+    }
     s.navigation = new Navigation(TOKEN, s);
     const history = {
       get length(): number {
@@ -20960,31 +21216,58 @@ export function installDom(
   /** Whether the document is completely loaded (HTML 8.4, "completely
    *  finish loading"): its `load` told. */
   let completelyLoaded = false;
-  const pageSession = makeSession({
-    url: () => String(call('location')),
-    base: () => document.baseURI,
-    // completely loaded once `load` was told, as a navigation a handler
-    // of it makes is still one during load (HTML 7.4.2.2)
-    loaded: () => completelyLoaded,
-    setUrl: (url) => void call('setLocation', url),
-    doc: () => document,
-    owner: () => document,
-    active: () => !document._unloaded,
-    get target() {
-      return windowTarget;
+  /** The host's session the document was shown in, where it keeps one
+   *  (`HtmlSessionHistory`), as JSON: null where it keeps none. */
+  const hostSession = ((): Any => {
+    const json = call('session');
+    if (typeof json !== 'string') return null;
+    try {
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  })();
+  const pageSession = makeSession(
+    {
+      url: () => String(call('location')),
+      base: () => document.baseURI,
+      // completely loaded once `load` was told, as a navigation a handler
+      // of it makes is still one during load (HTML 7.4.2.2)
+      loaded: () => completelyLoaded,
+      setUrl: (url) => void call('setLocation', url),
+      doc: () => document,
+      owner: () => document,
+      active: () => !document._unloaded,
+      get target() {
+        return windowTarget;
+      },
+      away: (url, replace) => void call('navigate', url, replace),
+      tellsFragments: true,
+      // each of them another document, which unloads this one
+      reload: (navState) => {
+        if (!unloadAllowed(document, windowTarget)) return;
+        planAway(pageSession.session, { type: 'reload', navState });
+        call('reload');
+      },
+      go: (delta) => {
+        if (unloadAllowed(document, windowTarget)) call('go', delta);
+      },
+      scroll: () => [Number(G.scrollX) || 0, Number(G.scrollY) || 0],
+      scrollTo: (x, y) => G.scrollTo?.(x, y),
+      // the host's session, where it keeps one across documents
+      plan: (plan) => void call('sessionPlan', JSON.stringify(plan)),
+      traverseAway: (delta) => void call('go', delta),
+      changed: (s) =>
+        void call(
+          'sessionWrite',
+          JSON.stringify({
+            entries: s.entries.map(sessionRecordOf),
+            index: s.index,
+          }),
+        ),
     },
-    away: (url, replace) => void call('navigate', url, replace),
-    tellsFragments: true,
-    // each of them another document, which unloads this one
-    reload: () => {
-      if (unloadAllowed(document, windowTarget)) call('reload');
-    },
-    go: (delta) => {
-      if (unloadAllowed(document, windowTarget)) call('go', delta);
-    },
-    scroll: () => [Number(G.scrollX) || 0, Number(G.scrollY) || 0],
-    scrollTo: (x, y) => G.scrollTo?.(x, y),
-  });
+    hostSession,
+  );
   const history = pageSession.history;
   const navigation = pageSession.navigation;
   /** `location`'s navigations: to a URL, or in place of the entry, which
@@ -21105,12 +21388,72 @@ export function installDom(
   /** A document and its frames' going (HTML 7.4.2.4, "unload a document
    *  and its descendants"): asked first where nothing asked as its
    *  navigation started, then its frames' unloaded before it. */
-  const unloadTree = (doc: Any, target: Any): void => {
+  const unloadTree = (
+    doc: Any,
+    target: Any,
+    /** What the document is told once its frames' documents are gone and
+     *  before it goes itself: the `pageswap` of the one shown in its place
+     *  (HTML, "deactivate a document for a cross-document
+     *  navigation"). */
+    beforeItself?: () => void,
+  ): void => {
     if (doc._unloaded) return;
     if (!doc._leaveChecked) unloadAllowed(doc, target, false);
     for (const [d, at] of documentTree(doc, target).reverse()) {
+      // the document shown in its place is in already, so what the page
+      // starts as it hears it goes nowhere, as what it starts as it
+      // unloads goes nowhere
+      if (d === doc && beforeItself) {
+        doc._unloadCounter += 1;
+        try {
+          beforeItself();
+        } finally {
+          doc._unloadCounter -= 1;
+        }
+      }
       unloadOne(d, at);
     }
+  };
+
+  /**
+   * HTML, "fire the pageswap event": the document is about to be
+   * swapped for the one the host shows in its place. Where that one is of
+   * this document's origin and the session is the host's, it is told how:
+   * the entry it is at now, the one it goes to — the current one for a
+   * reload, the one among the entries for a traversal, and for a push or a
+   * replace one of no list yet — and the navigation's type. No transition
+   * is set up across documents yet.
+   */
+  const firePageSwap = (swap: Any): void => {
+    const s = pageSession.session;
+    let activation: Any = null;
+    if (s.host && swap.key && !s.ctx.disabled?.()) {
+      const to = seedEntry(swap, false);
+      if (entryOrigin(to) === entryOrigin(currentOf(s))) {
+        const type = str(swap.type);
+        let destination: Any = null;
+        if (type === 'reload') destination = apiEntryOf(s, currentOf(s));
+        else if (type === 'traverse') {
+          const found = navEntriesOf(s).find(
+            (e) => e.key === to.key && e.id === to.id,
+          );
+          if (found) destination = apiEntryOf(s, found);
+        }
+        destination ??= looseEntryOf(s, to);
+        activation = new NavigationActivation(
+          TOKEN,
+          destination,
+          apiEntryOf(s, currentOf(s)),
+          type,
+        );
+      }
+    }
+    dispatch(
+      windowTarget,
+      asTrusted(
+        new PageSwapEvent('pageswap', { activation, viewTransition: null }),
+      ),
+    );
   };
 
   // An accessor of a base interface answers for any node, as a browser's
@@ -23455,6 +23798,8 @@ export function installDom(
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
+    'pageswap',
+    'pagereveal',
     'pagehide',
     'online',
     'offline',
@@ -24356,6 +24701,10 @@ export function installDom(
       const ev = new Event('DOMContentLoaded', { bubbles: true });
       ev.isTrusted = true;
       dispatch(document, ev);
+      // revealed at its first frame, now that the scripts the parser met
+      // have run and are listening (`revealOwed`)
+      revealOwed = true;
+      wantFrame();
     } else if (state === 'complete') {
       const ev = new Event('load');
       ev.isTrusted = true;
@@ -24386,7 +24735,25 @@ export function installDom(
   );
   // the document is going, its engine with it (`ScriptRunner.dispose`)
   entry('__unload', () => {
-    unloadTree(document, windowTarget);
+    // the document shown in its place, where there is one: what its
+    // `pageswap` is told
+    const [swap] = input() ?? [];
+    unloadTree(
+      document,
+      windowTarget,
+      swap && typeof swap === 'object' ? () => firePageSwap(swap) : undefined,
+    );
+    return true;
+  });
+  // the host goes to one of the document's own entries, as its Back and
+  // Forward do (`HtmlSessionHistory.go`): as `history.go` would, by a
+  // user's hand
+  entry('__traverseKey', () => {
+    const [key] = input();
+    const s = pageSession.session;
+    const at = s.entries.findIndex((e) => e.key === str(key) && !e.other);
+    if (at < 0 || at === s.index) return false;
+    traverseTo(s, at, undefined, null, true);
     return true;
   });
   // a frame's document in this realm is going: the host puts another in

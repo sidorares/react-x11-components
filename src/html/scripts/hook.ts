@@ -22,8 +22,14 @@ import type {
 } from '../index.js';
 import type { CssEventInfo } from '../node.js';
 import type { FramePost } from './host.js';
-import type { FrameLink, RunnerSeams, ScriptRunner } from './runner.js';
+import type {
+  FrameLink,
+  PageSwap,
+  RunnerSeams,
+  ScriptRunner,
+} from './runner.js';
 import type { ScriptsOptions } from './runner.js';
+import { arriveAt } from './session.js';
 
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
@@ -214,7 +220,9 @@ export function useScripts(
   }, []);
   const unwatch = useRef<(() => void) | null>(null);
 
-  const release = useCallback(() => {
+  /** The document's runner goes: with `swap`, the document shown in its
+   *  place, which it hears of as it goes (`pageswap`). */
+  const release = useCallback((swap: PageSwap | null = null) => {
     unwatch.current?.();
     unwatch.current = null;
     const was = runner.current;
@@ -222,15 +230,22 @@ export function useScripts(
     if (!was) return;
     if (bound.current) {
       bound.current.releaseFrame(was.host.document, seams.current);
-    } else was.dispose();
+    } else was.dispose(swap);
     bound.current = null;
   }, []);
 
   /** The runner of a document, made with the engine that is here. */
   const start = useCallback((loaded: ScriptRuntime, document: Document) => {
-    release();
-    setAdopted(NO_SHEETS);
     const link = linked.current;
+    // the next of the host's session, where it keeps one across the
+    // documents it shows here — a page's, and never a frame's — which
+    // tells the document shown before it where it goes as it goes, in
+    // this `<Html>` or one the host mounted in its place (`arriveAt`); one
+    // shown with no session hears only where
+    const session = link ? null : (latest.current.session ?? null);
+    const arrival = session ? arriveAt(session, address.current) : null;
+    release({});
+    setAdopted(NO_SHEETS);
     if (link) {
       runner.current = link.parent.bindFrame(
         document,
@@ -244,6 +259,8 @@ export function useScripts(
         document,
         address.current,
         seams.current,
+        null,
+        arrival,
       );
     }
     unwatch.current =
@@ -349,7 +366,7 @@ export function useScripts(
 
   // the document's scripts stop when the page goes, and a frame's view
   // hands its document's back
-  useEffect(() => release, []);
+  useEffect(() => () => release(), []);
 
   // where a page's `import()` would reach the host, nothing of the page's
   // runs, and the page is one with scripts off (`SCRIPTS_CONTAINED`)

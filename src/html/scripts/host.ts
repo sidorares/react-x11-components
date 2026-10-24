@@ -99,6 +99,8 @@ import {
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
 import { navigableFor } from './target.js';
+import { planSession, sessionView, writeSession } from './session.js';
+import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import * as ntk from 'react-x11/ntk';
@@ -1244,6 +1246,10 @@ export class DomHost {
   workers: PageWorkersLike | null = null;
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
+  /** Where the document is in the host's session across documents, where
+   *  the host keeps one (`HtmlSessionHistory`): set before the page's
+   *  realm is made, which reads it as it starts. */
+  arrival: SessionArrival | null = null;
   private _disposed = false;
   /** The document is being left: nothing its scripts change now is drawn
    *  (`leaving`). */
@@ -3662,6 +3668,48 @@ export class DomHost {
         return null;
       case 'promptToUnload':
         return this._seams.promptToUnload?.() !== false;
+      // the host's session across documents, where it keeps one: what the
+      // page reads as it starts, what its own navigations make of it, and
+      // the navigation to another document it starts (`./session.ts`)
+      case 'session':
+        return this.arrival ? JSON.stringify(sessionView(this.arrival)) : null;
+      case 'sessionWrite': {
+        if (!this.arrival) return null;
+        const written = JSON.parse(text(a)) as {
+          entries?: unknown;
+          index?: unknown;
+        } | null;
+        if (!written || !Array.isArray(written.entries)) return null;
+        writeSession(
+          this.arrival,
+          written.entries.filter(
+            (e): e is SessionRecord & { mine: boolean } =>
+              !!e && typeof e === 'object',
+          ),
+          Number(written.index) || 0,
+        );
+        return null;
+      }
+      case 'sessionPlan': {
+        if (!this.arrival) return null;
+        const plan = JSON.parse(text(a)) as Record<string, unknown> | null;
+        const type = plan?.type;
+        if (
+          type !== 'push' &&
+          type !== 'replace' &&
+          type !== 'reload' &&
+          type !== 'traverse'
+        ) {
+          return null;
+        }
+        planSession(this.arrival, {
+          type,
+          key: typeof plan?.key === 'string' ? plan.key : undefined,
+          navState:
+            typeof plan?.navState === 'string' ? plan.navState : undefined,
+        });
+        return null;
+      }
       case 'go':
         this._seams.go(Number(a) || 0);
         return null;
