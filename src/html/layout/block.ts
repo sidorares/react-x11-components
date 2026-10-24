@@ -367,6 +367,33 @@ function putBack(tree: BoxTree): void {
 }
 
 /**
+ * The children of each box its tree's last layout set aside some of, whole
+ * (`setAside`), or null where it set none aside: what an index of the boxes
+ * by element goes down, so that it is the same whenever it is made.
+ */
+export function asideOf(tree: BoxTree): ReadonlyMap<Box, Box[]> | null {
+  return SET_ASIDE.get(tree)?.boxes ?? null;
+}
+
+/** Whether the tree's last layout set this box aside, with what it holds
+ *  (`heldBack` asks it of a box and every box it is in). */
+export function setAsideHere(tree: BoxTree, box: Box): boolean {
+  const aside = SET_ASIDE.get(tree);
+  return aside !== undefined && HELD_BACK.get(box) === aside.pass;
+}
+
+/** Whether the tree's last layout set aside any box. */
+export function asideIn(tree: BoxTree): boolean {
+  return SET_ASIDE.has(tree);
+}
+
+/** Whether the tree's last layout set aside some of a box's children: a
+ *  walk down `children` passes them (`asideOf`). */
+export function setAsideIn(tree: BoxTree, box: Box): boolean {
+  return SET_ASIDE.get(tree)?.boxes.has(box) ?? false;
+}
+
+/**
  * Whether a box was set aside by its tree's last layout, or is in one that
  * was: it was not laid out, its geometry is a width ago, and nothing that
  * reads the layout — the paint, the hit test, the widgets mounted over the

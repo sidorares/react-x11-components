@@ -210,6 +210,10 @@ import {
   layoutAsks,
   layoutDocument,
   placedMatrix,
+  asideIn,
+  setAsideHere,
+  setAsideIn,
+  asideOf,
   resolvedInsets,
   restickToViewport,
   restickWithin,
@@ -3089,6 +3093,7 @@ export class HtmlViewNode extends Node {
           return tree;
         };
         this._tree = build();
+        this._asideOwed = false;
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
         this._styledWith = cascade;
@@ -3133,6 +3138,18 @@ export class HtmlViewNode extends Node {
           question || this._questioned
             ? undefined
             : this._stopAt(target, viewportMoved, crossing);
+        // a layout that puts back what a drag set aside, whole, lays it out
+        // in the styles its elements have now, which a restyle in place
+        // that passed over it left to a build (`_asideOwed`)
+        if (!stop && this._asideOwed) {
+          this._asideOwed = false;
+          this._stale = Stale.Boxes;
+          restyleOnly = new Set<Element>();
+          follow = false;
+          // the build and its layout are this pass's
+          pass -= 1;
+          continue;
+        }
         if (this._scrollOffsetsOf !== this._source.document) {
           this._scrollOffsets.clear();
           this._scrollOffsetsOf = this._source.document;
@@ -6374,9 +6391,17 @@ export class HtmlViewNode extends Node {
     // The boxes, each under its parent: what a box takes depends on what
     // the box it is in took.
     const fonts = layouts.fonts;
-    const blocks = this._blocksOf(
-      tree,
-      pseudoRules === HOVER_PSEUDO_NONE ? changed.keys() : reach,
+    // What a drag's layout set aside is not restyled here: whatever in it
+    // the change reached, the boxes are built again with the styles it
+    // gives their elements before the layout that puts them back whole
+    // (`_asideOwed`). Restyled at every step of the drag, a page in fluid
+    // type was its set-aside half each time, and the icons in it sized in
+    // `em` built the boxes for it at every step.
+    const restyling = (): Iterable<Element> =>
+      pseudoRules === HOVER_PSEUDO_NONE ? changed.keys() : reach;
+    const passedAside = asideIn(tree) && this._passesAside(tree, restyling());
+    const blocks = this._blocksOf(tree, restyling()).filter(
+      (block) => !heldBack(tree, block),
     );
     const restyled: [Box, ComputedStyle][] = [];
     const next = new Map<Box, ComputedStyle>();
@@ -6618,6 +6643,7 @@ export class HtmlViewNode extends Node {
     }
 
     // and only now, all of it
+    if (passedAside) this._asideOwed = true;
     const moved: [Box, ComputedStyle][] = [];
     const kept = !!this._sprites?.size || !!this._filtered?.size;
     let reoffer = false;
@@ -6727,6 +6753,12 @@ export class HtmlViewNode extends Node {
   /** An element's first box in document order, for the tree it was asked
    *  of: made on the first move over a tree, which is one walk of it. */
   private _firstBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
+
+  /** Whether a restyle in place passed over boxes a drag's layout set
+   *  aside, which then hold the styles of before: built again, keeping
+   *  every element's style, before a layout that lays them out
+   *  (`_restyleInPlace`, `_update`). */
+  private _asideOwed = false;
 
   /**
    * The elements whose container queries answer otherwise for the content
@@ -6996,17 +7028,58 @@ export class HtmlViewNode extends Node {
     let index = this._firstBoxes;
     if (index?.tree !== tree) {
       const of = new Map<Element, Box>();
+      // whether or not a drag's layout set some aside: the index is the
+      // tree's for as long as it lives
+      const aside = asideOf(tree);
       const stack: Box[] = [tree.root];
       while (stack.length) {
         const box = stack.pop()!;
-        if (box.el && !of.has(box.el)) of.set(box.el, box);
-        for (let i = box.children.length - 1; i >= 0; i -= 1) {
-          stack.push(box.children[i]);
+        const el = box.el;
+        if (el && of.get(el) === undefined) of.set(el, box);
+        const children = (aside && aside.get(box)) || box.children;
+        for (let i = children.length - 1; i >= 0; i -= 1) {
+          stack.push(children[i]);
         }
       }
       index = this._firstBoxes = { tree, of };
     }
     return index.of;
+  }
+
+  /**
+   * Whether a restyle of `restyling` reaches a box the tree's last layout
+   * set aside, which a walk down the boxes passes (`_asideOwed`): an
+   * element's own box set aside, or one some of whose children were — the
+   * text, the anonymous boxes and the pseudo-elements that take its style.
+   */
+  private _passesAside(tree: BoxTree, restyling: Iterable<Element>): boolean {
+    const first = this._firstBoxesOf(tree);
+    // whether a box is in one set aside, by box: the restyled elements of
+    // a long page share their ancestors, which are each asked once
+    const held = new Map<Box, boolean>();
+    const path: Box[] = [];
+    for (const el of restyling) {
+      const box = first.get(el);
+      if (!box) continue;
+      if (setAsideIn(tree, box)) return true;
+      let answer = false;
+      for (let at: Box | null = box; at; at = at.parent) {
+        const known = held.get(at);
+        if (known !== undefined) {
+          answer = known;
+          break;
+        }
+        if (setAsideHere(tree, at)) {
+          answer = true;
+          break;
+        }
+        path.push(at);
+      }
+      if (answer) return true;
+      for (const at of path) held.set(at, false);
+      path.length = 0;
+    }
+    return false;
   }
 
   /**
