@@ -16,11 +16,13 @@ import { act, renderX11, screen } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { TextInputNode } from 'react-x11/node';
+import * as ntk from 'react-x11/ntk';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { mapPoint } from '../../src/html/css/transform.js';
 import { placedMatrix } from '../../src/html/layout/block.js';
+import { drawsForeignObjects } from '../../src/html/svg.js';
 import type { Box } from '../../src/html/layout/boxes.js';
 
 export const h = React.createElement;
@@ -194,6 +196,131 @@ export function withFieldSelection(t: { after(fn: () => void): void }): void {
   t.after(() => {
     for (const name of Object.keys(members)) delete proto[name];
   });
+}
+
+/** What `SvgView` is to the stand-in below: the slice it wraps. */
+interface ViewProto {
+  draw(this: ViewThis, ...args: unknown[]): void;
+  _renderElement(this: ViewThis, ...args: unknown[]): void;
+  _bbox(this: ViewThis, ...args: unknown[]): unknown;
+}
+type ViewThis = {
+  _viewport: [number, number];
+  _standInObject?: ((el: unknown, ctx: unknown, box: unknown) => void) | null;
+};
+type ViewNode = { name: string; attribs: Record<string, string> };
+type ViewContext = { save(): void; restore(): void; globalAlpha: number };
+
+/**
+ * ntk's `opts.foreignObject` on `SvgView.draw` — an object handed to the
+ * caller where the drawing reaches it, in its user space, with its box and
+ * its opacity, measured as its box, and SVG 1.1's `Extensibility` held in a
+ * `<switch>`'s choice, sidorares/ntk#549 — for an ntk that has none, as
+ * that change writes it, so a test sees what `<Html>` draws through it.
+ * Installed until the test ends; on an ntk that has the hook nothing is
+ * installed, and the test runs against ntk's. Delete it once the floor's
+ * ntk carries the hook.
+ */
+export function withForeignObjects(t: { after(fn: () => void): void }): void {
+  if (drawsForeignObjects()) return;
+  const View = (ntk as unknown as { SvgView: { prototype: ViewProto } })
+    .SvgView;
+  const proto = View.prototype;
+  const own = {
+    draw: proto.draw,
+    _renderElement: proto._renderElement,
+    _bbox: proto._bbox,
+  };
+  const local = (name: string) =>
+    name.slice(name.indexOf(':') + 1).toLowerCase();
+  const attr = (node: ViewNode, name: string) =>
+    node.attribs[name] ?? node.attribs[name.toLowerCase()];
+  const length = (node: ViewNode, name: string, of: number) => {
+    const v = String(attr(node, name) ?? '').trim();
+    const n = parseFloat(v);
+    if (!Number.isFinite(n)) return 0;
+    return v.endsWith('%') ? (n / 100) * of : n;
+  };
+  const boxOf = (node: ViewNode, [pw, ph]: [number, number]) => {
+    const width = length(node, 'width', pw);
+    const height = length(node, 'height', ph);
+    return {
+      x: length(node, 'x', pw),
+      y: length(node, 'y', ph),
+      width: width > 0 ? width : 0,
+      height: height > 0 ? height : 0,
+    };
+  };
+  const EXTENSIBILITY = 'http://www.w3.org/TR/SVG11/feature#Extensibility';
+  proto.draw = function (this: ViewThis, ...args: unknown[]) {
+    const opts = (args[5] ?? {}) as { foreignObject?: unknown };
+    this._standInObject =
+      typeof opts.foreignObject === 'function'
+        ? (opts.foreignObject as ViewThis['_standInObject'])
+        : null;
+    try {
+      own.draw.apply(this, args);
+    } finally {
+      this._standInObject = null;
+    }
+  };
+  proto._renderElement = function (this: ViewThis, ...args: unknown[]) {
+    const [node, ctx, style, alpha] = args as [
+      ViewNode,
+      ViewContext,
+      { visibility: string },
+      number,
+    ];
+    const name = local(node.name);
+    const draw = this._standInObject;
+    if (name === 'foreignobject') {
+      if (!draw || style.visibility !== 'visible') return;
+      const box = boxOf(node, this._viewport);
+      if (!(box.width > 0 && box.height > 0)) return;
+      ctx.save();
+      try {
+        ctx.globalAlpha = alpha;
+        draw(node, ctx, { ...box, opacity: alpha });
+      } finally {
+        ctx.restore();
+      }
+      return;
+    }
+    // what a `<switch>` chooses among, with `#Extensibility` holding,
+    // while it chooses
+    const taken: [ViewNode, string, string][] = [];
+    if (name === 'switch' && draw) {
+      for (const child of (node as unknown as { children: ViewNode[] })
+        .children) {
+        if (!child.attribs) continue;
+        for (const key of ['requiredFeatures', 'requiredfeatures']) {
+          const value = child.attribs[key];
+          if (value === undefined || !value.includes(EXTENSIBILITY)) continue;
+          taken.push([child, key, value]);
+          const rest = value
+            .split(/\s+/)
+            .filter((f) => f && f !== EXTENSIBILITY)
+            .join(' ');
+          if (rest) child.attribs[key] = rest;
+          else delete child.attribs[key];
+        }
+      }
+    }
+    try {
+      own._renderElement.apply(this, args);
+    } finally {
+      for (const [child, key, value] of taken) child.attribs[key] = value;
+    }
+  };
+  proto._bbox = function (this: ViewThis, ...args: unknown[]) {
+    const node = args[0] as ViewNode;
+    if (local(node.name) !== 'foreignobject') {
+      return own._bbox.apply(this, args);
+    }
+    const { x, y, width, height } = boxOf(node, this._viewport);
+    return { x, y, w: width, h: height };
+  };
+  t.after(() => Object.assign(proto, own));
 }
 
 /** The text a document's boxes hold, generated content included. */

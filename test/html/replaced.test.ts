@@ -16,7 +16,7 @@ import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { decodesImageType } from '../../src/html/image-types.js';
-import { inlineDrawing } from '../../src/html/svg.js';
+import { drawsForeignObjects, inlineDrawing } from '../../src/html/svg.js';
 import {
   allowsAutoSizes,
   normalize,
@@ -44,6 +44,7 @@ import {
   solidPng,
   svgBytes,
   view,
+  withForeignObjects,
 } from './harness.js';
 import type { LaidBox, PaintOp, ReplacedBox } from './harness.js';
 import { animationClock } from '../../src/html/node.js';
@@ -2473,7 +2474,8 @@ function foreignOf(node: DrawnNode): Map<unknown, unknown> | undefined {
 
 metric(
   "a foreignObject's HTML is laid out in the object's box and drawn there",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // SVG 2, 23.2: what a `<foreignObject>` holds is HTML, a formatting
     // context of the object's size at the object's place in the drawing.
     // It drew nothing: an inline drawing is one replaced box, and
@@ -2517,7 +2519,8 @@ metric(
 
 metric(
   "a foreignObject's HTML has no canvas of its own, in a document of the other scheme",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // A document whose scheme is not the palette's is drawn on an opaque
     // canvas of its own (`paintDocument`); what an object holds is drawn
     // as a document is, and its canvas would have hidden the drawing
@@ -2548,7 +2551,8 @@ metric(
 
 metric(
   "a switch draws a foreignObject that asks for SVG 1.1's Extensibility, ahead of its fallback",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // draw.io's exports: the object in a group that asks for the feature,
     // in a `<switch>` ahead of a `<text>` for a renderer without it, which
     // was the one drawn here
@@ -2569,6 +2573,34 @@ metric(
   },
 );
 
+metric(
+  'where SvgView hands no foreignObject over, none is built, and a switch draws its fallback',
+  async (t) => {
+    // an ntk from before the hook (sidorares/ntk#549): an object draws
+    // nothing, as it did, and nothing is built or laid out for it
+    if (drawsForeignObjects()) {
+      t.skip('this ntk hands an object over');
+      return;
+    }
+    const source =
+      ALONE +
+      '<svg width="160" height="40"><switch>' +
+      '<foreignObject width="160" height="20" ' +
+      'requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility">' +
+      '<div style="background:#00ff00;height:40px"></div></foreignObject>' +
+      '<rect width="160" height="40" fill="#ff0000"/>' +
+      '</switch></svg>';
+    const { result, node } = await render(source, 200);
+    assert.strictEqual(foreignOf(node), undefined, 'none built');
+    await expectPixel(result.ctx, 80, 10, '#ff0000', {
+      message: 'the fallback',
+    });
+    // and the stand-in for the hook is one the view is asked about
+    withForeignObjects(t);
+    assert.ok(drawsForeignObjects(), 'the hook, found where it is');
+  },
+);
+
 test('a document with no foreignObject builds none', async () => {
   // what every walk over them asks first, so a page of icons pays nothing
   const { node } = await render(
@@ -2579,7 +2611,8 @@ test('a document with no foreignObject builds none', async () => {
 
 metric(
   "a foreignObject's HTML is drawn through the drawing's viewBox and transforms",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // A user unit is a CSS pixel of what the object holds, so a `viewBox`
     // that doubles the drawing doubles it, and a `rotate()` on a group
     // around it turns it: a picture of it, on a surface, where the context
@@ -2634,7 +2667,8 @@ metric(
 
 metric(
   "a foreignObject's HTML is cut to the object, and to a clip-path on it or a group around it",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     const { result } = await render(
       ALONE +
         // a block taller than the object: cut at its foot, unless its
@@ -2690,7 +2724,8 @@ metric(
 
 metric(
   "a foreignObject's HTML is painted in the drawing's order, styled by the document's rules, and faded with its group",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     const { result } = await render(
       ALONE +
         '<style>g.ink{color:#ff0000}.label{background:#00ff00}</style>' +
@@ -2737,7 +2772,8 @@ metric(
 
 metric(
   "a foreignObject's HTML is laid out in CSS pixels at 2x, and drawn on the device's grid",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // a user unit is a CSS pixel, two device pixels here: the object, its
     // block and its text are twice the device pixels across
     const { result, node } = await render2x(

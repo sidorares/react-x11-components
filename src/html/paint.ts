@@ -174,8 +174,8 @@ import {
   quotedFamilies,
 } from './svg.js';
 import type {
+  ForeignBox,
   ForeignPainter,
-  ForeignRect,
   IntrinsicSize,
   SurfaceMaker,
 } from './svg.js';
@@ -12644,9 +12644,9 @@ function foreignPainter(
   objects: ReadonlyMap<Element, ForeignObject>,
   options: PaintOptions,
 ): ForeignPainter {
-  return (el, ctx, alpha, rect) => {
+  return (el, ctx, box) => {
     const object = objects.get(el);
-    if (object) paintForeign(ctx as PaintContext, object, alpha, rect, options);
+    if (object) paintForeign(ctx as PaintContext, object, box, options);
   };
 }
 
@@ -12681,11 +12681,11 @@ const LEVEL = 1e-9;
 function paintForeign(
   ctx: PaintContext,
   object: ForeignObject,
-  alpha: number,
-  rect: ForeignRect,
+  rect: ForeignBox,
   options: PaintOptions,
 ): void {
   const { tree, scale } = object;
+  const alpha = rect.opacity;
   const width = Math.ceil(object.width);
   const height = Math.ceil(object.height);
   if (!(width > 0 && height > 0) || !(alpha > 0)) return;

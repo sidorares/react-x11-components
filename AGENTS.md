@@ -2788,20 +2788,23 @@ load-bearing:
   too wherever the drawing fades it, as the group it is. A picture of it
   scaled up is soft: laying it out at the drawing's scale would be a zoom
   on the object, which the box tree it is built in does not know yet.
-- **`SvgView` has no seam for an object, and this stands on two of its
-  private methods** (`foreignViewClass`): `_renderElement`, which it
-  draws an element with in its order, and `_bbox`, which a clip path in
-  `objectBoundingBox` units measures with. Both are feature-detected, and
-  where either is missing an object draws nothing, as before; the view is
-  used only for a drawing that has one. That is an escape hatch of the
-  kind "No escape hatches" warns of, kept because the drawing's order,
-  clips and masks are `SvgView`'s to apply: the seam belongs upstream, as
-  a `draw()` option ntk calls for an object (the shape `ForeignPainter`
-  already has), and this goes when it lands. A copy of the tree the view
-  is handed (`copyTree`, which a drawing with objects always is) holds
-  none of an object's HTML and maps each copy to its element
-  (`FOREIGN_COPIES`), and takes `Extensibility` out of a
-  `requiredFeatures`, which `SvgView` holds of nothing.
+- **The seam is ntk's, upstream, and asked for at run time.** `SvgView`
+  hands an object to `draw()`'s `opts.foreignObject(element, ctx, box)`
+  where the drawing reaches it — its transforms, clip paths, masks and
+  opacity on the context, `box` its rectangle and that opacity — and
+  measures it as its rectangle for `objectBoundingBox` units, and holds
+  SVG 1.1's `Extensibility` in a `<switch>` where it is handed one
+  (sidorares/ntk#549). An ntk from before it ignores the option, so
+  whether it draws one is asked of the view itself, by drawing an object
+  on a context that draws nothing (`drawsForeignObjects`): where it does
+  not, no object is built, laid out or drawn, as before, and a `<switch>`
+  draws its fallback. **Nothing here reaches into `SvgView`'s privates**;
+  the tests stand in for the hook on an ntk without it
+  (`withForeignObjects` in `test/html/harness.ts`, as #972's
+  `withFieldSelection` stands in for core's), and that stand-in goes when
+  the floor's ntk carries it. A copy of the tree the view is handed
+  (`copyTree`) holds none of an object's HTML and maps each copy to its
+  element (`FOREIGN_COPIES`), which the hook is handed.
 
 And one finding it made: **a type selector matches no element with a
 capital in its name.** The parser keeps SVG's camelCase (`foreignObject`,

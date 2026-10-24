@@ -33,6 +33,7 @@ import {
   snapshot,
   treeOf,
   view,
+  withForeignObjects,
 } from './harness.js';
 
 afterEach(cleanup);
@@ -116,7 +117,8 @@ metric(
 
 metric(
   "a class changed in a foreignObject's HTML builds the boxes, and is drawn",
-  async () => {
+  async (t) => {
+    withForeignObjects(t);
     // what an object holds is a tree of boxes of its own, which a restyle
     // in place finds nothing of: taken in place, the change left the
     // object drawn as it was
