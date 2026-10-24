@@ -143,6 +143,7 @@ import { resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
 import type { ComputedStyle, RootLook, TimelineRef } from './css/style.js';
 import {
+  COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
   NO_SNAP_ALIGN,
   inherit,
@@ -13371,6 +13372,8 @@ const PAINT_ONLY = new Set([
   'borderBottomColor',
   'borderLeftColor',
   'outlineColor',
+  // what `getComputedStyle` reads a colour field in, which draws nothing
+  ...COLOR_SOURCE_FIELDS,
   // the shape a corner's radii are drawn in, inside the border box
   'cornerShape',
   // and the rules in a container's gaps, drawn under what it holds
@@ -13496,6 +13499,7 @@ const UNDRAWN_FIELDS = new Set([
   'transitions',
   'cursor',
   'pointerEvents',
+  ...COLOR_SOURCE_FIELDS,
 ]);
 
 /** The last answer for each new style, which the text set in a box shares

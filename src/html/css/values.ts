@@ -444,10 +444,33 @@ export function inkColor(color: string, current: string): string {
   // a `color-mix()` or a relative colour with `currentColor` in it waits
   // for the colour too; every other functional colour was read when it was
   // parsed, to `#rrggbb` or `rgba()` with no letters in it
-  if (color.charCodeAt(color.length - 1) === 41 && HAS_CURRENT.test(color)) {
-    return functionalColor(color.replace(CURRENT, current)) ?? current;
-  }
-  return color;
+  const text = currentColorIn(color, current);
+  return text === null ? color : (functionalColor(text) ?? current);
+}
+
+/** A colour `parseColor` kept as written to be worked out where it is
+ *  used — a mix, a contrast or a relative colour with `currentColor` in it
+ *  — with `current` in its place; null for any other. */
+export function currentColorIn(color: string, current: string): string | null {
+  return waitsForColor(color) ? color.replace(CURRENT, current) : null;
+}
+
+/** Whether `parseColor` kept a colour as written, to be worked out with
+ *  the colour of the element it is used on (`currentColorIn`). */
+export function waitsForColor(color: string): boolean {
+  return color.charCodeAt(color.length - 1) === 41 && HAS_CURRENT.test(color);
+}
+
+/** A colour field's source (`keptColorText`) while it is the field's —
+ *  while it reads to the field's value — and null once something wrote the
+ *  field alone, as an animation does, or where it has none. */
+export function liveSource(
+  value: string | null,
+  source: string | null,
+): string | null {
+  return source !== null && value !== null && parseColor(source) === value
+    ? source
+    : null;
 }
 
 const CURRENT = /currentcolor/gi;
@@ -532,6 +555,31 @@ export function parseColor(value: string): string | null {
 }
 
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/**
+ * What a colour field keeps beside the sRGB value `parseColor` read
+ * `value` to (`parsed`), for `getComputedStyle` to read it in the space it
+ * was written or mixed in (`colorFormText`): the colour as written, where
+ * its computed value is no legacy sRGB colour — an `oklch()`, a `lab()`, a
+ * `color()`, a mix, a relative colour, a `none` — and null where `rgb()`
+ * says what it is: a hex colour, a name, a legacy function, a contrast,
+ * and a value `parseColor` kept as written to be worked out where it is
+ * used, which is its own. Two string tests for a hex colour or a name,
+ * which is what nearly every declaration is, and no allocation.
+ */
+export function keptColorText(value: string, parsed: string): string | null {
+  if (value.charCodeAt(value.length - 1) !== 41) return null;
+  if (parsed.charCodeAt(0) !== 35 && !parsed.startsWith('rgba(')) return null;
+  const legacy = LEGACY_FUNCTION.exec(value);
+  if (!legacy) return value;
+  // white or black, whatever it is of
+  if (legacy[1]) return null;
+  // a legacy function's relative form and its `none` are not legacy
+  return RELATIVE_COLOR.test(value) || HAS_NONE.test(value) ? value : null;
+}
+
+const LEGACY_FUNCTION = /^(?:rgba?|hsla?|hwb|(contrast-color))\(/i;
+const HAS_NONE = /(?<![\w-])none(?![\w-])/i;
 
 /**
  * The CSS named colours. The list is here rather than reached through ntk's

@@ -133,11 +133,42 @@ function scaled(c: Triple, k: number): Triple {
   return [c[0] * k, c[1] * k, c[2] * k];
 }
 
-/** A colour as gamma-encoded sRGB, unclipped, and its alpha. */
+/** A colour as gamma-encoded sRGB, unclipped, and its alpha; and, where
+ *  its computed value is no legacy sRGB colour, the form that value keeps
+ *  (`ColorForm`). */
 interface Rgba {
   rgb: Triple;
   a: number;
+  form?: ColorForm;
 }
+
+/**
+ * A colour as its computed value keeps it, where that is no legacy sRGB
+ * colour (CSS Color 4, 15; CSS Color 5, 3 and 4): the space it was written
+ * or mixed in, and its components there. A `lab()`, an `lch()`, an
+ * `oklab()` and an `oklch()` keep their own; a `color()`, a mix in an RGB
+ * or an XYZ space and a relative `rgb()` keep a `color()` space; and an
+ * `rgb()`, an `hsl()` or an `hwb()` keeps its own only where a component is
+ * `none`, which no other form can say. What a drawing context is handed is
+ * the sRGB colour beside it, as before: this is for `getComputedStyle`
+ * alone (`colorFormText`).
+ */
+export interface ColorForm {
+  /** `rgb`, `hsl`, `hwb`, `lab`, `lch`, `oklab`, `oklch`, or a `color()`
+   *  space — `srgb`, `srgb-linear`, `display-p3`, `xyz-d65`, …. */
+  space: string;
+  /** The components in that space: an `hsl()`'s saturation and lightness
+   *  and an `hwb()`'s whiteness and blackness in percent, a hue in
+   *  degrees, an `rgb()`'s channels from 0 to 255. */
+  c: Triple;
+  a: number;
+  /** Which are `none`: a bit a component, and `ALPHA` for the alpha. A
+   *  component that is none is 0 in `c`. */
+  none: number;
+}
+
+/** The alpha's bit in `ColorForm.none`. */
+const ALPHA = 8;
 
 /** Any colour but `currentColor`, as numbers: what `color-mix()` mixes. */
 function readRgba(value: string): Rgba | null {
@@ -232,14 +263,21 @@ function readRgbaFunction(value: string): Rgba | null {
   }
 
   let a = 1;
+  let none = 0;
   if (alpha) {
     if (alpha.unit !== '' && alpha.unit !== '%' && alpha.unit !== 'none') {
       return null;
     }
+    if (alpha.unit === 'none') none = ALPHA;
     a = clamp01(alpha.unit === '%' ? alpha.value / 100 : alpha.value);
   }
-  const rgb = toSrgb(name, space, channels);
-  return rgb ? { rgb, a } : null;
+  const v = resolved(name, channels);
+  const rgb = v && toSrgb(name, space, v);
+  if (!v || !rgb) return null;
+  for (let i = 0; i < 3; i += 1)
+    if (channels[i].unit === 'none') none |= 1 << i;
+  const form = absoluteForm(name, space, v, a, none);
+  return form ? { rgb, a, form } : { rgb, a };
 }
 
 const LEGACY = new Set(['rgb', 'rgba', 'hsl', 'hsla']);
@@ -281,7 +319,7 @@ function relative(name: string, body: string): Rgba | null {
   const rest = tokens.slice(2);
   const space = name === 'color' ? (rest.shift() ?? '').toLowerCase() : '';
   if (rest.length !== 3) return null;
-  const coords = originIn(name, space, origin.rgb);
+  const coords = originIn(name, space, origin);
   const keys = CHANNEL_NAMES[name] ?? (XYZ_SPACES.has(space) ? 'xyz' : 'rgb');
   if (!coords) return null;
   const known = new Map<string, number>([['alpha', origin.a]]);
@@ -296,16 +334,22 @@ function relative(name: string, body: string): Rgba | null {
     channels.push(c);
   }
   let a = origin.a;
+  let none = 0;
   if (slash.length === 2) {
     const token = words(slash[1]);
     if (token.length !== 1) return null;
     const alpha = relativeChannel(token[0], known);
     if (!alpha || alpha.unit === 'deg' || alpha.unit === 'grad') return null;
     if (alpha.unit === 'rad' || alpha.unit === 'turn') return null;
+    if (alpha.unit === 'none') none = ALPHA;
     a = clamp01(alpha.unit === '%' ? alpha.value / 100 : alpha.value);
   }
-  const rgb = toSrgb(name, space, channels);
-  return rgb ? { rgb, a } : null;
+  const v = resolved(name, channels);
+  const rgb = v && toSrgb(name, space, v);
+  if (!v || !rgb) return null;
+  for (let i = 0; i < 3; i += 1)
+    if (channels[i].unit === 'none') none |= 1 << i;
+  return { rgb, a, form: relativeForm(name, space, v, rgb, a, none) };
 }
 
 /** Each function's channel keywords, in order. */
@@ -350,8 +394,13 @@ function relativeChannel(
 const KEYWORD = /(?<![\w.-])-?[a-z][\w-]*(?![\w(-])/gi;
 
 /** The origin colour's channels in a relative colour's function, in the
- *  ranges its keywords take. */
-function originIn(name: string, space: string, rgb: Triple): Triple | null {
+ *  ranges its keywords take: the ones its computed value keeps where it is
+ *  of that space already, so `lab(from lab(200 300 400) l a b)` reads the
+ *  `a` and `b` that sRGB has no room for, and `none` is 0. */
+function originIn(name: string, space: string, origin: Rgba): Triple | null {
+  const form = origin.form;
+  if (form && form.space === formSpaceOf(name, space)) return form.c;
+  const rgb = origin.rgb;
   switch (name) {
     case 'rgb':
     case 'rgba':
@@ -425,49 +474,62 @@ function hue(c: Component): number | null {
 
 type Triple = [number, number, number];
 
-/** The colour in gamma-encoded sRGB, each channel from 0 to 1 (before
- *  clipping), or null where a channel is not one its function takes. */
-function toSrgb(name: string, space: string, c: Component[]): Triple | null {
+/** A function's channels as numbers in its own ranges — an `rgb()`'s from
+ *  0 to 255, a percentage of `hsl()`'s and `hwb()`'s in percent, a hue in
+ *  degrees, a `lab()`'s and an `oklab()`'s as their numbers — or null
+ *  where a channel is not one its function takes. `none` is 0. */
+function resolved(name: string, c: Component[]): Triple | null {
+  let v: (number | null)[];
   switch (name) {
     case 'rgb':
-    case 'rgba': {
-      const r = amount(c[0], 255);
-      const g = amount(c[1], 255);
-      const b = amount(c[2], 255);
-      if (r === null || g === null || b === null) return null;
-      return [r / 255, g / 255, b / 255];
-    }
+    case 'rgba':
+      v = [amount(c[0], 255), amount(c[1], 255), amount(c[2], 255)];
+      break;
     case 'hsl':
-    case 'hsla': {
-      const h = hue(c[0]);
-      const s = amount(c[1], 100);
-      const l = amount(c[2], 100);
-      if (h === null || s === null || l === null) return null;
-      return hslToRgb(h, clamp01(s / 100), clamp01(l / 100));
-    }
-    case 'hwb': {
-      const h = hue(c[0]);
-      const w = amount(c[1], 100);
-      const b = amount(c[2], 100);
-      if (h === null || w === null || b === null) return null;
-      return hwbToRgb(h, clamp01(w / 100), clamp01(b / 100));
-    }
+    case 'hsla':
+    case 'hwb':
+      v = [hue(c[0]), amount(c[1], 100), amount(c[2], 100)];
+      break;
+    case 'lab':
+      v = [amount(c[0], 100), amount(c[1], 125), amount(c[2], 125)];
+      break;
+    case 'lch':
+      v = [amount(c[0], 100), amount(c[1], 150), hue(c[2])];
+      break;
+    case 'oklab':
+      v = [amount(c[0], 1), amount(c[1], 0.4), amount(c[2], 0.4)];
+      break;
+    case 'oklch':
+      v = [amount(c[0], 1), amount(c[1], 0.4), hue(c[2])];
+      break;
+    case 'color':
+      v = [amount(c[0], 1), amount(c[1], 1), amount(c[2], 1)];
+      break;
+    default:
+      return null;
+  }
+  if (v[0] === null || v[1] === null || v[2] === null) return null;
+  return v as Triple;
+}
+
+/** The colour in gamma-encoded sRGB, each channel from 0 to 1 (before
+ *  clipping), from its function's channels as `resolved` reads them; null
+ *  for a `color()` space there is none of. */
+function toSrgb(name: string, space: string, v: Triple): Triple | null {
+  switch (name) {
+    case 'rgb':
+    case 'rgba':
+      return [v[0] / 255, v[1] / 255, v[2] / 255];
+    case 'hsl':
+    case 'hsla':
+      return hslToRgb(v[0], clamp01(v[1] / 100), clamp01(v[2] / 100));
+    case 'hwb':
+      return hwbToRgb(v[0], clamp01(v[1] / 100), clamp01(v[2] / 100));
     case 'lab':
     case 'lch': {
-      const l = amount(c[0], 100);
-      if (l === null) return null;
-      let a: number | null;
-      let b: number | null;
-      if (name === 'lab') {
-        a = amount(c[1], 125);
-        b = amount(c[2], 125);
-      } else {
-        const chroma = amount(c[1], 150);
-        const h = hue(c[2]);
-        if (chroma === null || h === null) return null;
-        [a, b] = polar(Math.max(0, chroma), h);
-      }
-      if (a === null || b === null) return null;
+      const l = v[0];
+      const [a, b] =
+        name === 'lab' ? [v[1], v[2]] : polar(Math.max(0, v[1]), v[2]);
       // the gamut mapping CSS draws with takes a lightness at either end to
       // white or black, whatever its chroma (CSS Color 4 13.2)
       if (l >= 100) return [1, 1, 1];
@@ -477,37 +539,315 @@ function toSrgb(name: string, space: string, c: Component[]): Triple | null {
     }
     case 'oklab':
     case 'oklch': {
-      const l = amount(c[0], 1);
-      if (l === null) return null;
-      let a: number | null;
-      let b: number | null;
-      if (name === 'oklab') {
-        a = amount(c[1], 0.4);
-        b = amount(c[2], 0.4);
-      } else {
-        const chroma = amount(c[1], 0.4);
-        const h = hue(c[2]);
-        if (chroma === null || h === null) return null;
-        [a, b] = polar(Math.max(0, chroma), h);
-      }
-      if (a === null || b === null) return null;
+      const l = v[0];
+      const [a, b] =
+        name === 'oklab' ? [v[1], v[2]] : polar(Math.max(0, v[1]), v[2]);
       if (l >= 1) return [1, 1, 1];
       if (l <= 0) return [0, 0, 0];
       return gamma(oklabToLinearSrgb(l, a, b));
     }
-    case 'color': {
-      const v: number[] = [];
-      for (const channel of c) {
-        const x = amount(channel, 1);
-        if (x === null) return null;
-        v.push(x);
-      }
-      return predefined(space, v as Triple);
-    }
+    case 'color':
+      return predefined(space, v);
     default:
       return null;
   }
 }
+
+// --- the forms a computed value keeps (CSS Color 4, 15) ---------------------
+
+/** The space a form of a function's is in, `color()`'s `xyz` as the
+ *  `xyz-d65` it is. */
+function formSpaceOf(name: string, space: string): string {
+  if (name === 'color') return space === 'xyz' ? 'xyz-d65' : space;
+  if (name === 'rgba') return 'rgb';
+  if (name === 'hsla') return 'hsl';
+  return name;
+}
+
+/** A hue as a computed value keeps it: in [0, 360), and 0 for one that is
+ *  no number. */
+function hueOf(h: number): number {
+  const r = ((h % 360) + 360) % 360;
+  return r >= 0 && r < 360 ? r : 0;
+}
+
+/** A number no calculation's `NaN` is: 0 where it is (CSS Values 4,
+ *  10.9). */
+function finite(x: number): number {
+  return Number.isNaN(x) ? 0 : x;
+}
+
+function between(x: number, lo: number, hi: number): number {
+  return x < lo ? lo : x > hi ? hi : finite(x);
+}
+
+/** The form an absolute colour's computed value keeps, from its channels
+ *  as `resolved` reads them; none for an `rgb()`, an `hsl()` or an `hwb()`
+ *  with no `none` in it, which is a legacy sRGB colour. */
+function absoluteForm(
+  name: string,
+  space: string,
+  v: Triple,
+  a: number,
+  none: number,
+): ColorForm | undefined {
+  switch (name) {
+    case 'rgb':
+    case 'rgba':
+      if (!none) return undefined;
+      return {
+        space: 'rgb',
+        c: [finite(v[0]), finite(v[1]), finite(v[2])],
+        a,
+        none,
+      };
+    case 'hsl':
+    case 'hsla':
+    case 'hwb':
+      if (!none) return undefined;
+      return {
+        space: formSpaceOf(name, space),
+        c: [hueOf(v[0]), finite(v[1]), finite(v[2])],
+        a,
+        none,
+      };
+    default:
+      return ownForm(name, space, v, a, none);
+  }
+}
+
+/** A `lab()`'s, an `lch()`'s, an `oklab()`'s, an `oklch()`'s or a
+ *  `color()`'s form: its lightness within its range, its chroma none below
+ *  nought and its hue in a turn — at parsed-value time, as CSS Color 4 has
+ *  them — and a `color()`'s channels as they are, unclamped. */
+function ownForm(
+  name: string,
+  space: string,
+  v: Triple,
+  a: number,
+  none: number,
+): ColorForm | undefined {
+  switch (name) {
+    case 'lab':
+      return {
+        space: name,
+        c: [between(v[0], 0, 100), finite(v[1]), finite(v[2])],
+        a,
+        none,
+      };
+    case 'oklab':
+      return {
+        space: name,
+        c: [between(v[0], 0, 1), finite(v[1]), finite(v[2])],
+        a,
+        none,
+      };
+    case 'lch':
+      return {
+        space: name,
+        c: [between(v[0], 0, 100), Math.max(0, finite(v[1])), hueOf(v[2])],
+        a,
+        none,
+      };
+    case 'oklch':
+      return {
+        space: name,
+        c: [between(v[0], 0, 1), Math.max(0, finite(v[1])), hueOf(v[2])],
+        a,
+        none,
+      };
+    case 'color':
+      return {
+        space: formSpaceOf(name, space),
+        c: [finite(v[0]), finite(v[1]), finite(v[2])],
+        a,
+        none,
+      };
+    default:
+      return undefined;
+  }
+}
+
+/** A relative colour's form (CSS Color 5, 4): in its function's own space,
+ *  but for `rgb()`, `hsl()` and `hwb()`, whose channels need not be in the
+ *  sRGB gamut, and which keep them unclamped in `color(srgb …)` — or, with
+ *  a `none` in them, in their own function. */
+function relativeForm(
+  name: string,
+  space: string,
+  v: Triple,
+  rgb: Triple,
+  a: number,
+  none: number,
+): ColorForm | undefined {
+  switch (name) {
+    case 'rgb':
+    case 'rgba':
+      return {
+        space: 'srgb',
+        c: [finite(v[0]) / 255, finite(v[1]) / 255, finite(v[2]) / 255],
+        a,
+        none,
+      };
+    case 'hsl':
+    case 'hsla':
+    case 'hwb':
+      if (none) return absoluteForm(name, space, v, a, none);
+      return {
+        space: 'srgb',
+        c: [finite(rgb[0]), finite(rgb[1]), finite(rgb[2])],
+        a,
+        none,
+      };
+    default:
+      return ownForm(name, space, v, a, none);
+  }
+}
+
+/** A colour's components in a space a mix is taken in, with which of them
+ *  are `none`: its own, where its computed value keeps that space, so a
+ *  `none` it was written with is carried into the mix (CSS Color 4,
+ *  12.2); else converted from sRGB, where a hue a grey has none of is
+ *  `none` too (12.3). */
+function inSpace(
+  space: string,
+  colour: Rgba,
+): { v: Triple; none: number } | null {
+  const form = colour.form;
+  if (form) {
+    if (form.space === formSpaceOf('color', space)) {
+      return { v: form.c, none: form.none };
+    }
+    if (form.space === 'rgb' && space === 'srgb') {
+      return { v: scaled(form.c, 1 / 255), none: form.none };
+    }
+  }
+  const v = toSpace(space, colour.rgb);
+  if (!v) return null;
+  let none = form ? form.none & ALPHA : 0;
+  let out = v;
+  for (let i = 0; i < 3; i += 1) {
+    if (!Number.isNaN(v[i])) continue;
+    if (out === v) out = [v[0], v[1], v[2]];
+    out[i] = 0;
+    none |= 1 << i;
+  }
+  return { v: out, none };
+}
+
+/** A form as `getComputedStyle` reads it (CSS Color 4, 15.3–15.5): the
+ *  function or `color()` with its space, each component a number of up to
+ *  six significant digits or `none`, a percentage where `hsl()` and
+ *  `hwb()` have one, and the alpha after a slash where it is not 1. */
+function serializeForm(f: ColorForm): string {
+  const part = (i: number, pct = false): string =>
+    f.none & (1 << i) ? 'none' : `${formNumber(f.c[i])}${pct ? '%' : ''}`;
+  const alpha =
+    f.none & ALPHA ? ' / none' : f.a === 1 ? '' : ` / ${formNumber(f.a)}`;
+  switch (f.space) {
+    case 'rgb':
+    case 'lab':
+    case 'lch':
+    case 'oklab':
+    case 'oklch':
+      return `${f.space}(${part(0)} ${part(1)} ${part(2)}${alpha})`;
+    case 'hsl':
+    case 'hwb':
+      return `${f.space}(${part(0)} ${part(1, true)} ${part(2, true)}${alpha})`;
+    default:
+      return `color(${f.space} ${part(0)} ${part(1)} ${part(2)}${alpha})`;
+  }
+}
+
+/** A component as a computed colour serializes it: six significant digits,
+ *  with nothing left of a rounding error below a millionth, and an
+ *  infinity as the calculation it can only be written as. */
+function formNumber(x: number): string {
+  if (x === Infinity) return 'calc(infinity)';
+  if (x === -Infinity) return 'calc(-infinity)';
+  const r = Number(finite(x).toPrecision(6));
+  return Math.abs(r) < 1e-6 ? '0' : String(r);
+}
+
+/**
+ * A colour as `getComputedStyle` reads it where its computed value keeps
+ * a space of its own (`ColorForm`): `color(srgb 0.5 0 0.5)` for a mix in
+ * sRGB, `oklch(0.623 0.214 259.815)` as it was written, a relative
+ * colour's channels unclamped. Null for a legacy sRGB colour, which
+ * `rgb()` says, for `currentColor`, which the caller resolves first, and
+ * for what is no colour.
+ */
+export function colorFormText(value: string): string | null {
+  let hit = FORM_CACHE.get(value);
+  if (hit === undefined) {
+    const form = readRgba(value)?.form;
+    hit = form ? serializeForm(form) : null;
+    if (FORM_CACHE.size >= 1024) FORM_CACHE.clear();
+    FORM_CACHE.set(value, hit);
+  }
+  return hit;
+}
+
+const FORM_CACHE = new Map<string, string | null>();
+
+/**
+ * An absolute colour function as a declaration keeps it (CSSOM 6.7.2):
+ * its name in lower case, each math function in it simplified to the one
+ * value it comes to, as `calc(<value>)`, and each number in its shortest
+ * form — `calc(1 + 1 / 1)` as `calc(2)`, `.5` as `0.5`. Null where it is
+ * none this reads, and for a relative colour, whose calculations name its
+ * origin's channels and are kept as written.
+ */
+export function specifiedColorText(value: string): string | null {
+  const v = value.trim();
+  const open = v.indexOf('(');
+  if (open < 0 || !v.endsWith(')')) return null;
+  const name = v.slice(0, open).toLowerCase();
+  if (!SPECIFIED_FUNCTIONS.has(name)) return null;
+  const body = v.slice(open + 1, -1).trim();
+  if (RELATIVE.test(body) || !readRgbaFunction(v)) return null;
+  const piece = (token: string): string | null => {
+    if (token.toLowerCase() === 'none') return 'none';
+    const c = channel(token);
+    if (!c) return null;
+    const n = `${formNumber(c.value)}${c.unit}`;
+    return token.includes('(') ? `calc(${n})` : n;
+  };
+  const pieces = (tokens: string[]): string[] | null => {
+    const out: string[] = [];
+    for (const token of tokens) {
+      const p = piece(token.trim());
+      if (p === null) return null;
+      out.push(p);
+    }
+    return out;
+  };
+  if (topLevelComma(body) >= 0) {
+    const out = pieces(topLevelParts(body, ','));
+    return out && `${name}(${out.join(', ')})`;
+  }
+  const slash = topLevelParts(body, '/');
+  const tokens = words(slash[0]);
+  const space = name === 'color' ? `${tokens.shift()?.toLowerCase()} ` : '';
+  const out = pieces(tokens);
+  const alpha = slash.length === 2 ? pieces(words(slash[1])) : [];
+  if (!out || !alpha) return null;
+  const tail = alpha.length ? ` / ${alpha[0]}` : '';
+  return `${name}(${space}${out.join(' ')}${tail})`;
+}
+
+const SPECIFIED_FUNCTIONS = new Set([
+  'rgb',
+  'rgba',
+  'hsl',
+  'hsla',
+  'hwb',
+  'lab',
+  'lch',
+  'oklab',
+  'oklch',
+  'color',
+]);
 
 /** One of `color()`'s predefined spaces, in gamma-encoded sRGB. */
 function predefined(space: string, v: Triple): Triple | null {
@@ -579,27 +919,46 @@ function mix(body: string): Rgba | null {
   const sum = (p1 as number) + (p2 as number);
   if (!(sum > 0)) return null;
   const t = (p2 as number) / sum;
-  const x = toSpace(space, first.colour.rgb);
-  const y = toSpace(space, second.colour.rgb);
+  const x = inSpace(space, first.colour);
+  const y = inSpace(space, second.colour);
   if (!x || !y) return null;
-  const a1 = first.colour.a;
-  const a2 = second.colour.a;
+  // a component `none` on one side is the other's, and on both stays
+  // `none` (CSS Color 4, 12.2) — the alpha too, which then weighs nothing
+  let none = x.none & y.none;
+  const a1 =
+    x.none & ALPHA ? (none & ALPHA ? 1 : second.colour.a) : first.colour.a;
+  const a2 =
+    y.none & ALPHA ? (none & ALPHA ? 1 : first.colour.a) : second.colour.a;
   const alpha = a1 * (1 - t) + a2 * t;
   const hueAt = HUE[space] ?? -1;
   const out: Triple = [0, 0, 0];
   for (let i = 0; i < 3; i += 1) {
+    const bit = 1 << i;
+    if (none & bit) continue;
+    const xi = x.none & bit ? y.v[i] : x.v[i];
+    const yi = y.none & bit ? x.v[i] : y.v[i];
     if (i === hueAt) {
-      out[i] = mixHue(x[i], y[i], t, method);
+      out[i] = mixHue(xi, yi, t, method);
     } else {
       // premultiplied, so a transparent side lends its alpha and not its
       // colour: Tailwind's `bg-blue-500/50` is blue, half as opaque
-      const v = x[i] * a1 * (1 - t) + y[i] * a2 * t;
+      const v = xi * a1 * (1 - t) + yi * a2 * t;
       out[i] = alpha === 0 ? 0 : v / alpha;
     }
   }
   const rgb = fromSpace(space, out);
-  // percentages that come to less than 100% take their share of the alpha
-  return rgb ? { rgb, a: alpha * Math.min(1, sum / 100) } : null;
+  if (!rgb) return null;
+  // percentages that come to less than 100% take their share of the alpha,
+  // and one that is `none` is drawn as nought
+  const a = (none & ALPHA ? 0 : alpha) * Math.min(1, sum / 100);
+  // the computed value is in the space mixed in (CSS Color 5, 3.1): an
+  // `hsl()` or an `hwb()` mix is sRGB, as `color(srgb …)`, but where it
+  // has a `none` to keep
+  const form: ColorForm =
+    (space === 'hsl' || space === 'hwb') && !none
+      ? { space: 'srgb', c: rgb, a, none }
+      : { space: formSpaceOf('color', space), c: out, a, none };
+  return { rgb, a, form };
 }
 
 // --- contrast-color() (CSS Color 5 4) ----------------------------------------
@@ -720,7 +1079,8 @@ function toSpace(space: string, rgb: Triple): Triple | null {
       return [h, Math.min(...rgb) * 100, (1 - Math.max(...rgb)) * 100];
     }
     default:
-      return null;
+      // `display-p3`, `rec2020` and the rest of `color()`'s
+      return toPredefined(space, rgb);
   }
 }
 
@@ -753,7 +1113,7 @@ function fromSpace(space: string, c: Triple): Triple | null {
     case 'hwb':
       return hwbToRgb(c[0], clamp01(c[1] / 100), clamp01(c[2] / 100));
     default:
-      return null;
+      return predefined(space, c);
   }
 }
 

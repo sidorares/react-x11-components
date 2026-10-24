@@ -21,8 +21,8 @@ import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
 import type { Len } from './css/values.js';
-import { inkColor } from './css/values.js';
-import { rgbaOf } from './css/color.js';
+import { currentColorIn, inkColor, liveSource } from './css/values.js';
+import { colorFormText, rgbaOf } from './css/color.js';
 
 /** What a layout made of an element's principal box, in device pixels:
  *  its border box's size, and its margins, borders and padding. */
@@ -334,9 +334,34 @@ function primitiveText(fn: Primitive, scale: number): string {
   }
 }
 
-/** A colour as CSSOM serializes it: `rgb()` opaque, `rgba()` not. */
-export function cssomColor(value: string | null, color: string): string {
+/**
+ * A colour as CSSOM serializes it (CSS Color 4, 15): in the space its
+ * computed value keeps (`colorFormText`) — `color(srgb …)` for a mix in
+ * sRGB or a relative `rgb()`, `oklch()` and `lab()` as themselves — and a
+ * legacy sRGB colour as `rgb()` opaque and `rgba()` not. `source` is what
+ * the field keeps beside its sRGB value (`keptColorText`), and `color` and
+ * `colorSource` the element's colour, which `currentColor` is.
+ */
+export function cssomColor(
+  value: string | null,
+  source: string | null,
+  color: string,
+  colorSource: string | null,
+): string {
   if (value === null) return 'rgba(0, 0, 0, 0)';
+  if (value === 'currentColor') {
+    value = color;
+    source = colorSource;
+  }
+  // a mix or a relative colour of `currentColor` is kept as written until
+  // it is used, and is worked out with the element's colour as its own
+  // computed value keeps it
+  let text = liveSource(value, source);
+  if (text === null && value.endsWith(')')) {
+    text = currentColorIn(value, liveSource(color, colorSource) ?? color);
+  }
+  const kept = text === null ? null : colorFormText(text);
+  if (kept !== null) return kept;
   // `currentColor` itself, or in a mix or a contrast, is the element's
   const read = rgbaOf(inkColor(value, color));
   if (!read) return value;
@@ -613,9 +638,14 @@ function cssomAt(
     'align-self': style.alignAnchorCenter ? 'anchor-center' : style.alignSelf,
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
-    color: cssomColor(color, color),
+    color: cssomColor(color, style.colorSource, color, style.colorSource),
     'color-scheme': style.colorSchemeKeywords,
-    'background-color': cssomColor(style.backgroundColor, color),
+    'background-color': cssomColor(
+      style.backgroundColor,
+      style.backgroundColorSource,
+      color,
+      style.colorSource,
+    ),
     'font-family': style.fontFamily,
     'font-size': px(style.fontSize, scale),
     'font-weight': String(style.fontWeight),
@@ -648,7 +678,12 @@ function cssomAt(
     left: len(style.left, scale),
     'outline-style': style.outlineStyle,
     'outline-width': px(style.outlineWidth, scale),
-    'outline-color': cssomColor(style.outlineColor, color),
+    'outline-color': cssomColor(
+      style.outlineColor,
+      style.outlineColorSource,
+      color,
+      style.colorSource,
+    ),
   };
   // a transform resolves to the matrix its list comes to for the box
   // (CSSOM 9, "resolved value"), and with no box is the list it computes
@@ -676,6 +711,12 @@ function cssomAt(
     style.borderBottomColor,
     style.borderLeftColor,
   ];
+  const sources = [
+    style.borderTopColorSource,
+    style.borderRightColorSource,
+    style.borderBottomColorSource,
+    style.borderLeftColorSource,
+  ];
   const margins = [
     style.marginTop,
     style.marginRight,
@@ -695,7 +736,12 @@ function cssomAt(
       styles[i] === 'none' || styles[i] === 'hidden'
         ? '0px'
         : px(box ? box.border[i] : widths[i], scale);
-    out[`border-${side}-color`] = cssomColor(colors[i], color);
+    out[`border-${side}-color`] = cssomColor(
+      colors[i],
+      sources[i],
+      color,
+      style.colorSource,
+    );
     out[`margin-${side}`] = box
       ? px(box.margin[i], scale)
       : len(margins[i], scale);

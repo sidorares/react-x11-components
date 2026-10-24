@@ -93,7 +93,7 @@ handle.refresh();
 | `scrollElementTo(element, { x?, y? }, relative?, target?)`                              | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`; `relative` for a `scrollBy()`, which a snap container snaps the way it went, and `target` for the element a scroll into view brings in, which it lines up. Answers where it came to, or null.                                                                                                                                                                                                                                                               |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`, or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                                                                                                                                                                                    |
+| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours in the space their computed values keep (`rgb()`, `oklch()`, `color(srgb …)`, …), a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`, or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                                                                                                              |
 | `customProperty(el, name, pseudo?)`                                                     | A custom property's computed value, as `getComputedStyle` reads it by its name — case and all, `--Tabs-x` and `--tabs-x` being two — with every `var()` in it replaced, and `''` where nothing sets it. Not in `computedStyle`'s record, which would carry every one a theme sets on the root to each element. Null as `computedStyle` is.                                                                                                                                                                                                                                                                        |
 | `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                                                                                                                                                                    |
 | `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                                                                                                                                                          |
@@ -4193,10 +4193,12 @@ either the comma or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`,
 `oklch()`, and `color()` in its predefined spaces. They are read here and
 handed to the drawing context as `#rrggbb` or `rgba()`, which both backends
 read alike, and one outside sRGB is clipped into it. `color-mix()` mixes in
-any of the spaces above but the wide-gamut RGB ones, premultiplied, so a
-colour mixed with `transparent` keeps its hue: Tailwind 4's
-`bg-blue-500/50` is written that way; with no space named it mixes in
-`oklab`. `contrast-color()` (CSS Color 5) is white or black, whichever has
+any of the spaces above, premultiplied, so a colour mixed with
+`transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is written that
+way; with no space named it mixes in `oklab`. A component that is `none`
+on one side takes the other's, and on both stays `none` (CSS Color 4,
+12.2), as a grey's hue does. `contrast-color()` (CSS Color 5) is white or
+black, whichever has
 the greater WCAG 2.1 contrast against the colour it is given, as Chrome and
 Safari choose. A relative colour (CSS Color 5) takes
 another colour into any of the functions above and reads its channels by
@@ -4209,7 +4211,28 @@ used, so it inherits as itself and an element with another colour works it
 out again. A channel
 of any colour function may be a math function — `calc()`, `min()`, `max()`,
 `clamp()` — of numbers, of percentages or of angles, one of the three
-throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`. A system colour (CSS Color 4) is
+throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`.
+
+What `getComputedStyle` reads back for `color`, `background-color`, the
+borders' colours and `outline-color` is the computed value CSS Color 4 (15)
+and 5 say, which keeps the space a colour was written or mixed in: a legacy
+sRGB colour — a name, hex, `rgb()`, `hsl()`, `hwb()`, a `contrast-color()`
+— as `rgb()` or `rgba()`; `lab()`, `lch()`, `oklab()` and `oklch()` as
+themselves, their calculations simplified, a lightness within its range and
+a hue in a turn; `color()` with its channels unclamped; a mix in the space
+it was mixed in — `color-mix(in srgb, red, blue)` is `color(srgb 0.5 0
+0.5)`, a mix in `hsl` or `hwb` `color(srgb …)` — and a relative `rgb()`,
+`hsl()` or `hwb()` as `color(srgb …)`, the others in their own function;
+and `none` kept wherever it is, in a legacy function's own form. A colour
+an element inherits, and `currentColor`, read as the colour they are.
+Drawing is as it was: what the context is handed is sRGB, and a style
+keeps the colour as written beside it (`colorSource`) only where it is no
+legacy colour, for this. A colour an animation or a transition is part way
+through reads as `rgb()`. A `contrast-color()` set through `el.style` is
+kept with its colour's calculations simplified, `calc(1 + 1 / 1)` as
+`calc(2)`.
+
+A system colour (CSS Color 4) is
 the palette's where the element's colour scheme is the palette's — `Canvas`
 its ground, `CanvasText` its text, `LinkText` and `AccentColor` its accent,
 `ButtonFace`, `ButtonText` and `ButtonBorder` its controls', `GrayText` its

@@ -129,7 +129,8 @@ function toLen(term: Term): Len | null {
 
 const NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?/;
 
-const CONSTANT = /^(?:-?infinity|nan|pi|e)(?![a-z0-9_(-])/;
+// ASCII case-insensitive, as every keyword is: `calc(NaN)` as written
+const CONSTANT = /^(?:-?infinity|nan|pi|e)(?![a-z0-9_(-])/i;
 
 const CONSTANTS: Record<string, number> = {
   infinity: Infinity,
@@ -204,7 +205,11 @@ function tokenize(text: string): Token[] | null {
     // radius as `calc(infinity * 1px)`
     const constant = CONSTANT.exec(text.slice(i))?.[0];
     if (constant) {
-      out.push({ t: 'num', value: CONSTANTS[constant], unit: '' });
+      out.push({
+        t: 'num',
+        value: CONSTANTS[constant.toLowerCase()],
+        unit: '',
+      });
       i += constant.length;
       continue;
     }

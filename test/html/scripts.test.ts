@@ -3023,6 +3023,41 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
+  // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
+  // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),
+  // a relative colour over contrast-color() as color(srgb …), and a legacy
+  // colour as rgb()
+  const doc = await hosted(
+    '<style>:root { --brand: oklch(62.3% 0.214 259.815) }' +
+      '#a { color: var(--brand); background-color: color-mix(in oklab, var(--brand) 50%, transparent) }' +
+      '#b { background-color: color-mix(in srgb, contrast-color(blue) 100%, purple); color: rgb(from contrast-color(blue) r g b); border: 1px solid #f00 }' +
+      '</style>' +
+      '<p id="out"></p><div id="a"></div><div id="b"></div>' +
+      '<script>' +
+      'var r = [], a = getComputedStyle(document.getElementById("a")), b = getComputedStyle(document.getElementById("b"));' +
+      'r.push(a.color, a.backgroundColor, b.backgroundColor, b.color, b.borderTopColor);' +
+      'var s = document.getElementById("b").style;' +
+      's.backgroundColor = "contrast-color(color(srgb calc(0.5) calc(1 + 1 / 1) 1 / .5))";' +
+      'r.push(s.backgroundColor, getComputedStyle(document.getElementById("b")).backgroundColor);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    [
+      'oklch(0.623 0.214 259.815)',
+      'oklab(0.623 -0.037841 -0.210628 / 0.5)',
+      'color(srgb 1 1 1)',
+      'color(srgb 1 1 1)',
+      'rgb(255, 0, 0)',
+      'contrast-color(color(srgb calc(0.5) calc(2) 1 / 0.5))',
+      'rgb(0, 0, 0)',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test('a computed style is live: it answers what the element is styled now', async () => {
   // CSSOM 9: getComputedStyle returns a live declaration block, read again
   // as the element changes, by name, by its camel-case name and by index

@@ -9,7 +9,9 @@ import { positionAreaText } from './anchor.js';
 import { serializeMath } from './calc-tree.js';
 import { animationItemText, animationLonghandsOf } from './animation.js';
 import { parseShapeFunction } from './shape-function.js';
+import { specifiedColorText } from './color.js';
 import { parseZoom, splitValue } from './values.js';
+import { closingParen } from './vars.js';
 import type { UnitContext } from './values.js';
 
 /** What a value is read against where it is only checked: its lengths
@@ -87,8 +89,12 @@ export function specifiedValue(
   }
   // `contrast-color()` takes one colour and nothing else (CSS Color 5,
   // 6.1): a value holding one of anything else is none, in any property
-  if (/contrast-color\(/i.test(value) && !contrastColorsValid(value)) {
-    return null;
+  if (/contrast-color\(/i.test(value)) {
+    if (!contrastColorsValid(value)) return null;
+    // and its colour is kept as the colour would be, its calculations
+    // simplified
+    const canonical = contrastColorsText(value);
+    if (canonical !== value) return canonical;
   }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     if (!/\bshape\(/i.test(value)) return undefined;
@@ -132,6 +138,29 @@ function contrastColorsValid(value: string): boolean {
     if (/^[+-]?[\d.]/.test(inner) || /^(?:max|min)$/i.test(inner)) return false;
   }
   return true;
+}
+
+/** A value with the colour function each `contrast-color()` holds as a
+ *  declaration keeps it (`specifiedColorText`): `contrast-color(color(srgb
+ *  calc(0.5) 0 0 / .5))` as `contrast-color(color(srgb calc(0.5) 0 0 /
+ *  0.5))`. Any other colour in one, and the rest of the value, as written. */
+function contrastColorsText(value: string): string {
+  let out = '';
+  let from = 0;
+  const re = /contrast-color\(/gi;
+  for (let m = re.exec(value); m; m = re.exec(value)) {
+    const open = m.index + m[0].length;
+    const close = closingParen(value, open);
+    if (close < 0) break;
+    const inner = value.slice(open, close).trim();
+    const canonical = specifiedColorText(inner);
+    if (canonical !== null && canonical !== inner) {
+      out += `${value.slice(from, open)}${canonical})`;
+      from = close + 1;
+      re.lastIndex = close + 1;
+    }
+  }
+  return from === 0 ? value : out + value.slice(from);
 }
 
 /** A `<custom-ident>` (CSS Values 4, 4.2): an identifier that is none of
