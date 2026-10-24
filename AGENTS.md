@@ -2784,7 +2784,10 @@ cannot read a selector list in, and nothing more. A compound that leads
 below to a subject (`PointerCompounds.below`) reaches the elements in it
 the subject names, not all that is in it: Bootstrap's `:hover >
 .anchor-link` names every element the pointer crosses, and reached the
-whole page. **Anything that draws an element some other box's way has to
+whole page. The subject is read without its functional pseudo-classes
+(`subjectOf`), each of which only narrows what the rest of it names, so
+Angular's `*:hover > kbd:not(:has(kbd))` reaches keys and not all of every
+hovered element. **Anything that draws an element some other box's way has to
 bring that box into the reach** — a shape in an inline `<svg>` brings the
 drawing (`_stateReach`'s `subject`), since only an `<svg>` in the reach
 has its shapes asked for again. And a rule at a shadow tree's edge is in

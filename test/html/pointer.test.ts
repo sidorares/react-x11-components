@@ -930,11 +930,28 @@ test('a :hover that leads below names the subject it reaches, not all that is in
   assert.deepStrictEqual(pointerCompounds('li:hover > ul > li').below, [
     { compound: 'li', subject: 'li', child: false },
   ]);
-  // a subject with a function in it may ask of more than its element, and
-  // the compound reaches all that is in it as before
+  // a subject's functions only narrow what the rest of it names, so they
+  // are left out: Angular's docs' `kbd` hint reached all of every hovered
+  // element, `<body>` and all
   const fn = pointerCompounds('p:hover > a:not(.x)');
-  assert.deepStrictEqual(fn.compounds, ['p']);
-  assert.deepStrictEqual(fn.below, []);
+  assert.deepStrictEqual(fn.compounds, []);
+  assert.deepStrictEqual(fn.below, [
+    { compound: 'p', subject: 'a', child: true },
+  ]);
+  assert.deepStrictEqual(pointerCompounds('*:hover>kbd:not(:has(kbd))').below, [
+    { compound: '*', subject: 'kbd', child: true },
+  ]);
+  assert.deepStrictEqual(pointerCompounds('.a:hover :is(.b, .c) i').below, [
+    { compound: '.a', subject: 'i', child: false },
+  ]);
+  assert.deepStrictEqual(pointerCompounds('.a:hover :where(.b)').below, [
+    { compound: '.a', subject: '*', child: false },
+  ]);
+  // and what is in brackets, quotes or an escape is not one
+  assert.deepStrictEqual(
+    pointerCompounds('.a:hover b[data-x="(:not)"]:not(.q)').below,
+    [{ compound: '.a', subject: 'b[data-x="(:not)"]', child: false }],
+  );
   // the subject testing the state is a compound of its own as well
   const both = pointerCompounds('a:hover > b:hover');
   assert.deepStrictEqual(both.compounds, ['b']);
@@ -1170,6 +1187,53 @@ metric(
       ['anchor-link'],
       'a hover reaches the anchors it shows and nothing else',
     );
+    await hoverInPlace(result, el, 'p7');
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'main'), quiet),
+      0,
+      'not as it was',
+    );
+  },
+);
+
+metric(
+  "a hover's subject with a function in it reaches what the rest of it names",
+  async () => {
+    // Angular's docs write `*:hover > kbd:not(:has(kbd))`, and a subject
+    // with a function in it reached all that every hovered element held,
+    // the page's `<body>` among them: every move built the boxes
+    const sections = Array.from(
+      { length: 120 },
+      (_, i) =>
+        `<section id="s${i}"><p id="p${i}">Press <kbd id="k${i}">` +
+        `<kbd>Ctrl</kbd>+<kbd id="j${i}">K</kbd></kbd> in part ${i}, ` +
+        `or <b>more</b>.</p><p>A second paragraph.</p></section>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} kbd{color:#000000}' +
+        ' *:hover>kbd:not(:has(kbd)){color:#0000ee}</style>' +
+        `<main id="main">${sections}</main>`,
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    // the keys in the hovered combination turn, and the combination,
+    // which holds keys, does not
+    const drawn = await hoverInPlace(result, el, 'j2');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the keys did not turn');
+    const reach = (
+      el as unknown as {
+        _hoverReach(was: unknown[], now: unknown[]): { reach: Set<unknown> };
+      }
+    )._hoverReach(
+      [],
+      ['j2', 'k2', 'p2', 's2', 'main'].map((id) => findById(el.document, id)),
+    ).reach;
+    assert.ok(
+      [...reach].every((e) => (e as { name: string }).name === 'kbd'),
+      'a hover reaches the keys it can turn and nothing else',
+    );
+    assert.ok(reach.size < 20, `${reach.size} elements reached`);
     await hoverInPlace(result, el, 'p7');
     assert.strictEqual(
       bytesApart(await hoverInPlace(result, el, 'main'), quiet),
