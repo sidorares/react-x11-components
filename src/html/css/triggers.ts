@@ -504,6 +504,13 @@ export interface ViewPlace {
   end: number;
   portStart: number;
   portEnd: number;
+  /** How far sticky positioning can move a sticky subject, or one in a
+   *  sticky box, toward the scrollport's start and toward its end, from
+   *  where `start` and `end` have it at rest (`stickyReach`): where it
+   *  enters is worked out with it moved back, and where it leaves with it
+   *  moved on, so the range takes in every scroll at which it is seen. */
+  up?: number;
+  down?: number;
 }
 
 /**
@@ -516,11 +523,16 @@ export interface ViewPlace {
  */
 export function viewEdgeAt(edge: RangeEdge, place: ViewPlace): number {
   const { start, end, portStart, portEnd } = place;
-  // where each of the subject's edges crosses each of the scrollport's
-  const enters = start - portEnd;
-  const leaves = end - portStart;
-  const a = start - portStart;
-  const b = end - portEnd;
+  const up = place.up ?? 0;
+  const down = place.down ?? 0;
+  // where each of the subject's edges crosses each of the scrollport's: its
+  // start entering and its end reaching the far edge where a sticky box has
+  // held it back, and its start reaching the near edge and its end leaving
+  // where one has carried it on
+  const enters = start - up - portEnd;
+  const leaves = end + down - portStart;
+  const a = start + down - portStart;
+  const b = end - up - portEnd;
   let from: number;
   let to: number;
   switch (edge.name ?? 'cover') {

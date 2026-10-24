@@ -1166,6 +1166,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.seekTransition(key, currentTime),
       seekAnimation: (key, currentTime, paused) =>
         nodeRef.current?.seekAnimation(key, currentTime, paused),
+      seekScrolled: (key, mode, time, rate) =>
+        nodeRef.current?.seekScrolled(key, mode, time, rate),
+      viewAdjust: (element, vertical) =>
+        nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
       cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
       cssKeyframes: (element, pseudo, name) =>
         nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,

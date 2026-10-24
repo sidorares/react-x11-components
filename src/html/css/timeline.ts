@@ -99,6 +99,29 @@ export interface Running {
   /** Whether a page's script cancelled it (`CSSAnimation.cancel()`): it
    *  draws nothing while `animation-name` still names it. */
   pageCancelled?: boolean;
+  /** Where its time is on a scroll's timeline, which `start` and `hold`,
+   *  the clock's, are not (`ScrollRun`). */
+  scroll?: ScrollRun;
+}
+
+/**
+ * A CSS animation's time on a scroll-driven timeline (Web Animations 2,
+ * 4.4), in percentages of the timeline: held where it is paused — by
+ * `animation-play-state` or by the page (`Running.pagePaused`) — and
+ * otherwise the timeline's time less its start time, times its rate. Its
+ * start time is its attachment range's start, or its end where it plays
+ * backwards, aligned to the range at each sample, as "auto-align start
+ * time" has it, until a page sets one (`seekScrolled`); and it aligns
+ * again when it plays after a pause, as `play()` on such a timeline does.
+ */
+export interface ScrollRun {
+  hold: number | null;
+  /** The start time a page set, null while it is aligned to its range. */
+  start: number | null;
+  rate: number;
+  /** Its time as last sampled, null where its timeline was inactive and
+   *  nothing held it: what `getAnimations()` reads it as. */
+  at: number | null;
 }
 
 /**
@@ -139,11 +162,13 @@ interface Target {
   /** The scroll-driven timelines its animations run on, their ranges,
    *  and where each was when it was last sampled — the timeline and the
    *  range's edges — what a scroll or a layout compares
-   *  (`restyleScrolled`). */
+   *  (`restyleScrolled`); and the timeline as it was then, which a style
+   *  asked for between frames reads (`heldProgress`). */
   scrolled?: {
     refs: TimelineRef[];
     ranges: [RangeEdge | null, RangeEdge | null][];
     at: string[];
+    progress: (ScrollProgress | null)[];
   };
   /** When it next changes: a frame from now while one is under way, the
    *  end of a delay before one starts, and never once each is over or
@@ -193,7 +218,16 @@ export class AnimationTimeline {
    *  iteration, for the events its moving owes (`_animationAt`). */
   private _runPhases = new WeakMap<
     Running,
-    { phase: TransitPhase; iteration: number; delay: number; active: number }
+    {
+      phase: TransitPhase;
+      iteration: number;
+      delay: number;
+      active: number;
+      /** The time it was sampled at, and what makes a millisecond of it:
+       *  1 on the clock's timeline, 1000 on a scroll's (`_animationAt`). */
+      time: number;
+      scale: number;
+    }
   >();
   /** Told as an event is owed, so the element that tells them knows to
    *  (`HtmlViewNode._oweCssEvents`). A fork has none. */
@@ -318,18 +352,40 @@ export class AnimationTimeline {
         const from = p && rangeStart && p.edgeAt ? p.edgeAt(rangeStart) : 0;
         const to = p && rangeEnd && p.edgeAt ? p.edgeAt(rangeEnd) : 100;
         if (ref.kind !== 'none') {
-          scrolled ??= { refs: [], ranges: [], at: [] };
+          scrolled ??= { refs: [], ranges: [], at: [], progress: [] };
           scrolled.refs.push(ref);
           scrolled.ranges.push([rangeStart, rangeEnd]);
           scrolled.at.push(p ? `${p.at},${from},${to}` : '');
+          scrolled.progress.push(p);
         }
+        if (ref.kind === 'none') continue;
+        // its time: the timeline's from its start time, or where it is
+        // held — paused by its play state or by the page
+        const s = (run.scroll ??= {
+          hold: null,
+          start: null,
+          rate: 1,
+          at: null,
+        });
+        const live = p
+          ? (p.at - (s.start ?? (s.rate < 0 ? to : from))) * s.rate
+          : null;
+        if (playStates[i % playStates.length] === 'paused' || run.pagePaused) {
+          s.hold ??= live;
+        } else if (s.hold !== null) {
+          // played again, it is aligned to its range again
+          s.hold = null;
+          s.start = null;
+        }
+        const local = s.hold ?? live;
+        s.at = local;
         const named = keyframesOf(name);
-        if (!named || !p) continue;
+        if (!named || local === null) continue;
         // a frame at a timeline offset is where that offset is in the
         // range, on a view timeline, and nowhere on any other
-        const edgeAt = p.edgeAt;
+        const edgeAt = p?.edgeAt;
         const rule =
-          p.view && edgeAt && to - from > 0
+          p?.view && edgeAt && to - from > 0
             ? placedRule(
                 named,
                 (range) =>
@@ -346,7 +402,6 @@ export class AnimationTimeline {
           timingAt(animations, i),
           Math.max(to - from, 0),
         );
-        const local = p.at - from;
         const active =
           timing.duration === 0 || timing.iterations === 0
             ? 0
@@ -354,9 +409,13 @@ export class AnimationTimeline {
         const end = Math.max(timing.delay + active, 0);
         const activeAfter = Math.max(Math.min(timing.delay + active, end), 0);
         // at its scroller's end, the end of the active phase is in it:
-        // it holds its end there as one that fills forwards would
+        // it holds its end there as one that fills forwards would — where
+        // its time is the timeline's, and not one held elsewhere
         const boundary =
-          p.edge && activeAfter > 0 && Math.abs(local - activeAfter) < 1e-9;
+          !!p?.edge &&
+          local === live &&
+          activeAfter > 0 &&
+          Math.abs(local - activeAfter) < 1e-9;
         const fill =
           boundary && (timing.fill === 'none' || timing.fill === 'backwards')
             ? timing.fill === 'none'
@@ -364,6 +423,8 @@ export class AnimationTimeline {
               : 'both'
             : timing.fill;
         const at = progressAt({ ...timing, fill }, local);
+        // and what its moving owes the page, as one on the clock's does
+        this._animationAt(el, pseudo, run, timing, local, true, boundary);
         if (at.phase !== 'after' || at.progress !== null) {
           willChange |= animatedWillChange(rule);
         }
@@ -373,7 +434,7 @@ export class AnimationTimeline {
           progress: at.progress,
           easing: easings[i % easings.length],
           duration: timing.duration,
-          forwards: at.forwards,
+          forwards: s.rate < 0 ? !at.forwards : at.forwards,
           // it moves as the scroll does, which asks for its frames
           left: 0,
         });
@@ -486,8 +547,41 @@ export class AnimationTimeline {
     };
     targets.set(pseudo, target);
     this._seen?.add(target);
+    if (this._sought.size) this._sought.delete(el);
     return out;
   }
+
+  /** The elements a page did something to a scroll-driven animation of
+   *  since they were last styled (`seekScrolled`, `cancelAnimation`): what
+   *  a style asked for before the next frame works out again (`sought`). */
+  private _sought = new Set<object>();
+
+  /** Whether a page did something to one of an element's scroll-driven
+   *  animations since it was last styled, or to one of its
+   *  pseudo-elements'. */
+  sought(el: object): boolean {
+    return this._sought.size > 0 && this._sought.has(el);
+  }
+
+  /**
+   * Where a scroll-driven timeline was for an element as it was last
+   * styled, or for a pseudo-element: what a style asked for between frames
+   * reads, as a browser's timeline holds its time from one frame to the
+   * next (Scroll-driven Animations 1, 6.1) — and where it is now, for one
+   * the element was not styled with.
+   */
+  heldProgress = (
+    el: object,
+    pseudo: string,
+    ref: TimelineRef,
+  ): ScrollProgress | null => {
+    const scrolled = this._targets.get(el)?.get(pseudo)?.scrolled;
+    if (scrolled) {
+      const i = scrolled.refs.findIndex((r) => r === ref || sameRef(r, ref));
+      if (i >= 0) return scrolled.progress[i];
+    }
+    return this.scrollProgress?.(el, pseudo, ref) ?? null;
+  };
 
   /**
    * A scroll or a layout moved: each element whose scroll-driven
@@ -793,6 +887,7 @@ export class AnimationTimeline {
             run && {
               ...run,
               trig: run.trig && { ...run.trig, seen: new Map(run.trig.seen) },
+              scroll: run.scroll && { ...run.scroll },
             },
         );
         copy.set(pseudo, { ...target, running });
@@ -1273,7 +1368,11 @@ export class AnimationTimeline {
    * Animations 1, 4.2) — `animationstart` into its active phase,
    * `animationiteration` into another iteration, `animationend` out of it
    * at its end, and the other way where it was taken back — with the
-   * elapsed time the interval it crossed gives.
+   * elapsed time the interval it crossed gives. On a scroll's timeline
+   * (`scrolled`) its times are percentages of the timeline, which is a
+   * hundred seconds long as a page hears it, as in Blink, and every event
+   * is due now, at the frame that sampled it; at the timeline's boundary
+   * (`boundary`) its end is in its active phase, as the effect's is.
    */
   private _animationAt(
     el: object,
@@ -1281,6 +1380,8 @@ export class AnimationTimeline {
     run: Running,
     timing: Timing,
     time: number,
+    scrolled = false,
+    boundary = false,
   ): void {
     const { duration, delay, iterations } = timing;
     const active =
@@ -1289,31 +1390,43 @@ export class AnimationTimeline {
     const beforeActive = Math.max(Math.min(delay, end), 0);
     const activeAfter = Math.max(Math.min(delay + active, end), 0);
     const phase: TransitPhase =
-      time < beforeActive ? 'before' : time >= activeAfter ? 'after' : 'active';
+      time < beforeActive
+        ? 'before'
+        : time >= activeAfter && !(boundary && time === activeAfter)
+          ? 'after'
+          : 'active';
     const iteration =
       phase === 'active' && duration > 0
-        ? Math.min(
-            Math.floor((time - delay) / duration),
-            Math.ceil(iterations) - 1,
+        ? Math.max(
+            0,
+            Math.min(
+              Math.floor((time - delay) / duration),
+              Math.ceil(iterations) - 1,
+            ),
           )
         : 0;
+    const scale = scrolled ? 1000 : 1;
     const was = this._runPhases.get(run);
-    this._runPhases.set(run, { phase, iteration, delay, active });
+    this._runPhases.set(run, { phase, iteration, delay, active, time, scale });
     if (was?.phase === phase && was.iteration === iteration) return;
     const begin = Math.max(Math.min(-delay, active), 0);
     const finish = Math.max(Math.min(end - delay, active), 0);
     // where on the timeline its time was nought, which places each event
     // where it was due
     const origin = this.now - time;
-    const owe = (type: CssEventRecord['type'], elapsed: number, at: number) => {
+    const owe = (
+      type: CssEventRecord['type'],
+      elapsed: number,
+      due: number,
+    ) => {
       this._cssEvents.push({
         el,
         pseudo,
         type,
         name: run.name,
-        elapsed,
+        elapsed: elapsed * scale,
         key: runKey(run),
-        at,
+        at: scrolled ? this.now : due,
       });
       this.onCssEvent?.();
     };
@@ -1343,7 +1456,9 @@ export class AnimationTimeline {
     const was = this._runPhases.get(run);
     if (!was || was.phase === 'after') return;
     this._runPhases.delete(run);
-    const time = run.hold ?? this.now - run.start;
+    // where the clock has it now, or where the scroll last had it
+    const time =
+      was.scale === 1 ? (run.hold ?? this.now - run.start) : was.time;
     this._cssEvents.push({
       el,
       pseudo,
@@ -1351,7 +1466,7 @@ export class AnimationTimeline {
       name: run.name,
       key: runKey(run),
       at: this.now,
-      elapsed: Math.max(0, Math.min(time - was.delay, was.active)),
+      elapsed: Math.max(0, Math.min(time - was.delay, was.active)) * was.scale,
     });
     this.onCssEvent?.();
   }
@@ -1391,6 +1506,42 @@ export class AnimationTimeline {
     return null;
   }
 
+  /**
+   * A page did something to a CSS animation on a scroll's timeline
+   * (`CSSAnimation`, a seek, `pause()`, `play()`, `playbackRate`): it is
+   * held at `time` where `mode` is `hold` — at where its timeline has it,
+   * the next time it is sampled, for null — runs from the start time
+   * `time` for `start`, and is aligned to its range again for `align`, at
+   * `rate` (`ScrollRun`), and is restyled at the next frame. The element
+   * it is on, or null where no run under way has the key.
+   */
+  seekScrolled(
+    key: number,
+    mode: 'align' | 'start' | 'hold',
+    time: number | null,
+    rate: number,
+  ): object | null {
+    for (const [el, targets] of this._targets) {
+      for (const target of targets.values()) {
+        for (const run of target.running) {
+          if (!run || RUN_KEYS.get(run) !== key) continue;
+          this._sought.add(el);
+          run.pageCancelled = false;
+          run.pagePaused = mode === 'hold';
+          run.scroll = {
+            hold: mode === 'hold' ? time : null,
+            start: mode === 'start' ? time : null,
+            rate: Number.isFinite(rate) ? rate : 1,
+            at: run.scroll?.at ?? null,
+          };
+          target.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
   /** A page cancelled a CSS animation (`CSSAnimation.cancel()`):
    *  `animationcancel`, and it draws nothing until the style names it
    *  again. The element it is on, or null. */
@@ -1400,6 +1551,7 @@ export class AnimationTimeline {
         for (const run of target.running) {
           if (!run || RUN_KEYS.get(run) !== key) continue;
           this._animationCancelled(el, pseudo, run);
+          this._sought.add(el);
           run.pageCancelled = true;
           target.next = 0;
           return el;
@@ -1465,6 +1617,12 @@ export class AnimationTimeline {
     }
     return null;
   }
+}
+
+/** Whether two `animation-timeline` entries name one timeline, as two
+ *  styles computed apart hold it. */
+function sameRef(a: TimelineRef, b: TimelineRef): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**

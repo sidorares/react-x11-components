@@ -1033,8 +1033,20 @@ draws it: each time a page lists it, it is read again — its
 where its time is, its `rangeStart` and `rangeEnd`, and its timeline, the
 document's, a `ScrollTimeline` or a `ViewTimeline` as `animation-timeline`
 names it, one object for one timeline — and it is the same object for as
-long as its run lasts. What a page does to it changes that object and not
-what is drawn. Its effect's `getKeyframes()` lists its `@keyframes`' frames,
+long as its run lasts. What a page does to it — a seek, `startTime`,
+`pause()`, `play()`, `finish()`, `cancel()`, and on a scroll's timeline
+its playback rate, `reverse()` among them — is the cascade's run's as
+well, so what is drawn, what `getComputedStyle` reads and the events it
+tells follow it; one the page cancelled is listed no longer, and plays
+again where the page plays it. It tells `animationstart`,
+`animationiteration`, `animationend` and `animationcancel` as an
+`AnimationEvent` on the clock's timeline and on a scroll's alike — on a
+scroll's, its elapsed time is of a timeline a hundred seconds long, as in
+Blink, and the end of its scroller's scroll is in the active phase of one
+that ends there. What a style does to one the page holds — an
+`animation-play-state` that pauses it, say — shows in its `playState`
+once `getAnimations()` lists it again, and it is never pending for that.
+Its effect's `getKeyframes()` lists its `@keyframes`' frames,
 those at one offset and of one easing merged, with a frame made of the
 element's style under its animations at an end the rule leaves out.
 `getComputedStyle` answers the `animation-*` longhands and
@@ -1063,7 +1075,14 @@ and events — the page's, then each frame's in tree order.
 **A scroll timeline is how far its source is scrolled** (Scroll Animations
 1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
 crosses the scroll container nearest it, from `cover 0%` to `cover 100%`,
-with its insets. Their times, and an animation's on them, are
+with its insets — `auto`, as one not given is, the scroll container's
+`scroll-padding` on that side — and for a subject that sticky positioning
+moves, from where it would enter held back as far as its containing block
+lets it to where it would leave carried as far on. A frame measures each
+again, and a page reads the time the last frame had until the next: a
+script that scrolls, or that changes what the source holds, reads the
+time it had, as an animation on it is drawn. Their times, and an
+animation's on them, are
 `CSSUnitValue` percentages — `CSS.percent()`, `CSSNumericValue.parse()` and
 the rest of Typed OM's numbers are there — and an animation's timing is
 normalized to its attachment range, which `rangeStart` and `rangeEnd` name
@@ -1071,9 +1090,7 @@ normalized to its attachment range, which `rangeStart` and `rangeEnd` name
 time aligns to the range at each frame until a page sets one, and it is
 drawn held at its time, told again at each frame its scroll moves it. Not
 yet: a vertical writing mode's axes, a right-to-left scroller's negative
-offsets, `scroll-padding` as an `auto` inset, sticky subjects, the
-viewport's horizontal scroll, and CSS's `animation-timeline`, `scroll()`
-and `view()`, which the cascade does not drive yet.
+offsets, and the viewport's horizontal scroll.
 
 What is not drawn: `composite: 'add'` and `'accumulate'` are drawn as
 `replace`; a pseudo-element other than `::before` and `::after`; and on
@@ -3084,7 +3101,16 @@ name keeps what it and its subtree declare by it from outside; and
 is a proportion of the timeline, an `auto` duration filling it, and at
 the end of its scroller's scroll its end is held, as Web Animations 2's
 timeline boundary has it. It is styled again when a scroll or a layout
-moves its timeline, and asks for no frame of the clock's.
+moves its timeline, and asks for no frame of the clock's; between frames
+it is where the last frame's scroll had it. Its start time is where its
+range starts, or ends played backwards, and `animation-play-state:
+paused` holds it where it is while the scroll moves on, as a page's
+`pause()` does: played again, it is where the scroll has it. A view
+timeline's `auto` inset, as `view()` and `view-timeline-inset` have it
+where none is given, is its scroll container's `scroll-padding` — the
+root's for the pane — and a subject sticky positioning moves, or one in a
+sticky box, is seen from where it would enter held back to where it
+would leave carried on, as Blink and WebKit have it.
 `animation-range`, and its `-start` and `-end`, narrow the part of the
 timeline it runs over: a percentage or a length into the whole timeline,
 or into a named range of a view timeline (`cover`, `contain`, `entry`,

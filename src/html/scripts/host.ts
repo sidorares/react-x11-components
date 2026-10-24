@@ -294,6 +294,28 @@ export interface HandleInternals {
   /** And a CSS animation, held there where the page paused it
    *  (`HtmlViewNode.seekAnimation`). */
   seekAnimation(key: number, currentTime: number, paused: boolean): void;
+  /** And one on a scroll's timeline, held, run from a start time or
+   *  aligned to its range (`HtmlViewNode.seekScrolled`). */
+  seekScrolled(
+    key: number,
+    mode: 'align' | 'start' | 'hold',
+    time: number | null,
+    rate: number,
+  ): void;
+  /** What a view timeline's subject is along an axis, in CSS pixels: its
+   *  scroll container's `scroll-padding` there, which an `auto` inset is,
+   *  and how far sticky positioning has moved it and can each way
+   *  (`HtmlViewNode.viewAdjustOf`). */
+  viewAdjust(
+    element: Element,
+    vertical: boolean,
+  ): {
+    padStart: number;
+    padEnd: number;
+    shift: number;
+    up: number;
+    down: number;
+  } | null;
   /** And one a page cancelled (`HtmlViewNode.cancelCss`). */
   cancelCss(kind: 'animation' | 'transition', key: number): void;
   /** A view transition's steps, as the page's realm runs them: its old
@@ -3452,6 +3474,27 @@ export class DomHost {
         return null;
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
+        return null;
+      // a view timeline's subject: its scroller's `scroll-padding` along
+      // the axis, and how far sticky positioning moved it and can each way
+      case 'viewAdjust': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const v = handle?.viewAdjust?.(el, b === true);
+        return v
+          ? `${v.padStart},${v.padEnd},${v.shift},${v.up},${v.down}`
+          : '';
+      }
+      // one on a scroll's timeline: `align`, `start` or `hold`, the time
+      // (null to hold it where its timeline has it) and its rate
+      case 'seekScrolled':
+        this._seams.handle.seekScrolled?.(
+          Number(a),
+          b === 'start' || b === 'hold' ? b : 'align',
+          typeof c === 'number' && Number.isFinite(c) ? c : null,
+          Number(d),
+        );
         return null;
       case 'cssTransitions': {
         this.flush();
