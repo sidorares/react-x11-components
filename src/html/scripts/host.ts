@@ -159,6 +159,16 @@ export interface FetchRequest {
   /** The body's bytes, where it is not text — a stream read to its end, a
    *  `Blob`, an `ArrayBuffer`, a multipart form — sent as they are. */
   bytes?: Uint8Array;
+  /**
+   * Whether the body was a page's `ReadableStream`, read to its end before
+   * it was handed over: a body whose source is null (Fetch 2.2.5), which
+   * a request sends once. A network that would send the request again does
+   * not: a 421, which HTTP/2 retries on a new connection, is the page's
+   * answer (Fetch, HTTP-network-or-cache fetch), and a redirect but a 303
+   * is a network error (HTTP-redirect fetch). `HtmlNetwork` hands the
+   * runtime's `fetch` such a body as a stream, which it sends once.
+   */
+  streamedBody?: boolean;
   /** Whether the caller takes the response's body as it arrives
    *  (`FetchResponse.chunks`), as a page's `fetch` does. A host may answer
    *  it whole all the same. */
@@ -5323,6 +5333,7 @@ export class DomHost {
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
         ...(raw.stream === true ? { stream: true } : {}),
+        ...(raw.streamedBody === true ? { streamedBody: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
               bytes: new Uint8Array(
@@ -5523,6 +5534,7 @@ export class DomHost {
       body: request.body,
       ...(request.bytes ? { bytes: request.bytes } : {}),
       ...(request.stream ? { stream: true } : {}),
+      ...(request.streamedBody ? { streamedBody: true } : {}),
     };
     if (own) {
       const response = await this._seams.fetch(plain, signal);

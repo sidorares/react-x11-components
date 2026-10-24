@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 
 import {
@@ -312,4 +314,59 @@ test("a page's request hands its body on as it arrives where it asks to, and sen
   );
   assert.equal(whole.chunks, undefined);
   assert.equal(whole.body, 'one two');
+});
+
+test("a page's stream body is sent once: a 421 is its answer, where Node's fetch sends bytes again on a new connection", async (t) => {
+  // HTTP/2's 421 Misdirected Request asks for the request on another
+  // connection, and Fetch has a browser send it again where the body has a
+  // source to be sent from — and a stream has none: WPT's
+  // fetch/api/basic/request-upload.h2.any.js
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      seen.push(
+        `${req.url} ${req.headers['content-length']} ${Buffer.concat(chunks)}`,
+      );
+      res.writeHead(421, { 'content-type': 'text/plain' });
+      res.end(`sent ${seen.length}`);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const fetch = new HtmlNetwork({ connectTimeout: null }).fetcher(
+    `${origin}/page`,
+  );
+  const signal = new AbortController().signal;
+  const post = (path: string, body: string, streamedBody: boolean) =>
+    fetch(
+      {
+        url: `${origin}${path}`,
+        method: 'POST',
+        headers: [],
+        body,
+        ...(streamedBody ? { streamedBody } : {}),
+      },
+      signal,
+    );
+
+  const streamed = await post('/stream', 'Test', true);
+  assert.deepEqual([streamed.status, streamed.body], [421, 'sent 1']);
+  // with its length, as its bytes went
+  assert.deepEqual(seen, ['/stream 4 Test']);
+  seen.length = 0;
+  const empty = await post('/empty', '', true);
+  assert.equal(empty.status, 421);
+  assert.deepEqual(seen, ['/empty 0 ']);
+
+  // the same bytes from a string are sent again, as Fetch lets them be
+  seen.length = 0;
+  const replayed = await post('/string', 'Test', false);
+  assert.deepEqual([replayed.status, replayed.body], [421, 'sent 2']);
+  assert.deepEqual(seen, ['/string 4 Test', '/string 4 Test']);
 });

@@ -1026,6 +1026,16 @@ the Interop 2026 focus areas through `<Html scripts>`
   headers and hands each chunk to the body's stream (`__fetchChunk`,
   `__fetchEnd`, `_pump`), and a worker's crosses its port the same way.
   The timeout bounds the wait for the headers only.
+- **A stream's body is sent once.** It has no source to be sent again
+  from (Fetch 2.2.5), and the facade, which reads it to its end, had
+  handed the host its bytes and no more: Node's `fetch` sent them again
+  on a new connection when the server answered 421, as Fetch lets it for
+  a body with a source, so WPT's `request-upload.h2.any` counted two
+  requests where it wanted the 421 back. The facade marks such a body
+  (`FetchRequest.streamedBody`, and not a `Request`'s bytes a page read
+  as a stream, which still have theirs), and `HtmlNetwork` hands it to
+  the runtime as a stream with its length, which neither Node nor Bun
+  sends again — nor follows a redirect with, but a 303's.
 - **A page's `load` waits for its frames'** (HTML's "completely loaded"
   holds the document's load event until every child navigable's has
   fired). The runner held `load` for the parse and the subresources only,

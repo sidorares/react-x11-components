@@ -15139,9 +15139,15 @@ export function installDom(
       // a stream body is read through a reader of fetch's own, which is
       // what an abort cancels it through (Fetch 4.1, "abort fetch")
       let bodyReader: Any = null;
-      // a stream's body cannot be sent again for credentials, so a 401 is
-      // a network error (Fetch 4.6)
-      fetches.set(id, { resolve, reject, streamed: !!extracted?.stream });
+      // a body that is a stream and nothing else has no source (Fetch
+      // 2.2.5), so nothing may send it again (HTTP-network-or-cache fetch):
+      // a 401 is a network error rather than a request made again with
+      // credentials, and the host is told (`streamedBody`), so that a 421
+      // is the page's answer rather than a request made again on a new
+      // connection. A `Request` whose bytes a page read as a stream still
+      // has them.
+      const sourceless = !!extracted?.stream && !extracted.bytes;
+      fetches.set(id, { resolve, reject, streamed: sourceless });
       signal?.addEventListener?.('abort', () => {
         // after the headers, an abort errors the body that is arriving
         const body = fetchBodies.get(id);
@@ -15183,6 +15189,7 @@ export function installDom(
               : textOf(bytes) !== null
                 ? { body: textOf(bytes) }
                 : { body: '', base64: base64OfBytes(bytes) }),
+            ...(sourceless && bytes !== null ? { streamedBody: true } : {}),
             // the body is taken as it arrives
             stream: true,
             // what the host checks another origin's answer against

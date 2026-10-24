@@ -4322,6 +4322,52 @@ test('an abort cancels a stream body with its reason, and a stream body answered
   );
 });
 
+test("a stream body reaches the host as one that is sent once, a 421 is the page's answer, and a request's bytes read as a stream are still bytes", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var stream = function () { return new ReadableStream({ start: function (c) { c.enqueue(new Uint8Array([84, 101, 115, 116])); c.close(); } }); };' +
+      'fetch("stream", { method: "POST", body: stream(), duplex: "half" })' +
+      '.then(function (res) { r.push(res.status); return res.text(); })' +
+      '.then(function (text) { r.push(text);' +
+      '  return fetch(new Request("request", { method: "POST", body: stream(), duplex: "half" })); })' +
+      '.then(function (res) { r.push(res.status);' +
+      '  var read = new Request("auth", { method: "POST", body: "Test" }); r.push(typeof read.body.getReader);' +
+      '  return fetch(read); })' +
+      '.then(function (res) { r.push(res.status); return fetch("string", { method: "POST", body: "Test" }); })' +
+      '.then(function (res) { r.push(res.status); document.getElementById("out").textContent = r.join("|"); },' +
+      '  function (e) { document.getElementById("out").textContent = r.concat(e.name).join("|"); });' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: request.url.endsWith('auth') ? 401 : 421,
+        statusText: '',
+        redirected: false,
+        headers: [],
+        body: 'ok',
+      }),
+    },
+  );
+  // a 401 is a network error only for a body with no source to send again
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '421|ok|421|function|401|421',
+  );
+  assert.deepEqual(
+    doc.fetched.map((r) => [
+      new URL(r.url).pathname,
+      r.body,
+      r.streamedBody ?? false,
+    ]),
+    [
+      ['/dir/stream', 'Test', true],
+      ['/dir/request', 'Test', true],
+      ['/dir/auth', 'Test', false],
+      ['/dir/string', 'Test', false],
+    ],
+  );
+});
+
 test('headers keep to their guard, a response is made as Fetch makes one, and a data: URL is answered in the page', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
