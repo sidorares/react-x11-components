@@ -774,15 +774,21 @@ charset }` — the `<script>` is the request's `element`, and the root
   request with no network does, a `TypeError` in the page. A body is
   handed over as `body`, text, where its bytes are UTF-8, and as `bytes`
   where they are not — an image a page uploads, a `Uint8Array` — with
-  `body` empty, so a host sends `bytes ?? body`. A page's `fetch` asks for
-  its response as it arrives (`stream: true`), and a host that can answers
-  with `chunks`, an async iterable of the body's bytes, and `body` empty:
-  the page's promise then settles at the headers, and `res.body` reads each
-  chunk as it comes — a model's reply, a stream of events. A host that
-  answers whole is answered whole. The page aborting, or cancelling the
-  body, calls the iterator's `return()`, and a body nothing will read — a
-  `no-cors` answer, one CORS refuses — is let go the same way.
-  `HtmlNetwork` answers so, and bounds only the wait for the headers.
+  `body` empty, so a host sends `bytes ?? body`. A body that was a page's
+  `ReadableStream` is marked `streamedBody`: it has no source to be sent
+  again from (Fetch), so a host sends it once — a 421, which HTTP/2 retries
+  on a new connection, is the page's answer, and a redirect but a 303 is a
+  network error — and `HtmlNetwork` hands the runtime's `fetch` such a body
+  as a stream, which Node's sends once where it sends bytes again. A page's
+  `fetch` asks for its response as it arrives (`stream: true`), and a host
+  that can answers with `chunks`, an async iterable of the body's bytes,
+  and `body` empty: the page's promise then settles at the headers, and
+  `res.body` reads each chunk as it comes — a model's reply, a stream of
+  events. A host that answers whole is answered whole. The page aborting,
+  or cancelling the body, calls the iterator's `return()`, and a body
+  nothing will read — a `no-cors` answer, one CORS refuses — is let go the
+  same way. `HtmlNetwork` answers so, and bounds only the wait for the
+  headers.
 
 `useHtmlNetwork(url)` is both, from one line: `onResource` and a `fetch` for
 the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a

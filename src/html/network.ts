@@ -55,6 +55,9 @@ declare const AbortSignal: {
   any(signals: AbortSignalLike[]): AbortSignalLike;
 };
 declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const ReadableStream: new (source: {
+  start(controller: { enqueue(chunk: Uint8Array): void; close(): void }): void;
+}) => object;
 declare const TextDecoder: new (label?: string) => {
   decode(bytes: Uint8Array): string;
 };
@@ -87,6 +90,12 @@ export type HtmlTransport = (
     method: string;
     headers: Record<string, string>;
     body?: string | Uint8Array;
+    /** Whether `body` was a page's stream (`FetchRequest.streamedBody`),
+     *  which the request sends once: a transport that would send a request
+     *  again — on a 421, or to a redirect but a 303's — does not send this
+     *  one. The runtime's `fetch` is handed it as a stream, which it sends
+     *  once. */
+    streamedBody?: boolean;
     signal: AbortSignalLike;
     redirect: 'follow';
   },
@@ -280,12 +289,38 @@ export class HtmlNetwork {
         // a runtime with no `node:net` connects as it does
       }
     }
-    const runtimeFetch = (globalThis as unknown as { fetch?: HtmlTransport })
-      .fetch;
+    const runtimeFetch = (
+      globalThis as unknown as {
+        fetch?: (url: string, init: object) => Promise<ResponseLike>;
+      }
+    ).fetch;
     if (!runtimeFetch) {
       throw new NetworkError('This runtime has no fetch.', 'ERR_FAILED');
     }
-    return runtimeFetch(url, init);
+    const { streamedBody, ...rest } = init;
+    if (!streamedBody || rest.body === undefined) {
+      return runtimeFetch(url, rest);
+    }
+    // a page's stream goes as a stream, a body with no source to the
+    // runtime as to the page: Node's fetch sends bytes again on a new
+    // connection when a 421 answers them, as Fetch lets it, and a stream
+    // never. Its length is known, so it goes with it, as its bytes did,
+    // rather than chunked.
+    const bytes =
+      typeof rest.body === 'string'
+        ? new TextEncoder().encode(rest.body)
+        : rest.body;
+    return runtimeFetch(url, {
+      ...rest,
+      headers: { ...rest.headers, 'content-length': String(bytes.length) },
+      body: new ReadableStream({
+        start(controller) {
+          if (bytes.length) controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      duplex: 'half',
+    });
   }
 
   /** How many requests are waiting or running. */
@@ -489,6 +524,7 @@ export class HtmlNetwork {
       body: string | null;
       bytes?: Uint8Array;
       stream?: boolean;
+      streamedBody?: boolean;
     },
     page: string,
     signal: AbortSignalLike,
@@ -544,16 +580,21 @@ export class HtmlNetwork {
       TIMEOUT,
     );
     this._log('fetch', method, request.url);
+    const body =
+      method === 'GET' || method === 'HEAD'
+        ? undefined
+        : (request.bytes ?? request.body ?? undefined);
     let response: ResponseLike;
     try {
       response = await this._paced(request.url, signal, () =>
         this._send(request.url, {
           method,
           headers,
-          body:
-            method === 'GET' || method === 'HEAD'
-              ? undefined
-              : (request.bytes ?? request.body ?? undefined),
+          body,
+          // a page's stream, which nothing sends again
+          ...(body !== undefined && request.streamedBody
+            ? { streamedBody: true }
+            : {}),
           signal: AbortSignal.any([signal, timer.signal]),
           redirect: 'follow',
         }),
