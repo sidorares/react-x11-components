@@ -120,6 +120,9 @@ export function FrameHolder({
   );
 }
 
+/** The values of an `<iframe>`'s `scrolling` that hide its scroll bars. */
+const SCROLLS_NOT = /^(?:off|noscroll|no)$/i;
+
 /** A number for each document, the same while it lives: a frame that goes
  *  on to another document is mounted again. */
 const DOCUMENTS = new WeakMap<Document, number>();
@@ -257,6 +260,11 @@ function FrameDocument({
     {
       ref: scroller,
       style: { flexGrow: 1, overflow: 'scroll' },
+      // `scrolling="no"` shows no scroll bars, whatever the document's
+      // `overflow` (HTML 15.4.4, the iframe element's rendering)
+      ...(SCROLLS_NOT.test(frame.attribs.scrolling ?? '') && {
+        scrollbar: false,
+      }),
       onScroll: () => scripts.scrolled?.(),
     },
     h(Html, {

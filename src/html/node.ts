@@ -1218,9 +1218,29 @@ export class HtmlViewNode extends Node {
   // document at half size on a retina panel.
 
   /** Device pixels per logical pixel — the display scale this element's
-   *  window resolved to, constant for the node's life. */
+   *  window resolved to, times every `scale` prop around it. */
   private get _scale(): number {
     return this.scale > 0 ? this.scale : 1;
+  }
+
+  /** The scale the document's styles were last computed at: what every
+   *  length they hold is device pixels of. */
+  private _styledAt = 0;
+
+  /**
+   * Style the document again where its scale moved since it was styled: a
+   * `scale` prop around the element changed (core's `docs/scale.md`, "A
+   * subtree of its own"), as a frame's does when a script sets the zoom of
+   * the `<iframe>` it is drawn in. Core lays the element out again, at a
+   * width that may be the one it had, so nothing else here would see it: a
+   * leaf frame laid out in device pixels at its old scale came out at the
+   * CSS size of the box it was drawn in.
+   */
+  private _followScale(): void {
+    if (this._styledAt === 0 || this._styledAt === this._scale) return;
+    this._styledAt = this._scale;
+    this._restyleOnly = null;
+    if (this._stale < Stale.Style) this._stale = Stale.Style;
   }
 
   private _deviceLookFor: RootLook | null = null;
@@ -1776,6 +1796,7 @@ export class HtmlViewNode extends Node {
   /** Rebuild the cascade — the document's sheets plus the host's. */
   private _restyle(width: number): void {
     const props = this._props();
+    this._styledAt = this._scale;
     const look = this._deviceLook();
     const facts = this._source.facts();
     // the document's sheets, and after them the host's
@@ -2501,6 +2522,7 @@ export class HtmlViewNode extends Node {
    */
   private _prepare(width: number): void {
     const target = Math.max(1, Math.floor(width));
+    this._followScale();
     if (this._failedAt === target && this._stale === Stale.Nothing) return;
     try {
       this._counted(() => this._update(target));
@@ -2942,6 +2964,14 @@ export class HtmlViewNode extends Node {
     ) {
       const tree = this._tree;
       const readers = cascade.viewportReaders(tree.styles, sides);
+      // a root whose font is such a length moves every `rem` and `rlh`
+      // with it, wherever they are, under parents whose styles stay
+      const rootFont = this._rootFontMoves(tree, readers);
+      if (rootFont) {
+        for (const el of cascade.rootReaders(tree.styles, rootFont)) {
+          readers.add(el);
+        }
+      }
       // the root box, standing in for a body or an `<html>` the markup does
       // not write, is styled in every build: one that holds such a length
       // is built again with every element's style kept
@@ -2954,7 +2984,10 @@ export class HtmlViewNode extends Node {
       // it the other way costs less
       const limit = Math.max(HOVER_RESTYLE_LIMIT, tree.styles.size >> 3);
       const inPlace =
-        readers.size > 0 && !rootReads && !cascade.pseudoReadsViewport(sides);
+        readers.size > 0 &&
+        !rootReads &&
+        !cascade.pseudoReadsViewport(sides) &&
+        !(rootFont && cascade.pseudoReadsRoot(rootFont));
       // what holds it and all that holds, or where that is more than a
       // restyle in place takes, followed down from them (`from`)
       const reach = inPlace ? withDescendants(readers, limit) : null;
@@ -4299,6 +4332,7 @@ export class HtmlViewNode extends Node {
    */
   private _sizeAt(width: number): { width: number; height: number } {
     const target = Math.max(1, Math.floor(width));
+    this._followScale();
     if (
       target !== this._laidOutWidth &&
       this._stale === Stale.Nothing &&
@@ -5079,11 +5113,12 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      // one the rules give no `content` is styled by them all the same
       const own = this._atNow(element, () =>
-        cascade.pseudoStyleFor(element, pseudo, style),
+        cascade.pseudoComputedStyle(element, pseudo, style),
       );
-      // one no rule styles has the style it would be made with all the
-      // same, its element's inherited, as a browser answers for it
+      // and one no rule styles has the style it would be made with all
+      // the same, its element's inherited, as a browser answers for it
       return cssomStyle(
         own ?? inherit(style, cascade.initial),
         this._scale,
@@ -5244,13 +5279,15 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const style = this._styleOf(element);
     const key = pseudo ? highlightKey(pseudo) : null;
+    // a pseudo-element no rule styles inherits every one of its element's
     const own =
       !style || !pseudo
         ? style
         : key !== null
           ? this._highlightPseudo(element, key)
           : pseudo === 'before' || pseudo === 'after'
-            ? (this._cascade?.pseudoStyleFor(element, pseudo, style) ?? null)
+            ? (this._cascade?.pseudoComputedStyle(element, pseudo, style) ??
+              style)
             : null;
     return own ? (own.custom?.get(name) ?? '') : null;
   }
@@ -5279,6 +5316,27 @@ export class HtmlViewNode extends Node {
       found = cascade.highlightPseudoStyle(chain[i], style, key, found);
     }
     return found?.style ?? null;
+  }
+
+  /**
+   * What of the root element's font — its size, which a `rem` reads, its
+   * line height, an `rlh` — moves where the root is among `readers`, the
+   * elements a move of the viewport styles again: its style worked out at
+   * the new viewport, as the restyle will, and compared with the tree's,
+   * of what the document reads of it (`Cascade.rootMetricsMoved`). Fluid
+   * type on the root, `font-size: calc(14px + .5vw)`, sizes every `rem`.
+   */
+  private _rootFontMoves(tree: BoxTree, readers: ReadonlySet<Element>): number {
+    const cascade = this._cascade;
+    if (!cascade?.readsRoot) return 0;
+    for (const el of readers) {
+      if (!isRootElement(el)) continue;
+      const kept = tree.styles.get(el);
+      if (!kept) return 0;
+      const now = cascade.styleFor(el, tree.root.style, kept.inFlex);
+      return cascade.rootMetricsMoved(kept.style, now);
+    }
+    return 0;
   }
 
   /**

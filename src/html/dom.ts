@@ -551,6 +551,16 @@ export function parsedWithNullRegistry(el: Element): boolean {
   return NULL_REGISTRY.has(el);
 }
 
+/** An element another parser made — the XML parser a frame's XHTML is
+ *  read with (HTML 14.2, which creates each element as this one's tree
+ *  builder does) — marked as this one marks it, where its markup wrote
+ *  `customelementregistry`. */
+export function markParsedRegistry(el: Element): void {
+  if (el.attribs.customelementregistry === undefined) return;
+  NULL_REGISTRY.add(el);
+  nullRegistriesParsed = true;
+}
+
 /** Whether the parser has made anything whose registry is null — an
  *  element with `customelementregistry` or a root with
  *  `shadowrootcustomelementregistry` — in any document. */

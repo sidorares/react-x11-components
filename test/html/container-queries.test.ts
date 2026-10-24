@@ -23,6 +23,7 @@ import {
   metric,
   render,
   render2x,
+  renderScrolled,
   treeOf,
   view,
 } from './harness.js';
@@ -267,6 +268,53 @@ test('a style range compares values of one type each, a registered length or col
   }
 });
 
+test('a style query takes inherit as what its container inherits, and unset as inherit where the property inherits', () => {
+  // CSS Conditional 5, 3.3: the value is computed for the container, so
+  // `inherit` is its parent's value — nothing set on either is the
+  // guaranteed-invalid value both have — and `unset` is `inherit` for a
+  // property that inherits and `initial` for one registered not to
+  const own = new Map([
+    ['--same', 'a'],
+    ['--other', 'b'],
+    ['--reg', '5px'],
+  ]);
+  const parent = new Map([
+    ['--same', 'a'],
+    ['--other', 'c'],
+    ['--theirs', 'd'],
+    ['--reg', '5px'],
+  ]);
+  const holds = (prelude: string) =>
+    containerHolds(
+      parseContainerPrelude(prelude)![0],
+      null,
+      (name) => own.get(name),
+      () => null,
+      null,
+      undefined,
+      (name) =>
+        name === '--reg'
+          ? { syntax: '*', initial: '0px', inherits: false }
+          : null,
+      undefined,
+      (name) => parent.get(name),
+    );
+  for (const [query, want] of [
+    ['style(--same: inherit)', true],
+    ['style(--other: inherit)', false],
+    ['style(--theirs: inherit)', false],
+    ['style(--nope: inherit)', true],
+    ['style(--same: unset)', true],
+    ['style(--other: unset)', false],
+    ['style(--nope: unset)', true],
+    ['style(--reg: inherit)', true],
+    ['style(--reg: unset)', false],
+    ['style(--reg: initial)', false],
+  ] as const) {
+    assert.strictEqual(holds(query), want, query);
+  }
+});
+
 test('an @container prelude is a name, a condition, or both, and a list of them', () => {
   assert.deepStrictEqual(parseContainerPrelude('(min-width: 400px)'), [
     { name: null, condition: '(min-width: 400px)', axes: 1 },
@@ -330,6 +378,60 @@ test('a container of no box is still one, its size features unknown; and a dashe
   assert.strictEqual(color('t'), 'rgb(0, 128, 0)', 'unknown or true');
   assert.notStrictEqual(color('u'), 'rgb(255, 0, 0)', 'unknown and true');
   assert.strictEqual(color('r'), 'rgb(0, 128, 0)', 'by its dashed name');
+});
+
+test("a style query's inherit is the value the container has from its parent", async () => {
+  // custom-property-style-queries.html's defaulting: `--inherit` is set on
+  // the container and its parent alike, `--inherit-no` to another value on
+  // the container, and `--unset-no` on the container alone
+  const { node } = await render(
+    '<style>#d { --inherit: baz; --inherit-no: baz }' +
+      '#dc { --inherit-no: bar; --unset-no: baz }' +
+      '@container style(--inherit: inherit) { #inherit { color: #008000 } }' +
+      '@container not style(--inherit-no: inherit) { #inherit-no { color: #008000 } }' +
+      '@container style(--unset: unset) { #unset { color: #008000 } }' +
+      '@container not style(--unset-no: unset) { #unset-no { color: #008000 } }' +
+      '</style><div id="d"><div id="dc"><p id="inherit">i</p>' +
+      '<p id="inherit-no">n</p><p id="unset">u</p><p id="unset-no">v</p>' +
+      '</div></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color;
+  for (const id of ['inherit', 'inherit-no', 'unset', 'unset-no']) {
+    assert.strictEqual(color(id), 'rgb(0, 128, 0)', id);
+  }
+});
+
+test("a ::before's style is its rules' whether or not they give it a content, as getComputedStyle reads it", async () => {
+  // pseudo-elements-005.html: a `::before` matched against its element's
+  // `style()`, and one the rules style with no `content`, which a browser
+  // computes all the same
+  const { node } = await render(
+    '<style>#c1 { --theme: green }' +
+      '@container style(--theme: green) { #c1::before { content: ""; ' +
+      'color: #008000; display: block; height: 100px } }' +
+      '#c2 { --theme: red } #c2::before { color: #ff0000; --mine: 1 }' +
+      '@container style(--theme: green) { #c2::before { content: ""; color: #008000 } }' +
+      '</style><div id="c1"></div><div id="c2"></div><div id="c3"></div>',
+  );
+  const el = view(node);
+  const before = (id: string) =>
+    el.computedStyle(findById(el.document, id)!, 'before');
+  assert.strictEqual(before('c1')?.color, 'rgb(0, 128, 0)');
+  assert.strictEqual(before('c1')?.height, '100px');
+  assert.strictEqual(before('c2')?.color, 'rgb(255, 0, 0)');
+  const c2 = findById(el.document, 'c2')!;
+  assert.strictEqual(el.customProperty(c2, '--mine', 'before'), '1');
+  assert.strictEqual(el.customProperty(c2, '--theme', 'before'), 'red');
+  // one no rule reaches is its element's, inherited
+  assert.strictEqual(
+    before('c3')?.color,
+    el.computedStyle(findById(el.document, 'c3')!)?.color,
+  );
+  // and it makes no box: the one `::before` is `#c1`'s
+  const tree = treeOf(el) as unknown as { root: Pseudo };
+  assert.deepStrictEqual(pseudoColors(tree.root), ['#008000']);
 });
 
 metric(
@@ -632,3 +734,87 @@ metric(
     assert.strictEqual(el.elementRect(findById(el.document, 'u')!)!.width, 100);
   },
 );
+
+metric(
+  "a query's container units are its container's: a hundredth of the nearest size container above it",
+  async () => {
+    // container-units-in-at-container.html, and the registered length of
+    // custom-property-style-queries.html: a query's lengths are its
+    // container's, and no container is the container of its own lengths,
+    // so `50cqi` is half of #registered's 200px and not of #rc's 100px
+    const { node } = await render(
+      '<style>body { margin: 0 }' +
+        '.ancestor { container-type: size; width: 64px; height: 160px }' +
+        '.parent { container-type: inline-size; width: 32px; height: 77px }' +
+        '.container { container-type: size; width: 16px; height: 16px }' +
+        '@container ((width = 16px) and (width = 50cqw)) { #child { --cqw: 1 } }' +
+        '@container ((width = 16px) and (width = 10cqh)) { #child { --cqh: 1 } }' +
+        '@container ((width = 16px) and (width = 50cqmin)) { #child { --cqmin: 1 } }' +
+        '@property --len { syntax: "<length>"; inherits: false; initial-value: 10px }' +
+        '#registered { container-type: inline-size; width: 200px }' +
+        '#rc { width: 100px; --len: 100px }' +
+        '@container style(--len: 50cqi) { #rt { color: #0000ff } }' +
+        '</style><div class="ancestor"><div class="parent"><div class="container">' +
+        '<p id="child">c</p></div></div></div>' +
+        '<div id="registered"><div id="rc"><p id="rt">r</p></div></div>',
+      600,
+    );
+    const el = view(node);
+    const child = findById(el.document, 'child')!;
+    for (const name of ['--cqw', '--cqh', '--cqmin']) {
+      assert.strictEqual(el.customProperty(child, name), '1', name);
+    }
+    assert.strictEqual(colorOf(el, 'rt'), BLUE);
+  },
+);
+
+metric(
+  "a layout that moves the container a query's unit reads restyles what the query answers for",
+  async () => {
+    // the query asks #i, which keeps its width: only #o, whose width its
+    // `cqw` is a hundredth of, moves
+    const { node } = await render(
+      '<style>body { margin: 0 }' +
+        '#o { container-type: inline-size; width: 200px } #o.wide { width: 400px }' +
+        '#i { container-type: inline-size; width: 100px }' +
+        '@container (width < 40cqw) { #p { color: #0000ff } }' +
+        '</style><div id="o"><div id="i"><p id="p">p</p></div></div>',
+      600,
+    );
+    const el = view(node);
+    const color = () => el.computedStyle(findById(el.document, 'p')!)?.color;
+    assert.notStrictEqual(color(), 'rgb(0, 0, 255)', '100px < 80px');
+    const o = findById(el.document, 'o')!;
+    o.attribs.class = 'wide';
+    el.touchDocument([
+      { type: 'attributes', target: o, attributeName: 'class', oldValue: null },
+    ]);
+    assert.strictEqual(color(), 'rgb(0, 0, 255)', '100px < 160px');
+  },
+);
+
+test('a style() comparison in rem or rlh follows a root font size in vw across a resize', async () => {
+  // style-query-registered-custom-rem-change.html at a resize: the root's
+  // `font-size: 2vw` is taken in place at a new width, and the container
+  // and the elements around it, whose styles stay, kept the answer it had
+  const { el, resize } = await renderScrolled(
+    '<!doctype html><style>html { font-size: 2vw; line-height: 2 }' +
+      'body { margin: 0; font-size: 16px }' +
+      '@property --len { syntax: "<length>"; inherits: false; initial-value: 0px }' +
+      '#c { --len: 80px } #q, #r { color: #ff0000 }' +
+      '@container style(--len: 10rem) { #q { color: #008000 } }' +
+      '@container style(--len: 5rlh) { #r { color: #008000 } }' +
+      '</style><div><div id="c"><p id="q">q</p><p id="r">r</p></div></div>',
+    300,
+    400,
+  );
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color;
+  const GREEN = 'rgb(0, 128, 0)';
+  const RED = 'rgb(255, 0, 0)';
+  assert.deepStrictEqual([color('q'), color('r')], [GREEN, GREEN], 'of 8px');
+  await resize(300, 800);
+  assert.deepStrictEqual([color('q'), color('r')], [RED, RED], 'of 16px');
+  await resize(300, 400);
+  assert.deepStrictEqual([color('q'), color('r')], [GREEN, GREEN]);
+});

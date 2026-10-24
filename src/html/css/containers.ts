@@ -11,7 +11,7 @@
 
 import { compare, evaluateCondition, styleQuery } from './conditions.js';
 import { fallbackMatches } from './anchor.js';
-import type { Kleene } from './conditions.js';
+import type { Kleene, Registered } from './conditions.js';
 
 /** One query of an `@container` rule's list: the container's name, if it
  *  gives one, and the condition, as written. */
@@ -162,18 +162,26 @@ export function containerHolds(
   value?: (text: string) => string | null,
   /** A custom property's registration, which a style feature compares
    *  its values by. */
-  registered: (name: string) => {
-    syntax?: string;
-    initial: string | null;
-  } | null = () => null,
+  registered: (name: string) => Registered | null = () => null,
   /** A colour as the container computes it, which a registered colour
    *  is compared as. */
   color: (text: string) => string | null = () => null,
+  /** A custom property of what the container inherits from, which an
+   *  `inherit` in a style feature is. */
+  inherited?: (name: string) => string | undefined,
 ): boolean {
   if (!query.condition) return true;
   const answer = evaluateCondition(query.condition, (fn, inner) => {
     if (fn === 'style') {
-      return styleQuery(inner, custom, value, length, registered, color);
+      return styleQuery(
+        inner,
+        custom,
+        value,
+        length,
+        registered,
+        color,
+        inherited,
+      );
     }
     if (fn === 'scroll-state') {
       return scroll

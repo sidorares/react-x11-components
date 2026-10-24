@@ -1532,7 +1532,15 @@ every step of a drag were each a length in `vw`, and Bootstrap's were its
 headings' fluid type, `calc(1.3rem + .6vw)`. **A box that takes a new
 font has its sizes forgotten too, whoever's style it is** — an anonymous
 box around a flex row's text kept the max-content it was measured at, and
-the row came out at the old size's widths.
+the row came out at the old size's widths. **And a root whose font is
+such a length moves every `rem` and `rlh` with it**: the cascade notes
+what of the root's font each style reads (`ROOT_READS`, as a style's
+sides), and an element's pseudo-elements' and container queries' by the
+element (`_pseudoRoot`, `_queryRoot`), and a resize that moves the root's
+font in place styles them again (`rootReaders`) — under a `<body>` with a
+size of its own, `follow` reached none. Anything new that takes the root's
+font in place does the same; a build that finds it moved keeps no style
+(`_rootMoved`).
 **Anything new a box's layouts keep for its life that a length decides is
 forgotten in `forgetSizes`**, or a drag lays the box out at the lengths it
 had; `test/html/viewport.test.ts` holds the resize to a build of the whole
@@ -1566,7 +1574,13 @@ of other sizes. And **the containers are measured from boxes taken as the
 tree was built** (`BoxTree.containers`), since a dragged width sets boxes
 aside from the root's walk. Anything new that makes a style read a
 container's size goes through `_containerReads`, or a layout that moves the
-container leaves the style as it was.
+container leaves the style as it was. A query's container units are its
+container's — the nearest size container above it, since a query's lengths
+are the container's (`_queryUnit`) — noted for the element under a key per
+container and axis (`_queryUnitKey`), and a query asked again after a
+layout reads them at the sizes that layout gave (`_moving`): asked at the
+last ones, a container no style had read yet answered with the viewport's,
+and the query kept its answer.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
@@ -2217,12 +2231,17 @@ closes a way out a DOM binding opens by accident:
   and reaction queue by its wrapper (`customOf`), are in the page's realm,
   where its class and its callbacks are. Once a name is defined the host
   notes each element that may be one as it is connected, disconnected,
-  adopted, given another attribute value or copied into the document
+  adopted, given another attribute value or copied, in any document
   (`_custom…`), and the facade takes the notes after the op that made them
   and runs the reactions (`takeReactions`), before the method returns.
-  **Anything new that puts a node into the tree, takes one out or changes
-  an attribute goes through `_childList`, `_adopt` or `_changed`**, or its
-  custom elements hear nothing of it. `:defined` is the cascade's
+  Once a node has a scoped registry the host also notes every node
+  connected, with its document (`_scoped`): a scoped registry's `define()`
+  upgrades only in the documents its nodes were connected in, in the order
+  each first was (its scoped document set), and that order cannot be
+  worked out again later. **Anything new that puts a node into the tree,
+  takes one out or changes an attribute goes through `_childList`, `_adopt`
+  or `_changed`**, or its custom elements hear nothing of it, and a scoped
+  registry's `define()` misses the document. `:defined` is the cascade's
   (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
   attribute no element has.
 - **What a page asks of a media element is the player's, kept by
@@ -2762,7 +2781,14 @@ the drawing rather than matched from each of its elements
 set's `.icon { fill }` is not matched a second time. GitHub's repository
 page, a hundred drawings and no rule for any shape in them, went from a
 tenth of a millisecond a drawing to a few microseconds. A property added to
-`shapes.ts` has to be one `SvgView` reads. An SVG _image_ is the same
+`shapes.ts` has to be one `SvgView` reads, or a shorthand the cascade
+writes out as some (`shapeFont`). **A length `SvgView` reads otherwise
+than CSS is worked out in the drawing's copy** (`geometryLength`,
+`fontSizeOf`): a percentage, a math function, a length in any unit but
+`px` — it read `x2="2.5em"` as 2.5 and a `rem` as 16 — in user units,
+which are CSS pixels unzoomed, since a zoom is the scale the drawing is
+drawn at; a rule's lengths are read at the drawing's zoom and come to the
+same (`DrawingUnits`). An SVG _image_ is the same
 cascade over a document of its own: `SvgDrawing.drawImage` builds a
 `Cascade` over the image's `<style>` sheets alone, one per colour scheme,
 tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
@@ -3786,7 +3812,11 @@ and `crowded` asks what each box on the path holds in that box's own
 the slide reached a frame drawn somewhere else. **The scale box is always
 there**, at 1 where nothing scales the element, so a frame whose stage
 comes to fit the window exactly is the same node, and its document is
-not started again. And **a cover is never painted over a scaled player**
+not started again — and is styled again when the factor moves
+(`_followScale`): a frame's script zooms the `<iframe>` its document is
+drawn in once it was laid out, and core lays the document out again at a
+width it may have had, under styles whose lengths are device pixels of
+the old scale. And **a cover is never painted over a scaled player**
 (`coversOf` is not asked): it is painted where it is laid out, through
 its own matrix and through no matrix around it, so such a video keeps
 its poster. A turn, a
