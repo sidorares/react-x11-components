@@ -10,7 +10,7 @@ import {
   parseMediaQuery,
   parseStylesheet,
 } from '../../src/html/css/parse.js';
-import { HtmlSource } from '../../src/html/dom.js';
+import { HtmlSource, shadowRootOf } from '../../src/html/dom.js';
 import { animationClock } from '../../src/html/node.js';
 import { lightDark, usedColorScheme } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -1134,6 +1134,77 @@ test('a breakpoint restyles what it reaches past @keyframes under a media query 
   assert.notStrictEqual(styleOf('i3'), three, 'the one reached');
   assert.strictEqual(boxOf(el, 'i3').x, 4);
   assert.deepStrictEqual(againstWhole(el), []);
+});
+
+test('a breakpoint restyles what it reaches in a shadow tree, and goes into every tree', async () => {
+  // MDN's pages are custom elements with trees of their own, and a document
+  // with a shadow tree answered every crossing with a style of the whole
+  // document: the walk did not go into the trees. A tree's own rules are
+  // in the indexes under it, and the walk goes in; a rule at a tree's edge
+  // under a media query is still none it can tell.
+  const tree =
+    '<template shadowrootmode="open"><style>p{margin:0;color:rgb(255,0,0)}' +
+    '@media (max-width:300px){p{color:rgb(0,128,0);margin-left:3px}}' +
+    ':host(.wide) p{padding-left:1px}' +
+    '@media (max-width:300px){:host(.wide) p{padding-left:5px}}</style>' +
+    '<p id="inner">in the tree</p><slot></slot></template>';
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}' +
+      '@media (max-width:300px){.light{color:rgb(0,0,255)}' +
+      '#host{font-size:20px}}</style>' +
+      `<div id="host" class="wide">${tree}` +
+      '<span id="slotted" class="light">slotted</span></div>' +
+      '<p id="outside">outside</p>',
+    300,
+    400,
+  );
+  const node = el as unknown as {
+    _cascade: Cascade;
+    _source: { document: { children: unknown[] } };
+    _tree: { styles: Map<Element, { style: ComputedStyle }> };
+  };
+  const reached = node._cascade.crossed(400, 250, node._source.document);
+  assert.ok(reached, 'told, where it was null');
+  assert.deepStrictEqual([...reached].map((e) => e.attribs.id).sort(), [
+    'host',
+    'inner',
+    'slotted',
+  ]);
+  const host = findById(el.document, 'host') as unknown as Element;
+  const inner = (shadowRootOf(host)!.children as unknown as Element[]).find(
+    (e) => e.attribs?.id === 'inner',
+  )!;
+  const outside = findById(el.document, 'outside') as unknown as Element;
+  const kept = node._tree.styles.get(outside)!.style;
+  await resize(300, 250);
+  assert.strictEqual(
+    node._tree.styles.get(outside)!.style,
+    kept,
+    'what it reaches nothing of keeps its style',
+  );
+  const style = node._tree.styles.get(inner)!.style;
+  assert.strictEqual(style.color, '#008000', 'the tree’s rule');
+  assert.strictEqual(style.fontSize, 20, 'inherited from its host');
+  assert.strictEqual(style.paddingLeft, 5, 'a `:host()` rule under the media');
+  assert.deepStrictEqual(againstWhole(el), []);
+  await cleanup();
+
+  // and one at the tree's edge under a media query: told nothing
+  const edge = await renderScrolled(
+    '<div id="host"><template shadowrootmode="open"><style>' +
+      '@media (max-width:300px){:host{color:rgb(0,0,255)}}</style>' +
+      '<p>x</p></template></div>',
+    300,
+    400,
+  );
+  const edgeNode = edge.el as unknown as {
+    _cascade: Cascade;
+    _source: { document: { children: unknown[] } };
+  };
+  assert.strictEqual(
+    edgeNode._cascade.crossed(400, 250, edgeNode._source.document),
+    null,
+  );
 });
 
 test('a map is the same as another only with the same entries', () => {

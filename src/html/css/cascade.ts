@@ -3562,7 +3562,6 @@ export class Cascade {
       }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
-        if (rule.media) this._mediaOutsideRules.push(rule.media);
         const split = splitPseudoElement(rule);
         this._changeRules.noteEdge(
           (split?.rule ?? rule).selector,
@@ -3975,9 +3974,10 @@ export class Cascade {
    * `to` wide make differently, for a resize that crossed a breakpoint:
    * each one a rule matches whose media hold at one width and not at the
    * other, or a pseudo-element of it is — or null where that cannot be
-   * told from the rules here, as for a shadow tree's, which styles
-   * elements the document's walk does not reach, or a `@keyframes` under
-   * a media query. A band changes few elements: Wikipedia's 1120px
+   * told from the rules here, as for a rule at a shadow tree's edge or a
+   * `@keyframes` under a media query. A shadow tree's own rules are in the
+   * indexes, filed under the tree, and the walk goes into every tree. A
+   * band changes few elements: Wikipedia's 1120px
    * breakpoint turns 55 rules over, which match 27 of 4,386 elements, and
    * its 1400px one 2, which match none — where every element was styled
    * again and every box built again.
@@ -3991,7 +3991,6 @@ export class Cascade {
     fromHeight = this.viewportHeight,
     toHeight = this.viewportHeight,
   ): Set<Element> | null {
-    if (this._scoped) return null;
     const answers = (
       media: MediaCondition[][] | null,
       width: number,
@@ -4037,6 +4036,11 @@ export class Cascade {
         if (matched.length) reached.add(el);
       }
       for (const child of el.children) stack.push(child);
+      // and the tree it hosts, whose rules are asked of its elements alone
+      // (`_matchInto`): MDN's pages are custom elements with trees of their
+      // own, and every breakpoint a drag crossed styled the page again
+      const shadow = this._scoped ? shadowRootOf(el) : null;
+      if (shadow) for (const child of shadow.children) stack.push(child);
     }
     return reached;
   }
@@ -4419,6 +4423,12 @@ export class Cascade {
     return info;
   }
 
+  /** A rule a crossing cannot ask the indexes about (`crossed`): its media
+   *  noted, so that a width they turn at styles the whole document. */
+  private _outsideIndexes(rule: StyleRule): void {
+    if (rule.media) this._mediaOutsideRules.push(rule.media);
+  }
+
   /**
    * A rule that says something of a shadow tree's edge (`SCOPING`), into
    * its tree's lists, or into the indexes as the rest of it with a test of
@@ -4451,6 +4461,7 @@ export class Cascade {
         el,
       });
       this._scopedPseudos.add(which);
+      this._outsideIndexes(rule);
       return true;
     }
     const part = readPart(selector);
@@ -4477,6 +4488,7 @@ export class Cascade {
         inner,
       });
       this._scopedPseudos.add(which);
+      this._outsideIndexes(rule);
       return true;
     }
     const reading = readHost(selector);
@@ -4493,6 +4505,7 @@ export class Cascade {
         host: test,
       });
       this._scopedPseudos.add(which);
+      this._outsideIndexes(rule);
       return true;
     }
     // `:host(.dark) .x`: the rest, which is in the tree, matched as any

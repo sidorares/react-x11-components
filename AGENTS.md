@@ -1522,10 +1522,14 @@ style**: anything new that makes a style read more — a sibling's style, an
 ancestor's past the parent — has to say so to `follow`, or a crossing keeps
 a style that changed. And `crossed` answers null, a whole restyle, for
 what is under a media query outside the rule indexes — a `@keyframes`, a
-rule at a shadow tree's edge — where that query's answer turns between the
-two widths, and for a shadow tree: GitHub keeps its `@keyframes` under
+rule in a tree's edge lists (`_outsideIndexes`) — where that query's answer
+turns between the two widths: GitHub keeps its `@keyframes` under
 `prefers-reduced-motion`, which no resize turns, and every breakpoint a
-drag crossed styled the whole page again. The viewport
+drag crossed styled the whole page again. A shadow tree's own rules, and a
+`:host()` rule with more after it, are in the indexes under their tree, and
+the walk goes into every tree, so **anything new that a shadow tree's sheet
+holds outside the indexes notes its media with `_outsideIndexes`**: MDN's
+custom elements made every crossing a style of the whole page. The viewport
 units are the other exception, handled the same way: a `vw` or a `vh` is a
 number once computed, so the cascade notes as a length is resolved which
 sides a style holds (`_viewportRead`, by the style, since a style is
