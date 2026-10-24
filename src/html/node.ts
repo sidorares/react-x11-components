@@ -2940,6 +2940,14 @@ export class HtmlViewNode extends Node {
     ) {
       const tree = this._tree;
       const readers = cascade.viewportReaders(tree.styles, sides);
+      // a root whose font is such a length moves every `rem` and `rlh`
+      // with it, wherever they are, under parents whose styles stay
+      const rootFont = this._rootFontMoves(tree, readers);
+      if (rootFont) {
+        for (const el of cascade.rootReaders(tree.styles, rootFont)) {
+          readers.add(el);
+        }
+      }
       // the root box, standing in for a body or an `<html>` the markup does
       // not write, is styled in every build: one that holds such a length
       // is built again with every element's style kept
@@ -2952,7 +2960,10 @@ export class HtmlViewNode extends Node {
       // it the other way costs less
       const limit = Math.max(HOVER_RESTYLE_LIMIT, tree.styles.size >> 3);
       const inPlace =
-        readers.size > 0 && !rootReads && !cascade.pseudoReadsViewport(sides);
+        readers.size > 0 &&
+        !rootReads &&
+        !cascade.pseudoReadsViewport(sides) &&
+        !(rootFont && cascade.pseudoReadsRoot(rootFont));
       // what holds it and all that holds, or where that is more than a
       // restyle in place takes, followed down from them (`from`)
       const reach = inPlace ? withDescendants(readers, limit) : null;
@@ -4987,11 +4998,12 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      // one the rules give no `content` is styled by them all the same
       const own = this._atNow(element, () =>
-        cascade.pseudoStyleFor(element, pseudo, style),
+        cascade.pseudoComputedStyle(element, pseudo, style),
       );
-      // one no rule styles has the style it would be made with all the
-      // same, its element's inherited, as a browser answers for it
+      // and one no rule styles has the style it would be made with all
+      // the same, its element's inherited, as a browser answers for it
       return cssomStyle(
         own ?? inherit(style, cascade.initial),
         this._scale,
@@ -5146,11 +5158,33 @@ export class HtmlViewNode extends Node {
   ): string | null {
     this._prepare(this.abs.width || 1);
     const style = this._styleOf(element);
+    // a pseudo-element no rule styles inherits every one of its element's
     const own =
       style && pseudo
-        ? (this._cascade?.pseudoStyleFor(element, pseudo, style) ?? null)
+        ? (this._cascade?.pseudoComputedStyle(element, pseudo, style) ?? style)
         : style;
     return own ? (own.custom?.get(name) ?? '') : null;
+  }
+
+  /**
+   * What of the root element's font — its size, which a `rem` reads, its
+   * line height, an `rlh` — moves where the root is among `readers`, the
+   * elements a move of the viewport styles again: its style worked out at
+   * the new viewport, as the restyle will, and compared with the tree's,
+   * of what the document reads of it (`Cascade.rootMetricsMoved`). Fluid
+   * type on the root, `font-size: calc(14px + .5vw)`, sizes every `rem`.
+   */
+  private _rootFontMoves(tree: BoxTree, readers: ReadonlySet<Element>): number {
+    const cascade = this._cascade;
+    if (!cascade?.readsRoot) return 0;
+    for (const el of readers) {
+      if (!isRootElement(el)) continue;
+      const kept = tree.styles.get(el);
+      if (!kept) return 0;
+      const now = cascade.styleFor(el, tree.root.style, kept.inFlex);
+      return cascade.rootMetricsMoved(kept.style, now);
+    }
+    return 0;
   }
 
   /**

@@ -93,7 +93,7 @@ handle.refresh();
 | `scrollElementTo(element, { x?, y? }, relative?, target?)`                              | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`; `relative` for a `scrollBy()`, which a snap container snaps the way it went, and `target` for the element a scroll into view brings in, which it lines up. Answers where it came to, or null.                                                                                                                                                                                                                                                               |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours in the space their computed values keep (`rgb()`, `oklch()`, `color(srgb …)`, …), a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`, or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                                                                                                              |
+| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours in the space their computed values keep (`rgb()`, `oklch()`, `color(srgb …)`, …), a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'` — styled by its rules whether or not they give it a `content`, as a browser answers — or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                         |
 | `customProperty(el, name, pseudo?)`                                                     | A custom property's computed value, as `getComputedStyle` reads it by its name — case and all, `--Tabs-x` and `--tabs-x` being two — with every `var()` in it replaced, and `''` where nothing sets it. Not in `computedStyle`'s record, which would carry every one a theme sets on the root to each element. Null as `computedStyle` is.                                                                                                                                                                                                                                                                        |
 | `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                                                                                                                                                                    |
 | `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                                                                                                                                                          |
@@ -4004,7 +4004,9 @@ where it cannot say; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
 `font-size` is — and an `rlh` the root's. A `rem` is the root element's font
 size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
-own `font-size` the initial size, as CSS has both. A math function comes down to pixels and a percentage, which
+own `font-size` the initial size, as CSS has both; a root's size or line
+height that moves — a script's, or fluid type in `vw` at a new width —
+moves every `rem` and `rlh` with it, wherever they are. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where
@@ -4378,7 +4380,12 @@ that is a size container of the axes its features read — `width`,
 the plain, `min-` and `max-` forms and Media Queries 4's ranges — under
 `not`, `and` and `or`. A `::before` or an `::after` asks its own element
 first, and the element never asks itself. A query's lengths are measured
-against the container's content box, and its `em` is the container's own.
+against the container's content box, and its `em` is the container's own;
+its `cqi` and the other container units are those of the container's own
+nearest size container, since no container is its own, so `(width < 40cqw)`
+is asked again when a layout moves the box around the container; and its
+`rem` and `rlh` are the root's, which a change of the root's font size or
+line height reaches wherever the element is.
 `style()` asks a container's custom properties as `if()` does (see
 `if()`), of any element, since every element is a style container. Where
 none is the container a query asks for, the query holds nowhere. In a
@@ -4389,7 +4396,9 @@ resolutions, so `1px <= 1em` and `3turn > 3deg` hold. A property
 registered as a `<length>` or a `<color>` (`@property`) is compared as
 one, so `--gap: 0.5em` holds of a `10px` gap in a `20px` font, and a
 `light-dark()` colour by the container's scheme; `initial` is a
-registered property's initial value. A value's `!important` asks nothing
+registered property's initial value, `inherit` the value the container
+takes from its parent, and `unset` `inherit` — or `initial`, for a
+property registered not to inherit. A value's `!important` asks nothing
 more, a `var()` that comes to nothing matches a property nothing set,
 and `revert`, `revert-layer` and `revert-rule` match nothing. What is no
 feature at all — a stray `;` or `!`, a function where a name should be, a

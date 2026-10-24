@@ -5064,7 +5064,7 @@ export class DomHost {
         false,
       );
     const style = styleOf(el);
-    return pseudo ? cascade.pseudoStyleFor(el, pseudo, style) : style;
+    return pseudo ? cascade.pseudoComputedStyle(el, pseudo, style) : style;
   }
 
   /** The size of a frame's viewport: its element's content box in the
