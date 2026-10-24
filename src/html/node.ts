@@ -1216,9 +1216,29 @@ export class HtmlViewNode extends Node {
   // document at half size on a retina panel.
 
   /** Device pixels per logical pixel — the display scale this element's
-   *  window resolved to, constant for the node's life. */
+   *  window resolved to, times every `scale` prop around it. */
   private get _scale(): number {
     return this.scale > 0 ? this.scale : 1;
+  }
+
+  /** The scale the document's styles were last computed at: what every
+   *  length they hold is device pixels of. */
+  private _styledAt = 0;
+
+  /**
+   * Style the document again where its scale moved since it was styled: a
+   * `scale` prop around the element changed (core's `docs/scale.md`, "A
+   * subtree of its own"), as a frame's does when a script sets the zoom of
+   * the `<iframe>` it is drawn in. Core lays the element out again, at a
+   * width that may be the one it had, so nothing else here would see it: a
+   * leaf frame laid out in device pixels at its old scale came out at the
+   * CSS size of the box it was drawn in.
+   */
+  private _followScale(): void {
+    if (this._styledAt === 0 || this._styledAt === this._scale) return;
+    this._styledAt = this._scale;
+    this._restyleOnly = null;
+    if (this._stale < Stale.Style) this._stale = Stale.Style;
   }
 
   private _deviceLookFor: RootLook | null = null;
@@ -1774,6 +1794,7 @@ export class HtmlViewNode extends Node {
   /** Rebuild the cascade — the document's sheets plus the host's. */
   private _restyle(width: number): void {
     const props = this._props();
+    this._styledAt = this._scale;
     const look = this._deviceLook();
     const facts = this._source.facts();
     // the document's sheets, and after them the host's
@@ -2499,6 +2520,7 @@ export class HtmlViewNode extends Node {
    */
   private _prepare(width: number): void {
     const target = Math.max(1, Math.floor(width));
+    this._followScale();
     if (this._failedAt === target && this._stale === Stale.Nothing) return;
     try {
       this._counted(() => this._update(target));
@@ -4293,6 +4315,7 @@ export class HtmlViewNode extends Node {
    */
   private _sizeAt(width: number): { width: number; height: number } {
     const target = Math.max(1, Math.floor(width));
+    this._followScale();
     if (
       target !== this._laidOutWidth &&
       this._stale === Stale.Nothing &&

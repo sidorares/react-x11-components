@@ -20,13 +20,21 @@ import { isSvgRoot, mutationGeneration, rawTextOf } from './dom.js';
 import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
-import { useHref } from './css/shapes.js';
-import type { ShapeStyle, ShapeStyles } from './css/shapes.js';
+import { quotedFamilies, useHref } from './css/shapes.js';
+import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
 import { parseMath } from './css/calc.js';
-import { inkColor, isTransparent, parseColor, resolve } from './css/values.js';
+import {
+  AUTO,
+  inkColor,
+  isTransparent,
+  parseColor,
+  parseLength,
+  resolve,
+} from './css/values.js';
+import type { UnitContext } from './css/values.js';
 
-export { isSvgRoot };
+export { isSvgRoot, quotedFamilies };
 
 /** What an image says about its own size, in CSS pixels: a width and a
  *  height — a raster image always has both, an SVG those that are absolute
@@ -483,17 +491,19 @@ export class SvgDrawing {
    *  and where the root and each element outside it a `<use>` drew ended —
    *  a streamed document grows an inline drawing after its first paint,
    *  and a sprite's symbol after the first icon drawn from it — and, for a
-   *  drawing with percentages in it, the viewport they were resolved
-   *  against. */
+   *  drawing with lengths to work out, what they were worked out against
+   *  (`Lengths`). */
   private _seen = -1;
   private _seenEnds: End[] = [];
   private _seenViewport = '';
   /** The `fill` and `stroke` the view's tree was last given its root's,
    *  and what the document's rules gave the elements in it. */
   private _seenPaint = '';
-  /** Whether a length in the tree is a percentage of the viewport, or a
-   *  math function (`viewportLength`); null until the tree is first read. */
-  private _percent: boolean | null = null;
+  /** Whether a length in the tree is one `SvgView` reads otherwise than
+   *  CSS, which the tree it is handed has worked out (`lengthsToWorkOut`):
+   *  a percentage of the viewport, a math function, a length in a unit;
+   *  null until the tree is first read. */
+  private _lengths: boolean | null = null;
   /** Whether a `<use>` in the tree is one `SvgView` cannot draw as it
    *  stands (`needsExpanding`). */
   private _uses = false;
@@ -584,6 +594,10 @@ export class SvgDrawing {
      *  the document laid out (`ForeignPainter`); none draws nothing of
      *  them. */
     foreign: ForeignPainter | null = null,
+    /** What a `rem` and a `vw` in its geometry are of, the document's
+     *  (`DrawingUnits`); an image's are its initial font size and the
+     *  rectangle it is drawn in. */
+    units: DrawingUnits | null = null,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -636,9 +650,17 @@ export class SvgDrawing {
     const paint =
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
+    // what a length in a unit of its font, of the root's or of the
+    // viewport's comes to: user units, which are CSS pixels
+    const lengths: Lengths = {
+      em: font && font.size >= 0 ? font.size : 16,
+      rem: units?.rem ?? 16,
+      vw: units?.vw ?? w / scale,
+      vh: units?.vh ?? h / scale,
+    };
     const view = box
-      ? this._viewFor(box[2], box[3], paint, shapes, inherited)
-      : this._viewFor(vw, vh, paint, shapes, inherited);
+      ? this._viewFor(box[2], box[3], paint, shapes, inherited, lengths)
+      : this._viewFor(vw, vh, paint, shapes, inherited, lengths);
     if (!view) return;
     ctx.save();
     // the view draws on the context lent, which counts its saves and keeps
@@ -854,6 +876,7 @@ export class SvgDrawing {
     shapes: ShapeStyles | null = null,
     /** What else the root inherits, as declarations (`draw`). */
     inherited = '',
+    lengths: Lengths = DEFAULT_LENGTHS,
   ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
@@ -865,12 +888,17 @@ export class SvgDrawing {
         lastNode(documentOf(root)) !== this._missingAt) ||
       this._seenEnds.some(moved);
     const grown = count !== this._seen || arrived;
-    if (grown || this._percent === null) {
-      this._percent = hasPercent(root);
+    if (grown || this._lengths === null) {
+      this._lengths = lengthsToWorkOut(root);
       this._uses = needsExpanding(root);
     }
-    const sized = this._percent || this._uses;
-    const viewport = sized ? `${width}x${height}` : '';
+    const sized = this._lengths || this._uses;
+    // and, for a drawing with lengths to work out, what they are of
+    const viewport = !sized
+      ? ''
+      : this._lengths
+        ? `${width}x${height}|${lengths.em}|${lengths.rem}|${lengths.vw}x${lengths.vh}`
+        : `${width}x${height}`;
     const painted = `${paint}|${inherited}|${shapes?.key ?? ''}`;
     if (
       this._view &&
@@ -890,7 +918,13 @@ export class SvgDrawing {
       const reached: Reached = { missing: false, outside: new Set() };
       const tree =
         sized || shapes || root.name.includes(':')
-          ? copyTree(root, sized ? [width, height] : null, reached, shapes)
+          ? copyTree(
+              root,
+              sized ? [width, height] : null,
+              reached,
+              shapes,
+              lengths,
+            )
           : root;
       view.setSvgDom(
         paint || inherited ? withPaint(tree, paint, inherited) : tree,
@@ -1027,44 +1061,6 @@ function imageLook(scheme: 'light' | 'dark', scale: number): RootLook {
   };
 }
 
-/** The generic families, which a font list names without quotes. */
-const GENERIC_FAMILIES = new Set([
-  'serif',
-  'sans-serif',
-  'monospace',
-  'cursive',
-  'fantasy',
-  'system-ui',
-  'ui-serif',
-  'ui-sans-serif',
-  'ui-monospace',
-  'ui-rounded',
-  'emoji',
-  'math',
-  'fangsong',
-]);
-
-/**
- * A style's family list as a `font` shorthand names it, for `SvgView` to
- * set its text in: each family quoted but the generic ones. The list a
- * style holds has its quotes taken off (`familyList`), and a name that is
- * not identifiers — `Font Awesome 6 Free` — makes a shorthand that a
- * context's parser drops whole, and the text is set in whatever font the
- * context had last.
- */
-export function quotedFamilies(list: string): string {
-  return list
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean)
-    .map((name) =>
-      GENERIC_FAMILIES.has(name.toLowerCase())
-        ? name
-        : `"${name.replace(/["\\]/g, '\\$&')}"`,
-    )
-    .join(', ');
-}
-
 /** Drawings of inline `<svg>` elements, per element: the element is the
  *  document's, and outlives the box trees built over it. */
 let INLINE = new WeakMap<Element, SvgDrawing>();
@@ -1157,6 +1153,110 @@ function viewportLength(value: string, of: number): number | null {
   return Number.isFinite(pct) ? (pct / 100) * of : null;
 }
 
+/** What the lengths in a drawing are worked out against, in its user
+ *  units: the font size its root inherits, which an `em` at the root is
+ *  of, the root element's, and the viewport's sides (`DrawingUnits`). */
+interface Lengths {
+  em: number;
+  rem: number;
+  vw: number;
+  vh: number;
+}
+
+const DEFAULT_LENGTHS: Lengths = { em: 16, rem: 16, vw: 0, vh: 0 };
+
+/** A length with a unit `SvgView` reads as the number before it — every
+ *  unit but `px`: it takes `x2="2.5em"` for 2.5 user units, `1in` for
+ *  one, and a `rem` as 16 pixels whatever the root's font size is. */
+const UNIT_LENGTH = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?!px$)[a-z]+$/i;
+
+/** A `font-size` `SvgView` reads otherwise than CSS: of the root's font
+ *  size, of the viewport, of a font's "0", or a math function. */
+const FOREIGN_SIZE = /(?:\d(?:rem|v(?:w|h|min|max)|[sld]v[wh]|ch|r?lh)\b|\()/i;
+
+/**
+ * A geometry attribute's value in user units, where `SvgView` would read it
+ * otherwise (`viewportLength`, `UNIT_LENGTH`): a percentage of `of`, the
+ * viewport's side or its normalized diagonal; a length in a unit, absolute
+ * or of the element's font (`em`), the root element's (`rem`) or the
+ * viewport (`vw`); or a math function of those. Null where it is a number,
+ * which `SvgView` reads as it is, or none this can read — a list, `auto`, a
+ * sum that does not add up — which is left as written.
+ */
+function geometryLength(
+  value: string,
+  of: number,
+  em: number,
+  lengths: Lengths,
+): number | null {
+  if (!value.endsWith('%') && !MATH_FUNCTION.test(value)) {
+    if (!UNIT_LENGTH.test(value)) return null;
+  }
+  const len = parseLength(value, unitsOf(em, lengths));
+  if (len === null || len === AUTO) return null;
+  return resolve(len, of);
+}
+
+/** A unit context in user units, a CSS pixel each, for an element whose
+ *  font size is `em`. */
+function unitsOf(em: number, lengths: Lengths): UnitContext {
+  return { em, rem: lengths.rem, vw: lengths.vw, vh: lengths.vh, scale: 1 };
+}
+
+/** The `font-size` keywords in CSS pixels, as `SvgView` has them. */
+const FONT_SIZES: Record<string, number> = {
+  'xx-small': 9,
+  'x-small': 10,
+  small: 13,
+  medium: 16,
+  large: 18,
+  'x-large': 24,
+  'xx-large': 32,
+  'xxx-large': 48,
+};
+
+/**
+ * An element's font size in user units, given the one it inherits, as
+ * `SvgView` reads it — its `font-size` attribute, and the last such
+ * declaration in its `style` over that — except that a `rem`, a `vw` and a
+ * math function are worked out as CSS has them, where `SvgView` reads them
+ * otherwise; `rewrite` is told the size where it does.
+ */
+function fontSizeOf(
+  attribs: Record<string, string>,
+  inherited: number,
+  lengths: Lengths,
+  rewrite: (size: number) => void,
+): number {
+  let raw = attribs['font-size'];
+  const style = attribs.style;
+  if (style && style.includes('font-size')) {
+    for (const declaration of style.split(';')) {
+      const colon = declaration.indexOf(':');
+      if (colon < 0) continue;
+      if (declaration.slice(0, colon).trim().toLowerCase() !== 'font-size') {
+        continue;
+      }
+      raw = declaration.slice(colon + 1);
+    }
+  }
+  if (raw === undefined) return inherited;
+  const v = raw
+    .trim()
+    .replace(/\s*!important$/i, '')
+    .toLowerCase();
+  if (v === '' || v === 'inherit') return inherited;
+  if (v in FONT_SIZES) return FONT_SIZES[v];
+  if (v === 'larger') return inherited * 1.2;
+  if (v === 'smaller') return inherited / 1.2;
+  const len = parseLength(v, unitsOf(inherited, lengths), true);
+  if (len === null || len === AUTO) return inherited;
+  const size = resolve(len, inherited);
+  if (!(size >= 0)) return inherited;
+  if (FOREIGN_SIZE.test(v)) rewrite(size);
+  return size;
+}
+
 /** What a percentage in it means is not the viewport's: a gradient's are
  *  of the box it paints, and `SvgView` reads those itself. */
 const OWN_UNITS = new Set(['lineargradient', 'radialgradient', 'pattern']);
@@ -1166,10 +1266,13 @@ function localName(name: string): string {
   return (i < 0 ? name : name.slice(i + 1)).toLowerCase();
 }
 
-/** Whether a length under the root is a percentage `SvgView` would read as
- *  a number: it resolves none against the viewport, so `width="100%"` was
- *  a hundred user units — or a math function, which it reads as none. */
-function hasPercent(root: Element): boolean {
+/** Whether a length under the root is one `SvgView` would read otherwise
+ *  than CSS: a percentage, which it resolves against no viewport, so
+ *  `width="100%"` was a hundred user units; a math function, which it
+ *  reads as none; a length in a unit, which it reads as the number before
+ *  it (`UNIT_LENGTH`); and a font size it reads otherwise
+ *  (`FOREIGN_SIZE`). */
+function lengthsToWorkOut(root: Element): boolean {
   const walk = (el: Element): boolean => {
     for (const child of el.children) {
       if (child.type !== 'tag') continue;
@@ -1177,9 +1280,20 @@ function hasPercent(root: Element): boolean {
       const local = localName(tag.name);
       if (OWN_UNITS.has(local)) continue;
       for (const name in tag.attribs) {
-        if (!PERCENT_OF[name]) continue;
         const value = tag.attribs[name].trim();
-        if (value.endsWith('%') || MATH_FUNCTION.test(value)) return true;
+        if (name === 'font-size' || name === 'style') {
+          const sized = name === 'font-size' || value.includes('font-size');
+          if (sized && FOREIGN_SIZE.test(value)) return true;
+          continue;
+        }
+        if (!PERCENT_OF[name]) continue;
+        if (
+          value.endsWith('%') ||
+          MATH_FUNCTION.test(value) ||
+          UNIT_LENGTH.test(value)
+        ) {
+          return true;
+        }
       }
       // what a `<foreignObject>` holds is HTML, and not the drawing's
       if (local !== 'foreignobject' && walk(tag)) return true;
@@ -1426,6 +1540,7 @@ function copyTree(
   viewport: [number, number] | null,
   reached?: Reached,
   shapes: ShapeStyles | null = null,
+  lengths: Lengths = DEFAULT_LENGTHS,
 ): Element {
   const colon = root.name.indexOf(':');
   const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
@@ -1442,6 +1557,8 @@ function copyTree(
     hidden: boolean,
     /** What the rules give the `<use>`. */
     own: ShapeStyle | undefined,
+    /** The `<use>`'s font size, which the copy inherits. */
+    size: number,
   ): Element | null => {
     const id = useHref(use);
     if (id === null || depth >= USE_DEPTH) return null;
@@ -1502,7 +1619,7 @@ function copyTree(
       const mine = styles?.get(target);
       const inner = hiddenIn(mine, hidden);
       if (mine?.display !== 'none') {
-        copyInto(children, target, within, depth + 1, inner, styles);
+        copyInto(children, target, within, depth + 1, inner, styles, size);
       }
       if (kept || mine) {
         const paints = { ...kept };
@@ -1511,7 +1628,7 @@ function copyTree(
         children.push(group);
       }
     } else if (shown(target, hidden, styles)) {
-      children.push(copy(target, within, depth + 1, hidden, styles));
+      children.push(copy(target, within, depth + 1, hidden, styles, size));
     }
     return new Element('g', attribs, children);
   };
@@ -1519,7 +1636,12 @@ function copyTree(
    *  its id: `SvgView` looks a use's element up in the tree it is given,
    *  so they go in it, in a `<defs>` at its end. */
   const brought = new Map<string, Element | null>();
-  const bring = (use: Element, resolve: boolean, depth: number): void => {
+  const bring = (
+    use: Element,
+    resolve: boolean,
+    depth: number,
+    size: number,
+  ): void => {
     const id = useHref(use);
     if (id === null || brought.has(id) || depth >= USE_DEPTH) return;
     ids ??= idsUnder(root);
@@ -1531,7 +1653,7 @@ function copyTree(
       return;
     }
     reached?.outside.add(target);
-    brought.set(id, copy(target, resolve, depth + 1, false, null));
+    brought.set(id, copy(target, resolve, depth + 1, false, null, size));
   };
   /** Whether an element is drawn at all, in a group that is hidden or
    *  not: one no rule gives `display: none`, and no shape a rule hides. */
@@ -1553,11 +1675,15 @@ function copyTree(
     depth: number,
     hidden: boolean,
     styles: ReadonlyMap<Element, ShapeStyle> | null,
+    /** The font size `el` has, which its children inherit. */
+    size: number,
   ): void => {
     for (const child of el.children) {
       if (child.type === 'tag') {
         if (shown(child as Element, hidden, styles)) {
-          children.push(copy(child as Element, resolve, depth, hidden, styles));
+          children.push(
+            copy(child as Element, resolve, depth, hidden, styles, size),
+          );
         }
       } else if (child.type === 'text') children.push(new Text(child.data));
     }
@@ -1571,30 +1697,37 @@ function copyTree(
     /** What the rules give the elements of the tree it is in: the
      *  drawing's, or a `<use>`'s copy's. */
     styles: ReadonlyMap<Element, ShapeStyle> | null = shapes?.of ?? null,
+    /** The font size the element inherits, in user units. */
+    inherited: number = lengths.em,
   ): Element => {
     const own = styles?.get(el);
     hidden = hiddenIn(own, hidden);
+    const attribs = { ...el.attribs };
+    if (own) restyle(attribs, own);
+    // its own font size, which an `em` in its lengths is of, written out
+    // where `SvgView` would read it otherwise
+    const size = fontSizeOf(attribs, inherited, lengths, (px) => {
+      attribs.style = `${attribs.style ? `${attribs.style};` : ''}font-size:${px}`;
+    });
     if (localName(el.name) === 'use') {
       // One in a `<clipPath>` clips as the shape or the text it names, and
       // a group clips as nothing (CSS Masking 1, 6.3): it stays a use.
       const parent = el.parent;
       if (parent?.type === 'tag' && localName(parent.name) === 'clippath') {
-        bring(el, resolve, depth);
+        bring(el, resolve, depth, size);
       } else {
-        const group = expand(el, resolve, depth, hidden, own);
+        const group = expand(el, resolve, depth, hidden, own, size);
         if (group) return group;
       }
     }
     const here = resolve && !OWN_UNITS.has(localName(el.name));
-    const attribs = { ...el.attribs };
-    if (own) restyle(attribs, own);
     if (here && viewport && el !== root) {
       for (const name in attribs) {
         const axis = PERCENT_OF[name];
         if (!axis) continue;
         const of =
           axis === 'x' ? viewport[0] : axis === 'y' ? viewport[1] : diagonal;
-        const length = viewportLength(attribs[name].trim(), of);
+        const length = geometryLength(attribs[name].trim(), of, size, lengths);
         if (length !== null) attribs[name] = String(length);
       }
     }
@@ -1603,7 +1736,7 @@ function copyTree(
     // into it (`ForeignPainter`) from the element: the copy holds none of
     // it, and is mapped to the element
     const object = localName(el.name) === 'foreignobject';
-    if (!object) copyInto(children, el, here, depth, hidden, styles);
+    if (!object) copyInto(children, el, here, depth, hidden, styles, size);
     const made = new Element(strip(el.name), attribs, children);
     if (object) FOREIGN_COPIES.set(made, el);
     return made;

@@ -154,10 +154,16 @@ import {
   SHAPE_TAGS,
   isShapeProp,
   isUse,
+  shapeFont,
   shapeValue,
   useHref,
 } from './shapes.js';
-import type { ShapeContext, ShapeStyle, ShapeStyles } from './shapes.js';
+import type {
+  DrawingUnits,
+  ShapeContext,
+  ShapeStyle,
+  ShapeStyles,
+} from './shapes.js';
 
 /** Where a declaration came from. Higher wins before specificity is asked. */
 const enum Origin {
@@ -6450,6 +6456,20 @@ export class Cascade {
     return this._shapes.hoverSensitive;
   }
 
+  /** What a `rem`, a `vw` and its kin in an inline drawing's geometry are
+   *  of, as the document has them now, in its user units (`DrawingUnits`):
+   *  the root's font size and the viewport, in CSS pixels, unzoomed. */
+  drawingUnits(): DrawingUnits {
+    const root = this._root ?? this.initial;
+    const css = (device: number): number =>
+      Number.isFinite(device) && device > 0 ? device / this.scale : 0;
+    return {
+      rem: css(root.fontSize / root.effectiveZoom),
+      vw: css(this.viewportWidth),
+      vh: css(this.viewportHeight),
+    };
+  }
+
   /**
    * What the rules give the elements of an inline drawing, `root` and what
    * is in it, or null where none reaches one: the narrow cascade of
@@ -6625,19 +6645,25 @@ export class Cascade {
       isRoot: boolean,
       custom: CustomProps | null = style.custom,
     ): Record<string, string> | null => {
+      // at the drawing's zoom, as its box's lengths are (`_computeStyle`):
+      // what they come to is user units, CSS pixels the zoom then scales
+      const zoom = style.effectiveZoom;
+      const rootStyle = this._root ?? this.initial;
       ctx ??= {
         color: style.color,
         scheme: style.colorScheme,
         units: {
           em: style.fontSize,
-          rem: (this._root ?? this.initial).fontSize,
+          rem: (rootStyle.fontSize * zoom) / rootStyle.effectiveZoom,
           remRead: this._remRead,
-          vw: this.viewportWidth,
-          vh: this.viewportHeight,
+          vw: this.viewportWidth * zoom,
+          vh: this.viewportHeight * zoom,
           viewport: this._viewportRead,
-          scale: this.scale,
+          scale: this.scale * zoom,
+          zoom,
           initial: this.initial,
           systemColors: this._systemColors,
+          families: this._mapFamilies,
         },
       };
       let own: Record<string, string> | null = null;
@@ -6656,9 +6682,20 @@ export class Cascade {
           // a `var()` with nothing to stand for it, or that stands for
           // something the property does not take, is invalid at
           // computed-value time, and the property as though `unset`
+          const raw = d.vars
+            ? substituteIn(d.value, custom, this._ifEnv)
+            : d.value;
+          if (d.prop === 'font') {
+            // a shorthand, which sets its longhands, or is `unset` where
+            // a `var()` in it made it nothing
+            const set =
+              (raw === null ? null : shapeFont(raw, ctx)) ??
+              (d.vars ? shapeFont('unset', ctx) : null);
+            if (set) Object.assign((own ??= {}), set);
+            continue;
+          }
           let value: string | null;
           if (d.vars) {
-            const raw = substituteIn(d.value, custom, this._ifEnv);
             value =
               (raw === null ? null : shapeValue(d.prop, raw, ctx)) ??
               shapeValue(d.prop, 'unset', ctx);

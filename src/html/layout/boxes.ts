@@ -53,7 +53,7 @@ import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
 import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
-import type { ShapeStyles } from '../css/shapes.js';
+import type { DrawingUnits, ShapeStyles } from '../css/shapes.js';
 import {
   CONTAIN_INLINE_SIZE,
   CONTAIN_SIZE,
@@ -1110,6 +1110,9 @@ export interface BoxTree {
    *  `<use>` finds the icon a sprite has for it; and what the rules matched
    *  in each copy a `<use>` makes. Null where `shapeStyler` is. */
   shapeCopies: ShapeCopies | null;
+  /** What a `rem` and a `vw` in a drawing's geometry are of, as the
+   *  document has them when it is painted (`Cascade.drawingUnits`). */
+  drawingUnits: () => DrawingUnits;
   /** The HTML each inline `<svg>`'s `<foreignObject>`s hold, by the
    *  object (`ForeignObject`): absent where the document has none, which
    *  is what every walk over them asks first. */
@@ -1559,6 +1562,7 @@ class Builder {
       highlightStyler: cascade.hasHighlights ? this._highlightStyler() : null,
       shapeStyler: this._shapeStyler(copies),
       shapeCopies: copies,
+      drawingUnits: () => cascade.drawingUnits(),
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
