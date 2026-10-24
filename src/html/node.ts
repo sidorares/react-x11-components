@@ -5859,17 +5859,20 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     const found = this._hoverReach(was, now);
     const reach = found?.reach ?? null;
-    if (found && !found.edge && cascade) {
+    if (found && cascade && !(found.edge && cascade.pseudoAtEdges)) {
       if (!found.reach.size) return;
       const before = { hovered: new Set(was), active: EMPTY_SET };
       const focus = this._focus;
-      if (
-        this._restyleInPlace(
-          found.reach,
-          (el) => cascade.pointerChanged(el, before, focus),
-          cascade.hoverPseudo,
-        )
-      ) {
+      // A rule at a shadow tree's edge — `:host(:hover)`, `::slotted()` — is
+      // in no index `pointerChanged` asks, so where the move flips a host,
+      // an element in a tree or a slotted one, every element it reaches is
+      // styled again, as the build would: MDN's custom elements built the
+      // boxes at every other move of the pointer. One that styles a
+      // pseudo-element of them is a build still.
+      const own = found.edge
+        ? () => true
+        : (el: Element) => cascade.pointerChanged(el, before, focus);
+      if (this._restyleInPlace(found.reach, own, cascade.hoverPseudo)) {
         if (cascade.placeholderFollows('hoverSensitive')) {
           this._reportControls();
         }
@@ -5925,16 +5928,15 @@ export class HtmlViewNode extends Node {
         )
       : null;
     const reach = found?.reach ?? null;
-    if (found && !found.edge) {
+    if (found && !(found.edge && cascade.pseudoAtEdges)) {
       if (!found.reach.size) return true;
       const pointer = { hovered: new Set(this._hovered), active: EMPTY_SET };
-      if (
-        this._restyleInPlace(
-          found.reach,
-          (el) => cascade.pointerChanged(el, pointer, was),
-          cascade.focusPseudo,
-        )
-      ) {
+      // every element it reaches where it is at a shadow tree's edge, as a
+      // move of the pointer there is (`_restyleHover`)
+      const own = found.edge
+        ? () => true
+        : (el: Element) => cascade.pointerChanged(el, pointer, was);
+      if (this._restyleInPlace(found.reach, own, cascade.focusPseudo)) {
         // what a field's placeholder is drawn in is its widget's, which no
         // restyle of a box tells (`Cascade.placeholderFollows`)
         if (cascade.placeholderFollows('focusSensitive')) {
@@ -5951,8 +5953,8 @@ export class HtmlViewNode extends Node {
   /**
    * The elements whose styles a move of the hovered chain can change, or
    * null where that cannot be said (`Cascade.hoverLocal`); and whether a
-   * rule at a shadow tree's edge can change them, which a restyle in place
-   * cannot answer (`StateReach`).
+   * rule at a shadow tree's edge can change them, which no index
+   * `pointerChanged` asks has (`StateReach`).
    */
   private _hoverReach(
     was: readonly Element[],

@@ -3969,6 +3969,13 @@ export class Cascade {
     }
   }
 
+  /** Whether a rule at a shadow tree's edge styles a pseudo-element: what
+   *  a restyle in place of an edge's move cannot reach (`_restyleHover`). */
+  get pseudoAtEdges(): boolean {
+    for (const which of this._scopedPseudos) if (which !== '') return true;
+    return false;
+  }
+
   /**
    * The elements whose styles a viewport `from` device pixels wide and one
    * `to` wide make differently, for a resize that crossed a breakpoint:

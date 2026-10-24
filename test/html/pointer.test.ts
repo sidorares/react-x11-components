@@ -1006,6 +1006,59 @@ async function hoverInPlace(
 }
 
 metric(
+  "a move that flips a shadow tree's host, or what its slots show, restyles where it is",
+  async () => {
+    // A rule at a tree's edge — `:host(:hover)`, `::slotted(:hover)`, and
+    // `:host(:hover) .x`'s test of the host — is in no index a restyle in
+    // place asks, and MDN's custom elements built the boxes at every other
+    // move: every element the move reaches is styled again instead
+    const tree =
+      '<template shadowrootmode="open"><style>' +
+      ':host(:hover){color:#ff0000} ::slotted(:hover){color:#0000ff}' +
+      ':host(:hover) p{background:#00ff00}' +
+      ':host(:focus-within){background:#eeeeee}' +
+      '::slotted(:focus){color:#aa00aa}</style>' +
+      '<p>in the tree</p><slot></slot></template>';
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0}</style>' +
+        `<div id="host">${tree}<span id="light" tabindex="0">slotted</span></div>` +
+        '<p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const drawn = await hoverInPlace(result, el, 'light');
+    assert.ok(
+      bytesApart(drawn, quiet) > 0,
+      'the host and its slot drew nothing',
+    );
+    await hoverInPlace(result, el, 'away');
+    // and the focus, the same way — not shown, so the ring the UA sheet
+    // gives `:focus-visible` is out of it
+    const tree2 = treeOf(el);
+    el.setFocus(findById(el.document, 'light') as never, false);
+    const focused = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree2, 'the focus built the document again');
+    assert.strictEqual(bytesApart(focused, await rebuilt(result, el)), 0);
+    await cleanup();
+
+    // and one that gives a pseudo-element of them a style still builds
+    const pseudo = await render(
+      '<style>body{margin:0}</style><div id="host">' +
+        '<template shadowrootmode="open"><style>' +
+        ':host(:hover)::before{content:"» "}</style><slot></slot></template>' +
+        '<span id="light">slotted</span></div>',
+      300,
+    );
+    const built = view(pseudo.node);
+    const before = treeOf(built);
+    built.setHover(...pointIn(built, 'light'));
+    await snapshot(pseudo.result, built);
+    assert.ok(treeOf(built) !== before, 'built, as before');
+  },
+);
+
+metric(
   'a :hover in :is() restyles where it is: a group, a peer and a link among prose',
   async () => {
     // Tailwind 4 writes `group-hover:`, `peer-hover:` and its typography's

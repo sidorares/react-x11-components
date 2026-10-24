@@ -2787,10 +2787,13 @@ the subject names, not all that is in it: Bootstrap's `:hover >
 whole page. **Anything that draws an element some other box's way has to
 bring that box into the reach** — a shape in an inline `<svg>` brings the
 drawing (`_stateReach`'s `subject`), since only an `<svg>` in the reach
-has its shapes asked for again. And a rule at a shadow tree's edge makes
-only the moves that flip a host, an element in a tree or a slotted one
-build (`HOVER_EDGE`, `StateRules.edge`), not every move: what it reads is
-in no index a restyle in place asks.
+has its shapes asked for again. And a rule at a shadow tree's edge is in
+no index a restyle in place asks, so a move that flips a host, an element
+in a tree or a slotted one (`HOVER_EDGE`, `StateRules.edge`) styles again
+every element it reaches, the subtree and later siblings the reach already
+holds, as the build would (`_restyleHover`); only one where an edge rule
+styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
+elements built them at every other move of the pointer.
 
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
