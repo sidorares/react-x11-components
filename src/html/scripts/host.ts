@@ -59,6 +59,7 @@ import {
   setMediaFlag,
   setPaused,
   markCustomized,
+  markParsedRegistry,
   parsedNullRegistries,
   parsedWithNullRegistry,
   setModal,
@@ -1156,6 +1157,12 @@ export class DomHost {
    *  theirs (`_custom…`): null until the first definition, so a page that
    *  makes none pays nothing for it. */
   private _custom: { names: Set<string>; log: Primitive[][] } | null = null;
+  /** Each node put where it is connected since the facade last asked, and
+   *  its document (`'s'`): what a scoped registry's elements and roots in
+   *  it associate the registry with (HTML 4.13.4, its scoped document
+   *  set). Null until the page gives a node a scoped registry
+   *  (`ceScoped`), so a page that never does pays nothing for it. */
+  private _scoped: Primitive[][] | null = null;
   /** The `<template>`s' contents (`content`), whose node document is an
    *  inert one in a browser: nothing in them is a custom element, and a
    *  copy of them none either, until it is put in the document. */
@@ -1499,7 +1506,7 @@ export class DomHost {
   parserInserted(): boolean {
     const made = this._seams.handle.parserMade?.();
     if (!made?.length || this._disposed) return false;
-    const fresh = this._custom ? new Set<AnyNode>(made) : null;
+    const fresh = this._custom || this._scoped ? new Set<AnyNode>(made) : null;
     for (const node of made) {
       const parent = node.parent;
       if (!parent) continue;
@@ -1518,7 +1525,10 @@ export class DomHost {
       if (fresh && this._inDocument(parent)) {
         let above: AnyNode = parent;
         while (above instanceof ShadowRoot) above = above.host;
-        if (!fresh.has(above)) this._customLog('c', node);
+        if (!fresh.has(above)) {
+          if (this._custom) this._customLog('c', node);
+          this._scoped?.push(['s', this.idOf(node), this.idOf(this.document)]);
+        }
       }
     }
     return true;
@@ -1715,9 +1725,14 @@ export class DomHost {
     return node === this.document || this._documents.has(node as Document);
   }
 
-  /** The document a node is in (DOM 4.4, "node document"). */
+  /** The document a node is in (DOM 4.4, "node document"): a shadow
+   *  root's is its host's. */
   private _ownerOf(node: AnyNode): Document {
-    for (let at: AnyNode | null = node; at; at = at.parent) {
+    for (
+      let at: AnyNode | null = node;
+      at;
+      at = at.parent ?? (at instanceof ShadowRoot ? at.host : null)
+    ) {
       if (this._isDocument(at)) return at as Document;
       const owner = this._owners.get(at);
       if (owner) return owner;
@@ -1733,10 +1748,16 @@ export class DomHost {
         this._customLog('a', node, [this.idOf(old), this.idOf(doc)]);
       }
     }
+    // what it holds follows it, shadow trees and all (shadow-including)
     const forget = (at: AnyNode): void => {
       for (const kid of (at as ParentNode).children ?? []) {
         this._owners.delete(kid);
         forget(kid);
+      }
+      const root = at instanceof Element ? shadowRootOf(at) : null;
+      if (root) {
+        this._owners.delete(root);
+        forget(root);
       }
     };
     forget(node);
@@ -2471,14 +2492,16 @@ export class DomHost {
 
       // --- custom elements (`_custom…`)
       // a name defined, local name `b` (its own, or the element an `is`
-      // extends), and the elements in the document it upgrades, in
-      // shadow-including tree order (HTML 4.13.4, `define()`)
+      // extends), and the elements in document `c`, where one is named, it
+      // upgrades, in shadow-including tree order (HTML 4.13.4, `define()`,
+      // "upgrade particular elements within a document")
       case 'ceDefine': {
         const name = text(a);
         const local = text(b);
         (this._custom ??= { names: new Set(), log: [] }).names.add(name);
+        if (!c) return '';
         const found: number[] = [];
-        this._customWalk(this.document, (el) => {
+        this._customWalk(this._node(c), (el) => {
           if (
             el.name !== local ||
             (el.namespace && el.namespace !== HTML_NAMESPACE)
@@ -2500,19 +2523,38 @@ export class DomHost {
         });
         return found.join(',');
       }
-      // what happened to them since the last time, as JSON
+      // what was connected from now on, for the scoped registries the page
+      // gives nodes (`_scoped`)
+      case 'ceScoped':
+        this._scoped ??= [];
+        return null;
+      // the elements and the shadow roots in a node, itself first, in
+      // shadow-including tree order: what a scoped registry's may be among
+      case 'ceTree': {
+        const found: number[] = [];
+        this._customWalk(this._node(a), (el) => {
+          found.push(this.idOf(el));
+          const root = shadowRootOf(el);
+          if (root) found.push(this.idOf(root));
+        });
+        return found.join(',');
+      }
+      // what happened to them since the last time, as JSON: what was
+      // connected first, then what happened to the custom elements
       case 'ceTake': {
         const custom = this._custom;
-        if (!custom?.log.length) return '';
-        const log = custom.log;
-        custom.log = [];
+        const scoped = this._scoped;
+        if (!custom?.log.length && !scoped?.length) return '';
+        const log = [...(scoped ?? []), ...(custom?.log ?? [])];
+        if (custom) custom.log = [];
+        if (scoped) this._scoped = [];
         return JSON.stringify(log);
       }
       // an element a definition made a custom element: `:defined` from now
       case 'ceDefined': {
         const el = this._element(a);
         markCustomized(el);
-        if (this._inDocument(el)) {
+        if (this._isDocument(shadowIncludingRoot(el))) {
           this._tell(el, {
             type: 'attributes',
             target: el,
@@ -4089,9 +4131,22 @@ export class DomHost {
     this._sheetText(parent);
     // a frame taken out unloads its document as the task ends
     if (removed.length && this._framesShown.size) this._framesGone = true;
-    if (this._custom && this._inDocument(parent)) {
-      for (const node of removed) this._customLog('d', node);
-      for (const node of added) this._customLog('c', node);
+    // a custom element is connected, and disconnected, in any document
+    // (DOM 4.2.3, "insert", and 4.2.3, "remove"): a frame's, or one a page
+    // made, as much as this one
+    if (this._custom || this._scoped) {
+      const root = shadowIncludingRoot(parent);
+      if (this._isDocument(root)) {
+        if (this._custom) {
+          for (const node of removed) this._customLog('d', node);
+          for (const node of added) this._customLog('c', node);
+        }
+        if (this._scoped) {
+          for (const node of added) {
+            this._scoped.push(['s', this.idOf(node), this.idOf(root)]);
+          }
+        }
+      }
     }
     if (this._observers.size) {
       this._queue(parent, {
@@ -4167,11 +4222,13 @@ export class DomHost {
     });
   }
 
-  /** A copy made in the document, whose custom elements a definition the
-   *  page has upgrades, connected or not (DOM 4.5, "clone", which creates
-   *  each element as `createElement` does). */
+  /** A copy, whose custom elements a definition the page has upgrades,
+   *  connected or not (DOM 4.5, "clone", which creates each element as
+   *  `createElement` does): in any document, since what decides is the
+   *  registry each element has, which the facade looks a definition up
+   *  in, and a document of no browsing context's has none. */
   private _customMade(node: AnyNode): void {
-    if (this._ownerOf(node) === this.document) this._customLog('u', node);
+    this._customLog('u', node);
   }
 
   /**
@@ -4908,6 +4965,9 @@ export class DomHost {
       }
       const colon = el.name.indexOf(':');
       el.namespace = own.get(colon < 0 ? '' : el.name.slice(0, colon)) ?? '';
+      // made, as the HTML parser makes one, of no registry where it says
+      // so, and so what it holds (HTML's scoped registries)
+      markParsedRegistry(el);
       for (const kid of el.children) {
         if (kid instanceof Element) resolve(kid, own);
       }

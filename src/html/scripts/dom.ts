@@ -100,7 +100,7 @@ export function installDom(
     }
     if (MUTATES.has(op)) {
       mutated();
-      if (customElementsDefined) takeReactions();
+      if (takesNotes) takeReactions();
     } else if (
       customElementsDefined &&
       !copying &&
@@ -125,6 +125,10 @@ export function installDom(
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
   let customElementsDefined = false;
+  /** Whether the host notes anything for the facade to take after an op
+   *  (`takeReactions`): what happens to custom elements, once one is
+   *  defined, and what is connected, once a node has a scoped registry. */
+  let takesNotes = false;
   /** The ops that change the tree, which the host records
    *  (`host.ts`, "what changed"). */
   const MUTATES = new Set([
@@ -5857,9 +5861,7 @@ export function installDom(
           ),
         ),
       );
-      if (!had) {
-        shadowRegistries.set(root, given === undefined ? own : given);
-      }
+      if (!had) setShadowRegistry(root, given === undefined ? own : given);
       return root;
     }
     get shadowRoot(): Any {
@@ -8304,8 +8306,9 @@ export function installDom(
       enumerable: true,
     });
     // a window's own global registry (HTML 4.13.4), for the elements its
-    // document makes: a frame defines its names apart from the page
-    const registry = globalRegistry();
+    // document makes: a frame defines its names apart from the page, and
+    // they upgrade, and are made, in the document it shows
+    const registry = globalRegistry(() => current);
     Object.defineProperty(win, 'customElements', {
       get: () => registry,
       configurable: true,
@@ -12225,7 +12228,7 @@ export function installDom(
         );
       }
       if (ns === '' && constructsWith(registry) && customElementsDefined) {
-        const made = createCustom(name, is, registry);
+        const made = createCustom(name, is, registry, this);
         if (made) return made;
       }
       const el = wrap(Number(call('create', 'element', name, this._id, ns)));
@@ -12272,7 +12275,7 @@ export function installDom(
         constructsWith(registry) &&
         customElementsDefined
       ) {
-        const made = createCustom(local, isOption(options), registry);
+        const made = createCustom(local, isOption(options), registry, this);
         if (made) return made;
       }
       const el = wrap(
@@ -21868,6 +21871,18 @@ export function installDom(
     waiting: Map<string, { promise: Any; resolve: Any }>;
     defining: boolean;
     scoped: boolean;
+    /** The document of its window (HTML 4.13.4, "relevant global object's
+     *  associated Document"): what a global one's `define()` upgrades in,
+     *  and what an element its constructor makes is made in — this
+     *  window's for a scoped one, whose constructors are this realm's. */
+    home: () => Any;
+    /** A scoped one's scoped document set (HTML 4.13.4): the documents
+     *  its elements and shadow roots were connected in, or initialized
+     *  in, in the order they first were, which its `define()` upgrades in
+     *  turn. */
+    documents: Set<Any>;
+    /** Whether some node has been given it (`noteScoped`). */
+    used: boolean;
   }
   const registryStates = new WeakMap<Any, RegistryState>();
   const stateOf = (registry: Any): RegistryState => {
@@ -21930,7 +21945,58 @@ export function installDom(
   const pinRegistry = (el: Any, registry: Any): void => {
     elementRegistries.set(el, registry);
     if (registry === null) noneIn.set(el, el.ownerDocument);
-    else noneIn.delete(el);
+    else {
+      noneIn.delete(el);
+      noteScoped(registry);
+    }
+  };
+  /** The scoped registries some node has been given, in the order each
+   *  first was: what a node connected is asked about (`associate`). */
+  const usedScoped: Any[] = [];
+  /** A registry given to a node. A scoped one is from now on associated
+   *  with each document one of its nodes is connected in (DOM 4.2.3,
+   *  "insert"), which the host notes from the first one given (`ceScoped`):
+   *  a page that only makes one, to see whether it can, pays nothing. */
+  const noteScoped = (registry: Any): void => {
+    const state = registryStates.get(registry);
+    if (!state?.scoped || state.used) return;
+    state.used = true;
+    usedScoped.push(registry);
+    if (usedScoped.length === 1) {
+      takesNotes = true;
+      call('ceScoped');
+    }
+  };
+  /** A shadow root's registry, set. */
+  const setShadowRegistry = (root: Any, registry: Any): void => {
+    shadowRegistries.set(root, registry);
+    noteScoped(registry);
+  };
+  /** A document `doc` put in a scoped registry's scoped document set,
+   *  where it is not yet (an ordered set's append). */
+  const associate = (registry: Any, doc: Any): void => {
+    if (doc) stateOf(registry).documents.add(doc);
+  };
+  /** A node connected in `doc`, and what it holds, shadow trees and all
+   *  (DOM 4.2.3, "insert"): each scoped registry one of its elements or
+   *  shadow roots has is associated with `doc`. Only the registries not
+   *  associated with it yet are looked for, so a document a page's
+   *  registries are all associated with costs a look at a set. */
+  const associateConnected = (id: number, doc: Any): void => {
+    if (!doc) return;
+    const lacking = usedScoped.filter((r) => !stateOf(r).documents.has(doc));
+    if (!lacking.length) return;
+    for (const found of idList(call('ceTree', id))) {
+      const at = wrap(found);
+      if (!at) continue;
+      const registry =
+        at instanceof ShadowRoot ? shadowRegistryOf(at) : registryOf(at);
+      const i = lacking.indexOf(registry);
+      if (i < 0) continue;
+      associate(registry, doc);
+      lacking.splice(i, 1);
+      if (!lacking.length) return;
+    }
   };
   /** What `createContextualFragment` parsed in a template: no registry
    *  while it is nobody's child (HTML's scoped registries), and the one
@@ -21951,12 +22017,11 @@ export function installDom(
     const registry = doc.defaultView?.customElements;
     return registry && registryStates.has(registry) ? registry : null;
   };
-  /** Whether `createElement` runs a definition of a registry: this
-   *  window's, or a scoped one. A frame's window's has no constructor
-   *  that makes an element in the frame's document. */
+  /** Whether `createElement` runs a definition of a registry: any of this
+   *  realm's, a frame's window's among them, whose constructors make an
+   *  element in that window's document (`home`). */
   const constructsWith = (registry: Any): boolean =>
-    !!registry &&
-    (registry === customElements || !!registryStates.get(registry)?.scoped);
+    !!registry && registryStates.has(registry);
   /** A shadow root's registry: none where its template said
    *  `shadowrootcustomelementregistry`, its host document's otherwise. */
   const shadowRegistryOf = (root: Any): Any => {
@@ -22007,7 +22072,7 @@ export function installDom(
         if (rootA && rootB) {
           let shadow = rootA.customElementRegistry;
           if (isGlobalRegistry(shadow)) shadow = globalOfDoc();
-          shadowRegistries.set(rootB, shadow);
+          setShadowRegistry(rootB, shadow);
           walk(rootA, rootB, null);
         }
       }
@@ -22047,7 +22112,7 @@ export function installDom(
       copying = false;
     }
     pinCopies(node, copy, deep, fallback, doc);
-    if (customElementsDefined) takeReactions();
+    if (takesNotes) takeReactions();
     return copy;
   };
   /** A registry as adoption leaves it (DOM 4.5, "adopt"): a global one
@@ -22139,12 +22204,12 @@ export function installDom(
   };
 
   /** The definition an element would be upgraded with: its own name's, or
-   *  its `is`'s, in its registry, where it is an HTML element of this
-   *  window's document. */
+   *  its `is`'s, in its registry, where it is an HTML element (HTML
+   *  4.13.4, "look up a custom element definition"). In whatever document:
+   *  one of no browsing context's has no registry, and another realm's
+   *  none of this one's. */
   const definitionFor = (el: Any): CustomDefinition | null => {
-    if (el.namespaceURI !== HTML_NS || el.ownerDocument !== document) {
-      return null;
-    }
+    if (el.namespaceURI !== HTML_NS) return null;
     return lookUp(registryOf(el), el.localName, el.getAttribute('is'));
   };
 
@@ -22236,6 +22301,10 @@ export function installDom(
     const log: Any[][] = JSON.parse(raw);
     withReactions(() => {
       for (const [kind, id, a, b, c] of log) {
+        if (kind === 's') {
+          associateConnected(id, wrap(a));
+          continue;
+        }
         const el = wrap(id);
         if (!el) continue;
         const custom = customOf.get(el);
@@ -22342,8 +22411,12 @@ export function installDom(
     if (!def) return null;
     const stack = def.stack;
     if (!stack.length) {
+      // in the document of the window whose constructor it is (HTML 3.2.3,
+      // the current global object's): a frame's, for a definition of its
+      // window's registry, where a frame here runs in this realm
+      const home = stateOf(registry).home() ?? document;
       const el = wrap(
-        Number(call('create', 'element', def.localName, document._id, '')),
+        Number(call('create', 'element', def.localName, home._id, '')),
       );
       Object.setPrototypeOf(el, target.prototype);
       pinRegistry(el, registry);
@@ -22373,6 +22446,7 @@ export function installDom(
     local: string,
     is: string | null,
     registry: Any,
+    doc: Any,
   ): Any => {
     const def = lookUp(registry, local, is);
     if (!def) return null;
@@ -22390,7 +22464,7 @@ export function installDom(
             ? 'The result must not have children'
             : made.parentNode
               ? 'The result must not have a parent'
-              : made.ownerDocument !== document
+              : made.ownerDocument !== doc
                 ? 'The result must be in the same document'
                 : made.localName !== local
                   ? 'The result must have the same localName'
@@ -22404,16 +22478,14 @@ export function installDom(
         return made;
       } catch (error) {
         report(error);
-        const el = wrap(
-          Number(call('create', 'element', local, document._id, '')),
-        );
+        const el = wrap(Number(call('create', 'element', local, doc._id, '')));
         Object.setPrototypeOf(el, HTMLUnknownElement.prototype);
         pinRegistry(el, registry);
         customFor(el).state = 'failed';
         return el;
       }
     }
-    const el = wrap(Number(call('create', 'element', local, document._id, '')));
+    const el = wrap(Number(call('create', 'element', local, doc._id, '')));
     pinRegistry(el, registry);
     try {
       upgrade(el, def);
@@ -22460,6 +22532,9 @@ export function installDom(
         waiting: new Map(),
         defining: false,
         scoped: true,
+        home: () => document,
+        documents: new Set(),
+        used: false,
       });
       registriesMatter = true;
     }
@@ -22572,11 +22647,20 @@ export function installDom(
       definitions.set(n, def);
       state.byCtor.set(ctor, def);
       customElementsDefined = true;
+      takesNotes = true;
       withReactions(() => {
-        // the document's elements of the name whose registry this is
-        for (const id of idList(call('ceDefine', n, local))) {
-          const el = wrap(id);
-          if (registryOf(el) === this) enqueueUpgrade(el, def);
+        // the elements of the name whose registry this is, connected in its
+        // window's document, or, for a scoped one, in each document of its
+        // scoped document set in the order they joined it, each in tree
+        // order (HTML 4.13.4, `define()`)
+        call('ceDefine', n, local);
+        const docs = state.scoped ? [...state.documents] : [state.home()];
+        for (const doc of docs) {
+          if (!doc) continue;
+          for (const id of idList(call('ceDefine', n, local, doc._id))) {
+            const el = wrap(id);
+            if (registryOf(el) === this) enqueueUpgrade(el, def);
+          }
         }
         const waiting = state.waiting.get(n);
         if (waiting) {
@@ -22644,19 +22728,23 @@ export function installDom(
       if (isDocument) {
         if (documentRegistryOf(root) === null) {
           documentRegistries.set(root, this);
+          noteScoped(this);
         }
       } else if (root instanceof ShadowRoot) {
-        if (shadowRegistryOf(root) === null) shadowRegistries.set(root, this);
+        if (shadowRegistryOf(root) === null) setShadowRegistry(root, this);
       }
       const elements = Array.from(root.querySelectorAll?.('*') ?? []) as Any[];
       if (root.nodeType === 1) elements.unshift(root);
       withReactions(() => {
         for (const el of elements) {
-          // one with no registry takes this one, and one this one already
-          // is is tried too; one of another registry is that one's
+          // one with no registry takes this one, and its document joins a
+          // scoped one's scoped document set; one this one already is is
+          // tried too; one of another registry is that one's
           const was = registryOf(el);
-          if (was === null) pinRegistry(el, this);
-          else if (was !== this) continue;
+          if (was === null) {
+            pinRegistry(el, this);
+            if (scoped) associate(this, el.ownerDocument);
+          } else if (was !== this) continue;
           const custom = customOf.get(el);
           if (custom && custom.state !== 'undefined') continue;
           // "try to upgrade" (HTML 4.13.6): the definition this registry
@@ -22687,10 +22775,13 @@ export function installDom(
   }
   // the window's own, which every element of its document has but where a
   // scoped one is named
-  /** A window's registry, global rather than scoped (HTML 4.13.4). */
-  const globalRegistry = (): Any => {
+  /** A window's registry, global rather than scoped (HTML 4.13.4), whose
+   *  window's document is `home`'s. */
+  const globalRegistry = (home: () => Any = () => document): Any => {
     const registry = new CustomElementRegistry();
-    stateOf(registry).scoped = false;
+    const state = stateOf(registry);
+    state.scoped = false;
+    state.home = home;
     return registry;
   };
   const customElements = globalRegistry();
@@ -24191,7 +24282,7 @@ export function installDom(
         taskEpoch += 1;
         try {
           // what the host changed on its own since the page last did
-          if (customElementsDefined) takeReactions();
+          if (takesNotes) takeReactions();
           return fn();
         } catch (error) {
           report(error);
