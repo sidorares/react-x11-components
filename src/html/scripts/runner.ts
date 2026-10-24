@@ -42,6 +42,8 @@ import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
 import type { HostSeams } from './host.js';
+import { liveSession } from './session.js';
+import type { HtmlSessionHistory, SessionArrival } from './session.js';
 import type { ClearTimeout, SetTimeout, UrlClass } from './platform.js';
 
 declare const setTimeout: SetTimeout;
@@ -78,6 +80,20 @@ export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
    *  page lays out no box for, whose seams its document is run with only
    *  where no view draws it (`FrameSeat`). */
   undrawn?: boolean;
+  /** The host's session history across the documents it shows here
+   *  (`HtmlScripts`' `session`): a page's, never a frame's. */
+  session?: HtmlSessionHistory | null;
+}
+
+/** The document shown in a document's place, as it hears it go
+ *  (`pageswap`): where it is and, where the host keeps a session, the
+ *  entry it is at and how it got there. */
+export interface PageSwap {
+  url?: string;
+  type?: string;
+  key?: string;
+  id?: string;
+  navState?: string | null;
 }
 
 /** What a runner is made with: the options, the handle, and where the
@@ -140,6 +156,9 @@ export class ScriptRunner {
   private _seatsWatched: (() => void) | null = null;
   private _viewListeners = new Set<() => void>();
   private _viewsTold = false;
+  /** Stops the host's traversals among the document's own entries
+   *  reaching it (`liveSession`). */
+  private _unlive: (() => void) | null = null;
 
   /**
    * A frame's document runs in a realm of its own, over the nodes the page's
@@ -152,8 +171,12 @@ export class ScriptRunner {
     url: string,
     private readonly _options: RunnerSeams,
     private readonly _link: FrameLink | null = null,
+    /** Where the document is in the host's session, where it keeps one:
+     *  what its realm reads as it starts (`./session.ts`). */
+    arrival: SessionArrival | null = null,
   ) {
     this.host = new DomHost(document, _options, url, _link?.parent.host.shared);
+    this.host.arrival = arrival;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
@@ -165,6 +188,23 @@ export class ScriptRunner {
       left: releaseAnimationClock,
     });
     this.host.entries = this.engine;
+    if (arrival) {
+      // told once the page's code is done, where it is running: the host
+      // may ask from one of the seams the page's code reached
+      this._unlive = liveSession(
+        arrival,
+        (key) => {
+          const go = () => {
+            if (!this._disposed) this.engine.call('__traverseKey', [key]);
+          };
+          if (this.engine.running) queueMicrotask(go);
+          else go();
+        },
+        // the next document of the session is shown, here or in another
+        // `<Html>`: this one hears where it goes, and goes
+        (swap) => this.dispose(swap),
+      );
+    }
     // the page's workers, each in a thread of its own, their network the
     // page's — where the page may have them at all
     this._workers =
@@ -552,10 +592,13 @@ export class ScriptRunner {
    * a document and its descendants") — its `beforeunload` where nothing
    * asked it as its navigation started, `pagehide`, `visibilitychange` to
    * hidden and `unload` — each under the timeout every entry has, and
-   * nothing they change is drawn.
+   * nothing they change is drawn. `swap` is the document shown in its
+   * place, where there is one, which its `pageswap` is told of before it
+   * unloads.
    */
-  dispose(): void {
+  dispose(swap: PageSwap | null = null): void {
     if (this._disposed) return;
+    this._unlive?.();
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
     if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
     if (this._paintSeen) clearTimeout(this._paintSeen);
@@ -564,7 +607,7 @@ export class ScriptRunner {
     this._seats.clear();
     this._seatsWatched?.();
     this.host.leaving();
-    this.engine.call('__unload', null);
+    this.engine.call('__unload', swap ? [swap] : null);
     this._workers?.dispose();
     this._disposed = true;
     if (this._link) this._link.parent.engine.unlink(this._frameId());

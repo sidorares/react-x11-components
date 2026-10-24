@@ -130,6 +130,11 @@ export type { HtmlScripts, ScriptViewport } from './scripts/scripted.js';
 export type { FetchRequest, FetchResponse } from './scripts/host.js';
 export type { AbortSignalLike } from './scripts/platform.js';
 export { preloadHtmlScripts } from './scripts/hook.js';
+export { HtmlSessionHistory } from './scripts/session.js';
+export type {
+  HtmlNavigationType,
+  HtmlSessionEntry,
+} from './scripts/session.js';
 export { linkTarget, navigableFor } from './scripts/target.js';
 export type { Navigable } from './scripts/target.js';
 export {

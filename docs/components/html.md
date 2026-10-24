@@ -814,7 +814,8 @@ since this component navigates nowhere by itself:
 | `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
 | `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
-| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries.                                                                                                              |
+| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names. |
+| `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                  |
 | `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
 | `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
 | `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
@@ -879,8 +880,96 @@ does not. The frame's first document keeps the window of its initial
 `about:blank`, as HTML has it, so what the page set on that window before
 the frame loaded — a handler on its `navigation` — is still there. Not
 yet: a frame of another origin, which runs in a realm of its own, hears
-nothing of the page's navigations of it, and the host's own entries
-before and after the page's are not in `navigation.entries()`.
+nothing of the page's navigations of it. With no `session`, the host's own
+entries before and after the page's are not in `navigation.entries()`.
+
+**A tab's documents are one history where the host hands them one
+session** (HTML 7.4.1). A host makes an `HtmlSessionHistory` for each place
+it shows pages — a tab — and hands it to every document shown there as
+`scripts.session`; each document it shows with it, in the same `<Html>` or
+in one it mounts in its place, is the next of that history:
+
+```tsx
+import { Html, HtmlSessionHistory } from '@react-x11/components/html';
+
+const session = useMemo(() => new HtmlSessionHistory(), []);
+// each load a document of its own, a reload of the same address included
+const [shown, setShown] = useState({ url: start, n: 0 });
+const show = (url: string) => setShown(({ n }) => ({ url, n: n + 1 }));
+<Html
+  key={shown.n}
+  source={sources[shown.url]}
+  baseUrl={shown.url}
+  scripts={{
+    session,
+    navigate: (to, how) => (how === 'tab' ? openTab(to) : show(to)),
+    reload: () => show(shown.url),
+    go: (delta) => {
+      const to = session.go(delta);
+      if (to) show(to.url);
+    },
+  }}
+/>;
+```
+
+The host does what it did: load what `navigate`, `reload` and `go` ask for.
+The engine keeps the rest. A document's own entries — `pushState`, a
+fragment, an intercepted `navigate` — are written to the session as they
+are made, with their keys, ids and states; a navigation the page starts to
+another document is planned there before its seam is called, and the next
+document shown takes the plan: a push drops the entries ahead and adds one,
+a replace takes the current entry's place and keeps its key, a reload keeps
+the entry, its key, its id and its states, and a traversal makes the entry
+it goes to the current one, with its `history.state`. A document shown with
+no plan is a push, an address the host went to itself. So `history.length`
+counts every entry of the tab; `navigation.entries()` is the run of entries
+around the current one whose documents are of its origin, each another
+document's with `sameDocument` false; `back()`, `forward()`,
+`traverseTo()`, `history.back()` and `history.go()` reach them; and a step
+to another document's entry is that document shown at the entry, asked
+first with `beforeunload` and then told as a `navigate` — a traversal,
+neither cancelable nor one a handler can take, and none at all for an
+entry of another origin — whose promises never settle, since the document
+they are of goes. Past the ends is nowhere, as in a browser.
+
+The entries a document's own navigations make share a document number
+(`HtmlSessionEntry.document`), so a document shown again at one of them, a
+reload or a step back to it, has the others as its own: a step among them
+is a `popstate`, not a document. The host's own Back and Forward are
+`session.go(delta)`: it answers the entry whose `url` to show, which the
+next document is at, or null where there is none, or where the entry is
+one of the document shown now, which goes there itself, as `history.go`
+would. `session.reload()` and `session.replace()` say the next document is
+a reload of the current entry, or takes its place. `entries`, `index` and
+`current` are the history as a host draws it, a Back menu say.
+
+**A document shown hears how, and the one it replaces where it goes.**
+`navigation.activation` is the navigation that showed it: its current
+entry, its `navigationType`, and in `from` the entry it came from where
+that one is of its origin — the entry among its entries, the current one
+for a reload, and for a replace one standing for the entry it took the
+place of. The document it replaces hears `pageswap` (HTML, "fire the
+pageswap event") once its frames' documents have gone and before its own
+`pagehide`: its `activation` is its current entry in `from`, the entry the
+navigation goes to — the current one for a reload, the entry among its own
+for a traversal, and for a push or a replace one of no list yet, `index`
+-1, with the new entry's key and id — and the type, where the new document
+is of its origin and the session is the host's, and null otherwise, as it
+is with no session. And every document hears `pagereveal` once, at its
+first frame after the scripts the parser met have run — before that
+frame's `requestAnimationFrame` callbacks, as a browser's first "update the
+rendering" tells it. `<Html>` lays a document out and draws it before any
+of its scripts runs, so what a browser draws after the event this draws
+before it. The `viewTransition` of both is null.
+
+Not yet: a cross-document view transition (`@view-transition { navigation:
+auto }`), which would capture the old document's named elements as it goes
+and run its tree over the new one's first frame; where a document was
+scrolled to restored when it is shown again, and its
+`history.scrollRestoration`, which are its own; a traversal the host starts
+with `session.go` told as a `navigate` in the document it leaves, which
+`handle.beforeUnload()` asks the rest of; a frame's history in the tab's;
+and the back-forward cache.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
 hears `pageshow` after its `load`. A navigation to another document that

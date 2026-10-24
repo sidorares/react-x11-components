@@ -209,6 +209,8 @@ function FrameDocument({
         ? outer.navigate(to, 'tab')
         : host.navigateFrame(frame, to, null),
     reload: () => host.navigateFrame(frame, url, null),
+    // the page's session is the page's: a frame's history is its own
+    session: null,
     title: () => {},
     log: (level, text) => outer.log(level, `[frame ${url}] ${text}`),
     drawsFrames: true,
