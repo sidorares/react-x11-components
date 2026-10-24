@@ -1532,7 +1532,15 @@ every step of a drag were each a length in `vw`, and Bootstrap's were its
 headings' fluid type, `calc(1.3rem + .6vw)`. **A box that takes a new
 font has its sizes forgotten too, whoever's style it is** — an anonymous
 box around a flex row's text kept the max-content it was measured at, and
-the row came out at the old size's widths.
+the row came out at the old size's widths. **And a root whose font is
+such a length moves every `rem` and `rlh` with it**: the cascade notes
+what of the root's font each style reads (`ROOT_READS`, as a style's
+sides), and an element's pseudo-elements' and container queries' by the
+element (`_pseudoRoot`, `_queryRoot`), and a resize that moves the root's
+font in place styles them again (`rootReaders`) — under a `<body>` with a
+size of its own, `follow` reached none. Anything new that takes the root's
+font in place does the same; a build that finds it moved keeps no style
+(`_rootMoved`).
 **Anything new a box's layouts keep for its life that a length decides is
 forgotten in `forgetSizes`**, or a drag lays the box out at the lengths it
 had; `test/html/viewport.test.ts` holds the resize to a build of the whole
@@ -1566,7 +1574,13 @@ of other sizes. And **the containers are measured from boxes taken as the
 tree was built** (`BoxTree.containers`), since a dragged width sets boxes
 aside from the root's walk. Anything new that makes a style read a
 container's size goes through `_containerReads`, or a layout that moves the
-container leaves the style as it was.
+container leaves the style as it was. A query's container units are its
+container's — the nearest size container above it, since a query's lengths
+are the container's (`_queryUnit`) — noted for the element under a key per
+container and axis (`_queryUnitKey`), and a query asked again after a
+layout reads them at the sizes that layout gave (`_moving`): asked at the
+last ones, a container no style had read yet answered with the viewport's,
+and the query kept its answer.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says

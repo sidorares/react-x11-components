@@ -1458,6 +1458,34 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
   assert.ok(inPlace >= 8, `${inPlace} of 24 restyled in place`);
 });
 
+test('a root font size in vw moves every rem and rlh with it at a new width, under parents whose styles stay, in place', async () => {
+  // Fluid type on the root, taken in place at a new width (`FONT_FIELDS`):
+  // the elements that read the root's font are styled again wherever they
+  // are (`Cascade.rootReaders`), where a `<body>` of a size of its own kept
+  // every `rem` under it at the width the page loaded at
+  const { el, resize } = await renderScrolled(
+    '<!doctype html><style>html { font-size: 2vw; line-height: 1.5 }' +
+      'body { margin: 0; font-size: 16px; line-height: 20px }' +
+      '#r { width: 10rem; height: 1px } #l { width: 10rlh; height: 1px }' +
+      '#t { font-size: 1.5rem }</style>' +
+      '<div><div id="r"></div><div id="l"></div><p id="t">text</p></div>',
+    300,
+    400,
+  );
+  const laid = () => [
+    boxOf(el, 'r').width,
+    boxOf(el, 'l').width,
+    el.computedStyle(findById(el.document, 't')!)?.['font-size'],
+  ];
+  assert.deepStrictEqual(laid(), [80, 120, '12px'], 'of 8px');
+  const tree = treeOf(el);
+  await resize(300, 800);
+  assert.deepStrictEqual(laid(), [160, 240, '24px'], 'of 16px');
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  await resize(300, 400);
+  assert.deepStrictEqual(laid(), [80, 120, '12px']);
+});
+
 test('a vw that comes to hold follows the width, and one that stops does not', async () => {
   // under a `@media` band: crossing into it styles the page again, which
   // finds the `vw`, and every resize in the band after it does too

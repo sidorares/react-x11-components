@@ -388,6 +388,20 @@ const CQ_BLOCK: ContainerQuery = {
   condition: '',
   axes: BLOCK_AXIS,
 };
+/** The axis each read of a container unit's basis is of: `CQ_INLINE`'s and
+ *  `CQ_BLOCK`'s, and those of a query's lengths (`_queryUnitKey`), whose
+ *  answer is a size as theirs is. */
+const UNIT_AXIS = new WeakMap<ContainerQuery, 'inline' | 'block'>([
+  [CQ_INLINE, 'inline'],
+  [CQ_BLOCK, 'block'],
+]);
+
+/** What a style reads of the root element's: a `rem` its font size, an
+ *  `rlh` its line height (`Cascade.rootReaders`). */
+export const ROOT_FONT_SIZE = 1;
+export const ROOT_LINE_HEIGHT = 2;
+/** What each style read of the root's, by the style, as `VIEWPORT_SIDES`. */
+const ROOT_READS = new WeakMap<ComputedStyle, number>();
 
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
@@ -3043,14 +3057,30 @@ export class Cascade {
    *  kept by its element's (`pseudoStyleFor`), so the element is what is
    *  styled again. */
   private _pseudoSides = new Map<Element, number>();
-  /** Whether a style of the document holds a length in `rem` (`remRead`),
-   *  and whether this build found the root's `font-size` moved: then no
-   *  style is kept, since one far from the root reads it. */
-  private _readsRem = false;
-  private _remMoved = false;
+  /** What of the root element's font the document reads (`ROOT_FONT_SIZE`,
+   *  `ROOT_LINE_HEIGHT`): a length in `rem` or `rlh`, in a style or in what
+   *  a container query compares (`remRead`, `rlhRead`) — and whether this
+   *  build found what it reads moved: then no style is kept, since one far
+   *  from the root reads it. */
+  private _rootRead = 0;
+  private _rootMoved = false;
+  /** What of the root's the style being computed read (`_computeStyle`),
+   *  noted on it (`ROOT_READS`), as `_sidesRead` is. */
+  private _rootBits = 0;
+  /** The elements one of whose pseudo-elements' styles read the root's
+   *  font, and those a container query of whose compared a length that
+   *  does, with what each read: what is styled again when it moves
+   *  (`rootReaders`), the element being what keeps both. */
+  private _pseudoRoot = new Map<Element, number>();
+  private _queryRoot = new Map<Element, number>();
   private _remRead = (): void => {
-    this._readsRem = true;
+    this._rootRead |= ROOT_FONT_SIZE;
+    this._rootBits |= ROOT_FONT_SIZE;
   };
+  private _rlhRead(): void {
+    this._rootRead |= ROOT_LINE_HEIGHT;
+    this._rootBits |= ROOT_LINE_HEIGHT;
+  }
   private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
     if (unit !== 'vh') {
       this._heldWidth = true;
@@ -3107,6 +3137,64 @@ export class Cascade {
       if (read & sides) readers.add(el);
     }
     return readers;
+  }
+
+  /** What of the root element's font some style of the document, or some
+   *  container query, reads (`ROOT_FONT_SIZE`, `ROOT_LINE_HEIGHT`). */
+  get readsRoot(): number {
+    return this._rootRead;
+  }
+
+  /**
+   * The elements among `styles` — a build's — that read what `bits` names
+   * of the root element's font: whose style holds a length in `rem` or
+   * `rlh`, whose pseudo-element's does, or a container query of whose
+   * compares one (`_queryRoot`). What a move of the root's font changes
+   * wherever it is, where an element is otherwise styled again only where
+   * its parent's style moved (`KeptStyles.follow`): a `<body>` with a size
+   * of its own keeps every `rem` under it from hearing of the root's.
+   */
+  rootReaders(
+    styles: ReadonlyMap<Element, { style: ComputedStyle }>,
+    bits: number,
+  ): Set<Element> {
+    const readers = new Set<Element>();
+    if (!(this._rootRead & bits)) return readers;
+    for (const [el, { style }] of styles) {
+      if ((ROOT_READS.get(style) ?? 0) & bits) readers.add(el);
+    }
+    for (const notes of [this._pseudoRoot, this._queryRoot]) {
+      for (const [el, read] of notes) {
+        if (read & bits && styles.has(el)) readers.add(el);
+      }
+    }
+    return readers;
+  }
+
+  /** Whether a pseudo-element's style reads what `bits` names of the
+   *  root's font, which its element's restyle in place does not make
+   *  again (`pseudoReadsViewport`). */
+  pseudoReadsRoot(bits: number): boolean {
+    for (const read of this._pseudoRoot.values()) if (read & bits) return true;
+    return false;
+  }
+
+  /** What of the root element's font differs between two of its styles,
+   *  of what the document reads of it: its size, a `rem`; its line height,
+   *  an `rlh`, which its size moves where it is `normal` or a number. */
+  rootMetricsMoved(was: ComputedStyle, now: ComputedStyle): number {
+    let moved = 0;
+    const read = this._rootRead;
+    if (read & ROOT_FONT_SIZE && was.fontSize !== now.fontSize) {
+      moved |= ROOT_FONT_SIZE;
+    }
+    if (
+      read & ROOT_LINE_HEIGHT &&
+      this._lineHeightOf(was) !== this._lineHeightOf(now)
+    ) {
+      moved |= ROOT_LINE_HEIGHT;
+    }
+    return moved;
   }
   /**
    * What an `if()` asks beyond the element's custom properties (`vars.ts`):
@@ -4025,9 +4113,11 @@ export class Cascade {
       this._heldWidth = false;
       this._heldHeight = false;
       this._pseudoSides.clear();
-      this._readsRem = false;
+      this._rootRead = 0;
+      this._pseudoRoot.clear();
+      this._queryRoot.clear();
     }
-    this._remMoved = false;
+    this._rootMoved = false;
     this._namesKept.clear();
     this._keepNames = true;
     this._inBuild = true;
@@ -4519,7 +4609,8 @@ export class Cascade {
   private _scrollRead = false;
   /** What each element's style read of size containers: for each query,
    *  the container it found and how it answered — and for a length in
-   *  `cqw` or its kin, the size it was read as (`CQ_INLINE`, `CQ_BLOCK`). */
+   *  `cqw` or its kin, in its style or in what one of its queries
+   *  compares, the size it was read as (`UNIT_AXIS`). */
   private _containerReads = new Map<
     Element,
     Map<ContainerQuery, { container: Element; answer: boolean | number }>
@@ -4562,10 +4653,71 @@ export class Cascade {
     query: ContainerQuery,
     size: ContainerSize | null,
   ): number {
-    const inline = query === CQ_INLINE;
+    const inline = UNIT_AXIS.get(query) === 'inline';
     if (size) return inline ? size.width : size.height;
     this._viewportRead(inline ? 'vw' : 'vh');
     return inline ? this.viewportWidth : this.viewportHeight;
+  }
+
+  /**
+   * A container unit's basis in a query asked of `container`: the content
+   * box in `axis` of the nearest size container above it that has the
+   * axis, since a query's lengths are the container's and no element is
+   * the container of its own (CSS Conditional 5, 3.4) — the viewport's, at
+   * the container's zoom, where there is none or no layout has sized it.
+   * Noted for `reader`, the element whose rule asked, as its own units
+   * are (`_containerUnit`), for the layout after to say whether it holds.
+   */
+  private _queryUnit(
+    container: Element | null,
+    axis: 'inline' | 'block',
+    zoom: number,
+    reader: Element | null,
+  ): number {
+    const inline = axis === 'inline';
+    const found = container
+      ? this._containerFor(inline ? CQ_INLINE : CQ_BLOCK, container, false)
+      : null;
+    const size = found ? this._sizeOf(found[0]) : null;
+    const viewport = inline ? this.viewportWidth : this.viewportHeight;
+    if (found && reader) {
+      let reads = this._containerReads.get(reader);
+      if (!reads) this._containerReads.set(reader, (reads = new Map()));
+      reads.set(this._queryUnitKey(found[0], axis), {
+        container: found[0],
+        answer: size ? (inline ? size.width : size.height) : viewport,
+      });
+    }
+    if (size) return inline ? size.width : size.height;
+    this._queryViewportRead(inline ? 'vw' : 'vh');
+    return viewport * zoom;
+  }
+
+  /** What a query's container unit is noted under (`_queryUnit`): one for
+   *  each container and axis, read as `CQ_INLINE` and `CQ_BLOCK` are, so
+   *  that two queries of one element that find other containers keep a
+   *  read each. */
+  private _queryUnitKeys = new WeakMap<
+    Element,
+    { inline?: ContainerQuery; block?: ContainerQuery }
+  >();
+  private _queryUnitKey(
+    container: Element,
+    axis: 'inline' | 'block',
+  ): ContainerQuery {
+    let keys = this._queryUnitKeys.get(container);
+    if (!keys) this._queryUnitKeys.set(container, (keys = {}));
+    let key = keys[axis];
+    if (!key) {
+      key = {
+        name: null,
+        condition: '',
+        axes: axis === 'inline' ? INLINE_AXIS : BLOCK_AXIS,
+      };
+      UNIT_AXIS.set(key, axis);
+      keys[axis] = key;
+    }
+    return key;
   }
 
   /** Whether a rule's `@container` blocks all hold for `el`: one query of
@@ -4604,7 +4756,16 @@ export class Cascade {
       query.scroll || query.anchored
         ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
         : null;
-    const answer = this._ask(query, size, style, scroll, container);
+    // what it compares in a `rem` or an `rlh` is the root's, wherever the
+    // element is (`rootReaders`)
+    const outerRoot = this._rootBits;
+    this._rootBits = 0;
+    const answer = this._ask(query, size, style, scroll, container, el);
+    const rootRead = this._rootBits;
+    this._rootBits = outerRoot;
+    if (rootRead) {
+      this._queryRoot.set(el, (this._queryRoot.get(el) ?? 0) | rootRead);
+    }
     if (query.axes || query.scroll || query.anchored) {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
@@ -4622,6 +4783,10 @@ export class Cascade {
     scroll: ScrollStates | null = null,
     /** The container, whose attributes an `attr()` in a feature reads. */
     container: Element | null = null,
+    /** The element whose rule asks, for whom the containers its container
+     *  units read are noted (`_queryUnit`): none where an answer is only
+     *  compared with the last (`containersMoved`). */
+    reader: Element | null = null,
   ): boolean {
     return containerHolds(
       query,
@@ -4639,9 +4804,16 @@ export class Cascade {
             ? (root.fontSize * zoom) / root.effectiveZoom
             : style.fontSize,
           remRead: this._remRead,
+          rlh: () => {
+            this._rlhRead();
+            return root
+              ? (this._lineHeightOf(root) * zoom) / root.effectiveZoom
+              : this._lineHeightOf(style);
+          },
           vw: this.viewportWidth * zoom,
           vh: this.viewportHeight * zoom,
           viewport: this._queryViewportRead,
+          cq: (axis) => this._queryUnit(container, axis, zoom, reader),
           scale: this.scale * zoom,
         };
         const len = parseLength(text, ctx);
@@ -4672,6 +4844,13 @@ export class Cascade {
           ? lightDark(text, style.colorScheme)
           : text;
         return picked === null ? null : parseColor(picked);
+      },
+      // an `inherit` is what the container inherits: its parent's in the
+      // flat tree, and at the top the initial values of what is registered
+      (name) => {
+        const parent = container && flatParentOf(container);
+        const from = parent ? this.stylesOf?.(parent) : undefined;
+        return (from?.custom ?? this._registeredBase)?.get(name);
       },
     );
   }
@@ -4777,32 +4956,38 @@ export class Cascade {
     const sizes = new Map<Element, ContainerSize | null | undefined>();
     const scrolls = new Map<Element, ScrollStates | undefined>();
     const moved = new Set<Element>();
-    for (const [el, reads] of this._containerReads) {
-      for (const [query, read] of reads) {
-        let size: ContainerSize | null | undefined;
-        if (query.axes || query === CQ_INLINE || query === CQ_BLOCK) {
-          size = sizes.get(read.container);
-          if (!sizes.has(read.container)) {
-            size = sizeOf(read.container);
-            sizes.set(read.container, size);
+    // a query asked again reads the containers its units are of at the
+    // sizes this layout gave them, which no style may have read yet
+    this._moving = (container) => {
+      if (!sizes.has(container)) sizes.set(container, sizeOf(container));
+      return sizes.get(container);
+    };
+    try {
+      for (const [el, reads] of this._containerReads) {
+        for (const [query, read] of reads) {
+          let size: ContainerSize | null | undefined;
+          if (query.axes) {
+            size = sizes.get(read.container);
+            if (!sizes.has(read.container)) {
+              size = sizeOf(read.container);
+              sizes.set(read.container, size);
+            }
+          } else size = this._containerSizes.get(read.container) ?? null;
+          let scroll: ScrollStates | undefined;
+          if (query.scroll || query.anchored) {
+            if (!scrolls.has(read.container)) {
+              scrolls.set(read.container, scrollOf?.(read.container));
+            }
+            scroll = scrolls.get(read.container);
           }
-        } else size = this._containerSizes.get(read.container) ?? null;
-        let scroll: ScrollStates | undefined;
-        if (query.scroll || query.anchored) {
-          if (!scrolls.has(read.container)) {
-            scrolls.set(read.container, scrollOf?.(read.container));
+          // nothing it reads is told otherwise
+          if (size === undefined && scroll === undefined) continue;
+          if (query.axes && size === undefined) {
+            size = this._containerSizes.get(read.container) ?? null;
           }
-          scroll = scrolls.get(read.container);
-        }
-        // nothing it reads is told otherwise
-        if (size === undefined && scroll === undefined) continue;
-        if (query.axes && size === undefined) {
-          size = this._containerSizes.get(read.container) ?? null;
-        }
-        const style = this.stylesOf?.(read.container);
-        if (!style) continue;
-        const now =
-          query === CQ_INLINE || query === CQ_BLOCK
+          const style = this.stylesOf?.(read.container);
+          if (!style) continue;
+          const now = UNIT_AXIS.has(query)
             ? this._unitBasis(query, size ?? null)
             : this._ask(
                 query,
@@ -4815,11 +5000,14 @@ export class Cascade {
                   : null,
                 read.container,
               );
-        if (now !== read.answer) {
-          moved.add(el);
-          break;
+          if (now !== read.answer) {
+            moved.add(el);
+            break;
+          }
         }
       }
+    } finally {
+      this._moving = null;
     }
     for (const [container, size] of sizes) {
       if (size !== undefined) this._containerSizes.set(container, size);
@@ -4828,6 +5016,19 @@ export class Cascade {
       if (scroll !== undefined) this._scrollStates.set(container, scroll);
     }
     return moved.size ? moved : null;
+  }
+
+  /** A layout's sizes, while `containersMoved` asks the queries again. */
+  private _moving:
+    ((container: Element) => ContainerSize | null | undefined) | null = null;
+
+  /** A size container's content box: as the layout being heard of left it
+   *  (`_moving`), or as the last one did. */
+  private _sizeOf(container: Element): ContainerSize | null {
+    const now = this._moving?.(container);
+    return now !== undefined
+      ? now
+      : (this._containerSizes.get(container) ?? null);
   }
 
   /**
@@ -4961,7 +5162,7 @@ export class Cascade {
     const kept = this._kept;
     if (
       kept !== null &&
-      !this._remMoved &&
+      !this._rootMoved &&
       !kept.restyle.has(el) &&
       (!kept.follow || this._parentAsWas(el, parentStyle, kept))
     ) {
@@ -5180,12 +5381,37 @@ export class Cascade {
     }
   >();
 
+  /**
+   * A `::before`'s or an `::after`'s style as `getComputedStyle` reads it:
+   * the one `pseudoStyleFor` makes where the element has one, and where it
+   * has none, what the rules that reach it make of it all the same — a
+   * browser answers for a pseudo-element its rules style whether or not
+   * they give it a `content`. Null where no rule reaches it. Kept nowhere,
+   * and its animations at rest: a style of no content makes no box.
+   */
+  pseudoComputedStyle(
+    el: Element,
+    which: 'before' | 'after',
+    elementStyle: ComputedStyle,
+  ): ComputedStyle | null {
+    const generated = this.pseudoStyleFor(el, which, elementStyle);
+    if (generated) return generated;
+    const index = this._pseudo[which];
+    const indexed = index.size > 0 && index.reaches(el);
+    const edges = this._scoped && this._scopedPseudos.has(which);
+    if (!indexed && !edges) return null;
+    return this._pseudoStyle(el, which, elementStyle, indexed, edges, false);
+  }
+
   private _pseudoStyle(
     el: Element,
     which: 'before' | 'after',
     elementStyle: ComputedStyle,
     indexed: boolean,
     edges: boolean,
+    /** Whether only one with a `content` is a style: one that makes a box,
+     *  whose animations run. */
+    generated = true,
   ): ComputedStyle | null {
     const candidates: Candidate[] = [];
     if (indexed) this._matchInto(this._pseudo[which], el, candidates);
@@ -5194,7 +5420,7 @@ export class Cascade {
     // One that no rule gives a `content` is none, whatever else reaches it —
     // `content` is not inherited, and its initial `normal` is nothing here.
     // Tailwind's `*, ::before, ::after` reaches both of every element's.
-    if (!candidates.some(setsContent)) return null;
+    if (generated && !candidates.some(setsContent)) return null;
     candidates.sort(byCascade);
     const style = this._computeStyle(
       el,
@@ -5202,8 +5428,9 @@ export class Cascade {
       elementStyle.display === 'flex' || elementStyle.display === 'inline-flex',
       candidates,
       false,
-      which,
+      generated ? which : null,
     );
+    if (!generated) return style;
     if (style.content === 'normal' || style.content === 'none') return null;
     // what `auto` is on a `::before` or an `::after` (CSS UI 4, 6.1): text
     // a stylesheet made up, which no browser selects or copies
@@ -5714,9 +5941,12 @@ export class Cascade {
     target: string | null = null,
   ): ComputedStyle {
     // which sides of the viewport it reads, noted on the style
-    // (`viewportReaders`), and on any style being computed around it
+    // (`viewportReaders`), and on any style being computed around it; and
+    // what of the root's font, the same way (`rootReaders`)
     const outer = this._sidesRead;
+    const outerRoot = this._rootBits;
     this._sidesRead = 0;
+    this._rootBits = 0;
     const style = this._computeStyleOf(
       el,
       parentStyle,
@@ -5732,6 +5962,21 @@ export class Cascade {
       if (!own) {
         this._pseudoSides.set(el, (this._pseudoSides.get(el) ?? 0) | sides);
       }
+    }
+    const rootBits = this._rootBits;
+    this._rootBits = outerRoot | rootBits;
+    if (rootBits) {
+      ROOT_READS.set(style, (ROOT_READS.get(style) ?? 0) | rootBits);
+      if (!own) {
+        this._pseudoRoot.set(el, (this._pseudoRoot.get(el) ?? 0) | rootBits);
+      }
+    }
+    // where the root's font moved in a build that keeps styles, every one
+    // that reads it is computed again, wherever it is: its parent's can
+    // come out as it was (`sharedStyleFor`)
+    if (own && this._rootRead && this._kept && isRootElement(el)) {
+      const was = this._kept.styles.get(el)?.style;
+      if (was && this.rootMetricsMoved(was, style)) this._rootMoved = true;
     }
     return style;
   }
@@ -6059,7 +6304,10 @@ export class Cascade {
       ch: () => this._chOf(parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
-      rlh: () => this._lineHeightOf(rootStyle) * rootZoom,
+      rlh: () => {
+        this._rlhRead();
+        return this._lineHeightOf(rootStyle) * rootZoom;
+      },
       focusRing: this.look.focusRing,
       paletteScheme: this.look.colorScheme,
       systemColors: this._systemColors,
@@ -6144,16 +6392,7 @@ export class Cascade {
     };
     let line: LineSource | null = null;
     // the root's other declarations measure a `rem` from its own size
-    if (root) {
-      // and where its size moved in a build that keeps styles, every one
-      // that holds a `rem` is computed again, wherever it is: its parent's
-      // can come out as it was (`sharedStyleFor`)
-      const was = this._kept?.styles.get(el)?.style;
-      if (was && this._readsRem && was.fontSize !== style.fontSize) {
-        this._remMoved = true;
-      }
-      this._root = style;
-    }
+    if (root) this._root = style;
     const ctx: UnitContext = {
       ...ctxParent,
       em: style.fontSize,

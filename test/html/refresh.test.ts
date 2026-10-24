@@ -208,6 +208,34 @@ test('the root’s font-size changed reaches a rem anywhere, though every parent
   assert.strictEqual(el.computedStyle(t)?.width, '20px');
 });
 
+test('the root’s line-height changed reaches an rlh anywhere, and a style() comparison in one', async () => {
+  // style-query-registered-custom-root-relative-units-change.html: the
+  // root's line height is what an `rlh` is, as its font size is a `rem`
+  const { result, node } = await render(
+    '<html id="root" style="line-height:20px"><body style="margin:0;line-height:20px">' +
+      '<style>@property --len { syntax: "<length>"; inherits: false; initial-value: 0px }' +
+      '#c { --len: 100px } @container style(--len: 10rlh) { #q { color: #008000 } }</style>' +
+      '<div id="c"><div id="t" style="width:2rlh;height:4px"></div><p id="q">q</p></div>' +
+      '</body></html>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const t = byId(el, 't');
+  const q = byId(el, 'q');
+  assert.strictEqual(el.computedStyle(t)?.width, '40px');
+  assert.notStrictEqual(el.computedStyle(q)?.color, 'rgb(0, 128, 0)');
+  const root = byId(el, 'root');
+  const oldValue = root.attribs.style ?? null;
+  root.attribs.style = 'line-height:10px';
+  el.touchDocument([
+    { type: 'attributes', target: root, attributeName: 'style', oldValue },
+  ]);
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(t)?.width, '20px');
+  assert.strictEqual(el.computedStyle(q)?.color, 'rgb(0, 128, 0)');
+});
+
 metric(
   'a class that moves something builds the boxes again, styling only what it reaches',
   async () => {

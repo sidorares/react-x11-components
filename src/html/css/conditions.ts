@@ -148,9 +148,10 @@ function closeOf(text: string, open: number): number {
  *
  * A custom property that is not registered compares as it was written, so
  * `1` is not `1.0` and `a  b` is not `a b`, white space at either end
- * aside; `initial` is a property nothing set. A feature of a property that
- * is not a custom one, which no engine answers yet, is unknown. A range,
- * `--n > 2`, compares numbers or dimensions of one unit.
+ * aside; `initial` is a property nothing set, and `inherit` the value of
+ * whatever the element inherits from (`inherited`). A feature of a
+ * property that is not a custom one, which no engine answers yet, is
+ * unknown. A range, `--n > 2`, compares numbers or dimensions of one unit.
  */
 export function styleQuery(
   inner: string,
@@ -159,15 +160,17 @@ export function styleQuery(
   /** A length a range compares, in the pixels of whoever asks — relative
    *  ones against its font — or null for none; absent, only `px`. */
   length: (text: string) => number | null = pxOnly,
-  /** The syntax and the initial value a property was registered with
-   *  (`@property`), or null for one that was not. */
-  registered: (name: string) => {
-    syntax?: string;
-    initial: string | null;
-  } | null = () => null,
+  /** The syntax, the initial value and the inheritance a property was
+   *  registered with (`@property`), or null for one that was not. */
+  registered: (name: string) => Registered | null = () => null,
   /** A colour as whoever asks computes it — its `light-dark()` in its
    *  colour scheme — or null for none. */
   color: (text: string) => string | null = () => null,
+  /** A custom property's value on what whoever asks inherits from — its
+   *  parent — which `inherit` compares with, and `unset` for a property
+   *  that inherits (CSS Conditional 5, 3.3: the value is computed for the
+   *  element asked). Absent, `inherit` is no value it has. */
+  inherited?: (name: string) => string | undefined,
 ): Kleene {
   const text = inner.trim();
   // a feature of what is no custom property makes the whole query none,
@@ -179,7 +182,15 @@ export function styleQuery(
   // answers, which the query is (`<general-enclosed>`)
   let malformed = false;
   const feature = (f: string): Kleene => {
-    const answer = styleFeature(f, get, value, length, registered, color);
+    const answer = styleFeature(
+      f,
+      get,
+      value,
+      length,
+      registered,
+      color,
+      inherited,
+    );
     if (answer === MALFORMED) {
       malformed = true;
       return undefined;
@@ -215,16 +226,22 @@ function strayToken(text: string): boolean {
   return false;
 }
 
+/** What a style query reads of a property's registration. */
+export interface Registered {
+  syntax?: string;
+  initial: string | null;
+  /** Whether it inherits; absent, it does, as a custom property does. */
+  inherits?: boolean;
+}
+
 function styleFeature(
   text: string,
   get: (name: string) => string | undefined,
   value: (text: string) => string | null,
   length: (text: string) => number | null,
-  registered: (name: string) => {
-    syntax?: string;
-    initial: string | null;
-  } | null,
+  registered: (name: string) => Registered | null,
   color: (text: string) => string | null,
+  inherited: ((name: string) => string | undefined) | undefined,
 ): Kleene | typeof MALFORMED {
   const colon = /^(--[\w\u0080-￿-]+|[a-z-]+)\s*(?::([\s\S]*))?$/i.exec(text);
   if (colon) {
@@ -242,14 +259,32 @@ function styleFeature(
     // which a property nothing set has as well
     if (want === null) return has === undefined;
     const reg = registered(name);
-    // `initial` is a registered property's initial value, and an
-    // unregistered one's is nothing
-    if (reg?.initial != null && /^\s*initial\s*$/i.test(want)) {
-      want = reg.initial;
+    const keyword = /^\s*(initial|inherit|unset)\s*$/i
+      .exec(want)?.[1]
+      .toLowerCase();
+    // `unset` is `inherit` for a property that inherits, as a custom one
+    // does unless it is registered not to, and `initial` for one that
+    // does not
+    const kind =
+      keyword === 'unset'
+        ? reg?.inherits === false
+          ? 'initial'
+          : 'inherit'
+        : keyword;
+    if (kind === 'inherit' && inherited) {
+      // the value it would have taken from its parent: what nothing set
+      // is the guaranteed-invalid value, which only that matches
+      const from = inherited(name);
+      if (from === undefined || has === undefined) return from === has;
+      want = from;
+    } else {
+      // `initial` is a registered property's initial value, and an
+      // unregistered one's is nothing
+      if (reg?.initial != null && kind === 'initial') want = reg.initial;
+      // a property nothing set is at its initial value, which `unset` is
+      // as well, a custom property's being its parent's
+      if (has === undefined) return kind === 'initial' || keyword === 'unset';
     }
-    // a property nothing set is at its initial value, which `unset` is
-    // as well, a custom property's being its parent's
-    if (has === undefined) return /^\s*(?:initial|unset)\s*$/i.test(want);
     // a registered length is compared as one, whatever unit either says
     if (reg?.syntax && /^\s*<length(?:-percentage)?>\s*$/.test(reg.syntax)) {
       const a = length(has);
