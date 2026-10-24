@@ -1340,38 +1340,54 @@ const LEGACY_PSEUDO_ELEMENT =
  * A subject compound as `PointerCompounds.below` matches elements by: what
  * it asks of an element, without a pseudo-element and what follows it, and
  * without the states this renderer keeps, so that it names every element
- * that can match it in any state — or null where it has a function in it,
- * which may ask of more than the element.
+ * that can match it in any state — and without its functional
+ * pseudo-classes, each of which only narrows what the rest matches, whatever
+ * it asks of other elements. A `:hover` inside one is the subject's own,
+ * which its compound answers for (`scanComplex`). Angular's docs write
+ * `*:hover > kbd:not(:has(kbd))`, which read as a compound of `*`'s reached
+ * all that every hovered element holds, the `<body>` among them, and every
+ * move built the boxes.
  */
-function subjectOf(compound: string): string | null {
+function subjectOf(compound: string): string {
   let bracket = 0;
   let quote = '';
-  let end = compound.length;
+  let own = '';
+  /** Where the pseudo-class being read starts, which a `(` after its name
+   *  makes a function to leave out. */
+  let colon = -1;
   for (let i = 0; i < compound.length; i += 1) {
     const c = compound[i];
     if (quote) {
       if (c === quote && compound[i - 1] !== '\\') quote = '';
+      own += c;
       continue;
     }
-    if (c === '\\') i = escapeEnd(compound, i) - 1;
-    else if (c === '"' || c === "'") quote = c;
+    if (c === '\\') {
+      const end = escapeEnd(compound, i);
+      own += compound.slice(i, end);
+      i = end - 1;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
     else if (c === '[') bracket += 1;
     else if (c === ']') bracket = Math.max(0, bracket - 1);
-    else if (c === '(' && bracket === 0) return null;
-    else if (
-      c === ':' &&
-      bracket === 0 &&
-      (compound[i + 1] === ':' || LEGACY_PSEUDO_ELEMENT.test(compound.slice(i)))
-    ) {
-      end = i;
-      break;
-    }
+    else if (c === '(' && bracket === 0 && colon >= 0) {
+      own = own.slice(0, own.length - (i - colon));
+      i = closeOf(compound, i);
+      colon = -1;
+      continue;
+    } else if (c === ':' && bracket === 0) {
+      if (
+        compound[i + 1] === ':' ||
+        LEGACY_PSEUDO_ELEMENT.test(compound.slice(i))
+      ) {
+        break;
+      }
+      colon = i;
+    } else if (bracket === 0 && !/[\w-]/.test(c)) colon = -1;
+    own += c;
   }
-  const own = compound
-    .slice(0, end)
-    .replace(new RegExp(STATE_PSEUDO.source, 'gi'), '')
-    .trim();
-  return own || '*';
+  return own.replace(new RegExp(STATE_PSEUDO.source, 'gi'), '').trim() || '*';
 }
 
 /**
