@@ -613,8 +613,41 @@ moved:
 Descendants win when they cover the whole square, because they are sharper
 and they are the level the camera is coming _from_; the ancestor wins when
 they do not, because a complete blurry picture beats a sharp one with holes
-in it. A cold map with neither shows its background. `MapFrameStats` counts
-both as `fromAncestor` and `fromDescendant`.
+in it. `MapFrameStats` counts both as `fromAncestor` and `fromDescendant`.
+
+**A cold view is drawn from its overview first.** A map opened on ground
+nothing has loaded has neither, and its own tiles — twenty-odd for a window,
+each a request and, on the retained renderer, 50–140 ms to draw — used to
+land a square at a time over the background. So each view has an
+**overview**: the finest level above it whose tiles are at least as large as
+the pane's longer side, so that four of them at most cover it. That is one
+level up for a pane a little wider than a tile and two for most windows,
+never more than three, and none for a pane no larger than a tile or an
+overzoomed view, whose own tiles are already that few. Its tiles are asked
+for before the view's on every frame, so they are the first requests to go
+out, and once one has a picture it is the ancestor every hole under it is
+drawn from: the whole view is up, at a half or a quarter of its sharpness,
+after a handful of requests, and its own tiles land over it.
+
+- **On the retained renderer it is drawn first, and only where it is
+  needed**: where a tile in view has no picture of its own, none in the
+  levels between it and the overview, and gaps its descendants leave. A
+  zoom in has the level it came from and draws none of it; a cold open, a
+  zoom out past what is cached and a pan onto new ground do. Each tile is
+  drawn as the map at its own level would draw it, so a zoom out onto that
+  level finds it drawn.
+- **On the GL renderer its loads go to the front of the queue**, and its
+  build to the front of the build queue when it lands — ahead even of the
+  view's own tiles a fast pan has left waiting, which would otherwise hold
+  it back by a screenful of requests.
+- **A pan onto new ground is the same case as an open**: the overview of
+  wherever the camera is now goes ahead of everything. The GL renderer
+  draws whatever has landed during the pan. The retained renderer draws
+  nothing else during a gesture, but where the view would show its
+  background it draws the overview, under 4 ms of a frame and a style layer
+  at a time — so a fast pan onto ground nothing has loaded fills in,
+  blurred, while it moves, and a pan within ground the map has drawn still
+  draws nothing.
 
 **The GL renderer keeps an overview, so a zoom out always has an ancestor.**
 Descendants only reach four levels, and a trackpad's momentum can zoom out
@@ -678,7 +711,9 @@ nothing", and a frame that finished nothing asks for another one. While a tile i
 ancestor already in the cache, scaled — which is why zooming in sharpens
 rather than flashing empty.
 
-**A gesture rasterizes nothing.** The budget is zero for the length of a
+**A gesture rasterizes nothing** — but for the overview, where the view
+would otherwise show its background (see "A cold view is drawn from its
+overview first"). The budget is zero for the length of a
 drag or a wheel and for a moment after it, so a gesture is composites only.
 This is what the per-tile surfaces buy: a pan composites the same surfaces
 at new offsets, a fractional zoom composites them scaled, and neither

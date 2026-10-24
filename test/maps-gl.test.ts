@@ -21,6 +21,7 @@ import {
 
 import { GeomType, parseTile } from '../src/maps/mvt.js';
 import {
+  overviewCover,
   project,
   transformFor,
   unproject,
@@ -1651,6 +1652,84 @@ test('a view keeps an overview of its ancestors, so a fast zoom out never lands 
   assert.ok(
     stats.ready + stats.fromAncestor > 0,
     `drawn from something: ${JSON.stringify({ tiles: stats.tiles, ready: stats.ready, up: stats.fromAncestor })}`,
+  );
+  driver.dispose();
+});
+
+test('a cold view loads its overview first, and so does a pan onto new ground', async () => {
+  // Loads that answer only when the test says, eight at a time, so what
+  // goes first is the order the store chose. An aborted one fails, as a
+  // `fetch` does.
+  const asked: string[] = [];
+  const answers: (() => void)[] = [];
+  const source: MapSource = {
+    id: 'held',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: ({ z, x, y, signal }) =>
+      new Promise((resolve, reject) => {
+        asked.push(`${z}/${x}/${y}`);
+        (signal as AbortSignal | undefined)?.addEventListener('abort', () =>
+          reject(new Error('aborted')),
+        );
+        answers.push(() => resolve({ kind: 'vector', data: fixtureBytes() }));
+      }),
+  };
+  const london = { center: { lon: -0.1281, lat: 51.508 }, zoom: 13 };
+  const tokyo = { center: { lon: 139.7004, lat: 35.69 }, zoom: 13 };
+  const controller = new MapController(london);
+  const driver = new GlMapDriver(controller, {
+    controller,
+    map: { sources: [source], mapStyle: { layers: STYLE }, adaptive: false },
+    onFailure: (error: Error) => {
+      throw error;
+    },
+  });
+  const gl = recordingGl(true).gl;
+  const info = { width: 1600, height: 1000, node: { scale: 1 } };
+  const pane = { width: 1600, height: 1000 };
+  const pyramid = { minZoom: 0, maxZoom: 14, tileSize: 512 };
+  const overviewOf = (camera: typeof london): string[] =>
+    overviewCover(transformFor(camera, pane), pyramid).map(
+      ({ tile }) => `${tile.z}/${tile.x}/${tile.y}`,
+    );
+  const frame = async () => {
+    driver.draw(gl, info);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  await frame();
+  const home = overviewOf(london);
+  assert.ok(home.length > 0 && home.every((k) => k.startsWith('11/')));
+  assert.deepStrictEqual(
+    asked.slice(0, home.length).sort(),
+    [...home].sort(),
+    `the overview went first: ${asked.slice(0, 10).join(' ')}`,
+  );
+
+  // Across the world, with the view's own tiles still queued behind the
+  // eight in flight: the new overview goes ahead of all of them.
+  const before = asked.length;
+  controller.setCamera(tokyo);
+  await frame();
+  await frame();
+  const away = overviewOf(tokyo);
+  const next = asked.slice(before, before + away.length);
+  assert.deepStrictEqual(
+    next.sort(),
+    [...away].sort(),
+    `the pan's first loads were its overview: ${asked.slice(before, before + 10).join(' ')}`,
+  );
+
+  // Once in, it is built ahead of the view's own and draws all of it.
+  for (const answer of answers.splice(0)) answer();
+  await frame();
+  for (let i = 0; i < 4; i++) await frame();
+  const stats = driver.stats()!;
+  assert.ok(
+    stats.tiles > 0 && stats.ready + stats.fromAncestor === stats.tiles,
+    JSON.stringify(stats),
   );
   driver.dispose();
 });

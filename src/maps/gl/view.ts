@@ -38,6 +38,7 @@ import { prepareStyle } from '../paint.js';
 import type { PreparedStyle } from '../paint.js';
 import {
   DEFAULT_TILE_SIZE,
+  overviewLevel,
   project,
   transformFor,
   worldSize,
@@ -846,6 +847,19 @@ export class GlMapDriver implements MapView {
     const buildMs = now() - buildStart;
     const covers: SourceCover[] = sources.map(({ source, store }) => {
       const pyramid = pyramidOf(source);
+      // The overview first: a level or two up, four tiles at most, asked
+      // for ahead of the view's twenty-odd, so a cold view — an open, or a
+      // pan onto ground nothing has loaded — is drawn whole from it, a
+      // little blurred, while its own tiles arrive (`overviewLevel`). Looked
+      // up every frame, which keeps it loaded; `renderCover`'s ancestors
+      // are what draw it.
+      const overview = overviewLevel(transformFor(camera, pane), pyramid);
+      if (overview !== null) {
+        const ahead = renderCover(camera, pane, scale, pyramid, store, {
+          level: overview,
+        });
+        store.want(ahead.missing, true);
+      }
       const target = renderCover(camera, pane, scale, pyramid, store, {
         padding: COVER_PADDING,
       });

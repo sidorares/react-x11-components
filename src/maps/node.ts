@@ -52,8 +52,10 @@ import {
   DEFAULT_TILE_SIZE,
   dataSquareOf,
   dataTileFor,
+  overviewCover,
   subTileOf,
   rasterFor,
+  tileContains,
   tileCover,
   tileKey,
   transformFor,
@@ -137,6 +139,13 @@ const MAX_OVERZOOM = 6;
  *  tile: enough that an ordinary flick has its tiles, not so much that a
  *  window covers four times the tiles it shows. */
 const COVER_PADDING = 256;
+
+/**
+ * Milliseconds a gesture's frame may spend drawing the overview, where the
+ * view would otherwise show its background. Nothing else is drawn during a
+ * gesture; see `_workOverview`.
+ */
+const GESTURE_OVERVIEW_MS = 4;
 
 /** The overlap of two rects, or null when they do not meet. */
 function intersectRects(a: ScreenRect, b: ScreenRect): ScreenRect | null {
@@ -853,6 +862,7 @@ export class MapViewNode extends Node {
           budget > 0,
           deadline,
           holding,
+          progressive ? undefined : this._cache.generation,
         ),
       );
     }
@@ -1055,8 +1065,29 @@ export class MapViewNode extends Node {
     /** A restyle is holding the previous style up, so a tile that finishes
      *  waits for the swap rather than going on screen alone. */
     holding: boolean,
+    /** The pictures that count as drawn — `undefined` for any, which is
+     *  `progressive`. */
+    generation: number | undefined,
   ): VisibleTile[] {
     const p = pyramid(source);
+    const deep = { ...p, maxZoom: p.maxZoom + MAX_OVERZOOM };
+    // The overview is asked for before the view, so that its requests are
+    // the first to go out — see `_workOverview`.
+    const overview = this._rasterSquares(
+      source,
+      sourceId,
+      overviewCover(transform, deep),
+      p.maxZoom,
+    ).map((entry) => ({
+      entry,
+      cached: this._cache.want(
+        source,
+        sourceId,
+        entry.tile,
+        dataTileFor(entry.tile, p.maxZoom),
+        subTileOf(entry.tile, p.maxZoom),
+      ),
+    }));
     // The cover goes **deeper than the source cuts**, up to
     // `MAX_OVERZOOM` levels past it, and the data for those tiles comes
     // from their ancestor at the deepest cut level. That is what makes an
@@ -1067,18 +1098,26 @@ export class MapViewNode extends Node {
     // data. An image has no more detail than its pixels, so a raster tile
     // past the cut is drawn as the whole of its data tile instead — see
     // `_rasterSquares`.
-    const cover = this._rasterSquares(
-      source,
-      sourceId,
-      tileCover(
-        { ...transform, zoom: transform.zoom },
-        { ...p, maxZoom: p.maxZoom + MAX_OVERZOOM },
-        COVER_PADDING,
-      ),
-      p.maxZoom,
-    );
+    const view = tileCover(transform, deep, COVER_PADDING);
+    const cover = this._rasterSquares(source, sourceId, view, p.maxZoom);
     const zoom = transform.zoom;
     const styleZoom = Math.floor(zoom);
+    if (overview.length > 0 && view.length > 0 && !holding) {
+      this._workOverview(
+        source,
+        overview,
+        cover,
+        view[0].tile.z,
+        pane,
+        p,
+        zoom,
+        style,
+        stats,
+        mayRaster,
+        mayRaster ? deadline : deadline + GESTURE_OVERVIEW_MS,
+        generation,
+      );
+    }
     const visible: VisibleTile[] = [];
     for (const entry of cover) {
       // In the window's logical pixels, the space `pane` is in: what the
@@ -1173,6 +1212,165 @@ export class MapViewNode extends Node {
       }
     }
     return visible;
+  }
+
+  /**
+   * Draw the overview's tiles where the view needs them, before any of the
+   * view's own: the frame's first tile, the one drawn whatever the budget.
+   *
+   * What a cold map is drawn from. The view's own tiles are twenty-odd
+   * requests and twenty-odd rasterizations of 50–140 ms each, so they land
+   * a square at a time over a frame or two apiece, and until the last of
+   * them the map is partly its background. The overview (`overviewLevel`)
+   * is a level or two up — four tiles at most, asked for before the view's
+   * — so the whole view is up, blurred, after the first of them, and
+   * sharpens a square at a time from there. Nothing composites it on
+   * purpose: once it has a picture it is the ancestor `_drawSource` covers
+   * a hole with, as the level a zoom in came from is.
+   *
+   * Drawn only where a tile in view has nothing nearer to show: no picture
+   * of its own, none in the levels between it and the overview, and gaps
+   * its descendants leave. So a zoom in, which has the level it came from,
+   * draws none of it; a cold open and a zoom out past what is cached do.
+   * It is asked for on every frame regardless, so its loads are never
+   * cancelled and its pictures never evicted while it is in view.
+   *
+   * **A gesture draws it too, where the view would show its background.**
+   * Nothing else is drawn during one, which keeps a pan a composite; but a
+   * fast pan onto ground nothing has loaded is a pan over a flat colour
+   * until it stops, so the overview is drawn there under
+   * `GESTURE_OVERVIEW_MS` a frame, a style layer at a time, and only where
+   * a hole has no picture at any level. A pan within what the map has
+   * drawn draws nothing.
+   *
+   * Each tile is drawn as the map at its own level would draw it — at its
+   * natural size, in its own zoom's style — so a zoom out onto that level
+   * finds it already drawn.
+   */
+  private _workOverview(
+    source: MapSource,
+    overview: readonly { entry: TileCoverEntry; cached: CachedTile }[],
+    cover: readonly TileCoverEntry[],
+    /** The view's own pyramid level. */
+    level: number,
+    pane: ScreenRect,
+    p: { minZoom: number; maxZoom: number; tileSize: number },
+    zoom: number,
+    style: PreparedStyle,
+    stats: MapFrameStats,
+    /** False for the length of a gesture. */
+    mayRaster: boolean,
+    deadline: number,
+    generation: number | undefined,
+  ): void {
+    for (const { entry, cached } of overview) {
+      const need = this._overviewNeed(
+        source,
+        entry.tile,
+        cover,
+        pane,
+        generation,
+      );
+      if (need === null || cached.status !== 'ready') continue;
+      // The zoom, and the size on screen, the tile has at its own level.
+      const shift = level - entry.tile.z;
+      const own = zoom - shift;
+      const plan = this._rasterPlan(
+        { ...entry, size: entry.size / 2 ** shift },
+        p,
+        own,
+      );
+      const drawing = this._cache.beginRender(
+        cached,
+        cached.raster ? cached.raster.width : plan.size,
+        cached.raster ? 0 : Math.floor(own),
+        (edge: number) => this._makeSurface(edge),
+        !cached.raster,
+      );
+      if (drawing && drawing.progress !== -1) {
+        if (cached.raster) {
+          this._uploadRaster(cached, drawing);
+        } else if (
+          (mayRaster || need === 'blank') &&
+          (!this._rastered || now() < deadline)
+        ) {
+          this._rasterize(
+            cached,
+            drawing,
+            style,
+            entry,
+            plan,
+            Math.floor(own),
+            stats,
+            deadline,
+          );
+        }
+        const shown = intersectRects(
+          {
+            x: pane.x + entry.x,
+            y: pane.y + entry.y,
+            width: entry.size,
+            height: entry.size,
+          },
+          pane,
+        );
+        if (this._cache.promote(cached) && shown) {
+          this._claim(shown, 'content');
+        }
+      }
+      if (cached.drawing && cached.drawing.progress !== -1) stats.pending++;
+    }
+  }
+
+  /**
+   * Whether the tiles in view under an overview tile need it: `'blank'`
+   * where one would show the background, `'coarse'` where the best a hole
+   * has is an ancestor above the overview, and null where every one has
+   * something at least as sharp — its own picture, an ancestor no higher
+   * than the overview, or descendants with no gaps between them.
+   */
+  private _overviewNeed(
+    source: MapSource,
+    tile: TileId,
+    cover: readonly TileCoverEntry[],
+    pane: ScreenRect,
+    generation: number | undefined,
+  ): 'blank' | 'coarse' | null {
+    let need: 'coarse' | null = null;
+    for (const entry of cover) {
+      if (entry.tile.z <= tile.z || !tileContains(tile, entry.tile)) continue;
+      const box = {
+        x: pane.x + entry.x,
+        y: pane.y + entry.y,
+        width: entry.size,
+        height: entry.size,
+      };
+      if (!rectsOverlap(box, pane)) continue;
+      const shown = this._cache.peek(source, entry.tile)?.shown;
+      if (shown && drawnFor(shown, generation)) continue;
+      const up = entry.tile.z - tile.z;
+      if (this._cache.ancestorWithSurface(source, entry.tile, up, generation)) {
+        continue;
+      }
+      const below = this._cache.descendantsWithSurface(
+        source,
+        entry.tile,
+        generation,
+      );
+      if (below.gaps.length === 0) continue;
+      if (
+        !this._cache.ancestorWithSurface(
+          source,
+          entry.tile,
+          undefined,
+          generation,
+        )
+      ) {
+        return 'blank';
+      }
+      need = 'coarse';
+    }
+    return need;
   }
 
   /**
