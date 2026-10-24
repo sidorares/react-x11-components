@@ -3147,7 +3147,17 @@ it set aside in each, so the box is placed at the new width and the paint
 reaches it; the span set aside leaves their heights out, since the flow adds
 them again. The Guardian's banner, fixed to the bottom, laid its whole tree
 out at every step. A tree that sets such a box aside anyway — a holder the
-cache missed — is laid out whole from then on (`escapes`). And **a partial
+cache missed — is laid out whole from then on (`escapes`). **An absolute
+box that draws nothing waits for the layout at rest** (`unseenWhileStopped`):
+hidden or faded to nothing all through, placed by a layout before and holding
+no widget, it is set aside from its parent with all it holds, where it was a
+width ago, since where it is matters to nothing a reader sees. GitHub keeps
+its menus so, shrink-to-fit, and they were a third of every step of a drag.
+A restyle in place restyles such a box where it is (`unseenIn`,
+`unseenHeld`), and lays the document out where the box now draws
+(`showsUnseen`): **anything new that can show a box without a layout asks
+`showsUnseen` too**, or a menu a script opens during a drag is drawn only
+once the drag ends. And **a partial
 layout stands on intrinsic sizes the
 tree's first, whole layout found**, which a box keeps for its lifetime: one
 no whole layout has laid out is laid out whole (`_wholeTree`), since a

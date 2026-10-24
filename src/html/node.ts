@@ -214,6 +214,9 @@ import {
   setAsideHere,
   setAsideIn,
   asideOf,
+  showsUnseen,
+  unseenHeld,
+  unseenIn,
   resolvedInsets,
   restickToViewport,
   restickWithin,
@@ -6400,8 +6403,9 @@ export class HtmlViewNode extends Node {
     const restyling = (): Iterable<Element> =>
       pseudoRules === HOVER_PSEUDO_NONE ? changed.keys() : reach;
     const passedAside = asideIn(tree) && this._passesAside(tree, restyling());
+    // but what was set aside for drawing nothing, which a restyle may show
     const blocks = this._blocksOf(tree, restyling()).filter(
-      (block) => !heldBack(tree, block),
+      (block) => !heldBack(tree, block) || unseenHeld(tree, block),
     );
     const restyled: [Box, ComputedStyle][] = [];
     const next = new Map<Box, ComputedStyle>();
@@ -6417,6 +6421,7 @@ export class HtmlViewNode extends Node {
     while (walk.length) {
       const box = walk.pop()!;
       for (const child of box.children) walk.push(child);
+      for (const child of unseenIn(tree, box)) walk.push(child);
       const parent = box.parent;
       const above = parent ? next.get(parent) : undefined;
       let style: ComputedStyle | undefined;
@@ -6723,6 +6728,9 @@ export class HtmlViewNode extends Node {
         relayout = true;
       }
     }
+    // a box a drag's layout left where it was for drawing nothing, shown:
+    // set aside, nothing finds it until a layout places it
+    if (showsUnseen(tree)) relayout = true;
     if (moved.length || widgets || (covers && tree.controls.length)) {
       this._reportControls();
     }
@@ -7069,8 +7077,9 @@ export class HtmlViewNode extends Node {
           answer = known;
           break;
         }
+        // what was set aside for drawing nothing is restyled where it is
         if (setAsideHere(tree, at)) {
-          answer = true;
+          answer = !unseenHeld(tree, at);
           break;
         }
         path.push(at);

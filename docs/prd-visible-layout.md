@@ -1,6 +1,6 @@
 # Laying out only what can be seen
 
-> **Status: A, B, C, E, F and the table rows are built; the rest is design.** Written 2026-10-24 after
+> **Status: A, B, C, E, F, the table rows and what draws nothing are built; D is design.** Written 2026-10-24 after
 > round 49 of the [perf sweep](perf-sweep-2026-09.md), from the seventeen
 > pages its `htmlpage.mjs` loads, with the window's edge dragged 8 px a step
 > for 40 steps and back, on react-x11's macOS backend at 2x. Every number
@@ -312,6 +312,28 @@ widget, can be laid out once the width rests, as what is set aside is; its
 place matters to nothing a reader sees, and the layout at rest gives it the
 right one.
 
+**Built.** In a layout that stops, an absolute box that draws nothing all
+through (`drawsNothing`), that a layout has placed before and that holds no
+control, player or embedded element, is not laid out: it is set aside from
+its parent with all it holds (`unseenWhileStopped`, `holdUnseen`), where it
+was a width ago, and the layout at rest places it. Not a fixed box, which
+the paint finds by a list of its own, nor one in the top layer, nor any in a
+tree that anchors. A restyle in place restyles such a box where it is, and
+lays the document out where it now draws (`showsUnseen`), so a menu a script
+opens during a drag is placed at the next step. Wikipedia's articles hide
+their menus the same way (`vector-dropdown-content`). Boxes laid out a step
+of the drag:
+
+| page                     | before | after |
+| ------------------------ | -----: | ----: |
+| GitHub                   |  1,168 |   813 |
+| Wikipedia, United States |    588 |   397 |
+| Wikipedia, X Window      |    468 |   286 |
+| Wikipedia, countries     |    452 |   279 |
+
+On the Mac, GitHub's median frame went from 11.4 ms to 9.21 and the drag's
+processor time from 4.74 s to 4.04.
+
 ## Order
 
 1. **A** and **B** — built: the enabler. It takes the build off five of
@@ -320,8 +342,8 @@ right one.
    a sidebar.
 3. **E** and a table's rows — built — then **D**: the cut decided from the last
    layout, which only a kept tree has — so after A.
-4. **F** — built — and what draws nothing: one page each in this set, and
-   both common on news sites.
+4. **F** and what draws nothing — both built: one page each in this set,
+   and both common on news sites.
 
 Each is measured as round 48 and 49 were: the seventeen pages dragged on a
 Mac, interleaved against master, three runs a side, with X11 as the second
