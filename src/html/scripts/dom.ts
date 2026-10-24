@@ -145,6 +145,7 @@ export function installDom(
     'setHtml',
     'adjacent',
     'setTitle',
+    'write',
   ]);
   const idList = (s: Any): number[] =>
     typeof s === 'string' && s ? s.split(',').map(Number) : [];
@@ -11730,6 +11731,21 @@ export function installDom(
       return this.querySelector('head');
     }
     get body(): Any {
+      // the `<html>`'s first `<body>` or `<frameset>` child, or none (HTML
+      // 3.1.3, "the body element"): a script in the head, which runs before
+      // the parser has got to the body, finds none
+      if (this._ready === 'loading' && !this._type) {
+        const root = this.documentElement;
+        if (root?.localName === 'html') {
+          for (let kid = root.firstElementChild; kid;) {
+            if (kid.localName === 'body' || kid.localName === 'frameset') {
+              return kid;
+            }
+            kid = kid.nextElementSibling;
+          }
+          return null;
+        }
+      }
       return (
         this.querySelector('body') ?? (this._type ? null : this.documentElement)
       );
@@ -23554,6 +23570,13 @@ export function installDom(
   });
   entry('__ran', () => {
     document._current = null;
+    return true;
+  });
+  // the parser put nodes in the document since a script ran — the host
+  // has noted them for the page's observers (`parserInserted`), and the
+  // entry has run what its custom elements owe
+  entry('__mutated', () => {
+    mutated();
     return true;
   });
 

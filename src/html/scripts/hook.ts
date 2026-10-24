@@ -8,7 +8,8 @@
 // That import takes a few milliseconds, and a document is parsed in the
 // render that mounts it: what `<Html>` reports before the engine is here —
 // the document, the scripts it met, the end of its parse, its `load` — is
-// kept, and handed to the runner in that order once it is made.
+// kept, and handed to the runner in that order once it is made — the script
+// the parse waits at among them, so the parse waits for the engine too.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { Image as NtkImage } from 'react-x11/ntk';
 import type { Element } from 'domhandler';
@@ -59,6 +60,8 @@ export async function preloadHtmlScripts(): Promise<boolean> {
 interface Early {
   document: Document | null;
   scripts: ScriptRequest[];
+  /** The script the parse waits at (`onParserBlocked`). */
+  blocked: Element | null;
   parsed: boolean;
   loaded: boolean;
   /** The CSS events the document owed before the engine was here. */
@@ -73,6 +76,10 @@ export interface ScriptProps {
   onScript?: (request: ScriptRequest) => void;
   onParsed?: () => void;
   onLoaded?: () => void;
+  /** The parse waits at a script that blocks it, which the runner runs
+   *  (`ScriptRunner.blocked`): an internal prop of `<Html>`'s, whose
+   *  presence makes the parse yield to the page's scripts. */
+  _onParserBlocked?: (script: Element) => void;
   onDomEvent?: (event: HtmlDomEvent) => boolean | void;
   stylesheet?: string[];
   /** A frame of the page's sent somewhere by a link or a form whose target
@@ -130,6 +137,7 @@ export function useScripts(
   const early = useRef<Early>({
     document: null,
     scripts: [],
+    blocked: null,
     parsed: false,
     loaded: false,
     css: [],
@@ -257,6 +265,7 @@ export function useScripts(
       early.current = {
         document,
         scripts: [],
+        blocked: null,
         parsed: false,
         loaded: false,
         css: [],
@@ -266,6 +275,10 @@ export function useScripts(
   const onScript = useCallback((request: ScriptRequest) => {
     if (runner.current) runner.current.add(request);
     else if (early.current.document) early.current.scripts.push(request);
+  }, []);
+  const onParserBlocked = useCallback((script: Element) => {
+    if (runner.current) void runner.current.blocked(script);
+    else if (early.current.document) early.current.blocked = script;
   }, []);
   const onParsed = useCallback(() => {
     if (runner.current) void runner.current.parsed();
@@ -309,6 +322,7 @@ export function useScripts(
         early.current = {
           document: null,
           scripts: [],
+          blocked: null,
           parsed: false,
           loaded: false,
           css: [],
@@ -317,6 +331,7 @@ export function useScripts(
         start(loaded, kept.document);
         for (const request of kept.scripts) runner.current?.add(request);
         if (kept.css.length) runner.current?.cssEvents(kept.css);
+        if (kept.blocked) void runner.current?.blocked(kept.blocked);
         if (kept.parsed) void runner.current?.parsed();
         if (kept.loaded) runner.current?.loaded();
       },
@@ -357,6 +372,7 @@ export function useScripts(
     onScript,
     onParsed,
     onLoaded,
+    _onParserBlocked: onParserBlocked,
     onDomEvent,
     navigateFrame,
     scrolled,

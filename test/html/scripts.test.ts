@@ -335,9 +335,29 @@ async function settled(
   return doc.text(id);
 }
 
+/** A page's log, kept on its `<html id="root">` where a script in the
+ *  head, which runs before the parser has met the body, can write it. */
+const ROOT_NOTE =
+  "function note(s) { var root = document.documentElement; var was = root.getAttribute('data-log'); root.setAttribute('data-log', (was ? was + ' ' : '') + s) }";
+
+/** What `ROOT_NOTE` logged, once `done` holds of it or the time is up. */
+async function rootLog(
+  doc: Hosted,
+  done: (log: string) => boolean = () => true,
+  ms = 3000,
+): Promise<string> {
+  const log = () => doc.byId('root')?.attribs['data-log'] ?? '';
+  const end = Date.now() + ms;
+  while (!done(log()) && Date.now() < end) await settle(20);
+  return log();
+}
+
 test('nothing of the host is reachable from a page', async () => {
   const doc = await hosted(
-    '<p id="out"></p><script>' +
+    // the script after what it reaches for, which the parser has met
+    '<p id="out"></p><p id="reached"></p>' +
+      '<button id="b" onclick="import(\'fs\').catch(refused(\'attribute\'))">b</button>' +
+      '<script>' +
       'var r = [];' +
       "r.push(this.constructor.constructor('return typeof process')());" +
       "r.push(document.constructor.constructor('return typeof process')());" +
@@ -360,8 +380,7 @@ test('nothing of the host is reachable from a page', async () => {
       "new Function(\"return import('fs')\")().catch(refused('function'));" +
       "setTimeout(\"import('fs').catch(refused('timer'))\", 0);" +
       "document.getElementById('b').click();" +
-      '</script><p id="reached"></p>' +
-      '<button id="b" onclick="import(\'fs\').catch(refused(\'attribute\'))">b</button>',
+      '</script>',
   );
   await settle(60);
   assert.equal(
@@ -621,6 +640,111 @@ test("a page's scripts run in order once it is parsed, and what they change is d
   // script reads
   assert.equal(doc.text('state'), 'loading shared ready loaded');
   assert.ok(doc.view.textContent().includes('item 2'), 'drawn');
+});
+
+test('a script the parser meets runs there, and sees the document only as far as the parser has read it', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script id="s1">' +
+      ROOT_NOTE +
+      "note(['head', document.body === null, document.readyState, document.currentScript.id," +
+      " document.getElementById('first') === null, document.scripts.length].join(':'));" +
+      '</script></head><body><p id="first">a</p><script id="s2">' +
+      "note(['body', !!document.getElementById('first'), document.getElementById('second') === null," +
+      ' document.body.children.length, document.currentScript.id, document.readyState].join(":"));' +
+      '</script><p id="second">b</p><script>' +
+      "note('end:' + !!document.getElementById('second'));" +
+      "document.addEventListener('DOMContentLoaded', function () { note('ready:' + document.readyState) });" +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('ready')),
+    'head:true:loading:s1:true:1 body:true:true:2:s2:loading end:true ready:interactive',
+  );
+});
+
+test('what document.write writes is parsed where the script is, before what follows it, and is there when write returns', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><p id="a">a</p><script>' +
+      'document.write(\'<p id="w">written</p>\');' +
+      "document.getElementById('w').textContent += ' found';" +
+      // markup a write leaves open goes on in the next one, and in the source
+      "document.write('<div id=\"x\">'); document.write('in</div>');" +
+      'document.writeln(\'<span id="open">\');' +
+      '</script>inside</span><p id="b">b</p><script>' +
+      "note(Array.prototype.map.call(document.body.querySelectorAll('[id]'), function (e) { return e.id }).join(','));" +
+      '</script></body></html>',
+  );
+  assert.equal(await rootLog(doc), 'a,w,x,open,b');
+  assert.equal(doc.text('w'), 'written found');
+  assert.equal(doc.text('x'), 'in');
+  assert.equal(doc.text('open'), '\ninside');
+  assert.ok(doc.view.textContent().includes('written found'), 'drawn');
+});
+
+test('a script document.write writes runs before the parse goes on, and what it writes goes in before what the script that wrote it wrote after it', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><script>' +
+      'document.write(\'<script src="w.js"><\\/script><p id="after-w">after</p>\');' +
+      // what is written once a written script stops the parse waits for it
+      'document.write(\'<p id="later">later</p>\');' +
+      "note('outer:' + (document.getElementById('from-w') === null) + ':' + (document.getElementById('after-w') === null));" +
+      'document.write(\'<script>note("inline:" + !!document.getElementById("from-w") + ":" + (document.getElementById("tail") === null))<\\/script>\');' +
+      '</script><p id="tail">tail</p><script>' +
+      "note('ids:' + Array.prototype.map.call(document.body.querySelectorAll('[id]'), function (e) { return e.id }).join(','));" +
+      '</script></body></html>',
+    {
+      scripts: {
+        'https://example.test/dir/w.js':
+          "note('w:' + (document.getElementById('tail') === null) + ':' + document.currentScript.src.split('/').pop());" +
+          'document.write(\'<p id="from-w">from w</p>\');',
+      },
+    },
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('ids')),
+    'outer:true:true w:true:w.js inline:true:true ids:from-w,after-w,later,tail',
+  );
+});
+
+test('a page sees what the parser puts in the document after its first script, as mutation records', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      'var seen = [];' +
+      'new MutationObserver(function (records) { records.forEach(function (r) {' +
+      '  r.addedNodes.forEach(function (n) { if (n.id) seen.push(r.target.localName + ">" + n.id) }) }) })' +
+      '.observe(document.documentElement, { childList: true, subtree: true });' +
+      "document.addEventListener('DOMContentLoaded', function () { note(seen.join(',')) });" +
+      '</script></head><body id="body"><p id="one"><b id="in-one"></b></p><script>' +
+      'document.write(\'<i id="written"></i>\');' +
+      '</script><p id="two"></p></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.length > 0),
+    'html>body,body>one,p>in-one,body>written,body>two',
+  );
+});
+
+test('a deferred script and a module wait for the parse to end, and find what follows them', async () => {
+  const doc = await hosted(
+    '<p id="a">a</p><script defer src="d.js"></script>' +
+      '<script type="module">document.getElementById("b").textContent += " module"</script>' +
+      '<p id="b">b</p>',
+    {
+      scripts: {
+        'https://example.test/dir/d.js':
+          'document.getElementById("b").textContent += " defer"',
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'b', (t) => t.includes('module')),
+    'b defer module',
+  );
 });
 
 test("a classic script's declarations are the window's, a strict one's and its let, const and class too, and one that does not parse is the page's SyntaxError", async () => {
@@ -5453,53 +5577,53 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(
-    '<html><head><script>' +
-      "function note(s) { var log = document.getElementById('log'); log.textContent = (log.textContent ? log.textContent + ' ' : '') + s }" +
+    '<html id="root"><head><script>' +
+      ROOT_NOTE +
       "note('early:' + document.readyState);" +
       "document.addEventListener('DOMContentLoaded', function () { note('ready') });" +
       '</script><link rel="stylesheet" href="slow.css">' +
       '<link rel="stylesheet" href="gone.css"></head>' +
-      '<body><p id="log"></p><p id="out">x</p><script>' +
+      '<body><p id="out">x</p><script>' +
       "note('late:' + getComputedStyle(document.getElementById('out')).color);" +
       '</script></body></html>',
     { held },
   );
-  assert.equal(doc.text('log'), 'early:loading', 'held for the sheets');
+  assert.equal(await rootLog(doc), 'early:loading', 'held for the sheets');
   await held.answer('gone.css', null);
-  assert.equal(doc.text('log'), 'early:loading', 'one failed, one to come');
+  assert.equal(await rootLog(doc), 'early:loading', 'one failed, one to come');
   await held.answer('slow.css', '#out { color: #ff0000 }');
   assert.equal(
-    await settled(doc, 'log', (t) => t.includes('ready')),
+    await rootLog(doc, (t) => t.includes('ready')),
     'early:loading late:rgb(255, 0, 0) ready',
   );
 });
 
 test('an async script waits for no sheet, and a deferred one or a module for every one the parser met, after it as well', async () => {
   const held = new HeldSheets();
-  const note =
-    "function note(s) { var log = document.getElementById('log'); log.textContent = (log.textContent ? log.textContent + ' ' : '') + s }";
-  const color = "getComputedStyle(document.getElementById('log')).color";
+  const color = 'getComputedStyle(document.documentElement).color';
   let doc = await hosted(
-    '<html><head><script>' +
-      note +
+    '<html id="root"><head><script>' +
+      ROOT_NOTE +
       '</script><link rel="stylesheet" href="slow.css">' +
       '<script async src="a.js"></script><script>' +
       `note('inline:' + ${color})` +
       '</script></head><body><p id="log"></p></body></html>',
     { held, scripts: { 'https://example.test/dir/a.js': "note('async')" } },
   );
-  assert.equal(doc.text('log'), 'async');
-  await held.answer('slow.css', '#log { color: #0000ff }');
+  // run as soon as it was here, while the parse waits for the sheet at the
+  // script after it
+  assert.equal(await rootLog(doc), 'async');
+  await held.answer('slow.css', 'html { color: #0000ff }');
   assert.equal(
-    await settled(doc, 'log', (t) => t.includes('inline')),
+    await rootLog(doc, (t) => t.includes('inline')),
     'async inline:rgb(0, 0, 255)',
   );
   await cleanup();
 
   const later = new HeldSheets();
   doc = await hosted(
-    '<html><head><script>' +
-      note +
+    '<html id="root"><head><script>' +
+      ROOT_NOTE +
       '</script><script defer src="d.js"></script>' +
       `<script type="module">note('module:' + ${color})</script>` +
       '<link rel="stylesheet" href="slow.css"></head>' +
@@ -5509,10 +5633,10 @@ test('an async script waits for no sheet, and a deferred one or a module for eve
       scripts: { 'https://example.test/dir/d.js': `note('defer:' + ${color})` },
     },
   );
-  assert.equal(doc.text('log'), '', 'both after the parse, after the sheet');
-  await later.answer('slow.css', '#log { color: #0000ff }');
+  assert.equal(await rootLog(doc), '', 'both after the parse, after the sheet');
+  await later.answer('slow.css', 'html { color: #0000ff }');
   assert.equal(
-    await settled(doc, 'log', (t) => t.includes('module')),
+    await rootLog(doc, (t) => t.includes('module')),
     'defer:rgb(0, 0, 255) module:rgb(0, 0, 255)',
   );
 });

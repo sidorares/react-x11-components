@@ -91,6 +91,127 @@ test('typing at the end of a completed document is a re-parse per keystroke', ()
   );
 });
 
+test('a source that yields stops after each script that blocks the parser, takes what it writes after it, and goes on when told', () => {
+  const source = new HtmlSource();
+  source.setScripting(true);
+  source.setYields(true);
+  source.setSource(
+    '<p id="a">a</p><script defer src="d.js"></script>' +
+      '<script type="module"></script><script async src="x.js"></script>' +
+      '<script type="text/plain"></script><template><script></script></template>' +
+      '<noscript><script></script></noscript>' +
+      '<script id="s">one</script><p id="b">b</p>' +
+      '<script id="t" src="t.js"></script><p id="c">c</p>',
+    true,
+  );
+  const held = source.held!;
+  assert.strictEqual(
+    held?.attribs.id,
+    's',
+    'not a deferred one, a module, an async one, a data block, or one in a template or a noscript',
+  );
+  assert.ok(!source.complete);
+  assert.strictEqual(findById(source.document, 'b'), null, 'nothing after it');
+  assert.strictEqual(rawTextOf(held), 'one', 'and it is whole');
+  // only the script it waits at writes into the stream
+  assert.strictEqual(source.write(createElement('script'), '<i></i>'), false);
+  assert.ok(source.write(held, '<i id="w">w'));
+  assert.ok(findById(source.document, 'w'), 'parsed as it is written');
+  assert.ok(source.write(held, '</i>'));
+  source.resume(held);
+  assert.strictEqual(source.held?.attribs.id, 't', 'a src blocks too');
+  assert.ok(findById(source.document, 'b'));
+  assert.strictEqual(findById(source.document, 'c'), null);
+  const ids = (): string[] =>
+    [...source.document.children]
+      .filter((n): n is Element => 'attribs' in n)
+      .map((n) => n.attribs.id ?? n.name);
+  assert.deepStrictEqual(ids(), [
+    'a',
+    'script',
+    'script',
+    'script',
+    'script',
+    'template',
+    'noscript',
+    's',
+    'w',
+    'b',
+    't',
+  ]);
+  source.resume(source.held!);
+  assert.strictEqual(source.held, null);
+  assert.ok(source.complete, 'to the end of the source');
+  assert.deepStrictEqual(ids().slice(-2), ['t', 'c']);
+});
+
+test('a script a script writes is waited at before what was written after it, and writes before it', () => {
+  const source = new HtmlSource();
+  source.setScripting(true);
+  source.setYields(true);
+  source.setSource('<script id="s"></script><p id="tail"></p>', true);
+  const outer = source.held!;
+  source.write(outer, '<script id="w" src="w.js"></script><p id="after"></p>');
+  assert.strictEqual(findById(source.document, 'after'), null, 'it waits');
+  source.write(outer, '<p id="later"></p>');
+  source.resume(outer);
+  const written = source.held!;
+  assert.strictEqual(written.attribs.id, 'w');
+  source.write(written, '<p id="from-w"></p>');
+  source.resume(written);
+  assert.ok(source.complete);
+  assert.deepStrictEqual(
+    source.document.children.map((n) => (n as Element).attribs.id),
+    ['s', 'w', 'from-w', 'after', 'later', 'tail'],
+  );
+});
+
+test('a source that yields with no script that blocks the parser is parsed whole at once', () => {
+  const source = new HtmlSource();
+  source.setScripting(true);
+  source.setYields(true);
+  source.setSource(
+    '<p>a</p><script type="module"></script><script defer src="d.js"></script><p>b</p>',
+    true,
+  );
+  assert.strictEqual(source.held, null);
+  assert.ok(source.complete);
+  assert.strictEqual(source.document.children.length, 4);
+});
+
+test('a stream that yields reads no `</script>` across two of its chunks', () => {
+  const source = new HtmlSource();
+  source.setScripting(true);
+  source.setYields(true);
+  // read through a call, which an assertion of null does not narrow
+  const held = (): Element | null => source.held;
+  source.setSource('<p>a</p><script id="s">x</scr', false);
+  assert.strictEqual(held(), null);
+  source.setSource('<p>a</p><script id="s">x</script', false);
+  assert.strictEqual(held(), null, 'no `>` yet');
+  source.setSource('<p>a</p><script id="s">x</script><p id="b"></p>', false);
+  assert.strictEqual(held()?.attribs.id, 's');
+  assert.strictEqual(rawTextOf(held()!), 'x');
+  assert.strictEqual(findById(source.document, 'b'), null);
+  source.resume(held()!);
+  assert.ok(findById(source.document, 'b'));
+  assert.ok(!source.complete, 'the stream goes on');
+  source.setSource('<p>a</p><script id="s">x</script><p id="b"></p>', true);
+  assert.ok(source.complete);
+});
+
+test('turned off while it waits, a source that yields reads on to the end', () => {
+  const source = new HtmlSource();
+  source.setScripting(true);
+  source.setYields(true);
+  source.setSource('<script></script><p id="b"></p>', true);
+  assert.ok(source.held);
+  assert.ok(source.setYields(false));
+  assert.strictEqual(source.held, null);
+  assert.ok(source.complete);
+  assert.ok(findById(source.document, 'b'));
+});
+
 test('the document reports its stylesheets, scripts and resources in one pass', () => {
   const source = new HtmlSource();
   source.setSource(

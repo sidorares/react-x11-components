@@ -966,6 +966,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     scripting: props.scripting ?? false,
     onParsed: lifecycle.onParsed,
     onLoaded: lifecycle.onLoaded,
+    onParserBlocked: lifecycle.onParserBlocked,
     onLayout: lifecycle.onLayout,
     onSheet: onDomEvent ? handleSheet : undefined,
     ref: viewRef as React.Ref<unknown>,
@@ -1201,6 +1202,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
+      parserWrite: (script: Element, markup: string) =>
+        nodeRef.current?.parserWrite(script, markup) ?? false,
+      parserResume: (script: Element) => nodeRef.current?.parserResume(script),
+      parserMade: () => nodeRef.current?.parserMade() ?? [],
       controlValue: (element: Element) =>
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>

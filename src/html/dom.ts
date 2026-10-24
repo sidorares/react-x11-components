@@ -53,6 +53,82 @@ export const NON_RENDERED = new Set(['template']);
  *  its scripts (`HtmlSource.scripting`). */
 const NON_RENDERED_SCRIPTING = new Set(['template', 'noscript']);
 
+/** The MIME types a classic script is (HTML 4.12.1.1, "JavaScript MIME
+ *  type essence match"), and no type at all. */
+const CLASSIC_TYPES = new Set([
+  '',
+  'text/javascript',
+  'application/javascript',
+  'application/ecmascript',
+  'application/x-ecmascript',
+  'application/x-javascript',
+  'text/ecmascript',
+  'text/javascript1.0',
+  'text/javascript1.1',
+  'text/javascript1.2',
+  'text/javascript1.3',
+  'text/javascript1.4',
+  'text/javascript1.5',
+  'text/jscript',
+  'text/livescript',
+  'text/x-ecmascript',
+  'text/x-javascript',
+]);
+
+/** Whether a `<script>`'s `type`, lower-cased, its parameters left out,
+ *  is a classic script's. */
+export function isClassicScriptType(type: string): boolean {
+  return CLASSIC_TYPES.has(type.split(';')[0].trim().toLowerCase());
+}
+
+/**
+ * Whether the parser waits at a `<script>` it has just closed until the
+ * script has run (HTML 13.2.6.4.8, "an end tag whose tag name is
+ * script"): a classic script, inline or with a `src` that is neither
+ * `async` nor `defer` — a parser-blocking script — that a browser with
+ * modules runs, so with no `nomodule`, and that is the document's to run,
+ * in no `<template>` and, where scripts run, in no `<noscript>`, which
+ * the scan hands no script in either (`HtmlSource.facts`). A module, an
+ * import map, a deferred or an `async` script is no reason to wait.
+ */
+export function blocksParser(el: Element, scripting: boolean): boolean {
+  if (el.name !== 'script') return false;
+  const { attribs } = el;
+  if (!isClassicScriptType(attribs.type ?? 'text/javascript')) return false;
+  if (attribs.nomodule !== undefined) return false;
+  if (
+    attribs.src !== undefined &&
+    (attribs.async !== undefined || attribs.defer !== undefined)
+  ) {
+    return false;
+  }
+  for (let at: AnyNode | null = el.parent; at;) {
+    if (at instanceof ShadowRoot) {
+      at = at.host;
+      continue;
+    }
+    if (at instanceof Element) {
+      if (at.name === 'template' || (scripting && at.name === 'noscript')) {
+        return false;
+      }
+    }
+    at = at.parent;
+  }
+  return true;
+}
+
+/** The `<link>`s and `<style>`s a document's parser made, which alone are
+ *  style sheets that hold a script back (HTML 4.2.4, "a style sheet that is
+ *  blocking scripts", whose element was "created by that Document's
+ *  parser") — one written by a parser-blocking script's `document.write`
+ *  among them, and none a script put in with the DOM. */
+const PARSER_SHEETS = new WeakSet<Element>();
+
+/** Whether a document's parser made a `<link>` or a `<style>`. */
+export function madeByParser(el: Element): boolean {
+  return PARSER_SHEETS.has(el);
+}
+
 /** What the HTML parser puts in `<head>`. Where the markup has no `<head>`
  *  around it, at the top of the document, it is still the head's, which a
  *  browser implies and the UA sheet hides: `* { display: block }` shows no
@@ -990,6 +1066,17 @@ export type SheetRef = (
  * ended parse cannot be extended, so every later change re-parses. A caller
  * that wants the append path — a stream, a `<Markdown partial>` — keeps
  * `complete` false until the last chunk, which is what the flag is for.
+ *
+ * Where it `yields`, the parse stops after the end tag of each script that
+ * blocks the parser (`blocksParser`) and waits there — `held` — until the
+ * host has run it and says to go on (`resume`), as HTML's parser waits for
+ * a parser-blocking script (13.2.6.4.8). What the script writes with
+ * `document.write` meanwhile goes into the input stream at the insertion
+ * point, straight after the script and after what it wrote before, and is
+ * parsed there and then (`write`). The source is handed to the parser a
+ * piece at a time, each ending with the `>` of a `</script` (`pieceEnd`),
+ * so the parser has read no further than the script it stops at: the rest
+ * is not in the tree yet, which is what a script that runs there sees.
  */
 export class HtmlSource {
   /** The tree, live: it grows as chunks are written. */
@@ -1001,6 +1088,11 @@ export class HtmlSource {
   /** Whether the host runs the document's scripts: the scan then skips
    *  what a `<noscript>` holds. Set with `setScripting`, which scans again. */
   scripting = false;
+  /** Whether the parse waits at each script that blocks the parser until
+   *  the host has run it (see the class). Set with `setYields`. */
+  yields = false;
+  /** The script the parse waits at: closed, and not yet run. */
+  held: Element | null = null;
 
   private _parser: Parser;
   private _handler: Handler;
@@ -1009,18 +1101,73 @@ export class HtmlSource {
   /** Whether `document` is a tree handed over (`adopt`), which nothing is
    *  written to here. */
   private _adopted = false;
+  /** Where the parse yields: the source as the input stream has it, how far
+   *  into it the parser has read, and whether the source given has ended
+   *  (`complete`), which the parse does once it has read all of it. */
+  private _input = '';
+  private _inputAt = 0;
+  private _ending = false;
+  /** What `document.write` put in the input stream that the parser has
+   *  not read yet, ahead of the rest of `_input`, and the insertion point
+   *  in it: where what the script writes next goes (HTML 13.2.4.3). */
+  private _ahead = '';
+  private _insertion = 0;
+  /** A script that blocks the parser, which what the held one wrote closed:
+   *  it is held next, before the parse goes on (HTML's "pending
+   *  parsing-blocking script"). */
+  private _pending: Element | null = null;
+  /** The script that blocks the parser the last `_feed` stopped after. */
+  private _stopped: Element | null = null;
+  /** What the parser made since `takeMade` was last asked, from the first
+   *  script it waited at on: null before it. */
+  private _made: ChildNode[] | null = null;
 
   constructor() {
     const { parser, handler } = createParser();
+    handler.marksSheets = true;
     this._parser = parser;
     this._handler = handler;
     this.document = handler.root;
+  }
+
+  /** Wait at the scripts that block the parser, or not. Turned off while
+   *  the parse waits, it reads on to the end of what it has without
+   *  stopping. True where the tree changed. */
+  setYields(on: boolean): boolean {
+    if (on === this.yields) return false;
+    this.yields = on;
+    if (on || this._adopted) return false;
+    // what is left of the input stream, read as one
+    this.held = null;
+    this._pending = null;
+    this._made = null;
+    this._handler.inserted = null;
+    let read = false;
+    if (this._ahead) {
+      this._parser.write(this._ahead);
+      this._ahead = '';
+      read = true;
+    }
+    if (this._inputAt < this._input.length) {
+      this._parser.write(this._input.slice(this._inputAt));
+      read = true;
+    }
+    this._input = '';
+    this._inputAt = 0;
+    if (this._ending && !this.complete) {
+      this._parser.end();
+      this.complete = true;
+      read = true;
+    }
+    if (read) this._changed();
+    return read;
   }
 
   /** Set the whole source. Appends when it can — an extension of what was
    *  written, into a parser that has not been ended — and re-parses when it
    *  cannot. */
   setSource(source: string, complete: boolean): boolean {
+    if (this.yields) return this._setYielding(source, complete);
     let changed = false;
     if (this._adopted) {
       // a source after a tree handed over is a document of its own
@@ -1054,12 +1201,181 @@ export class HtmlSource {
       this.complete = true;
       changed = true;
     }
-    if (changed) {
-      this.revision += 1;
-      this._facts = freshFacts();
-      treesChanged();
-    }
+    if (changed) this._changed();
     return changed;
+  }
+
+  /** `setSource` where the parse yields: the source is the input stream's,
+   *  read on from where the parser is to the next script it waits at. */
+  private _setYielding(source: string, complete: boolean): boolean {
+    let changed = false;
+    if (this._adopted) {
+      this._adopted = false;
+      this.reset();
+      this._input = source;
+      changed = true;
+    } else if (source === this._written) {
+      // the same source, which may have ended since
+    } else if (!this.complete && source.startsWith(this._written)) {
+      // more of a stream, after whatever the parser has yet to read
+      this._input += source.slice(this._written.length);
+    } else {
+      this.reset();
+      this._input = source;
+      changed = true;
+    }
+    this._written = source;
+    if (complete) this._ending = true;
+    if (!this.held && !this.complete && this._readOn()) changed = true;
+    if (changed) this._changed();
+    return changed;
+  }
+
+  /**
+   * Read on from where the parser is: what was written ahead of the source,
+   * then the source, a piece at a time, stopping after the end tag of a
+   * script that blocks the parser — which is then `held` — and ending the
+   * parse where the source has ended and all of it is read. True where it
+   * read anything.
+   */
+  private _readOn(): boolean {
+    let read = false;
+    if (this._ahead) {
+      const at = this._feed(this._ahead, 0, this._ahead.length, true);
+      if (at > 0) read = true;
+      this._ahead = this._ahead.slice(at);
+      if (this._hold()) return true;
+      // a tail that may start a `</script` the source goes on with: put in
+      // front of the source, where the two can be read as one
+      if (this._ahead) {
+        this._input = this._ahead + this._input.slice(this._inputAt);
+        this._inputAt = 0;
+        this._ahead = '';
+      }
+    }
+    const from = this._inputAt;
+    this._inputAt = this._feed(
+      this._input,
+      from,
+      this._input.length,
+      !this._ending,
+    );
+    if (this._inputAt > from) read = true;
+    if (this._hold()) return true;
+    if (this._ending && this._inputAt === this._input.length) {
+      this._parser.end();
+      this.complete = true;
+      this._input = '';
+      this._inputAt = 0;
+      read = true;
+    }
+    return read;
+  }
+
+  /** Hold the script the last `_feed` stopped after, where it did: what
+   *  it writes goes in before anything the parser has yet to read. */
+  private _hold(): boolean {
+    const stopped = this._stopped;
+    if (!stopped) return false;
+    this._stopped = null;
+    this.held = stopped;
+    this._insertion = 0;
+    if (!this._made) {
+      this._made = [];
+      this._handler.inserted = this._made;
+    }
+    return true;
+  }
+
+  /**
+   * Hand `text` from `from` up to `to` to the parser, a piece at a time
+   * (`pieceEnd`), stopping after a piece whose `</script>` closed a script
+   * that blocks the parser (`_stopped`). `more` where the input goes on
+   * past `to`, so that a `</script` cut at `to` waits for the rest of it.
+   * Answers how far it read.
+   */
+  private _feed(text: string, from: number, to: number, more: boolean): number {
+    let at = from;
+    while (at < to) {
+      const end = pieceEnd(text, at, to, more);
+      if (end <= at) break;
+      this._handler.closedScript = null;
+      this._parser.write(text.slice(at, end));
+      at = end;
+      const closed = this._handler.closedScript;
+      if (closed && blocksParser(closed, this.scripting)) {
+        this._stopped = closed;
+        break;
+      }
+    }
+    return at;
+  }
+
+  /**
+   * `document.write` from the script the parse waits at: `markup` goes
+   * into the input stream at the insertion point and is parsed up to it
+   * (HTML 8.4.3, "document write steps"), unless a script that blocks the
+   * parser was written before it — and that stops the parse here too,
+   * held next (`_pending`), before what was written after it, which waits.
+   * False where the parse does not wait at `script`, and the caller writes
+   * another way.
+   */
+  write(script: Element, markup: string): boolean {
+    if (!this.yields || this.held !== script || this.complete) return false;
+    const ahead = this._ahead;
+    this._ahead =
+      ahead.slice(0, this._insertion) + markup + ahead.slice(this._insertion);
+    this._insertion += markup.length;
+    if (this._pending) return true;
+    const at = this._feed(this._ahead, 0, this._insertion, true);
+    if (this._stopped) {
+      this._pending = this._stopped;
+      this._stopped = null;
+    }
+    if (at > 0) {
+      this._ahead = this._ahead.slice(at);
+      this._insertion -= at;
+      this._changed();
+    }
+    return true;
+  }
+
+  /**
+   * The script the parse waits at has run: the parse goes on, to the next
+   * script it waits at — one the script wrote first — or to the end of the
+   * source. True where it read anything.
+   */
+  resume(script: Element): boolean {
+    if (this.held !== script) return false;
+    this.held = null;
+    if (this._pending) {
+      this.held = this._pending;
+      this._pending = null;
+      this._insertion = 0;
+      return false;
+    }
+    const read = this._readOn();
+    if (read) this._changed();
+    return read;
+  }
+
+  /** The nodes the parser has put in the tree since this was last asked,
+   *  in the order it put them there, from the first script it waited at
+   *  on: what the page's mutation observers and custom elements hear of,
+   *  since its scripts have run. */
+  takeMade(): readonly ChildNode[] {
+    const made = this._made;
+    if (!made?.length) return NO_NODES;
+    this._made = [];
+    this._handler.inserted = this._made;
+    return made;
+  }
+
+  /** The tree grew: anything kept by the revision is stale. */
+  private _changed(): void {
+    this.revision += 1;
+    this._facts = freshFacts();
+    treesChanged();
   }
 
   /**
@@ -1075,6 +1391,7 @@ export class HtmlSource {
     this._adopted = true;
     this.document = document;
     this._written = '';
+    this._unhold();
     this.complete = true;
     this.revision += 1;
     this._facts = freshFacts();
@@ -1086,13 +1403,29 @@ export class HtmlSource {
   reset(): void {
     this._parser.reset();
     const { parser, handler } = createParser();
+    handler.marksSheets = true;
     this._parser = parser;
     this._handler = handler;
     this.document = handler.root;
     this._written = '';
+    this._unhold();
     this.complete = false;
     this._facts = freshFacts();
     treesChanged();
+  }
+
+  /** Nothing waited at, and no input stream of a parse that yields. */
+  private _unhold(): void {
+    this.held = null;
+    this._pending = null;
+    this._stopped = null;
+    this._input = '';
+    this._inputAt = 0;
+    this._ending = false;
+    this._ahead = '';
+    this._insertion = 0;
+    this._made = null;
+    this._handler.inserted = null;
   }
 
   /** The DOM changed under us — an app mutated it, or a stylesheet arrived
@@ -1218,6 +1551,43 @@ export class HtmlSource {
   }
 }
 
+/** Nothing made (`HtmlSource.takeMade`). */
+const NO_NODES: readonly ChildNode[] = [];
+
+/** A `</script`, wherever it is: the end tags a parse that yields cuts
+ *  the input after (`pieceEnd`). */
+const SCRIPT_END = /<\/script/gi;
+const SCRIPT_END_TEXT = '</script';
+
+/**
+ * Where the piece of `text` from `from` ends that the parser is handed
+ * next where the parse yields (`HtmlSource._feed`): right after the `>`
+ * of the first `</script` in it, or at `to`. A script's end tag is the
+ * only place the parser stops at, and it closes the script at that `>`,
+ * so a script that a piece closed was closed at its end, and nothing of
+ * the input after it has been read. Where the input goes on past `to`
+ * (`more`), a `</script` with no `>` before `to`, and a tail that may be
+ * the start of one, wait for the rest of it, so that no end tag is read
+ * across two pieces.
+ */
+function pieceEnd(text: string, from: number, to: number, more: boolean) {
+  SCRIPT_END.lastIndex = from;
+  const found = SCRIPT_END.exec(text);
+  if (found && found.index < to) {
+    const close = text.indexOf('>', found.index + SCRIPT_END_TEXT.length);
+    if (close >= 0 && close < to) return close + 1;
+    return more ? found.index : to;
+  }
+  if (more) {
+    for (let k = Math.min(SCRIPT_END_TEXT.length - 1, to - from); k > 0; k--) {
+      if (SCRIPT_END_TEXT.startsWith(text.slice(to - k, to).toLowerCase())) {
+        return to - k;
+      }
+    }
+  }
+  return to;
+}
+
 interface ScannedFacts extends DocumentFacts {
   /** The revision `facts()` was computed for; -1 until it has been. */
   scanned: number;
@@ -1266,6 +1636,16 @@ class Handler extends DomHandler {
    *  does in a document a browser's parser builds, and not in a fragment
    *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
   declarative = true;
+  /** Whether the `<link>`s and `<style>`s made here are a document's
+   *  parser's (`madeByParser`): a fragment's are not. */
+  marksSheets = false;
+  /** The last `<script>` an end tag closed, for `HtmlSource` to ask
+   *  whether the parse waits at it. */
+  closedScript: Element | null = null;
+  /** The nodes put in the tree while it is set, in the order they were
+   *  put there: what a step of a parse that waits for scripts made,
+   *  which the page's mutation observers and custom elements hear of. */
+  inserted: ChildNode[] | null = null;
 
   /** Whether an element is open: its end tag not met yet. */
   isOpen(el: Element): boolean {
@@ -1281,6 +1661,7 @@ class Handler extends DomHandler {
    * `<div>`s, which a broken generator writes, ran the stack out.
    */
   protected override addNode(node: ChildNode): void {
+    this.inserted?.push(node);
     const stack = this.tagStack;
     if (stack.length <= MAX_DEPTH) {
       super.addNode(node);
@@ -1333,6 +1714,9 @@ class Handler extends DomHandler {
     if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
+    if (this.marksSheets && (name === 'link' || name === 'style')) {
+      PARSER_SHEETS.add(opened);
+    }
     if (attribs.customelementregistry !== undefined) {
       NULL_REGISTRY.add(opened);
       nullRegistriesParsed = true;
@@ -1569,7 +1953,11 @@ class Handler extends DomHandler {
     // a close htmlparser2 makes is of what it opened, which the implied
     // head is not: it closes with it
     this._closeImpliedHead(null);
+    const closing = this.tagStack[this.tagStack.length - 1];
     super.onclosetag();
+    if (closing instanceof Element && closing.name === 'script') {
+      this.closedScript = closing;
+    }
   }
 
   override oncomment(data: string): void {

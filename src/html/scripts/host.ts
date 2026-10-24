@@ -260,6 +260,16 @@ export interface HandleInternals {
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** `document.write` from the script the parse waits at, into the input
+   *  stream after it (`HtmlViewNode.parserWrite`): false where the parse
+   *  waits at no such script. */
+  parserWrite(script: Element, markup: string): boolean;
+  /** The script the parse waits at has run, and the parse goes on
+   *  (`HtmlViewNode.parserResume`). */
+  parserResume(script: Element): void;
+  /** What the parser put in the tree since this was last asked, once the
+   *  page's scripts have begun to run (`HtmlViewNode.parserMade`). */
+  parserMade(): readonly ChildNode[];
   /** The document styled and laid out as it stands now, and what that
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
@@ -1467,6 +1477,45 @@ export class DomHost {
     return out;
   }
 
+  /**
+   * What the parser put in the document since the page's scripts began to
+   * run (`HandleInternals.parserMade`), told as the DOM tells an insertion
+   * (HTML 13.2.6.1, "insert an element at the adjusted insertion
+   * location"): a record of each node, which the parser appended to a
+   * parent already in the tree, for the page's mutation observers, and
+   * each custom element connected, with what it holds, once. Not to
+   * `<Html>`, whose parser made it. True where there was anything, which
+   * the facade is then told of (`__mutated`) — but for what the op that
+   * wrote it made, which the op's own return tells.
+   */
+  parserInserted(): boolean {
+    const made = this._seams.handle.parserMade?.();
+    if (!made?.length || this._disposed) return false;
+    const fresh = this._custom ? new Set<AnyNode>(made) : null;
+    for (const node of made) {
+      const parent = node.parent;
+      if (!parent) continue;
+      if (this._observers.size) {
+        this._queue(parent, {
+          type: 'childList',
+          target: parent,
+          added: [node],
+          removed: [],
+          previous: node.prev,
+          next: null,
+          attributeName: null,
+          oldValue: null,
+        });
+      }
+      if (fresh && this._inDocument(parent)) {
+        let above: AnyNode = parent;
+        while (above instanceof ShadowRoot) above = above.host;
+        if (!fresh.has(above)) this._customLog('c', node);
+      }
+    }
+    return true;
+  }
+
   /** Load the frames the document has, as a browser loads a frame as the
    *  parser meets it: those its markup has, where the browser draws frames
    *  and nothing has asked for them yet. */
@@ -2531,6 +2580,14 @@ export class DomHost {
       case 'write': {
         const script = this.writing;
         if (!script?.parent) return false;
+        // where the parse waits at the script, into the input stream at the
+        // insertion point, which the parser reads on from, as HTML's does
+        if (this._seams.handle.parserWrite?.(script, text(a))) {
+          this.parserInserted();
+          return true;
+        }
+        // a document parsed whole before its scripts ran — a frame's, which
+        // the page's realm made — takes it as a fragment after the script
         const kids = parseFragment(text(a));
         if (!kids.length) return true;
         const after = this._written.get(script) ?? script;

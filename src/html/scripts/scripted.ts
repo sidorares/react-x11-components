@@ -174,6 +174,10 @@ export interface InternalHtmlProps extends HtmlProps {
   /** Whether the document may be left, as its scripts answer: what the
    *  handle's `beforeUnload` asks. */
   _unloadCheck?: () => boolean;
+  /** The parse waits at a script that blocks it, which the engine runs
+   *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
+   *  page's scripts. */
+  _onParserBlocked?: (script: Element) => void;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of
@@ -489,6 +493,7 @@ export function useScriptedHtml(
     _onPaint: scripts.painted,
     _onCssEvents: scripts.cssEvents,
     _unloadCheck: unloadCheck,
+    _onParserBlocked: scripts._onParserBlocked,
     _frames:
       holderContext && engine
         ? h(engine.FrameHolder, { context: holderContext })

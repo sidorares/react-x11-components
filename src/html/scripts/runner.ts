@@ -5,13 +5,21 @@
 //
 // One engine a document (`ScriptEngine`), over one host (`DomHost`), made
 // when `<Html>` hands over a document it has not seen and dropped with it.
-// The order is phase 1's (docs/prd-html-scripts.md): every classic script
-// the parser met runs once the parse has ended, in document order, as if it
-// were `defer` — `async` ones in the same pass — then `DOMContentLoaded`,
-// then `load` once `<Html>` says everything the document asked for is in.
-// Each waits first for the style sheets a browser would have held it for
-// (`scriptsUnblocked`): those before it, so that one after a head's
-// `<link>` reads the document as the sheet styles it.
+// A script that blocks the parser — a classic one, inline or with a `src`
+// that is neither `async` nor `defer` — runs where the parser met it: the
+// parse waits after its end tag (`blocked`, `onParserBlocked`), so that it
+// sees the document as far as it goes and nothing after, and what it
+// writes with `document.write` goes into the input stream after it. An
+// `async` one runs as soon as its source is here (`_soon`), and the rest —
+// deferred ones and modules — once the parse has ended, in document order,
+// then `DOMContentLoaded`, then `load` once `<Html>` says everything the
+// document asked for is in. A document parsed whole before its scripts
+// ran, a frame's, runs all of them in that pass, as if every one were
+// `defer` (phase 1's order, docs/prd-html-scripts.md), `async` ones after
+// one that blocks the parser among them. Each waits first for the style
+// sheets a browser would have held it for (`scriptsUnblocked`): those
+// before it, so that one after a head's `<link>` reads the document as the
+// sheet styles it.
 // A script a page puts in later runs when its source is here, as a browser
 // runs one a script inserts; one `innerHTML` put in never runs, as in a
 // browser. A module script runs in the same order, its imports fetched and
@@ -27,6 +35,7 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
+import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import { ScriptEngine } from './engine.js';
@@ -74,28 +83,6 @@ export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
 /** What a runner is made with: the options, the handle, and where the
  *  sheets the page adopts go. */
 export type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
-
-/** The MIME types a classic script is (HTML 4.12.1.1, "JavaScript MIME
- *  type essence match"), and no type at all. */
-const CLASSIC = new Set([
-  '',
-  'text/javascript',
-  'application/javascript',
-  'application/ecmascript',
-  'application/x-ecmascript',
-  'application/x-javascript',
-  'text/ecmascript',
-  'text/javascript1.0',
-  'text/javascript1.1',
-  'text/javascript1.2',
-  'text/javascript1.3',
-  'text/javascript1.4',
-  'text/javascript1.5',
-  'text/jscript',
-  'text/livescript',
-  'text/x-ecmascript',
-  'text/x-javascript',
-]);
 
 interface Queued {
   request: ScriptRequest;
@@ -343,15 +330,64 @@ export class ScriptRunner {
       return;
     }
     const module = type === 'module';
-    if (!module && !CLASSIC.has(type)) return;
+    if (!module && !isClassicScriptType(type)) return;
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)
     if (!module && request.element.attribs.nomodule !== undefined) return;
     const source = request.src
       ? this._options.load(request.src, request.element).catch(() => null)
       : Promise.resolve(request.text);
     const queued = { request, source, module };
-    if (!this._parsed) this._queue.push(queued);
+    if (!this._parsed && !this._soon(queued)) this._queue.push(queued);
     else void source.then((code) => this._run(queued, code));
+  }
+
+  /**
+   * Whether an `async` script met before the parse has ended runs as soon
+   * as its source is here, as HTML runs one (4.12.1.1, "the set of scripts
+   * that will execute as soon as possible"), rather than in the pass after
+   * the parse: where no script queued before it blocks the parser. In a
+   * parse that yields, those have run by the time the parser meets it; in
+   * a document parsed whole before its scripts ran — a frame's — they run
+   * in that pass, and it runs after them, in order, as it always did.
+   */
+  private _soon({ request, module }: Queued): boolean {
+    if (request.element.attribs.async === undefined) return false;
+    if (!module && request.src === null) return false;
+    return !this._queue.some((q) => blocksParser(q.request.element, true));
+  }
+
+  /**
+   * The parse waits at a script it met that blocks it (`onParserBlocked`):
+   * run as HTML runs a parser-blocking script — once its source is here
+   * and the sheets before it are in, with what it writes going in after it
+   * — and then the parse goes on (`parserResume`). What the parser made
+   * since a script last ran is told to the page first, and what it makes
+   * going on after it, as the DOM tells an insertion (`parserInserted`).
+   * One the runner does not run — one a view met before, of a type it
+   * runs none of — lets the parse go on all the same, which would
+   * otherwise wait for it for good.
+   */
+  async blocked(element: Element): Promise<void> {
+    if (this._disposed) return;
+    this._parserInserted();
+    const at = this._queue.findIndex((q) => q.request.element === element);
+    if (at >= 0) {
+      const [queued] = this._queue.splice(at, 1);
+      const code = await queued.source;
+      if (this._disposed) return;
+      await this._unblocked(queued);
+      if (this._disposed) return;
+      await this._run(queued, code, true);
+      if (this._disposed) return;
+    }
+    this._options.handle.parserResume?.(element);
+    this._parserInserted();
+  }
+
+  /** What the parser put in the document since it was last asked, told to
+   *  the page: its mutation observers and its custom elements. */
+  private _parserInserted(): void {
+    if (this.host.parserInserted()) this.engine.call('__mutated', null);
   }
 
   /** The parse ended: the scripts it met, in order, each once the sheets
@@ -359,6 +395,7 @@ export class ScriptRunner {
   async parsed(): Promise<void> {
     if (this._parsed || this._disposed) return;
     this._parsed = true;
+    this._parserInserted();
     for (const queued of this._queue) {
       const code = await queued.source;
       if (this._disposed) return;

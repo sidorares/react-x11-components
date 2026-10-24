@@ -1982,8 +1982,10 @@ knows which those are** (`scriptsUnblocked`, `_blocksScripts`): HTML's
 handle's promise before each such script, and asks with no script for a
 deferred one or a module, which waits for every sheet. It does not ask for
 an `async` one. A sheet holds a script while it is the parser's
-(`_parserSheets`, the ones there when the parse ended), is before the
-script, and has a `media` that holds. A `<link>` holds it until
+(`madeByParser` while the parse goes on, `_parserSheets` — those of them
+there when it ended — after), is before the script, and has a `media`
+that holds: one a script put in with the DOM, while the parse waited for
+it, holds nothing. A `<link>` holds it until
 `_sheetOutcome` answers, the answer its `load` is told from, and a
 `<style>` until its imports are in. Run at `onParsed`, a script after a
 head's `<link>` read the document while its first rendering was held for
@@ -1996,7 +1998,8 @@ load-bearing:
   script ahead of them would run after the first paint, which it is
   written to precede.
 - **A waiter is woken only from `_lifecycle`**, which every layout and
-  every settled request reaches. Anything new that can let a script go
+  every settled request reaches — while the parse waits at a script as
+  well as once it has ended. Anything new that can let a script go
   without one has to call `_wakeScripts`, or the page's scripts stop where
   they were.
 
@@ -2004,6 +2007,53 @@ A script ahead of the sheets still runs while the first rendering is held,
 and `computedStyle` and `elementRect` answer null there, where a browser
 answers from the sheets it has. A forced style while a rendering is held
 would close that, and it has to keep the paint held as well.
+
+**The parse yields to the scripts that block it** (`HtmlSource.yields`,
+HTML 13.2.6.4.8): a classic script, inline or with a `src` that is neither
+`async` nor `defer`, runs where the parser met it, and what it writes with
+`document.write` goes into the input stream after it and is parsed there
+(`HtmlSource.write`, through `parserWrite` and the host's `write` op). The
+runner runs it from `onParserBlocked` and lets the parse go on with
+`parserResume` (`ScriptRunner.blocked`); deferred scripts and modules run
+once the parse has ended, and an `async` one as soon as its source is here
+(`_soon`). It yields only where `useScripts` hands `<Html>` its
+`_onParserBlocked`, so a document with scripts off, or a host with an
+engine of its own, is parsed whole as it always was, and so is one with no
+script that blocks it. Six things are load-bearing:
+
+- **The parser is handed a piece at a time, each ending with the `>` of a
+  `</script`** (`pieceEnd`), and stops after a piece whose end tag closed a
+  script `blocksParser` says waits: that is what keeps everything after the
+  script out of the tree, since htmlparser2 has no way to stop in the
+  middle of a chunk. No `</script` is read across two pieces — a tail that
+  may start one waits for more input. **Anything new that writes into the
+  parser of a document that yields goes through `_feed`**, or the parse
+  reads past the script it should have waited at.
+- **The parse waits only at a script the scan hands over.** `blocksParser`
+  leaves out a `<template>`'s and, where scripts run, a `<noscript>`'s, as
+  `facts()` does, and the runner's `blocked` lets the parse go on for a
+  script it runs none of: a script the parse waits at that nothing runs is
+  a document whose rest is never drawn. A change to which scripts the scan
+  hands over changes `blocksParser` with it.
+- **The input stream is what was written ahead of the source, then the
+  source** (`_ahead`, `_input`), with the insertion point in the first
+  (`_insertion`), so a write copies only what was written. A script the
+  written markup closes is `_pending`: the rest of the write, and any later
+  one, waits behind it, and it is held next, its writes going in front of
+  them.
+- **`onParserBlocked` is told as `onParsed` is**: a microtask later, and
+  held for the element's first layout (`useParsedOnceLaidOut`), so a head
+  script measures a document laid out at its width.
+- **What the parser makes once a script has run is the page's to hear,
+  and not `<Html>`'s** (`takeMade`, `parserInserted`): a mutation record
+  a node, and its custom elements connected, from the handler's `addNode`.
+  `<Html>` parsed it and restyles for it itself, so none of it goes
+  through `_tell`.
+- **A frame's document is parsed whole**, by the page's realm, before its
+  scripts run (`adopt`), so a frame's classic scripts still run after its
+  parse, in order, and its `document.write` is the fragment the host puts
+  after the script. An `async` script queued behind one of them waits for
+  that pass, as it always did.
 
 **What the document draws takes the focus through a box mounted over it.**
 A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
