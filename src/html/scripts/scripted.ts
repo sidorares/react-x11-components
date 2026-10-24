@@ -94,6 +94,15 @@ export interface HtmlScripts {
   /** `history.go`, `back` and `forward`, past the page's own
    *  `pushState` steps. Default: nothing. */
   go?: (delta: number) => void;
+  /**
+   * A page being left — a link, a form, `location`, `history`, or the
+   * handle's `beforeUnload` — asked to be confirmed first: its
+   * `beforeunload` was canceled or given a `returnValue`, after the user
+   * pressed or typed in it (HTML 7.4.2.4, "prompt to unload"). Answers
+   * whether to leave it. Default: it is left, as a browser with no one to
+   * ask leaves it.
+   */
+  promptToUnload?: () => boolean;
   /** `document.title` was set. Default: nothing. */
   title?: (title: string | null) => void;
   /** What the page writes to its console, and what the engine says went
@@ -160,6 +169,9 @@ export interface InternalHtmlProps extends HtmlProps {
   _onViewportScroll?: () => void;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
+  /** Whether the document may be left, as its scripts answer: what the
+   *  handle's `beforeUnload` asks. */
+  _unloadCheck?: () => boolean;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of
@@ -286,6 +298,7 @@ export function useScriptedHtml(
     navigate: config.navigate ?? nothing,
     reload: config.reload ?? nothing,
     go: config.go ?? nothing,
+    promptToUnload: config.promptToUnload,
     log: config.log ?? nothing,
     title: config.title ?? nothing,
     fetch: config.fetch ?? NO_NETWORK,
@@ -341,6 +354,12 @@ export function useScriptedHtml(
     (rect: EmbeddedRect) =>
       latest.current.props.renderEmbedded?.(rect) ?? mounts?.(rect) ?? null,
     [mounts],
+  );
+
+  // whether the document may be left, which its runner asks it
+  const unloadCheck = useCallback(
+    () => scripts.runner?.()?.beforeUnload() ?? true,
+    [scripts.runner],
   );
 
   // a link or a form whose target names one of the page's frames loads it
@@ -466,6 +485,7 @@ export function useScriptedHtml(
       frames && scripts.scripting ? renderEmbedded : props.renderEmbedded,
     _onViewportScroll: scripts.scrolled,
     _onCssEvents: scripts.cssEvents,
+    _unloadCheck: unloadCheck,
     _frames:
       holderContext && engine
         ? h(engine.FrameHolder, { context: holderContext })

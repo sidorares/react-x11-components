@@ -1517,14 +1517,22 @@ boxes are kept: a change only of ink, or of what nothing draws — under
 the change is, since no box shows it. Node's API pages hold a hidden picker
 `max-width: 75vw`, and every step of a drag built the whole document's
 boxes for it. And since a layout follows, a change of a block's lengths
-alone is taken in place too (`lengths`, `lengthsOnly`): its width and its
+alone is taken in place too (`lengths`, `lengthChange`): its width and its
 limits, its margins, paddings, offsets and gaps, on a block or a flex or
-grid box that is not replaced — never a font's size, a line's height or a
-sizing keyword, which a box's runs and its measuring are built from. The
-box takes the new style, and what its layouts keep of its sizes for its
-life is forgotten for it and every box it is in (`forgetSizes`), so the
-layout after measures them again: MDN's, Python's, GitHub's, Next.js's and
-the Guardian's builds at every step of a drag were each a length in `vw`.
+grid box that is not replaced — and its text's size, its lines' height and
+its indent (`FONT_FIELDS`), on such a box, on an inline box in one, on a
+`::before` or an `::after`, and on the anonymous boxes that inherit them,
+since `collect` sets a paragraph's runs from each box's style as the block
+is laid out; never a sizing keyword, nor a font where a `::first-line` is
+styled from it as the boxes are built. The box takes the new style, and
+what its layouts keep of its sizes for its life is forgotten for it and
+every box it is in (`forgetSizes`), so the layout after measures them
+again: MDN's, Python's, GitHub's, Next.js's and the Guardian's builds at
+every step of a drag were each a length in `vw`, and Bootstrap's were its
+headings' fluid type, `calc(1.3rem + .6vw)`. **A box that takes a new
+font has its sizes forgotten too, whoever's style it is** — an anonymous
+box around a flex row's text kept the max-content it was measured at, and
+the row came out at the old size's widths.
 **Anything new a box's layouts keep for its life that a length decides is
 forgotten in `forgetSizes`**, or a drag lays the box out at the lengths it
 had; `test/html/viewport.test.ts` holds the resize to a build of the whole
@@ -2321,6 +2329,17 @@ closes a way out a DOM binding opens by accident:
   never answers a property read from the other realm. `postMessage`'s
   `targetOrigin` is held to the window posted to (`__origin`), which is
   not the sender's once two origins are linked.
+- **A document that goes is unloaded first, whatever replaces it.** The
+  page's runner unloads its document as it is disposed (`__unload`), after
+  its frames' realms; a frame's document in the page's realm unloads as
+  the host puts another in its place, while the frame still shows it, or as
+  the task that took the frame out of the document ends
+  (`_unloadFrameDocument`) — never from inside an op, since what it tells
+  runs the page's listeners. And a navigation to another document asks the
+  one it leaves first, after its `navigate` (`unloadAllowed`). **Anything
+  new that swaps a frame's document, drops a runner or hands the host a
+  navigation goes through these**, or a page never hears its `pagehide`,
+  and its window's `navigation` answers for a document that is gone.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
@@ -3649,6 +3668,21 @@ context is painted in its context's flow passes, and nothing of its own
 paints after what it scrolls. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
 links and the page (`scrollBarAt`).
+
+**A scroll snaps by how it moved** (`layout/snap.ts`'s `SnapScroll`): an
+absolute one to the place nearest where it went, a relative one only ahead
+of where it began (`from`) and never past a `scroll-snap-stop: always`, a
+page within a snapport of where it began first (`page`), and one that
+brings an element into view with the element lined up (`lineUp`, the
+`target` of `scrollElementTo` and `snapViewport`). **Anything new that
+scrolls a container or the viewport goes through `_snapScroll` or
+`_snapViewportAt` and says which kind it is**, or a snap container comes to
+rest between its places, or a carousel skips a slide. The viewport's
+re-snap runs after the layout has said how far the document reaches
+(`_documentHeight`), and asks the pane again once the frame is over
+(`_scrollPaneTo`): inside the pass the pane still has the extent from
+before, and clamped an area that the layout moved down past it to where
+the document used to end.
 
 **A vertical writing mode is a frame turned a quarter, and the layout in
 it is the horizontal one** (`layout/writing.ts`). A block container whose

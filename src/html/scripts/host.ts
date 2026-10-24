@@ -332,8 +332,14 @@ export interface HandleInternals {
    *  (`HtmlViewNode.setHighlights`). */
   setHighlights(highlights: readonly HighlightRanges[]): void;
   /** Where a script's scroll of the viewport comes to rest, where the
-   *  root makes it a snap container (`HtmlViewNode.snapViewport`). */
-  snapViewport(x: number, y: number): { x: number; y: number };
+   *  root makes it a snap container, or with the element it brings into
+   *  view lined up (`HtmlViewNode.snapViewport`). */
+  snapViewport(
+    x: number,
+    y: number,
+    target?: Element | null,
+    relative?: boolean,
+  ): { x: number; y: number };
   /** What the page's `CSS.registerProperty` registered, as `@property`
    *  rules (`HtmlViewNode.setRegisteredProperties`). */
   setRegisteredProperties(rules: string): void;
@@ -398,6 +404,9 @@ export interface HostSeams {
   navigate(url: string, how: 'here' | 'replace' | 'tab'): void;
   reload(): void;
   go(delta: number): void;
+  /** A page that is being left asked to be confirmed first (HTML 7.4.2.4,
+   *  "prompt to unload"): whether to leave it. Absent, it is left. */
+  promptToUnload?(): boolean;
   /** What the page writes to its console. */
   log(level: string, text: string): void;
   /** The document's title changed. */
@@ -1221,6 +1230,9 @@ export class DomHost {
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
   private _disposed = false;
+  /** The document is being left: nothing its scripts change now is drawn
+   *  (`leaving`). */
+  private _leaving = false;
   /** An element the page focused that could not take the focus yet, which
    *  is asked again a frame on (`focus`). */
   private _focusing: Element | null = null;
@@ -1297,6 +1309,13 @@ export class DomHost {
     return id;
   }
 
+  /** A task of the page's ended: the documents of the frames it took out
+   *  of the document unload (`_framesLeft`), and what it changed is drawn. */
+  settled(): void {
+    if (this._framesGone) this._framesLeft();
+    this.flush();
+  }
+
   /** Hand the tree's changes to `<Html>`: a restyle, a layout and a paint
    *  of the document as the page left it. */
   flush(): void {
@@ -1307,6 +1326,12 @@ export class DomHost {
     // the tree is whole before it is drawn or read again. Only on a
     // timeout, which is rare, so the walk costs nothing in the common case.
     if (this.entries?.timedOutSince?.()) this._repairTree();
+    // a document being left changes nothing anyone sees
+    if (this._leaving) {
+      this._changes = [];
+      this._refreshAll = false;
+      return;
+    }
     if (this._sheetsChanged.size) this._writeSheets();
     this._syncHighlights();
     if (this._s.changes.size && !this._disposed) {
@@ -1515,6 +1540,12 @@ export class DomHost {
     for (const el of elements) {
       this.entries.call('__fire', [this.idOf(el), 'scrollend']);
     }
+  }
+
+  /** The document is being left (`ScriptRunner.dispose`): what its
+   *  `pagehide` and `unload` listeners change is drawn nowhere. */
+  leaving(): void {
+    this._leaving = true;
   }
 
   dispose(): void {
@@ -3148,7 +3179,9 @@ export class DomHost {
         const r = this._seams.handle.clientBox?.(this._element(a));
         return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
       }
-      // and scrolled, an axis left where it is where it is not a number
+      // and scrolled, an axis left where it is where it is not a number:
+      // by `true` for a relative scroll, or for the element a scroll into
+      // view brings into view by its id, which a snap lines up
       case 'scrollElement': {
         this.flush();
         const x = typeof b === 'number' && Number.isFinite(b) ? b : undefined;
@@ -3157,18 +3190,27 @@ export class DomHost {
           this._element(a),
           { x, y },
           d === true,
+          typeof d === 'number' ? this._element(d) : null,
         );
         return to ? `${to.x},${to.y}` : '';
       }
       case 'scrollTo': {
         // where the root makes the viewport a snap container, where the
-        // scroll comes to rest (`HtmlViewNode.snapViewport`)
+        // scroll comes to rest (`HtmlViewNode.snapViewport`): with the
+        // element a scroll into view brings into view by its id, and
+        // `scrollBy()`'s the way it went
         const x = Math.max(0, Number(a) || 0);
         const y = Math.max(0, Number(b) || 0);
+        const target = typeof c === 'number' ? this._element(c) : null;
         // against the style the page has now, as a scroll is (CSSOM View
         // 4, "perform a scroll" runs after the style is up to date)
         this.flush();
-        const to = this._seams.handle.snapViewport?.(x, y) ?? { x, y };
+        const to = this._seams.handle.snapViewport?.(
+          x,
+          y,
+          target,
+          d === true,
+        ) ?? { x, y };
         this._seams.scrollTo(to.x, to.y);
         return null;
       }
@@ -3352,7 +3394,20 @@ export class DomHost {
         // back to that as it closes. Not one that can take no focus at
         // all, which a page focuses to find out whether it can.
         this._focusing = null;
-        if (!this._seams.handle.focus(el)) {
+        if (this._seams.handle.focus(el)) {
+          // a stop the render to come mounts the box of, which core's focus
+          // follows only then: the element has the focus now, as `focus()`
+          // gives it before it returns, and brings it into view — a slide
+          // of a carousel was focused a frame late and never scrolled to
+          if (this._seams.handle.activeElement !== el && focusableElement(el)) {
+            this._focusing = el;
+            setTimeout(() => {
+              if (!this._disposed && this._focusing === el) {
+                this._focusing = null;
+              }
+            }, 16);
+          }
+        } else {
           const pending = focusableElement(el);
           if (pending) {
             this._focusing = el;
@@ -3467,6 +3522,8 @@ export class DomHost {
       case 'reload':
         this._seams.reload();
         return null;
+      case 'promptToUnload':
+        return this._seams.promptToUnload?.() !== false;
       case 'go':
         this._seams.go(Number(a) || 0);
         return null;
@@ -3831,6 +3888,8 @@ export class DomHost {
       }
     }
     this._sheetText(parent);
+    // a frame taken out unloads its document as the task ends
+    if (removed.length && this._framesShown.size) this._framesGone = true;
     if (this._custom && this._inDocument(parent)) {
       for (const node of removed) this._customLog('d', node);
       for (const node of added) this._customLog('c', node);
@@ -4419,9 +4478,20 @@ export class DomHost {
       !src ||
       (foreign && !(this._seams.drawsFrames && /^https?:/i.test(src)))
     ) {
-      if (src) this._frameAt.set(frame, src);
-      else if (navigated) this._blankFrame(frame);
-      setTimeout(loaded, 0);
+      if (!navigated) {
+        if (src) this._frameAt.set(frame, src);
+        setTimeout(loaded, 0);
+        return;
+      }
+      // a navigation from the document the frame shows, which goes in a
+      // task of its own once that one is unloaded, as one fetched does
+      setTimeout(() => {
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        this._unloadFrameDocument(frame);
+        if (src) this._frameAt.set(frame, src);
+        else this._blankFrame(frame);
+        loaded();
+      }, 0);
       return;
     }
     this._seams
@@ -4493,6 +4563,36 @@ export class DomHost {
       });
   }
 
+  /**
+   * A frame's document is going — another goes in its place, or the frame
+   * left the document — and unloads in this realm (HTML 7.4.2.4) while the
+   * frame still shows it, where it is one of this realm's that the page has
+   * reached: one with a realm of its own unloads as its runner goes, and a
+   * frame's initial `about:blank` is never shown.
+   */
+  private _unloadFrameDocument(frame: Element): void {
+    const old = this._frames.get(frame);
+    if (!old || !this.entries || this._disposed || !this._ids.has(old)) return;
+    if (this._initialBlank.has(old) || this._s.realms.has(old)) return;
+    this._framesShown.delete(frame);
+    this.entries.call('__unloadDocument', [this.idOf(old)]);
+  }
+
+  /** The frames in the document showing one of this realm's documents,
+   *  whose leaving the document unloads it (`_framesLeft`), and whether
+   *  one may have since the last task. */
+  private _framesShown = new Set<Element>();
+  private _framesGone = false;
+
+  /** The frames that left the document since the last task: their
+   *  documents unload, at the end of the task that took them out. */
+  private _framesLeft(): void {
+    this._framesGone = false;
+    for (const frame of [...this._framesShown]) {
+      if (!this._inDocument(frame)) this._unloadFrameDocument(frame);
+    }
+  }
+
   /** A frame's new document, from `address`, put in the frame: its
    *  scripts run, where it may run any, and its `load` told. */
   private _frameLoaded(
@@ -4511,12 +4611,16 @@ export class DomHost {
     const realm =
       !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
     if (realm) this._s.realms.add(doc);
+    // the one it shows unloads first, while it is still the frame's
+    this._unloadFrameDocument(frame);
+    if (this._disposed) return;
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
     this._frameAt.set(frame, address);
     this._s.frameList.add(frame);
     this._s.framesChanged();
     if (realm) return;
+    if (this._inDocument(frame)) this._framesShown.add(frame);
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
     }

@@ -573,6 +573,10 @@ export interface HtmlHandle {
     /** A relative scroll, `scrollBy()`'s, which a snap container snaps
      *  in the direction it went. */
     relative?: boolean,
+    /** The element the scroll brings into view — `scrollIntoView()`'s,
+     *  a fragment's — lined up as its `scroll-snap-align` says where it
+     *  is one of the container's snap areas. */
+    target?: Element | null,
   ): { x: number; y: number } | null;
   /** The document's `<title>`, if it had one. */
   readonly title: string | null;
@@ -621,6 +625,17 @@ export interface HtmlHandle {
    * Settled at once with no document.
    */
   scriptsUnblocked(script?: Element | null): Promise<void>;
+  /**
+   * Ask the document whether it may be left, before the host goes to
+   * another — a typed address, Reload, a tab closed — as a browser asks
+   * (HTML 7.4.2.4): with `scripts` on, its `beforeunload` is told, and it
+   * stays only where it asks to be confirmed, the user has pressed or typed
+   * in it, and `scripts.promptToUnload` says to stay. True to leave it, and
+   * true with no scripts. A navigation the page starts itself is asked as
+   * it starts, and a document left without asking hears its
+   * `beforeunload` as it goes, with nothing it can keep.
+   */
+  beforeUnload(): boolean;
   /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
@@ -819,10 +834,17 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     [],
   );
   const outerRef = props.ref;
+  // what the handle's `beforeUnload` asks: the document's scripts, where
+  // they run (`_unloadCheck`)
+  const unloadCheck = React.useRef(props._unloadCheck);
+  unloadCheck.current = props._unloadCheck;
   const viewRef = React.useCallback(
     (node: HtmlViewNode | null) => {
       viewNode.current = node;
-      if (node) node.interactive = interactive;
+      if (node) {
+        node.interactive = interactive;
+        node.unloadCheck = () => unloadCheck.current?.() ?? true;
+      }
       if (typeof outerRef === 'function') outerRef(node);
       else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
     },
@@ -1117,7 +1139,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
       setRegisteredProperties: (rules) =>
         nodeRef.current?.setRegisteredProperties(rules),
-      snapViewport: (x, y) => nodeRef.current?.snapViewport(x, y) ?? { x, y },
+      snapViewport: (x, y, target, relative) =>
+        nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
       layoutNow: () => nodeRef.current?.layoutNow(),
       cssAnimations: (element, subtree) =>
         nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
@@ -1160,7 +1183,9 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         element: Element,
         to: { x?: number; y?: number },
         relative?: boolean,
-      ) => nodeRef.current?.scrollElementTo(element, to, relative) ?? null,
+        target?: Element | null,
+      ) =>
+        nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
       customProperty: (
@@ -1173,6 +1198,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.matchMedia(query) ?? false,
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
+      beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
       controlValue: (element: Element) =>
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>

@@ -285,6 +285,322 @@ test('a scroll with a direction snaps ahead of where it began: scrollBy, a scrol
   assert.equal(y(), 80, 'ahead, where it rested');
 });
 
+test('a page key in a snap container rests within a page where a snap position is, so that it skips no area, and goes farther where none is', async () => {
+  // CSS Scroll Snap 1, "choosing snap positions": a scroll by a page takes
+  // a place within a snapport of where it began before any farther, as
+  // WPT's input/paged.html has it. Centred in a 200px list, the areas
+  // line up at 0, 100, 210, 320, 360, 400, 510 and, past a gap, 1080 —
+  // the most it scrolls — and seven eighths of a page from 0 is nearer
+  // 210 than 100, which would skip the short area between
+  const heights = [180, 40, 180, 40, 40, 40, 180];
+  const areas = heights
+    .map(
+      (height, i) =>
+        `<div id="p${i}" class="p" style="height:${height}px"></div>`,
+    )
+    .join('');
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#s{height:200px;overflow-y:auto;' +
+      'scroll-snap-type:y mandatory}.p{scroll-snap-align:center}</style>' +
+      `<div id="s">${areas}<div style="height:400px"></div>` +
+      '<div id="last" class="p" style="height:180px"></div></div>',
+    300,
+  );
+  const list = el(node, 's');
+  const y = () => node.scrollStateOf(list)?.y;
+  const page = async (sign: 1 | -1) =>
+    act(async () => void node.scrollForKey('y', 'page', sign, list));
+  await page(1);
+  assert.equal(y(), 100, 'the short area, not the one past it');
+  await page(1);
+  assert.equal(y(), 210, 'the tall one after it');
+  await page(1);
+  assert.equal(y(), 400, 'the one of those in a page nearest a page on');
+  await page(1);
+  assert.equal(y(), 510);
+  await page(1);
+  assert.equal(y(), 1080, 'more than a page, where nothing is nearer');
+  await page(-1);
+  assert.equal(y(), 510, 'and back');
+  // a line is a scroll with a direction too, and Home and End go to the
+  // place nearest each end
+  await act(async () => void node.scrollForKey('y', 'end', -1, list));
+  assert.equal(y(), 0);
+  await act(async () => void node.scrollForKey('y', 'line', 1, list));
+  assert.equal(y(), 100, 'the next place on');
+  // Space is a page, and Shift+Space a page back
+  const dx = 20 - node.abs.width / 2;
+  const dy = 20 - node.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(node as unknown as DrawnNode, { dx, dy });
+    fireEvent.mouseUp(node as unknown as DrawnNode, { dx, dy });
+  });
+  await userEvent.key(XK_SPACE);
+  assert.equal(y(), 210);
+  await userEvent.key(XK_SPACE, { modifiers: ['Shift'] });
+  assert.equal(y(), 100);
+});
+
+test('a scroll with a direction passes over no area whose scroll-snap-stop is always, and stops at the first it reaches', async () => {
+  // CSS Scroll Snap 1, "scroll-snap-stop", as WPT's scroll-snap-stop-002
+  // has it: a stop the scroll would pass is where it rests, however much
+  // nearer where it was going another place is; one past where it was
+  // going stops nothing; and an area larger than the snapport stops a
+  // scroll at its first place, and lets the next go on inside it
+  const scroller = (id: string, areas: string) =>
+    `<div id="${id}" class="s"><div class="space"></div>${areas}</div>`;
+  const at = (left: number, extra = '') =>
+    `<div class="t" style="left:${left}px;${extra}"></div>`;
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}.s{position:relative;width:400px;height:100px;' +
+      'overflow:scroll;scroll-snap-type:x mandatory}' +
+      '.s div{position:absolute;top:0}.space{width:2100px;height:50px}' +
+      '.t{width:50px;height:50px;scroll-snap-align:start}</style>' +
+      scroller('a', at(0) + at(100, 'scroll-snap-stop:always') + at(290)) +
+      scroller('b', at(0) + at(120, 'scroll-snap-stop:always') + at(110)) +
+      scroller(
+        'c',
+        at(0) +
+          at(700, 'scroll-snap-stop:always') +
+          at(100, 'width:500px;scroll-snap-stop:always') +
+          at(600),
+      ),
+    400,
+  );
+  const by = (id: string, x: number) =>
+    node.scrollElementTo(
+      el(node, id),
+      { x: node.scrollStateOf(el(node, id))!.x + x },
+      true,
+    )?.x;
+  assert.equal(by('a', 300), 100, 'the stop, not 290 past it');
+  assert.equal(by('a', 200), 290, 'and on from it');
+  assert.equal(
+    node.scrollElementTo(el(node, 'a'), { x: 300 })?.x,
+    290,
+    'a scroll to a place stops nowhere on its way',
+  );
+  assert.equal(by('b', 100), 110, 'a stop past where it was going');
+  assert.equal(by('c', 150), 100, 'the first place of a large area');
+  assert.equal(by('c', 50), 150, 'and anywhere in it after');
+  // the wheel, once it rests, from where it began
+  node.scrollElementTo(el(node, 'a'), { x: 0 });
+  const rect = node.elementRect(el(node, 'a'))!;
+  node.wheelAt({ x: rect.x + 10, y: rect.y + 10 });
+  await act(async () => node.scrollBy({ x: 150 }));
+  await act(async () => node.scrollBy({ x: 150 }));
+  await act(() => new Promise((ok) => setTimeout(ok, 150)));
+  assert.equal(node.scrollStateOf(el(node, 'a'))?.x, 100);
+});
+
+test('a re-snap that cannot show both areas it was snapped to keeps the focused one, then the URL target, then the block axis area', async () => {
+  // CSS Scroll Snap 1, "re-snapping after layout changes", as WPT's
+  // layout-follows-focused-targeted-block has it: snapped to #b2 across
+  // and #b1 down, and #b1 moved out of the snapport, the container lines
+  // up the one it prefers on both axes
+  const page =
+    '<style>body{margin:0}#s{position:relative;width:200px;height:200px;' +
+    'overflow:scroll;scroll-snap-type:both mandatory}' +
+    '.t{position:absolute;width:50px;height:50px;scroll-snap-align:start}' +
+    '#b1{left:150px;top:0}#b2{left:0;top:150px}' +
+    '.space{position:absolute;width:1000px;height:1000px}</style>' +
+    '<div id="s"><div id="b1" class="t"></div><div id="b2" class="t"></div>' +
+    '<div class="space"></div></div>';
+  const follows = async (
+    how: 'focus' | 'target' | 'neither',
+  ): Promise<{ x: number; y: number }> => {
+    const { el: node } = await renderScrolled(
+      page,
+      300,
+      400,
+      how === 'target' ? { baseUrl: 'https://example.test/#b2' } : {},
+    );
+    if (how === 'focus') node.setFocus(el(node, 'b1'));
+    await act(async () => {
+      el(node, 'b1').attribs.style = 'left:300px';
+      node.touchDocument(null);
+    });
+    await act();
+    const state = node.scrollStateOf(el(node, 's'))!;
+    cleanup();
+    return { x: state.x, y: state.y };
+  };
+  assert.deepEqual(await follows('focus'), { x: 300, y: 0 }, 'focused #b1');
+  assert.deepEqual(
+    await follows('target'),
+    { x: 0, y: 150 },
+    '#b2, the URL target',
+  );
+  assert.deepEqual(
+    await follows('neither'),
+    { x: 300, y: 0 },
+    'the block axis area',
+  );
+});
+
+test('of the areas that line up at once, a snap is to the focused one or the one that holds the focus, then the innermost, then one that lines up on both axes', async () => {
+  // CSS Scroll Snap 1, "selecting between multiple aligned snap areas",
+  // as WPT's nested-supercedes-common-to-both-axes and
+  // prefer-focused-nested-containers have it
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#s{position:relative;width:300px;height:300px;' +
+      'overflow:scroll;scroll-snap-type:both mandatory}' +
+      '#s div{position:absolute;scroll-snap-align:start}' +
+      '#space{width:1000px;height:1000px;scroll-snap-align:none!important}' +
+      '#box1{left:0;top:0;width:200px;height:200px}' +
+      '.in{width:50px;height:50px}#box2{left:100px;top:0}#box3{left:0;top:100px}' +
+      '#o{position:relative;width:300px;height:300px;overflow:scroll;' +
+      'scroll-snap-type:y mandatory}#o .c{position:absolute;top:100px;width:100px;' +
+      'height:100px;overflow:scroll;scroll-snap-type:y mandatory;scroll-snap-align:start}' +
+      '#o .space{position:absolute;width:10px;height:1000px}' +
+      '#right{left:150px}#r1{position:absolute;top:0;width:10px;height:10px}</style>' +
+      '<div id="s"><div id="space"></div><div id="box1">' +
+      '<div id="box2" class="in"></div><div id="box3" class="in"></div></div></div>' +
+      '<div id="o"><div class="space"></div>' +
+      '<div id="left" class="c"><div class="space"></div></div>' +
+      '<div id="right" class="c"><div class="space"></div><div id="r1"></div></div></div>',
+    700,
+  );
+  // at no scroll, #box1 and #box2 line up down and #box1 and #box3 across:
+  // the inner ones, though #box1 lines up on both
+  await act(async () => {
+    el(node, 'box2').attribs.style = 'top:100px';
+    el(node, 'box3').attribs.style = 'left:100px';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.deepEqual(
+    [
+      node.scrollStateOf(el(node, 's'))?.x,
+      node.scrollStateOf(el(node, 's'))?.y,
+    ],
+    [100, 100],
+    'it followed #box3 and #box2',
+  );
+  // two inner containers line up in the outer one, and the focus is in the
+  // second: that is the one it follows
+  node.setFocus(el(node, 'r1'));
+  assert.equal(node.scrollElementTo(el(node, 'o'), { y: 100 })?.y, 100);
+  await act(async () => {
+    el(node, 'right').attribs.style = 'top:200px';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.equal(node.scrollStateOf(el(node, 'o'))?.y, 200, 'it followed #right');
+});
+
+test('a scroll that brings an area into view lines it up as its scroll-snap-align says, in a container that snaps and in one that does not', async () => {
+  // CSS Scroll Snap 1, "choosing snap positions": a scroll to a target
+  // snaps to one of its own places; and one whose container does not
+  // snap may line it up too, as WPT's scroll-target-align-00x have it
+  const slides = Array.from(
+    { length: 8 },
+    (_, i) => `<div id="slide${i}" class="slide"></div>`,
+  ).join('');
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#c{display:flex;width:300px;height:100px;' +
+      'overflow-x:auto;scroll-snap-type:x mandatory}' +
+      '.slide{flex:0 0 100px;height:80px;scroll-snap-align:center}' +
+      '#plain{height:80px;overflow:auto;scroll-padding-top:10px}' +
+      '#plain div{height:20px}#target{scroll-margin-top:10px;scroll-snap-align:center}</style>' +
+      `<div id="c">${slides}</div>` +
+      '<div id="plain"><div></div><div></div><div></div><div></div><div></div>' +
+      '<div></div><div></div><div id="target"></div><div></div><div></div>' +
+      '<div></div><div></div><div></div></div>',
+    400,
+  );
+  // the third slide, which the carousel shows at no scroll, lined up at
+  // its centre: 250 - 150
+  assert.deepEqual(
+    node.scrollElementTo(el(node, 'c'), {}, false, el(node, 'slide2')),
+    { x: 100, y: 0 },
+  );
+  assert.deepEqual(
+    node.scrollElementTo(el(node, 'c'), { x: 0 }),
+    { x: 0, y: 0 },
+    'without it, the place nearest where it asked',
+  );
+  // the target and its margin, 130 to 160, centred in the 10px to 80px of
+  // the scrollport its padding leaves: 145 - 45
+  assert.equal(
+    node.scrollElementTo(
+      el(node, 'plain'),
+      { y: 140 },
+      false,
+      el(node, 'target'),
+    )?.y,
+    100,
+  );
+  assert.equal(
+    node.scrollElementTo(el(node, 'plain'), { y: 140 })?.y,
+    140,
+    'a scroll to a place is where it asked',
+  );
+});
+
+test('the viewport snaps under the scroll keys and the wheel where the root makes it a snap container', async () => {
+  const sections = Array.from(
+    { length: 4 },
+    (_, i) => `<section id="s${i}"></section>`,
+  ).join('');
+  const { el: node } = await renderScrolled(
+    '<!DOCTYPE html><html><head><style>html{scroll-snap-type:y mandatory}' +
+      'body{margin:0}section{height:300px;scroll-snap-align:start}</style>' +
+      `</head><body>${sections}</body></html>`,
+    300,
+  );
+  const pane = paneOf(node);
+  const dx = 20 - node.abs.width / 2;
+  const dy = 20 - node.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(node as unknown as DrawnNode, { dx, dy });
+    fireEvent.mouseUp(node as unknown as DrawnNode, { dx, dy });
+  });
+  await userEvent.key(XK_PAGE_DOWN);
+  assert.equal(pane.scrollY, 300, 'a page, at the next section');
+  await userEvent.key(XK_DOWN);
+  assert.equal(pane.scrollY, 600, 'a line, at the next one on');
+  await userEvent.key(XK_HOME);
+  assert.equal(pane.scrollY, 0);
+  // a notch of the wheel moves the pane, and once it rests it snaps on
+  await wheel(node, 50, 50);
+  assert.equal(pane.scrollY, 48, 'as it turns');
+  await act(() => new Promise((ok) => setTimeout(ok, 150)));
+  assert.equal(pane.scrollY, 300, 'where it rested');
+  await wheel(node, 50, 50, -1);
+  await act(() => new Promise((ok) => setTimeout(ok, 150)));
+  assert.equal(pane.scrollY, 0, 'and back');
+});
+
+test('the viewport re-snapped after a layout follows the area it came to rest at, not the one it was snapped to before', async () => {
+  const { el: node } = await renderScrolled(
+    '<!DOCTYPE html><html><head><style>html{scroll-snap-type:y mandatory}' +
+      'body{margin:0}section{height:300px;scroll-snap-align:start}</style>' +
+      '</head><body><div id="pad"></div><section id="c1"></section>' +
+      '<section id="c2"></section><section id="c3"></section></body></html>',
+    300,
+  );
+  const pane = paneOf(node);
+  assert.deepEqual(node.snapViewport(0, 600), { x: 0, y: 600 });
+  await act(() =>
+    (pane as unknown as { scrollTo(to: object): void }).scrollTo({ y: 600 }),
+  );
+  // #c3 goes, and the viewport comes to rest at #c2, the end now
+  await act(async () => {
+    el(node, 'c3').attribs.style = 'display:none';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.equal(pane.scrollY, 300);
+  // and follows #c2 down, where the nearest place to where it was is #c1's
+  await act(async () => {
+    el(node, 'pad').attribs.style = 'height:200px';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.equal(pane.scrollY, 500);
+});
+
 test('a scroll container moves the boxes positioned against it and leaves the ones positioned against what is around it', async () => {
   const { el: node } = await renderScrolled(
     '<style>body{margin:0}#s{height:100px;overflow:auto}' +
