@@ -69,6 +69,7 @@ import type {
   TextLayoutLike,
 } from './boxes.js';
 import type { FloatContext } from './floats.js';
+import { FRAMES, framed, setUpright, uprightInMixed } from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
 import type { PrettySetting } from './pretty.js';
@@ -577,6 +578,12 @@ function linesOf(
   }
   // small capitals the face does not have, made of its capitals
   synthesizeSmallCaps(items, fonts);
+  // the characters a vertical line sets upright, each in an em of its own
+  // (`uprightItems`); and `vertical-lr`'s lines, made a piece at a time so
+  // that each can be put back across the frame alone (`reflectFrame`)
+  const vertical = framed.any && block.style.writingMode !== 'horizontal-tb';
+  if (vertical) uprightItems(items, fonts);
+  const apart = vertical && block.style.writingMode === 'vertical-lr';
   if (wraps(block.style)) holdNoWrap(items, block);
   // one walk for what few paragraphs have: text that casts a shadow, and a
   // tab, which only a `white-space` that keeps it leaves — so no text is
@@ -713,7 +720,7 @@ function linesOf(
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
   // the lines a piece at a time, below, where it did not.
-  if (spaced && !floated && !indent && !alignedApart && !restyled) {
+  if (spaced && !floated && !indent && !alignedApart && !restyled && !apart) {
     const laid = layoutSpaced(
       items,
       base,
@@ -739,7 +746,8 @@ function linesOf(
     !indent &&
     !alignedApart &&
     !restyled &&
-    !strutted
+    !strutted &&
+    !apart
   ) {
     // no atomics and no edges, so everything is text
     const textItems = items as Extract<Item, { kind: 'text' }>[];
@@ -1251,6 +1259,7 @@ function linesOf(
       !alignedApart &&
       !onFirst &&
       !strutted &&
+      !apart &&
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
@@ -3708,6 +3717,9 @@ function tableBaseline(table: Box): number | null {
  * chevron, and the line it was on came out shorter than a browser's.
  */
 function lastBaselineIn(box: Box): number | null {
+  // the root of a flow in another writing mode has none along the line it
+  // is on, and sits on its bottom margin edge (CSS Writing Modes 4, 4.3.2)
+  if (framed.any && FRAMES.has(box)) return null;
   if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
   if (box.lines?.length) {
     const line = box.lines[box.lines.length - 1];
@@ -3723,6 +3735,7 @@ function lastBaselineIn(box: Box): number | null {
 /** The same, from the first line box or child: a table's baseline is its
  *  first row's, and so is a table cell's. */
 export function firstBaselineIn(box: Box): number | null {
+  if (framed.any && FRAMES.has(box)) return null;
   if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
   if (box.lines?.length) {
     return heldIn(box, box.lines[0].y + box.lines[0].baseline);
@@ -4904,6 +4917,151 @@ function smallCapsPieces(
   cut(text.length);
   return any ? pieces : null;
 }
+
+/**
+ * The characters a vertical line sets upright (CSS Writing Modes 4, 5.1):
+ * every one but white space under `text-orientation: upright`, and under
+ * `mixed` those whose orientation is upright (`uprightInMixed`); none in a
+ * `sideways-*` mode or under `sideways`, whose glyphs the frame's turn sets
+ * on their sides. Each is a run of its own, with a mark or a joiner after
+ * it, spaced out to an em, which is how far a vertical line advances over
+ * an upright glyph — a Latin letter is narrower than that, and set upright
+ * at its own advance its neighbours' glyphs would overlap it. The spacing
+ * has a hair more in it, so that no run of a horizontal line is ever the
+ * same run (`TextLayoutCache`). The glyph each is drawn from, upright, is
+ * laid out once for its face and character (`setUpright`).
+ */
+function uprightItems(items: Item[], fonts: FontsLike): void {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind !== 'text' || item.control) continue;
+    const style = item.box.style;
+    const mode = style.writingMode;
+    if (
+      mode === 'horizontal-tb' ||
+      mode === 'sideways-rl' ||
+      mode === 'sideways-lr' ||
+      style.textOrientation === 'sideways'
+    ) {
+      continue;
+    }
+    const pieces = uprightPieces(
+      item,
+      style.textOrientation === 'upright',
+      fonts,
+      fontOf(style),
+    );
+    if (!pieces) continue;
+    items.splice(i, 1, ...pieces);
+    i += pieces.length - 1;
+  }
+}
+
+/** Whether a code point goes with the character before it: a combining
+ *  mark, a variation selector, a joiner or what it joins, a skin tone. */
+function clings(cp: number): boolean {
+  return (
+    (cp >= 0x300 && cp <= 0x36f) ||
+    (cp >= 0x1ab0 && cp <= 0x1aff) ||
+    (cp >= 0x1dc0 && cp <= 0x1dff) ||
+    (cp >= 0x20d0 && cp <= 0x20ff) ||
+    cp === 0x3099 ||
+    cp === 0x309a ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    (cp >= 0xfe20 && cp <= 0xfe2f) ||
+    cp === 0x200d ||
+    (cp >= 0x1f3fb && cp <= 0x1f3ff) ||
+    (cp >= 0xe0100 && cp <= 0xe01ef)
+  );
+}
+
+/** A text item cut where its characters stand upright, each upright one a
+ *  piece of its own spaced to an em, or null where none does. */
+function uprightPieces(
+  item: Extract<Item, { kind: 'text' }>,
+  all: boolean,
+  fonts: FontsLike,
+  face: Face,
+): Extract<Item, { kind: 'text' }>[] | null {
+  const text = item.run.text;
+  const pieces: Extract<Item, { kind: 'text' }>[] = [];
+  const em = item.run.size ?? 16;
+  const own = item.run.letterSpacing ?? 0;
+  let from = 0;
+  let any = false;
+  const piece = (to: number, upright: boolean): void => {
+    if (to === from) return;
+    const chars = text.slice(from, to);
+    let run: TextRun = { ...item.run, text: chars };
+    if (upright) {
+      const advance = advanceOf(fonts, face, chars);
+      run = { ...run, letterSpacing: own + em - advance + HAIR };
+      setUpright(run, uprightGlyph(fonts, item.run, chars));
+    }
+    pieces.push({ ...item, run, start: item.start + from, length: to - from });
+    from = to;
+  };
+  for (let at = 0; at < text.length;) {
+    const cp = text.codePointAt(at)!;
+    const upright = all ? !SPACE_LIKE.test(text[at]) : uprightInMixed(cp);
+    let end = at + (cp > 0xffff ? 2 : 1);
+    if (!upright) {
+      at = end;
+      continue;
+    }
+    // what clings to it goes with it, and after a joiner, what it joins
+    while (end < text.length) {
+      const next = text.codePointAt(end)!;
+      if (!clings(next)) break;
+      end += next > 0xffff ? 2 : 1;
+      if (next === 0x200d && end < text.length) {
+        const joined = text.codePointAt(end)!;
+        end += joined > 0xffff ? 2 : 1;
+      }
+    }
+    piece(at, false);
+    piece(end, true);
+    any = true;
+    at = end;
+  }
+  piece(text.length, false);
+  return any ? pieces : null;
+}
+
+/** White space, which a vertical line sets as it is in any orientation. */
+const SPACE_LIKE = /[\s\u200b\u2028]/;
+
+/** A character laid out alone, in a run's face, to be drawn upright: with
+ *  the face's vertical forms (`vert`), which put a full stop in the top
+ *  right of its cell and turn a bracket. Kept per face and character. */
+function uprightGlyph(
+  fonts: FontsLike,
+  run: TextRun,
+  text: string,
+): TextLayoutLike {
+  let kept = GLYPHS.get(fonts);
+  if (!kept) GLYPHS.set(fonts, (kept = new Map()));
+  const key = `${run.family}|${run.size}|${run.weight}|${run.style}|${run.color}|${text}`;
+  let glyph = kept.get(key);
+  if (!glyph) {
+    const face = {
+      family: run.family,
+      size: run.size,
+      weight: run.weight,
+      style: run.style,
+      color: run.color,
+    };
+    glyph = fonts.layout(
+      [{ ...face, text, features: { ...run.features, vert: 1 } }],
+      face,
+      {},
+    );
+    kept.set(key, glyph);
+  }
+  return glyph;
+}
+
+const GLYPHS = new WeakMap<FontsLike, Map<string, TextLayoutLike>>();
 
 /** Features without the small capitals a synthesis stands in for, one
  *  object for each set, as `featuresOf` keeps them. */

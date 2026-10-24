@@ -3684,6 +3684,72 @@ re-snap runs after the layout has said how far the document reaches
 before, and clamped an area that the layout moved down past it to where
 the document used to end.
 
+**A vertical writing mode is a frame turned a quarter, and the layout in
+it is the horizontal one** (`layout/writing.ts`). A block container whose
+writing mode is vertical in a horizontal parent is an orthogonal flow's root
+(CSS Writing Modes 4, 7.3); the builder moves what it holds into an
+anonymous block, its frame, whose transform is the quarter turn
+(`makeFrame`), so paint, the hit test, the damage, `elementRect` and the
+layers all go through it as through any transform. The root is laid out by
+its parent in the page's axes, and lays its frame out in the flow's
+(`layoutFramed` in `block.ts`): the frame as wide as the root is tall, fit
+to its content within the room down the page — the containing block's
+height, or the viewport's, which marks the layout as reading it
+(`readsViewportHeight`) — and the root as wide as the frame came to down its
+block axis, which is the root's intrinsic width at its least and its most
+(`intrinsicWidth`). Six things are load-bearing.
+
+- **A box in a frame has its style turned** (`framedStyle`): its physical
+  sides, sizes, corners and shadow offsets handed to the frame's, so the
+  horizontal layout reads the flow's block and inline sides where it reads
+  top and left. The element's own style, the cascade's and a script's, is
+  the page's, and a turned style is no element's: a restyle in place finds
+  `box.style !== kept` and builds. **Anything new that hands a box in a
+  frame a style from the cascade turns it, or builds**, and **anything new
+  that reads such a box's sides or sizes for the page turns them back**
+  (`pageSides`, as `getComputedStyle` does; a widget's rect through the
+  frame's matrix, as `controlRectsOf` does).
+- **The gate is the tree's** (`BoxTree.vertical`, set by the builder):
+  `framed.any` is set from it as a layout, a paint or an anchor walk of a
+  tree begins (`layoutDocument`, `paintDocument`, `paintCapture`,
+  `paintLiftedBox`, `paintCover`, `anchorAt`), and every per-box question —
+  `FRAMES.get`, `FRAME_ROOTS.has`, a box's writing mode in the inline layout
+  and in `paintLinePart` — asks it first, so a document in no vertical mode
+  pays a boolean. Anything new that lays out or paints a tree from another
+  entry sets it there; anything new that asks a box whether it is a frame's
+  asks it first.
+- **The root is a formatting context of its own with no baseline across
+  its line** (`establishesBFC`, `lastBaselineIn`, `firstBaselineIn`): an
+  inline-block one sits on its bottom margin edge. Its words say nothing of
+  its width (`exactMinContent`, `wordBound`), and its frame is laid out
+  whole: `until`, `reach` and `keep` are heights down the page, and the
+  frame's heights are across it. An anchor walk stops at the root.
+- **What a vertical line sets upright is a run a character, spaced to an
+  em, and drawn after the frame level with the page** (`uprightItems`,
+  `paintUpright`): ntk turns no glyph, and a glyph turned back through two
+  quarter turns would be resampled twice on a surface. The run carries the
+  glyph it is drawn from under a symbol (`setUpright`), which a copy of the
+  run (`{ ...run, nowrap }`) keeps and its identity would not, and its
+  spacing a hair no horizontal run's has, so the layout cache never hands
+  one's layout to the other. The frame's own draw leaves the upright cells
+  out (`drawSideways`): **anything new that draws a frame's text leaves
+  them out too**, or they are drawn twice, once on their sides.
+- **`vertical-lr` is laid out as `vertical-rl` and put back across**
+  (`reflectFrame`): its lines and blocks moved, each whole and none
+  mirrored, to where they are laid out from the other end, so its glyphs
+  stay the right way up — which is why its lines are made a piece at a
+  time (`apart` in `linesOf`), each a layout of its own that can be moved
+  alone, quadratic in its lines as that loop is, and why a block's margins
+  in it are turned from the other side (`REFLECTED_MARGINS`). A block no
+  layout has laid out since it was put back is left as it is
+  (`layoutSerial`).
+- **A writing mode and a direction are read ahead of the other
+  declarations where a sheet declares a writing mode** (`Cascade._writing`):
+  a logical property maps by the element's own, whatever its place in
+  cascade order. In a document that declares none nothing is read twice,
+  and the direction is as the cascade has it when a logical property is
+  read, as before.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

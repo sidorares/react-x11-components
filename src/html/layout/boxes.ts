@@ -41,6 +41,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
+import { makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -1065,6 +1066,11 @@ export interface BoxTree {
    *  is, no layer is offered for one (`HtmlViewNode.sprites`), and nothing
    *  looks. A restyle in place that turns one sets it too. */
   tilted: boolean;
+  /** Whether any box is the root of a flow in a vertical writing mode,
+   *  turned on its side in a frame of its own (`layout/writing.ts`): where
+   *  none is, nothing in the layout or the paint asks a box whether it is
+   *  one. */
+  vertical: boolean;
   /** Whether any box has a `reading-flow`: where none has, Tab goes in the
    *  document's order and nothing asks the boxes (`inReadingOrder`). */
   readingFlow: boolean;
@@ -1226,6 +1232,17 @@ function idIndex(root: Element): (id: string) => Element | null {
  */
 const MAX_DEPTH = 512;
 
+/** The writing mode a box's content is laid out in: its own, but for a
+ *  table's rows and row groups, to which `writing-mode` does not apply and
+ *  whose cells are in the table's (CSS Writing Modes 4, 3.1). */
+function flowModeAround(box: Box): ComputedStyle['writingMode'] {
+  let at: Box | null = box;
+  while (at && (at.kind === 'table-row' || at.kind === 'table-row-group')) {
+    at = at.parent;
+  }
+  return (at ?? box).style.writingMode;
+}
+
 /** The sharing key the root box's children share under: one root style per
  *  build, and the shared styles last a build (`Cascade.beginSharing`). */
 const ROOT_SHARE_KEY = 0;
@@ -1263,6 +1280,10 @@ class Builder {
   private _awaitingKind: Element[] = [];
   private _relative = false;
   private _tilted = false;
+  /** The boxes in a vertical writing mode whose parents are in a
+   *  horizontal one, which a frame is made in once the fix-up has run
+   *  (`makeFrame`). */
+  private _orthogonal: Box[] = [];
   private _readingFlow = false;
   private _anchors = false;
   private _negative = false;
@@ -1332,6 +1353,9 @@ class Builder {
     cascade.endSharing();
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);
+    for (const box of this._orthogonal) {
+      makeFrame(box, anonymous(box.style, 'block'));
+    }
     assignSubtreeRanges(rootBox);
     // every build has one: a drawing may want its attributes' `var()`s
     // read where no rule reaches it (`Cascade.shapeStyles`), and the index
@@ -1359,6 +1383,7 @@ class Builder {
       awaitingKind: this._awaitingKind,
       relative: this._relative || isRelative(rootStyle),
       tilted: this._tilted || outOfPlane(rootStyle),
+      vertical: this._orthogonal.length > 0,
       readingFlow: this._readingFlow || rootStyle.readingFlow !== 'normal',
       anchors: this._anchors || rootStyle.anchorNames !== null,
       negative: this._negative,
@@ -1751,6 +1776,17 @@ class Builder {
     if (this._depth + depth > MAX_DEPTH) return;
     const box = new Box(kind, el, style);
     into.append(box);
+    // a block container in a vertical writing mode in a horizontal one:
+    // the root of an orthogonal flow (CSS Writing Modes 4, 7.3)
+    if (
+      style.writingMode !== 'horizontal-tb' &&
+      (kind === 'table-cell' ||
+        kind === 'table-caption' ||
+        (kind === 'block' && !style.grid)) &&
+      flowModeAround(into) === 'horizontal-tb'
+    ) {
+      this._orthogonal.push(box);
+    }
     if (
       (kind === 'block' || kind === 'table-cell' || kind === 'table-caption') &&
       this._options.cascade.hasFirstLine

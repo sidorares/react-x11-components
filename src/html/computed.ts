@@ -631,6 +631,8 @@ function cssomAt(
     'text-decoration-line': style.textDecorationLine || 'none',
     'white-space': style.whiteSpace,
     direction: style.direction,
+    'writing-mode': style.writingMode,
+    'text-orientation': style.textOrientation,
     'list-style-type': style.listStyleType,
     'min-width': len(style.minWidth, scale),
     'max-width': len(style.maxWidth, scale),

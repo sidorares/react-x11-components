@@ -98,6 +98,38 @@ import type { RangeEdge, TimelineTriggers, TriggerScope } from './triggers.js';
 import { viewTransitionClass, viewTransitionName } from './specified.js';
 import type { BasicShape } from './basic-shape.js';
 
+/** `writing-mode`'s values (CSS Writing Modes 4, 3.1). */
+export type WritingMode =
+  | 'horizontal-tb'
+  | 'vertical-rl'
+  | 'vertical-lr'
+  | 'sideways-rl'
+  | 'sideways-lr';
+
+/** What each value `writing-mode` is written with computes to: its own
+ *  five, and SVG 1.1's, which pages written for IE still use (`-ms-
+ *  writing-mode: tb-rl`) and every browser still reads (3.1.1). */
+const WRITING_MODES: Readonly<Record<string, WritingMode>> = {
+  'horizontal-tb': 'horizontal-tb',
+  'vertical-rl': 'vertical-rl',
+  'vertical-lr': 'vertical-lr',
+  'sideways-rl': 'sideways-rl',
+  'sideways-lr': 'sideways-lr',
+  lr: 'horizontal-tb',
+  'lr-tb': 'horizontal-tb',
+  rl: 'horizontal-tb',
+  'rl-tb': 'horizontal-tb',
+  tb: 'vertical-rl',
+  'tb-rl': 'vertical-rl',
+  'tb-lr': 'vertical-lr',
+};
+
+/** Whether a writing mode's lines run down the page (or up it, for
+ *  `sideways-lr`): any but `horizontal-tb`. */
+export function verticalMode(mode: WritingMode): boolean {
+  return mode !== 'horizontal-tb';
+}
+
 export type Display =
   | 'none'
   | 'block'
@@ -750,6 +782,15 @@ export interface ComputedStyle {
    *  does, which is all it asks of a text that is not being edited. */
   textWrapStyle: 'auto' | 'balance' | 'pretty';
   direction: 'ltr' | 'rtl';
+  /** `writing-mode` (CSS Writing Modes 4, 3.1): which way lines run and
+   *  which way they stack. Inherited; a box whose mode is vertical and
+   *  whose parent's is not is an orthogonal flow (`layout/writing.ts`). */
+  writingMode: WritingMode;
+  /** `text-orientation` (5.1): how the glyphs of a vertical line stand —
+   *  `mixed` turns the sideways scripts and keeps CJK upright, `upright`
+   *  keeps every character so, `sideways` turns them all. Inherited, and
+   *  read only in a vertical mode. */
+  textOrientation: 'mixed' | 'upright' | 'sideways';
   /** How an element's text takes part in the bidi algorithm: not
    *  inherited, and carried out as the control characters it stands for
    *  (`bidiControls`). */
@@ -1465,6 +1506,8 @@ export const INHERITED = [
   'lineBreakAnywhere',
   'textWrapStyle',
   'direction',
+  'writingMode',
+  'textOrientation',
   'visibility',
   'listStyleType',
   'listStylePosition',
@@ -1626,6 +1669,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     lineBreakAnywhere: false,
     textWrapStyle: 'auto',
     direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    textOrientation: 'mixed',
     unicodeBidi: 'normal',
     visibility: 'visible',
     listStyleType: 'disc',
@@ -1987,6 +2032,8 @@ export function inherit(
   out.lineBreakAnywhere = parent.lineBreakAnywhere;
   out.textWrapStyle = parent.textWrapStyle;
   out.direction = parent.direction;
+  out.writingMode = parent.writingMode;
+  out.textOrientation = parent.textOrientation;
   out.visibility = parent.visibility;
   out.listStyleType = parent.listStyleType;
   out.listStylePosition = parent.listStylePosition;
@@ -2253,6 +2300,13 @@ const PREFIXED_ALIASES: Record<string, string> = {
   // Safari's name for it until 18, which pages still write beside the
   // standard one
   '-webkit-backdrop-filter': 'backdrop-filter',
+  // the vertical text of an EPUB, and of pages written for IE and for
+  // WebKit before the standard names
+  '-webkit-writing-mode': 'writing-mode',
+  '-ms-writing-mode': 'writing-mode',
+  '-epub-writing-mode': 'writing-mode',
+  '-webkit-text-orientation': 'text-orientation',
+  '-epub-text-orientation': 'text-orientation',
 };
 
 /**
@@ -4193,6 +4247,18 @@ export function applyDeclaration(
     case 'direction': {
       const v = value.toLowerCase();
       if (v === 'ltr' || v === 'rtl') style.direction = v;
+      return;
+    }
+    case 'writing-mode': {
+      const mode = WRITING_MODES[value.toLowerCase()];
+      if (mode) style.writingMode = mode;
+      return;
+    }
+    case 'text-orientation': {
+      const v = value.toLowerCase();
+      if (v === 'mixed' || v === 'upright' || v === 'sideways') {
+        style.textOrientation = v;
+      } else if (v === 'sideways-right') style.textOrientation = 'sideways';
       return;
     }
     case 'unicode-bidi': {
@@ -7630,7 +7696,9 @@ const CORNERS = [
   'border-bottom-left-radius',
 ];
 
-type Side = 'inline-start' | 'inline-end' | 'block-start' | 'block-end';
+export type LogicalSide =
+  'inline-start' | 'inline-end' | 'block-start' | 'block-end';
+type Side = LogicalSide;
 
 /** What a logical property stands for: a physical one found by a side, the
  *  two sides of an axis, or a corner. */
@@ -7645,7 +7713,13 @@ type Logical =
       physical: (side: string) => string;
       valid: (part: string, ctx: UnitContext) => boolean;
     }
-  | { kind: 'size'; physical: string }
+  | {
+      kind: 'size';
+      /** The physical property in a horizontal writing mode, and in a
+       *  vertical one, whose inline axis is the page's height. */
+      physical: string;
+      vertical: string;
+    }
   | {
       kind: 'corner';
       block: 'start' | 'end';
@@ -7655,10 +7729,12 @@ type Logical =
     };
 
 /**
- * CSS Logical Properties 1, in the horizontal writing mode `<Html>` lays
- * out: the inline axis is the line's, its start the left of a
- * left-to-right element and the right of a right-to-left one, and the block
- * axis runs down. Tailwind 4 writes its spacing in them — `px-4` is
+ * CSS Logical Properties 1: the inline axis is the line's, its start the
+ * left of a left-to-right element and the right of a right-to-left one,
+ * and the block axis runs down — in a horizontal writing mode. In a
+ * vertical one the inline axis runs down the page (up it, in
+ * `sideways-lr`) and the block axis across, right to left or left to right
+ * (`physicalSide`). Tailwind 4 writes its spacing in them — `px-4` is
  * `padding-inline`, `mx-auto` is `margin-inline: auto` — and every modern
  * reset writes some.
  */
@@ -7725,15 +7801,17 @@ const LOGICAL: Record<string, Logical> = (() => {
       };
     }
   }
-  const sizes: [string, string][] = [
-    ['inline-size', 'width'],
-    ['block-size', 'height'],
-    ['min-inline-size', 'min-width'],
-    ['min-block-size', 'min-height'],
-    ['max-inline-size', 'max-width'],
-    ['max-block-size', 'max-height'],
+  const sizes: [string, string, string][] = [
+    ['inline-size', 'width', 'height'],
+    ['block-size', 'height', 'width'],
+    ['min-inline-size', 'min-width', 'min-height'],
+    ['min-block-size', 'min-height', 'min-width'],
+    ['max-inline-size', 'max-width', 'max-height'],
+    ['max-block-size', 'max-height', 'max-width'],
   ];
-  for (const [name, physical] of sizes) out[name] = { kind: 'size', physical };
+  for (const [name, physical, vertical] of sizes) {
+    out[name] = { kind: 'size', physical, vertical };
+  }
   for (const block of ['start', 'end'] as const) {
     for (const inline of ['start', 'end'] as const) {
       out[`border-${block}-${inline}-radius`] = {
@@ -7753,17 +7831,39 @@ const LOGICAL: Record<string, Logical> = (() => {
   return out;
 })();
 
-/** The physical side a logical one is, by the element's direction. */
-function physicalSide(side: Side, rtl: boolean): string {
+/** The physical side a logical one is, by the element's direction and its
+ *  writing mode (CSS Writing Modes 4, 6.4): in a vertical mode the inline
+ *  axis runs down the page, up it in `sideways-lr`, and the block axis
+ *  starts at the right of `vertical-rl` and `sideways-rl` and at the left
+ *  of the other two. */
+export function physicalSide(
+  side: LogicalSide,
+  rtl: boolean,
+  mode: WritingMode = 'horizontal-tb',
+): 'top' | 'right' | 'bottom' | 'left' {
+  if (mode === 'horizontal-tb') {
+    switch (side) {
+      case 'inline-start':
+        return rtl ? 'right' : 'left';
+      case 'inline-end':
+        return rtl ? 'left' : 'right';
+      case 'block-start':
+        return 'top';
+      default:
+        return 'bottom';
+    }
+  }
+  const up = mode === 'sideways-lr';
+  const fromRight = mode === 'vertical-rl' || mode === 'sideways-rl';
   switch (side) {
     case 'inline-start':
-      return rtl ? 'right' : 'left';
+      return rtl !== up ? 'bottom' : 'top';
     case 'inline-end':
-      return rtl ? 'left' : 'right';
+      return rtl !== up ? 'top' : 'bottom';
     case 'block-start':
-      return 'top';
+      return fromRight ? 'right' : 'left';
     default:
-      return 'bottom';
+      return fromRight ? 'left' : 'right';
   }
 }
 
@@ -7782,34 +7882,44 @@ function applyLogical(
   ctx: UnitContext,
 ): void {
   const rtl = style.direction === 'rtl';
+  const mode = style.writingMode;
   switch (logical.kind) {
     case 'side':
       applyDeclaration(
         style,
         parent,
-        logical.physical(physicalSide(logical.side, rtl)),
+        logical.physical(physicalSide(logical.side, rtl, mode)),
         value,
         ctx,
       );
       return;
     case 'size':
-      applyDeclaration(style, parent, logical.physical, value, ctx);
-      return;
-    case 'corner': {
-      const vertical = logical.block === 'start' ? 'top' : 'bottom';
-      const left = (logical.inline === 'start') !== rtl;
       applyDeclaration(
         style,
         parent,
-        logical.physical(`${vertical}-${left ? 'left' : 'right'}`),
+        mode === 'horizontal-tb' ? logical.physical : logical.vertical,
+        value,
+        ctx,
+      );
+      return;
+    case 'corner': {
+      const block = physicalSide(`block-${logical.block}`, rtl, mode);
+      const inline = physicalSide(`inline-${logical.inline}`, rtl, mode);
+      // a corner is named by its side across the page and then its side
+      // down it, whichever of them is the block axis's
+      const across = block === 'top' || block === 'bottom';
+      applyDeclaration(
+        style,
+        parent,
+        logical.physical(across ? `${block}-${inline}` : `${inline}-${block}`),
         value,
         ctx,
       );
       return;
     }
     default: {
-      const start = physicalSide(`${logical.axis}-start`, rtl);
-      const end = physicalSide(`${logical.axis}-end`, rtl);
+      const start = physicalSide(`${logical.axis}-start`, rtl, mode);
+      const end = physicalSide(`${logical.axis}-end`, rtl, mode);
       let parts: string[];
       if (logical.same || CSS_WIDE.has(value.toLowerCase())) {
         parts = [value, value];
@@ -7862,6 +7972,8 @@ const INHERITED_NAMES = new Set<string>([
   'text-wrap-mode',
   'text-wrap-style',
   'direction',
+  'writing-mode',
+  'text-orientation',
   'visibility',
   'list-style',
   'list-style-type',
@@ -8239,6 +8351,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-wrap-mode': ['whiteSpace'],
   'text-wrap-style': ['textWrapStyle'],
   direction: ['direction'],
+  'writing-mode': ['writingMode'],
+  'text-orientation': ['textOrientation'],
   'unicode-bidi': ['unicodeBidi'],
   visibility: ['visibility'],
   'list-style': ['listStyleType', 'listStylePosition', 'listStyleImage'],
