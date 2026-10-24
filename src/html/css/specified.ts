@@ -6,6 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { positionAreaText } from './anchor.js';
+import { serializeMath } from './calc-tree.js';
 import { animationItemText, animationLonghandsOf } from './animation.js';
 import { parseShapeFunction } from './shape-function.js';
 import { parseZoom, splitValue } from './values.js';
@@ -558,7 +559,9 @@ function rewriteAnchors(value: string, prop: string): string | null {
     from = end;
     re.lastIndex = end;
   }
-  return out + value.slice(from);
+  // and a math function around them simplified, as one serializes
+  const whole = out + value.slice(from);
+  return MATH.test(whole) ? (serializeMath(whole) ?? whole) : whole;
 }
 
 function anchorCall(fn: string, inner: string, prop: string): string | null {
@@ -599,7 +602,11 @@ function anchorCall(fn: string, inner: string, prop: string): string | null {
         ? ANCHOR_SIZE.test(w)
         : ANCHOR_SIDE.test(w) || /^[+-]?[\d.]+%$/.test(w) || MATH.test(w))
     ) {
-      word = MATH.test(w) || /%$/.test(w) ? w : w.toLowerCase();
+      word = MATH.test(w)
+        ? (serializeMath(w) ?? w)
+        : /%$/.test(w)
+          ? w
+          : w.toLowerCase();
     } else return null;
   }
   if (!size && word === null) return null;

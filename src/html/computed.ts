@@ -607,6 +607,10 @@ function cssomAt(
       style.positionTryOrder === 'normal'
         ? tryFallbacksText(style.positionTryFallbacks)
         : `${style.positionTryOrder} ${tryFallbacksText(style.positionTryFallbacks)}`,
+    'justify-self': style.justifyAnchorCenter
+      ? 'anchor-center'
+      : style.justifySelf,
+    'align-self': style.alignAnchorCenter ? 'anchor-center' : style.alignSelf,
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, color),

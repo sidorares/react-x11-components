@@ -204,6 +204,7 @@ import {
   forgetSizes,
   heldBack,
   laidWhole,
+  layoutAsks,
   layoutDocument,
   placedMatrix,
   resolvedInsets,
@@ -220,8 +221,12 @@ import {
   scrollBarHit,
   scrollBarsOf,
   anchoredAcross,
+  anchorScrollsOf,
+  followPane,
   positionVisibilityBoxes,
+  refitAnchored,
   scrollContent,
+  setViewport,
   updatePositionVisibility,
   scrolledBy,
   scrollMoves,
@@ -230,7 +235,12 @@ import {
   STUCK,
   wheelScrolls,
 } from './layout/scroll.js';
-import type { ScrollBar, ScrollOffset, ScrollState } from './layout/scroll.js';
+import type {
+  ScrollBar,
+  ScrollOffset,
+  ScrollState,
+  Viewport,
+} from './layout/scroll.js';
 import { lineUp, linesUp, resnap, snapTo } from './layout/snap.js';
 import type {
   SnapArea,
@@ -2258,7 +2268,37 @@ export class HtmlViewNode extends Node {
         }
       }
     }
+    // A box anchored across the pane's scroll moves with its anchor where
+    // the copy leaves it, or stays where the copy takes its anchor: where
+    // it was drawn, and where it is drawn now.
+    if (tree.anchors && anchorScrollsOf(tree.root).size) {
+      this._followViewport();
+      out.push(...this._anchoredDrawn);
+      for (const rect of this._anchoredRects(tree)) {
+        if (!this._anchoredDrawn.some((was) => sameRect(was, rect))) {
+          out.push(rect);
+        }
+      }
+    }
     return out.length ? out : null;
+  }
+
+  /** Where each box anchored across the pane's scroll (`followPane`) is
+   *  drawn, in window pixels. */
+  private _anchoredRects(tree: BoxTree): Rect[] {
+    let out: Rect[] | null = null;
+    for (const [box, state] of anchorScrollsOf(tree.root)) {
+      if (!state.pane) continue;
+      const ink = this._inkOf(box, true);
+      if (!ink || !(ink.width > 0 && ink.height > 0)) continue;
+      (out ??= []).push({
+        x: this.abs.x + ink.x,
+        y: this.abs.y + ink.y,
+        width: ink.width,
+        height: ink.height,
+      });
+    }
+    return out ?? NO_RECTS;
   }
 
   /**
@@ -2328,16 +2368,18 @@ export class HtmlViewNode extends Node {
     // moves as much as a scroll
     void Promise.resolve().then(() => this._restyleScrolled());
     const boxes = tree && VIEWPORT_STICKY.get(tree);
-    if (!boxes) return;
-    const viewport = this._viewport();
-    if (!viewport) return;
-    const origin = this._scrolledOrigin();
-    const moved = restickToViewport(boxes, {
-      x: viewport.x - origin.x,
-      y: viewport.y - origin.y,
-      width: viewport.width,
-      height: viewport.height,
-    });
+    // and what is anchored across the pane's scroll: fixed to the viewport
+    // and anchored in the document, or the other way round
+    const anchored = tree?.anchors ? anchorScrollsOf(tree.root) : null;
+    if (!tree || (!boxes && !anchored?.size)) return;
+    const at = this._viewportAt();
+    if (!at) return;
+    let moved = boxes ? restickToViewport(boxes, at) : null;
+    if (anchored?.size) {
+      const followed = followPane(tree.root, at, translate);
+      if (followed) moved = moved ? [...moved, ...followed] : followed;
+      if (this._refitAnchored(tree, at)) moved ??= [];
+    }
     if (!moved) return;
     // what moved, and the boxes around it as far as they have to grow
     // (`boundsAfterMove`); the whole tree where that cannot be said
@@ -2352,6 +2394,45 @@ export class HtmlViewNode extends Node {
     }
     // what is mounted beside the document is told at the paint
     this._stickyMoved = true;
+  }
+
+  /**
+   * Where the pane around the element has the viewport, in the document's
+   * device pixels, for the offsets it has now (`_scrolledOrigin`): how far
+   * its scroll moves what is fixed to the viewport from where it was laid
+   * out, and the viewport's size. Null where nothing scrolls the element.
+   */
+  private _viewportAt(): Viewport | null {
+    const viewport = this._viewport();
+    if (!viewport) return null;
+    const origin = this._scrolledOrigin();
+    return {
+      x: viewport.x - origin.x,
+      y: viewport.y - origin.y,
+      width: viewport.width,
+      height: viewport.height,
+    };
+  }
+
+  /**
+   * What a scroll did to the boxes anchored across it (`refitAnchored`): a
+   * box `position-visibility` hides or shows now leaves its stacking
+   * context's layers, or joins them, and one that no longer fits where it
+   * has position options to try has the document laid out again, which
+   * tries them where its anchor is now (CSS Anchor Positioning 1, 6.5).
+   * Whether anything is hidden or shown.
+   */
+  private _refitAnchored(tree: BoxTree, viewport: Viewport | null): boolean {
+    const root = tree.root;
+    if (refitAnchored(root, viewport)) {
+      // asked as a paint reads where the boxes are: the layout is the
+      // next frame's
+      void Promise.resolve().then(() => this._invalidate(Stale.Layout));
+    }
+    if (!updatePositionVisibility(root, viewport).length) return false;
+    stackLayers(root);
+    computePaintBounds(root, tree.movedInline);
+    return true;
   }
 
   private _viewportHeight(): number {
@@ -3020,6 +3101,12 @@ export class HtmlViewNode extends Node {
           this._scrollOffsetsOf = this._source.document;
         }
         setScrollOffsets(this._tree, this._scrollOffsets, this._scale);
+        // and where the pane has the viewport, for what is anchored across
+        // its scroll, and whether the layout is a question no frame draws
+        if (this._tree.anchors) {
+          setViewport(this._tree, this._viewportAt());
+          layoutAsks(this._tree, question);
+        }
         const result = layoutDocument(
           this._tree,
           this._layoutFonts(),
@@ -9564,8 +9651,15 @@ export class HtmlViewNode extends Node {
     const before = anchored.map((b) => this._inkOf(b));
     const to = scrollContent(box, x * s, y * s, translate);
     // a box `position-visibility` hides or shows now leaves its
-    // stacking context's layers, or joins them, with what it holds
-    if (updatePositionVisibility(root).length) stackLayers(root);
+    // stacking context's layers, or joins them, with what it holds — and
+    // one anchored across the scroll that no longer fits tries its
+    // position options again (`_refitAnchored`)
+    const anchors = !!this._tree?.anchors;
+    const viewport = anchors ? this._viewportAt() : null;
+    if (anchors && refitAnchored(root, viewport)) {
+      this._invalidate(Stale.Layout);
+    }
+    if (updatePositionVisibility(root, viewport).length) stackLayers(root);
     // its sticky boxes where it is scrolled to now
     if (to.x !== was.x || to.y !== was.y) restickWithin(box);
     const offset = { x: to.x / s, y: to.y / s };
@@ -9814,6 +9908,9 @@ export class HtmlViewNode extends Node {
    *  in window pixels (`_heldRects`): what a scroll blit of the pane drags
    *  with the text, for it to repair (`viewportFixedRects`). */
   private _stuckDrawn: Rect[] = NO_RECTS;
+  /** Where the boxes anchored across the pane's scroll were drawn at the
+   *  last paint (`_anchoredRects`), for its blit to repair. */
+  private _anchoredDrawn: Rect[] = NO_RECTS;
   /** Whether `_followViewport` moved a box since what is mounted beside the
    *  document was last told where its element is. */
   private _stickyMoved = false;
@@ -9860,6 +9957,7 @@ export class HtmlViewNode extends Node {
       this._reportStops();
     }
     this._stuckDrawn = this._heldRects(tree);
+    this._anchoredDrawn = tree.anchors ? this._anchoredRects(tree) : NO_RECTS;
     // what is at the top of the viewport as it is drawn, for a layout at
     // another width to keep it there (`_anchorFrame`)
     this._noteShown(tree);

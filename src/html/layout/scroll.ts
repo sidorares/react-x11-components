@@ -567,6 +567,7 @@ const DEFAULT_ANCHORS = new WeakMap<
 export function clearDefaultAnchors(root: Box): void {
   DEFAULT_ANCHORS.delete(root);
   VISIBILITY.delete(root);
+  ANCHOR_SCROLLS.delete(root);
 }
 
 /** Each box `position-visibility` may hide, by the root of its tree, and
@@ -585,30 +586,56 @@ export function noteVisibility(root: Box, box: Box, overflows: boolean): void {
  * 5.4), strongly — passed over by paint and by the paint bounds, as a box
  * past a clamp point is (`CLAMPED`): one with `no-overflow` that
  * overflowed its containing block, and one with `anchors-visible` whose
- * default anchor a box between the two clips away entirely. The boxes
- * that were hidden or shown by it.
+ * default anchor a box between the two clips away entirely — or the
+ * viewport does, for a box fixed to it whose anchor the pane scrolls,
+ * given where the pane has it (`viewport`, in the document's device
+ * pixels). The boxes that were hidden or shown by it.
  */
 export function positionVisibilityBoxes(root: Box): Box[] {
   return [...(VISIBILITY.get(root)?.keys() ?? [])];
 }
 
-export function updatePositionVisibility(root: Box): Box[] {
+export function updatePositionVisibility(
+  root: Box,
+  viewport: Viewport | null = null,
+): Box[] {
   const map = VISIBILITY.get(root);
   if (!map?.size) return [];
   const anchors = DEFAULT_ANCHORS.get(root);
+  const scrolled = ANCHOR_SCROLLS.get(root);
   const changed: Box[] = [];
   for (const [box, overflows] of map) {
     const bits = box.style.positionVisibility;
     const anchor = anchors?.get(box)?.anchor;
     const hidden =
       (!!(bits & 2) && overflows) ||
-      (!!(bits & 1) && !!anchor && clippedAway(anchor, box));
+      (!!(bits & 1) &&
+        !!anchor &&
+        (clippedAway(anchor, box) ||
+          (scrolled?.get(box)?.pane === 1 &&
+            !!viewport &&
+            outside(anchor, viewport))));
     if (hidden === CLAMPED.has(box)) continue;
     if (hidden) CLAMPED.add(box);
     else CLAMPED.delete(box);
     changed.push(box);
   }
   return changed;
+}
+
+/** Whether a box is wholly outside a rectangle — but for one of no size,
+ *  which is outside nothing it is on the edge of. */
+function outside(
+  anchor: Box,
+  r: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (anchor.kind === 'inline') return false;
+  return (
+    anchor.x >= r.x + r.width ||
+    anchor.x + anchor.width <= r.x ||
+    anchor.y >= r.y + r.height ||
+    anchor.y + anchor.height <= r.y
+  );
 }
 
 /** Whether a box that clips what overflows it, between an anchor and the
@@ -625,15 +652,13 @@ function clippedAway(anchor: Box, box: Box): boolean {
       : b.parent;
   for (let at = up(anchor); at && at !== cb; at = up(at)) {
     if (!clipsOverflow(at)) continue;
-    const x = at.x + at.borderLeft;
-    const y = at.y + at.borderTop;
-    const w = at.width - at.borderLeft - at.borderRight;
-    const h = at.height - at.borderTop - at.borderBottom;
     if (
-      anchor.x >= x + w ||
-      anchor.x + anchor.width <= x ||
-      anchor.y >= y + h ||
-      anchor.y + anchor.height <= y
+      outside(anchor, {
+        x: at.x + at.borderLeft,
+        y: at.y + at.borderTop,
+        width: at.width - at.borderLeft - at.borderRight,
+        height: at.height - at.borderTop - at.borderBottom,
+      })
     ) {
       return true;
     }
@@ -655,6 +680,26 @@ export function noteDefaultAnchor(
   map.set(box, { anchor, x, y });
 }
 
+/** The axes a box was last noted to follow its default anchor on
+ *  (`noteDefaultAnchor`), or null where it has none. */
+export function defaultAnchorOf(
+  root: Box,
+  box: Box,
+): { anchor: Box; x: boolean; y: boolean } | null {
+  return DEFAULT_ANCHORS.get(root)?.get(box) ?? null;
+}
+
+/** Whether a scroll container's scroll moves a box: inside it, and not
+ *  positioned against something outside it on the way down. */
+function movedBy(scroller: Box, b: Box): boolean {
+  for (let at: Box | null = b; at; at = at.parent) {
+    if (at === scroller) return true;
+    if (at.parent === scroller && escapes(at, scroller)) return false;
+    if (at.outOfFlow && !holds(scroller, containingBlockOf(at))) return false;
+  }
+  return false;
+}
+
 /** The boxes anchored to something inside `scroller`, that are outside it
  *  themselves: what its scroll moves with their anchors. */
 export function anchoredAcross(
@@ -664,23 +709,265 @@ export function anchoredAcross(
   while (root.parent) root = root.parent;
   const map = DEFAULT_ANCHORS.get(root);
   if (!map?.size) return [];
-  // what the scroller moves: inside it, and not positioned against
-  // something outside it on the way down
-  const movedBy = (b: Box) => {
-    for (let at: Box | null = b; at; at = at.parent) {
-      if (at === scroller) return true;
-      if (at.parent === scroller && escapes(at, scroller)) return false;
-      if (at.outOfFlow && !holds(scroller, containingBlockOf(at))) {
-        return false;
-      }
-    }
-    return false;
-  };
   const out: { box: Box; x: boolean; y: boolean }[] = [];
   for (const [anchored, { anchor, x, y }] of map) {
-    if (anchor !== scroller && movedBy(anchor) && !movedBy(anchored)) {
+    if (
+      anchor !== scroller &&
+      movedBy(scroller, anchor) &&
+      !movedBy(scroller, anchored)
+    ) {
       out.push({ box: anchored, x, y });
     }
   }
   return out;
+}
+
+/** Where the pane around a document has the viewport: its corner, in the
+ *  document's device pixels — how far the pane's scroll moves what is
+ *  fixed to it from where it was laid out — and its size. */
+export interface Viewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The viewport each tree's next layout is seen through, handed over by
+ *  the node before it (`setViewport`). */
+const VIEWPORTS = new WeakMap<BoxTree, Viewport>();
+
+/** Hand a tree where the pane around it has the viewport, for an anchored
+ *  box whose anchor the pane scrolls and it does not, or the other way
+ *  round. */
+export function setViewport(tree: BoxTree, viewport: Viewport | null): void {
+  if (viewport) VIEWPORTS.set(tree, viewport);
+  else VIEWPORTS.delete(tree);
+}
+
+/** Where a tree's layout has the viewport (`setViewport`), or null. */
+export function viewportOf(tree: BoxTree): Viewport | null {
+  return VIEWPORTS.get(tree) ?? null;
+}
+
+/** How far a tree's next layout scrolls a scroll container's content, both
+ *  ways, in the device pixels its boxes are laid out in. */
+export function wantedScroll(tree: BoxTree, box: Box): ScrollOffset {
+  const given = OFFSETS.get(tree);
+  const want = box.el ? given?.offsets.get(box.el) : undefined;
+  if (!want) return { x: 0, y: 0 };
+  return { x: want.x * given!.scale, y: want.y * given!.scale };
+}
+
+/**
+ * An anchor-positioned box whose default anchor is in another scroll
+ * context than its own (CSS Anchor Positioning 1, 3.3): scrolled by scroll
+ * containers that do not scroll the box, or by the pane where the box is
+ * fixed to the viewport — or fixed where the box is not. How a scroll
+ * displaces the anchor from the box, what the box's anchor references were
+ * taken at (its remembered scroll offset), and what it has to fit in,
+ * which a scroll asks again with no layout (`refitAnchored`).
+ */
+export interface AnchorScroll {
+  /** The scroll containers that scroll the anchor and not the box. */
+  scrollers: readonly Box[];
+  /** 1 where the pane scrolls the anchor and not the box, -1 where it
+   *  scrolls the box and not the anchor, 0 where it scrolls both. */
+  pane: number;
+  /** The axes the box follows its anchor on. */
+  x: boolean;
+  y: boolean;
+  /** The displacement its layout placed it at, which a scroll shifts it
+   *  from by its difference from what it is now. */
+  rx: number;
+  ry: number;
+  /** Its inset-modified containing block, from its margin box's corner as
+   *  laid out, before any shift, and its margin box's size. */
+  room: { x: number; y: number; width: number; height: number };
+  /** The edges of that rectangle a scroll that moves the anchor leaves
+   *  where they are — the containing block's, and not the anchor's — as
+   *  bits: left 1, right 2, top 4, bottom 8. Only those can a scroll take
+   *  the box over, since the others move with it. */
+  fixedEdges: number;
+  width: number;
+  height: number;
+  /** Whether its insets left it no room at all, which nothing fits. */
+  corrected: boolean;
+  /** Whether a placement that no longer fits is laid out again, to try its
+   *  position options (6.5). */
+  refits: boolean;
+  /** The displacement its layout was at, once the layout has scrolled
+   *  everything (`settleAnchorScrolls`): what was tried there is not tried
+   *  again at a scroll that moves nothing. */
+  dx: number | null;
+  dy: number | null;
+}
+
+/** Each anchored box in another scroll context than its default anchor's,
+ *  by the root of its tree. */
+const ANCHOR_SCROLLS = new WeakMap<Box, Map<Box, AnchorScroll>>();
+
+export function noteAnchorScroll(
+  root: Box,
+  box: Box,
+  state: AnchorScroll,
+): void {
+  let map = ANCHOR_SCROLLS.get(root);
+  if (!map) ANCHOR_SCROLLS.set(root, (map = new Map()));
+  map.set(box, state);
+}
+
+/** The anchored boxes of a tree in another scroll context than their
+ *  default anchors' (`AnchorScroll`), or none. */
+export function anchorScrollsOf(root: Box): ReadonlyMap<Box, AnchorScroll> {
+  return ANCHOR_SCROLLS.get(root) ?? NO_ANCHOR_SCROLLS;
+}
+
+const NO_ANCHOR_SCROLLS: ReadonlyMap<Box, AnchorScroll> = new Map();
+
+/**
+ * The scroll containers that scroll a box's default anchor and not the box,
+ * and whether the pane does (`AnchorScroll.pane`), with `atViewport` saying
+ * whether a box is drawn fixed to the viewport; null where nothing scrolls
+ * one and not the other.
+ */
+export function scrollContextOf(
+  anchor: Box,
+  box: Box,
+  atViewport: (box: Box) => boolean,
+): { scrollers: Box[]; pane: number } | null {
+  let scrollers: Box[] | null = null;
+  for (let at = anchor.parent; at; at = at.parent) {
+    if (isScroller(at) && movedBy(at, anchor) && !movedBy(at, box)) {
+      (scrollers ??= []).push(at);
+    }
+  }
+  const fixedBox = atViewport(box);
+  const fixedAnchor = atViewport(anchor);
+  const pane = fixedBox === fixedAnchor ? 0 : fixedBox ? 1 : -1;
+  if (!scrollers && !pane) return null;
+  return { scrollers: scrollers ?? [], pane };
+}
+
+/** How far scrolls displace a box's default anchor from it now: the
+ *  offsets of the scroll containers between them, as they are scrolled to
+ *  (`offsetOf`), and the pane's, where the viewport is. */
+export function displacementOf(
+  context: { scrollers: readonly Box[]; pane: number },
+  viewport: { x: number; y: number } | null,
+  offsetOf: (scroller: Box) => ScrollOffset = scrollStateOf,
+): [number, number] {
+  let x = 0;
+  let y = 0;
+  for (const scroller of context.scrollers) {
+    const at = offsetOf(scroller);
+    x += at.x;
+    y += at.y;
+  }
+  if (context.pane && viewport) {
+    x += context.pane * viewport.x;
+    y += context.pane * viewport.y;
+  }
+  return [x, y];
+}
+
+/** Whether an anchored box still fits what it has to (`AnchorScroll.room`)
+ *  with its anchor displaced by `d`: shifted from where it was laid out by
+ *  the default scroll shift, the difference from the displacement it was
+ *  laid out at, against the edges of the room that stay where they are. */
+export function fitsDisplaced(
+  state: AnchorScroll,
+  [dx, dy]: readonly [number, number],
+): boolean {
+  if (state.corrected) return false;
+  const sx = state.x ? state.rx - dx : 0;
+  const sy = state.y ? state.ry - dy : 0;
+  const { room, fixedEdges: f } = state;
+  return (
+    (!(f & 1) || sx >= room.x - 0.5) &&
+    (!(f & 2) || sx + state.width <= room.x + room.width + 0.5) &&
+    (!(f & 4) || sy >= room.y - 0.5) &&
+    (!(f & 8) || sy + state.height <= room.y + room.height + 0.5)
+  );
+}
+
+/** Note where a layout has the anchors of its tree displaced to, once it
+ *  has scrolled everything (`applyScrollOffsets`). */
+export function settleAnchorScrolls(
+  root: Box,
+  viewport: { x: number; y: number } | null,
+): void {
+  for (const state of ANCHOR_SCROLLS.get(root)?.values() ?? []) {
+    const [dx, dy] = displacementOf(state, viewport);
+    state.dx = dx;
+    state.dy = dy;
+  }
+}
+
+/**
+ * After a scroll — of a container in the document, or of the pane, which
+ * has the viewport at `viewport` now — what it did to the anchored boxes
+ * whose anchors it displaced: whether each still fits, noted for
+ * `position-visibility`, and whether one with position options no longer
+ * does where its layout did not try them, which a layout does (CSS Anchor
+ * Positioning 1, 6.5): true where one is owed.
+ */
+export function refitAnchored(
+  root: Box,
+  viewport: { x: number; y: number } | null,
+): boolean {
+  const map = ANCHOR_SCROLLS.get(root);
+  if (!map) return false;
+  let owed = false;
+  for (const [box, state] of map) {
+    const d = displacementOf(state, viewport);
+    const fits = fitsDisplaced(state, d);
+    if (box.style.positionVisibility & 2) noteVisibility(root, box, !fits);
+    if (
+      !fits &&
+      state.refits &&
+      (Math.abs(d[0] - (state.dx ?? NaN)) > 0.5 ||
+        Math.abs(d[1] - (state.dy ?? NaN)) > 0.5)
+    ) {
+      owed = true;
+    }
+  }
+  return owed;
+}
+
+/** How far each box is moved by the pane's scroll (`followPane`), from
+ *  where its layout left it. */
+const PANE_SHIFT = new WeakMap<Box, [number, number]>();
+
+/** A layout places a box afresh, with no shift of the pane's on it. */
+export function forgetPaneShift(box: Box): void {
+  PANE_SHIFT.delete(box);
+}
+
+/**
+ * Move each anchored box whose anchor the pane scrolls and it does not —
+ * fixed to the viewport, anchored in the document — or the other way round
+ * with its anchor, on the axes it follows it on, to where the pane has the
+ * viewport now (CSS Anchor Positioning 1, 3.3): the default scroll shift a
+ * scroll of the pane makes, which lays nothing out. The boxes it moved, or
+ * null.
+ */
+export function followPane(
+  root: Box,
+  viewport: { x: number; y: number } | null,
+  move: MoveBox,
+): Box[] | null {
+  const map = ANCHOR_SCROLLS.get(root);
+  if (!map) return null;
+  let moved: Box[] | null = null;
+  for (const [box, state] of map) {
+    if (!state.pane) continue;
+    const wantX = state.x && viewport ? -state.pane * viewport.x : 0;
+    const wantY = state.y && viewport ? -state.pane * viewport.y : 0;
+    const [hadX, hadY] = PANE_SHIFT.get(box) ?? [0, 0];
+    if (wantX === hadX && wantY === hadY) continue;
+    move(box, wantX - hadX, wantY - hadY, () => false);
+    PANE_SHIFT.set(box, [wantX, wantY]);
+    (moved ??= []).push(box);
+  }
+  return moved;
 }

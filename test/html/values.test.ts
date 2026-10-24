@@ -1035,10 +1035,41 @@ test('the scroll-timeline and view-timeline shorthands set their longhands, and 
 test('the anchor positioning properties take their grammars, and anchor() and anchor-size() their canonical order where each may be', () => {
   const v = specifiedValue;
   assert.strictEqual(v('left', 'anchor(inside --foo)'), 'anchor(--foo inside)');
-  assert.strictEqual(
-    v('top', 'calc(anchor(top --a, 0) + 10px)'),
-    'calc(anchor(--a top, 0px) + 10px)',
-  );
+  // and a math function around them simplified, as CSS Values 4, 10.10
+  // and 10.12 have it: its children sorted, the number first and what no
+  // calculation sees into last (WPT anchor-parse-valid)
+  for (const [given, canonical] of [
+    ['calc(anchor(top --a, 0) + 10px)', 'calc(10px + anchor(--a top, 0px))'],
+    [
+      'calc((anchor(--foo top) + anchor(--bar bottom)) / 2)',
+      'calc(0.5 * (anchor(--foo top) + anchor(--bar bottom)))',
+    ],
+    [
+      'calc(0.5 * (anchor(--foo top) + anchor(--bar bottom)))',
+      'calc(0.5 * (anchor(--foo top) + anchor(--bar bottom)))',
+    ],
+    [
+      'anchor(--foo top, calc(0.5 * anchor(--bar bottom)))',
+      'anchor(--foo top, calc(0.5 * anchor(--bar bottom)))',
+    ],
+    [
+      'min(100px, 10%, anchor(--foo top), anchor(--bar bottom))',
+      'min(100px, 10%, anchor(--foo top), anchor(--bar bottom))',
+    ],
+    [
+      'calc(anchor(--foo left, 1px) + 10%)',
+      'calc(10% + anchor(--foo left, 1px))',
+    ],
+    ['calc(anchor(--foo left, 0))', 'anchor(--foo left, 0px)'],
+    ['anchor(--foo min(50%, 100%))', 'anchor(--foo calc(50%))'],
+    ['calc(anchor(top) - 1in + 4px)', 'calc(-92px + anchor(top))'],
+    [
+      'calc(anchor(top) - (anchor(bottom) * 2))',
+      'calc(anchor(top) - (2 * anchor(bottom)))',
+    ],
+  ]) {
+    assert.strictEqual(v('top', given), canonical, given);
+  }
   assert.strictEqual(
     v('width', 'anchor-size(width --foo)'),
     'anchor-size(--foo width)',

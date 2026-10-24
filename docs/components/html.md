@@ -4268,49 +4268,93 @@ any box, and on an absolutely positioned one `position-anchor`, `anchor()`
 in an inset — a name or the default anchor, a side (`top`, `right`,
 `bottom`, `left`, `center`, `start`, `end`, `self-start`, `self-end`,
 `inside`, `outside`) or a percentage across the anchor, and a fallback —
-and `anchor-size()` as a `width` or a `height`. `position-area` places the
-box in the cells of the 3×3 grid the anchor makes of its containing block,
-physical, logical or `span-` keywords, one or two of them; the cells are
-its containing block, and `normal` alignment aligns it towards the anchor,
-or centres it on the anchor where an axis takes all three tracks.
-`position-try-fallbacks`, and the fallbacks of `position-try`, are tried in
-order where the box's margin box overflows its containing block: the
-tactics `flip-block`, `flip-inline` and `flip-start`, and `flip-x` and
-`flip-y` across and down, alone or combined, a
-`@position-try` rule by its name (its insets, margins, sizes,
-`position-anchor` and `position-area`, worked out as the element's own),
-and a `position-area`. The first option that fits is kept, or the box's own
-position where none does. `container-type: anchored` makes the box answer
-`@container anchored(fallback: …)` for what it holds: the option it took,
-written as in its list and matched word for word (a `position-area` by the
-cells it takes), `none` where it took none, and any option in a boolean
-context. That answer is layout's, so as for a size query, a layout that
-changes it restyles what it holds and lays the document out again. An
-anchor is the last box with the name that is not the positioned box or
-inside it and is laid out before it (2.3): inside its containing block,
-and, where the anchor's chain of containing blocks reaches the box's
-through an absolutely positioned one, that one before the box in the
-tree; an inline one by the rectangle around its fragments. A scroll
-container that scrolls a box's default anchor, and not the box, moves the
-box with it (6.2), on each axis it is placed against an anchor in that
-scroll container. `position-visibility` hides such a box, with all it
-holds, where its default anchor is cut away entirely by a box that clips
-between the two (`anchors-visible`, the initial value) and where it
-overflows its containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. Not done: `anchor()`
-inside `calc()` (the declaration is dropped), `anchor-size()` in other
-properties, `position-try-order`, `anchors-valid`, `anchor-scope`, a
-popover's implicit anchor,
-`justify-self` and `align-self` in a position area (including
-`anchor-center`), a fixed box following an anchor the pane scrolls, and
-trying the fallbacks again after a scroll. A box is placed against where
-its anchor was laid out, before relative offsets. A script's
-`el.style` takes each of these properties only as its grammar has it, in
-canonical form — `anchor()` and `anchor-size()` with the name first, each
-only where it may be, and a `position-area` with its horizontal or block
-keyword first — keeps `position-try` as its two longhands, and
-`getComputedStyle` reads all of them, a `position-area` of block and
-inline keywords said with `start` and `end`.
+and `anchor-size()` as a `width` or a `height`, each alone or among the
+terms of a `calc()`, a `min()`, a `max()` or a `clamp()`:
+`top: calc(anchor(bottom) + 8px)`, `left: calc((anchor(left) +
+anchor(right)) / 2)`. A call with no anchor and no fallback makes the
+property `auto`. `position-area` places the box in the cells of the 3×3
+grid the anchor makes of its containing block — its outer lines the
+containing block's edges, or the anchor's where it reaches past them —
+physical, logical or `span-` keywords, one or two of them. The cells are
+the containing block its insets are against, every `auto` inset and
+margin is nought, and `normal` alignment aligns it in what its insets
+leave towards the anchor, or centres it on the anchor where an axis takes
+all three tracks; one inset alone places it against that inset.
+`justify-self` and `align-self` align it there instead, and
+`anchor-center` centres it on its default anchor anywhere, its `auto`
+insets and margins nought, as wide as its content in what its insets
+leave. Outside a position area, the two align any absolutely positioned
+box between two insets neither of which is `auto`, where neither margin
+is, sized to its content there (CSS Position 3, 4.3): `start`, `end`,
+`center`, and `anchor-center` with no default anchor. A box too big for
+where it is aligned is held inside its containing block as far as it
+goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2).
+`justify-self` and `align-self` read `anchor-center` back from
+`getComputedStyle`.
+
+`position-try-fallbacks`, and the fallbacks of `position-try`, are tried
+where the box's margin box overflows its inset-modified containing block,
+or its insets go past each other and leave it no room: the tactics
+`flip-block`, `flip-inline` and `flip-start`, and `flip-x` and `flip-y`
+across and down, alone or combined, a `@position-try` rule by its name
+(its insets, margins, sizes, self-alignment, `position-anchor` and
+`position-area`, worked out as the element's own), and a `position-area`.
+The box keeps the option it was last placed by while that fits — its last
+successful position option, kept by element across layouts and builds,
+and forgotten where its `position`, its default anchor or its options
+change — and tries each other where it does not, its own first, keeping
+the first that fits, or the one it had where none does.
+`container-type: anchored` makes the box answer `@container
+anchored(fallback: …)` for what it holds: the option it took, written as
+in its list and matched word for word (a `position-area` by the cells it
+takes), `none` where it took none, and any option in a boolean context.
+That answer is layout's, so as for a size query, a layout that changes it
+restyles what it holds and lays the document out again. An anchor is the
+last box with the name that is not the positioned box or inside it and is
+laid out before it (2.3): inside its containing block, and, where the
+anchor's chain of containing blocks reaches the box's through an
+absolutely positioned one, that one before the box in the tree; an inline
+one by the rectangle around its fragments, and one in columns by the
+rectangle around its pieces. `anchor-scope` keeps a name to the boxes
+inside the element that scopes it, and a box is placed against where its
+anchor's relative offset moved it.
+
+A scroll moves a box with its default anchor where it scrolls the anchor
+and not the box (3.3), on each axis the box is placed against the
+anchor — an edge of what it is placed in that is the anchor's, a
+`position-area` or `anchor-center`: a scroll container's scroll, and the
+pane's, for a box fixed to the viewport anchored in the document and for a
+box in the document anchored to one fixed to the viewport, which lays
+nothing out. Where such a scroll leaves the box overflowing an edge of
+what it is placed in that is not the anchor's, and it has options, the
+document is laid out again in the next frame and the options tried where
+the anchor is now. `position-visibility` hides a box, with all it holds,
+where its default anchor is cut away entirely by a box that clips between
+the two, or by the viewport for a box fixed to it whose anchor the pane
+scrolls (`anchors-visible`, the initial value), and where it overflows its
+inset-modified containing block (`no-overflow`); a scroll that changes
+either hides or shows it in the frame it scrolls. Not done: vertical
+writing modes, `anchor-size()` in other properties, `position-try-order`,
+`anchors-valid`, a popover's implicit anchor, the scrollable containing
+block a scroll container is for a box with a default anchor, and each
+anchor reference's own remembered scroll offset — a layout takes every
+anchor where it is scrolled to then.
+
+A script's `el.style` takes each of these properties only as its grammar
+has it, in canonical form — `anchor()` and `anchor-size()` with the name
+first, each only where it may be, a math function around them simplified
+as CSS Values 4 serializes one (`calc((anchor(top) + anchor(bottom)) / 2)`
+is `calc(0.5 * (anchor(top) + anchor(bottom)))`, `calc(anchor(left) +
+10%)` is `calc(10% + anchor(left))`), and a `position-area` with its
+horizontal or block keyword first — keeps `position-try` as its two
+longhands, and `getComputedStyle` reads all of them, a `position-area` of
+block and inline keywords said with `start` and `end`. A `@position-try`
+rule is a `CSSPositionTryRule`, its `name` as written and its `style` a
+`CSSPositionTryDescriptors`: its declarations of the properties the rule
+takes, in order, an attribute for each by its name and in camel case and
+none for any other, which a page sets — with `setProperty`, by attribute
+or by `cssText` — and the rule is written again in its sheet, which the
+document is styled by.
 
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`

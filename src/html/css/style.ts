@@ -72,14 +72,18 @@ import {
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import {
+  anchorMathValue,
   parseAnchor,
+  parseAnchorMath,
   parseAnchorSize,
   parsePositionArea,
   parseTryFallbacks,
   readsAnchor,
 } from './anchor.js';
 import type {
+  AnchorInset,
   AnchorRef,
+  AnchorSize,
   AnchorSizeRef,
   InsetSide,
   PositionArea,
@@ -899,15 +903,14 @@ export interface ComputedStyle {
    *  anchor is clipped away, `no-overflow` (2) where it overflows its
    *  containing block, `anchors-valid` (4) — 0 for `always`. */
   positionVisibility: number;
-  /** The insets written as an `anchor()`, by side: what each comes to is
-   *  layout's, and the inset itself holds the function's fallback, or
-   *  `auto`. Null where none is. */
-  anchorInsets: Readonly<Partial<Record<InsetSide, AnchorRef>>> | null;
-  /** A `width` or a `height` written as an `anchor-size()`, as the insets
-   *  are. */
-  anchorSizes: Readonly<
-    Partial<Record<'width' | 'height', AnchorSizeRef>>
-  > | null;
+  /** The insets written with an `anchor()`, alone or in a math function,
+   *  by side: what each comes to is layout's, and the inset itself holds
+   *  what it is with every call's fallback, or `auto`. Null where none
+   *  is. */
+  anchorInsets: Readonly<Partial<Record<InsetSide, AnchorInset>>> | null;
+  /** A `width` or a `height` written with an `anchor-size()`, as the
+   *  insets are. */
+  anchorSizes: Readonly<Partial<Record<'width' | 'height', AnchorSize>>> | null;
   /** `position-area`: the cells of the grid its anchor makes of its
    *  containing block that it is placed in; null for `none`. */
   positionArea: PositionArea | null;
@@ -1447,6 +1450,13 @@ export interface ComputedStyle {
   justifyItems: 'normal' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
   justifySelf:
     'auto' | 'normal' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
+  /** `justify-self: anchor-center` and `align-self: anchor-center` (CSS
+   *  Anchor Positioning 1, 4.2), which `justifySelf` and `alignSelf` hold
+   *  as `center`: what each behaves as everywhere but in an absolutely
+   *  positioned box with a default anchor, which it centres on the anchor
+   *  (`layoutPositioned`). */
+  justifyAnchorCenter: boolean;
+  alignAnchorCenter: boolean;
 
   tableLayout: 'auto' | 'fixed';
 
@@ -1935,6 +1945,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridRowEnd: null,
     justifyItems: 'normal',
     justifySelf: 'auto',
+    justifyAnchorCenter: false,
+    alignAnchorCenter: false,
 
     tableLayout: 'auto',
 
@@ -3321,9 +3333,17 @@ export function applyDeclaration(
       }
       // the anchor's size, kept beside the size, which takes the fallback
       if ((name === 'width' || name === 'height') && readsAnchor(value)) {
-        const ref = parseAnchorSize(value, name, ctx);
+        const ref: AnchorSize | null =
+          parseAnchorSize(value, name, ctx) ??
+          parseAnchorMath<AnchorSizeRef>(value, ctx, name);
         if (!ref) return;
-        style[name] = ref.fallback ?? AUTO;
+        style[name] =
+          'calls' in ref
+            ? (anchorMathValue(
+                ref,
+                ref.calls.map(() => null),
+              ) ?? AUTO)
+            : (ref.fallback ?? AUTO);
         if (name === 'width') {
           style.widthKeyword = null;
           style.widthSize = null;
@@ -4524,10 +4544,19 @@ export function applyDeclaration(
       const keyword = value.trim().toLowerCase();
       if (keyword === 'auto' || keyword === 'normal') {
         style.alignSelf = keyword;
+        style.alignAnchorCenter = false;
+        return;
+      }
+      if (ANCHOR_CENTER.test(keyword)) {
+        style.alignSelf = 'center';
+        style.alignAnchorCenter = true;
         return;
       }
       const v = alignKeyword(value);
-      if (v) style.alignSelf = v as ComputedStyle['alignSelf'];
+      if (v) {
+        style.alignSelf = v as ComputedStyle['alignSelf'];
+        style.alignAnchorCenter = false;
+      }
       return;
     }
     case 'align-content': {
@@ -4762,6 +4791,11 @@ export function applyDeclaration(
     case 'justify-items':
     case 'justify-self': {
       const v = value.trim().toLowerCase();
+      if (name === 'justify-self' && ANCHOR_CENTER.test(v)) {
+        style.justifySelf = 'center';
+        style.justifyAnchorCenter = true;
+        return;
+      }
       const keyword =
         v === 'auto' && name === 'justify-self'
           ? 'auto'
@@ -4778,7 +4812,10 @@ export function applyDeclaration(
       ) {
         if (name === 'justify-items' && keyword !== 'auto') {
           style.justifyItems = keyword;
-        } else if (name === 'justify-self') style.justifySelf = keyword;
+        } else if (name === 'justify-self') {
+          style.justifySelf = keyword;
+          style.justifyAnchorCenter = false;
+        }
       }
       return;
     }
@@ -4964,9 +5001,19 @@ function setInset(
   ctx: UnitContext,
 ): void {
   if (readsAnchor(value)) {
-    const ref = parseAnchor(value, ctx);
+    // the call alone, or a math function with calls among its terms —
+    // `calc(anchor(bottom) + 8px)` — which comes to what it is with each
+    // call's fallback until layout has the anchors
+    const ref: AnchorInset | null =
+      parseAnchor(value, ctx) ?? parseAnchorMath<AnchorRef>(value, ctx, null);
     if (!ref) return;
-    style[side] = ref.fallback ?? AUTO;
+    style[side] =
+      'calls' in ref
+        ? (anchorMathValue(
+            ref,
+            ref.calls.map(() => null),
+          ) ?? AUTO)
+        : (ref.fallback ?? AUTO);
     style.anchorInsets = { ...style.anchorInsets, [side]: ref };
     return;
   }
@@ -5300,6 +5347,10 @@ function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
  *  start where it overflows its room, which is not done here: it is no
  *  value, and the declaration is dropped — which is the start's for the
  *  flex box that overflows, as it was before `safe` was read at all. */
+/** `anchor-center`, which takes an overflow position as the other
+ *  self-positions do. */
+const ANCHOR_CENTER = /^(?:(?:safe|unsafe)\s+)?anchor-center$/;
+
 function overflowAligned(value: string): string {
   const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
   const m = /^unsafe (.+)$/.exec(v);
@@ -8482,7 +8533,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'flex-flow': ['flexDirection', 'flexWrap'],
   'justify-content': ['justifyContent'],
   'align-items': ['alignItems'],
-  'align-self': ['alignSelf'],
+  'align-self': ['alignSelf', 'alignAnchorCenter'],
   'align-content': ['alignContent'],
   flex: ['flexGrow', 'flexShrink', 'flexBasis'],
   'flex-grow': ['flexGrow'],
@@ -8523,9 +8574,14 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-column-start': ['gridColumnStart'],
   'grid-column-end': ['gridColumnEnd'],
   'justify-items': ['justifyItems'],
-  'justify-self': ['justifySelf'],
+  'justify-self': ['justifySelf', 'justifyAnchorCenter'],
   'place-items': ['alignItems', 'justifyItems'],
-  'place-self': ['alignSelf', 'justifySelf'],
+  'place-self': [
+    'alignSelf',
+    'justifySelf',
+    'alignAnchorCenter',
+    'justifyAnchorCenter',
+  ],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],

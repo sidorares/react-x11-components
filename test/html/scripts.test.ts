@@ -901,6 +901,66 @@ test('an @view-transition rule is a CSSViewTransitionRule, its descriptors as th
   ]);
 });
 
+test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the properties it takes, which a page sets and the box is placed by', async () => {
+  // WPT at-position-try-cssom: the name as written, the declarations in
+  // order with what the rule takes no part of them, an attribute for each
+  // property it takes — by its name and in camel case — and none for one
+  // it does not; set, the rule is written again in its sheet, which the
+  // document is styled by
+  const doc = await hosted(
+    '<style>@position-try --pf { top: anchor(bottom); --x: 1px; color: red; left: 0 }' +
+      '#cb{position:relative;width:400px;height:400px}' +
+      '.a{position:absolute;top:0;width:100px;height:100px}' +
+      '#a{left:100px;anchor-name:--a}#b{left:250px;width:50px;anchor-name:--b}' +
+      '#t{position:absolute;width:50px;height:50px;position-anchor:--a;' +
+      'left:1000px;top:0;position-try-fallbacks:--pf}</style>' +
+      '<p id="out">-</p><div id="cb"><div class="a" id="a"></div>' +
+      '<div class="a" id="b"></div><div id="t"></div></div><script>' +
+      'var r = [], sheet = document.styleSheets[0], rule = sheet.cssRules[0];' +
+      'var t = document.getElementById("t");' +
+      'var at = function () { var b = t.getBoundingClientRect(), c = document.getElementById("cb").getBoundingClientRect(); return (b.left - c.left) + "," + (b.top - c.top); };' +
+      'r.push(rule instanceof CSSPositionTryRule, rule.name, rule.type,' +
+      '  rule.style instanceof CSSPositionTryDescriptors, rule.style === rule.style,' +
+      '  rule.style.length, rule.style.item(0), rule.style.item(1), rule.style.top,' +
+      '  rule.style.color, rule.style.getPropertyValue("color"), at());' +
+      'rule.style.setProperty("left", "anchor(right)"); r.push(at());' +
+      'rule.style.setProperty("position", "static"); r.push(rule.style.length);' +
+      'rule.style.positionAnchor = "--b"; r.push(rule.style["position-anchor"], at());' +
+      'r.push(rule.cssText, sheet.cssRules[0] === rule);' +
+      'rule.style.cssText = "color: red; margin-block: unset;";' +
+      'r.push(rule.style.length, rule.style.marginBlock, rule.cssText);' +
+      'var escaped = new CSSStyleSheet(); escaped.replaceSync("@position-try --\\\\{ {}");' +
+      'r.push(escaped.cssRules[0].name, escaped.cssRules[0].cssText);' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    '--pf',
+    0,
+    true,
+    true,
+    2,
+    'top',
+    'left',
+    'anchor(bottom)',
+    // no attribute for `color`: undefined, which JSON writes as null
+    null,
+    '',
+    '0,100',
+    '200,100',
+    2,
+    '--b',
+    '300,100',
+    '@position-try --pf { top: anchor(bottom); left: anchor(right); position-anchor: --b; }',
+    true,
+    1,
+    'unset',
+    '@position-try --pf { margin-block: unset; }',
+    '--\\{',
+    '@position-try --\\{ { }',
+  ]);
+});
+
 test("PageSwapEvent and PageRevealEvent construct, and a link's, a script's and a style's blocking and relList support their tokens", async () => {
   const doc = await hosted(
     '<p id="out">-</p><script>' +
@@ -3215,6 +3275,37 @@ test('showModal puts a dialog in the top layer: :modal matches it, it is centred
     ].join('|'),
   );
   assert.equal(doc.view.computedStyle(doc.byId('d'))?.position, 'absolute');
+});
+
+test('a modal dialog anchored to a box in the document is placed against it, and follows it as the pane scrolls', async () => {
+  // WPT anchor-position-top-layer-001: fixed to the viewport in the top
+  // layer, and moved with its anchor by the pane's scroll (CSS Anchor
+  // Positioning 1, 3.3)
+  const doc = await hosted(
+    '<style>body{margin:0;height:300vh}' +
+      '#anchor{position:absolute;top:300px;left:200px;width:100px;height:100px;anchor-name:--a}' +
+      '#target{top:anchor(top);left:anchor(right);width:100px;height:100px;position-anchor:--a}' +
+      'dialog{margin:0;border:0;padding:0;inset:auto}dialog::backdrop{background:transparent}' +
+      '</style><div id="anchor"></div><dialog id="target"></dialog><p id="out"></p><script>' +
+      'target.showModal(); scrollTo(0, 100);' +
+      'setTimeout(function () { var a = document.getElementById("anchor").getBoundingClientRect();' +
+      '  var t = target.getBoundingClientRect();' +
+      '  document.getElementById("out").textContent = [a.x, a.y, t.x, t.y].join(","); }, 0);' +
+      '</script>',
+    { pane: 300 },
+  );
+  // where the page reads them, in the viewport
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), '200,200,300,200');
+  // and where they are drawn, in the document
+  const at = (id: string) => {
+    const r = doc.view.elementRect(doc.byId(id))!;
+    return [r.x, r.y];
+  };
+  assert.deepEqual(at('anchor'), [200, 300]);
+  assert.deepEqual(at('target'), [300, 300]);
+  await act(async () => doc.pane!.scrollTo({ y: 150 }));
+  await act();
+  assert.deepEqual(at('target'), [300, 300], 'with its anchor');
 });
 
 test('Escape the page lets be closes the last modal dialog opened, after a cancel it may cancel, and gives the focus back', async () => {

@@ -3887,6 +3887,26 @@ block axis, which is the root's intrinsic width at its least and its most
   and the direction is as the cascade has it when a logical property is
   read, as before.
 
+**An anchored box follows an anchor a scroll moves by being moved, not
+laid out** (CSS Anchor Positioning 1, 3.3; `layoutPositioned`,
+`AnchorScroll` in `layout/scroll.ts`). Where a scroll moves a box's
+default anchor and not the box — a scroll container's, or the pane's for
+a box fixed to the viewport anchored in the document, or the other way
+round — the layout places the box against the anchor where the scroll
+has it, moves it back to where it would be with nothing scrolled, and the
+scroll moves it on with the anchor: `scrollContent` through
+`anchoredAcross`, and `followPane` from `_followViewport`. Three things
+are load-bearing. **Anything new that scrolls what an anchor is in moves
+the boxes anchored across it, and asks `refitAnchored` after**: whether
+one now overflows an edge of what it is placed in that is not its
+anchor's — the anchor's move with it — which has the next layout try its
+position options there, and what `position-visibility` hides. **A layout
+places such a box afresh** (`forgetPaneShift`), so what the pane moved it
+by is forgotten with it. And a box fixed to the viewport that follows its
+anchor is still one of `FIXED_BOXES`, which the pane's blit would hold in
+place: it is told where the box was drawn and where it is drawn now
+(`_anchoredRects`).
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

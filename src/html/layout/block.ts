@@ -22,13 +22,17 @@ import {
 } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import {
+  anchorCalls,
   anchorInset,
+  anchorMathValue,
   areaAlignment,
   areaLines,
+  isAnchorMath,
+  mapAnchorCalls,
   physicalCols,
 } from '../css/anchor.js';
 import type {
-  AnchorRef,
+  AnchorInset,
   AnchorSide,
   InsetSide,
   PositionArea,
@@ -68,15 +72,24 @@ import {
   STUCK,
   applyScrollOffsets,
   clearDefaultAnchors,
+  defaultAnchorOf,
+  displacementOf,
   escapes as positionedOutside,
+  forgetPaneShift,
   isScroller,
+  noteAnchorScroll,
   noteDefaultAnchor,
   noteVisibility,
+  scrollContextOf,
+  settleAnchorScrolls,
   updatePositionVisibility,
   scrollStateOf,
   scrolledBy,
+  viewportOf,
+  wantedScroll,
   wantedScrollTop,
 } from './scroll.js';
+import type { ScrollOffset, Viewport } from './scroll.js';
 import type { Placed } from '../css/transform.js';
 import {
   affineOf,
@@ -150,6 +163,7 @@ import {
   computePaintBounds,
   containingBlockOf,
   DOCUMENT_FLOW,
+  drawnAtViewport,
   FIXED_BOXES,
   fixedToViewport,
   hoistNegative,
@@ -190,6 +204,21 @@ export interface LayoutContext {
   /** Each box's place in the tree's order, found with the anchors: what
    *  says whether an anchor precedes the box it anchors. */
   anchorOrder?: Map<Box, number>;
+  /** Where the pane around the document has the viewport (`setViewport`),
+   *  for a box fixed to it anchored in the document, or the other way
+   *  round. */
+  viewport?: Viewport | null;
+  /** How far the layout scrolls a scroll container's content
+   *  (`wantedScroll`). */
+  scrollOf?: (box: Box) => ScrollOffset;
+  /** While an anchored box is placed, the displacement of its default
+   *  anchor its anchor references are taken at (`layoutPositioned`), which
+   *  the anchors scrolled with that one are seen moved back by
+   *  (`anchorFor`). */
+  anchorShift?: { anchor: Box; x: number; y: number } | null;
+  /** Whether the layout answers a question about the document's size,
+   *  which no frame draws (`layoutAsks`). */
+  question?: boolean;
   /**
    * Lay a box and everything under it out at a width, at the origin.
    *
@@ -785,6 +814,13 @@ export function layoutDocument(
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
     anchorRoot: tree.anchors ? tree.root : null,
+    ...(tree.anchors
+      ? {
+          viewport: viewportOf(tree),
+          scrollOf: (box: Box) => wantedScroll(tree, box),
+          question: QUESTIONS.has(tree),
+        }
+      : null),
     ...(cuts
       ? {
           until,
@@ -798,6 +834,9 @@ export function layoutDocument(
       : null),
   };
   const root = tree.root;
+  // what the last layout noted of anchored boxes is of where it placed
+  // them, and of boxes that may be anchored no more
+  if (tree.anchors) clearDefaultAnchors(root);
   // The root box is the initial containing block, and where the markup
   // writes no element for it, it stands in for one too (`Cascade.rootStyle`):
   // a fragment's `<body>`, or the `<html>` implied around a `<body>`. It is
@@ -902,8 +941,9 @@ export function layoutDocument(
   // the same way: everything else reads the boxes where they are drawn
   applyScrollOffsets(tree, translate);
   // and `position-visibility` hides what it hides where all of that left
-  // the boxes
-  updatePositionVisibility(root);
+  // the boxes, with how far that scrolled the anchors noted
+  if (tree.anchors) settleAnchorScrolls(root, ctx.viewport ?? null);
+  updatePositionVisibility(root, ctx.viewport ?? null);
   // and a sticky box keeps to the scroll container it is in where it is
   // scrolled to, which it was placed in as though it were scrolled to its
   // start; the ones the viewport keeps are the element's to place again
@@ -4749,29 +4789,95 @@ function isControl(box: Box): boolean {
  *  was one of its `position-try-fallbacks`; none where it was its own. */
 export const ANCHOR_FALLBACK = new WeakMap<Box, string>();
 
-/** A `position-area`'s cells, which a box placed in them takes for its
- *  containing block, and how far along their free room it is aligned
- *  across and down. */
-interface PlacedArea {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  across: number;
-  down: number;
+/**
+ * What placing a box against its default anchor gives it beside its style
+ * (`anchoredStyle`): the cells of its `position-area`, which it takes for
+ * its containing block, and the alignment `normal` is in them; the
+ * anchor's centre, which `anchor-center` centres it on; and which edges of
+ * what it is placed in are its anchor's, and move with it.
+ */
+interface Anchoring {
+  /** The `position-area`'s cells, or null where it has none. */
+  area: CbRect | null;
+  /** How far along the cells' free room `normal` aligns the box, across
+   *  and down (CSS Anchor Positioning 1, 4.1): towards the anchor — or null
+   *  where the cells are all three tracks of the axis, which is
+   *  `anchor-center`. */
+  across: number | null;
+  down: number | null;
+  /** The default anchor's centre, or null where it has none. */
+  centre: { x: number; y: number } | null;
+  /** The edges of its inset-modified containing block a scroll of its
+   *  default anchor moves with the anchor (`Edges`). */
+  moving: number;
+}
+
+/** The edges of a rectangle, as bits. */
+const enum Edges {
+  Left = 1,
+  Right = 2,
+  Top = 4,
+  Bottom = 8,
+}
+
+/** Where a positioned box was placed in: its inset-modified containing
+ *  block (CSS Position 3, 3.5), whether its insets had to give way to leave
+ *  it any room at all (3.5.2), which no box fits, and which of its edges
+ *  are its default anchor's (`Anchoring.moving`). */
+interface Placement extends CbRect {
+  corrected: boolean;
+  moving: number;
+}
+
+/**
+ * The position option each anchored element was last placed by: its last
+ * successful position option (CSS Anchor Positioning 1, 6.5.1.1), kept by
+ * element, and by pseudo-element under it, across layouts and builds.
+ * `key` is what it holds for: its `position`, its default anchor and its
+ * options, a change of any of which is a fallback-sensitive change
+ * (6.5.1).
+ */
+interface LastPosition {
+  key: string;
+  option: number;
+}
+const LAST_POSITIONS = new WeakMap<object, Map<string, LastPosition>>();
+
+/** Where an anchored box's last position is kept: by its element, or by
+ *  the element a pseudo-element's box hangs off. */
+function lastPositionOf(box: Box): [Map<string, LastPosition>, string] | null {
+  const owner = box.el ?? (box.pseudo ? box.parent?.el : null);
+  if (!owner) return null;
+  let map = LAST_POSITIONS.get(owner);
+  if (!map) LAST_POSITIONS.set(owner, (map = new Map()));
+  return [map, box.el ? '' : (box.pseudo ?? '')];
 }
 
 /**
  * An absolutely positioned box, against its containing block — and where
  * it is anchor-positioned (CSS Anchor Positioning 1), against its anchor
  * as well: its `anchor()` insets and `anchor-size()` sizes come to what the
- * anchor's box makes of them, and a `position-area` puts it in the cells
- * of the grid the anchor makes of its containing block. Where it has
- * `position-try-fallbacks`, a placement that overflows its containing block
- * is tried again with each option in turn — a `@position-try` rule's
- * style, its tactics, a `position-area` — and the first that fits is kept,
- * or its own where none does (4.3). The option it took is noted for an
- * anchored container query (`ANCHOR_FALLBACK`).
+ * anchor's box makes of them, a `position-area` puts it in the cells of the
+ * grid the anchor makes of its containing block, and `anchor-center`
+ * centres it on the anchor.
+ *
+ * Where it has `position-try-fallbacks`, it keeps the option it was last
+ * placed by — its own, at first — while that fits its inset-modified
+ * containing block (6.5.1.1), and is tried with each other option in turn
+ * where it does not — its own, a `@position-try` rule's style, tactics, a
+ * `position-area` — keeping the first that fits, or the one it had where
+ * none does (6.5). The option it took is noted for an anchored container
+ * query (`ANCHOR_FALLBACK`).
+ *
+ * Where its default anchor is in another scroll context — scrolled by a
+ * scroll container that does not scroll the box, or by the pane, where the
+ * box is fixed to the viewport, or the other way round — it is placed
+ * against the anchors that scroll with that one where the scroll has them
+ * (3.3), and moved back to where they are with nothing scrolled, which the
+ * scroll after the layout moves it on from as it moves them: by
+ * `scrollContent` for a scroll container's, and by `followPane` for the
+ * pane's. What a scroll asks of it with no layout is noted
+ * (`AnchorScroll`).
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const style = box.style;
@@ -4779,182 +4885,277 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     !style.anchorInsets &&
     !style.anchorSizes &&
     !style.positionArea &&
-    !style.positionTryFallbacks
+    !style.positionTryFallbacks &&
+    !style.justifyAnchorCenter &&
+    !style.alignAnchorCenter
   ) {
     positionedIn(box, containing, ctx, null);
     return;
   }
+  forgetPaneShift(box);
   const cb =
     containing.kind === 'inline'
       ? inlineContainingBlock(containing, box, ctx)
       : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
   const options = style.positionTryFallbacks ?? [];
-  const place = (index: number): boolean => {
+  const root = ctx.anchorRoot ?? null;
+  // what scrolls its default anchor and not it, and how far it has now
+  const anchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  const context =
+    anchor &&
+    scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
+  const [sx, sy] = context
+    ? displacementOf(context, ctx.viewport ?? null, (s) =>
+        ctx.scrollOf ? ctx.scrollOf(s) : { x: 0, y: 0 },
+      )
+    : [0, 0];
+  // the option it was placed by last, where it is the same box it was
+  const kept = options.length ? lastPositionOf(box) : null;
+  const key = `${style.position} ${style.positionAnchor} ${options
+    .map((o) => o.text)
+    .join(',')}`;
+  const last = kept?.[0].get(kept[1]);
+  let start =
+    last?.key === key && last.option < options.length ? last.option : -1;
+  const place = (index: number): Placement | null => {
     const option = index < 0 ? null : options[index];
     let tried = style;
     if (option) {
       if (option.name !== null) {
         const named = style.positionTryStyles?.[index];
         // an option naming no rule there is is none
-        if (!named) return false;
+        if (!named) return null;
         tried = named;
       }
       tried = triedWith(tried, option.tactics, option.area);
     }
-    const { resolved, placed } = anchoredStyle(box, tried, cb, ctx);
-    box.style = resolved;
+    ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
-      positionedIn(box, containing, ctx, placed);
+      const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx);
+      box.style = resolved;
+      return positionedIn(box, containing, ctx, anchoring);
     } finally {
       box.style = style;
+      ctx.anchorShift = null;
     }
-    return true;
   };
+  let chosen = start;
+  let placed = place(start);
+  if (!placed && start >= 0) {
+    start = chosen = -1;
+    placed = place(-1);
+  }
+  if (options.length && !(placed && fitsIn(box, placed))) {
+    // each option it is not placed by, its own first (6.5)
+    let found = false;
+    for (let i = -1; i < options.length; i += 1) {
+      if (i === start) continue;
+      const tried = place(i);
+      if (tried && fitsIn(box, tried)) {
+        chosen = i;
+        placed = tried;
+        found = true;
+        break;
+      }
+    }
+    // and where none does, the one it had
+    if (!found) placed = place(start);
+  }
+  if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
+  else ANCHOR_FALLBACK.delete(box);
+  if (kept && !ctx.question) kept[0].set(kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
   // where it ends up (5.4)
-  const visibility = (): void => {
-    if (ctx.anchorRoot && style.positionVisibility & 3) {
-      noteVisibility(ctx.anchorRoot, box, !fitsIn(box, cb));
-    }
-  };
-  place(-1);
-  ANCHOR_FALLBACK.delete(box);
-  if (!options.length || fitsIn(box, cb)) {
-    visibility();
-    return;
+  if (root && style.positionVisibility & 3) {
+    noteVisibility(root, box, !(placed && fitsIn(box, placed)));
   }
-  for (let i = 0; i < options.length; i += 1) {
-    if (place(i) && fitsIn(box, cb)) {
-      ANCHOR_FALLBACK.set(box, options[i].text);
-      visibility();
-      return;
-    }
-  }
-  place(-1);
-  visibility();
+  if (!context || !root || !placed) return;
+  // moved to where its anchor is with nothing scrolled, on the axes it
+  // follows its anchor on — which the last placement noted
+  const on = defaultAnchorOf(root, box) ?? { x: false, y: false };
+  const mx = box.x - box.marginLeft;
+  const my = box.y - box.marginTop;
+  noteAnchorScroll(root, box, {
+    scrollers: context.scrollers,
+    pane: context.pane,
+    x: on.x,
+    y: on.y,
+    rx: sx,
+    ry: sy,
+    room: {
+      x: placed.x - mx,
+      y: placed.y - my,
+      width: placed.width,
+      height: placed.height,
+    },
+    fixedEdges: ~placed.moving & 15,
+    width: box.width + box.marginLeft + box.marginRight,
+    height: box.height + box.marginTop + box.marginBottom,
+    corrected: placed.corrected,
+    refits: options.length > 0,
+    dx: null,
+    dy: null,
+  });
+  const dx = on.x ? sx : 0;
+  const dy = on.y ? sy : 0;
+  if (dx || dy) translate(box, dx, dy, () => false);
 }
 
-/** Whether a box's margin box is inside a rectangle, to within half a
- *  pixel. */
-function fitsIn(box: Box, cb: CbRect): boolean {
+/** Whether a box's margin box is inside the rectangle it was placed in, to
+ *  within half a pixel. */
+function fitsIn(box: Box, at: Placement): boolean {
   return (
-    box.x - box.marginLeft >= cb.x - 0.5 &&
-    box.y - box.marginTop >= cb.y - 0.5 &&
-    box.x + box.width + box.marginRight <= cb.x + cb.width + 0.5 &&
-    box.y + box.height + box.marginBottom <= cb.y + cb.height + 0.5
+    !at.corrected &&
+    box.x - box.marginLeft >= at.x - 0.5 &&
+    box.y - box.marginTop >= at.y - 0.5 &&
+    box.x + box.width + box.marginRight <= at.x + at.width + 0.5 &&
+    box.y + box.height + box.marginBottom <= at.y + at.height + 0.5
   );
 }
 
 /**
  * A style with its anchor functions worked out for a containing block:
  * each `anchor()` inset as the distance from the containing block's edge
- * to the anchor's, and each `anchor-size()` as the anchor's size — or the
- * fallback each holds already where there is no anchor — and the cells of
- * its `position-area`, where it has one and an anchor.
+ * to the anchor's — or the cells' edge, where it has a `position-area` —
+ * and each `anchor-size()` as the anchor's size, alone or in a math
+ * function, or the fallback each holds already where there is no anchor;
+ * and what else its default anchor makes of it (`Anchoring`).
  */
 function anchoredStyle(
   box: Box,
   style: ComputedStyle,
   cb: CbRect,
   ctx: LayoutContext,
-): { resolved: ComputedStyle; placed: PlacedArea | null } {
+): { resolved: ComputedStyle; anchoring: Anchoring | null } {
   let resolved = style;
   const own = (): ComputedStyle =>
     resolved === style ? (resolved = { ...style }) : resolved;
   const rtl = style.direction === 'rtl';
+  const anchor = anchorFor(box, style.positionAnchor, ctx);
+  const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  // the edges a scroll of the default anchor moves with it
+  let moving = 0;
+  // the cells of its `position-area` (3.1.1): between lines at the
+  // containing block's edges, or the anchor's where it reaches past them,
+  // and at the anchor's
+  let area: CbRect | null = null;
+  let alongX: number | null = null;
+  let alongY: number | null = null;
+  const positionArea = style.positionArea;
+  if (positionArea && anchor) {
+    const cols = physicalCols(positionArea, rtl);
+    const rows = positionArea.rows;
+    const xs = areaLines(cb.x, cb.width, anchor.x, anchor.width);
+    const ys = areaLines(cb.y, cb.height, anchor.y, anchor.height);
+    area = {
+      x: xs[cols[0]],
+      y: ys[rows[0]],
+      width: Math.max(0, xs[cols[1] + 1] - xs[cols[0]]),
+      height: Math.max(0, ys[rows[1] + 1] - ys[rows[0]]),
+    };
+    const all = ([s, e]: readonly [number, number]) => s === 0 && e === 2;
+    alongX = all(cols) ? null : areaAlignment(cols);
+    alongY = all(rows) ? null : areaAlignment(rows);
+    // the lines at the anchor's edges
+    if (cols[0] > 0) moving |= Edges.Left;
+    if (cols[1] < 2) moving |= Edges.Right;
+    if (rows[0] > 0) moving |= Edges.Top;
+    if (rows[1] < 2) moving |= Edges.Bottom;
+  }
+  // which are the containing block its insets are against
+  const against = area ?? cb;
   const insets = style.anchorInsets;
   if (insets) {
     for (const side of ['top', 'right', 'bottom', 'left'] as const) {
-      const ref = insets[side];
-      if (!ref) continue;
-      const anchor = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
-      if (!anchor) continue;
+      const inset = insets[side];
+      if (!inset) continue;
       const across = side === 'left' || side === 'right';
-      own()[side] = anchorInset(
-        side,
-        ref.side,
-        across ? anchor.x : anchor.y,
-        across ? anchor.width : anchor.height,
-        across ? cb.x : cb.y,
-        across ? cb.width : cb.height,
-        rtl,
-      );
+      let scrolled = false;
+      const values = anchorCalls(inset).map((ref) => {
+        const name = ref.name ?? style.positionAnchor;
+        const of = anchorFor(box, name, ctx);
+        if (!of) return null;
+        const at = anchorBoxFor(box, name, ctx);
+        if (at && defaultAnchor && sameScrollContext(at, defaultAnchor)) {
+          scrolled = true;
+        }
+        return anchorInset(
+          side,
+          ref.side,
+          across ? of.x : of.y,
+          across ? of.width : of.height,
+          across ? against.x : against.y,
+          across ? against.width : against.height,
+          rtl,
+        );
+      });
+      if (isAnchorMath(inset)) {
+        own()[side] = anchorMathValue(inset, values) ?? AUTO;
+      } else if (values[0] !== null) own()[side] = values[0];
+      if (scrolled) moving |= EDGE_OF[side];
     }
   }
   const sizes = style.anchorSizes;
   if (sizes) {
     for (const prop of ['width', 'height'] as const) {
-      const ref = sizes[prop];
-      if (!ref) continue;
-      const anchor = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
-      if (!anchor) continue;
+      const size = sizes[prop];
+      if (!size) continue;
+      const values = anchorCalls(size).map((ref) => {
+        const of = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
+        return of ? (ref.size === 'width' ? of.width : of.height) : null;
+      });
+      if (isAnchorMath(size)) {
+        // a length like any other, which `box-sizing` says the box of
+        own()[prop] = anchorMathValue(size, values) ?? AUTO;
+        continue;
+      }
+      const value = values[0];
+      if (value === null) continue;
       // the anchor's border box, which a box sized to it takes as its own
       // border box
       const extra =
         prop === 'width'
           ? box.borderLeft + box.borderRight + box.padLeft + box.padRight
           : box.borderTop + box.borderBottom + box.padTop + box.padBottom;
-      const size = ref.size === 'width' ? anchor.width : anchor.height;
       own()[prop] =
-        style.boxSizing === 'border-box' ? size : Math.max(0, size - extra);
+        style.boxSizing === 'border-box' ? value : Math.max(0, value - extra);
     }
   }
-  // its default anchor, which a scroll moves it with (6.2) on each axis
-  // it is placed against an anchor scrolled with it on: an inset's
-  // `anchor()` of an anchor in the default one's scroll container, or a
-  // `position-area`
-  const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  // its default anchor, which a scroll moves it with (3.3) on each axis
+  // it is placed against an anchor scrolled with it on: an edge of what it
+  // is placed in that is the anchor's, a `position-area` or
+  // `anchor-center`
   if (defaultAnchor && ctx.anchorRoot) {
-    const scroller = nearestScrollerOf(defaultAnchor);
-    const ofDefault = (side: InsetSide) => {
-      const ref = insets?.[side];
-      if (!ref) return false;
-      const anchor = anchorBoxFor(box, ref.name ?? style.positionAnchor, ctx);
-      return !!anchor && nearestScrollerOf(anchor) === scroller;
-    };
-    const area = !!style.positionArea;
     noteDefaultAnchor(
       ctx.anchorRoot,
       box,
       defaultAnchor,
-      area || ofDefault('left') || ofDefault('right'),
-      area || ofDefault('top') || ofDefault('bottom'),
+      !!positionArea ||
+        style.justifyAnchorCenter ||
+        !!(moving & (Edges.Left | Edges.Right)),
+      !!positionArea ||
+        style.alignAnchorCenter ||
+        !!(moving & (Edges.Top | Edges.Bottom)),
     );
   }
-  let placed: PlacedArea | null = null;
-  const area = style.positionArea;
-  const anchor = area && anchorFor(box, style.positionAnchor, ctx);
-  if (area && anchor) {
-    const cols = physicalCols(area, rtl);
-    const xs = areaLines(cb.x, cb.width, anchor.x, anchor.width);
-    const ys = areaLines(cb.y, cb.height, anchor.y, anchor.height);
-    // all three tracks of an axis centre the box on the anchor
-    // (`anchor-center`, 3.1.4): in as much of them as is as far on either
-    // side of the anchor's centre
-    const span = (
-      lines: readonly number[],
-      [s, e]: readonly [number, number],
-      start: number,
-      size: number,
-    ): [number, number] => {
-      if (s !== 0 || e !== 2) return [lines[s], lines[e + 1] - lines[s]];
-      const centre = start + size / 2;
-      const half = Math.max(0, Math.min(centre - lines[0], lines[3] - centre));
-      return [centre - half, 2 * half];
-    };
-    const [x, width] = span(xs, cols, anchor.x, anchor.width);
-    const [y, height] = span(ys, area.rows, anchor.y, anchor.height);
-    placed = {
-      x,
-      y,
-      width: Math.max(0, width),
-      height: Math.max(0, height),
-      across: areaAlignment(cols),
-      down: areaAlignment(area.rows),
-    };
-  }
-  return { resolved, placed };
+  const centre = anchor
+    ? { x: anchor.x + anchor.width / 2, y: anchor.y + anchor.height / 2 }
+    : null;
+  return {
+    resolved,
+    anchoring:
+      area || centre || moving
+        ? { area, across: alongX, down: alongY, centre, moving }
+        : null,
+  };
 }
+
+const EDGE_OF: Record<InsetSide, number> = {
+  left: Edges.Left,
+  right: Edges.Right,
+  top: Edges.Top,
+  bottom: Edges.Bottom,
+};
 
 /**
  * The rectangle of the box an anchor name finds for `box`, in document
@@ -4980,7 +5181,24 @@ function anchorFor(
           height: anchor.height,
         };
   const [dx, dy] = relativeShift(anchor, box);
-  return { ...rect, x: rect.x + dx, y: rect.y + dy };
+  // and where the box's anchor references are taken at a displacement of
+  // its default anchor, one scrolled with that seen moved back by it
+  const shift = ctx.anchorShift;
+  const back =
+    shift && sameScrollContext(anchor, shift.anchor) ? shift : NO_SHIFT;
+  return { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+}
+
+const NO_SHIFT = { x: 0, y: 0 };
+
+/** Whether one scroll moves two anchors alike: in the same scroll
+ *  container, and fixed to the viewport both or neither. */
+function sameScrollContext(a: Box, b: Box): boolean {
+  if (a === b) return true;
+  return (
+    nearestScrollerOf(a) === nearestScrollerOf(b) &&
+    drawnAtViewport(a) === drawnAtViewport(b)
+  );
 }
 
 /**
@@ -5191,13 +5409,18 @@ function flipAxis(style: ComputedStyle, down: boolean): void {
   [style[ma], style[mb]] = [style[mb], style[ma]];
   const insets = style.anchorInsets;
   if (insets) {
-    const out: Partial<Record<InsetSide, AnchorRef>> = { ...insets };
+    const out: Partial<Record<InsetSide, AnchorInset>> = { ...insets };
     delete out[a];
     delete out[b];
     const ia = insets[a];
     const ib = insets[b];
-    if (ia) out[b] = { ...ia, side: mirroredSide(ia.side, down) };
-    if (ib) out[a] = { ...ib, side: mirroredSide(ib.side, down) };
+    const mirrored = (inset: AnchorInset) =>
+      mapAnchorCalls(inset, (ref) => ({
+        ...ref,
+        side: mirroredSide(ref.side, down),
+      }));
+    if (ia) out[b] = mirrored(ia);
+    if (ib) out[a] = mirrored(ib);
     style.anchorInsets = out;
   }
   const area = style.positionArea;
@@ -5231,16 +5454,17 @@ function flipStart(style: ComputedStyle): void {
   };
   const insets = style.anchorInsets;
   if (insets) {
-    const out: Partial<Record<InsetSide, AnchorRef>> = {};
-    for (const [side, ref] of Object.entries(insets) as [
+    const out: Partial<Record<InsetSide, AnchorInset>> = {};
+    for (const [side, inset] of Object.entries(insets) as [
       InsetSide,
-      AnchorRef,
+      AnchorInset,
     ][]) {
       const to = swap[side] as InsetSide;
-      out[to] =
+      out[to] = mapAnchorCalls(inset, (ref) =>
         typeof ref.side === 'string' && swap[ref.side]
           ? { ...ref, side: swap[ref.side] }
-          : ref;
+          : ref,
+      );
     }
     style.anchorInsets = out;
   }
@@ -5264,43 +5488,64 @@ function flipStart(style: ComputedStyle): void {
 /**
  * An absolutely positioned box, against its containing block: a box's
  * padding box, or an inline box's fragments (`inlineContainingBlock`) —
- * or the cells of a `position-area`, `placed`. An axis with neither offset
- * takes the static position, where the box would have been in flow
- * (`placeStatic`, and `staticPositions` in a line), or is aligned in the
- * cells.
+ * or the cells of a `position-area` (`Anchoring`). An axis with neither
+ * offset takes the static position, where the box would have been in flow
+ * (`placeStatic`, and `staticPositions` in a line); one its self-alignment
+ * aligns is aligned in its inset-modified containing block
+ * (`selfAligned`). Answers that rectangle, which says whether it fits.
  */
 function positionedIn(
   box: Box,
   containing: Box,
   ctx: LayoutContext,
-  placed: PlacedArea | null,
-): void {
+  anchoring: Anchoring | null,
+): Placement {
   // a grid's is the box's grid area (CSS Grid 1, 9.1), whether the box is
   // the grid's child or deeper in it
   const area =
     containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
+  // the containing block as it is before a `position-area` takes its cells
+  // of it, which a box too big for them is held in as far as it can be
+  const whole =
+    containing.kind === 'inline'
+      ? inlineContainingBlock(containing, box, ctx)
+      : (area ?? containingRect(containing, ctx));
   // and a box in a `position-area` is in the area's cells
-  const {
-    x: cbX,
-    y: cbY,
-    width: cbWidth,
-    height: cbHeight,
-  } = placed ??
-  (containing.kind === 'inline'
-    ? inlineContainingBlock(containing, box, ctx)
-    : (area ?? containingRect(containing, ctx)));
+  const placed = anchoring?.area ?? null;
+  const { x: cbX, y: cbY, width: cbWidth, height: cbHeight } = placed ?? whole;
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
   const style = box.style;
-  const left = resolveOrNull(style.left, cbWidth);
-  const right = resolveOrNull(style.right, cbWidth);
-  const top = resolveOrNull(style.top, cbHeight);
-  const bottom = resolveOrNull(style.bottom, cbHeight);
+  let left = resolveOrNull(style.left, cbWidth);
+  let right = resolveOrNull(style.right, cbWidth);
+  let top = resolveOrNull(style.top, cbHeight);
+  let bottom = resolveOrNull(style.bottom, cbHeight);
+  // an axis its self-alignment places it on (CSS Position 3, 4.3): sized
+  // and placed in the rectangle its insets leave, an `auto` inset nought
+  const alignX = selfAligned(
+    box,
+    false,
+    cbX,
+    cbWidth,
+    left,
+    right,
+    anchoring,
+    containing.style.direction === 'rtl',
+  );
+  const alignY = selfAligned(box, true, cbY, cbHeight, top, bottom, anchoring);
+  if (alignX) {
+    left = alignX.startInset;
+    right = alignX.endInset;
+  }
+  if (alignY) {
+    top = alignY.startInset;
+    bottom = alignY.endInset;
+  }
   // what both offsets down and the margins leave of the containing block,
-  // and NaN where it has no pair of them
+  // and NaN where it has no pair of them, or is aligned in what they leave
   const fill =
-    top !== null && bottom !== null
+    top !== null && bottom !== null && (!alignY || alignY.stretch)
       ? Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom)
       : NaN;
 
@@ -5321,29 +5566,29 @@ function positionedIn(
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
-  const room = placed
-    ? placed
-    : inArea
-      ? {
-          x: cbX,
-          y: cbY,
-          width: cbWidth,
-          height: cbHeight,
-          ...staticAlignment(box, containing, false),
-        }
-      : at?.inside
-        ? { ...insideRect(at.from, at.inside.box), ...at.inside }
-        : null;
+  const room = inArea
+    ? {
+        x: cbX,
+        y: cbY,
+        width: cbWidth,
+        height: cbHeight,
+        ...staticAlignment(box, containing, false),
+      }
+    : at?.inside
+      ? { ...insideRect(at.from, at.inside.box), ...at.inside }
+      : null;
   // and a shrink-to-fit box's room starts at the offset on the side it has
-  // one, or at its static position: `left: 50%` leaves it half the width
-  const offset =
-    left ??
-    right ??
-    (!at
-      ? 0
-      : rtl
-        ? cbX + cbWidth - (at.from.x + at.right)
-        : at.from.x + at.x - cbX);
+  // one, or at its static position: `left: 50%` leaves it half the width —
+  // and one aligned between its insets has what they leave
+  const offset = alignX
+    ? cbWidth - alignX.size
+    : (left ??
+      right ??
+      (!at
+        ? 0
+        : rtl
+          ? cbX + cbWidth - (at.from.x + at.right)
+          : at.from.x + at.x - cbX));
 
   let width: number;
   let stretched = NaN;
@@ -5361,11 +5606,16 @@ function positionedIn(
     // an intrinsic size, which both offsets do not stretch, or a height of
     // its own through its ratio
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
+  } else if (alignX && !alignX.stretch) {
+    // aligned, it is as wide as its content in what its insets leave, which
+    // they do not stretch it to (CSS Position 3, 4.1)
+    width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   } else if (
     boxRatio(box) &&
     (left === null || right === null) &&
     top !== null &&
-    bottom !== null
+    bottom !== null &&
+    !Number.isNaN(fill)
   ) {
     // the height its offsets leave it through its ratio, where its width
     // has no pair of them to stretch it (CSS Sizing 4, 5.1)
@@ -5433,7 +5683,8 @@ function positionedIn(
           style.width === AUTO &&
           style.widthKeyword === null &&
           left !== null &&
-          right !== null)
+          right !== null &&
+          (!alignX || alignX.stretch))
         ? width
         : null,
       cbWidth,
@@ -5459,7 +5710,15 @@ function positionedIn(
   } else layoutOwn(box, ctx, width);
 
   let x: number;
-  if (
+  if (alignX) {
+    x =
+      alignedStart(
+        alignX,
+        box.width + box.marginLeft + box.marginRight,
+        whole.x,
+        whole.width,
+      ) + box.marginLeft;
+  } else if (
     left !== null &&
     right !== null &&
     (style.width !== AUTO ||
@@ -5515,7 +5774,19 @@ function positionedIn(
               : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   }
   let y: number;
-  if (top !== null && bottom !== null) {
+  if (alignY) {
+    if (stretches) {
+      box.height = clampHeight(box, fill);
+      centreButton(box);
+    }
+    y =
+      alignedStart(
+        alignY,
+        box.height + box.marginTop + box.marginBottom,
+        whole.y,
+        whole.height,
+      ) + box.marginTop;
+  } else if (top !== null && bottom !== null) {
     // a box that fills what its offsets leave, unless `min-height` or
     // `max-height` moves that, which makes it a height like one set, and
     // the rules run again with it (10.7)
@@ -5556,6 +5827,192 @@ function positionedIn(
             : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+  // the rectangle its insets leave of its containing block, which it has
+  // to fit in to be in no need of another position (CSS Anchor
+  // Positioning 1, 6.5)
+  const [ix, iw, cx] = alignX
+    ? [alignX.start, alignX.size, alignX.corrected]
+    : insetSpan(cbX, cbWidth, left, right);
+  const [iy, ih, cy] = alignY
+    ? [alignY.start, alignY.size, alignY.corrected]
+    : insetSpan(cbY, cbHeight, top, bottom);
+  return {
+    x: ix,
+    y: iy,
+    width: iw,
+    height: ih,
+    corrected: cx || cy,
+    moving: anchoring?.moving ?? 0,
+  };
+}
+
+/** One axis of the rectangle a box's insets leave of its containing block,
+ *  an `auto` inset nought: its start, its size, and whether the insets
+ *  went past each other, which leaves it none. */
+function insetSpan(
+  start: number,
+  size: number,
+  a: number | null,
+  b: number | null,
+): [number, number, boolean] {
+  const room = size - (a ?? 0) - (b ?? 0);
+  return [start + (a ?? 0), Math.max(0, room), room < 0];
+}
+
+/**
+ * An axis an absolutely positioned box's self-alignment places it on (CSS
+ * Position 3, 4.3): the inset-modified containing block — its insets,
+ * `auto` ones nought, having given way where they went past each other
+ * (3.5.2) — and where in it the box goes: `along` of its free room from
+ * the start, or centred on `centre`.
+ */
+interface SelfAligned {
+  start: number;
+  size: number;
+  corrected: boolean;
+  /** The insets, as offsets size the box. */
+  startInset: number;
+  endInset: number;
+  along: number;
+  /** The default anchor's centre, for `anchor-center`. */
+  centre: number | null;
+  /** Whether an `auto` size fills it. */
+  stretch: boolean;
+  /** Whether it may overflow as its alignment has it, where the default
+   *  would hold it in: `normal` against the one inset it has in a
+   *  `position-area` (CSS Anchor Positioning 1, 4.1). */
+  unsafe: boolean;
+}
+
+/**
+ * How an absolutely positioned box is aligned on an axis, by `justify-self`
+ * across and `align-self` down — or null where it is placed as it always
+ * was, by an inset's edge, its `auto` margins or its static position. In a
+ * `position-area`'s cells, `normal` aligns it towards the anchor, or
+ * centres it on the anchor where the cells are all three tracks of the
+ * axis (CSS Anchor Positioning 1, 4.1), and every `auto` inset and margin
+ * is nought (3.1); `anchor-center` centres it on its default anchor,
+ * making the same of its `auto` insets and margins (4.2), and is `center`
+ * where it has none. Elsewhere the box is aligned between two insets that
+ * are not `auto`, where neither margin is (CSS Position 3, 4.3): `start`,
+ * `end` and `center`; `normal` and `stretch` fill what they leave, as they
+ * always did.
+ */
+function selfAligned(
+  box: Box,
+  down: boolean,
+  cbStart: number,
+  cbSize: number,
+  start: number | null,
+  end: number | null,
+  anchoring: Anchoring | null,
+  rtl = false,
+): SelfAligned | null {
+  const style = box.style;
+  const value = down ? style.alignSelf : style.justifySelf;
+  const anchorCentre = anchoring?.centre
+    ? down
+      ? anchoring.centre.y
+      : anchoring.centre.x
+    : null;
+  const normal = value === 'auto' || value === 'normal' || value === 'baseline';
+  let along =
+    value === 'center'
+      ? 0.5
+      : value === 'flex-end'
+        ? rtl
+          ? 0
+          : 1
+        : rtl
+          ? 1
+          : 0;
+  let centre: number | null = null;
+  let stretch = false;
+  let unsafe = false;
+  if (
+    (down ? style.alignAnchorCenter : style.justifyAnchorCenter) &&
+    anchorCentre !== null
+  ) {
+    centre = anchorCentre;
+  } else if (anchoring?.area) {
+    if (value === 'stretch') {
+      stretch = true;
+      along = rtl ? 1 : 0;
+    } else if (normal) {
+      if ((start === null) !== (end === null)) {
+        // towards the inset it has, as one inset alone places a box
+        along = start !== null ? 0 : 1;
+        unsafe = true;
+      } else {
+        const area = down ? anchoring.down : anchoring.across;
+        if (area === null) centre = anchorCentre;
+        else along = area;
+      }
+    }
+  } else {
+    if (normal || value === 'stretch' || start === null || end === null) {
+      return null;
+    }
+    const [ma, mb] = down
+      ? [style.marginTop, style.marginBottom]
+      : [style.marginLeft, style.marginRight];
+    if (ma === AUTO || mb === AUTO) return null;
+  }
+  let a = start ?? 0;
+  let b = end ?? 0;
+  const room = cbSize - a - b;
+  // insets that go past each other: the weaker gives way, the `auto` one
+  // where one is, and otherwise the end's (CSS Position 3, 3.5.2)
+  if (room < 0) {
+    if (start === null && end !== null) a += room;
+    else if (end === null && start !== null) b += room;
+    else if (rtl) a += room;
+    else b += room;
+  }
+  return {
+    start: cbStart + a,
+    size: Math.max(0, room),
+    corrected: room < 0,
+    startInset: a,
+    endInset: b,
+    along,
+    centre,
+    stretch,
+    unsafe,
+  };
+}
+
+/**
+ * Where a margin box `outer` long starts on an aligned axis (`selfAligned`)
+ * of a box whose containing block, before a `position-area` took its cells
+ * of it, runs from `cbStart` for `cbSize`. Held inside the inset-modified
+ * containing block where it fits, as CSS Box Alignment 3, 4.4.1.2 has the
+ * default overflow alignment; where it does not, covering it as far as the
+ * rectangle around it and the containing block allows, and at that
+ * rectangle's start where it is larger still. Unsafe, where it is aligned
+ * as it says.
+ */
+function alignedStart(
+  a: SelfAligned,
+  outer: number,
+  cbStart: number,
+  cbSize: number,
+): number {
+  const free = a.size - outer;
+  const want =
+    a.centre !== null ? a.centre - outer / 2 : a.start + a.along * free;
+  if (a.unsafe) return want;
+  const within = (v: number, lo: number, hi: number) =>
+    Math.min(Math.max(v, lo), hi);
+  if (free >= 0) return within(want, a.start, a.start + free);
+  const lo = Math.min(a.start, cbStart);
+  const hi = Math.max(a.start + a.size, cbStart + cbSize);
+  if (outer > hi - lo) return lo;
+  return within(
+    want,
+    Math.max(lo, a.start + a.size - outer),
+    Math.min(a.start, hi - outer),
+  );
 }
 
 /** A box's content box or its padding box, as its layout left them. */
@@ -6875,6 +7332,18 @@ function restickAll(root: Box): Box[] | null {
  *  rest by the layout (`stickyOffset`), and again by the element where the
  *  pane around it is scrolled to (`restickToViewport`). */
 export const VIEWPORT_STICKY = new WeakMap<object, readonly Box[]>();
+
+/** The trees whose next layout answers a question about their size —
+ *  core's content floors, at a fraction of the width they are drawn at —
+ *  which keeps no anchored box's last position option (`LAST_POSITIONS`):
+ *  no frame draws it there. */
+const QUESTIONS = new WeakSet<BoxTree>();
+
+/** Say whether a tree's next layout answers a question about its size. */
+export function layoutAsks(tree: BoxTree, asks: boolean): void {
+  if (asks) QUESTIONS.add(tree);
+  else QUESTIONS.delete(tree);
+}
 
 /**
  * Place the sticky boxes the viewport keeps (`VIEWPORT_STICKY`) against
