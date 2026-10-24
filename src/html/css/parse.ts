@@ -19,7 +19,13 @@ import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
 import type { ContainerQuery } from './containers.js';
 import { parseLength, parseStretch, splitValue } from './values.js';
-import { closingParen, hasVar, unbalanced, validVars } from './vars.js';
+import {
+  closingParen,
+  hasVar,
+  namespacedAttrs,
+  unbalanced,
+  validVars,
+} from './vars.js';
 import type { CustomFunction, FunctionItem, FunctionParam } from './vars.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
 
@@ -349,6 +355,10 @@ export function parseStylesheet(
   for (const conditions of under ?? []) note(conditions);
   // `@import` counts only ahead of every other rule, `@charset` aside
   let importsAllowed = true;
+  // and `@namespace` after those and ahead of the rest (CSS Namespaces 3):
+  // the prefixes it declares, for the `attr()`s in the sheet's rules
+  let namespacesAllowed = true;
+  let namespaces: Map<string, string> | null = null;
 
   /** A layer's rank, named for the first time if it has not been. */
   const rankOf = (name: string): number => {
@@ -395,6 +405,18 @@ export function parseStylesheet(
         i = at.end;
         const name = at.name.toLowerCase();
         if (name === 'charset') continue;
+        if (name === 'namespace') {
+          const declared = namespacesAllowed
+            ? namespaceRule(at.prelude, at.block)
+            : null;
+          if (declared) {
+            importsAllowed = false;
+            if (declared.prefix !== null) {
+              (namespaces ??= new Map()).set(declared.prefix, declared.url);
+            }
+          }
+          continue;
+        }
         if (name === 'import') {
           if (importsAllowed && media === under) {
             const url = importUrl(at.prelude);
@@ -410,6 +432,7 @@ export function parseStylesheet(
         // and an at-rule nobody knows are dropped as though never written.
         if (at.block !== null && BLOCK_AT_RULES.has(name)) {
           importsAllowed = false;
+          namespacesAllowed = false;
         }
         if (name === 'media' && at.block !== null) {
           const conditions = parseMediaQuery(at.prelude);
@@ -520,6 +543,7 @@ export function parseStylesheet(
       const selectors = rawSelectors(prelude);
       if (!selectors) continue;
       importsAllowed = false;
+      namespacesAllowed = false;
       styleRule(selectors, block.body, media, layer, path, 0, containers);
     }
   };
@@ -613,6 +637,12 @@ export function parseStylesheet(
     if (!declarations.length) return;
     if (base !== null) {
       for (const d of declarations) d.value = absoluteUrls(d.value, base);
+    }
+    if (namespaces) {
+      for (const d of declarations) {
+        if (d.value.includes('|'))
+          d.value = namespacedAttrs(d.value, namespaces);
+      }
     }
     for (const raw of selectors) {
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
@@ -791,6 +821,27 @@ export function parseDeclarations(text: string): Declaration[] {
     i = end + 1;
   }
   return out;
+}
+
+/**
+ * An `@namespace` rule (CSS Namespaces 3, 2): an optional prefix and the
+ * namespace's URL, a string or a `url()`, and nothing else; null where it
+ * is none and is dropped. The prefix is case-sensitive, and null where
+ * the rule declares the default namespace.
+ */
+function namespaceRule(
+  prelude: string,
+  block: string | null,
+): { prefix: string | null; url: string } | null {
+  if (block !== null) return null;
+  const m =
+    /^\s*(?:((?:[\w-]|[^\x00-\x7f])+)\s+)?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\([^)]*\))\s*$/i.exec(
+      prelude,
+    );
+  if (!m || (m[1] && /^url$/i.test(m[1]))) return null;
+  const url = parseUrl(m[2]);
+  if (url === undefined) return null;
+  return { prefix: m[1] ?? null, url: url ?? '' };
 }
 
 /**

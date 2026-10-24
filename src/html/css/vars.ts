@@ -17,9 +17,26 @@
 //
 // A document with none of these pays nothing: the cascade asks only when
 // some declaration has one (`Declaration.custom`, `Declaration.vars`).
+//
+// What an `attr()` substitutes is attr()-tainted (CSS Values 5, 8.7.2), and
+// so is the whole of whatever a substitution made with a tainted value in
+// it: a custom property, a `var()`, an `if()` whose condition read one. A
+// tainted value as or in a URL makes its declaration invalid at
+// computed-value time, so an attribute a page keeps a token in cannot be
+// sent anywhere by a style sheet (`substituteIn`).
 
 import { evaluateCondition, styleQuery } from './conditions.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
+
+/**
+ * How many times a tainted value has been read: an attribute an `attr()`
+ * substituted, or a tainted custom property a `var()`, a `style()` or an
+ * `inherit()` read. Only ever counted up, so a substitution compares it
+ * before and after to know whether anything it made it from was tainted —
+ * through every nested `var()`, fallback and branch — with nothing passed
+ * down to them. A document with no `attr()` never moves it.
+ */
+let taints = 0;
 
 /**
  * An element's custom properties: its own over those it inherits, with
@@ -32,6 +49,9 @@ export class CustomProps {
   readonly own: Map<string, string | null>;
   readonly parent: CustomProps | null;
   readonly depth: number;
+  /** Which of its own are attr()-tainted; null for none, which is every
+   *  set in a document with no `attr()`. */
+  taint: Set<string> | null = null;
 
   constructor(parent: CustomProps | null) {
     // a lookup walks the chain, so a long one is folded into one map
@@ -49,15 +69,41 @@ export class CustomProps {
     return undefined;
   }
 
+  /** `get`, counting a tainted value as read (`taints`): what a
+   *  substitution asks. */
+  read(name: string): string | undefined {
+    for (let at: CustomProps | null = this; at; at = at.parent) {
+      const value = at.own.get(name);
+      if (value !== undefined) {
+        if (value !== null && at.taint?.has(name)) taints += 1;
+        return value ?? undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Whether the value `get` finds is attr()-tainted. */
+  tainted(name: string): boolean {
+    for (let at: CustomProps | null = this; at; at = at.parent) {
+      const value = at.own.get(name);
+      if (value !== undefined) return value !== null && !!at.taint?.has(name);
+    }
+    return false;
+  }
+
   /** The whole chain as one link, with the same answers. */
   private folded(): CustomProps {
     const out = new CustomProps(null);
     const links: CustomProps[] = [];
     for (let at: CustomProps | null = this; at; at = at.parent) links.push(at);
     for (let i = links.length - 1; i >= 0; i -= 1) {
+      const taint = links[i].taint;
       for (const [name, value] of links[i].own) {
         if (value === null) out.own.delete(name);
         else out.own.set(name, value);
+        if (value !== null && taint?.has(name)) {
+          (out.taint ??= new Set()).add(name);
+        } else out.taint?.delete(name);
       }
     }
     return out;
@@ -92,16 +138,24 @@ export function customProperties(
   registered: ReadonlyMap<string, Registration> | null = null,
 ): CustomProps {
   const out = new CustomProps(parent);
+  const taint = (name: string): void => {
+    (out.taint ??= new Set()).add(name);
+  };
+  /** The parent's value, tainted as the parent's is. */
+  const inherited = (name: string): string | null => {
+    if (parent?.tainted(name)) taint(name);
+    return parent?.get(name) ?? null;
+  };
   const unset = (name: string): string | null => {
     const reg = registered?.get(name);
-    return reg && !reg.inherits ? reg.initial : (parent?.get(name) ?? null);
+    return reg && !reg.inherits ? reg.initial : inherited(name);
   };
   for (const [name, value] of own) {
     const keyword = value.trim().toLowerCase();
     if (keyword === 'initial') {
       out.own.set(name, registered?.get(name)?.initial ?? null);
     } else if (keyword === 'inherit') {
-      out.own.set(name, parent?.get(name) ?? null);
+      out.own.set(name, inherited(name));
     } else if (
       keyword === 'unset' ||
       keyword === 'revert' ||
@@ -117,9 +171,15 @@ export function customProperties(
   const state = new Map<string, boolean>();
   const stack: string[] = [];
   const cyclic = new Set<string>();
+  /** Its value, counted as read where it is tainted, as `read` counts. */
+  const resolved = (name: string): string | undefined => {
+    const value = out.own.get(name);
+    if (value != null && out.taint?.has(name)) taints += 1;
+    return value ?? undefined;
+  };
   const visit = (name: string): string | undefined => {
     // an inherited one was resolved where it was declared
-    if (!own.has(name)) return parent?.get(name);
+    if (!own.has(name)) return parent?.read(name);
     const done = state.get(name);
     if (done === false) {
       // on the stack: a cycle, and nothing in it has a value, whatever
@@ -129,11 +189,13 @@ export function customProperties(
       }
       return undefined;
     }
-    if (done === true) return out.own.get(name) ?? undefined;
+    if (done === true) return resolved(name);
     state.set(name, false);
     stack.push(name);
     const raw = out.own.get(name);
     if (raw && hasVar(raw)) {
+      // tainted as a whole where anything it was made from was
+      const before = taints;
       // an `inherit()` finds the parent's, its own name's where it names
       // none
       const value = substitute(
@@ -141,18 +203,16 @@ export function customProperties(
         visit,
         hasInherit(raw) ? inheritingEnv(env, name, parent) : env,
       );
+      const made = value !== null && !cyclic.has(name);
       out.own.set(
         name,
-        value !== null && !cyclic.has(name)
-          ? value
-          : registered?.has(name)
-            ? unset(name)
-            : null,
+        made ? value : registered?.has(name) ? unset(name) : null,
       );
+      if (made && taints !== before) taint(name);
     }
     stack.pop();
     state.set(name, true);
-    return out.own.get(name) ?? undefined;
+    return resolved(name);
   };
   for (const name of own.keys()) visit(name);
   return out;
@@ -164,6 +224,10 @@ export function customProperties(
  * so a `var()` a utility class writes is replaced once for all of them.
  * What is remembered goes with the properties. With none, there is nothing
  * to key it on that would go, and only fallbacks to read.
+ *
+ * The value of a property that is no custom property's: null, invalid at
+ * computed-value time, where an attr()-tainted value is or is in a URL in
+ * what it comes to (`taintsUrl`).
  */
 export function substituteIn(
   value: string,
@@ -182,7 +246,7 @@ export function substituteIn(
         (env.attribute && ATTR_CALL.test(value)) ||
         (env.functionsReadMedia && DASHED_CALL.test(value))))
   ) {
-    return substitute(value, props, env);
+    return substituteUntainted(value, props, env);
   }
   let memo = SUBSTITUTED.get(props);
   if (!memo) {
@@ -191,10 +255,76 @@ export function substituteIn(
   }
   const hit = memo.get(value);
   if (hit !== undefined) return hit;
-  const out = substitute(value, props, env);
+  const out = substituteUntainted(value, props, env);
   memo.set(value, out);
   return out;
 }
+
+/** `substitute`, or null where what it comes to has a tainted value as or
+ *  in a URL. Where nothing tainted was read, which is every substitution in
+ *  a document with no `attr()`, it is `substitute` once; where something
+ *  was, it is made again, noting where each tainted value went. */
+function substituteUntainted(
+  value: string,
+  props: CustomProps | null,
+  env: IfEnvironment | null,
+): string | null {
+  const before = taints;
+  const out = substitute(value, props, env);
+  if (out === null || taints === before) return out;
+  const ranges: number[] = [];
+  const again = substitute(value, props, env, [], ranges);
+  return again === null || taintsUrl(again, ranges) ? null : again;
+}
+
+/**
+ * Whether one of `value`'s attr()-tainted ranges (`ranges`, a start and an
+ * end each) is or is in a `<url>` (CSS Values 5, 8.7.2): a `url()`, a
+ * `src()`, or a string an `image()` or an `image-set()` takes for one. A
+ * tainted value elsewhere is no URL, though it be beside one: an
+ * `image("a.png", attr(c type(<color>)))` fades to the attribute's colour.
+ */
+export function taintsUrl(value: string, ranges: readonly number[]): boolean {
+  const meets = (from: number, to: number): boolean => {
+    for (let k = 0; k < ranges.length; k += 2) {
+      if (ranges[k] < to && ranges[k + 1] > from) return true;
+    }
+    return false;
+  };
+  // the function each bracket open at `i` is, lowercase, '' for none
+  const open: string[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    if (c === '\\') {
+      i += 1;
+    } else if (c === '"' || c === "'") {
+      const end = stringEnd(value, i);
+      const close = end < 0 ? value.length : end + 1;
+      if (URL_STRINGS.has(open[open.length - 1] ?? '') && meets(i, close)) {
+        return true;
+      }
+      i = close - 1;
+    } else if (c === '(' || c === '[' || c === '{') {
+      let at = i;
+      while (at > 0 && isNameChar(value[at - 1])) at -= 1;
+      const name = c === '(' ? value.slice(at, i).toLowerCase() : '';
+      if (name === 'url' || name === 'src') {
+        const close = closingParen(value, i + 1);
+        const end = close < 0 ? value.length : close + 1;
+        if (meets(at, end)) return true;
+        i = end - 1;
+        continue;
+      }
+      open.push(name);
+    } else if (c === ')' || c === ']' || c === '}') {
+      open.pop();
+    }
+  }
+  return false;
+}
+
+/** The functions a string in which is a URL (CSS Images 4, 2.2 and 2.4). */
+const URL_STRINGS = new Set(['image', 'image-set', '-webkit-image-set']);
 
 const SUBSTITUTED = new WeakMap<CustomProps, Map<string, string | null>>();
 
@@ -226,7 +356,7 @@ export function inheritingEnv(
     ...(env ?? NO_ENV),
     property,
     inherited: (name) =>
-      name.startsWith('--') ? parent?.get(name) : env?.inherited?.(name),
+      name.startsWith('--') ? parent?.read(name) : env?.inherited?.(name),
   };
 }
 
@@ -262,9 +392,10 @@ export interface IfEnvironment {
    *  with no name inherits. */
   property?: string;
   /** The element's attribute of a name, which an `attr()` reads (CSS
-   *  Values 5, 7.7), undefined where it has none. Absent, an `attr()` is
+   *  Values 5, 7.7), in a namespace where one is given and in none where
+   *  it is null; undefined where it has none. Absent, an `attr()` is
    *  left as it is written, for what reads it to answer (`content`'s). */
-  attribute?(name: string): string | undefined;
+  attribute?(name: string, namespace?: string | null): string | undefined;
 }
 
 /**
@@ -318,7 +449,9 @@ export function validVars(value: string): boolean {
     const inner = value.slice(open, close);
     if (kind === 'attr') {
       const comma = topLevelComma(inner);
-      if (!attrHead(comma < 0 ? inner : inner.slice(0, comma))) return false;
+      const head = comma < 0 ? inner : inner.slice(0, comma);
+      // a name or a type a substitution gives is read once it has
+      if (hasVar(head) ? !validArguments(head) : !attrHead(head)) return false;
       if (comma >= 0) {
         const fallback = inner.slice(comma + 1);
         if (topLevel(fallback, ';') >= 0 || topLevel(fallback, '!') >= 0) {
@@ -401,9 +534,15 @@ export function substitute(
   /** The custom functions being evaluated, outermost first, a call of any
    *  of which again is a cycle. */
   calls: readonly string[] = [],
+  /** Where the attr()-tainted replacements went in what comes back, a
+   *  start and an end each, where it is wanted: each function a tainted
+   *  value went into the making of is tainted whole. */
+  tainted: number[] | null = null,
 ): string | null {
   const get =
-    typeof lookup === 'function' ? lookup : (name: string) => lookup?.get(name);
+    typeof lookup === 'function'
+      ? lookup
+      : (name: string) => lookup?.read(name);
   let out = '';
   let i = 0;
   for (;;) {
@@ -418,6 +557,7 @@ export function substitute(
       close = value.length;
     }
     const inner = value.slice(open, close);
+    const before = taints;
     let replacement: string | undefined | null;
     if (kind === 'attr') {
       replacement = env?.attribute
@@ -458,12 +598,20 @@ export function substitute(
     // already, so the tokenizer joins nothing that was apart
     out += value.slice(i, at);
     if (out && !/[\s(,]$/.test(out)) out += ' ';
+    const start = out.length;
     out += replacement.trim();
+    if (tainted && taints !== before) tainted.push(start, out.length);
     const next = value[close + 1];
     if (next !== undefined && !/[\s),]/.test(next)) out += ' ';
     i = close + 1;
   }
-  return (out + value.slice(i)).trim();
+  const whole = out + value.slice(i);
+  if (tainted?.length) {
+    // what the trim takes from its start moves every range back
+    const lead = whole.length - whole.trimStart().length;
+    for (let k = 0; k < tainted.length; k += 1) tainted[k] -= lead;
+  }
+  return whole.trim();
 }
 
 /** The units a number in an attribute may be given by an `attr()`'s type
@@ -480,6 +628,14 @@ const ATTR_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i;
  * of. An attribute it does not have, or that is not of its type, is its
  * fallback; with none, a typed one has no value and an untyped one is the
  * empty string. Null for a call that is no `attr()` at all.
+ *
+ * Its name and type are substituted first, so `attr(var(--x))` reads the
+ * attribute `--x` names, and a name and type that are none once they are
+ * is its fallback, or no value (8.7.1). A name in a namespace is one an
+ * `@namespace` rule declared the prefix of (`namespacePrefix`); any other
+ * prefix names no attribute. What the attribute holds, once it is read,
+ * is attr()-tainted (`taints`), whether it parsed or the fallback stood
+ * for it.
  */
 function attrValue(
   inner: string,
@@ -488,34 +644,43 @@ function attrValue(
   calls: readonly string[],
 ): string | null {
   const comma = topLevelComma(inner);
-  const head = attrHead(comma < 0 ? inner : inner.slice(0, comma));
-  if (!head) return null;
-  const { name, syntax, unit, number } = head;
-  const typed = syntax !== null || number || unit !== null;
-  const fallback = (): string | null => {
+  let headText = comma < 0 ? inner : inner.slice(0, comma);
+  if (hasVar(headText)) headText = substitute(headText, get, env, calls) ?? '';
+  const head = attrHead(headText);
+  const fallback = (typed: boolean): string | null => {
     if (comma < 0) return typed ? null : '""';
     const text = inner.slice(comma + 1);
     return hasVar(text) ? substitute(text, get, env, calls) : text.trim();
   };
-  const raw = env.attribute!(unescapeName(name));
-  if (raw === undefined) return fallback();
+  if (!head) return fallback(true);
+  const { name, prefix, syntax, unit, number } = head;
+  const typed = syntax !== null || number || unit !== null;
+  let namespace: string | null = null;
+  if (prefix) {
+    const declared = namespaceOfPrefix(prefix);
+    if (declared === undefined) return fallback(typed);
+    namespace = declared;
+  }
+  const raw = env.attribute!(unescapeName(name), namespace);
+  if (raw === undefined) return fallback(typed);
+  taints += 1;
   // an attribute whose value reads itself, through others or not, has none
   const key = `attr ${name.toLowerCase()}`;
   if (calls.includes(key)) return null;
   if (!typed) return cssString(raw);
   if (unit !== null || number) {
     const n = raw.trim();
-    if (!ATTR_NUMBER.test(n)) return fallback();
+    if (!ATTR_NUMBER.test(n)) return fallback(true);
     if (number) return n;
-    if (!ATTR_UNIT.test(unit!)) return fallback();
+    if (!ATTR_UNIT.test(unit!)) return fallback(true);
     return `${n}${unit!.toLowerCase()}`;
   }
   // the attribute is read as a value, what it substitutes in it too
   const parsed = hasVar(raw)
     ? substitute(raw, get, env, [...calls, key])
     : raw.trim();
-  if (parsed === null || !parsed) return fallback();
-  if (!matchesSyntax(parsed, syntax!)) return fallback();
+  if (parsed === null || !parsed) return fallback(true);
+  if (!matchesSyntax(parsed, syntax!)) return fallback(true);
   // substituted as the value it was parsed as, which serializes a
   // dimension's unit in lowercase (CSS Values 4, 4.2): `3EM` is `3em`
   return NUMERIC_SYNTAX.test(syntax!)
@@ -528,41 +693,93 @@ const NUMERIC_SYNTAX =
   /<(?:length|length-percentage|angle|time|resolution|flex|frequency)>/;
 
 /** An `attr()`'s name and type, before its fallback: null where it is
- *  none, which makes its declaration none as it is parsed. */
+ *  none, which makes its declaration none as it is parsed. Its prefix is
+ *  the namespace's as written, '' for `|name`, which is no namespace, and
+ *  null for none; `*` is none, since an `attr()` names one attribute (CSS
+ *  Values 5, 8.7). A `type()` of a URL is none either: no attribute can
+ *  be one (8.7.2). */
 function attrHead(text: string): {
   name: string;
+  prefix: string | null;
   syntax: string | null;
   unit: string | null;
   number: boolean;
 } | null {
   const m =
-    /^\s*(?:((?:[\w-]|[^\x00-\x7f]|\\.)+|\*)?\|)?((?:[\w-]|[^\x00-\x7f]|\\.)+)\s*([\s\S]*)$/.exec(
+    /^\s*(?:((?:[\w-]|[^\x00-\x7f]|\\.)*)\|)?((?:[\w-]|[^\x00-\x7f]|\\.)+)\s*([\s\S]*)$/.exec(
       text,
     );
   if (!m) return null;
-  // a namespace prefix: an HTML element's attributes are in none, which
-  // only `*` and no prefix at all name
-  if (m[1] !== undefined && m[1] !== '*') return null;
   const name = m[2];
+  const prefix = m[1] ?? null;
   const typeText = m[3].trim();
   if (/^type\(/i.test(typeText)) {
     let end = closingParen(typeText, 5);
     if (end >= 0 && typeText.slice(end + 1).trim()) return null;
     if (end < 0) end = typeText.length;
     const syntax = typeText.slice(5, end).trim();
-    if (!validSyntax(syntax)) return null;
-    return { name, syntax, unit: null, number: false };
+    if (!validSyntax(syntax) || /<url>/i.test(syntax)) return null;
+    return { name, prefix, syntax, unit: null, number: false };
   }
   if (/^number$/i.test(typeText)) {
-    return { name, syntax: null, unit: null, number: true };
+    return { name, prefix, syntax: null, unit: null, number: true };
   }
   if (!typeText || /^raw-string$/i.test(typeText)) {
-    return { name, syntax: null, unit: null, number: false };
+    return { name, prefix, syntax: null, unit: null, number: false };
   }
   // an ident is a unit, which only a unit's name is the type of; and
   // anything else is no type
   if (!/^(?:%|-?[a-z_][\w-]*)$/i.test(typeText)) return null;
-  return { name, syntax: null, unit: typeText, number: false };
+  return { name, prefix, syntax: null, unit: typeText, number: false };
+}
+
+/**
+ * The prefix an `attr()` in a style sheet is given for a namespace an
+ * `@namespace` rule declared there (CSS Namespaces 3): a sheet's prefix
+ * stands for its URL in that sheet alone, so the parser writes the URL in
+ * where it reads one (`namespacedAttrs`), as an ident that holds it.
+ */
+export function namespacePrefix(url: string): string {
+  let hex = '';
+  for (let i = 0; i < url.length; i += 1) {
+    hex += url.charCodeAt(i).toString(16).padStart(4, '0');
+  }
+  return `${NAMESPACE_MARK}${hex}`;
+}
+
+const NAMESPACE_MARK = '-rx-ns-';
+
+/** The URL a prefix `namespacePrefix` wrote stands for, null for a
+ *  namespace of nothing, which is none; undefined for any other prefix,
+ *  which no `@namespace` declared. */
+function namespaceOfPrefix(prefix: string): string | null | undefined {
+  if (!prefix.startsWith(NAMESPACE_MARK)) return undefined;
+  const hex = prefix.slice(NAMESPACE_MARK.length);
+  if (hex.length % 4 || /[^0-9a-f]/.test(hex)) return undefined;
+  let url = '';
+  for (let i = 0; i < hex.length; i += 4) {
+    url += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+  }
+  return url || null;
+}
+
+/**
+ * `value` with the namespace prefix of each `attr()` in it that
+ * `namespaces` declares written as the URL it stands for
+ * (`namespacePrefix`). One it does not declare is left as written, and
+ * names no attribute.
+ */
+export function namespacedAttrs(
+  value: string,
+  namespaces: ReadonlyMap<string, string>,
+): string {
+  return value.replace(
+    /(?<![\w-])(attr\(\s*)((?:[\w-]|[^\x00-\x7f])+)\|(?!=)/gi,
+    (all, open: string, prefix: string) => {
+      const url = namespaces.get(prefix);
+      return url === undefined ? all : `${open}${namespacePrefix(url)}|`;
+    },
+  );
 }
 
 /** `text` as a CSS string, quoted and escaped (CSSOM, "serialize a

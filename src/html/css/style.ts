@@ -1341,6 +1341,11 @@ export interface ComputedStyle {
    *  in turn, and over again where there are fewer than the images. The
    *  fields above are the first of each. */
   backgroundImages: BackgroundImage[] | null;
+  /** Each layer's `background-image` as its declaration wrote it, once
+   *  substituted, a comma between them: what `getComputedStyle` serializes
+   *  (`computed.ts`), which the fields above cannot say — the options of an
+   *  `image-set()`, a gradient's direction. Null for `none`. */
+  backgroundImageText: string | null;
   backgroundRepeats: ComputedStyle['backgroundRepeat'][] | null;
   backgroundSizes: ComputedStyle['backgroundSize'][] | null;
   backgroundAttachments: ComputedStyle['backgroundAttachment'][] | null;
@@ -1924,6 +1929,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundPositionX: 0,
     backgroundPositionY: 0,
     backgroundImages: null,
+    backgroundImageText: null,
     backgroundRepeats: null,
     backgroundSizes: null,
     backgroundAttachments: null,
@@ -3774,6 +3780,8 @@ export function applyDeclaration(
       style.backgroundImage = urlImageOf(first);
       style.backgroundGradient = gradientOf(first);
       style.backgroundImages = images.length > 1 ? images : null;
+      const text = value.trim();
+      style.backgroundImageText = /^none$/i.test(text) ? null : text;
       return;
     }
     case 'background-clip':
@@ -6191,6 +6199,9 @@ function applyBackgroundShorthand(
   style.backgroundImages = many
     ? layers.map((l) => l.image ?? l.gradient)
     : null;
+  style.backgroundImageText = layers.some((l) => l.imageText !== null)
+    ? layers.map((l) => l.imageText ?? 'none').join(', ')
+    : null;
   style.backgroundRepeats = many ? layers.map((l) => l.repeat) : null;
   style.backgroundSizes = many ? layers.map((l) => l.size) : null;
   style.backgroundAttachments = many ? layers.map((l) => l.attachment) : null;
@@ -6203,15 +6214,74 @@ function applyBackgroundShorthand(
 
 /** One layer's `background-image`: a url, a gradient, what an
  *  `image-set()` chose — none where it is one this does not draw, as though
- *  there were none — or none; undefined where it is not an image at all. */
+ *  there were none — or none; undefined where it is not an image at all,
+ *  as a string alone is not: a string is a URL only where `src()`,
+ *  `image()` or `image-set()` takes one (CSS Images 4, 2). */
 function backgroundImageOf(
   text: string,
   ctx: UnitContext,
 ): BackgroundImage | undefined {
   const v = text.trim();
   if (IMAGE_SET.test(v)) return imageSetOf(v, ctx);
-  if (IMAGE_FUNCTION.test(v.toLowerCase())) return parseGradient(v, ctx);
+  const lower = v.toLowerCase();
+  if (IMAGE_FUNCTION.test(lower)) return parseGradient(v, ctx);
+  if (lower.startsWith('src(')) return srcUrl(v);
+  if (lower.startsWith('image(')) return imageFunctionOf(v);
+  if (lower !== 'none' && !lower.startsWith('url(')) return undefined;
   return parseUrl(v);
+}
+
+/** Whether a background's part is an image's start: a `url()`, or a
+ *  function that is an image. */
+function startsImage(lower: string): boolean {
+  return (
+    lower.startsWith('url(') ||
+    lower.startsWith('src(') ||
+    lower.startsWith('image(') ||
+    IMAGE_FUNCTION.test(lower)
+  );
+}
+
+/** A `src()` (CSS Values 4, 4.5.1): the url its string names, its
+ *  modifiers passed over; undefined where it holds no string. */
+function srcUrl(text: string): string | null | undefined {
+  const end = closingParen(text, 4);
+  if (end < 0 || end < text.length - 1) return undefined;
+  const quoted = QUOTED.exec(text.slice(4, end).trim());
+  return quoted ? parseUrl(quoted[1]) : undefined;
+}
+
+/**
+ * An `image()` (CSS Images 4, 2.2) of a url, a string that is one or a
+ * colour: the url's image, or a colour's, which is the colour all over —
+ * drawn here as a gradient of it alone. Its `ltr` and `rtl` are passed
+ * over, and a colour after a url too, which is the image's only where the
+ * url draws nothing. Undefined where it is none of those.
+ */
+function imageFunctionOf(text: string): BackgroundImage | undefined {
+  const end = closingParen(text, 6);
+  if (end < 0 || end < text.length - 1) return undefined;
+  const args = splitCommas(text.slice(6, end)).map((a) => a.trim());
+  if (!args.length || args.length > 2) return undefined;
+  const first = args[0].replace(/^(?:ltr|rtl)\s+/i, '');
+  if (args.length === 1) {
+    const color = parseColor(first);
+    if (color !== null) {
+      return {
+        kind: 'linear',
+        angle: 180,
+        corner: null,
+        stops: [
+          { color, at: null },
+          { color, at: null },
+        ],
+      };
+    }
+  }
+  if (args.length === 2 && parseColor(args[1]) === null) return undefined;
+  if (/^url\(/i.test(first)) return parseUrl(first);
+  const quoted = QUOTED.exec(first);
+  return quoted && !quoted[2].trim() ? parseUrl(quoted[1]) : undefined;
 }
 
 /** `image-set()`, and `-webkit-image-set()`, which every engine reads as
@@ -6355,6 +6425,8 @@ interface BackgroundLayer {
   colorSource: string | null;
   image: UrlImage | null;
   gradient: Gradient | null;
+  /** The image as written, null for none (`backgroundImageText`). */
+  imageText: string | null;
   repeat: ComputedStyle['backgroundRepeat'];
   size: ComputedStyle['backgroundSize'];
   attachment: ComputedStyle['backgroundAttachment'];
@@ -6383,6 +6455,7 @@ function readBackgroundLayer(
     colorSource: null,
     image: null,
     gradient: null,
+    imageText: null,
     repeat: REPEAT,
     size: 'auto',
     attachment: 'scroll',
@@ -6400,13 +6473,14 @@ function readBackgroundLayer(
   for (let i = 0; i < parts.length;) {
     const part = parts[i];
     const v = part.toLowerCase();
-    if (v === 'none' || v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+    if (v === 'none' || startsImage(v)) {
       if (!once(1)) return null;
       if (v !== 'none') {
         const image = backgroundImageOf(part, ctx);
         if (image === undefined) return null;
         layer.image = urlImageOf(image);
         layer.gradient = gradientOf(image);
+        layer.imageText = part;
       }
       i += 1;
     } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
@@ -8727,6 +8801,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundPositionX',
     'backgroundPositionY',
     'backgroundImages',
+    'backgroundImageText',
     'backgroundRepeats',
     'backgroundSizes',
     'backgroundAttachments',
@@ -8742,6 +8817,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundImage',
     'backgroundGradient',
     'backgroundImages',
+    'backgroundImageText',
   ],
   'background-repeat': ['backgroundRepeat', 'backgroundRepeats'],
   'background-size': ['backgroundSize', 'backgroundSizes'],
@@ -9180,6 +9256,11 @@ function sameCustom(a: CustomProps, b: CustomProps): boolean {
         break;
       }
     }
+  }
+  // and the values an `attr()` made are the same ones (`CustomProps.taint`)
+  if (same && (a.taint || b.taint)) {
+    same = (a.taint?.size ?? 0) === (b.taint?.size ?? 0);
+    if (same) for (const name of a.taint ?? []) same &&= !!b.taint?.has(name);
   }
   if (same && a.parent !== b.parent) {
     same = !!a.parent && !!b.parent && sameCustom(a.parent, b.parent);

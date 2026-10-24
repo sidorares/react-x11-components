@@ -2598,7 +2598,8 @@ function classesOf(value: string | null): string[] {
   return value ? value.split(CLASS_SPACE).filter(Boolean) : [];
 }
 
-/** The names a declaration's `attr()`s read. */
+/** The names a declaration's `attr()`s read, as written: a `var()` or a
+ *  namespace's prefix and its bar among them. */
 const ATTR_FUNCTION = /\battr\(\s*([^\s,)]+)/gi;
 
 /**
@@ -2736,7 +2737,10 @@ class MutationRules {
     for (const declaration of declarations) {
       if (!declaration.value.includes('attr(')) continue;
       for (const m of declaration.value.matchAll(ATTR_FUNCTION)) {
-        note(`a:${asciiLower(m[1])}`, CHANGES_SELF, null);
+        // a name a `var()` gives, or one in a namespace, which the element
+        // holds under a prefix of its own, could be any attribute's
+        const name = /[|(]/.test(m[1]) ? '*' : asciiLower(m[1]);
+        note(`a:${name}`, CHANGES_SELF, null);
       }
     }
   }
@@ -3337,13 +3341,12 @@ export class Cascade {
    *  the line height settled ahead of the declarations that read it. */
   /** The element whose style is being computed (`_cascadeStyle`). */
   private _styling: Element | null = null;
-  /** Its attribute of a name, for an `attr()` (`IfEnvironment.attribute`):
-   *  HTML's names are its lowercase ones. */
-  private _attributeOf = (name: string): string | undefined => {
-    const attribs = this._styling?.attribs;
-    if (!attribs) return undefined;
-    return attribs[name] ?? attribs[name.toLowerCase()];
-  };
+  /** Its attribute of a name, for an `attr()` (`IfEnvironment.attribute`,
+   *  `attributeIn`). */
+  private _attributeOf = (
+    name: string,
+    namespace?: string | null,
+  ): string | undefined => attributeIn(this._styling, name, namespace);
   private _lh = false;
   /** The properties the user agent's sheet declares (`UnitContext.uaSets`). */
   private _uaProps = new Set<string>();
@@ -3815,6 +3818,8 @@ export class Cascade {
       if (anchors) found.push(anchors);
     };
     add(`a:${name}`);
+    // what an `attr()` reads by a name not known until it is read
+    add('a:*');
     const tests = rules.tests(name);
     if (tests) {
       // an element with the value it had and one with the value it has, by
@@ -4929,15 +4934,14 @@ export class Cascade {
       (text) => {
         const attr = !!container && ATTR_IN.test(text);
         if (!attr && !hasVar(text)) return text;
-        const attribs = container?.attribs;
         return substitute(
           text,
           style.custom ?? this._registeredBase,
           attr
             ? {
                 ...this._ifEnv,
-                attribute: (name) =>
-                  attribs?.[name] ?? attribs?.[name.toLowerCase()],
+                attribute: (name, namespace) =>
+                  attributeIn(container, name, namespace),
               }
             : null,
         );
@@ -6832,7 +6836,7 @@ export class Cascade {
       property,
       inherited: (name) =>
         name.startsWith('--')
-          ? (parentStyle.custom ?? this._registeredBase)?.get(name)
+          ? (parentStyle.custom ?? this._registeredBase)?.read(name)
           : computedText(parentStyle, name, this.scale),
     };
   }
@@ -7957,6 +7961,53 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 /** Whether any of the declarations has a length in `lh` or `rlh`. */
 /** An `attr()` in a value (`IfEnvironment.attribute`). */
 const ATTR_IN = /(?:^|[^\w-])attr\(/i;
+
+/**
+ * An element's attribute of a name, for an `attr()`: HTML's names are its
+ * lowercase ones. In a namespace, one the element holds as `prefix:name`
+ * whose prefix an `xmlns:prefix` on it or around it binds to that
+ * namespace (Namespaces in XML 1.0, 6.1), as an XHTML document read as
+ * HTML keeps it; `xml` and `xlink` are bound where nothing declares them,
+ * as HTML's parser binds them on its foreign elements.
+ */
+function attributeIn(
+  el: Element | null,
+  name: string,
+  namespace?: string | null,
+): string | undefined {
+  const attribs = el?.attribs;
+  if (!attribs) return undefined;
+  if (!namespace) return attribs[name] ?? attribs[name.toLowerCase()];
+  const local = name.toLowerCase();
+  for (const key in attribs) {
+    const colon = key.indexOf(':');
+    if (colon <= 0 || key.slice(colon + 1).toLowerCase() !== local) continue;
+    if (prefixBinding(el!, key.slice(0, colon)) === namespace) {
+      return attribs[key];
+    }
+  }
+  return undefined;
+}
+
+/** The namespace a prefix is bound to at an element, by the `xmlns:`
+ *  attributes on it and its ancestors; undefined for none. */
+function prefixBinding(el: Element, prefix: string): string | undefined {
+  const declaration = `xmlns:${prefix}`;
+  for (let at: Element | null = el; at;) {
+    const bound =
+      at.attribs[declaration] ?? at.attribs[declaration.toLowerCase()];
+    if (bound !== undefined) return bound;
+    const parent: Element['parent'] = at.parent;
+    at = parent && isTag(parent) ? parent : null;
+  }
+  return BOUND_PREFIXES.get(prefix.toLowerCase());
+}
+
+const BOUND_PREFIXES = new Map([
+  ['xml', 'http://www.w3.org/XML/1998/namespace'],
+  ['xmlns', 'http://www.w3.org/2000/xmlns/'],
+  ['xlink', 'http://www.w3.org/1999/xlink'],
+]);
 
 function usesSnap(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (d.prop === 'scroll-snap-type') return true;
