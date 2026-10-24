@@ -1201,16 +1201,25 @@ HTML 4.13.4).
     that moves into another document trades its old document's own registry
     for the new one's.
 - **Definitions.** A scoped registry's definitions upgrade only the elements
-  whose registry it is.
+  whose registry it is, and only in the documents it is associated with:
+  each one an element or a shadow root of its was connected in, or
+  `initialize()` gave it to an element in. `define()` upgrades them
+  document by document in the order each was first associated, not the
+  order the documents stand in, and each document in tree order.
+- **Frames.** A frame's window has a registry of its own, which defines,
+  upgrades and constructs in the frame's document. A custom element's
+  callbacks run in whatever document it is connected in.
 - **`innerHTML`.** It upgrades what it makes in a tree of a scoped registry
   at once, connected or not. Under the window's registry, an element is
   upgraded as it is connected, as Chrome has it.
 - **Constructors.** A class with no definition but a scoped one constructs
   nothing, since its `super()` looks it up in the window's registry.
+- **`customelementregistry`.** An element the parser makes with the
+  attribute has no registry, and so does what it holds. That holds for the
+  HTML parser, and for the XML parser that reads a frame's XHTML.
 - **What doesn't work yet:**
-  - shadow roots don't clone;
-  - `getHTML()` doesn't serialize them;
-  - the parser reads no `customelementregistry` attribute on an element.
+  - a window `window.open()` opens, which a page gets no handle to;
+  - a top-level XHTML document, which `<Html>` parses as HTML.
 
 `setHTMLUnsafe()` parses declarative shadow roots, as the document's
 parser does, where `innerHTML` doesn't. An element of an HTML name no

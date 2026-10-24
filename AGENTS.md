@@ -2217,12 +2217,17 @@ closes a way out a DOM binding opens by accident:
   and reaction queue by its wrapper (`customOf`), are in the page's realm,
   where its class and its callbacks are. Once a name is defined the host
   notes each element that may be one as it is connected, disconnected,
-  adopted, given another attribute value or copied into the document
+  adopted, given another attribute value or copied, in any document
   (`_custom…`), and the facade takes the notes after the op that made them
   and runs the reactions (`takeReactions`), before the method returns.
-  **Anything new that puts a node into the tree, takes one out or changes
-  an attribute goes through `_childList`, `_adopt` or `_changed`**, or its
-  custom elements hear nothing of it. `:defined` is the cascade's
+  Once a node has a scoped registry the host also notes every node
+  connected, with its document (`_scoped`): a scoped registry's `define()`
+  upgrades only in the documents its nodes were connected in, in the order
+  each first was (its scoped document set), and that order cannot be
+  worked out again later. **Anything new that puts a node into the tree,
+  takes one out or changes an attribute goes through `_childList`, `_adopt`
+  or `_changed`**, or its custom elements hear nothing of it, and a scoped
+  registry's `define()` misses the document. `:defined` is the cascade's
   (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
   attribute no element has.
 - **What a page asks of a media element is the player's, kept by

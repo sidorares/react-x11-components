@@ -2975,6 +2975,142 @@ test("createContextualFragment parses in its context's registry, and in a templa
   );
 });
 
+test('a scoped registry defines in each document it was associated with, in the order each was, and each in tree order', async () => {
+  // HTML 4.13.4: a scoped registry's define() upgrades its elements
+  // connected in each document of its scoped document set, which a
+  // document joins as an element or a shadow root of the registry's is
+  // connected in it (DOM 4.2.3, "insert") or initialize() gives one in it
+  // the registry — not in the order the documents stand in the tree
+  // (WPT's scoped-registry-define-upgrade-order and -criteria)
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], log = [];' +
+      'function named() { return class extends HTMLElement { constructor() { super(); log.push(this.id); } }; }' +
+      'function frame(parent, before) { parent = parent || document.body;' +
+      '  var f = parent.ownerDocument.createElement("iframe"); parent.insertBefore(f, before || null); return f; }' +
+      'function shadow(parent, registry) { var host = parent.ownerDocument.createElement("div");' +
+      '  var root = host.attachShadow({ mode: "open", customElementRegistry: registry }); parent.appendChild(host); return root; }' +
+      // a frame's document first, the frame in it next, the page's last
+      'var one = new CustomElementRegistry(), f1 = frame(), s1 = shadow(f1.contentDocument.body, one);' +
+      's1.innerHTML = "<x-a id=a></x-a>";' +
+      'var f2 = frame(f1.contentDocument.body), s2 = shadow(f2.contentDocument.body, one);' +
+      's2.innerHTML = "<x-a id=b></x-a>";' +
+      'var s3 = shadow(document.body, one); s3.innerHTML = "<x-a id=c></x-a>";' +
+      // and one taken out is no candidate
+      'var s4 = shadow(document.body, one); s4.innerHTML = "<x-a id=gone></x-a>"; s4.host.remove();' +
+      'one.define("x-a", named()); r.push(log.join(","));' +
+      // hosts made in the page and moved into two frames, the second's
+      // first: the page joined first, and the frames as they were moved to
+      'log = []; var two = new CustomElementRegistry(), f3 = frame(), f4 = frame(document.body, f3);' +
+      'var h1 = shadow(document.body, two); h1.innerHTML = "<x-b id=d></x-b>";' +
+      'var h2 = shadow(document.body, two); h2.innerHTML = "<x-b id=e></x-b>";' +
+      'f3.contentDocument.body.appendChild(h2.host); f4.contentDocument.body.appendChild(h1.host);' +
+      'two.define("x-b", named()); r.push(log.join(","));' +
+      // a document a page made joins it as initialize() gives its elements one
+      'log = []; var three = new CustomElementRegistry(), made = document.implementation.createHTMLDocument();' +
+      'made.body.innerHTML = "<x-c id=f></x-c>"; three.initialize(made.body);' +
+      'three.define("x-c", named()); r.push(log.join(","), made.body.firstChild.matches(":defined"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), 'a,b,c|e,d|f|true', doc.logs.join('\n'));
+});
+
+test("a frame's window's registry upgrades, makes and calls back the elements of the frame's document", async () => {
+  // HTML 4.13.4: a global registry's define() upgrades in its window's
+  // document, and a constructor of its makes an element in that document
+  // (HTML 3.2.3); a frame here runs in the page's realm, and its custom
+  // elements are connected in its document as the page's are in the page's
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], seen = [], f = document.createElement("iframe"); document.body.append(f);' +
+      'var win = f.contentWindow, fdoc = f.contentDocument;' +
+      'fdoc.body.setHTMLUnsafe("<y-a id=p></y-a>");' +
+      'class YA extends win.HTMLElement {' +
+      '  constructor() { super(); seen.push((this.id || "made") + ":" + (this.customElementRegistry === win.customElements) + ":" + (this.ownerDocument === fdoc)); }' +
+      '  connectedCallback() { seen.push("in:" + (this.id || "made")); } }' +
+      'win.customElements.define("y-a", YA);' +
+      'r.push(fdoc.getElementById("p") instanceof YA, customElements.get("y-a") === undefined);' +
+      'var made = fdoc.createElement("y-a"); r.push(made instanceof YA, made.ownerDocument === fdoc);' +
+      'fdoc.body.append(made);' +
+      'fdoc.body.insertAdjacentHTML("beforeend", "<y-a id=q></y-a>"); r.push(fdoc.getElementById("q") instanceof YA);' +
+      // the page's own registry has no such name
+      'r.push(document.createElement("y-a") instanceof YA);' +
+      'r.push(seen.join(","));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    [
+      'true|true',
+      'true|true',
+      'true',
+      'false',
+      'p:true:true,in:p,made:true:true,in:made,q:true:true,in:q',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a custom element is connected and disconnected in whatever document it is put in', async () => {
+  // DOM 4.2.3: "insert" calls back each custom element it connects, and
+  // "remove" each it disconnects, in any document — one a page made with
+  // createHTMLDocument as much as the page's — after "adopt" calls it back
+  // for the move (WPT's connected-callbacks, adopted-callback)
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var seen = [];' +
+      'customElements.define("z-a", class extends HTMLElement {' +
+      '  connectedCallback() { seen.push("in:" + (this.ownerDocument === document)); }' +
+      '  disconnectedCallback() { seen.push("out"); }' +
+      '  adoptedCallback(from, to) { seen.push("adopted:" + (from === document)); } });' +
+      'var za = document.createElement("z-a"), other = document.implementation.createHTMLDocument();' +
+      'var host = other.createElement("div"); other.body.append(host); var root = host.attachShadow({ mode: "open" });' +
+      'other.body.append(za); za.remove(); root.append(za); host.remove();' +
+      "document.getElementById('out').textContent = seen.join(',');" +
+      '</script>',
+  );
+  assert.strictEqual(
+    doc.text('out'),
+    'adopted:true,in:false,out,in:false,out',
+    doc.logs.join('\n'),
+  );
+});
+
+test("customelementregistry in a frame's XHTML gives what the XML parser makes there no registry", async () => {
+  // the XML parser creates each element as the HTML parser does (HTML
+  // 14.2), so one written with `customelementregistry`, and what it holds,
+  // has none, and the rest the frame's window's
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var f = document.createElement("iframe");' +
+      'f.onload = function () { var d = f.contentDocument, r = [];' +
+      '  r.push(d.contentType, d.querySelector("a-b").customElementRegistry, d.querySelector("e-f").customElementRegistry);' +
+      '  r.push(d.querySelector("c-d").customElementRegistry === f.contentWindow.customElements);' +
+      '  document.getElementById("out").textContent = r.join("|"); };' +
+      'f.src = "x.xhtml"; document.body.append(f);' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'application/xhtml+xml']],
+        body:
+          '<html xmlns="http://www.w3.org/1999/xhtml"><body>' +
+          '<a-b customelementregistry=""><e-f/></a-b><c-d/></body></html>',
+      }),
+    },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'application/xhtml+xml|||true',
+    doc.logs.join('\n'),
+  );
+});
+
 test("getComputedStyle answers a positioned box's used insets, and clientWidth a box's padding box", async () => {
   // CSSOM 9's resolved value of an inset is the used one where the box is
   // positioned: an absolute box's from where it was placed, an anchor()
