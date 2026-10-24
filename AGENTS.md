@@ -2312,6 +2312,22 @@ closes a way out a DOM binding opens by accident:
   is never lifted onto a layer (`liftOf`): a layer's frames are sampled
   ahead, which a seek, a pause or a cancel from the page can take back at
   any time.
+- **A scroll timeline's time is the last frame's, on both sides of the
+  bridge.** The realm's `ScrollTimeline` and `ViewTimeline` are measured
+  as they are made and again at each `runFrame` (`snapTimelines`), and a
+  page reads that until the next; the cascade's style asked for between
+  frames — a `getComputedStyle` after a page sought a scroll-driven CSS
+  animation — reads the timeline its element was last styled with
+  (`AnimationTimeline.heldProgress`). **Anything new that reads a scroll
+  timeline's geometry in the realm reads `_snapshot()`**, and anything
+  that forks the timeline for a style between frames hands the fork
+  `heldProgress`, or a page that scrolls and reads in one task reads the
+  new scroll, which WPT's sampling tests hold to the old. And a CSS
+  animation on a scroll's timeline keeps its time apart from the clock's
+  (`ScrollRun`): what a page does to one reaches it through
+  `CSSAnimation._tellScrolled` (`seekScrolled`), held, started or aligned,
+  and a view timeline's subject is placed by `_viewPlace` alone, which
+  holds its `auto` insets and its sticky reach.
 - **A page's geometry is in two places, and a read takes the one its
   attribute names.** `getBoundingClientRect` is `elementRect`, drawn
   through every transform and moved by every scroll, a box fixed to the

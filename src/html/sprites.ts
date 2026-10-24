@@ -248,8 +248,22 @@ export function liftOf(
     transform ||= moves;
     const run = runs?.[index];
     // nor one a trigger plays, which may turn it back or hold it at any
-    // time, as a page's script may
-    if (!run || run.name !== name || run.hold !== null || run.trig) {
+    // time, as a page's script may, nor one the page cancelled
+    if (
+      !run ||
+      run.name !== name ||
+      run.hold !== null ||
+      run.trig ||
+      run.pageCancelled
+    ) {
+      return null;
+    }
+    // nor one a scroll drives, whose time no clock has
+    const timelines = style.animationTimeline;
+    if (
+      timelines.length &&
+      timelines[index % timelines.length].kind !== 'auto'
+    ) {
       return null;
     }
     const timing = timingAt(animations, index);

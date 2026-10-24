@@ -2390,6 +2390,28 @@ test('what a layer cannot carry stays on the document’s clock: a colour, two a
   );
 });
 
+test('an element with an animation a scroll drives stays on the document’s clock, which has none of its time', async (t) => {
+  // its fade is the clock's, and its turn the scroll's
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      '@keyframes turn { to { transform: rotate(90deg) } }' +
+      'div { width: 20px; height: 20px; background: red }' +
+      '#driven { animation: fade 1s infinite, turn 1s infinite;' +
+      ' animation-timeline: auto, scroll(root) }' +
+      '#free { animation: fade 1s infinite; margin-top: 30px }</style>' +
+      '<div id="driven"></div><div id="free"></div>',
+  );
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const free = boxOf(doc.el, 'free');
+  assert.deepStrictEqual(
+    sprites.map((p) => p.rect.y),
+    [abs.y + free.y],
+    'only the one on the clock',
+  );
+});
+
 test('what the document paints before an element is under its layer, as it is under the element: a toast over the text before it, a block that slides over the flow after it', async (t) => {
   // a stacking context is painted with the positioned boxes, after the flow
   // it is in, the flow after it among it
