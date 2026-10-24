@@ -138,8 +138,8 @@ import {
   triggerActive,
   viewEdgeAt,
 } from './css/triggers.js';
-import type { TimelineTrigger } from './css/triggers.js';
-import { resolve as resolveLen } from './css/values.js';
+import type { TimelineTrigger, ViewPlace } from './css/triggers.js';
+import { AUTO, resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
 import type { ComputedStyle, RootLook, TimelineRef } from './css/style.js';
 import {
@@ -4108,14 +4108,17 @@ export class HtmlViewNode extends Node {
   /** Whether what `element` draws now may be other than its last frame's:
    *  a script animates it, or a CSS animation on the clock or a transition
    *  of its own runs, which a page may have sought (`seekAnimation`,
-   *  `seekTransition`). A scroll-driven one is where the last frame's
-   *  scroll had it, as a browser's timeline is until the next frame. */
+   *  `seekTransition`), or a page did something to one on a scroll's
+   *  timeline since (`seekScrolled`). A scroll-driven one is where the last
+   *  frame's scroll had it, as a browser's timeline is until the next
+   *  frame (`heldProgress`). */
   private _timedNow(element: Element): boolean {
     return (
       this._scripts.has(element) ||
       (this._animating() &&
         (this._timeline.transiting(element) ||
-          this._timeline.animatesOnClock(element)))
+          this._timeline.animatesOnClock(element) ||
+          this._timeline.sought(element)))
     );
   }
 
@@ -4130,8 +4133,9 @@ export class HtmlViewNode extends Node {
     if (this._animating()) {
       const fork = this._timeline.fork(element);
       fork.now = animationClock.now();
-      // and the scrolls its scroll-driven animations run on
-      fork.scrollProgress = this._timeline.scrollProgress;
+      // and the scrolls its scroll-driven animations run on, where the
+      // last frame had them
+      fork.scrollProgress = this._timeline.heldProgress;
       cascade.timeline = fork;
     } else cascade.timeline = null;
     try {
@@ -6745,13 +6749,14 @@ export class HtmlViewNode extends Node {
         edges(trigger.active),
       );
     }
-    const start = (down ? box.y : box.x) - portStart;
-    const place = {
-      start,
-      end: start + (down ? box.height : box.width),
-      portStart: resolveLen(source.inset[0], portSize),
-      portEnd: portSize - resolveLen(source.inset[1], portSize),
-    };
+    const place = this._viewPlace(
+      box,
+      scroller,
+      down,
+      portStart,
+      portSize,
+      source.inset,
+    );
     const edges = (range: TimelineTrigger['activation']) =>
       [viewEdgeAt(range[0], place), viewEdgeAt(range[1], place)] as const;
     return triggerActive(
@@ -7111,6 +7116,22 @@ export class HtmlViewNode extends Node {
     this.invalidate(true, this, 'props');
   }
 
+  /** And one on a scroll's timeline, whose time is a percentage of it:
+   *  held at `time`, running from the start time `time`, or aligned to its
+   *  range again, at `rate` (`AnimationTimeline.seekScrolled`). */
+  seekScrolled(
+    key: number,
+    mode: 'align' | 'start' | 'hold',
+    time: number | null,
+    rate: number,
+  ): void {
+    if (!this._animating()) return;
+    this._timeline.now = animationClock.now();
+    if (this._timeline.seekScrolled(key, mode, time, rate)) {
+      this._scheduleFrame();
+    }
+  }
+
   /**
    * Where a scroll-driven timeline is for an element (Scroll-driven
    * Animations 1): a `scroll()` timeline how far its scroller — the
@@ -7177,13 +7198,14 @@ export class HtmlViewNode extends Node {
     // where the subject is in the scrollport, less its insets; and each
     // edge of a range as how far the scroll is from it (`viewEdgeAt`), on
     // the scale of `cover`
-    const start = (down ? box.y : box.x) - port.start;
-    const place = {
-      start,
-      end: start + (down ? box.height : box.width),
-      portStart: resolveLen(inset[0], port.size),
-      portEnd: port.size - resolveLen(inset[1], port.size),
-    };
+    const place = this._viewPlace(
+      box,
+      scroller,
+      down,
+      port.start,
+      port.size,
+      inset,
+    );
     const from = viewEdgeAt({ name: 'cover', offset: 0 }, place);
     const to = viewEdgeAt({ name: 'cover', offset: { pct: 100 } }, place);
     if (!(to - from > 0)) return null;
@@ -7194,6 +7216,94 @@ export class HtmlViewNode extends Node {
       view: true,
     };
   };
+
+  /**
+   * Where a view timeline's subject is in the scrollport it is seen in,
+   * along one axis (`ViewPlace`): its border box from the scrollport's
+   * start — where it is at rest, for one sticky positioning moves, with
+   * how far it can move each way (`stickyReach`) — and the part of the
+   * scrollport it is seen through, less the timeline's insets, an `auto`
+   * one the scroll container's `scroll-padding` there (Scroll-driven
+   * Animations 1, 3.3), the root's for the pane's.
+   */
+  private _viewPlace(
+    box: Box,
+    scroller: Box | null,
+    down: boolean,
+    portStart: number,
+    portSize: number,
+    inset: readonly [Len, Len],
+  ): ViewPlace {
+    const sticky = stickyReach(box, scroller, down);
+    const start = (down ? box.y : box.x) - sticky.shift - portStart;
+    const pad = (i: 0 | 1): number =>
+      inset[i] !== AUTO
+        ? resolveLen(inset[i], portSize)
+        : this._scrollPadding(scroller, down, portSize)[i];
+    return {
+      start,
+      end: start + (down ? box.height : box.width),
+      portStart: pad(0),
+      portEnd: portSize - pad(1),
+      up: sticky.up,
+      down: sticky.down,
+    };
+  }
+
+  /** A scroll container's `scroll-padding` at the start and the end of an
+   *  axis, of a scrollport `size` long: the root's for the pane's. */
+  private _scrollPadding(
+    scroller: Box | null,
+    down: boolean,
+    size: number,
+  ): [number, number] {
+    const style = scroller ? scroller.style : this._rootBox()?.style;
+    if (!style) return [0, 0];
+    return [
+      resolveLen(down ? style.scrollPaddingTop : style.scrollPaddingLeft, size),
+      resolveLen(
+        down ? style.scrollPaddingBottom : style.scrollPaddingRight,
+        size,
+      ),
+    ];
+  }
+
+  /** What a view timeline's subject is along an axis, in CSS pixels, for
+   *  a page's `ViewTimeline` (`_viewPlace`): the insets an `auto` one
+   *  comes to there, the scroll container's `scroll-padding`, and how far
+   *  sticky positioning has moved it and can each way. Null where it has
+   *  no box. */
+  viewAdjustOf(
+    element: Element,
+    vertical: boolean,
+  ): {
+    padStart: number;
+    padEnd: number;
+    shift: number;
+    up: number;
+    down: number;
+  } | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree && this._firstBoxesOf(tree).get(element);
+    if (!box) return null;
+    const scroller = nearestScroller(box);
+    const port = this._scrollportOf(scroller, vertical);
+    const [padStart, padEnd] = this._scrollPadding(
+      scroller,
+      vertical,
+      port.size,
+    );
+    const sticky = stickyReach(box, scroller, vertical);
+    const s = this._scale;
+    return {
+      padStart: padStart / s,
+      padEnd: padEnd / s,
+      shift: sticky.shift / s,
+      up: sticky.up / s,
+      down: sticky.down / s,
+    };
+  }
 
   /** A scrollport, in document coordinates — a scroll container's or,
    *  for null, the pane's — along one axis: where it starts, how long it
@@ -9126,7 +9236,18 @@ export class HtmlViewNode extends Node {
         fill: timing.fill,
         easing: easingText(at(lists.easings)),
         paused: at(lists.playStates) === 'paused' || !!a.run.pagePaused,
+        ...(a.run.pageCancelled ? { cancelled: true } : null),
         currentTime: a.run.hold ?? now - a.run.start,
+        // on a scroll's, where the scroll has it
+        ...(timeline.kind === 'scroll' || timeline.kind === 'view'
+          ? {
+              scroll: {
+                at: a.run.scroll?.at ?? null,
+                start: a.run.scroll?.start ?? null,
+                rate: a.run.scroll?.rate ?? 1,
+              },
+            }
+          : null),
         timeline,
         rangeStart: edgeText(
           style.animationRangeStart[i % style.animationRangeStart.length],
@@ -11505,7 +11626,15 @@ export interface CssAnimationInfo {
   fill: string;
   easing: string;
   paused: boolean;
+  /** Whether the page cancelled it (`CSSAnimation.cancel()`), which
+   *  `getAnimations()` lists no longer. */
+  cancelled?: boolean;
   currentTime: number;
+  /** On a scroll's timeline, where its time is, in percentages of the
+   *  timeline: its time as last sampled, null where its timeline was
+   *  inactive; the start time a page set, null while it is aligned to its
+   *  range; and its playback rate (`ScrollRun`). */
+  scroll?: { at: number | null; start: number | null; rate: number };
   timeline:
     | { kind: 'document' | 'none' }
     | { kind: 'scroll'; source: Element | null; axis: string }
@@ -11656,6 +11785,51 @@ function scopedTimeline(
     if (under) found = timeline;
   }
   return found;
+}
+
+/**
+ * How sticky positioning moves a view timeline's subject along an axis
+ * (Scroll-driven Animations 1, 3.2): how far the sticky boxes from it up to
+ * its scroller have moved it now (`shift`), and how far each can move it
+ * at most toward the scrollport's start (`up`) — one with an end inset, as
+ * far as its containing block lets its margin box go back — and toward its
+ * end (`down`), one with a start inset, as far on. A subject held at the
+ * top of a section is seen from where it would enter held at the
+ * section's top to where it would leave carried to its foot, as Blink and
+ * WebKit have it.
+ */
+function stickyReach(
+  box: Box,
+  scroller: Box | null,
+  down: boolean,
+): { shift: number; up: number; down: number } {
+  let shift = 0;
+  let up = 0;
+  let on = 0;
+  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
+    if (at.style.position !== 'sticky' || at.kind === 'inline') continue;
+    const stuck = STUCK.get(at);
+    const moved = stuck ? (down ? stuck[1] : stuck[0]) : 0;
+    shift += moved;
+    let cb = at.parent;
+    while (cb && cb.kind === 'inline') cb = cb.parent;
+    if (!cb) continue;
+    const st = at.style;
+    const rest = (down ? at.y : at.x) - moved;
+    const size = down ? at.height : at.width;
+    const cbAt = down ? cb.contentY : cb.contentX;
+    const cbEnd = cbAt + (down ? cb.contentHeight : cb.contentWidth);
+    if ((down ? st.bottom : st.right) !== AUTO) {
+      up += Math.max(0, rest - (down ? at.marginTop : at.marginLeft) - cbAt);
+    }
+    if ((down ? st.top : st.left) !== AUTO) {
+      on += Math.max(
+        0,
+        cbEnd - (rest + size + (down ? at.marginBottom : at.marginRight)),
+      );
+    }
+  }
+  return { shift, up, down: on };
 }
 
 /** The scroll container a box is scrolled by: the nearest one around it,

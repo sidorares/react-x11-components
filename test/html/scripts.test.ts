@@ -8274,22 +8274,259 @@ test('a view timeline is its subject crossing its scroller, from cover 0% to 100
       // cover 0% where its top meets the scrollport's bottom, 100% where
       // its bottom leaves the top: before either, a time before 0%
       'r.push(tl.source === s, String(tl.startOffset), String(tl.endOffset), String(tl.currentTime));' +
+      // a scroll is the timeline's at the next frame, and until then it
+      // reads as the last frame had it
       's.scrollTop = 350; r.push(String(tl.currentTime));' +
       'var a = v.animate({ opacity: [0, 1] }, { timeline: tl, rangeStart: "contain 0%", rangeEnd: "contain 100%" });' +
       'r.push(JSON.stringify([a.rangeStart.rangeName, String(a.rangeStart.offset)]));' +
-      'a.ready.then(function () {' +
+      'requestAnimationFrame(function () {' +
       // contain runs from 300 to 400: 350 is its middle
-      '  r.push(String(a.startTime), getComputedStyle(v).opacity);' +
+      '  r.push(String(tl.currentTime), String(a.startTime), getComputedStyle(v).opacity);' +
       '  document.getElementById("out").textContent = r.join("|");' +
       '});' +
       '</script>',
   );
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
-    'true|200px|500px|-66.66666666666666%|50%|["contain","0%"]|33.33333333333333%|0.5',
+    'true|200px|500px|-66.66666666666666%|-66.66666666666666%|["contain","0%"]|50%|33.33333333333333%|0.5',
     doc.logs.join('\n'),
   );
 });
+
+test('a CSS animation on a scroll timeline tells the page as it starts and is cancelled, and follows what a page does to it', async () => {
+  // the scroller scrolls 400px, and the animation runs from 20% to 60%
+  const doc = await hosted(
+    '<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #t { height: 10px; animation: k auto linear; animation-timeline: scroll();' +
+      '   animation-range-start: 20%; animation-range-end: 60% }</style>' +
+      '<div id="s"><div id="c"><div id="t"></div></div></div><p id="out"></p><script>' +
+      'var log = [], r = [], s = document.getElementById("s"), t = document.getElementById("t"), a;' +
+      '["animationstart", "animationiteration", "animationend", "animationcancel"].forEach(function (type) {' +
+      '  t.addEventListener(type, function (e) {' +
+      '    log.push(e.type + ":" + e.elapsedTime + ":" + (e.animation === a)); }); });' +
+      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
+      'function opacity() { return getComputedStyle(t).opacity; }' +
+      'frame(function () {' +
+      // short of its range it has no effect, and has not started
+      '  a = t.getAnimations()[0];' +
+      '  r.push(opacity(), log.length);' +
+      '  s.scrollTop = 160;' +
+      '  frame(function () {' +
+      '    r.push(opacity(), String(a.currentTime));' +
+      // paused, it holds where it is as the scroll moves on
+      '    a.pause(); s.scrollTop = 240;' +
+      '    frame(function () {' +
+      '      r.push(opacity(), a.playState, String(a.currentTime));' +
+      // played again, it is where the scroll has it
+      '      s.scrollTop = 200; a.play();' +
+      '      frame(function () {' +
+      '        r.push(opacity(), String(a.currentTime));' +
+      // sought, it runs on from there as the scroll moves
+      '        a.currentTime = CSS.percent(10);' +
+      '        frame(function () {' +
+      '          r.push(opacity());' +
+      '          s.scrollTop = 300;' +
+      '          frame(function () {' +
+      '            r.push(opacity(), String(a.currentTime));' +
+      '            a.cancel();' +
+      '            frame(function () {' +
+      '              r.push(opacity(), a.playState, t.getAnimations().length);' +
+      '              document.getElementById("out").textContent = JSON.stringify([r, log]);' +
+      '            }); }); }); }); }); }); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 6000);
+  assert.deepEqual(
+    JSON.parse(text || 'null'),
+    [
+      [
+        '1',
+        0,
+        '0.5',
+        '20%',
+        '0.5',
+        'paused',
+        '20%',
+        '0.75',
+        '30%',
+        '0.25',
+        '0.875',
+        '35%',
+        '1',
+        'idle',
+        0,
+      ],
+      // its times are of a timeline a hundred seconds long, as in Blink
+      ['animationstart:0:true', 'animationcancel:35:true'],
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
+test("a CSS animation on a scroll timeline ends past its range, starts again scrolled back, and at its scroller's end is still under way", async () => {
+  const doc = await hosted(
+    '<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #t, #u { height: 10px; animation: k auto linear; animation-timeline: scroll() }' +
+      ' #t { animation-range-start: 20%; animation-range-end: 60% }</style>' +
+      '<div id="s"><div id="c"><div id="t"></div><div id="u"></div></div></div><p id="out"></p><script>' +
+      'var log = [], s = document.getElementById("s");' +
+      '["animationstart", "animationend", "animationcancel"].forEach(function (type) {' +
+      '  s.addEventListener(type, function (e) {' +
+      '    log.push(e.target.id + ":" + e.type + ":" + e.elapsedTime + ":" + e.animationName); }); });' +
+      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
+      'frame(function () {' +
+      '  log.push("past");' +
+      '  s.scrollTop = 320;' +
+      '  frame(function () {' +
+      '    log.push("back");' +
+      '    s.scrollTop = 160;' +
+      '    frame(function () {' +
+      '      log.push("end");' +
+      '      s.scrollTop = 400;' +
+      '      frame(function () {' +
+      '        document.getElementById("out").textContent = JSON.stringify(log);' +
+      '      }); }); }); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 6000);
+  assert.deepEqual(
+    JSON.parse(text || 'null'),
+    [
+      // the one over the whole timeline starts with it; the other is
+      // short of its range
+      'u:animationstart:0:k',
+      'past',
+      // skipped over in one scroll, it starts and ends at once
+      't:animationstart:0:k',
+      't:animationend:40:k',
+      'back',
+      't:animationstart:40:k',
+      'end',
+      // and the scroller's end is in the active phase of one that ends there
+      't:animationend:40:k',
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
+test('a CSS animation on a scroll timeline holds where animation-play-state pauses it, and a page plays it backwards', async () => {
+  const doc = await hosted(
+    '<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #t { height: 10px; animation: k auto linear paused; animation-timeline: scroll() }</style>' +
+      '<div id="s"><div id="c"><div id="t"></div></div></div><p id="out"></p><script>' +
+      'var r = [], s = document.getElementById("s"), t = document.getElementById("t"), a;' +
+      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
+      'function opacity() { return getComputedStyle(t).opacity; }' +
+      'frame(function () {' +
+      '  r.push(opacity()); s.scrollTop = 200;' +
+      '  frame(function () {' +
+      // paused from the start, it holds at its start
+      '    r.push(opacity());' +
+      '    t.style.animationPlayState = "running";' +
+      '    frame(function () {' +
+      '      r.push(opacity());' +
+      '      a = t.getAnimations()[0]; a.playbackRate = -1; s.scrollTop = 100;' +
+      '      frame(function () {' +
+      // backwards, its time runs from its range's end
+      '        r.push(opacity(), String(a.currentTime), String(t.getAnimations()[0].currentTime));' +
+      '        t.style.animationPlayState = "paused"; s.scrollTop = 300;' +
+      '        frame(function () {' +
+      '          r.push(opacity());' +
+      '          document.getElementById("out").textContent = JSON.stringify(r);' +
+      '        }); }); }); }); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 6000);
+  assert.deepEqual(
+    JSON.parse(text || 'null'),
+    ['0', '0', '0.5', '0.75', '75%', '75%', '0.75'],
+    doc.logs.join('\n'),
+  );
+});
+
+test('a scroll timeline, and a CSS animation on one, are where the last frame had the scroll until the next', async () => {
+  const doc = await hosted(
+    '<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #c { height: 500px }' +
+      ' #t { height: 10px; animation: k auto linear; animation-timeline: scroll() }</style>' +
+      '<div id="s"><div id="c"><div id="t"></div></div></div><p id="out"></p><script>' +
+      'var r = [], s = document.getElementById("s"), c = document.getElementById("c"), t = document.getElementById("t");' +
+      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
+      'function read() { r.push(getComputedStyle(t).opacity, String(tl.currentTime), String(a.currentTime)); }' +
+      'var tl, a;' +
+      'frame(function () {' +
+      '  tl = new ScrollTimeline({ source: s }); a = t.getAnimations()[0];' +
+      '  s.scrollTop = 200; read();' +
+      '  frame(function () {' +
+      '    read();' +
+      // what moves its scroll's range is the timeline's at the next frame too
+      '    c.style.height = "300px"; r.push(s.scrollHeight); read();' +
+      '    frame(function () {' +
+      '      read();' +
+      '      document.getElementById("out").textContent = JSON.stringify(r);' +
+      '    }); }); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 6000);
+  assert.deepEqual(
+    JSON.parse(text || 'null'),
+    [
+      ...['0', '0%', '0%'],
+      ...['0.5', '50%', '50%'],
+      300,
+      ...['0.5', '50%', '50%'],
+      ...['1', '100%', '100%'],
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
+for (const scale of [1, 2]) {
+  test(`a view timeline's auto insets are its scroller's scroll-padding, and a sticky subject's range takes in where it is held, at scale ${scale}`, async () => {
+    const doc = await hosted(
+      '<style>@keyframes k { from { opacity: 0 } to { opacity: 1 } }' +
+        ' #s { overflow: auto; width: 100px; height: 200px; scroll-padding: 40px }' +
+        ' .gap { height: 800px } #v { height: 200px }' +
+        ' #v, #q { animation: k auto linear both; animation-timeline: view() }' +
+        ' #n { overflow: auto; width: 100px; height: 500px } .space { height: 500px }' +
+        ' #p { position: sticky; top: 0; bottom: 0; height: 50px } #q { height: 50px }</style>' +
+        '<div id="s"><div class="gap"></div><div id="v"></div><div class="gap"></div></div>' +
+        '<div id="n"><div class="space"></div><div class="space"><div style="height: 200px"></div>' +
+        '<div id="p"><div id="q"></div></div></div><div class="space"></div></div>' +
+        '<p id="out"></p><script>' +
+        'var r = [], s = document.getElementById("s"), n = document.getElementById("n");' +
+        'var v = document.getElementById("v"), q = document.getElementById("q");' +
+        'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
+        'var view = new ViewTimeline({ subject: v }), zero = new ViewTimeline({ subject: v, inset: "0px" });' +
+        'var held = new ViewTimeline({ subject: q });' +
+        // cover from where the subject's top meets the padded bottom, 640, to
+        // where its bottom meets the padded top, 960; and held at the top or
+        // the foot of its section, from 0 to 1000
+        'r.push(String(view.startOffset), String(view.endOffset), String(zero.startOffset), String(zero.endOffset));' +
+        'r.push(String(held.startOffset), String(held.endOffset));' +
+        's.scrollTop = 720; n.scrollTop = 250;' +
+        'frame(function () {' +
+        '  r.push(getComputedStyle(v).opacity, String(view.currentTime), getComputedStyle(q).opacity, String(held.currentTime));' +
+        '  document.getElementById("out").textContent = JSON.stringify(r);' +
+        '});' +
+        '</script>',
+      { scale },
+    );
+    const text = await settled(doc, 'out', (t) => t !== '', 6000);
+    assert.deepEqual(
+      JSON.parse(text || 'null'),
+      [
+        ...['640px', '960px', '600px', '1000px'],
+        ...['0px', '1000px'],
+        ...['0.25', '25%', '0.25', '25%'],
+      ],
+      doc.logs.join('\n'),
+    );
+  });
+}
 
 test('keyframes take their offsets as Web Animations computes them, and a list per property is spread on its own', async () => {
   const doc = await hosted(

@@ -72,6 +72,13 @@ export function installDom(
   // timeout, where a loop would wedge the pane with nothing to stop it.
   const RealFinalizationRegistry: Any =
     typeof FinalizationRegistry === 'function' ? FinalizationRegistry : null;
+  // and its `WeakRef`, which holds the scroll timelines a frame measures
+  // again without keeping one the page let go (`heldTimelines`)
+  const RealWeakRef: Any = typeof WeakRef === 'function' ? WeakRef : null;
+  /** The scroll-driven timelines a page holds — weakly, where the context
+   *  can — each measured again at every frame (`snapTimelines`), which a
+   *  scroll, or a change to the document, asks for while there is one. */
+  const heldTimelines = new Set<Any>();
 
   // --- the bridge -------------------------------------------------------------
 
@@ -100,6 +107,8 @@ export function installDom(
     }
     if (MUTATES.has(op)) {
       mutated();
+      // a scroll timeline's time is measured again at the next frame
+      if (heldTimelines.size) wantFrame();
       if (customElementsDefined) takeReactions();
     } else if (
       customElementsDefined &&
@@ -2728,6 +2737,25 @@ export function installDom(
   const documentTimeline = new DocumentTimeline();
 
   const SCROLL_AXES = ['block', 'inline', 'x', 'y'];
+  /** A subject with no box's `scroll-padding` and sticky reach. */
+  const NO_ADJUST = [0, 0, 0, 0, 0];
+  const holdTimeline = (timeline: Any): void => {
+    heldTimelines.add(
+      RealWeakRef ? new RealWeakRef(timeline) : { deref: () => timeline },
+    );
+    // measured again at the next frame, which a timeline made before the
+    // document is laid out is waiting for
+    wantFrame();
+  };
+  /** A frame: each timeline's time as its scroll is now (Scroll-driven
+   *  Animations 1, 6.1, "update the rendering"). */
+  const snapTimelines = (): void => {
+    for (const held of [...heldTimelines]) {
+      const timeline = held.deref();
+      if (timeline) timeline._snap();
+      else heldTimelines.delete(held);
+    }
+  };
   /**
    * A scroll progress timeline (Scroll Animations 1, 2.3): its time is how
    * far its source is scrolled along its axis, a percentage, and it is
@@ -2757,6 +2785,26 @@ export function installDom(
       }
       this._source =
         o.source === undefined ? document.scrollingElement : o.source;
+      holdTimeline(this);
+      // as its scroll is now, until the next frame; a view timeline's once
+      // it has its subject
+      if (!(this instanceof ViewTimeline)) this._snap();
+    }
+    /** What its time is worked out from — its source's scroll, or its
+     *  subject's place in it — as it was at the last frame, or as it was
+     *  made (Scroll-driven Animations 1, 6.1): a page that scrolls, or
+     *  changes what its source holds, reads the time it had until the
+     *  next frame, as the document draws it. */
+    _snapped: Any = undefined;
+    _snap(): void {
+      this._snapped = this._measure();
+    }
+    _measure(): Any {
+      return scrollGeometry(this.source);
+    }
+    _snapshot(): Any {
+      if (this._snapped === undefined) this._snap();
+      return this._snapped;
     }
     get source(): Any {
       return this._source;
@@ -2776,7 +2824,7 @@ export function installDom(
       return this._axis === 'y' || this._axis === 'block';
     }
     override _time(): number | null {
-      const g = scrollGeometry(this.source);
+      const g: ScrollGeometry | null = this._snapshot();
       if (!g) return null;
       const max = this._vertical() ? g.maxY : g.maxX;
       if (!(max > 0)) return null;
@@ -2784,7 +2832,7 @@ export function installDom(
       return (at / max) * 100;
     }
     override _atEdge(): boolean {
-      const g = scrollGeometry(this.source);
+      const g: ScrollGeometry | null = this._snapshot();
       if (!g) return false;
       const at = Math.abs(this._vertical() ? g.y : g.x);
       const max = this._vertical() ? g.maxY : g.maxX;
@@ -2792,7 +2840,7 @@ export function installDom(
     }
     override _rangeAt(edge: RangeEdge, end: boolean): number {
       if (edge === 'normal') return end ? 100 : 0;
-      const g = scrollGeometry(this.source);
+      const g: ScrollGeometry | null = this._snapshot();
       const max = g ? (this._vertical() ? g.maxY : g.maxX) : 0;
       if (!(max > 0)) return end ? 100 : 0;
       return (offsetPx(edge.offset, max) / max) * 100;
@@ -2823,6 +2871,7 @@ export function installDom(
       super({ source: null, axis: options.axis });
       this._subject = options.subject;
       this._inset = insetOf(options.inset);
+      this._snap();
     }
     get subject(): Any {
       return this._subject;
@@ -2847,37 +2896,51 @@ export function installDom(
       return unitFactories.px(v ? v.cover[1] : 0);
     }
     /** The scroll offsets of each of its named ranges, and where the
-     *  source is scrolled to. */
+     *  source is scrolled to, as of the last frame (`_snapshot`). */
     _view(): {
       at: number;
       max: number;
       cover: [number, number];
       ranges: (name: string) => [number, number];
     } | null {
+      return this._snapshot();
+    }
+    override _measure(): Any {
       const source = this.source;
       const g = scrollGeometry(source);
       const r = docRect(this._subject);
       if (!g || !r) return null;
       const vertical = this._vertical();
+      // the scroll container's `scroll-padding`, which an `auto` inset is,
+      // and how far sticky positioning has moved the subject and can each
+      // way, which the range takes in (the document's `_viewPlace`)
+      const raw = call('viewAdjust', this._subject._id, vertical);
+      const [padStart, padEnd, shift, up, down] =
+        typeof raw === 'string' && raw ? raw.split(',').map(Number) : NO_ADJUST;
       const port = vertical ? g.height : g.width;
-      const start = (vertical ? r[1] - g.originY : r[0] - g.originX) + 0;
+      const start =
+        (vertical ? r[1] - g.originY : r[0] - g.originX) - shift + 0;
       const size = vertical ? r[3] : r[2];
-      const insetStart = offsetPx(this._inset[0], port);
-      const insetEnd = offsetPx(this._inset[1], port);
-      const viewStart = insetStart;
-      const viewEnd = port - insetEnd;
-      const s0 = start;
-      const s1 = start + size;
-      const cover: [number, number] = [s0 - viewEnd, s1 - viewStart];
+      const inset = (v: Any, pad: number) =>
+        v === 'auto' ? pad : offsetPx(v, port);
+      const viewStart = inset(this._inset[0], padStart);
+      const viewEnd = port - inset(this._inset[1], padEnd);
+      // its edges where a sticky box holds it back as it enters, and
+      // carries it on as it leaves
+      const s0 = start - up;
+      const s1 = start + size - up;
+      const e0 = start + down;
+      const e1 = start + size + down;
+      const cover: [number, number] = [s0 - viewEnd, e1 - viewStart];
       const a = s1 - viewEnd;
-      const b = s0 - viewStart;
+      const b = e0 - viewStart;
       const contain: [number, number] = [Math.min(a, b), Math.max(a, b)];
       const max = vertical ? g.maxY : g.maxX;
       return {
         at: Math.abs(vertical ? g.y : g.x),
         max,
         cover,
-        ranges: (name) =>
+        ranges: (name: string): [number, number] =>
           name === 'contain'
             ? contain
             : name === 'entry'
@@ -2887,7 +2950,7 @@ export function installDom(
                 : name === 'entry-crossing'
                   ? [s0 - viewEnd, s1 - viewEnd]
                   : name === 'exit-crossing'
-                    ? [s0 - viewStart, s1 - viewStart]
+                    ? [e0 - viewStart, e1 - viewStart]
                     : name === 'scroll'
                       ? [0, max]
                       : cover,
@@ -2939,27 +3002,27 @@ export function installDom(
   idlAttributes(ViewTimeline);
   /** A view timeline's insets, from a string of one or two
    *  `<length-percentage>` or `auto`, or a list of one or two values
-   *  (Scroll Animations 1, 3.3). `auto` is the scroll container's
-   *  `scroll-padding`, which is 0 here. */
+   *  (Scroll Animations 1, 3.3), `auto` where none is given. `auto` is the
+   *  scroll container's `scroll-padding` on that side, which the subject's
+   *  place is measured with (`_measure`). */
   const insetOf = (given: Any): [Any, Any] => {
-    const zero = percentOf(0);
     const one = (v: Any): Any => {
       if (v instanceof CSSKeywordValue) {
         if (v.value !== 'auto') {
           throw new TypeError(`'${v.value}' is not a valid inset.`);
         }
-        return zero;
+        return 'auto';
       }
       if (v instanceof CSSNumericValue) return rangeOffset(v);
       const text = String(v).trim();
-      if (text === 'auto') return zero;
+      if (text === 'auto') return 'auto';
       try {
         return rangeOffset(CSSNumericValue.parse(text));
       } catch {
         throw new TypeError(`'${text}' is not a valid inset.`);
       }
     };
-    if (given === undefined) return [zero, zero];
+    if (given === undefined) return ['auto', 'auto'];
     let parts: Any[];
     if (typeof given === 'string') {
       parts = given.trim().split(/\s+(?![^(]*\))/);
@@ -3021,7 +3084,7 @@ export function installDom(
   /** A scroll happened: the next frame comes soon. */
   const nudgeFrames = (): void => {
     quietFrames = 0;
-    if (scrollLinked.size) wantFrame();
+    if (scrollLinked.size || heldTimelines.size) wantFrame();
   };
   /**
    * Whether the document is yet to be revealed (HTML 8.1.7.1, "reveal"):
@@ -3056,6 +3119,13 @@ export function installDom(
       shown = renderingSteps();
     } catch (error) {
       report(error);
+    }
+    // then the scroll timelines' times, which the animations on them read
+    snapTimelines();
+    // and the CSS animations on one a page has hold of, as a frame updates
+    // every animation (Web Animations 1, 4.4.19); the cascade draws them
+    for (const css of cssAnimationObjects.values()) {
+      if (css._finite() && css.playState !== 'idle') css._frameScrolled();
     }
     let moved = false;
     for (const animation of [...scrollLinked]) {
@@ -4131,12 +4201,54 @@ export function installDom(
       // whose pseudo-element it animates going (`scriptedTransition`)
       if (this.playState === 'idle') heldCssAnimations.delete(this);
       else heldCssAnimations.add(this);
+      if (this._finite()) {
+        this._tellScrolled();
+        return;
+      }
       const time = this.currentTime;
       if (typeof time === 'number') {
         call('seekAnimation', this._key, time, this.playState === 'paused');
       } else if (this.playState === 'idle') {
         call('cancelCss', 'animation', this._key);
       }
+    }
+    /**
+     * On a scroll's timeline, what its state comes to, told the cascade's
+     * run: held where it is paused, or pause-pending, at its time — at
+     * where its timeline will have it, where it has none yet — aligned to
+     * its range where its start time is the timeline's to align, as
+     * `play()` makes it, and otherwise running from the start time a seek,
+     * `startTime` or `finish()` gave it.
+     */
+    _tellScrolled(): void {
+      const state = this.playState;
+      if (state === 'idle') {
+        call('cancelCss', 'animation', this._key);
+        return;
+      }
+      const rate = this._effRate();
+      if (state === 'paused') {
+        call('seekScrolled', this._key, 'hold', this._cur(), rate);
+      } else if (this._autoAlign) {
+        call('seekScrolled', this._key, 'align', null, rate);
+      } else {
+        const t = this._tlTime();
+        const start =
+          this._start ??
+          (this._hold !== null && t !== null && this._rate !== 0
+            ? t - this._hold / this._rate
+            : null);
+        if (start === null) {
+          call('seekScrolled', this._key, 'hold', this._cur(), rate);
+        } else call('seekScrolled', this._key, 'start', start, this._rate);
+      }
+    }
+    /** A frame, on a scroll's timeline: its start time aligned, its
+     *  pending task run where it is ready, and its finished state, from
+     *  the timeline's time now — what the page reads of it. */
+    _frameScrolled(): void {
+      this._autoAlignStart();
+      if (!this._tryPending()) this._updateFinished(false, false);
     }
     // drawn by the document's cascade, and brought up to date by it; its
     // `finished` settles at its end, by the timer every animation keeps
@@ -4187,6 +4299,9 @@ export function installDom(
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     const out: Any[] = [];
     for (const info of list) {
+      // one the page cancelled is idle, and listed by no one, but keeps
+      // its object for as long as its run lasts, which `play()` takes up
+      if (info.cancelled) continue;
       let a = cssAnimationObjects.get(info.key);
       const el = wrap(info.element);
       if (!a) {
@@ -4223,18 +4338,27 @@ export function installDom(
       );
       a._rangeStart = rangeEdgeOf(info.rangeStart, false);
       a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+      // a task the page left pending is the cascade's now, and done
+      const pending = a._pendingPlay || a._pendingPause;
       a._pendingPlay = false;
       a._pendingPause = false;
+      if (pending) a._resolveReady();
       if (!a._timeline) {
         a._start = null;
         a._hold = null;
       } else if (a._finite()) {
-        // on a scroll's timeline, where its range starts
-        a._autoAlign = true;
-        a._start = a._range()[0];
+        // on a scroll's timeline: held where the cascade holds it, from the
+        // start time a page gave it, or where its range starts — or ends,
+        // played backwards — and at the rate the page gave it
+        const scroll = info.scroll ?? { at: null, start: null, rate: 1 };
+        a._rate = scroll.rate;
+        a._pendingRate = null;
+        a._autoAlign = scroll.start === null;
+        const [from, to] = a._range();
+        a._start = scroll.start ?? (scroll.rate < 0 ? to : from);
         a._hold = null;
         if (info.paused) {
-          a._hold = a._cur();
+          a._hold = scroll.at ?? a._cur();
           a._start = null;
         }
       } else if (info.paused) {
@@ -25348,6 +25472,9 @@ export function installDom(
     const [id, type] = input();
     const target = wrap(id);
     if (!target) return false;
+    // a scroll container scrolled: the timelines on it move at the next
+    // frame
+    if (type === 'scroll') nudgeFrames();
     const ev = new Event(String(type));
     ev.isTrusted = true;
     return dispatch(target, ev);
