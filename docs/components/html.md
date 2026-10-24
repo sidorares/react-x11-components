@@ -90,7 +90,7 @@ handle.refresh();
 | `setMediaState(el, state)`                                                              | Tell a `<video>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; see [Video](#video).                                                                                                                                                                                                                                                                                                             |
 | `setScriptAnimation(el, id, effect, play)`                                              | Draw an animation a script made (`Element.animate()`): its effect, as the JSON the scripts' realm describes it — the pseudo-element, the frames at their computed offsets with their easings and values, and the timing — and where its time is, `1,<time>,<rate>` running from that time and `0,<time>,<rate>` held there, by an id that is its composite order. Either null takes it off the element. Sampled on the clock CSS's animations run on; see [Scripts](#scripts).                                                                                                                                    |
 | `scriptAnimationValues(el, id, properties)`                                             | What `commitStyles()` writes: each of `properties` as the element's animations come to now, those made after `id` left out, as `getComputedStyle` serializes it — `prop\u0000value` pairs joined by `\u0001` — or null where the element is not rendered.                                                                                                                                                                                                                                                                                                                                                         |
-| `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `scrollElementTo(element, { x?, y? }, relative?, target?)`                              | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`; `relative` for a `scrollBy()`, which a snap container snaps the way it went, and `target` for the element a scroll into view brings in, which it lines up. Answers where it came to, or null.                                                                                                                                                                                                                                                               |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, a `transform` as the `matrix()` or `matrix3d()` it comes to for the box, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`, or for the root element one of a view transition's, `'view-transition-group(name)'`.                                                                                                                                                                                                                    |
@@ -4275,32 +4275,46 @@ Snap 1, `layout/snap.ts`). `scroll-snap-type` makes a scroll container, or
 the viewport by the root's, snap on an axis, and `scroll-snap-align` makes a
 box in it an area, its border box outset by `scroll-margin` lined up at the
 start, the end or the centre of the snapport, the scrollport inset by
-`scroll-padding`. A script's scroll — `scrollTo`, `scrollTop`,
-`scrollIntoView`, and the scroll `focus()` makes to bring an element into
-view — comes to rest at the place nearest where it asked, where
-`mandatory` says it must and within a third of the snapport where
-`proximity` says it may, or anywhere inside an area larger than the
-snapport. A scroll with a direction — `scrollBy`, a scroll key, the wheel
-once it has rested on the container — rests only at a place ahead of where
-it began, the one nearest where it would have gone: a step from one snap
-position goes on to the next, however near the last. On a container that
-snaps on one axis, only an area the snapport shows across it is a snap
-position (5.1), so one pushed out to the side is passed over. Where several
-areas line up at that place, the focused element or the URL's target is
-the one snapped to, then one that lines up on both axes, then the innermost
-of those inside another, then the first in tree order. The area each axis
-lined up is kept by its element, and a layout that moves it scrolls the
-container with it; a `mandatory` container no script has scrolled is
+`scroll-padding`. A script's scroll — `scrollTo`, `scrollTop` — comes to
+rest at the place nearest where it asked, where `mandatory` says it must and
+within a third of the snapport where `proximity` says it may, or anywhere
+inside an area larger than the snapport; a place past what the container
+can be scrolled to is as far as it can go that way. A scroll with a
+direction — `scrollBy`, the scroll keys, the wheel once it has rested on the
+container — rests only at a place ahead of where it began, the one nearest
+where it would have gone: a step from one snap position goes on to the next,
+however near the last. A page — PageDown, PageUp, Space, Shift+Space — takes
+a place within a snapport of where it began before any farther, so that it
+skips no area, and goes farther only where none is that near; Home and End
+go to the place nearest the end. None of them passes over a place of an area
+whose `scroll-snap-stop` is `always`: such a scroll rests at the first it
+reaches, however much nearer where it was going another is. On a container
+that snaps on one axis, only an area the snapport shows across it is a snap
+position, so one pushed out to the side is passed over. Where several areas
+line up at that place, the one snapped to is the focused element or the one
+that holds it, then the URL's target or the one that holds it, then the
+innermost, then one that lines up on both axes, then the first in tree
+order. A scroll that brings an element into view — `scrollIntoView`, the
+URL's fragment, the scroll `focus()` makes — lines the element up as its
+`scroll-snap-align` says where it is an area, whatever `block` and `inline`
+asked, in a container that snaps and in one that does not; `focus()` of an
+element the containers around it already show scrolls nothing, and leaves
+what each was snapped to. The area each axis lined up is kept by its
+element, and a layout that moves it scrolls the container with it — the
+viewport as far as the document reaches after that layout; where the
+snapport can no longer show the areas both axes lined up, the container
+keeps the focused one, then the URL's target, then the block axis's, and
+lines it up on both. A `mandatory` container no script has scrolled is
 snapped where it is after a layout, or after a restyle that changed what a
 container snaps on — the viewport too — and a page that reads where the
-viewport is scrolled reads it after that layout. An area is the nearest scroll container
-on its containing blocks', so a box positioned past a scroll container
-inside the snap container is the snap container's; an anonymous box takes
-its parent's `scroll-snap-align` with the rest of its style, and is none.
-`scroll-snap-stop`, and the viewport under the wheel, are not snapped yet.
-A container's
-`scrollend` is told a frame after its last `scroll`, at the element, and the
-viewport's at the document, bubbling to the window.
+viewport is scrolled reads it after that layout. Where the root snaps, the
+element takes the wheel and the scroll keys for the viewport itself, and
+snaps it as it snaps a container. An area is the nearest scroll container on
+its containing blocks', so a box positioned past a scroll container inside
+the snap container is the snap container's; an anonymous box takes its
+parent's `scroll-snap-align` with the rest of its style, and is none. A
+container's `scrollend` is told a frame after its last `scroll`, at the
+element, and the viewport's at the document, bubbling to the window.
 
 **The wheel goes to the innermost scroll container under the pointer
 that can move the way it turns**, and on out: one scrolled to its end

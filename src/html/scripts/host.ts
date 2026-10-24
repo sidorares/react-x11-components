@@ -332,8 +332,14 @@ export interface HandleInternals {
    *  (`HtmlViewNode.setHighlights`). */
   setHighlights(highlights: readonly HighlightRanges[]): void;
   /** Where a script's scroll of the viewport comes to rest, where the
-   *  root makes it a snap container (`HtmlViewNode.snapViewport`). */
-  snapViewport(x: number, y: number): { x: number; y: number };
+   *  root makes it a snap container, or with the element it brings into
+   *  view lined up (`HtmlViewNode.snapViewport`). */
+  snapViewport(
+    x: number,
+    y: number,
+    target?: Element | null,
+    relative?: boolean,
+  ): { x: number; y: number };
   /** What the page's `CSS.registerProperty` registered, as `@property`
    *  rules (`HtmlViewNode.setRegisteredProperties`). */
   setRegisteredProperties(rules: string): void;
@@ -3173,7 +3179,9 @@ export class DomHost {
         const r = this._seams.handle.clientBox?.(this._element(a));
         return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
       }
-      // and scrolled, an axis left where it is where it is not a number
+      // and scrolled, an axis left where it is where it is not a number:
+      // by `true` for a relative scroll, or for the element a scroll into
+      // view brings into view by its id, which a snap lines up
       case 'scrollElement': {
         this.flush();
         const x = typeof b === 'number' && Number.isFinite(b) ? b : undefined;
@@ -3182,18 +3190,27 @@ export class DomHost {
           this._element(a),
           { x, y },
           d === true,
+          typeof d === 'number' ? this._element(d) : null,
         );
         return to ? `${to.x},${to.y}` : '';
       }
       case 'scrollTo': {
         // where the root makes the viewport a snap container, where the
-        // scroll comes to rest (`HtmlViewNode.snapViewport`)
+        // scroll comes to rest (`HtmlViewNode.snapViewport`): with the
+        // element a scroll into view brings into view by its id, and
+        // `scrollBy()`'s the way it went
         const x = Math.max(0, Number(a) || 0);
         const y = Math.max(0, Number(b) || 0);
+        const target = typeof c === 'number' ? this._element(c) : null;
         // against the style the page has now, as a scroll is (CSSOM View
         // 4, "perform a scroll" runs after the style is up to date)
         this.flush();
-        const to = this._seams.handle.snapViewport?.(x, y) ?? { x, y };
+        const to = this._seams.handle.snapViewport?.(
+          x,
+          y,
+          target,
+          d === true,
+        ) ?? { x, y };
         this._seams.scrollTo(to.x, to.y);
         return null;
       }
@@ -3377,7 +3394,20 @@ export class DomHost {
         // back to that as it closes. Not one that can take no focus at
         // all, which a page focuses to find out whether it can.
         this._focusing = null;
-        if (!this._seams.handle.focus(el)) {
+        if (this._seams.handle.focus(el)) {
+          // a stop the render to come mounts the box of, which core's focus
+          // follows only then: the element has the focus now, as `focus()`
+          // gives it before it returns, and brings it into view — a slide
+          // of a carousel was focused a frame late and never scrolled to
+          if (this._seams.handle.activeElement !== el && focusableElement(el)) {
+            this._focusing = el;
+            setTimeout(() => {
+              if (!this._disposed && this._focusing === el) {
+                this._focusing = null;
+              }
+            }, 16);
+          }
+        } else {
           const pending = focusableElement(el);
           if (pending) {
             this._focusing = el;

@@ -3669,6 +3669,21 @@ paints after what it scrolls. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
 links and the page (`scrollBarAt`).
 
+**A scroll snaps by how it moved** (`layout/snap.ts`'s `SnapScroll`): an
+absolute one to the place nearest where it went, a relative one only ahead
+of where it began (`from`) and never past a `scroll-snap-stop: always`, a
+page within a snapport of where it began first (`page`), and one that
+brings an element into view with the element lined up (`lineUp`, the
+`target` of `scrollElementTo` and `snapViewport`). **Anything new that
+scrolls a container or the viewport goes through `_snapScroll` or
+`_snapViewportAt` and says which kind it is**, or a snap container comes to
+rest between its places, or a carousel skips a slide. The viewport's
+re-snap runs after the layout has said how far the document reaches
+(`_documentHeight`), and asks the pane again once the frame is over
+(`_scrollPaneTo`): inside the pass the pane still has the extent from
+before, and clamped an area that the layout moved down past it to where
+the document used to end.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would
