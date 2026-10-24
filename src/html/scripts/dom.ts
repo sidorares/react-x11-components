@@ -7006,6 +7006,60 @@ export function installDom(
       'InvalidStateError',
     );
 
+  /** The input types `readonly` does not apply to, which it leaves
+   *  mutable (HTML 4.10.5.3.3). */
+  const READONLY_IGNORED = new Set([
+    'button',
+    'checkbox',
+    'color',
+    'file',
+    'hidden',
+    'image',
+    'radio',
+    'range',
+    'reset',
+    'submit',
+  ]);
+  /**
+   * `showPicker()` (HTML 4.10.5.4, and 4.10.7 for a `<select>`): a control
+   * that is not mutable is refused, so is a call no press or key of the
+   * user's is behind, and a `<select>` that is not being rendered has
+   * nowhere to drop a menu from. Else the activation is spent, and the
+   * host shows the picker where the control has one here — a drop-down
+   * `<select>`'s menu — which `:open` matches while it is down. No focus
+   * moves.
+   */
+  const showPicker = (el: Any, iface: string): void => {
+    const refused = (message: string, name: string): Any =>
+      new DOMException(
+        `Failed to execute 'showPicker' on '${iface}': ${message}`,
+        name,
+      );
+    const readOnly =
+      el._name === 'input' &&
+      el.hasAttribute('readonly') &&
+      !READONLY_IGNORED.has(el.type);
+    if (isDisabled(el) || readOnly) {
+      throw refused(
+        `${iface}::showPicker() cannot be used on immutable controls.`,
+        'InvalidStateError',
+      );
+    }
+    if (!hasTransientActivation()) {
+      throw refused(
+        `${iface}::showPicker() requires a user gesture.`,
+        'NotAllowedError',
+      );
+    }
+    if (call('showPicker', el._id) === 'unrendered') {
+      throw refused(
+        `${iface}::showPicker() requires the select is rendered.`,
+        'NotSupportedError',
+      );
+    }
+    consumeActivation();
+  };
+
   class HTMLInputElement extends FormControl {
     get type(): string {
       const t = (this.getAttribute('type') ?? '').toLowerCase();
@@ -7105,7 +7159,9 @@ export function installDom(
     }
     stepUp(): void {}
     stepDown(): void {}
-    showPicker(): void {}
+    showPicker(): void {
+      showPicker(this, 'HTMLInputElement');
+    }
   }
   for (const name of [
     'placeholder',
@@ -7339,6 +7395,9 @@ export function installDom(
         option,
         typeof before === 'number' ? this.options[before] : (before ?? null),
       );
+    }
+    showPicker(): void {
+      showPicker(this, 'HTMLSelectElement');
     }
   }
   Object.defineProperty(
@@ -16202,6 +16261,22 @@ export function installDom(
   }
   class MimeTypeArray extends PluginArray {}
 
+  /** `navigator.userActivation` (HTML 6.4.3): whether the page has been
+   *  used, and whether a press or a key of the user's is recent enough to
+   *  be behind what a script does now (`hasTransientActivation`). */
+  const ACTIVATION_KEY = Symbol('userActivation');
+  class UserActivation {
+    constructor(key?: Any) {
+      if (key !== ACTIVATION_KEY) throw new TypeError('Illegal constructor');
+    }
+    get hasBeenActive(): boolean {
+      return stickyActivation;
+    }
+    get isActive(): boolean {
+      return hasTransientActivation();
+    }
+  }
+
   /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
    *  a view as its bytes, a `Blob` as its own. */
   const blobBytes = (parts: Any): Uint8Array => {
@@ -19668,6 +19743,7 @@ export function installDom(
     // it can use
     sendBeacon: () => false,
     javaEnabled: () => false,
+    userActivation: new UserActivation(ACTIVATION_KEY),
   };
   // a page's service workers, where the host lets it have them and it is a
   // secure context; left out otherwise, as `clipboard` is
@@ -21296,6 +21372,19 @@ export function installDom(
    *  (HTML 6.4.1, "sticky activation"), which its frames of the same origin
    *  share. A prompt to unload is asked for only where it has. */
   let stickyActivation = false;
+  /** When the user last pressed or typed in the page (HTML 6.4.1, "last
+   *  activation timestamp"): it has transient activation for
+   *  `TRANSIENT_ACTIVATION_MS` after, Chrome's and Firefox's five seconds,
+   *  until an API that takes it spends it (`consumeActivation`) — a
+   *  `showPicker()` from a click's handler, which a second call in the
+   *  same handler is refused for. */
+  let lastActivation = -Infinity;
+  const TRANSIENT_ACTIVATION_MS = 5000;
+  const hasTransientActivation = (): boolean =>
+    now() - lastActivation < TRANSIENT_ACTIVATION_MS;
+  const consumeActivation = (): void => {
+    lastActivation = -Infinity;
+  };
 
   /** A document and the documents its frames hold in this realm, each with
    *  where its window hears events, a parent before its frames: a frame
@@ -23201,6 +23290,7 @@ export function installDom(
     Window,
     PluginArray,
     MimeTypeArray,
+    UserActivation,
     Blob,
     File,
     FormData,
@@ -23939,6 +24029,7 @@ export function installDom(
       (e.type === 'keydown' && e.key !== 'Escape')
     ) {
       stickyActivation = true;
+      lastActivation = now();
     }
     let target = wrap(e.target);
     if (!target) return true;

@@ -1650,6 +1650,16 @@ and a restyle that turns the styling on or off builds the box again
 (`isInputButton` in `_restyleInPlace`): a black pill was the palette's
 white framed button, half as wide again.
 
+**A `<select>`'s menu is the document's to hold.** Its widget is core's
+`<Select>` given `open` and `onOpenChange` (`renderControl`), so a press
+asks and `pickerChanged` answers, a script's `showPicker()` sets the same
+state, and `:open` reads it (`isPickerOpen`), told as a change of
+`-rx-picker-open`, which restyles in place. **Anything new that opens or
+shuts a control's picker goes through `pickerChanged`**, or the menu and
+`:open` come apart. A core before `open` hands both props to the trigger's
+box, which is how `holdsOpen` tells, so they go on the `<Select>` itself
+and never on a box around it.
+
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
 button, and `centreButton` (`layout/block.ts`) moves it there when the
@@ -2247,6 +2257,12 @@ closes a way out a DOM binding opens by accident:
   selector against the whole document, so `el.querySelectorAll('.a .b')`
   found nothing whose `.a` was above `el`. **A page's selector goes
   through `_query`**, which compiles it as the DOM does and keeps it.
+- **What HTML gates on the user's gesture reads the realm's activation.**
+  `__event` notes an activation-triggering press or key (`lastActivation`),
+  `hasTransientActivation` holds for five seconds after, and
+  `consumeActivation` spends it where the spec consumes it, as
+  `showPicker()` does: anything new that needs a gesture asks those, never
+  `stickyActivation`, which says only that the page was used.
 - **What a page waits on settles.** A stand-in that answers and never
   finishes is worse than none: `animate()` handed back an object whose
   `onfinish` was never called, so a menu that hid a panel at the end of its

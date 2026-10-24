@@ -15,8 +15,10 @@ import {
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
+import { XK_ESCAPE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
+import { parseColor } from '../../src/html/css/values.js';
 import {
   FONTS,
   boxOf,
@@ -34,6 +36,9 @@ import {
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
+
+/** A node's props, as core keeps them. */
+type Props = { props: Record<string, unknown> };
 
 metric(
   "form controls take Chrome's margins and sit on the baseline",
@@ -1002,6 +1007,66 @@ metric(
     );
   },
 );
+
+test("a select's menu is its :open, dropped by a press or a script, and restyled in place", async () => {
+  // HTML's `:open` matches a drop-down `<select>` whose menu is down
+  // (16.6.1), which a page styles its arrow by and a script drops with
+  // `showPicker()`. The menu is core's `<Select>`'s, held as the document
+  // says where core's select takes `open` and tells `onOpenChange`: on a
+  // core before that, the widget keeps its menu to itself, `:open` says
+  // nothing of it and a script drops none — which this holds it to there,
+  // so the test runs on either.
+  const { node } = await render(
+    '<style>select:open{color:#ff0000}select:closed{color:#0000ff}</style>' +
+      '<select id="s"><option>one</option><option>two</option></select>' +
+      '<select id="m" multiple><option>one</option></select>',
+  );
+  const el = view(node);
+  const [trigger] = screen.getAllByRole('combobox') as DrawnNode[];
+  const holds = !('onOpenChange' in (trigger as unknown as Props).props);
+  const select = findById(el.document, 's')!;
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { color: string } }).style;
+  const menu = () =>
+    (trigger.children as DrawnNode[]).find(
+      (c) => (c as unknown as { isWindow?: boolean }).isWindow,
+    ) ?? null;
+  const [red, blue] = [parseColor('#ff0000'), parseColor('#0000ff')];
+  const box = boxOf(el, 's');
+  assert.strictEqual(style('s').color, blue, 'a drop-down shut is :closed');
+  assert.ok(
+    ![red, blue].includes(style('m').color),
+    'a list box has no picker to open or shut',
+  );
+
+  await act(() => fireEvent.mouseDown(trigger));
+  await act(() => fireEvent.mouseUp(trigger));
+  await act();
+  assert.ok(menu(), 'the press drops the menu');
+  assert.strictEqual(
+    style('s').color,
+    holds ? red : blue,
+    holds ? 'and the select is :open' : 'which an older core keeps to itself',
+  );
+  assert.strictEqual(boxOf(el, 's'), box, 'restyled in place, no build');
+
+  await act(() => fireEvent.key(XK_ESCAPE));
+  await act();
+  assert.strictEqual(menu(), null, 'Escape takes it up');
+  assert.strictEqual(style('s').color, blue, 'and it is shut');
+
+  const forms = el.interactive!;
+  assert.strictEqual(
+    forms.showPicker(findById(el.document, 'm')!),
+    false,
+    'a list box drops nothing',
+  );
+  assert.strictEqual(forms.showPicker(select), holds, "a script's drops it");
+  await act();
+  assert.strictEqual(!!menu(), holds);
+  assert.strictEqual(style('s').color, holds ? red : blue);
+  assert.strictEqual(boxOf(el, 's'), box, 'in place again');
+});
 
 test('a form control or a frame keeps its height when only its width is set', async () => {
   // Only an image has an intrinsic ratio (CSS 2.1 10.3.2). A control's size

@@ -33,6 +33,8 @@ import {
   inActiveTransition,
   isModal,
   isFullscreen,
+  isDropDown,
+  isPickerOpen,
   isPopoverOpen,
   isMuted,
   hasMediaFlag,
@@ -2216,8 +2218,11 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   'any-link': ['a:href'],
   'local-link': ['a:href'],
   visited: ['a:href'],
-  open: ['a:open'],
-  closed: ['a:open'],
+  // a `<select>`'s picker open or shut is told as a change of this
+  // attribute nothing has (`useForms`'s `pickerChanged`), and whether it is
+  // a drop-down box at all by the two it is read from
+  open: ['a:open', 'a:-rx-picker-open'],
+  closed: ['a:open', 'a:-rx-picker-open', 'a:multiple', 'a:size'],
   'popover-open': ['a:popover', 'a:-rx-popover-open'],
   // a view transition begun, ended or given other types, which the script
   // engine tells as a change of this attribute nothing has (`vtActive`)
@@ -7273,9 +7278,15 @@ const PSEUDOS = {
   buffering: (el: Element) => hasMediaFlag(el, 'buffering'),
   stalled: (el: Element) => hasMediaFlag(el, 'stalled'),
   // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
-  // css-select has neither, and dropped every rule that named one
-  open: (el: Element) => opens(el) && el.attribs.open !== undefined,
-  closed: (el: Element) => opens(el) && el.attribs.open === undefined,
+  // css-select has neither, and dropped every rule that named one — and a
+  // `<select>` whose drop-down box is down or up (HTML 16.6.1), as its
+  // widget says (`isPickerOpen`)
+  open: (el: Element) =>
+    opens(el) ? el.attribs.open !== undefined : isPickerOpen(el),
+  closed: (el: Element) =>
+    opens(el)
+      ? el.attribs.open === undefined
+      : isDropDown(el) && !isPickerOpen(el),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,

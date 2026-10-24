@@ -47,6 +47,8 @@ import {
   inActiveTransition,
   isModal,
   setActiveTransition,
+  isDropDown,
+  isPickerOpen,
   isPopoverOpen,
   isMuted,
   hasMediaFlag,
@@ -3527,6 +3529,17 @@ export class DomHost {
           Number(c),
           d === 'forward' || d === 'backward' ? d : 'none',
         );
+      // a control's picker shown, `showPicker()`'s last steps (HTML
+      // 4.10.5.4): 'unrendered' for a `<select>` with no box to drop a menu
+      // from, which the page is refused, and else whether one is down
+      case 'showPicker': {
+        this.flush();
+        const el = this._element(a);
+        if (el.name === 'select' && !this._seams.handle.elementRect(el)) {
+          return 'unrendered';
+        }
+        return this._seams.handle.showPicker(el) ? 'shown' : 'none';
+      }
       case 'focus': {
         this.flush();
         const el = this._element(a);
@@ -4218,9 +4231,16 @@ export class DomHost {
         }
         return false;
       },
+      // a details or a dialog by its attribute, and a select by its widget's
+      // menu, as the cascade answers them
       open: (el) =>
-        (el.name === 'details' || el.name === 'dialog') &&
-        el.attribs.open !== undefined,
+        el.name === 'details' || el.name === 'dialog'
+          ? el.attribs.open !== undefined
+          : isPickerOpen(el),
+      closed: (el) =>
+        el.name === 'details' || el.name === 'dialog'
+          ? el.attribs.open === undefined
+          : isDropDown(el) && !isPickerOpen(el),
       valid: (el) => !invalid(el),
       invalid,
       'placeholder-shown': (el) =>

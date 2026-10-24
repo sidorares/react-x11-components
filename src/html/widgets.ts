@@ -38,7 +38,14 @@ import type {} from 'react-x11/jsx-runtime';
 
 import { cancelLater, later } from '../internal/timers.js';
 import { hx } from './hx.js';
-import { attr, isElement, isInputButton, tagOf } from './dom.js';
+import {
+  attr,
+  isDropDown,
+  isElement,
+  isInputButton,
+  setPickerOpen,
+  tagOf,
+} from './dom.js';
 import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
@@ -156,6 +163,10 @@ export interface Forms {
    *  one is mounted that takes it — as it does the next one mounted. False
    *  for what is no text field. */
   setSelection(el: Element, selection: FieldSelection): boolean;
+  /** Drop a `<select>`'s menu as a script's `showPicker()` does, where its
+   *  widget can be asked to (`holdsOpen`): false where nothing opens — a
+   *  list box, a disabled one, what has no picker here. */
+  showPicker(el: Element): boolean;
   /** HTML's interactive validation: true where the form may go, and else
    *  false, with the reason shown at the first control that is wrong. */
   validate(form: Element, submitter: Element | null): boolean;
@@ -205,6 +216,8 @@ export function useForms(options: FormsOptions): Forms {
           // blurred, and the document is told it went
           const node = view.current;
           if (node?.focusedElement === el) node.setFocus(null);
+          // and a select's menu goes with its widget
+          if (picker.current === el) pickerChanged(el, false);
         },
         // A field's selection outlives its widget, as an input's outlives
         // a `display: none`: what the widget had as it went is kept, and
@@ -215,6 +228,15 @@ export function useForms(options: FormsOptions): Forms {
           if (field) forms.keepSelection(el, selectionOf(field));
         },
         came: (el) => {
+          // A menu a script asked for before its widget was mounted, by a
+          // core whose select turns out to keep its menu to itself: no
+          // menu is down, and `:open` says so.
+          if (
+            picker.current === el &&
+            holdsOpen(widgets.triggerOf(el)) === false
+          ) {
+            pickerChanged(el, false);
+          }
           const kept = forms.selection(el);
           const field = kept && selectingField(widgets.fieldOf(el));
           if (!field) return;
@@ -224,6 +246,29 @@ export function useForms(options: FormsOptions): Forms {
       }),
     [view, forms],
   );
+
+  // Whose picker is open: the `<select>` whose menu is down, as its widget
+  // tells it (`onOpenChange`) or a script's `showPicker()` asks for it. The
+  // widget's `open` is this (`renderControl`), so its menu follows, and so
+  // does `:open` (`isPickerOpen`), told as a change of an attribute nothing
+  // has: a restyle in place where it only inks, as a hover is. One menu is
+  // down at a time, as a popup that grabs the pointer has it.
+  const picker = React.useRef<Element | null>(null);
+  const [, setPicker] = React.useState<Element | null>(null);
+  const tellPicker = (el: Element, open: boolean) => {
+    if (!setPickerOpen(el, open)) return;
+    view.current?.touchDocument([
+      { type: 'attributes', target: el, attributeName: '-rx-picker-open' },
+    ]);
+  };
+  const pickerChanged = (el: Element, open: boolean) => {
+    const was = picker.current;
+    if (open ? was === el : was !== el) return;
+    picker.current = open ? el : null;
+    if (was && was !== el) tellPicker(was, false);
+    tellPicker(el, open);
+    setPicker(picker.current);
+  };
 
   // What each field's selection was last seen as, by a script's setting it
   // or a gesture's end: a key, a press or a release in the field that
@@ -567,6 +612,8 @@ export function useForms(options: FormsOptions): Forms {
   const ctx: ControlContext = {
     forms,
     widgets,
+    picker: picker.current,
+    pickerChanged,
     changed,
     setChecked,
     checkRadio,
@@ -654,6 +701,15 @@ export function useForms(options: FormsOptions): Forms {
       const field = selectingField(widgets.fieldOf(el));
       if (field) field.setSelectionRange(kept.start, kept.end, kept.direction);
       seen.current.set(el, field ? selectionOf(field) : kept);
+      return true;
+    },
+    showPicker: (el) => {
+      if (!isDropDown(el) || isDisabled(el)) return false;
+      // Asked before its widget is mounted — a select just shown — it is
+      // down from the widget's first commit, where the core's select takes
+      // `open`; `came` finds out where it does not.
+      if (holdsOpen(widgets.triggerOf(el)) === false) return false;
+      pickerChanged(el, true);
       return true;
     },
     validate,
@@ -809,6 +865,21 @@ class WidgetBoxes {
     return null;
   }
 
+  /** The trigger of `el`'s widget, where it is a `<Select>` and is
+   *  mounted: the node in its box that is the combobox. */
+  triggerOf(el: Element): DrawnNode | null {
+    const box = this._boxes.get(el);
+    const stack: DrawnNode[] = box ? [box] : [];
+    while (stack.length) {
+      const node = stack.pop()!;
+      const props = (node as unknown as { props: Record<string, unknown> })
+        .props;
+      if (props.role === 'combobox') return node;
+      stack.push(...(node.children as DrawnNode[]));
+    }
+    return null;
+  }
+
   /** Focus `el`'s widget: the first node in its box that takes the focus. */
   focus(el: Element): boolean {
     const box = this._boxes.get(el);
@@ -851,6 +922,10 @@ function takesFocus(node: DrawnNode): boolean {
 interface ControlContext {
   forms: FormState;
   widgets: WidgetBoxes;
+  /** The `<select>` whose menu is down, or null. */
+  picker: Element | null;
+  /** A `<select>`'s widget says its menu went down, or came up. */
+  pickerChanged: (el: Element, open: boolean) => void;
   changed: (el: Element, value: string | boolean, restyle: boolean) => void;
   setChecked: (el: Element, checked: boolean) => void;
   checkRadio: (el: Element) => void;
@@ -1005,6 +1080,15 @@ function renderControl(
         // default would keep a drawn menu under the drawn trigger a styled
         // select gets.
         nativeMenu: true,
+        // Whether the menu is down is the document's, so `showPicker()`
+        // drops it and `:open` follows it: what the user does asks, and is
+        // told back (`pickerChanged`). A core whose select takes neither
+        // hands both to its trigger's box, where `holdsOpen` sees them —
+        // and declares neither, so they are spread past its types.
+        ...({
+          open: ctx.picker === el,
+          onOpenChange: (open: boolean) => ctx.pickerChanged(el, open),
+        } as object),
         disabled,
         ...order,
         style: rect.bare
@@ -1492,6 +1576,27 @@ interface SelectingField {
     end: number,
     direction?: FieldSelection['direction'],
   ): void;
+}
+
+/** Whether core's `<Select>` takes `open` and tells `onOpenChange`, as
+ *  learnt from the first trigger seen; null before one is. */
+let selectsHoldOpen: boolean | null = null;
+
+/**
+ * Whether core's `<Select>` holds its menu as its owner says (react-x11
+ * with `open` and `onOpenChange` on the select): one that does not passes
+ * both on to its trigger's box with the rest of its props, so a trigger
+ * that has an `onOpenChange` of its own is a select's that took none.
+ * Every select is the same core's, so what one trigger says is kept for
+ * the next asked before its widget is mounted.
+ */
+function holdsOpen(trigger: DrawnNode | null): boolean | null {
+  if (trigger) {
+    const props = (trigger as unknown as { props: Record<string, unknown> })
+      .props;
+    selectsHoldOpen = !('onOpenChange' in props);
+  }
+  return selectsHoldOpen;
 }
 
 function selectingField(node: TextInputNode | null): SelectingField | null {
