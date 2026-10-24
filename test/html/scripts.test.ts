@@ -5961,6 +5961,117 @@ test('a frame’s window is one for the frame wherever it goes: its location sen
   );
 });
 
+test("a frame's window answers for the frame's own viewport — its size, its media queries, its visualViewport — and hears it resized before its animation frames, which follow the page's", async () => {
+  // HTML 8.1.7.3: the resize steps, then the media queries' changes, of
+  // every document, then each one's animation frame callbacks in tree
+  // order. A frame with no realm of its own answered the page's
+  // `matchMedia`, heard no `resize` and ran its callbacks with the page's
+  const doc = await hosted(
+    '<style>body{margin:0}iframe{display:block;border:0;width:200px;height:100px}</style>' +
+      '<iframe id="f"></iframe><iframe id="g"></iframe><p id="out"></p><p id="heard"></p><script>' +
+      'var f = document.getElementById("f"), w = f.contentWindow, g = document.getElementById("g").contentWindow;' +
+      'var narrow = w.matchMedia("(max-width: 300px)");' +
+      'var vv = w.visualViewport;' +
+      'document.getElementById("out").textContent = [w.innerWidth, w.innerHeight, narrow.matches,' +
+      '  matchMedia("(max-width: 300px)").matches, w.matchMedia("(min-height: 100px)").matches,' +
+      '  vv.width, vv.height, vv !== visualViewport, narrow instanceof MediaQueryList].join("|");' +
+      'var heard = [];' +
+      'function note(what) { heard.push(what); document.getElementById("heard").textContent = heard.join("|"); }' +
+      'w.addEventListener("resize", function (e) { note("resize " + w.innerWidth + " " + (e.target === w) + " " + (this === w)); });' +
+      'vv.addEventListener("resize", function () { note("visual " + vv.width); });' +
+      'g.onresize = function () { note("g resize"); };' +
+      'addEventListener("resize", function () { note("page resize"); });' +
+      'narrow.addEventListener("change", function (e) {' +
+      '  note("change " + e.matches + " " + e.media + " " + (e instanceof MediaQueryListEvent));' +
+      '});' +
+      'setTimeout(function () {' +
+      // the frame second in tree order asks first
+      '  g.requestAnimationFrame(function () { note("g frame"); });' +
+      '  w.requestAnimationFrame(function () { note("f frame " + narrow.matches); });' +
+      '  requestAnimationFrame(function () { note("page frame"); });' +
+      '  f.style.width = "350px";' +
+      '}, 30);' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    // the frame's own, where the page is 400 wide
+    '200|100|true|false|true|200|100|true|true',
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'heard', (t) => t.includes('g frame')),
+    [
+      'resize 350 true true',
+      'visual 350',
+      'change false (max-width: 300px) true',
+      'page frame',
+      'f frame false',
+      'g frame',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test("a scroll told while a frame is coming is that frame's, between its resize steps and its media queries", async () => {
+  const doc = await hosted(
+    '<style>body{margin:0}iframe{display:block;border:0;width:200px;height:100px}</style>' +
+      '<iframe id="f"></iframe><p id="heard"></p><script>' +
+      'var f = document.getElementById("f"), w = f.contentWindow;' +
+      'var heard = [];' +
+      'function note(what) { heard.push(what); document.getElementById("heard").textContent = heard.join("|"); }' +
+      'w.addEventListener("resize", function () { note("resize"); });' +
+      'w.matchMedia("(max-width: 300px)").onchange = function () { note("change"); };' +
+      'addEventListener("scroll", function () { note("scroll"); });' +
+      '</script>',
+  );
+  await settle();
+  // in one task: the frame resized and a frame asked for; and the pane's
+  // scroll told before that frame comes
+  doc.run(
+    'f.style.width = "350px";' +
+      'requestAnimationFrame(function () { note("frame"); });',
+  );
+  doc.runner()?.engine.call('__scrolled', null);
+  assert.equal(
+    await settled(doc, 'heard', (t) => t.includes('frame')),
+    'resize|scroll|change|frame',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a media query list hears a change only where its answer moved, through each way of listening, and not once its listener is gone', async () => {
+  const doc = await hosted(
+    '<style>body{margin:0}iframe{display:block;border:0;width:200px;height:100px}</style>' +
+      '<iframe id="f"></iframe><p id="heard"></p><script>' +
+      'var f = document.getElementById("f"), w = f.contentWindow;' +
+      'var heard = [];' +
+      'function note(what) { heard.push(what); document.getElementById("heard").textContent = heard.join("|"); }' +
+      'var wide = w.matchMedia("(min-width: 250px)");' +
+      'wide.addListener(function (e) { note("legacy " + e.matches); });' +
+      'w.matchMedia("(min-width: 250px)").onchange = function (e) { note("handler " + e.matches); };' +
+      'w.matchMedia("(min-height: 50px)").onchange = function () { note("tall"); };' +
+      'var other = w.matchMedia("(min-width: 250px)");' +
+      'function off() { note("off"); }' +
+      'other.addListener(off); other.removeListener(off);' +
+      'var widths = ["300px", "320px", "240px"];' +
+      'function step() {' +
+      '  if (!widths.length) { note("done"); return; }' +
+      '  f.style.width = widths.shift();' +
+      '  w.requestAnimationFrame(function () { setTimeout(step, 0); });' +
+      '}' +
+      'setTimeout(step, 30);' +
+      '</script>',
+  );
+  // 200 to 300 crosses 250, 320 does not, 240 crosses back; the height
+  // never moves
+  assert.equal(
+    await settled(doc, 'heard', (t) => t.endsWith('done')),
+    'legacy true|handler true|legacy false|handler false|done',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a form whose target names a frame posts into the frame, and the tab stays where it is', async () => {
   // Facebook's pixel: a hidden form posting into a frame inside it, named
   // as the form's target, submitted once the frame has loaded, and taken
@@ -8324,6 +8435,59 @@ test('a frame the page lays out no box for runs all the same, and keeps its real
     .find((f) => f.frame.attribs.id === 'f')!;
   assert.ok(runner().frameDrawn(shown.document), 'drawn over its box');
   assert.equal(text('f', 'n'), 'ran 1');
+});
+
+test('a frame that runs in a realm of its own measures its own viewport, and hears it resized: its resize, then its media query lists’ change', async () => {
+  const frame =
+    '<!DOCTYPE html><style>body{margin:0}</style><p id="got">-</p><script>' +
+    'var heard = []; var narrow = matchMedia("(max-width: 300px)");' +
+    'function note(what) { heard.push(what); document.getElementById("got").textContent = heard.join("|"); }' +
+    'note([innerWidth, innerHeight, narrow.matches, visualViewport.width].join(" "));' +
+    'addEventListener("resize", function () { note("resize " + innerWidth + " " + innerHeight); });' +
+    'narrow.onchange = function (e) { note("change " + e.matches + " " + narrow.matches); };' +
+    'parent.postMessage("ready", "*");' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<style>body{margin:0}iframe{display:block;border:0;width:200px;height:100px}</style>' +
+      '<iframe id="f" src="frame.html"></iframe><script>' +
+      'addEventListener("message", function () {' +
+      '  var f = document.getElementById("f"); f.style.width = "350px"; f.style.height = "120px";' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('f', 'got'),
+      (t) => t.includes('change'),
+    ),
+    '200 100 true 200|resize 350 120|change false false',
+    logs.join('\n'),
+  );
+});
+
+test('a frame that runs in a realm of its own hears its own CSS transitions', async () => {
+  const frame =
+    '<!DOCTYPE html><style>.t { opacity: 1; transition: opacity 40ms linear }</style>' +
+    '<p id="a" class="t">a</p><p id="got">-</p><script>' +
+    'var log = [], a = document.getElementById("a");' +
+    'function show() { document.getElementById("got").textContent = log.join("|"); }' +
+    '["transitionrun", "transitionend"].forEach(function (type) {' +
+    '  a.addEventListener(type, function (e) { log.push(e.type + " " + e.propertyName); show(); }); });' +
+    'requestAnimationFrame(function () { getComputedStyle(a).opacity; a.style.opacity = "0"; });' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe>',
+    { 'frame.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('f', 'got'),
+      (t) => t.includes('end'),
+    ),
+    'transitionrun opacity|transitionend opacity',
+    logs.join('\n'),
+  );
 });
 
 metric(

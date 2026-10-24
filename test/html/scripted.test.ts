@@ -9,6 +9,7 @@
 // the engine's chunk is in, which `useScripts` keeps what it reports for.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
+import { useState } from 'react';
 import { act, cleanup, renderX11, screen, userEvent } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
@@ -428,6 +429,63 @@ test('on a display of scale 2 the page reads the pane in its own pixels: its scr
   assert.equal(
     await until(page, 'out', (s) => s.endsWith('|480')),
     '400|300|50|550|120|480',
+  );
+});
+
+test("the page hears the pane it is shown in resized: its window's resize, then its media query lists' change, then the animation frame its listener asked for", async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  const source =
+    '<p id="out"></p><script>' +
+    'var heard = [], wide = matchMedia("(min-width: 350px)");' +
+    'function note(what) { heard.push(what); document.getElementById("out").textContent = heard.join("|"); }' +
+    'note(innerWidth + " " + wide.matches);' +
+    'addEventListener("resize", function () {' +
+    '  note("resize " + innerWidth + " " + visualViewport.width);' +
+    '  requestAnimationFrame(function () { note("frame " + innerWidth); });' +
+    '});' +
+    'visualViewport.addEventListener("resize", function () { note("visual"); });' +
+    'wide.addEventListener("change", function (e) { note("change " + e.matches); });' +
+    '</script>';
+  const page = {} as { handle: HtmlHandle; width: (w: number) => void };
+  function Page() {
+    const handle = useHtmlHandle();
+    const [width, setWidth] = useState(400);
+    page.handle = handle;
+    page.width = setWidth;
+    return h(
+      'box',
+      { style: { width, height: 300, overflow: 'scroll' } },
+      h(Html, {
+        source,
+        partial: false,
+        baseUrl: PAGE,
+        ref: handle.ref,
+        scripts: true,
+      }),
+    );
+  }
+  await renderX11(
+    h(Page),
+    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+  );
+  const text = () => {
+    const el = page.handle.document && findById(page.handle.document, 'out');
+    return el ? textOf(el as never) : '';
+  };
+  const until = async (done: (s: string) => boolean): Promise<string> => {
+    const end = Date.now() + 5000;
+    while (!done(text()) && Date.now() < end) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
+    return text();
+  };
+  assert.equal(await until((s) => s !== ''), '400 true');
+  // a frame of quiet, and then the reader drags the pane narrower
+  await act(() => new Promise((r) => setTimeout(r, 50)));
+  await act(async () => page.width(300));
+  assert.equal(
+    await until((s) => s.includes('frame')),
+    '400 true|resize 300 300|visual|change false|frame 300',
   );
 });
 

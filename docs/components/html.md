@@ -797,7 +797,13 @@ answers `'script'` and any `fetch` of the same shape will do.
 `innerWidth`, `scrollY`, `scrollTo`, its `scroll` events — is the scroll pane around the `<Html>`, the host's, and its zoom is core's
 `scale` between the two, so an `<Html>` in a `<box scale={1.25}>` is a page
 at 125%. Its scripts run once the document has first been laid out, since a
-page measures what it reads.
+page measures what it reads. The pane resized is the page's: its window's
+`resize` and its `visualViewport`'s, then a `change` at each
+`MediaQueryList` a listener hears whose answer moved, then the animation
+frame callbacks, in one frame, as HTML's "update the rendering" orders
+them; a `scroll` told while a frame is coming is that frame's, after its
+`resize` and before its `change`. A frame's document is the same with its
+frame's box for a pane (see [Embedded content](#embedded-content)).
 
 **What leaves the document is handed back**, and goes nowhere by default,
 since this component navigates nowhere by itself:
@@ -958,9 +964,11 @@ at once; `updatePlaybackRate()`, `reverse()`, `effect.updateTiming()` and
 setting `timeline` follow their steps, and an easing is checked and
 serialized as CSS has it. `document.timeline.currentTime` is read once a
 task, as a browser updates it once a frame, so a page that waits until it
-moves waits for a frame. A frame updates the scroll-driven animations and
-the finished state, then runs `requestAnimationFrame`'s callbacks in a task
-after that one's microtasks and events.
+moves waits for a frame. A frame runs the resize steps, the scroll steps
+and the media queries' changes of each document the realm runs, updates the
+scroll-driven animations and the finished state, then runs
+`requestAnimationFrame`'s callbacks in a task after that one's microtasks
+and events — the page's, then each frame's in tree order.
 
 **A scroll timeline is how far its source is scrolled** (Scroll Animations
 1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
@@ -1617,6 +1625,19 @@ that turns scripts on gets them with no `renderEmbedded` of its own, and
 one that has one is asked first. An `<iframe srcdoc>` shows the markup its
 attribute holds, ahead of any `src`, as a document at `about:srcdoc` of the
 page's origin, with the page's base.
+
+**A frame's document has a viewport of its own: its frame's content box.**
+Its window's `innerWidth` and `innerHeight`, `matchMedia`, `visualViewport`
+and `getComputedStyle`'s media queries answer for it and not for the page,
+whether the frame runs in a realm of its own or in the page's — a frame
+with no script in it, its initial `about:blank`, one a script writes into.
+A page that lays the frame's box out again is the frame's `resize`, and a
+`change` at each of its media query lists whose answer moved; a frame with
+no realm of its own has animation frame callbacks of its own, which run
+after the page's in tree order, as each document's do in a browser. Not
+yet: such a frame's document scrolls nothing (`scrollX` is 0, `scrollTo`
+does nothing, and nothing tells its `scroll`), and a realm of its own runs
+its frames on its own clock, apart from the page's.
 
 ## Focus and the keyboard
 

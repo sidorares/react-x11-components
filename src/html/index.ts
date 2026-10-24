@@ -957,6 +957,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onViewportOverflow,
     onElementScroll: props.onElementScroll,
     onViewportScroll: props._onViewportScroll,
+    onPaint: props._onPaint,
     onCssEvents: props._onCssEvents,
     canvasImage: props.canvasImage,
     domRevision,
@@ -1196,6 +1197,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>
         nodeRef.current?.matchMedia(query) ?? false,
+      mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,

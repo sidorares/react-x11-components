@@ -450,6 +450,17 @@ export class ScriptRunner {
     }, FRAME_MS);
   }
   private _scrollEndOwed: ReturnType<typeof setTimeout> | null = null;
+
+  /** `<Html>` painted: what the page's windows measure may have moved, which
+   *  the host looks at once the paint is over (`DomHost.renderingMoved`). */
+  painted(): void {
+    if (this._disposed || this._paintSeen) return;
+    this._paintSeen = setTimeout(() => {
+      this._paintSeen = null;
+      if (!this._disposed) this.host.renderingMoved();
+    }, 0);
+  }
+  private _paintSeen: ReturnType<typeof setTimeout> | null = null;
   /** Each scroll container's `scrollend`, owed a frame after its last
    *  `scroll` (`elementScrolled`). */
   private _elementScrollEnds = new Map<
@@ -510,6 +521,7 @@ export class ScriptRunner {
     if (this._disposed) return;
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
     if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
+    if (this._paintSeen) clearTimeout(this._paintSeen);
     for (const owed of this._elementScrollEnds.values()) clearTimeout(owed);
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();

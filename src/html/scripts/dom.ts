@@ -754,6 +754,17 @@ export function installDom(
       this.newState = String(init.newState ?? '');
     }
   }
+  /** A media query list's `change` (CSSOM View 4.2): its query, and what
+   *  it answers now. */
+  class MediaQueryListEvent extends Event {
+    readonly media: string;
+    readonly matches: boolean;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.media = String(init?.media ?? '');
+      this.matches = !!init?.matches;
+    }
+  }
 
   /** The legacy `keyCode` a page still branches on, from the key. */
   const KEY_CODES: Record<string, number> = {
@@ -895,10 +906,17 @@ export function installDom(
     return fn;
   };
 
+  /** The window each frame window's own target is for (`frameWindowOf`),
+   *  which its listeners hear as what they are on, as the page's do G. */
+  const targetWindows = new WeakMap<object, Any>();
+  /** What a target's listeners hear it as. */
+  const listenedAs = (target: Any): Any =>
+    target === windowTarget ? G : (targetWindows.get(target) ?? target);
+
   const invoke = (target: Any, event: Any, phase: number): void => {
     // the window's listeners are kept on a target of their own, and hear
     // the window as what they are on, as `this` and `currentTarget`
-    const self = target === windowTarget ? G : target;
+    const self = listenedAs(target);
     event._currentTarget = self;
     event._phase = phase;
     if (phase !== CAPTURING_PHASE) {
@@ -959,8 +977,8 @@ export function installDom(
         path.push(windowTarget);
       }
     }
-    event._target = target === windowTarget ? G : target;
-    event._path = path.map((t) => (t === windowTarget ? G : t));
+    event._target = listenedAs(target);
+    event._path = path.map(listenedAs);
     event._stop = false;
     event._stopNow = false;
     for (let i = path.length - 1; i > 0 && !event._stop; i -= 1) {
@@ -2953,18 +2971,24 @@ export function installDom(
 
   // --- the frame -----------------------------------------------------------------
   //
-  // HTML's "update the rendering", as far as script sees it: the animations
-  // on a scroll-driven timeline brought up to date — their times, their
-  // auto-aligned start times, their pending tasks, their finished state —
-  // then the page's animation frame callbacks, at one time. A frame comes
-  // every 16 ms while a callback waits or a scroll-driven animation is
-  // under way, and every 100 ms once none of those has moved for half a
-  // second.
+  // HTML's "update the rendering", as far as script sees it: the resize
+  // steps, the scroll steps and the media queries' changes of each document
+  // this realm runs, the page's and its frames' (`renderingSteps`); the
+  // animations on a scroll-driven timeline brought up to date — their
+  // times, their auto-aligned start times, their pending tasks, their
+  // finished state — then the animation frame callbacks of each document,
+  // in tree order, at one time. A frame comes every 16 ms while a callback
+  // waits or a scroll-driven animation is under way, and every 100 ms once
+  // none of those has moved for half a second; and where the host says a
+  // viewport moved (`__rendering`).
 
   const frameCallbacks = new Map<number, Any>();
   let frameSeq = 0;
   let frameTimer = 0;
   let quietFrames = 0;
+  /** Whether the host said a viewport moved since the last frame, which
+   *  the next one comes for (`__rendering`). */
+  let renderingOwed = false;
   /** Animations whose timeline is a scroll's, which a frame updates. */
   const scrollLinked = new Set<Any>();
   const wantFrame = (): void => {
@@ -2996,8 +3020,17 @@ export function installDom(
     if (scrollLinked.size) wantFrame();
   };
   const runFrame = (): void => {
-    frameTimer = 0;
+    // in the frame: a frame its steps ask for is the next one
+    // (`nextFrame`), and not one more beside this
+    frameTimer = -1;
+    renderingOwed = false;
     const time = taskNow();
+    let shown: Viewport[] = [ownViewport];
+    try {
+      shown = renderingSteps();
+    } catch (error) {
+      report(error);
+    }
     let moved = false;
     for (const animation of [...scrollLinked]) {
       if (animation._frame()) moved = true;
@@ -3009,6 +3042,13 @@ export function installDom(
     // 1, 4.4.19), and microtasks run here only as a task ends
     const callbacks = [...frameCallbacks.values()];
     frameCallbacks.clear();
+    // and each frame's after the page's, in tree order (HTML 8.1.7.3:
+    // "for each doc of docs, run the animation frame callbacks")
+    for (const v of shown) {
+      if (v === ownViewport || !v.callbacks.size) continue;
+      callbacks.push(...v.callbacks.values());
+      v.callbacks.clear();
+    }
     if (callbacks.length) {
       // queued from a microtask, after the finish notifications the
       // update queued, so the events they tell come first
@@ -3037,14 +3077,16 @@ export function installDom(
       });
       return;
     }
+    frameTimer = 0;
     runAfterFrame();
     nextFrame();
   };
   /** The next frame, where something waits for one. */
   const nextFrame = (): void => {
     if (frameTimer) return;
-    if (frameCallbacks.size) wantFrame();
-    else if (scrollLinked.size) {
+    if (frameCallbacks.size || renderingOwed || scrollOwed || framesWaiting()) {
+      wantFrame();
+    } else if (scrollLinked.size) {
       frameTimer = setTimer(runFrame, quietFrames > 30 ? 100 : 16, [], false);
     }
   };
@@ -8010,6 +8052,10 @@ export function installDom(
     'removeEventListener',
     'dispatchEvent',
     'customElements',
+    // what is answered for its own viewport (`viewportFor`)
+    'matchMedia',
+    'requestAnimationFrame',
+    'cancelAnimationFrame',
   ]);
   const crossOrigin = (): Any =>
     new DOMException(
@@ -8115,6 +8161,10 @@ export function installDom(
     let current = doc;
     const proxy = frameProxyOf(frame);
     const target = new EventTarget();
+    targetWindows.set(target, proxy);
+    // its own viewport, the frame's content box, which its size, its media
+    // queries and its rendering steps are of
+    const view = viewportFor(frame, () => current, target);
     win = Object.create(Window.prototype);
     for (const [name, value] of realmGlobals) {
       Object.defineProperty(win, name, {
@@ -8147,6 +8197,7 @@ export function installDom(
       pageXOffset: () => 0,
       pageYOffset: () => 0,
       devicePixelRatio: () => viewport().dpr,
+      visualViewport: () => visualOf(view),
       // its own session history (`makeSession`), made as it is asked for
       history: () => frameSessionOf(frame, current, target).history,
       navigation: () => frameSessionOf(frame, current, target).navigation,
@@ -8184,8 +8235,10 @@ export function installDom(
       configurable: true,
     });
     const methods: Record<string, Any> = {
-      addEventListener: (type: Any, fn: Any, options?: Any) =>
-        target.addEventListener(type, fn, options),
+      addEventListener: (type: Any, fn: Any, options?: Any) => {
+        target.addEventListener(type, fn, options);
+        if (String(type) === 'resize' && fn) watchViewport(view);
+      },
       removeEventListener: (type: Any, fn: Any, options?: Any) =>
         target.removeEventListener(type, fn, options),
       dispatchEvent: (event: Any) => {
@@ -8198,6 +8251,22 @@ export function installDom(
       scrollTo() {},
       scroll() {},
       scrollBy() {},
+      matchMedia: (query: Any) => mediaListIn(view, query),
+      requestAnimationFrame: (fn: Any) => {
+        if (typeof fn !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'requestAnimationFrame' on 'Window': The callback provided as parameter 1 is not a function.",
+          );
+        }
+        const id = ++view.seq;
+        view.callbacks.set(id, fn);
+        watchViewport(view);
+        wantFrame();
+        return id;
+      },
+      cancelAnimationFrame: (id: Any) => {
+        view.callbacks.delete(Number(id));
+      },
     };
     for (const [key, value] of Object.entries(methods)) {
       Object.defineProperty(win, key, {
@@ -8220,6 +8289,9 @@ export function installDom(
         get: () => target._handlers[type] ?? null,
         set: (fn: Any) => {
           target._handlers[type] = typeof fn === 'function' ? fn : null;
+          if (type === 'resize' && typeof fn === 'function') {
+            watchViewport(view);
+          }
         },
         configurable: true,
       });
@@ -13237,6 +13309,283 @@ export function installDom(
 
   const now = (): number => Number(bridge('now'));
 
+  // --- viewports, as the rendering steps see them -------------------------
+  //
+  // Each document this realm runs has a viewport of its own (HTML 8.1.7.3,
+  // "update the rendering"): the page's is the pane it is shown in, and a
+  // frame's document that runs here — one with no realm of its own — has
+  // its frame's content box, which the page lays out. A frame's window
+  // answers `innerWidth`, `matchMedia` and `visualViewport` for it, hears
+  // its own `resize`, and has animation frame callbacks of its own, which
+  // run after the page's in tree order: what it shared of the page's
+  // before was the page's size and the page's order.
+
+  /** A document's viewport, as the rendering steps see it. */
+  interface Viewport {
+    /** The document it is the viewport of, now. */
+    doc(): Any;
+    /** The frame whose document's it is; null for the page's. */
+    frame: Any;
+    /** Its window's own target, which its `resize` is fired at. */
+    target: Any;
+    /** Its window's `visualViewport`, made as it is first asked for
+     *  (`visualOf`). */
+    visual: Any;
+    /** Its width and height as the resize steps last saw them, null
+     *  before they first did. */
+    size: number[] | null;
+    /** What its media queries were last answered from (`rendering`). */
+    media: string;
+    /** Its media query lists a listener hears, oldest first. */
+    lists: Any[];
+    /** Its animation frame callbacks, by id, and the last id given. */
+    callbacks: Map<number, Any>;
+    seq: number;
+  }
+  /** Its width and height now. */
+  const sizeOf = (v: Viewport): number[] => {
+    if (!v.frame) {
+      const { width, height } = viewport();
+      return [width, height];
+    }
+    return String(call('frameSize', v.doc()._id)).split(' ').map(Number);
+  };
+  /** Whether a media query holds in it now. */
+  const holdsIn = (v: Viewport, query: string): boolean =>
+    v.frame
+      ? call('frameMedia', v.doc()._id, query) === true
+      : !!call('media', query);
+  const viewportFor = (frame: Any, doc: () => Any, target: Any): Viewport => {
+    const v: Viewport = {
+      doc,
+      frame,
+      target,
+      visual: null,
+      size: null,
+      media: '',
+      lists: [],
+      callbacks: frame ? new Map() : frameCallbacks,
+      seq: 0,
+    };
+    return v;
+  };
+  /** A viewport's `visualViewport`, one for it. */
+  const visualOf = (v: Viewport): Any => {
+    if (!v.visual) {
+      v.visual = new VisualViewport();
+      v.visual._of = v;
+    }
+    return v.visual;
+  };
+  const ownViewport = viewportFor(null, () => document, windowTarget);
+  /** The frames' viewports something here watches: a `resize` listener on
+   *  its window or its `visualViewport`, a media query list's listener, an
+   *  animation frame callback. One nothing watches any more is let go at
+   *  the next frame (`watched`), so a frame a page once asked a frame of
+   *  is not measured at every frame after. */
+  const watchedFrames = new Set<Viewport>();
+  const watchViewport = (v: Viewport): void => {
+    if (!v.frame) {
+      if (v.size === null) v.size = sizeOf(v);
+      return;
+    }
+    if (watchedFrames.has(v)) return;
+    // what the next resize steps compare with: the size it has now, what
+    // came before being no listener's
+    v.size = sizeOf(v);
+    v.media = '';
+    watchedFrames.add(v);
+    // the host is told of it at the next frame's steps (`rendering`)
+    renderingOwed = true;
+    wantFrame();
+  };
+  /** Whether something hears a type of event at a target. */
+  const heard = (target: Any, type: string): boolean =>
+    !!(target?._listeners[type]?.length || target?._handlers[type]);
+  /** Whether something still watches a frame's viewport. */
+  const watched = (v: Viewport): boolean =>
+    v.callbacks.size > 0 ||
+    v.lists.length > 0 ||
+    heard(v.target, 'resize') ||
+    heard(v.visual, 'resize');
+  /** Whether a frame's viewport is still its frame's: the frame in a
+   *  document, and still showing the document this realm runs. */
+  const liveFrame = (v: Viewport): boolean =>
+    v.frame.isConnected &&
+    !linkedFrames.has(v.frame._id) &&
+    !crossLinked.has(v.frame._id) &&
+    frameDocumentOf(v.frame) === v.doc();
+  /** A frame element and the frames around it, the outermost first. */
+  const framesAround = (frame: Any): Any[] => {
+    const chain = [frame];
+    for (let at = frame; ;) {
+      const doc = at.ownerDocument;
+      if (!doc || doc === document) break;
+      const outer = wrap(Number(call('frameElement', doc._id)));
+      if (!outer || chain.includes(outer)) break;
+      chain.push(outer);
+      at = outer;
+    }
+    return chain.reverse();
+  };
+  /** Two frames' viewports in tree order (HTML's "docs" list). */
+  const treeOrder = (a: Viewport, b: Viewport): number => {
+    const x = framesAround(a.frame);
+    const y = framesAround(b.frame);
+    for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+      if (x[i] === y[i]) continue;
+      return x[i].compareDocumentPosition(y[i]) & 4 ? -1 : 1;
+    }
+    return x.length - y.length;
+  };
+  /** Whether a frame's animation frame callback waits for a frame. */
+  const framesWaiting = (): boolean => {
+    for (const v of watchedFrames) if (v.callbacks.size) return true;
+    return false;
+  };
+  /** The scroll the pane made that the next frame's scroll steps tell, as
+   *  a frame was coming when it was told (`__scrolled`). */
+  let scrollOwed = false;
+  const tellScroll = (): boolean => {
+    scrollOwed = false;
+    const ev = new Event('scroll', { bubbles: true });
+    ev.isTrusted = true;
+    return dispatch(document, ev);
+  };
+  /** A trusted event of a type and nothing else at a target. */
+  const fireTrusted = (target: Any, type: string): void => {
+    const ev = new Event(type);
+    ev.isTrusted = true;
+    dispatch(target, ev);
+  };
+  /**
+   * HTML's resize steps, scroll steps and "evaluate media queries and
+   * report changes", for each document this realm runs, in tree order: a
+   * `resize` at a window whose viewport is another size than these steps
+   * last saw, and at its `visualViewport`; the document's `scroll` the pane
+   * owes; and a `change` at each media query list a listener hears whose
+   * answer moved, oldest first. What they are measured from is the host's,
+   * read once a frame (`rendering`). Answers the viewports, for the
+   * frame's animation frame callbacks.
+   */
+  const renderingSteps = (): Viewport[] => {
+    const shown = [ownViewport];
+    if (watchedFrames.size) {
+      const frames: Viewport[] = [];
+      for (const v of watchedFrames) {
+        if (liveFrame(v) && watched(v)) frames.push(v);
+        else watchedFrames.delete(v);
+      }
+      shown.push(...frames.sort(treeOrder));
+    }
+    const lines = String(
+      call('rendering', shown.map((v) => v.doc()._id).join(' ')),
+    ).split('\n');
+    shown.forEach((v, i) => {
+      const [width, height] = (lines[i] ?? '').split(' ', 2).map(Number);
+      const was = v.size;
+      v.size = [width, height];
+      if (was && (was[0] !== width || was[1] !== height)) {
+        fireTrusted(v.target, 'resize');
+        if (v.visual) fireTrusted(v.visual, 'resize');
+      }
+    });
+    if (scrollOwed) tellScroll();
+    shown.forEach((v, i) => {
+      const line = lines[i] ?? '';
+      if (line === v.media) return;
+      v.media = line;
+      for (const list of v.lists.slice()) {
+        const matches = holdsIn(v, list._media);
+        if (matches === list._matched) continue;
+        list._matched = matches;
+        const ev = new MediaQueryListEvent('change', {
+          media: list._media,
+          matches,
+        });
+        ev.isTrusted = true;
+        dispatch(list, ev);
+      }
+    });
+    return shown;
+  };
+
+  /** Made by `matchMedia` and by nothing else. */
+  let makingList = false;
+  /**
+   * A media query list (CSSOM View 4.2): its query, answered as `matches`
+   * is read, in the viewport of the document whose window made it, and a
+   * `change` the rendering steps fire at it where the answer moved. One a
+   * listener hears is kept by its viewport, as HTML keeps it.
+   */
+  class MediaQueryList extends EventTarget {
+    _media = '';
+    _of: Viewport = ownViewport;
+    /** What it answered as its listeners last heard, or as the first was
+     *  added. */
+    _matched = false;
+    constructor() {
+      super();
+      if (!makingList) throw new TypeError('Illegal constructor');
+    }
+    get media(): string {
+      return this._media;
+    }
+    get matches(): boolean {
+      return holdsIn(this._of, this._media);
+    }
+    get onchange(): Any {
+      return this._handlers.change ?? null;
+    }
+    set onchange(fn: Any) {
+      this._handlers.change = typeof fn === 'function' ? fn : null;
+      this._heard();
+    }
+    override addEventListener(type: string, fn: Any, options?: Any): void {
+      super.addEventListener(type, fn, options);
+      if (String(type) === 'change') this._heard();
+    }
+    override removeEventListener(type: string, fn: Any, options?: Any): void {
+      super.removeEventListener(type, fn, options);
+      if (String(type) === 'change') this._heard();
+    }
+    /** The legacy aliases (CSSOM View 4.2). */
+    addListener(fn: Any): void {
+      if (fn) this.addEventListener('change', fn);
+    }
+    removeListener(fn: Any): void {
+      if (fn) this.removeEventListener('change', fn);
+    }
+    /** Kept by its viewport, with what it answers, while a listener hears
+     *  it, and let go once none does: a page that listens to a list for
+     *  as long as a component is mounted makes one at every mount. */
+    _heard(): void {
+      const v = this._of;
+      const at = v.lists.indexOf(this);
+      if (!heard(this, 'change')) {
+        if (at >= 0) v.lists.splice(at, 1);
+        return;
+      }
+      if (at >= 0) return;
+      this._matched = this.matches;
+      v.lists.push(this);
+      watchViewport(v);
+    }
+  }
+  idlAttributes(MediaQueryList);
+  /** `matchMedia` of a document's window: a new list each time. */
+  const mediaListIn = (v: Viewport, query: Any): Any => {
+    makingList = true;
+    try {
+      const list = new MediaQueryList();
+      list._media = str(query);
+      list._of = v;
+      return list;
+    } finally {
+      makingList = false;
+    }
+  };
+
   // timers: the host keeps the clock, this keeps the callbacks
   let timerSeq = 0;
   const timers = new Map<number, { fn: Any; args: Any[]; repeat: boolean }>();
@@ -15412,11 +15761,13 @@ export function installDom(
 
   /** `visualViewport`: the pane's, as `innerWidth` is, at a scale of 1. */
   class VisualViewport extends EventTarget {
+    /** The viewport it is of: the page's, or a frame's (`visualOf`). */
+    _of: Viewport | null = null;
     get width(): number {
-      return viewport().width;
+      return this._of?.frame ? sizeOf(this._of)[0] : viewport().width;
     }
     get height(): number {
-      return viewport().height;
+      return this._of?.frame ? sizeOf(this._of)[1] : viewport().height;
     }
     get offsetLeft(): number {
       return 0;
@@ -15424,11 +15775,16 @@ export function installDom(
     get offsetTop(): number {
       return 0;
     }
+    // a frame's document scrolls nothing here
     get pageLeft(): number {
-      return viewport().scrollX;
+      return this._of?.frame ? 0 : viewport().scrollX;
     }
     get pageTop(): number {
-      return viewport().scrollY;
+      return this._of?.frame ? 0 : viewport().scrollY;
+    }
+    override addEventListener(type: string, fn: Any, options?: Any): void {
+      super.addEventListener(type, fn, options);
+      if (String(type) === 'resize' && fn && this._of) watchViewport(this._of);
     }
     get scale(): number {
       return 1;
@@ -18775,23 +19131,10 @@ export function installDom(
     }
   }
 
-  /** `matchMedia`: answered by the host from `<Html>`'s own media queries,
-   *  each time `matches` is read — no listener hears it change. */
-  const matchMedia = (query: Any): Any => {
-    const media = str(query);
-    return {
-      media,
-      get matches() {
-        return !!call('media', media);
-      },
-      onchange: null,
-      addListener() {},
-      removeListener() {},
-      addEventListener() {},
-      removeEventListener() {},
-      dispatchEvent: () => true,
-    };
-  };
+  /** `matchMedia`: a list answered by the host from `<Html>`'s own media
+   *  queries, each time `matches` is read, and told of a change by the
+   *  rendering steps (`MediaQueryList`). */
+  const matchMedia = (query: Any): Any => mediaListIn(ownViewport, query);
 
   /** `getComputedStyle`: the host's `computedStyle`, a declaration that
    *  answers by a property's name, either spelling — and a custom
@@ -22485,6 +22828,8 @@ export function installDom(
     TextDecoder,
     VisualViewport,
     FragmentDirective,
+    MediaQueryList,
+    MediaQueryListEvent,
     PromiseRejectionEvent,
     NodeFilter,
     TreeWalker,
@@ -22851,7 +23196,7 @@ export function installDom(
   for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
     getter(at, () => 0);
   }
-  define('visualViewport', new VisualViewport());
+  define('visualViewport', visualOf(ownViewport));
   define('crypto', crypto);
   // `new Image()`, `new Option()` and `new Audio()`: the elements, made
   // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
@@ -23944,6 +24289,15 @@ export function installDom(
     return true;
   });
 
+  // a viewport this realm watches moved — the pane, a frame's box — or
+  // answers a media query from something else (`DomHost.renderingMoved`):
+  // a frame, whose steps tell the page
+  entry('__rendering', () => {
+    renderingOwed = true;
+    wantFrame();
+    return true;
+  });
+
   // what the host's read of a media element's source came to
   entry('__media', () => {
     const [id, load, kind, a, b, c] = input();
@@ -23956,6 +24310,8 @@ export function installDom(
   entry('__ready', () => {
     const [state] = input();
     document._ready = state;
+    // the size the first resize steps compare with, where no frame took it
+    if (state === 'interactive') watchViewport(ownViewport);
     // the media the markup made select a source, as each would have as
     // the parser put it in (HTML 4.8.11.5), but one that loads nothing
     // until it is played
@@ -24025,13 +24381,23 @@ export function installDom(
   // a script of a frame's document, the page's own origin's: run here, in
   // the page's realm, with the frame's window and document for the names a
   // script reaches them by — a frame has no realm of its own here, so what
-  // it declares is its function's and not a window's (`_frameScripts`)
+  // it declares is its function's and not a window's (`_frameScripts`) —
+  // and the window's own methods a script calls by name, which answer for
+  // the frame's viewport and not the page's
   entry('__frameScript', () => {
     const [id, code, url] = input();
     const doc = wrap(id);
     if (!doc) return false;
     const win = windowOfDocument(doc);
     if (!win) return false;
+    const own = [
+      'matchMedia',
+      'requestAnimationFrame',
+      'cancelAnimationFrame',
+      'addEventListener',
+      'removeEventListener',
+      'dispatchEvent',
+    ];
     try {
       new Function(
         'window',
@@ -24040,8 +24406,18 @@ export function installDom(
         'parent',
         'top',
         'frames',
+        ...own,
         `${code}\n//# sourceURL=${String(url).replace(/\s/g, '%20')}`,
-      ).call(win, win, win, doc, win.parent, win.top, win);
+      ).call(
+        win,
+        win,
+        win,
+        doc,
+        win.parent,
+        win.top,
+        win,
+        ...own.map((name) => win[name]),
+      );
       return true;
     } catch (error) {
       report(error);
@@ -24054,13 +24430,18 @@ export function installDom(
   // measures its lines again on once it has come into view
   entry('__scrolled', () => {
     nudgeFrames();
-    const ev = new Event('scroll', { bubbles: true });
-    ev.isTrusted = true;
-    return dispatch(document, ev);
+    // in the frame that is coming, where one is, between its resize steps
+    // and its media queries (HTML 8.1.7.3), and else as a frame of its own
+    if (frameTimer > 0) {
+      scrollOwed = true;
+      return true;
+    }
+    return tellScroll();
   });
   // and its scroll over: `scrollend` at the document, which bubbles to the
   // window (CSSOM View 13.1)
   entry('__scrollended', () => {
+    if (scrollOwed) tellScroll();
     const ev = new Event('scrollend', { bubbles: true });
     ev.isTrusted = true;
     return dispatch(document, ev);

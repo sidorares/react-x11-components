@@ -480,6 +480,10 @@ export interface HtmlViewProps {
    *  a scroll that moves the document under the pane's viewport makes it
    *  do. What a page's scripts hear as the window's `scroll`. */
   onViewportScroll?: () => void;
+  /** The element painted: what a page's scripts hear the sizes their
+   *  windows answer may have moved by — the pane's, which the element is
+   *  laid out and painted again for, and an `<iframe>`'s box in it. */
+  onPaint?: () => void;
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -600,7 +604,12 @@ export function registerHtmlView(): void {
     ],
     // what the component watches is no part of the picture: a new window of
     // stops after each Tab is no repaint of the document
-    selfDamagedProps: ['watchStops', 'onViewportScroll', 'onCssEvents'],
+    selfDamagedProps: [
+      'watchStops',
+      'onViewportScroll',
+      'onPaint',
+      'onCssEvents',
+    ],
     childrenAllowed: false,
   });
 }
@@ -4725,6 +4734,25 @@ export class HtmlViewNode extends Node {
    */
   matchMedia(query: string): boolean {
     return this._mediaHolds([parseMediaQuery(query)]);
+  }
+
+  /**
+   * What `matchMedia` answers from, as a key: the width, the viewport's
+   * height, the scale, the colour scheme, the preference for motion and
+   * scripting. A page's media query lists are asked again where it moves
+   * (HTML's "evaluate media queries and report changes"), and only there.
+   */
+  mediaEnvironment(): string {
+    const props = this._props();
+    const width = this.abs.width || this._cascade?.viewportWidth || 1;
+    return [
+      Math.max(1, Math.floor(width)),
+      this._viewportHeight(),
+      this._scale,
+      props.look.colorScheme,
+      props.reducedMotion ?? false,
+      props.scripting ?? false,
+    ].join(' ');
   }
 
   /** Whether media conditions hold, as the document's `@media` rules are
@@ -9665,6 +9693,7 @@ export class HtmlViewNode extends Node {
     this._counted(() => this._paintContent(ctx));
     this._noteFrame();
     this._notePaneScroll();
+    this._props().onPaint?.();
   }
 
   /** Where the pane around the element was scrolled to at the last paint

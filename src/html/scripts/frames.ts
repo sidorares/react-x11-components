@@ -293,6 +293,14 @@ function FrameDocument({
       renderEmbedded: embeddedMounts(inner),
       canvasImage: scripts.canvasImage,
       style: { flexGrow: 1 },
+      // the frame's own viewport moved — its box laid out again by the
+      // page — which its realm hears as its window's `resize` and its media
+      // query lists' `change`; and its own CSS transitions' events, which
+      // its realm hears and the page's does not (`InternalHtmlProps`)
+      ...({
+        _onPaint: scripts.painted,
+        _onCssEvents: scripts.cssEvents,
+      } as object),
     }),
     holder ? h(FrameHolder, { context: holder }) : null,
   );

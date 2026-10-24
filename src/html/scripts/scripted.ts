@@ -167,6 +167,8 @@ export interface InternalHtmlProps extends HtmlProps {
   _frames?: ReactNode;
   /** The pane around the element scrolled (`HtmlViewProps`). */
   _onViewportScroll?: () => void;
+  /** The element painted (`HtmlViewProps`). */
+  _onPaint?: () => void;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
   /** Whether the document may be left, as its scripts answer: what the
@@ -484,6 +486,7 @@ export function useScriptedHtml(
     renderEmbedded:
       frames && scripts.scripting ? renderEmbedded : props.renderEmbedded,
     _onViewportScroll: scripts.scrolled,
+    _onPaint: scripts.painted,
     _onCssEvents: scripts.cssEvents,
     _unloadCheck: unloadCheck,
     _frames:

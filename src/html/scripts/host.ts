@@ -79,7 +79,9 @@ import { cssomStyle } from '../computed.js';
 import type { ComputedStyle, RootLook } from '../css/style.js';
 import type { Stylesheet } from '../css/parse.js';
 import {
+  mediaMatches,
   parseDeclarations,
+  parseMediaQuery,
   parseStylesheet,
   supportsCondition,
 } from '../css/parse.js';
@@ -302,6 +304,9 @@ export interface HandleInternals {
   transitionCaptureNew(): string;
   transitionRemaining(): number | null;
   transitionEnd(): void;
+  /** What the document's media queries are answered from, as a key that
+   *  moves where an answer may (`HtmlViewNode.mediaEnvironment`). */
+  mediaEnvironment(): string;
   /** Whether an element is drawn where the viewport is — fixed to it, or
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
@@ -1511,6 +1516,62 @@ export class DomHost {
   private _frameDone(frame: Element): void {
     if (!this._framesLoading.delete(frame)) return;
     if (!this.framesLoading) this.onFramesLoaded?.();
+  }
+
+  /**
+   * The viewports the facade watches (`rendering`), by the id of the
+   * document each is of — this one's, 1, and those of the page realm's
+   * frames it made windows for — each with what it was last answered, and
+   * whether the facade was woken since it last asked.
+   */
+  private _viewports = new Map<number, string>([[1, '']]);
+  private _viewportsWoken = false;
+
+  /** `<Html>` painted (`ScriptRunner.painted`): the facade is woken for a
+   *  frame where a viewport it watches is another size, or answers a media
+   *  query from anything else, than it was last told — a pane resized, an
+   *  `<iframe>`'s box the page laid out again — so that the frame runs its
+   *  resize steps and reports its media queries (HTML's "update the
+   *  rendering") whether or not anything else asked for one. */
+  renderingMoved(): void {
+    if (this._disposed || !this.entries || this._viewportsWoken) return;
+    for (const [id, was] of this._viewports) {
+      if (this._viewportKey(id) === was) continue;
+      this._viewportsWoken = true;
+      this.entries.call('__rendering', null);
+      return;
+    }
+  }
+
+  /** What a document's viewport is now, as `rendering` answers it: its
+   *  width and height in CSS pixels, then what its media queries are
+   *  answered from. */
+  private _viewportKey(id: number): string {
+    const v = this._seams.viewport();
+    if (id === 1) {
+      const media = this._seams.handle.mediaEnvironment?.() ?? '';
+      return `${v.width} ${v.height} ${v.dpr} ${media}`;
+    }
+    const doc = this._nodes.get(id);
+    if (!(doc instanceof Document) || !this._frameOf.has(doc)) return '0 0';
+    const size = this._frameSize(doc);
+    return `${size.width} ${size.height} ${v.dpr}`;
+  }
+
+  /** Whether a media query holds for a frame's document that runs in this
+   *  realm: at its viewport, its frame's content box, as its styles are
+   *  worked out (`_frameComputed`), in the look a frame is styled in. */
+  private _frameMedia(doc: Document, query: string): boolean {
+    const size = this._frameSize(doc);
+    return mediaMatches(
+      [parseMediaQuery(query)],
+      size.width,
+      FRAME_LOOK.colorScheme,
+      size.height,
+      this._seams.viewport().dpr,
+      false,
+      true,
+    );
   }
 
   /** Scroll containers in the document scrolled: each one's `scroll`,
@@ -2922,6 +2983,26 @@ export class DomHost {
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
         return `${size.width} ${size.height}`;
+      }
+      // a media query, as a frame's document in this realm answers it: at
+      // its own viewport, and not the page's
+      case 'frameMedia':
+        try {
+          return this._frameMedia(this._node(a) as Document, text(b));
+        } catch {
+          return false;
+        }
+      // the viewports the facade's rendering steps run for, by the ids of
+      // their documents — this one's, 1, and frames' in this realm — a line
+      // each: the width, the height and what its media queries are
+      // answered from (`renderingMoved`)
+      case 'rendering': {
+        this.flush();
+        const ids = text(a).split(' ').map(Number).filter(Boolean);
+        const keys = ids.map((id) => this._viewportKey(id));
+        this._viewports = new Map(ids.map((id, i) => [id, keys[i]]));
+        this._viewportsWoken = false;
+        return keys.join('\n');
       }
 
       // --- the document

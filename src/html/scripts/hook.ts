@@ -81,6 +81,10 @@ export interface ScriptProps {
   /** The pane the page is shown in scrolled, which the page hears as
    *  `scroll`. `<Html>`'s `onViewportScroll`. */
   scrolled?: () => void;
+  /** The element painted, which may have moved the sizes the page's
+   *  windows answer — its own viewport's, a frame's box. `<Html>`'s
+   *  `onPaint`. */
+  painted?: () => void;
   /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
   onElementScroll?: (element: Element) => void;
   /** The document's CSS transition events, which the page hears. */
@@ -281,6 +285,7 @@ export function useScripts(
     [],
   );
   const scrolled = useCallback(() => runner.current?.scrolled(), []);
+  const painted = useCallback(() => runner.current?.painted(), []);
   const onElementScroll = useCallback(
     (element: Element) => runner.current?.elementScrolled(element),
     [],
@@ -355,6 +360,7 @@ export function useScripts(
     onDomEvent,
     navigateFrame,
     scrolled,
+    painted,
     onElementScroll,
     cssEvents,
     canvasImage,
