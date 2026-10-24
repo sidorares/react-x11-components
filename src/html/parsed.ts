@@ -39,6 +39,13 @@ function undisplayed(node: Placed | null): boolean {
   return false;
 }
 
+/** What the parse's end and a script it waits at are told to. */
+interface Told<S> {
+  onParsed?: () => void;
+  onLoaded?: () => void;
+  _onParserBlocked?: (script: S) => void;
+}
+
 /**
  * `onParsed`, held until the element has been laid out, and the `onLayout`
  * that lets it go — core's, which reports a node's first layout from after
@@ -46,26 +53,44 @@ function undisplayed(node: Placed | null): boolean {
  * the element tells it from whichever layout it finds everything in, which
  * may be one core's measuring made, and a host hears the two in order.
  * Once laid out, a later document's parse is told as it ends, since the
- * element has a width to lay it out at.
+ * element has a width to lay it out at. A script the parse waits at
+ * (`onParserBlocked`) is held the same way, and for the same reason: the
+ * host runs it from there, and it measures the document as far as it goes.
  */
-export function useParsedOnceLaidOut(
-  props: { onParsed?: () => void; onLoaded?: () => void },
+export function useParsedOnceLaidOut<S>(
+  props: Told<S>,
   node: { readonly current: Placed | null },
-): { onParsed?: () => void; onLoaded?: () => void; onLayout?: () => void } {
+): {
+  onParsed?: () => void;
+  onLoaded?: () => void;
+  onParserBlocked?: (script: S) => void;
+  onLayout?: () => void;
+} {
   const latest = React.useRef(props);
   latest.current = props;
   const state = React.useRef({
     laidOut: false,
+    /** the script the parse waits at, held for the layout */
+    blocked: null as S | null,
     /** the parse's end, held for the layout */
     parsed: false,
     /** the load, held behind it */
     loaded: false,
+    /** whether the wait for a layout ran out once: what comes after it is
+     *  not held again, so a parse that waits at each of its scripts does
+     *  not wait a second for each */
+    waited: false,
     timer: null as DelayTick,
   });
   const tell = React.useCallback(() => {
     const s = state.current;
     cancelLater(s.timer);
     s.timer = null;
+    if (s.blocked !== null) {
+      const script = s.blocked;
+      s.blocked = null;
+      latest.current._onParserBlocked?.(script);
+    }
     if (!s.parsed) return;
     s.parsed = false;
     latest.current.onParsed?.();
@@ -77,12 +102,26 @@ export function useParsedOnceLaidOut(
     state.current.laidOut = true;
     tell();
   }, [tell]);
-  const parsed = React.useCallback(() => {
-    const s = state.current;
-    s.parsed = true;
-    if (s.laidOut || undisplayed(node.current)) tell();
-    else if (!s.timer) s.timer = later(tell, LAYOUT_WAIT_MS);
+  const waitedOut = React.useCallback(() => {
+    state.current.waited = true;
+    tell();
   }, [tell]);
+  const hold = React.useCallback(() => {
+    const s = state.current;
+    if (s.laidOut || s.waited || undisplayed(node.current)) tell();
+    else if (!s.timer) s.timer = later(waitedOut, LAYOUT_WAIT_MS);
+  }, [tell, waitedOut]);
+  const parsed = React.useCallback(() => {
+    state.current.parsed = true;
+    hold();
+  }, [hold]);
+  const blocked = React.useCallback(
+    (script: S) => {
+      state.current.blocked = script;
+      hold();
+    },
+    [hold],
+  );
   const loaded = React.useCallback(() => {
     const s = state.current;
     if (s.parsed) s.loaded = true;
@@ -92,6 +131,7 @@ export function useParsedOnceLaidOut(
   return {
     onParsed: props.onParsed ? parsed : undefined,
     onLoaded: props.onLoaded ? loaded : undefined,
+    onParserBlocked: props._onParserBlocked ? blocked : undefined,
     // until the first layout: core reports every one that moves the node
     onLayout: state.current.laidOut ? undefined : onLayout,
   };

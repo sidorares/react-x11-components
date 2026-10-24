@@ -75,6 +75,7 @@ import {
   isElement,
   isInputButton,
   isText,
+  madeByParser,
   ShadowRoot,
   shadowRootOf,
   tagOf,
@@ -499,6 +500,16 @@ export interface HtmlViewProps {
   scripting?: boolean;
   /** The parse has ended: every element is in the tree, once a document. */
   onParsed?: () => void;
+  /**
+   * The parse waits at a script that blocks the parser (`blocksParser`),
+   * which it has just closed and handed to `onScript`: given, the parse
+   * stops after each such script's end tag, with nothing after it in the
+   * tree, until the host has run it and says so through the handle's
+   * `parserResume` — and what the script's `document.write` writes
+   * meanwhile goes in after it, through `parserWrite` (`HtmlSource`).
+   * Told a microtask later, once a script, as `onParsed` is told.
+   */
+  onParserBlocked?: (script: Element) => void;
   /** Everything the document asked for has arrived or failed, counted
    *  from its first complete layout, once a document. */
   onLoaded?: () => void;
@@ -1264,6 +1275,9 @@ export class HtmlViewNode extends Node {
    *  an append when the new source extends the old — see `HtmlSource`. */
   private _read(): void {
     const props = this._props();
+    // a parse that waits for its scripts, where a host runs them: turned
+    // off while it waits, it reads on to the end of what it has
+    const released = this._source.setYields(!!props.onParserBlocked);
     const changed = props.document
       ? this._source.adopt(props.document)
       : this._source.setSource(props.source ?? '', props.complete !== false);
@@ -1271,10 +1285,71 @@ export class HtmlViewNode extends Node {
       this._invalidate(Stale.Style);
       props.onDocument?.(this._source.document);
       this._reportedDomRevision = props.domRevision ?? 0;
+    } else if (released) {
+      this._invalidate(Stale.Style);
     }
+    this._parsedOn();
+  }
+
+  /** What the parser read since: the base it may have met, the scripts and
+   *  the resources it handed over, where the document has got to, and the
+   *  script the parse waits at now. */
+  private _parsedOn(): void {
     this._updateBase();
     this._sweep();
     this._lifecycle();
+    this._tellBlocked();
+  }
+
+  /** The script `onParserBlocked` was last told of. */
+  private _blockedTold: Element | null = null;
+
+  /** Tell the host of the script the parse waits at, once a script, a
+   *  microtask later: never from inside a commit or a layout, since a host
+   *  runs the script from it. */
+  private _tellBlocked(): void {
+    const held = this._source.held;
+    if (!held || held === this._blockedTold) return;
+    this._blockedTold = held;
+    const doc = this._source.document;
+    void Promise.resolve().then(() => {
+      if (
+        this._source.document === doc &&
+        this._source.held === held &&
+        !this.destroyed
+      ) {
+        this._props().onParserBlocked?.(held);
+      }
+    });
+  }
+
+  /**
+   * `document.write` from the script the parse waits at (`HtmlSource.write`):
+   * the markup parsed into the tree after the script, for the next restyle,
+   * and for the scan once the parse goes on, which hands over the scripts
+   * and the resources in it. False where the parse does not wait at
+   * `script`.
+   */
+  parserWrite(script: Element, markup: string): boolean {
+    if (this.destroyed) return false;
+    const before = this._source.revision;
+    if (!this._source.write(script, markup)) return false;
+    if (this._source.revision !== before) this._invalidate(Stale.Style);
+    return true;
+  }
+
+  /** The script the parse waits at has run: the parse goes on to the next
+   *  script it waits at, or to its end (`HtmlSource.resume`). */
+  parserResume(script: Element): void {
+    if (this.destroyed || this._source.held !== script) return;
+    if (this._source.resume(script)) this._invalidate(Stale.Style);
+    this._parsedOn();
+  }
+
+  /** What the parser has put in the tree since this was last asked, from
+   *  the first script it waited at on (`HtmlSource.takeMade`). */
+  parserMade(): readonly ChildNode[] {
+    return this._source.takeMade();
   }
 
   /**
@@ -2355,15 +2430,24 @@ export class HtmlViewNode extends Node {
    * paint or a commit: a host runs a page's scripts from them.
    */
   private _lifecycle(): void {
-    if (!this._source.complete || this.destroyed) return;
+    if (this.destroyed) return;
+    const complete = this._source.complete;
+    // a stream's parse, where the parse waits at no script, has nothing to
+    // tell yet; one that waits tells its sheets, and lets go the script it
+    // waits at once they are in
+    if (!complete && !this._source.held) return;
     const doc = this._source.document;
     const props = this._props();
-    if (this._parsedOf !== doc) {
+    if (complete && this._parsedOf !== doc) {
       this._parsedOf = doc;
       // what is there now the parser made: a sheet a script puts in from
-      // here on holds no script back
+      // here on holds no script back, and nor does one a script put in
+      // while the parse waited for it
       this._parserSheets = new Set(
-        this._source.facts().sheets.map((ref) => ref.element),
+        this._source
+          .facts()
+          .sheets.filter((ref) => this._parserMade(ref.element))
+          .map((ref) => ref.element),
       );
       if (props.onParsed) {
         void Promise.resolve().then(() => {
@@ -2377,6 +2461,7 @@ export class HtmlViewNode extends Node {
     // after: a sheet's `load` is the page's before the script it held runs
     this._wakeScripts();
     if (
+      !complete ||
       this._loadedOf === doc ||
       !this._tree ||
       this._stale !== Stale.Nothing ||
@@ -2520,11 +2605,13 @@ export class HtmlViewNode extends Node {
 
   /** Whether a sheet holds a script back, as `scriptsUnblocked` says. */
   private _blocksScripts(script: Element | null): boolean {
-    // until the parse ends every sheet is the parser's
+    // until the parse ends every sheet the parser made is the parser's
     const made =
       this._parsedOf === this._source.document ? this._parserSheets : null;
     for (const ref of this._source.facts().sheets) {
-      if (made && !made.has(ref.element)) continue;
+      if (made ? !made.has(ref.element) : !this._parserMade(ref.element)) {
+        continue;
+      }
       // one after the script the parser had not met when it got to it
       if (script && !(compareDocumentPosition(ref.element, script) & BEFORE)) {
         continue;
@@ -2543,6 +2630,13 @@ export class HtmlViewNode extends Node {
       if (!this._importsOutcome(read.imports)) return true;
     }
     return false;
+  }
+
+  /** Whether the document's parser made a sheet's element: every one, in
+   *  a document parsed somewhere else and handed over (`adopt`), whose
+   *  sheets were all in it before any script ran. */
+  private _parserMade(element: Element): boolean {
+    return !!this._props().document || madeByParser(element);
   }
 
   /** Let a host run the scripts the sheets before them no longer hold
@@ -4138,7 +4232,11 @@ export class HtmlViewNode extends Node {
       this._timeline = new AnimationTimeline();
       this._invalidate(Stale.Boxes);
     }
-    if (next.source !== prev.source || next.complete !== prev.complete) {
+    if (
+      next.source !== prev.source ||
+      next.complete !== prev.complete ||
+      !next.onParserBlocked !== !prev.onParserBlocked
+    ) {
       this._read();
     } else if (scripted) {
       this._sweep();

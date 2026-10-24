@@ -605,6 +605,15 @@ they look up exists by the time they run. A page that writes markup as it
 loads, as Acid3 writes its frames and its table, gets it where it wrote
 it.
 
+Since then the parse yields to the scripts that block it: a classic
+script, inline or with a `src` that is neither `async` nor `defer`, runs
+where the parser met it, sees nothing after it, and what it writes with
+`document.write` goes into the input stream after it and is parsed there,
+a script it writes included; an `async` script runs as soon as its source
+is here. The rule above still holds for a frame's document, which the
+page's realm parses whole. `docs/components/html.md`, "A script the parser
+meets runs where it is", has the detail.
+
 ## The DOM in phase 1
 
 **In:**

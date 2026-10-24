@@ -1843,6 +1843,41 @@ rendering, as it is written to. `getComputedStyle` answers nothing there
 yet, where a browser answers from the sheets it has so far.
 `DOMContentLoaded` is told after the last script.
 
+**A script the parser meets runs where it is.** With `scripts` on, a
+classic script — inline, or with a `src` that is neither `async` nor
+`defer` — blocks the parser, as it does in a browser (HTML 13.2.6.4.8): the
+parse stops after its end tag, the script runs once its source is here, the
+sheets before it are in and the element has been laid out, and only then
+does the parse go on. So it sees the document as far as the parser has read
+it, and nothing after: in the head `document.body` is null,
+`document.readyState` is `loading`, `document.currentScript` is the script,
+and an element after it is not there yet. The document is laid out and
+drawn as far as it goes while the parse waits, as a stream of it is.
+
+What such a script writes with `document.write` and `writeln` goes into the
+input stream straight after it, after what it wrote before, and is parsed
+there and then: the markup is in the tree when `write` returns, and a tag it
+leaves open is closed by the next write, or by the source after the script.
+A script in what it wrote — the shape an ad, an analytics tag or an old
+widget embed has, `document.write('<script src="…"></script>')` — runs
+before the parse goes on, and what that script writes goes in ahead of what
+the script that wrote it wrote after it, as HTML's insertion point has it.
+A page's mutation observers hear what the parser puts in the document once
+its first script has run, a record a node, and its custom elements are
+connected as the parser puts them in. A deferred script and a module run
+once the parse has ended, in order, and an `async` one as soon as its
+source is here. `document.write` from any other — an `async` script, a
+module, a timer — is ignored with a warning, as Chrome ignores one from an
+`async` script.
+
+The parse yields only where `scripts` is on and the document has a script
+that blocks it. A document without one is parsed whole at once, as one with
+scripts off is, and so is the document a frame shows, which the page's realm
+parsed before its scripts ran: a frame's classic scripts run after its parse,
+in order, and what one writes goes in after it, parsed as a fragment. And an
+inline script that `document.write` writes runs once the script that wrote
+it has ended, where a browser runs it inside the `write`.
+
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
 so the component cannot hear them take the focus: `activeElement` still
