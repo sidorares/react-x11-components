@@ -2207,12 +2207,29 @@ closes a way out a DOM binding opens by accident:
   and pending tasks and runs its procedures step by step, and
   `document.timeline` is read once a task (`taskNow`): WPT's
   `waitForNextFrame` asks for frames until the time moves, and a clock
-  read live answered it with no frame at all. A frame updates the
-  scroll-driven animations, then runs `requestAnimationFrame`'s callbacks
-  in a task after its microtasks, which is where a browser's checkpoint
-  puts a finished promise. **Anything new that reads the document's time
-  reads `taskNow`**, and anything a frame must do before the page's
-  callbacks goes in `runFrame`'s first half.
+  read live answered it with no frame at all. A frame runs the resize
+  steps, the scroll steps and the media queries' changes
+  (`renderingSteps`), updates the scroll-driven animations, then runs
+  `requestAnimationFrame`'s callbacks in a task after its microtasks, which
+  is where a browser's checkpoint puts a finished promise. **Anything new
+  that reads the document's time reads `taskNow`**, and anything a frame
+  must do before the page's callbacks goes in `runFrame`'s first half, in
+  the order HTML's "update the rendering" has it.
+- **Each document a realm runs has a viewport of its own.** The page's is
+  its pane; a frame's document with no realm of its own has its frame's
+  content box (`viewportFor`), which its window's `innerWidth`,
+  `matchMedia`, `visualViewport`, `resize` and animation frame callbacks
+  answer for and run in, after the page's in tree order. **Anything new a
+  window answers from its viewport reads its `Viewport`**, never the
+  page's `viewport()`, and is fired at the window's own target, which its
+  listeners hear as the window (`targetWindows`). The steps read every
+  viewport they run for from the host once a frame (`rendering`), and the
+  host wakes a realm with no frame coming only where what it answered last
+  moved, looked at after each paint (`renderingMoved`) — so **anything new
+  a media query is answered from joins `mediaEnvironment`**, or a list
+  hears no `change` when it moves. A list no listener hears, and a frame's
+  viewport nothing watches, is let go (`_heard`, `watched`): a page that
+  listens to a list while a component is mounted makes one at each mount.
 - **What an animation draws follows the timing the page reads, never
   beside it.** The realm keeps the timing, and tells the host the effect
   and where the animation's time is, as a JSON string and a time, a rate
