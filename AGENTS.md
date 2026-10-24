@@ -3812,6 +3812,22 @@ the gaps, clipped to them so nothing is drawn twice. The rule generalises
 past maps: **a pyramid cache has two neighbours, and code that only knows
 one of them is half a cache** — and it has them per square, not per tile.
 
+**And a cold view has neither, so it is given one.** Opened, or panned onto
+ground nothing has loaded, the view's own twenty-odd tiles landed a square
+at a time over the background. Its **overview** — the finest level above it
+whose tiles are as large as the pane, four at most (`overviewLevel` in
+`proj.ts`) — is asked for ahead of them on every frame, so its requests go
+first and its picture becomes the ancestor the existing fill draws every
+hole from. The retained renderer draws it first and only where a hole has
+nothing as sharp, which keeps it out of a zoom in; the GL store puts its
+loads and builds at the front of its queues (`want(tiles, ahead)`), ahead
+of a pan's leftovers. The retained renderer also draws it during a gesture,
+under a few milliseconds a frame, where a hole has no picture at any level:
+"a gesture rasterizes nothing" was the right rule for ground the map has
+drawn and the wrong one for a pan over a flat colour. The rule to carry:
+**a pyramid's cold start is its coarse level first** — a handful of loads
+for the whole view, then the detail over it.
+
 **Three caches, layered, and the layering is the whole argument.** Tile
 data, keyed on `source/z/x/y` and valid forever. Up to two rendered
 `Surface`s per tile — the one on screen and the one being drawn, swapped

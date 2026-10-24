@@ -50,6 +50,9 @@ interface Entry {
   job: number;
   /** Cancels the load in flight, while there is one. */
   abort: (() => void) | null;
+  /** Asked for ahead of the view — the overview — so it is loaded and
+   *  built before the tiles asked for without it. */
+  ahead: boolean;
 }
 
 export interface GlTileStoreOptions {
@@ -202,9 +205,17 @@ export class GlTileStore implements TileLookup {
     this._frame++;
   }
 
-  /** Ask for tiles, centre-out. Already-known tiles cost a lookup. */
-  want(tiles: readonly TileId[]): void {
+  /**
+   * Ask for tiles, centre-out. Already-known tiles cost a lookup.
+   *
+   * `ahead` puts the ones not yet known in front of everything waiting for
+   * a load, and in front of the build queue when they land: the overview,
+   * which a fast pan onto new ground asks for after a frame or two of the
+   * view's own tiles are queued, and which would otherwise wait for them.
+   */
+  want(tiles: readonly TileId[], ahead = false): void {
     const at = now();
+    let front = 0;
     for (const tile of tiles) {
       const k = key(tile);
       let entry = this._entries.get(k);
@@ -220,11 +231,13 @@ export class GlTileStore implements TileLookup {
           failures: 0,
           job: 0,
           abort: null,
+          ahead,
         };
         this._entries.set(k, entry);
       }
       entry.state = 'loading';
-      this._waiting.push(entry);
+      if (ahead) this._waiting.splice(front++, 0, entry);
+      else this._waiting.push(entry);
     }
     this._drain();
   }
@@ -268,7 +281,8 @@ export class GlTileStore implements TileLookup {
           if (data && data.kind === 'vector' && data.data.length > 0) {
             entry.bytes = data.data;
             entry.state = 'loaded';
-            this._queue.push(entry);
+            if (entry.ahead) this._queue.unshift(entry);
+            else this._queue.push(entry);
           } else if (data && data.kind === 'raster' && data.width > 0) {
             // An image needs no building — it is its own texture — and no
             // style: nothing to queue, and nothing a restyle rebuilds.

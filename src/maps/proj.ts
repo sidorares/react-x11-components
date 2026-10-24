@@ -664,6 +664,55 @@ export function tileCover(
 }
 
 /**
+ * How far above the view an overview may be: tiles eight times the view's
+ * across, so four of them cover a pane 4,096 logical pixels on a side. A
+ * larger pane takes more of them rather than a blurrier level.
+ */
+export const OVERVIEW_LEVELS = 3;
+
+/**
+ * The level a view is drawn from while its own tiles are on their way, or
+ * null where the view's own cover is no more tiles than it would be.
+ *
+ * The finest level above the view's whose tiles are at least as large as
+ * the pane's longer side, so that no more than four of them cover it — one
+ * level up for a pane a little larger than a tile, two for most windows.
+ * That is what a cold map draws first: a handful of requests and a handful
+ * of tiles to draw, standing in for the twenty-odd of the view's own, which
+ * otherwise arrive a square at a time over nothing but the background. Each
+ * of them is the view's own picture, `2^k` times blurrier; the view's tiles
+ * land over it as they come.
+ *
+ * Read from the tile's size on screen rather than from the zoom, so an
+ * overzoomed view — whose few tiles are each larger than the pane already —
+ * has no overview, and a 256-pixel source is read a level deeper exactly as
+ * {@link tileCover} reads it.
+ */
+export function overviewLevel(
+  t: Transform,
+  pyramid: TilePyramid,
+): number | null {
+  const z = sourceZoomFor(t.zoom + zoomOffsetFor(t, pyramid), pyramid);
+  const edge = t.tileSize * Math.pow(2, t.zoom - z);
+  const longest = Math.max(t.width, t.height);
+  if (!(edge > 0) || !(longest > edge)) return null;
+  const up = Math.min(OVERVIEW_LEVELS, Math.ceil(Math.log2(longest / edge)));
+  const level = Math.max(pyramid.minZoom, z - up);
+  return level < z ? level : null;
+}
+
+/** The tiles of {@link overviewLevel} that the pane shows, centre-out —
+ *  none where there is no such level. */
+export function overviewCover(
+  t: Transform,
+  pyramid: TilePyramid,
+): TileCoverEntry[] {
+  const level = overviewLevel(t, pyramid);
+  if (level === null) return [];
+  return tileCover(t, { ...pyramid, minZoom: level, maxZoom: level });
+}
+
+/**
  * The affine that takes a tile's own integer coordinates to pane pixels:
  * `screenX = ox + local * k`.
  *

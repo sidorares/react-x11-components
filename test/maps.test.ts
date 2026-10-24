@@ -78,12 +78,18 @@ import type {
   TileData,
 } from '../src/maps/index.js';
 import { GeomType } from '../src/maps/mvt.js';
+import { settleClock } from '../src/maps/controller.js';
 import { restyleClock } from '../src/maps/node.js';
 import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
-import { dataSquareOf } from '../src/maps/proj.js';
+import {
+  dataSquareOf,
+  overviewCover,
+  overviewLevel,
+} from '../src/maps/proj.js';
 import { TileCache } from '../src/maps/tiles.js';
 import { holdGlide } from './glide-clock.js';
+import { holdClock } from './held-clock.js';
 
 test.afterEach(async () => {
   await cleanup();
@@ -2139,6 +2145,245 @@ for (const scale of [1, 2]) {
     );
   });
 }
+
+// --- the overview ----------------------------------------------------------
+//
+// A cold view's own tiles land a square at a time, over the background until
+// the last of them. A level or two up, four tiles at most cover the pane, and
+// are drawn first.
+
+test('the overview is the finest level whose tiles cover the pane four at most', () => {
+  const vector = { minZoom: 0, maxZoom: 14, tileSize: 512 };
+  const level = (zoom: number, width: number, height: number, p = vector) =>
+    overviewLevel(transformFor({ center: LONDON, zoom }, { width, height }), p);
+  // A tile is 512 logical pixels at a whole zoom: one level up for a pane
+  // a little wider, two for a window, three at most.
+  assert.equal(level(12, 640, 480), 11);
+  assert.equal(level(12, 1600, 1000), 10);
+  assert.equal(level(12, 2048, 1000), 10);
+  assert.equal(level(12, 9000, 1000), 9);
+  // At 12.9 a tile is 955 pixels across, so one level up is 1,910.
+  assert.equal(level(12.9, 1600, 1000), 11);
+  // A pane no larger than a tile is its own overview.
+  assert.equal(level(12, 512, 300), null);
+  assert.equal(level(12, 200, 200), null);
+  // Overzoomed, the view's few tiles are each larger than the pane.
+  assert.equal(level(18, 1600, 1000), null);
+  // Never above the pyramid's root, and none at the root.
+  assert.equal(level(1, 1600, 1000), 0);
+  assert.equal(level(0, 1600, 1000), null);
+  // A 256-pixel source is read a level deeper, and so is its overview.
+  assert.equal(
+    level(12, 640, 480, { minZoom: 0, maxZoom: 19, tileSize: 256 }),
+    11,
+  );
+
+  // Whatever the camera, the overview's tiles cover the pane, four at most
+  // where it did not have to stop at `OVERVIEW_LEVELS`.
+  let seed = 7;
+  const random = (): number => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  for (let i = 0; i < 500; i++) {
+    const t = transformFor(
+      {
+        center: { lon: random() * 340 - 170, lat: random() * 140 - 70 },
+        zoom: 3 + random() * 11,
+      },
+      { width: 100 + random() * 3000, height: 100 + random() * 2000 },
+    );
+    const cover = overviewCover(t, vector);
+    const z = overviewLevel(t, vector);
+    if (z === null) {
+      assert.equal(cover.length, 0);
+      continue;
+    }
+    assert.ok(cover.every((e) => e.tile.z === z));
+    if (cover[0].size >= Math.max(t.width, t.height)) {
+      assert.ok(cover.length <= 4, `${cover.length} tiles at ${z}`);
+    }
+    const left = Math.min(...cover.map((e) => e.x));
+    const top = Math.min(...cover.map((e) => e.y));
+    const right = Math.max(...cover.map((e) => e.x + e.size));
+    const bottom = Math.max(...cover.map((e) => e.y + e.size));
+    const clipped = cover.some(
+      (e) => e.tile.y === 0 || e.tile.y === 2 ** z - 1,
+    );
+    assert.ok(left <= 0 && right >= t.width, `across at ${z}`);
+    if (!clipped) assert.ok(top <= 0 && bottom >= t.height, `down at ${z}`);
+  }
+});
+
+for (const scale of [1, 2]) {
+  test(`a cold map is drawn from its overview while its own tiles are on their way, at scale ${scale}`, async () => {
+    // Level 12 never answers, so a cold view at zoom 12 has nothing of its
+    // own; the pane is wider than a tile, so its overview is level 11,
+    // which does. The first cut drew the background until the view's tiles
+    // came — here, for ever.
+    const centre = {
+      lon: lonFromMercatorX(2048.5 / 4096),
+      lat: latFromMercatorY(2048.5 / 4096),
+    };
+    const ref = React.createRef<MapHandle>();
+    const result = await renderX11(
+      React.createElement(MapView, {
+        ref,
+        sources: [LEVELLED_GROUND],
+        defaultCamera: { center: centre, zoom: 12 },
+        attribution: '',
+        'data-testname': 'map',
+      }),
+      { backend: 'xserver', width: 640, height: 480, scale },
+    );
+    const handle = ref.current as MapHandle;
+    const abs = result.getByTestName('map').abs;
+    const pane = {
+      x: abs.x / scale,
+      y: abs.y / scale,
+      width: abs.width / scale,
+      height: abs.height / scale,
+    };
+    let seen = { checked: 0, wrong: 0, first: '' };
+    await waitFor(async () => {
+      seen = await wrongLevelledGround(
+        result,
+        handle,
+        pane,
+        scale,
+        () => 11,
+        6,
+      );
+      assert.ok(seen.checked > 1000, `only ${seen.checked} samples`);
+      assert.ok(
+        seen.wrong === 0,
+        `${seen.wrong} of ${seen.checked} samples wrong, the first ${seen.first}`,
+      );
+    });
+    const stats = handle.stats()!;
+    assert.equal(stats.fromAncestor, stats.tiles, JSON.stringify(stats));
+  });
+}
+
+/** A vector source answering at once at every level, with the levels it
+ *  was asked for in the order it was asked. */
+function recordedSource(asked: number[]): MapSource {
+  return {
+    id: 'recorded',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: ({ z }) => {
+      asked.push(z);
+      return { kind: 'vector', data: threeLayerTile() };
+    },
+  };
+}
+
+/** The middle of tile `12/2048/1361`: a 640×480 pane at zoom 13 there sees
+ *  the four level-13 tiles under it, and its overview is that tile alone. */
+const OVERVIEW_HOME = {
+  lon: lonFromMercatorX(2048.5 / 4096),
+  lat: latFromMercatorY(1361.5 / 4096),
+};
+
+test('a cold map asks for its overview first, and draws it before any tile of its own', async () => {
+  const asked: number[] = [];
+  const frames: MapFrameStats[] = [];
+  await renderX11(
+    React.createElement(MapView, {
+      sources: [recordedSource(asked)],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: OVERVIEW_HOME, zoom: 13 },
+      // A tile a frame, whatever it costs: only the guarantee draws.
+      rasterBudgetMs: 0.0001,
+      onFrame: (stats) => frames.push({ ...stats }),
+    }),
+    { backend: 'xserver', width: 640, height: 480 },
+  );
+  for (let i = 0; i < 30; i++) await act(async () => {});
+
+  const firstOfView = asked.indexOf(13);
+  assert.ok(firstOfView > 0, `asked: ${asked.join(',')}`);
+  assert.ok(
+    asked.slice(0, firstOfView).every((z) => z === 12),
+    `the overview's requests go first: ${asked.join(',')}`,
+  );
+  // The overview is the first tile drawn, so the whole view is up from it
+  // while every tile of its own is still to draw — and then they land. A
+  // frame counts only what its damage reaches, so the frame that shows the
+  // whole view from the overview is the one that repainted the pane.
+  const whole = frames.findIndex(
+    (f) => f.tiles > 0 && f.fromAncestor === f.tiles,
+  );
+  const sharp = frames.findIndex((f) => f.ready > 0);
+  const summary = JSON.stringify(
+    frames.map((f) => [f.tiles, f.ready, f.fromAncestor, f.pending]),
+  );
+  assert.ok(whole >= 0 && sharp >= 0, summary);
+  assert.ok(
+    whole < sharp,
+    `the view was whole at frame ${whole}, its first own tile at ${sharp}: ${summary}`,
+  );
+  assert.equal(frames.at(-1)!.pending, 0, `and the view finishes: ${summary}`);
+});
+
+test('a pan onto ground nothing has drawn draws the overview during the gesture, and nothing else', async (t) => {
+  const settle = holdClock(t, settleClock);
+  const asked: number[] = [];
+  const frames: MapFrameStats[] = [];
+  const { handle } = await mountMap(
+    {
+      sources: [recordedSource(asked)],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: OVERVIEW_HOME, zoom: 13 },
+      onFrame: (stats) => frames.push({ ...stats }),
+    },
+    DRIVEN,
+  );
+  // Every tile in view drawn. Not `ready === tiles`: a frame counts only
+  // what its damage reaches, and the last tile to land claims its own box.
+  const settled = async (): Promise<void> => {
+    await waitFor(() => {
+      const last = frames.at(-1)!;
+      assert.ok(last.tiles > 0 && last.pending === 0, JSON.stringify(last));
+    });
+  };
+  await settled();
+
+  // A zoom in: the level it leaves covers every hole, so the gesture
+  // draws nothing — the overview's tiles were drawn on the way in.
+  let from = frames.length;
+  await act(async () => handle.setCamera({ zoom: 14.2 }));
+  for (let i = 0; i < 5; i++) await act(async () => {});
+  assert.ok(frames.length > from, 'the zoom was painted');
+  for (const f of frames.slice(from)) {
+    assert.equal(f.rasterMs, 0, `a zoom in drew: ${JSON.stringify(f)}`);
+  }
+  while (settle.pending) await settle.frame();
+  await settled();
+
+  // Across the world, mid-gesture: nothing of the view is drawn, and the
+  // overview covers all of it.
+  from = frames.length;
+  await act(async () => handle.setCamera({ center: TOKYO, zoom: 13 }));
+  await waitFor(() => {
+    const last = frames.at(-1)!;
+    assert.ok(
+      last.tiles > 0 && last.fromAncestor === last.tiles,
+      JSON.stringify(last),
+    );
+  });
+  assert.ok(
+    frames.slice(from).every((f) => f.ready === 0),
+    'no tile of the view was drawn during the gesture',
+  );
+  assert.ok(settle.pending, 'and it still was one');
+
+  // And sharp once it ends.
+  while (settle.pending) await settle.frame();
+  await settled();
+});
 
 // --- the tile cache --------------------------------------------------------
 

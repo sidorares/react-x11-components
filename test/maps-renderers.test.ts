@@ -407,8 +407,14 @@ for (const renderer of RENDERERS) {
     await frame();
     await act(async () => {});
     await frame();
-    await waitFor(() => assert.ok(seen.length > 0, 'the failure was reported'));
-    assert.match(seen[0], /bad 4\/\d+\/\d+ Error: unauthorized/);
+    // The view's own tiles are level 4; the overview's, asked for first,
+    // are level 3, and fail the same way.
+    await waitFor(() =>
+      assert.ok(
+        seen.some((s) => /^bad 4\/\d+\/\d+ Error: unauthorized$/.test(s)),
+        `a tile of the view's failure was reported: ${seen.join('; ')}`,
+      ),
+    );
     // A frame counts the tiles that failed and are waiting on a retry, and
     // the first retry is due half a second after the failure: a frame drawn
     // later than that asks for the tiles again before it counts, and finds
