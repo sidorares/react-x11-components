@@ -37,6 +37,7 @@ import {
   pixelsIn,
   pixelsPng,
   render,
+  render2x,
   renderWithBytes,
   renderWithImages,
   snapshot,
@@ -2435,6 +2436,340 @@ metric(
       Math.abs(paths.matrix.b - 0.5) < 1e-6,
       'the paths through the turn',
     );
+  },
+);
+
+/** A document of drawings, laid out from the window's corner. */
+const ALONE = '<style>body{margin:0;background:#fff}svg{display:block}</style>';
+
+/** How many of a region's pixels are within `tolerance` of a colour, in
+ *  each channel. */
+async function pixelsNear(
+  ctx: unknown,
+  region: { x: number; y: number; width: number; height: number },
+  colour: [number, number, number],
+  tolerance = 24,
+): Promise<number> {
+  const px = await pixelsIn(ctx, region);
+  let n = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    if (
+      Math.abs(px[i] - colour[0]) <= tolerance &&
+      Math.abs(px[i + 1] - colour[1]) <= tolerance &&
+      Math.abs(px[i + 2] - colour[2]) <= tolerance
+    ) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/** The `<foreignObject>`s a document's last build made a tree for. */
+function foreignOf(node: DrawnNode): Map<unknown, unknown> | undefined {
+  return (
+    view(node) as unknown as { _tree: { foreign?: Map<unknown, unknown> } }
+  )._tree.foreign;
+}
+
+metric(
+  "a foreignObject's HTML is laid out in the object's box and drawn there",
+  async () => {
+    // SVG 2, 23.2: what a `<foreignObject>` holds is HTML, a formatting
+    // context of the object's size at the object's place in the drawing.
+    // It drew nothing: an inline drawing is one replaced box, and
+    // `SvgView` draws nothing of an object. Mermaid's labels are these.
+    const { result, node } = await render(
+      ALONE +
+        '<svg width="160" height="100">' +
+        '<rect width="160" height="100" fill="#ddeeff"/>' +
+        '<foreignObject x="20" y="10" width="120" height="60">' +
+        '<div style="background:#00ff00;height:20px"></div>' +
+        '<p style="margin:0;color:#000000;font:16px/18px sans-serif">Hello there world</p>' +
+        '</foreignObject></svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 25, 15, '#00ff00', { message: 'its first block' });
+    await expectPixel(ctx, 135, 28, '#00ff00', {
+      message: 'as wide as the object',
+    });
+    await expectPixel(ctx, 15, 15, '#ddeeff', { message: 'left of it' });
+    await expectPixel(ctx, 145, 15, '#ddeeff', { message: 'right of it' });
+    await expectPixel(ctx, 25, 8, '#ddeeff', { message: 'above it' });
+    // its text, in the 120 pixels the object is wide: two lines of it
+    const first = await pixelsNear(
+      ctx,
+      { x: 20, y: 30, width: 120, height: 18 },
+      [0, 0, 0],
+      64,
+    );
+    const second = await pixelsNear(
+      ctx,
+      { x: 20, y: 48, width: 120, height: 18 },
+      [0, 0, 0],
+      64,
+    );
+    assert.ok(first > 20, `its first line is drawn (${first})`);
+    assert.ok(second > 10, `and the words that wrapped (${second})`);
+    assert.strictEqual(foreignOf(node)?.size, 1);
+  },
+);
+
+metric(
+  "a foreignObject's HTML has no canvas of its own, in a document of the other scheme",
+  async () => {
+    // A document whose scheme is not the palette's is drawn on an opaque
+    // canvas of its own (`paintDocument`); what an object holds is drawn
+    // as a document is, and its canvas would have hidden the drawing
+    // under it. Its own background is still drawn.
+    const { result } = await render(
+      ALONE +
+        '<style>:root{color-scheme:dark}</style>' +
+        '<svg width="160" height="60">' +
+        '<rect width="160" height="60" fill="#ddeeff"/>' +
+        '<foreignObject width="160" height="30">' +
+        '<div style="height:10px;width:20px;background:#00ff00"></div>' +
+        '</foreignObject>' +
+        '<foreignObject y="30" width="160" height="30" ' +
+        'style="background:#ff00ff"></foreignObject>' +
+        '</svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 10, 5, '#00ff00', { message: 'what it holds' });
+    await expectPixel(ctx, 80, 20, '#ddeeff', {
+      message: 'the drawing, under the rest of it',
+    });
+    await expectPixel(ctx, 80, 45, '#ff00ff', {
+      message: "an object's own background",
+    });
+  },
+);
+
+metric(
+  "a switch draws a foreignObject that asks for SVG 1.1's Extensibility, ahead of its fallback",
+  async () => {
+    // draw.io's exports: the object in a group that asks for the feature,
+    // in a `<switch>` ahead of a `<text>` for a renderer without it, which
+    // was the one drawn here
+    const { result } = await render(
+      ALONE +
+        '<svg width="160" height="40"><switch>' +
+        '<g requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility">' +
+        '<foreignObject width="160" height="40">' +
+        '<div style="background:#00ff00;height:40px"></div>' +
+        '</foreignObject></g>' +
+        '<rect width="160" height="40" fill="#ff0000"/>' +
+        '</switch></svg>',
+      200,
+    );
+    await expectPixel(result.ctx, 80, 20, '#00ff00', {
+      message: 'the object, and not the fallback after it',
+    });
+  },
+);
+
+test('a document with no foreignObject builds none', async () => {
+  // what every walk over them asks first, so a page of icons pays nothing
+  const { node } = await render(
+    '<svg width="10" height="10"><rect width="10" height="10"/></svg><p>x</p>',
+  );
+  assert.strictEqual(foreignOf(node), undefined);
+});
+
+metric(
+  "a foreignObject's HTML is drawn through the drawing's viewBox and transforms",
+  async () => {
+    // A user unit is a CSS pixel of what the object holds, so a `viewBox`
+    // that doubles the drawing doubles it, and a `rotate()` on a group
+    // around it turns it: a picture of it, on a surface, where the context
+    // sets glyphs as they were shaped (ntk's)
+    const { result } = await render(
+      ALONE +
+        '<svg width="160" height="100" viewBox="0 0 80 50">' +
+        '<foreignObject x="10" y="5" width="60" height="30">' +
+        '<div style="background:#00ff00;height:10px"></div>' +
+        '<div style="background:#0000ff;height:5px;width:20px"></div>' +
+        '</foreignObject></svg>' +
+        '<svg width="160" height="160">' +
+        '<g transform="rotate(90 80 80)">' +
+        '<foreignObject x="20" y="60" width="120" height="40">' +
+        '<div style="background:#ff00ff;height:10px"></div>' +
+        '<p style="margin:0;color:#000000">Turned</p>' +
+        '</foreignObject></g></svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    // the first drawing: the object at (20, 10), 120 by 60, its blocks
+    // 20 and 10 tall
+    await expectPixel(ctx, 25, 15, '#00ff00', { message: 'scaled: its top' });
+    await expectPixel(ctx, 135, 28, '#00ff00', {
+      message: 'scaled: as wide as the object, twice over',
+    });
+    await expectPixel(ctx, 25, 35, '#0000ff', {
+      message: 'scaled: its second block, under the first',
+    });
+    await expectPixel(ctx, 65, 35, '#ffffff', {
+      message: 'scaled: forty wide, and no wider',
+    });
+    // the second, 100 down: (x, y) turned about (80, 80) is (160 - y, x)
+    await expectPixel(ctx, 95, 100 + 30, '#ff00ff', {
+      message: 'turned: its first block runs down the drawing',
+    });
+    await expectPixel(ctx, 95, 100 + 130, '#ff00ff', {
+      message: 'turned: all of its length',
+    });
+    await expectPixel(ctx, 50, 100 + 30, '#ffffff', {
+      message: 'turned: and not across it',
+    });
+    const text = await pixelsNear(
+      ctx,
+      { x: 60, y: 100 + 20, width: 30, height: 120 },
+      [0, 0, 0],
+      96,
+    );
+    assert.ok(text > 20, `turned: its text, beside the block (${text})`);
+  },
+);
+
+metric(
+  "a foreignObject's HTML is cut to the object, and to a clip-path on it or a group around it",
+  async () => {
+    const { result } = await render(
+      ALONE +
+        // a block taller than the object: cut at its foot, unless its
+        // overflow is visible — by a rule, or by its presentation attribute
+        '<svg width="160" height="40">' +
+        '<foreignObject width="50" height="20">' +
+        '<div style="background:#00ff00;height:40px"></div></foreignObject>' +
+        '<foreignObject x="55" width="50" height="20" style="overflow:visible">' +
+        '<div style="background:#00ff00;height:40px"></div></foreignObject>' +
+        '<foreignObject x="110" width="50" height="20" overflow="visible">' +
+        '<div style="background:#00ff00;height:40px"></div></foreignObject>' +
+        '</svg>' +
+        // a circle on the object
+        '<svg width="160" height="100">' +
+        '<clipPath id="round"><circle cx="80" cy="50" r="40"/></clipPath>' +
+        '<foreignObject width="160" height="100" clip-path="url(#round)">' +
+        '<div style="background:#ff00ff;height:100px"></div>' +
+        '</foreignObject></svg>' +
+        // the middle of the object's box, on the group around it
+        '<svg width="160" height="100">' +
+        '<clipPath id="mid" clipPathUnits="objectBoundingBox">' +
+        '<rect x="0.25" y="0.25" width="0.5" height="0.5"/></clipPath>' +
+        '<g clip-path="url(#mid)"><foreignObject width="160" height="100">' +
+        '<div style="background:#0000ff;height:100px"></div>' +
+        '</foreignObject></g></svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 25, 10, '#00ff00', { message: 'in the object' });
+    await expectPixel(ctx, 25, 30, '#ffffff', {
+      message: "below it, cut: SVG's UA sheet hides its overflow",
+    });
+    await expectPixel(ctx, 80, 30, '#00ff00', {
+      message: 'below one a rule makes visible',
+    });
+    await expectPixel(ctx, 135, 30, '#00ff00', {
+      message: 'below one its attribute makes visible',
+    });
+    await expectPixel(ctx, 80, 40 + 50, '#ff00ff', {
+      message: 'in the circle',
+    });
+    await expectPixel(ctx, 5, 40 + 5, '#ffffff', {
+      message: 'a corner the circle cuts away',
+    });
+    await expectPixel(ctx, 80, 140 + 50, '#0000ff', {
+      message: 'in the middle of its box',
+    });
+    await expectPixel(ctx, 20, 140 + 50, '#ffffff', {
+      message: 'outside the middle, which the clip is of its box',
+    });
+  },
+);
+
+metric(
+  "a foreignObject's HTML is painted in the drawing's order, styled by the document's rules, and faded with its group",
+  async () => {
+    const { result } = await render(
+      ALONE +
+        '<style>g.ink{color:#ff0000}.label{background:#00ff00}</style>' +
+        '<svg width="160" height="60">' +
+        '<rect width="80" height="60" fill="#0000ff"/>' +
+        '<g class="ink"><foreignObject width="160" height="60">' +
+        '<div class="label" style="height:20px;width:120px"></div>' +
+        '<div style="font:40px/40px sans-serif;margin-left:84px">MM</div>' +
+        '</foreignObject></g>' +
+        '<rect x="100" width="60" height="10" fill="#ff00ff"/>' +
+        '</svg>' +
+        '<svg width="160" height="40">' +
+        '<g opacity="0.5"><foreignObject width="160" height="40">' +
+        '<div style="background:#000000;height:40px"></div>' +
+        '</foreignObject></g></svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 40, 10, '#00ff00', {
+      message: 'over the rect before it, in a class of the page',
+    });
+    await expectPixel(ctx, 40, 30, '#0000ff', {
+      message: 'what it does not cover shows through',
+    });
+    await expectPixel(ctx, 110, 5, '#ff00ff', {
+      message: 'under the rect after it',
+    });
+    await expectPixel(ctx, 110, 15, '#00ff00', {
+      message: 'and below that rect, its own',
+    });
+    const red = await pixelsNear(
+      ctx,
+      { x: 80, y: 20, width: 80, height: 40 },
+      [255, 0, 0],
+      32,
+    );
+    assert.ok(red > 40, `its text in the colour a group's rule gives (${red})`);
+    await expectPixel(ctx, 80, 60 + 20, [128, 128, 128], {
+      tolerance: 3,
+      message: 'faded as the group around it',
+    });
+  },
+);
+
+metric(
+  "a foreignObject's HTML is laid out in CSS pixels at 2x, and drawn on the device's grid",
+  async () => {
+    // a user unit is a CSS pixel, two device pixels here: the object, its
+    // block and its text are twice the device pixels across
+    const { result, node } = await render2x(
+      ALONE +
+        '<svg width="160" height="100">' +
+        '<foreignObject x="20" y="10" width="120" height="60">' +
+        '<div style="background:#00ff00;height:20px"></div>' +
+        '<p style="margin:0;color:#000000;font:16px/18px sans-serif">Hello there world</p>' +
+        '</foreignObject></svg>',
+      200,
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const ctx = result.ctx;
+    await expectPixel(ctx, abs.x + 42, abs.y + 22, '#00ff00', {
+      message: 'its corner, two device pixels to a user unit',
+    });
+    await expectPixel(ctx, abs.x + 278, abs.y + 58, '#00ff00', {
+      message: 'its far corner',
+    });
+    await expectPixel(ctx, abs.x + 282, abs.y + 30, '#ffffff', {
+      message: 'past the object',
+    });
+    await expectPixel(ctx, abs.x + 42, abs.y + 61, '#ffffff', {
+      message: 'below the block, on the grid',
+    });
+    const second = await pixelsNear(
+      ctx,
+      { x: abs.x + 40, y: abs.y + 96, width: 240, height: 36 },
+      [0, 0, 0],
+      64,
+    );
+    assert.ok(second > 40, `its text wraps where it does at 1x (${second})`);
   },
 );
 

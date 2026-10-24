@@ -144,6 +144,7 @@ import type {
   BoxTree,
   ColumnPiece,
   EdgePlacement,
+  ForeignObject,
   LineBox,
   LineText,
   Marker,
@@ -172,7 +173,12 @@ import {
   inlineDrawing,
   quotedFamilies,
 } from './svg.js';
-import type { IntrinsicSize, SurfaceMaker } from './svg.js';
+import type {
+  ForeignPainter,
+  ForeignRect,
+  IntrinsicSize,
+  SurfaceMaker,
+} from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 import {
   backdropFilter,
@@ -544,6 +550,9 @@ export interface PaintOptions {
   /** @internal What the rules give the shapes in each drawing, where one
    *  could reach any (`BoxTree.shapeStyler`). */
   shapeStyler?: ShapeStyler | null;
+  /** @internal The HTML of the tree's `<foreignObject>`s, where it has
+   *  any (`BoxTree.foreign`), which its drawings paint (`paintForeign`). */
+  foreign?: ReadonlyMap<Element, ForeignObject> | null;
   /** @internal The matrix the context draws through, from the coordinates
    *  being painted in to the window's, inside a box drawn through its
    *  transform (`paintTransformed`): what a shadow's offset and blur, which
@@ -1171,6 +1180,7 @@ export function paintDocument(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    foreign: tree.foreign ?? null,
     backdrop,
   };
   paintBox(ctx, tree.root, painted);
@@ -1225,6 +1235,7 @@ export function paintCapture(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    foreign: tree.foreign ?? null,
     backdrop,
     captureTop: box,
   };
@@ -2597,6 +2608,7 @@ export function paintLiftedBox(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    foreign: tree.foreign ?? null,
   });
 }
 
@@ -2629,6 +2641,7 @@ export function paintCover(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    foreign: tree.foreign ?? null,
   };
   if (turns(box)) paintTransformed(ctx, box, inner);
   else paintBox(ctx, box, inner);
@@ -12619,7 +12632,172 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       style: style.fontStyle,
     },
     svgInherited(style),
+    options.foreign && inlineDrawing(box.el).foreignObjects().length
+      ? foreignPainter(options.foreign, options)
+      : null,
   );
+}
+
+/** What paints the HTML of a drawing's `<foreignObject>`s where the
+ *  drawing reaches each (`ForeignPainter`), for a tree that has any. */
+function foreignPainter(
+  objects: ReadonlyMap<Element, ForeignObject>,
+  options: PaintOptions,
+): ForeignPainter {
+  return (el, ctx, alpha, rect) => {
+    const object = objects.get(el);
+    if (object) paintForeign(ctx as PaintContext, object, alpha, rect, options);
+  };
+}
+
+/** How near a matrix's terms are to a translation's for the paint through
+ *  it to be one: well under what a pixel's worth of the largest surface
+ *  comes to. */
+const LEVEL = 1e-9;
+
+/**
+ * The HTML a `<foreignObject>` holds, painted where the drawing reaches the
+ * object (`ForeignObject`): `ctx` is in the object's user space, cut to
+ * what cuts the object in the drawing, and the object's own rectangle cuts
+ * what it holds too, unless its `overflow` is `visible`. What it holds was
+ * laid out in device pixels, `object.scale` to a user unit, from its
+ * corner, so it is painted through the matrix that makes of those the
+ * user space's — as a document of its own, its canvas the object's box
+ * (`paintDocument`).
+ *
+ * Where that matrix is a move and no more — a drawing at its own size, no
+ * `viewBox` scaling it, no transform turning it — it is painted with no
+ * matrix at all, from where the move puts its corner, so that it is set on
+ * the pixel grid as the document around the drawing is, and the paint's
+ * damage culls it. Where the matrix scales, turns or skews it, the context
+ * draws through it where it sets text through it (`scalesText`), and where
+ * what it holds is paths and flat colour (`drawnAsPaths`); anywhere else —
+ * ntk's context, which sets a glyph as it was shaped, where the matrix puts
+ * its origin — it is painted on a surface as it was laid out and the
+ * surface drawn through the matrix, as a transformed box is
+ * (`paintRaster`). And on a surface wherever the drawing fades it, which
+ * fades it as the group it is.
+ */
+function paintForeign(
+  ctx: PaintContext,
+  object: ForeignObject,
+  alpha: number,
+  rect: ForeignRect,
+  options: PaintOptions,
+): void {
+  const { tree, scale } = object;
+  const width = Math.ceil(object.width);
+  const height = Math.ceil(object.height);
+  if (!(width > 0 && height > 0) || !(alpha > 0)) return;
+  if (!ctx.transform || !ctx.beginPath || !ctx.rect || !ctx.clip) return;
+  ctx.save();
+  try {
+    if (object.clips) {
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.width, rect.height);
+      ctx.clip();
+    }
+    ctx.transform(1 / scale, 0, 0, 1 / scale, rect.x, rect.y);
+    // what the drawing set, a mark's alpha among it, is its own
+    if (typeof ctx.globalAlpha === 'number') ctx.globalAlpha = 1;
+    const m = ctx.getTransform?.() ?? null;
+    const matrix: Matrix | null = m && [m.a, m.b, m.c, m.d, m.e, m.f];
+    const level =
+      m !== null &&
+      Math.abs(m.a - 1) < LEVEL &&
+      Math.abs(m.d - 1) < LEVEL &&
+      Math.abs(m.b) < LEVEL &&
+      Math.abs(m.c) < LEVEL;
+    const through = level || ctx.scalesText === true || drawnAsPaths(tree.root);
+    if (alpha >= 1 && through) {
+      if (level && ctx.setTransform) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        paintDocument(
+          ctx,
+          tree,
+          foreignOptions(options, m!.e, m!.f, width, height, options.damage),
+        );
+      } else {
+        paintDocument(
+          ctx,
+          tree,
+          foreignOptions(options, 0, 0, width, height, null, matrix),
+        );
+      }
+      return;
+    }
+    const surface =
+      options.surface &&
+      ctx.drawImage &&
+      width <= RASTER_SIDE &&
+      height <= RASTER_SIDE &&
+      width * height <= RASTER_LIMIT &&
+      (!matrix || fitsFixedPoint(matrix, 0, 0))
+        ? options.surface(width, height)
+        : null;
+    if (!surface) {
+      // nothing to paint it on: through the matrix, its text set where
+      // the matrix puts each glyph, faded a thing at a time
+      if (typeof ctx.globalAlpha === 'number') ctx.globalAlpha = alpha;
+      paintDocument(
+        ctx,
+        tree,
+        foreignOptions(options, 0, 0, width, height, null, matrix),
+      );
+      return;
+    }
+    try {
+      paintDocument(
+        surface.getContext('2d') as PaintContext,
+        tree,
+        foreignOptions(options, 0, 0, width, height, null),
+      );
+      if (typeof ctx.globalAlpha === 'number') ctx.globalAlpha = alpha;
+      ctx.drawImage!(surface, 0, 0);
+    } finally {
+      surface.destroy?.();
+    }
+  } finally {
+    ctx.restore();
+  }
+}
+
+/**
+ * How a `<foreignObject>`'s tree is painted (`paintForeign`): from
+ * (`x`, `y`), its canvas and its viewport the object's box there, with the
+ * images, the surfaces and the rasters the document is painted with, and
+ * none of what the document keeps by its own boxes — the surfaces kept for
+ * them, their filters' reads, what a presenter lifted — nor its selection,
+ * which is in the document's text and not the object's.
+ */
+function foreignOptions(
+  options: PaintOptions,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  damage: Rect | null,
+  matrix: Matrix | null = null,
+): PaintOptions {
+  const box = { x, y, width, height };
+  return {
+    originX: x,
+    originY: y,
+    scale: options.scale,
+    damage,
+    selection: null,
+    selectionColor: options.selectionColor,
+    imageFor: options.imageFor,
+    backgroundImageFor: options.backgroundImageFor,
+    scrollbarHidden: options.scrollbarHidden,
+    surface: options.surface,
+    cached: options.cached,
+    tilesKept: options.tilesKept,
+    drawingKept: options.drawingKept,
+    canvas: box,
+    viewport: box,
+    ...(matrix && { matrix }),
+  };
 }
 
 /** What an inline `<svg>`'s drawing inherits from its box besides its

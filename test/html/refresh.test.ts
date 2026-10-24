@@ -114,6 +114,36 @@ metric(
   },
 );
 
+metric(
+  "a class changed in a foreignObject's HTML builds the boxes, and is drawn",
+  async () => {
+    // what an object holds is a tree of boxes of its own, which a restyle
+    // in place finds nothing of: taken in place, the change left the
+    // object drawn as it was
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{display:block}' +
+        '.d{height:40px;background:#00ff00} .d.on{background:#ff0000}</style>' +
+        '<svg width="100" height="40"><foreignObject width="100" height="40">' +
+        '<div id="d" class="d"></div></foreignObject></svg>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    el.touchDocument([setClass(byId(el, 'd'), 'd on')]);
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'the boxes were built again');
+    const { width } = (el as unknown as { abs: { width: number } }).abs;
+    const at = (10 * width + 10) * 4;
+    assert.deepStrictEqual(
+      [drawn[at], drawn[at + 1], drawn[at + 2]],
+      [255, 0, 0],
+      'the object drawn in its new class',
+    );
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
 test('an attribute set to what it was, or set and set back, restyles nothing', async () => {
   const { result, node } = await render(
     '<style>body{margin:0} [class*=on]{color:#ff0000} .open{display:none}</style>' +

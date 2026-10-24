@@ -68,7 +68,12 @@ import {
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { focusableElement } from '../focus.js';
-import { atDensity, concreteSize, svgIntrinsics } from '../svg.js';
+import {
+  atDensity,
+  concreteSize,
+  inlineDrawing,
+  svgIntrinsics,
+} from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import type { GridLines } from './grid-lines.js';
@@ -1104,6 +1109,10 @@ export interface BoxTree {
    *  `<use>` finds the icon a sprite has for it; and what the rules matched
    *  in each copy a `<use>` makes. Null where `shapeStyler` is. */
   shapeCopies: ShapeCopies | null;
+  /** The HTML each inline `<svg>`'s `<foreignObject>`s hold, by the
+   *  object (`ForeignObject`): absent where the document has none, which
+   *  is what every walk over them asks first. */
+  foreign?: Map<Element, ForeignObject>;
   /** Whether a float or an out-of-flow box sits in an inline box: where
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
@@ -1132,6 +1141,31 @@ export interface BoxTree {
    *  (`propagateOverflow`): what the host that scrolls the document is
    *  told it asks of it. */
   viewportOverflow: ViewportOverflow;
+}
+
+/**
+ * The HTML a `<foreignObject>` in an inline `<svg>` holds (SVG 2, 23.2): a
+ * tree of boxes of its own, the object its root and its initial containing
+ * block, styled by the document's cascade from the drawing's elements down,
+ * laid out as a document is at the object's size (`layoutDocument`) and
+ * painted by the drawing where it reaches the object in its order, in the
+ * object's user space (`ForeignPainter`). Out of the document's tree: no
+ * walk of the document's boxes reaches it, and its text is no part of the
+ * document's.
+ */
+export interface ForeignObject {
+  /** The drawing's box, which the object's user units are of. */
+  svg: Box;
+  el: Element;
+  tree: BoxTree;
+  /** Whether what it holds is cut to its rectangle: the UA sheet's
+   *  `overflow: hidden`, unless a rule says `visible`. */
+  clips: boolean;
+  /** Device pixels a user unit was last laid out at, and its size in
+   *  device pixels then; 0 by 0 where it is none, or not laid out yet. */
+  scale: number;
+  width: number;
+  height: number;
 }
 
 export interface BuildOptions {
@@ -1243,6 +1277,75 @@ function flowModeAround(box: Box): ComputedStyle['writingMode'] {
   return (at ?? box).style.writingMode;
 }
 
+/** What of a `<foreignObject>`'s own style is the drawing's, and none of
+ *  its box's (`foreignRootStyle`): where it is, its size, and what moves,
+ *  fades, cuts or filters it, which the drawing does to it as it does to
+ *  any of its elements — its `overflow` among them, which cuts what it
+ *  holds to its rectangle where the drawing draws it (`ForeignObject`). */
+const DRAWING_OWNS = [
+  'position',
+  'float',
+  'transform',
+  'translate',
+  'rotate',
+  'scale',
+  'perspective',
+  'opacity',
+  'filter',
+  'backdropFilter',
+  'clipPath',
+  'clip',
+  'mask',
+  'mixBlendMode',
+  'isolation',
+  'zIndex',
+  'willChange',
+  'overlay',
+  'overflowX',
+  'overflowY',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
+  'width',
+  'height',
+  'minWidth',
+  'maxWidth',
+  'minHeight',
+  'maxHeight',
+  'widthKeyword',
+  'minWidthKeyword',
+  'maxWidthKeyword',
+  'minHeightKeyword',
+  'maxHeightKeyword',
+  'heightKeyword',
+  'widthSize',
+  'heightSize',
+  'top',
+  'right',
+  'bottom',
+  'left',
+] as const satisfies readonly (keyof ComputedStyle)[];
+
+/**
+ * The style of the box a `<foreignObject>`'s HTML is laid out in: the
+ * object's, a block that is its initial containing block, with what the
+ * drawing does to the object (`DRAWING_OWNS`) put back to the initial
+ * values — the drawing has done it. Its background, its borders and its
+ * padding are its box's, as a browser draws them.
+ */
+function foreignRootStyle(
+  own: ComputedStyle,
+  initial: ComputedStyle,
+): ComputedStyle {
+  const style = copyStyle(own);
+  const to = style as unknown as Record<string, unknown>;
+  const from = initial as unknown as Record<string, unknown>;
+  for (const name of DRAWING_OWNS) to[name] = from[name];
+  style.display = 'block';
+  return style;
+}
+
 /** The sharing key the root box's children share under: one root style per
  *  build, and the shared styles last a build (`Cascade.beginSharing`). */
 const ROOT_SHARE_KEY = 0;
@@ -1307,13 +1410,24 @@ class Builder {
    *  container whose first line has not begun. Null when there is none,
    *  and once anything but a letter begins that line. */
   private _firstLetter: LetterSearch | null = null;
+  /** The `<foreignObject>`s built, by the object; null until one is. */
+  private _foreign: Map<Element, ForeignObject> | null = null;
+  /** What this build's drawings share (`BoxTree.shapeCopies`), the
+   *  document's: a drawing in a `<foreignObject>` finds its `<use>`'s
+   *  icon among the document's ids. */
+  private _copies: ShapeCopies | null = null;
 
-  constructor(options: BuildOptions) {
+  constructor(options: BuildOptions, copies: ShapeCopies | null = null) {
     this._options = options;
+    this._copies = copies;
   }
 
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
+    // every build has one: a drawing may want its attributes' `var()`s
+    // read where no rule reaches it (`Cascade.shapeStyles`), and the index
+    // of ids is made only if a `<use>` asks it
+    this._copies = new ShapeCopies(idIndex(root));
     cascade.beginSharing(this._options.kept ?? null);
     // the styles of an element's ancestors, which an `@container` rule
     // finds its container among: this build's as it goes, and the tree's
@@ -1351,18 +1465,69 @@ class Builder {
       if (top) rootStyle.direction = top.style.direction;
     }
     cascade.endSharing();
+    return this._finish(rootBox, rootStyle, {
+      impliedHtml,
+      impliedRoot: body && !html,
+      paletteScheme: cascade.look.colorScheme,
+      viewportOverflow: viewportOverflowOf(
+        root,
+        [impliedHtml, rootStyle],
+        this._styles,
+      ),
+    });
+  }
+
+  /**
+   * The tree of the HTML a `<foreignObject>` holds (`ForeignObject`), its
+   * root the object, in `style` — the object's, as the cascade gave it
+   * under the drawing's elements around it. Inside the document's build,
+   * whose sharing it is styled under: what is in it is matched against the
+   * document's rules, as the HTML around the drawing is.
+   */
+  runForeign(el: Element, style: ComputedStyle): BoxTree {
+    const cascade = this._options.cascade;
+    const styles = this._styles;
+    const outer = cascade.stylesOf;
+    // an `@container` rule finds its container among the object's own
+    cascade.stylesOf = (at) => styles.get(at)?.style ?? outer?.(at);
+    const rootBox = new Box('block', null, style);
+    if (style.backgroundClipText) this._clipText = true;
+    this._scopes.open();
+    try {
+      this._children(el, rootBox, style, false, el, cascade.freshShareKey());
+      this._endLine();
+    } finally {
+      cascade.stylesOf = outer;
+    }
+    return this._finish(rootBox, style, {
+      impliedHtml: null,
+      impliedRoot: false,
+      // drawn in the scheme of the drawing it is in, and on no canvas of
+      // its own: it is transparent, as an `<iframe>`'s document is not
+      paletteScheme: style.colorScheme,
+      viewportOverflow: VIEWPORT_AUTO,
+    });
+  }
+
+  private _finish(
+    rootBox: Box,
+    rootStyle: ComputedStyle,
+    root: Pick<
+      BoxTree,
+      'impliedHtml' | 'impliedRoot' | 'paletteScheme' | 'viewportOverflow'
+    >,
+  ): BoxTree {
+    const cascade = this._options.cascade;
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);
     for (const box of this._orthogonal) {
       makeFrame(box, anonymous(box.style, 'block'));
     }
     assignSubtreeRanges(rootBox);
-    // every build has one: a drawing may want its attributes' `var()`s
-    // read where no rule reaches it (`Cascade.shapeStyles`), and the index
-    // of ids is made only if a `<use>` asks it
-    const copies = new ShapeCopies(idIndex(root));
+    const copies = this._copies!;
     return {
       ...(cascade.readsContainers && { containers: containerBoxes(rootBox) }),
+      ...(this._foreign && { foreign: this._foreign }),
       root: rootBox,
       anonymous,
       text: this._chunks.join(''),
@@ -1396,14 +1561,10 @@ class Builder {
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
-      impliedHtml,
-      impliedRoot: body && !html,
-      paletteScheme: cascade.look.colorScheme,
-      viewportOverflow: viewportOverflowOf(
-        root,
-        [impliedHtml, rootStyle],
-        this._styles,
-      ),
+      impliedHtml: root.impliedHtml,
+      impliedRoot: root.impliedRoot,
+      paletteScheme: root.paletteScheme,
+      viewportOverflow: root.viewportOverflow,
     };
   }
 
@@ -2010,6 +2171,10 @@ class Builder {
       // its `em` is its own font size, in CSS pixels like the rest of it
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       setIntrinsics(box, svgIntrinsics(el, style.fontSize / scale), scale);
+      // and the HTML its `<foreignObject>`s hold, which most drawings have
+      // none of
+      const objects = inlineDrawing(el).foreignObjects();
+      if (objects.length) this._foreignObjects(el, box, style, objects);
       return;
     }
     if (replaced === 'frame') {
@@ -2054,6 +2219,62 @@ class Builder {
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
     // field, which no document viewer does.
+  }
+
+  /**
+   * The HTML of a drawing's `<foreignObject>`s, each a tree of its own
+   * (`ForeignObject`): styled through the drawing's elements from the
+   * root's box down, as a browser inherits into it, and built by a builder
+   * of its own, whose text, links and controls are its own. What the
+   * document asks of a build for the images in it — the backgrounds, the
+   * generated images, the faces its text is set in — is the document's
+   * too, and an `<img>` built before its image was in builds the document
+   * again when it is, since nothing lays an object out again in place.
+   */
+  private _foreignObjects(
+    svg: Element,
+    box: Box,
+    svgStyle: ComputedStyle,
+    objects: readonly Element[],
+  ): void {
+    const cascade = this._options.cascade;
+    const known = new Map<Element, ComputedStyle>([[svg, svgStyle]]);
+    // the parser keeps a document to 256 elements deep (`dom.ts`)
+    const styleOf = (el: Element): ComputedStyle => {
+      let style = known.get(el);
+      if (style) return style;
+      const parent = isElement(el.parent) ? styleOf(el.parent) : svgStyle;
+      style = cascade.styleFor(el, parent, false);
+      known.set(el, style);
+      return style;
+    };
+    for (const el of objects) {
+      let hidden = false;
+      for (let at = el.parent; isElement(at) && at !== svg; at = at.parent) {
+        if (styleOf(at).display === 'none') hidden = true;
+      }
+      if (hidden) continue;
+      const parent = isElement(el.parent) ? styleOf(el.parent) : svgStyle;
+      const own = cascade.styleFor(el, parent, false);
+      if (own.display === 'none') continue;
+      const sub = new Builder(this._options, this._copies);
+      sub._depth = this._depth + 1;
+      const tree = sub.runForeign(el, foreignRootStyle(own, cascade.initial));
+      for (const style of tree.textStyles) this._textStyles.add(style);
+      this._backgrounds.push(...tree.backgrounds);
+      this._contentImages.push(...tree.contentImages);
+      this._awaitingKind.push(...tree.awaitingKind);
+      for (const at of tree.awaiting) if (at.el) this._awaitingKind.push(at.el);
+      (this._foreign ??= new Map()).set(el, {
+        svg: box,
+        el,
+        tree,
+        clips: own.overflowX !== 'visible' || own.overflowY !== 'visible',
+        scale: 0,
+        width: 0,
+        height: 0,
+      });
+    }
   }
 
   /**
