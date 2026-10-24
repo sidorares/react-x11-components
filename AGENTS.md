@@ -1886,10 +1886,13 @@ otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
 it is under and the layers ranked before it joins `ParsedSheet`, and
-nothing after a parse changes a sheet but that `order`. A `<meta>`, a `<base>`, a sheet in
-a shadow tree, a `:has()` every element could anchor that reaches past it
-(`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)` are refreshes of
-everything: the scope says null, and nothing is skipped. And the
+nothing after a parse changes a sheet but that `order`. A `<meta>` the
+cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
+`<base>`, a sheet in a shadow tree, a `:has()` every element could anchor
+that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`
+are refreshes of everything: the scope says null, and nothing is skipped.
+Any other `<meta>` is an element like any, which the Guardian's scripts,
+Next.js's and npm's put in for a page's social cards. And the
 `stylesheet` prop is compared by the sheets it holds: `<Html scripts>`
 merges a page's adopted sheets into it at every render, and github.com
 was styled whole some sixty times a load. A shadow tree attached is one; a rule at a tree's edge

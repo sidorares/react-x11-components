@@ -8728,7 +8728,7 @@ export class HtmlViewNode extends Node {
       const el = change.target;
       const name = change.attributeName.toLowerCase();
       if (
-        changesCascade(el, name) &&
+        changesCascade(el, name, change.oldValue ?? null) &&
         !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
       ) {
         return false;
@@ -13322,13 +13322,18 @@ const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
  * cascade: one of those its sheets, its pragmas and its base are read from
  * (`DocumentSource.facts`, `metaColorScheme`, `pragmaLanguage`) — a
  * `<style>`'s `media`, a sheet's `<link>`'s `href` and `media` and any
- * `<link>`'s `rel`, a `<meta>`'s, a `<base>`'s `href`. Any other is an
- * attribute as any element's is: a bundler marks the `<link>` it is
- * loading (rspack's `data-rspack-loading`), and GitHub sets its icon's
- * `href` at every change of scheme. Anything new read of these elements
- * joins this, or a change of it leaves the document as it was.
+ * `<link>`'s `rel`, a pragma `<meta>`'s, before or after (`pragmaMeta`), a
+ * `<base>`'s `href`. Any other is an attribute as any element's is: a
+ * bundler marks the `<link>` it is loading (rspack's
+ * `data-rspack-loading`), and GitHub sets its icon's `href` at every
+ * change of scheme. Anything new read of these elements joins this, or a
+ * change of it leaves the document as it was.
  */
-function changesCascade(el: Element, name: string): boolean {
+function changesCascade(
+  el: Element,
+  name: string,
+  oldValue: string | null,
+): boolean {
   switch (tagOf(el)) {
     case 'style':
       return name === 'media';
@@ -13338,11 +13343,11 @@ function changesCascade(el: Element, name: string): boolean {
         ((name === 'href' || name === 'media') && isSheetLink(el))
       );
     case 'meta':
+      if (name === 'content') return pragmaMeta(el);
+      if (name !== 'name' && name !== 'http-equiv') return false;
       return (
-        name === 'name' ||
-        name === 'content' ||
-        name === 'http-equiv' ||
-        name === 'charset'
+        pragmaMeta(el) ||
+        pragmaMeta(el, name, (oldValue ?? '').trim().toLowerCase())
       );
     case 'base':
       return name === 'href';
@@ -13427,10 +13432,30 @@ function drawingAround(node: AnyNode): Element | null {
   return found;
 }
 
+/**
+ * Whether a `<meta>` is one the cascade reads (`metaColorScheme`,
+ * `pragmaLanguage`): a `name="color-scheme"` or an `http-equiv=
+ * "content-language"` — as it is, or with `name` read as `value`, as it
+ * was before a change of that attribute. Any other is an element like any:
+ * the Guardian's scripts, Next.js's and npm's put in the `<meta>`s of a
+ * page's social cards and referrer policy, and each restyled the whole
+ * document.
+ */
+function pragmaMeta(el: Element, name?: string, value?: string): boolean {
+  const read = (attribute: string): string =>
+    attribute === name
+      ? value!
+      : (attr(el, attribute) ?? '').trim().toLowerCase();
+  return (
+    read('name') === 'color-scheme' || read('http-equiv') === 'content-language'
+  );
+}
+
 /** What a node is, or holds, of `CASCADE_TAGS`: nothing, a sheet's element
  *  (`HELD_SHEET`) — a `<style>`, a sheet's `<link>`, and not the `<link
  *  rel="preload">` a page's scripts put in for every chunk they load — or a
- *  `<meta>` or a `<base>` (`HELD_PRAGMA`), the most it holds. */
+ *  pragma `<meta>` (`pragmaMeta`) or a `<base>` (`HELD_PRAGMA`), the most
+ *  it holds. */
 function cascadeHeld(node: AnyNode): number {
   if (!isElement(node)) return HELD_NOTHING;
   let held = HELD_NOTHING;
@@ -13438,7 +13463,9 @@ function cascadeHeld(node: AnyNode): number {
   while (stack.length) {
     const el = stack.pop()!;
     const tag = tagOf(el);
-    if (tag === 'meta' || tag === 'base') return HELD_PRAGMA;
+    if (tag === 'base' || (tag === 'meta' && pragmaMeta(el))) {
+      return HELD_PRAGMA;
+    }
     if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
       held = HELD_SHEET;
     }

@@ -668,12 +668,14 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
   assert.ok(!own.has(byId(el, 'first')), 'what is before it is restyled');
   el.touchDocument([loaded]);
   assert.notStrictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
-  // an icon's href, a <style>'s type, a <meta>'s data: the element itself
-  // at most, since a `:link` reads an `href`
+  // an icon's href, a <style>'s type, a <meta>'s data, and the content of
+  // a <meta> no pragma reads: the element itself at most, since a `:link`
+  // reads an `href`
   const quiet = [
     setAttr(byId(el, 'icon'), 'href', 'b.svg'),
     setAttr(byId(el, 'st'), 'type', 'text/css'),
     setAttr(byId(el, 'm'), 'data-x', '1'),
+    setAttr(byId(el, 'm'), 'content', 'z'),
   ];
   for (const change of quiet) {
     const scoped = scopeOf(el, [change]);
@@ -715,10 +717,28 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
   assert.strictEqual(scopeOf(el, [style]), null, 'a sheet restyled only some');
   el.touchDocument([style]);
   await act();
-  const meta = added(createElement('meta', { name: 'color-scheme' }));
-  assert.strictEqual(scopeOf(el, [meta]), null, 'a <meta> restyled only some');
-  el.touchDocument([meta]);
+  // a <meta> the cascade reads, and one a page's scripts put in for its
+  // social cards, which is an element like any
+  const card = added(
+    createElement('meta', { property: 'og:title', content: 'q' }),
+    createElement('meta', { name: 'referrer', content: 'origin' }),
+  );
+  assert.ok(scopeOf(el, [card]), 'a card’s <meta> restyled everything');
+  el.touchDocument([card]);
   await act();
+  for (const attribs of <Record<string, string>[]>[
+    { name: 'color-scheme', content: 'dark' },
+    { 'http-equiv': 'Content-Language', content: 'fr' },
+  ]) {
+    const meta = added(createElement('meta', attribs));
+    assert.strictEqual(
+      scopeOf(el, [meta]),
+      null,
+      'a <meta> restyled only some',
+    );
+    el.touchDocument([meta]);
+    await act();
+  }
   // a shadow tree's sheets are its own, bound to it by how they read
   const root = shadowRootOf(byId(el, 'host'))!;
   const inTree = createElement('style', {}, [createText('b{color:#00aa00}')]);
@@ -744,7 +764,8 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
     () => setAttr(byId(el, 's2'), 'href', 'none.css'),
     () => setAttr(byId(el, 's3'), 'rel', 'icon'),
     () => setAttr(byId(el, 'st'), 'media', 'print'),
-    () => setAttr(byId(el, 'm'), 'content', 'z'),
+    () => setAttr(byId(el, 'm'), 'name', 'color-scheme'),
+    () => setAttr(byId(el, 'm'), 'name', 'x'),
   ]) {
     const change = make();
     assert.strictEqual(
