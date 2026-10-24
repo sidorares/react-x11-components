@@ -663,6 +663,29 @@ function cssomAt(
     'text-align': style.textAlign,
     'text-transform': style.textTransform,
     'text-decoration-line': style.textDecorationLine || 'none',
+    'text-decoration-color': cssomColor(
+      style.textDecorationColor ?? 'currentColor',
+      null,
+      color,
+      style.colorSource,
+    ),
+    'text-decoration-style': style.textDecorationStyle,
+    'text-decoration-thickness':
+      style.textDecorationThickness === null
+        ? 'auto'
+        : px(style.textDecorationThickness, scale),
+    'text-underline-offset':
+      style.textUnderlineOffset === null
+        ? 'auto'
+        : px(style.textUnderlineOffset, scale),
+    'text-shadow': style.textShadow
+      ? style.textShadow
+          .map(
+            (s) =>
+              `${cssomColor(s.color, null, color, style.colorSource)} ${px(s.x, scale)} ${px(s.y, scale)} ${px(s.blur, scale)}`,
+          )
+          .join(', ')
+      : 'none',
     'white-space': style.whiteSpace,
     direction: style.direction,
     'writing-mode': style.writingMode,

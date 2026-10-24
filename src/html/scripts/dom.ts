@@ -105,7 +105,7 @@ export function installDom(
       const parts = r.split('\u0001');
       throw new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
-    if (MUTATES.has(op)) {
+    if (mutatesHas.call(MUTATES, op)) {
       mutated();
       // a scroll timeline's time is measured again at the next frame
       if (heldTimelines.size) wantFrame();
@@ -135,7 +135,10 @@ export function installDom(
    *  (`takeReactions`). */
   let customElementsDefined = false;
   /** The ops that change the tree, which the host records
-   *  (`host.ts`, "what changed"). */
+   *  (`host.ts`, "what changed"), asked through `Set.prototype.has` as it
+   *  was before any page code ran: a page that changes the prototype
+   *  stops no op. */
+  const mutatesHas = Set.prototype.has;
   const MUTATES = new Set([
     'setText',
     'insert',
@@ -2975,8 +2978,8 @@ export function installDom(
     }
   }
   /** An interface's attributes as Web IDL has them (3.7.6): enumerable,
-   *  and a getter that throws for what is no instance of it, its own
-   *  prototype among them. */
+   *  and a getter and a setter that throw for what is no instance of it,
+   *  its own prototype among them. */
   const idlAttributes = (Interface: Any): void => {
     const proto = Interface.prototype;
     for (const key of Object.getOwnPropertyNames(proto)) {
@@ -2991,10 +2994,22 @@ export function installDom(
         return get.call(this);
       };
       Object.defineProperty(checked, 'name', { value: `get ${key}` });
+      let set = d.set;
+      if (set) {
+        const own = set;
+        set = function (this: Any, v: Any): void {
+          if (!(this instanceof Interface)) {
+            throw new TypeError('Illegal invocation');
+          }
+          own.call(this, v);
+        };
+        Object.defineProperty(set, 'name', { value: `set ${key}` });
+      }
       Object.defineProperty(proto, key, {
         ...d,
         enumerable: true,
         get: checked,
+        set,
       });
     }
   };
@@ -8239,6 +8254,9 @@ export function installDom(
    *  facade defined as a value, before any page code ran, but what is the
    *  window's own (`OWN_PER_WINDOW`). Taken at the end of `installDom`. */
   let realmGlobals: [string, Any][] = [];
+  /** The page's `CSS` namespace, which a frame's window copies with its
+   *  own `highlights` (`frameWindowOf`). Made where `CSS` is defined. */
+  let cssNamespace: Any = null;
   const OWN_PER_WINDOW = new Set([
     'window',
     'self',
@@ -8261,6 +8279,8 @@ export function installDom(
     'removeEventListener',
     'dispatchEvent',
     'customElements',
+    // its own `CSS.highlights`, its document's (`registryFor`)
+    'CSS',
     // what is answered for its own viewport (`viewportFor`)
     'matchMedia',
     'requestAnimationFrame',
@@ -8426,6 +8446,14 @@ export function installDom(
       },
       configurable: true,
       enumerable: true,
+    });
+    // a window's own `CSS` namespace (CSS Highlight API 1, 3.2), whose
+    // highlights are its document's and drawn there
+    Object.defineProperty(win, 'CSS', {
+      value: { ...cssNamespace, highlights: registryFor(() => current) },
+      writable: true,
+      configurable: true,
+      enumerable: false,
     });
     // a window's own global registry (HTML 4.13.4), for the elements its
     // document makes: a frame defines its names apart from the page
@@ -12925,7 +12953,7 @@ export function installDom(
     get size(): number {
       return setSize.call(this._ranges);
     }
-    forEach(fn: Any, thisArg?: Any): void {
+    forEach(fn: Any, thisArg: Any = undefined): void {
       if (typeof fn !== 'function') {
         throw new TypeError(
           "Failed to execute 'forEach' on 'Highlight': The callback provided as parameter 1 is not a function.",
@@ -12944,21 +12972,28 @@ export function installDom(
     entries(): Any {
       return setEntries.call(this._ranges);
     }
-    [Symbol.iterator](): Any {
-      return setValues.call(this._ranges);
-    }
     get [Symbol.toStringTag](): string {
       return 'Highlight';
     }
   }
 
-  /** Made once, as `CSS.highlights`: a page constructs none. */
+  /** Each document's registry, by the document its window is of now: the
+   *  page's is `CSS.highlights`, and a frame's window has one of its own
+   *  (`frameWindowOf`), whose highlights are drawn in the frame. */
+  const highlightRegistries = new Set<Any>();
+  /** Made once, as `CSS.highlights`: a page constructs none. A frame's is
+   *  made past the constructor (`registryFor`). */
   let registryMade = false;
   class HighlightRegistry {
     _map = new Map<string, Any>();
+    /** The document its window is of now. */
+    _doc: () => Any = () => document;
+    /** What the host was last told of it (`sendHighlights`). */
+    _sent = '';
     constructor() {
       if (registryMade) throw new TypeError('Illegal constructor');
       registryMade = true;
+      setAdd.call(highlightRegistries, this);
     }
     set(name: Any, highlight: Any): Any {
       if (!(highlight instanceof Highlight)) {
@@ -12989,7 +13024,7 @@ export function installDom(
     get size(): number {
       return mapSize.call(this._map);
     }
-    forEach(fn: Any, thisArg?: Any): void {
+    forEach(fn: Any, thisArg: Any = undefined): void {
       if (typeof fn !== 'function') {
         throw new TypeError(
           "Failed to execute 'forEach' on 'HighlightRegistry': The callback provided as parameter 1 is not a function.",
@@ -13008,18 +13043,64 @@ export function installDom(
     entries(): Any {
       return mapEntries.call(this._map);
     }
-    [Symbol.iterator](): Any {
-      return mapEntries.call(this._map);
-    }
-    /** The highlights over a point of the viewport, the highest priority
-     *  first, each with its ranges there (CSS Highlight API 1, 5.2). */
-    highlightsFromPoint(x: Any, y: Any): Any[] {
-      const px = Number(x);
-      const py = Number(y);
-      const found: { highlight: Any; ranges: Any[] }[] = [];
-      for (const [, highlight] of mapEntries.call(this._map)) {
+    /**
+     * The highlights over a point of the viewport, the highest priority
+     * first and the one registered last first among equals, each with
+     * those of its ranges whose client rects hold the point (CSS Highlight
+     * API 1, 6): none outside the viewport, and none where what is hit
+     * there is in a shadow tree whose root `options.shadowRoots` leaves
+     * out, as `elementFromPoint` keeps a closed tree's nodes to itself.
+     */
+    highlightsFromPoint(x: Any, y: Any, options: Any = undefined): Any[] {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to execute 'highlightsFromPoint' on 'HighlightRegistry': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const at = (v: Any): number => {
+        // a `float`: a number, and a finite one
+        const n = Number(v);
+        if (!Number.isFinite(n)) {
+          throw new TypeError(
+            "Failed to execute 'highlightsFromPoint' on 'HighlightRegistry': The provided float value is non-finite.",
+          );
+        }
+        return Math.fround(n);
+      };
+      const px = at(x);
+      const py = at(y);
+      const roots = shadowRootsOption(options);
+      const map = this._map;
+      if (!mapSize.call(map) || px < 0 || py < 0) return [];
+      const doc = this._doc();
+      if (doc === document) {
+        const root = document.documentElement;
+        if (!root || px > root.clientWidth || py > root.clientHeight) {
+          return [];
+        }
+        const top = document.elementFromPoint(px, py);
+        const tree = top?.getRootNode();
+        if (tree instanceof ShadowRoot && !roots.includes(tree)) return [];
+      } else {
+        // a frame's document, which a frame with no box shows nowhere
+        const frame = wrap(Number(call('frameElement', doc._id)));
+        if (!frame || !frame.getClientRects().length) return [];
+        const [width, height] = String(call('frameSize', doc._id))
+          .split(' ')
+          .map(Number);
+        if (px > width || py > height) return [];
+      }
+      const found: { highlight: Any; ranges: Any[]; order: number }[] = [];
+      let order = 0;
+      for (const [, highlight] of mapEntries.call(map)) {
+        order += 1;
         const ranges: Any[] = [];
         for (const range of setValues.call(highlight._ranges)) {
+          if (range instanceof StaticRange) {
+            const [sc, so, ec, eo] = range._points();
+            if (!staticValid(sc, so, ec, eo)) continue;
+          }
+          if (range.collapsed) continue;
           let rects: Any[];
           try {
             rects = Array.from(liveRangeOf(range).getClientRects());
@@ -13035,13 +13116,96 @@ export function installDom(
             ranges.push(range);
           }
         }
-        if (ranges.length) found.push({ highlight, ranges });
+        if (ranges.length) found.push({ highlight, ranges, order });
       }
-      return found.sort((a, b) => b.highlight.priority - a.highlight.priority);
+      return found
+        .sort(
+          (a, b) =>
+            b.highlight._priority - a.highlight._priority || b.order - a.order,
+        )
+        .map(({ highlight, ranges }) => ({ highlight, ranges }));
     }
     get [Symbol.toStringTag](): string {
       return 'HighlightRegistry';
     }
+  }
+  /** `HighlightsFromPointOptions.shadowRoots`, as Web IDL converts it: a
+   *  dictionary, or none, whose member is a sequence of shadow roots. */
+  const shadowRootsOption = (options: Any): Any[] => {
+    if (options === undefined || options === null) return [];
+    if (typeof options !== 'object' && typeof options !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'highlightsFromPoint' on 'HighlightRegistry': The provided value is not of type 'HighlightsFromPointOptions'.",
+      );
+    }
+    const given = options.shadowRoots;
+    if (given === undefined) return [];
+    if (
+      given === null ||
+      (typeof given !== 'object' && typeof given !== 'function') ||
+      typeof given[Symbol.iterator] !== 'function'
+    ) {
+      throw new TypeError(
+        "Failed to execute 'highlightsFromPoint' on 'HighlightRegistry': Failed to read the 'shadowRoots' property from 'HighlightsFromPointOptions': The provided value cannot be converted to a sequence.",
+      );
+    }
+    const roots = Array.from(given as Iterable<Any>);
+    for (const root of roots) {
+      if (!(root instanceof ShadowRoot)) {
+        throw new TypeError(
+          "Failed to execute 'highlightsFromPoint' on 'HighlightRegistry': Failed to read the 'shadowRoots' property from 'HighlightsFromPointOptions': Failed to convert value to 'ShadowRoot'.",
+        );
+      }
+    }
+    return roots;
+  };
+  /** A frame document's registry, made past the constructor, which is the
+   *  page's alone. */
+  const registryFor = (doc: () => Any): Any => {
+    const registry = Object.create(HighlightRegistry.prototype);
+    registry._map = new Map();
+    registry._doc = doc;
+    registry._sent = '';
+    setAdd.call(highlightRegistries, registry);
+    return registry;
+  };
+  // Both are setlike and maplike as Web IDL makes them (3.7.11, 3.7.12):
+  // each operation enumerable, `@@iterator` the same function as `values`
+  // or `entries`, and their attributes' getters for instances alone
+  for (const [Interface, iterator, names] of [
+    [
+      Highlight,
+      'values',
+      ['add', 'delete', 'has', 'clear', 'forEach', 'values', 'keys', 'entries'],
+    ],
+    [
+      HighlightRegistry,
+      'entries',
+      [
+        'set',
+        'get',
+        'has',
+        'delete',
+        'clear',
+        'forEach',
+        'keys',
+        'values',
+        'entries',
+        'highlightsFromPoint',
+      ],
+    ],
+  ] as [Any, string, string[]][]) {
+    const proto = Interface.prototype;
+    for (const name of names) {
+      Object.defineProperty(proto, name, { enumerable: true });
+    }
+    Object.defineProperty(proto, Symbol.iterator, {
+      value: proto[iterator],
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    idlAttributes(Interface);
   }
   /** A live range over a static one's points, or the range itself. */
   const liveRangeOf = (range: Any): Any => {
@@ -13411,23 +13575,47 @@ export function installDom(
   };
 
   const highlightRegistry = new HighlightRegistry();
-  /** Tell the host what the registry holds now. */
+  /** Whether a change to a highlight or a registry is yet to be told
+   *  (`sendHighlights`). */
+  let highlightsQueued = false;
+  /** A highlight or a registry changed: the host is told once the task's
+   *  script is done, so a page that adds a search's thousand matches one
+   *  at a time sends the registry once, and not once a range. */
   const highlightsChanged = (): void => {
-    const out: Any[] = [];
-    for (const [name, highlight] of mapEntries.call(highlightRegistry._map)) {
-      const ranges: Any[] = [];
-      for (const range of setValues.call(highlight._ranges)) {
-        if (range instanceof StaticRange) {
-          const [sc, so, ec, eo] = range._points();
-          // only a valid one is lit (DOM 5.4): its points in one tree,
-          // inside their nodes, and the start not after the end
-          if (!staticValid(sc, so, ec, eo)) continue;
-          ranges.push([idOf(sc), so, idOf(ec), eo]);
-        } else if (range._id) ranges.push(range._id);
+    if (highlightsQueued) return;
+    highlightsQueued = true;
+    queueMicrotask(sendHighlights);
+  };
+  /** What each registry holds now, to the host: the page's, and each
+   *  frame document's by its id, for the `<Html>` that draws it. */
+  const sendHighlights = (): void => {
+    highlightsQueued = false;
+    for (const registry of setValues.call(highlightRegistries)) {
+      const out: Any[] = [];
+      for (const [name, highlight] of mapEntries.call(registry._map)) {
+        const ranges: Any[] = [];
+        for (const range of setValues.call(highlight._ranges)) {
+          if (range instanceof StaticRange) {
+            const [sc, so, ec, eo] = range._points();
+            // only a valid one is lit (DOM 5.4): its points in one tree,
+            // inside their nodes, and the start not after the end
+            if (!staticValid(sc, so, ec, eo)) continue;
+            ranges.push([idOf(sc), so, idOf(ec), eo]);
+          } else if (range._id) ranges.push(range._id);
+        }
+        out.push({ name, priority: highlight._priority, ranges });
       }
-      out.push({ name, priority: highlight._priority, ranges });
+      const json = JSON.stringify(out);
+      const doc = registry._doc();
+      const id = doc === document ? 0 : idOf(doc);
+      // told again only where it holds something else, or is another
+      // document's: a live range is told by its id, and the host follows it
+      const sent = `${id}:${json}`;
+      if (sent === registry._sent) continue;
+      registry._sent = sent;
+      if (id) call('highlights', json, id);
+      else call('highlights', json);
     }
-    call('highlights', JSON.stringify(out));
   };
   for (const name of Object.getOwnPropertyNames(Range)) {
     if (!/^[A-Z_]+$/.test(name)) continue;
@@ -19593,12 +19781,127 @@ export function installDom(
    *  answers by a property's name, either spelling — and a custom
    *  property's by its name alone, asked for as it is read, since a theme
    *  sets hundreds of them on the root. */
+  /** The pseudo-elements `getComputedStyle` knows by a name alone,
+   *  lower-cased: a `::before` and an `::after` answer their own style, a
+   *  highlight's its own (`highlight(name)` too), and the rest the
+   *  element's. */
+  const COMPUTED_PSEUDOS = new Set([
+    'before',
+    'after',
+    'first-line',
+    'first-letter',
+    'marker',
+    'placeholder',
+    'selection',
+    'target-text',
+    'spelling-error',
+    'grammar-error',
+    'search-text',
+    'backdrop',
+    'file-selector-button',
+    'details-content',
+    'checkmark',
+    'picker-icon',
+    'scroll-marker',
+    'scroll-marker-group',
+    'column',
+    'cue',
+  ]);
+  /** A CSS identifier, its escapes in it. */
+  const CSS_IDENT =
+    /^(?:--|-?(?:[_a-zA-Z\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f]))(?:[-_a-zA-Z0-9\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f])*$/;
+  /** An identifier's escapes made the characters they stand for. */
+  const unescapeIdent = (ident: string): string =>
+    ident.replace(
+      /\\(?:([0-9a-fA-F]{1,6})[ \t\n]?|([^\n\r\f]))/g,
+      (_m, hex: string | undefined, ch: string | undefined) => {
+        if (hex === undefined) return ch!;
+        const code = parseInt(hex, 16);
+        return code === 0 ||
+          code > 0x10ffff ||
+          (code >= 0xd800 && code <= 0xdfff)
+          ? '�'
+          : String.fromCodePoint(code);
+      },
+    );
+  /** What `getComputedStyle`'s second argument names (CSSOM 9): '' for the
+   *  element itself — none, or one that does not start with a colon — and
+   *  the pseudo-element's name without its colons as the host takes it,
+   *  a custom highlight's as `highlight(name)` with its name unescaped; or
+   *  null where it parses as no pseudo-element, which answers an empty
+   *  declaration. A vendor's name is the element's, as it always was. */
+  const computedPseudo = (pseudo: Any): string | null => {
+    if (pseudo === undefined || pseudo === null) return '';
+    const s = str(pseudo);
+    if (s[0] !== ':') return '';
+    // CSS 2's spellings of four (CSS Pseudo 4, 8)
+    const legacy = /^:(before|after|first-line|first-letter)$/i.exec(s);
+    if (legacy) return legacy[1].toLowerCase();
+    if (s[1] !== ':') return null;
+    const rest = s.slice(2);
+    if (/^view-transition/i.test(rest)) return rest;
+    if (/^-?[a-zA-Z][-a-zA-Z0-9]*$/.test(rest)) {
+      const name = rest.toLowerCase();
+      if (COMPUTED_PSEUDOS.has(name)) return name;
+      return name[0] === '-' ? name : null;
+    }
+    const highlight =
+      /^highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f]|[^()\s\\])+)\s*\)$/i.exec(
+        rest,
+      );
+    if (highlight) {
+      return CSS_IDENT.test(highlight[1])
+        ? `highlight(${unescapeIdent(highlight[1])})`
+        : null;
+    }
+    // the rest of the ones that take an argument are the element's, and
+    // `::part()` and `::slotted()` none
+    return /^(?:picker|scroll-button|cue|cue-region)\([^()]*\)$/i.test(rest)
+      ? rest.toLowerCase()
+      : null;
+  };
+  /** The empty declaration `getComputedStyle` answers where its argument
+   *  names no pseudo-element: no properties, and each one the element's
+   *  style has reads as '' rather than as nothing. */
+  const emptyComputedStyle = (id: number): Any => {
+    let known: Set<string> | null = null;
+    const names = (): Set<string> => {
+      if (known) return known;
+      const r = call('computed', id, '');
+      known = new Set();
+      for (const name of Object.keys(
+        typeof r === 'string' && r ? JSON.parse(r) : {},
+      )) {
+        known.add(name);
+        known.add(camel(name));
+      }
+      return known;
+    };
+    const methods: Any = {
+      getPropertyValue: () => '',
+      getPropertyPriority: () => '',
+      item: () => '',
+      cssText: '',
+      length: 0,
+      [Symbol.iterator]: () => [][Symbol.iterator](),
+    };
+    return new Proxy(methods, {
+      get(target, key) {
+        if (key in target) return target[key as Any];
+        return typeof key === 'string' && names().has(key) ? '' : undefined;
+      },
+      has(target, key) {
+        return key in target || (typeof key === 'string' && names().has(key));
+      },
+    });
+  };
+
   /** A computed style, which is live (CSSOM 9): read again after an op
    *  that may have changed it — a style set, a class, an element moved —
    *  or in a later task, it is asked for again (`opEpoch`, `taskEpoch`).
    *  A page that keeps one and changes the element read the old values. */
   const getComputedStyle = (el: Any, pseudo?: Any): Any => {
-    const which = pseudo ? String(pseudo).replace(/^:+/, '') : '';
+    const which = computedPseudo(pseudo);
     const id = idOf(el, 'element');
     let json = '';
     let values: Record<string, string> = {};
@@ -19606,6 +19909,11 @@ export function installDom(
     let names: string[] = [];
     let readAt = -1;
     let readIn = -1;
+    // what no pseudo-element answers is an empty declaration (CSSOM 9),
+    // whose every property reads as ''
+    if (which === null) {
+      return emptyComputedStyle(id);
+    }
     const read = (): void => {
       if (readAt === opEpoch && readIn === taskEpoch) return;
       const r = call('computed', id, which);
@@ -23819,7 +24127,7 @@ export function installDom(
   define('getComputedStyle', getComputedStyle);
   define('btoa', btoa);
   define('atob', atob);
-  define('CSS', {
+  cssNamespace = {
     ...unitFactories,
     escape: (v: Any) => cssEscape(str(v)),
     highlights: highlightRegistry,
@@ -23833,7 +24141,8 @@ export function installDom(
         'supports',
         args.length >= 2 ? `(${str(args[0])}: ${str(args[1])})` : str(args[0]),
       ) === true,
-  });
+  };
+  define('CSS', cssNamespace);
   define('customElements', customElements);
   const timeOrigin = Date.now() - now();
   define('performance', {

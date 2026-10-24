@@ -432,6 +432,10 @@ export interface PaintOptions {
     selection: { start: number; end: number };
     styler: SelectionStyler;
   }[];
+  /** The colours the custom highlights lay over each replaced box their
+   *  ranges hold whole, the lowest priority first: filled over its content
+   *  box once the box's content is painted. Absent where none does. */
+  litReplaced?: ReadonlyMap<Box, readonly string[]>;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
   /** What a view transition's old or new image draws (`TRANSITION_IMAGES`):
@@ -4147,6 +4151,8 @@ function paintContent(
     else if (box.replaced === 'frame' && options.imageFor(box)) {
       paintImage(ctx, box, options);
     }
+    const lit = options.litReplaced?.get(box);
+    if (lit) paintReplacedHighlights(ctx, box, options, lit);
   }
 
   // A box that does not let its content overflow clips it to its padding
@@ -12440,6 +12446,28 @@ function paintMarker(
     return;
   }
   marker.layout?.draw(ctx, x, y);
+}
+
+/** The custom highlights over a replaced element (CSS Pseudo 4, 3.4,
+ *  3.6.4): each one's colour over its content box, in priority order, on
+ *  the pixel grid as its image is. */
+function paintReplacedHighlights(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  colours: readonly string[],
+): void {
+  const left = box.contentX + options.originX;
+  const top = box.contentY + options.originY;
+  const x = Math.round(left);
+  const y = Math.round(top);
+  const w = Math.round(left + box.contentWidth) - x;
+  const h = Math.round(top + box.contentHeight) - y;
+  if (w <= 0 || h <= 0) return;
+  for (const colour of colours) {
+    ctx.fillStyle = colour;
+    ctx.fillRect(x, y, w, h);
+  }
 }
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {

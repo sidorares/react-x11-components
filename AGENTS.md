@@ -3625,6 +3625,23 @@ the URL a page's `location` reads. **Anything new that reads `baseUrl`'s
 fragment splits it the same way**, or `#sec:~:text=a` names an element
 called `sec:~:text=a`.
 
+**A highlight registry is its window's, and the host is told once a
+task.** The page's `CSS.highlights` and each frame window's (`CSS` is in
+`OWN_PER_WINDOW`, `registryFor`) are in `highlightRegistries`, and
+`sendHighlights` tells the host each one's ranges with its document's id,
+from a microtask `highlightsChanged` queues: a search that adds a thousand
+matches one at a time sent every range a thousand times. The host keeps
+them by document (`_highlightSpecs`) and hands each to the `<Html>` that
+draws it, its ranges in another document left out. **Anything new that
+changes a highlight or a registry calls `highlightsChanged`**, and nothing
+reads them back from the host in the task that changed them: what a page
+asks of them, `highlightsFromPoint`, is answered in its realm. A
+highlight's `getComputedStyle` is not the painter's styler but
+`Cascade.highlightPseudoStyle`, down the flat tree and with no UA rule in
+it (the UA's look is a paired default, CSS Pseudo 4, 3.3.1): the two are
+asked different questions, and one built on the other came out with
+`::target-text`'s `Mark` on every element under the root.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run
