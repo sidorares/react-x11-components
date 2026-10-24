@@ -1931,6 +1931,25 @@ answers a page in CSS pixels from a style divides by both, as
 zoom**: one added to `INHERITED` that holds a length joins `zoomedBy`, or a
 zoomed child inherits it at its parent's size.
 
+**A computed colour is sRGB, and keeps what it was written as beside
+it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
+and the field holds that, whatever it was written in. Where its computed
+value is no legacy sRGB colour — an `oklch()`, a mix, a relative colour, a
+`none` — the style keeps the colour as written in the field's source
+(`colorSource`, `backgroundColorSource`, the borders' and
+`outlineColorSource`: `COLOR_SOURCES`), and `getComputedStyle` reads it in
+the space CSS Color 4 and 5 keep (`colorFormText`): `color(srgb …)` for a
+mix in sRGB, `oklch()` as itself. Tailwind 4's whole palette is `oklch()`
+and its opacities `color-mix()`, so a page's theme script reads these.
+Three things are load-bearing. **Anything new that writes one of those
+fields from a declaration writes its source too** (`keptColorText`, null
+for a legacy colour), or the field reads as the colour an earlier rule
+gave it. **A source counts only while it reads to its field**
+(`liveSource`): an animation or a transition writes the field alone, and
+its frames read as `rgb()` rather than as the colour it set out from. And
+**nothing that draws reads a source**: the common hex and named colour
+keep nothing, and cost two string tests.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides

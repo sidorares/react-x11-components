@@ -17,9 +17,13 @@ import {
   alphaOf,
   fontSizeBasis,
   fourSides,
+  currentColorIn,
   inkColor,
   isTransparent,
+  keptColorText,
   keywordFontSize,
+  liveSource,
+  waitsForColor,
   parseAlpha,
   parseZoom,
   parseColor,
@@ -692,6 +696,16 @@ export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
   color: string;
   /**
+   * The colour `color` was read from, where its computed value keeps a
+   * space of its own — an `oklch()`, a `color-mix()`, a relative colour —
+   * and null where it is a legacy sRGB colour (`keptColorText`). The field
+   * itself is sRGB, which is what every drawing context reads; this is for
+   * `getComputedStyle` alone (`cssomColor`), and holds only while it reads
+   * to the field's value. Each colour `getComputedStyle` answers for has
+   * one: `backgroundColorSource`, the borders' and `outlineColorSource`.
+   */
+  colorSource: string | null;
+  /**
    * The colour scheme the element is drawn in (CSS Color Adjust 1, 2.2):
    * its `color-scheme` resolved against the scheme the palette is, which
    * stands for the reader's preference, as it does for `@media
@@ -1232,6 +1246,11 @@ export interface ComputedStyle {
   borderRightColor: string;
   borderBottomColor: string;
   borderLeftColor: string;
+  /** The colours the borders' were read from, as `colorSource`. */
+  borderTopColorSource: string | null;
+  borderRightColorSource: string | null;
+  borderBottomColorSource: string | null;
+  borderLeftColorSource: string | null;
   /** The corners' horizontal radii — top-left, top-right, bottom-right,
    *  bottom-left — each a length or a percentage of the border box's
    *  width. */
@@ -1256,6 +1275,8 @@ export interface ComputedStyle {
   outlineStyle: BorderStyle | 'auto';
   outlineWidth: number;
   outlineColor: string;
+  /** The colour `outlineColor` was read from, as `colorSource`. */
+  outlineColorSource: string | null;
   outlineOffset: number;
   /** The rules drawn in a multicol, flex or grid container's gaps (CSS
    *  Gap Decorations 1): down the column gaps and across the row gaps,
@@ -1293,6 +1314,8 @@ export interface ComputedStyle {
   scrollMarginLeft: number;
 
   backgroundColor: string | null;
+  /** The colour `backgroundColor` was read from, as `colorSource`. */
+  backgroundColorSource: string | null;
   /** The first layer's url, at the density an `image-set()` chose it at
    *  where that is not 1x. */
   backgroundImage: UrlImage | null;
@@ -1465,6 +1488,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'colorSource',
   'interpolateSize',
   'scrollbarThumbColor',
   'colorScheme',
@@ -1633,6 +1657,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
   // a copy of the literal, not the literal: see `copyStyle`
   return copyStyle({
     color: look.color,
+    colorSource: null,
     // what the root has where no rule sets one: `normal`'s
     colorScheme: look.normalScheme ?? look.colorScheme,
     colorSchemeKeywords: 'normal',
@@ -1845,6 +1870,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderRightColor: 'currentColor',
     borderBottomColor: 'currentColor',
     borderLeftColor: 'currentColor',
+    borderTopColorSource: null,
+    borderRightColorSource: null,
+    borderBottomColorSource: null,
+    borderLeftColorSource: null,
     borderRadius: [0, 0, 0, 0],
     borderRadiusY: null,
     cornerShape: ROUND_CORNERS,
@@ -1853,6 +1882,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     outlineStyle: 'none',
     outlineWidth: medium,
     outlineColor: 'currentColor',
+    outlineColorSource: null,
     outlineOffset: 0,
     columnRule: noRule(medium),
     rowRule: noRule(medium),
@@ -1875,6 +1905,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scrollMarginBottom: 0,
     scrollMarginLeft: 0,
     backgroundColor: null,
+    backgroundColorSource: null,
     backgroundImage: null,
     backgroundGradient: null,
     backgroundRepeat: REPEAT,
@@ -1992,6 +2023,7 @@ export function inherit(
   // quarters of the cost of every element's style, a store through a
   // computed name costing thirty times one through a written one
   out.color = parent.color;
+  out.colorSource = parent.colorSource;
   out.interpolateSize = parent.interpolateSize;
   out.scrollbarThumbColor = parent.scrollbarThumbColor;
   out.colorScheme = parent.colorScheme;
@@ -2163,6 +2195,7 @@ export function zoomedBy(style: ComputedStyle, r: number): ComputedStyle {
  */
 export const FIRST_LINE_INHERITED = [
   'color',
+  'colorSource',
   'textFillColor',
   'fontFamily',
   'fontSize',
@@ -2228,6 +2261,31 @@ const COLOR_PROPS: Record<string, keyof ComputedStyle> = {
   'text-decoration-color': 'textDecorationColor',
   '-webkit-text-fill-color': 'textFillColor',
 };
+
+/** The field each colour field `getComputedStyle` answers for keeps its
+ *  source in (`ComputedStyle.colorSource`). */
+const COLOR_SOURCES: Partial<Record<keyof ComputedStyle, keyof ComputedStyle>> =
+  {
+    color: 'colorSource',
+    backgroundColor: 'backgroundColorSource',
+    borderTopColor: 'borderTopColorSource',
+    borderRightColor: 'borderRightColorSource',
+    borderBottomColor: 'borderBottomColorSource',
+    borderLeftColor: 'borderLeftColorSource',
+    outlineColor: 'outlineColorSource',
+  };
+
+/** The source fields `COLOR_SOURCES` names: what draws nothing, and changes
+ *  in place with the colour beside it. */
+export const COLOR_SOURCE_FIELDS = [
+  'colorSource',
+  'backgroundColorSource',
+  'borderTopColorSource',
+  'borderRightColorSource',
+  'borderBottomColorSource',
+  'borderLeftColorSource',
+  'outlineColorSource',
+] as const satisfies readonly (keyof ComputedStyle)[];
 
 const SIDE_PROPS: Record<
   string,
@@ -2402,10 +2460,31 @@ export function applyDeclaration(
     // `currentColor` in `color` is the one place the token refers to itself:
     // it means the inherited colour, and so does one in a `color-mix()`
     if (name === 'color') {
-      style.color = inkColor(parsed, parent.color);
+      if (parsed === 'currentColor') {
+        style.color = parent.color;
+        style.colorSource = parent.colorSource;
+        return;
+      }
+      // worked out from the inherited colour as its computed value keeps
+      // it, which is what `getComputedStyle` reads it in
+      const text = waitsForColor(parsed)
+        ? currentColorIn(
+            parsed,
+            liveSource(parent.color, parent.colorSource) ?? parent.color,
+          )
+        : null;
+      const drawn = text === null ? parsed : parseColor(text);
+      style.color = drawn ?? parent.color;
+      style.colorSource =
+        drawn === null
+          ? parent.colorSource
+          : keptColorText(text ?? value, drawn);
       return;
     }
-    (style as unknown as Record<string, unknown>)[color] = parsed;
+    const record = style as unknown as Record<string, unknown>;
+    record[color] = parsed;
+    const source = COLOR_SOURCES[color];
+    if (source) record[source] = keptColorText(value, parsed);
     return;
   }
 
@@ -3487,13 +3566,21 @@ export function applyDeclaration(
       return;
     }
     case 'border-color': {
-      const parts = splitValue(value).map((p) => parseColor(p));
+      const texts = splitValue(value);
+      const parts = texts.map((p) => parseColor(p));
       if (parts.some((p) => p === null)) return;
       const sides = fourSides(parts as string[]);
       style.borderTopColor = sides[0];
       style.borderRightColor = sides[1];
       style.borderBottomColor = sides[2];
       style.borderLeftColor = sides[3];
+      const sources = fourSides(
+        texts.map((text, i) => keptColorText(text, parts[i] as string)),
+      );
+      style.borderTopColorSource = sources[0];
+      style.borderRightColorSource = sources[1];
+      style.borderBottomColorSource = sources[2];
+      style.borderLeftColorSource = sources[3];
       return;
     }
     case 'border-top-width':
@@ -3539,6 +3626,7 @@ export function applyDeclaration(
       let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
       let outline: ComputedStyle['outlineStyle'] = 'none';
       let color = 'currentColor';
+      let source: string | null = null;
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
         const kind = outlineStyleOf(v);
@@ -3554,10 +3642,12 @@ export function applyDeclaration(
         const c = outlineColorOf(part, ctx);
         if (c === null) return;
         color = c;
+        source = keptColorText(part, c);
       }
       style.outlineStyle = outline;
       style.outlineWidth = width;
       style.outlineColor = color;
+      style.outlineColorSource = source;
       return;
     }
     case 'outline-style': {
@@ -3573,7 +3663,9 @@ export function applyDeclaration(
     case 'outline-color': {
       // `invert` is the text's colour where a browser cannot invert
       const c = outlineColorOf(value, ctx);
-      if (c !== null) style.outlineColor = c;
+      if (c === null) return;
+      style.outlineColor = c;
+      style.outlineColorSource = keptColorText(value, c);
       return;
     }
     case 'outline-offset': {
@@ -5908,6 +6000,7 @@ function applyBorderShorthand(
   let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
   let borderStyle: BorderStyle = 'none';
   let color: string | null = 'currentColor';
+  let source: string | null = null;
   // each of the three at most once (`<line-width> || <line-style> ||
   // <color>`): `red solid 16px red` is no border, where the second colour
   // was taken for the first
@@ -5932,6 +6025,7 @@ function applyBorderShorthand(
       if (seen & 4) return;
       seen |= 4;
       color = c;
+      source = keptColorText(part, c);
       continue;
     }
     // a negative width makes the whole shorthand invalid
@@ -5956,6 +6050,10 @@ function applyBorderShorthand(
       style.borderRightColor = color;
       style.borderBottomColor = color;
       style.borderLeftColor = color;
+      style.borderTopColorSource = source;
+      style.borderRightColorSource = source;
+      style.borderBottomColorSource = source;
+      style.borderLeftColorSource = source;
     }
     return;
   }
@@ -5963,9 +6061,13 @@ function applyBorderShorthand(
     (style as unknown as Record<string, unknown>)[`border${side}Width`] = width;
     (style as unknown as Record<string, unknown>)[`border${side}Style`] =
       borderStyle;
-    if (color !== null)
+    if (color !== null) {
       (style as unknown as Record<string, unknown>)[`border${side}Color`] =
         color;
+      (style as unknown as Record<string, unknown>)[
+        `border${side}ColorSource`
+      ] = source;
+    }
   }
 }
 
@@ -6023,6 +6125,7 @@ function applyBackgroundShorthand(
   const [top] = layers;
   style.backgroundClipText = false;
   style.backgroundColor = layers[layers.length - 1].color;
+  style.backgroundColorSource = layers[layers.length - 1].colorSource;
   style.backgroundImage = top.image;
   style.backgroundGradient = top.gradient;
   style.backgroundRepeat = top.repeat;
@@ -6197,6 +6300,8 @@ function layerValues<T>(
 
 interface BackgroundLayer {
   color: string | null;
+  /** What `color` was read from, as `ComputedStyle.colorSource`. */
+  colorSource: string | null;
   image: UrlImage | null;
   gradient: Gradient | null;
   repeat: ComputedStyle['backgroundRepeat'];
@@ -6224,6 +6329,7 @@ function readBackgroundLayer(
   const parts = splitValue(text).flatMap(splitSlash);
   const layer: BackgroundLayer = {
     color: null,
+    colorSource: null,
     image: null,
     gradient: null,
     repeat: REPEAT,
@@ -6306,6 +6412,7 @@ function readBackgroundLayer(
       const color = parseColor(part);
       if (color === null || !last || !once(16)) return null;
       layer.color = color;
+      layer.colorSource = keptColorText(part, color);
       i += 1;
     }
   }
@@ -8121,9 +8228,7 @@ export function initialOne(
   }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
-  for (const key of keys) {
-    (style as unknown as Record<string, unknown>)[key] = initial[key];
-  }
+  copyFields(style, initial, keys);
 }
 
 /**
@@ -8225,8 +8330,22 @@ function inheritOne(
   // A border colour left to `currentColor` inherits as the keyword and
   // takes the child's own colour (CSS Color 4) — not the parent's colour,
   // which is what CSS 2.1 computed it to.
+  copyFields(style, parent, keys);
+}
+
+/** `keys` of `from` into `style`, and the source a colour field keeps
+ *  beside it (`COLOR_SOURCES`) with it: not one of the fields a property
+ *  names, which an animation would interpolate, but the field's own. */
+function copyFields(
+  style: ComputedStyle,
+  from: ComputedStyle,
+  keys: readonly (keyof ComputedStyle)[],
+): void {
+  const to = style as unknown as Record<string, unknown>;
   for (const key of keys) {
-    (style as unknown as Record<string, unknown>)[key] = parent[key];
+    to[key] = from[key];
+    const source = COLOR_SOURCES[key];
+    if (source) to[source] = from[source];
   }
 }
 

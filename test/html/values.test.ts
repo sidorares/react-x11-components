@@ -23,7 +23,8 @@ import {
   specifiedValue,
 } from '../../src/html/css/specified.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
-import { cssomStyle } from '../../src/html/computed.js';
+import { cssomColor, cssomStyle } from '../../src/html/computed.js';
+import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
 import {
@@ -707,7 +708,285 @@ test("getComputedStyle reads a mix or a contrast of currentColor with the elemen
     el.computedStyle(findById(el.document, id)!)?.['background-color'];
   assert.strictEqual(bg('outer'), 'rgb(255, 255, 255)');
   assert.strictEqual(bg('inner'), 'rgb(0, 0, 0)');
-  assert.strictEqual(bg('mix'), 'rgb(128, 0, 128)');
+  // a mix computes to the space it is mixed in, sRGB as `color()`
+  assert.strictEqual(bg('mix'), 'color(srgb 0.5 0 0.5)');
+});
+
+test('a computed colour keeps the space it was written or mixed in, as CSS Color 4 serializes it', () => {
+  // CSS Color 4, 15: lab(), lch(), oklab() and oklch() as themselves, their
+  // calculations simplified, the lightness within its range, a chroma no
+  // less than nought, a hue in a turn and the alpha within 0 and 1; color()
+  // unclamped, its xyz as xyz-d65; and none kept as none
+  const cases: [string, string | null][] = [
+    ['oklch(62.3% 0.214 259.815)', 'oklch(0.623 0.214 259.815)'],
+    ['lab(20 0 10/50%)', 'lab(20 0 10 / 0.5)'],
+    ['lab(400 0 10/50%)', 'lab(100 0 10 / 0.5)'],
+    ['lab(20% -50% 90%/0.5)', 'lab(20 -62.5 112.5 / 0.5)'],
+    ['oklab(20% 70% -80%/0.5)', 'oklab(0.2 0.28 -0.32 / 0.5)'],
+    [
+      'lab(calc(50 * 3) calc(0.5 - 1) calc(1.5) / calc(-0.5 + 1))',
+      'lab(100 -0.5 1.5 / 0.5)',
+    ],
+    ['lab(calc(NaN) 0 0)', 'lab(0 0 0)'],
+    ['lch(10 20 1.28rad)', 'lch(10 20 73.3386)'],
+    ['lch(10 20 -700deg)', 'lch(10 20 20)'],
+    ['lch(20 -20 0)', 'lch(20 0 0)'],
+    [
+      'lch(calc(-50 * 3) calc(0.5 + 1) calc(-20deg * 2) / calc(-0.5 * 2))',
+      'lch(0 1.5 320 / 0)',
+    ],
+    ['oklch(20% 60% 10/0.5)', 'oklch(0.2 0.24 10 / 0.5)'],
+    ['lab(none none none / none)', 'lab(none none none / none)'],
+    ['color(xyz 0.1 0.2 0.3)', 'color(xyz-d65 0.1 0.2 0.3)'],
+    ['color(display-p3 200% 0 10 / 50%)', 'color(display-p3 2 0 10 / 0.5)'],
+    ['color(srgb -200 -200 -200 / -200)', 'color(srgb -200 -200 -200 / 0)'],
+    [
+      'color(srgb calc(50% * 3) calc(-150% / 3) calc(50%) / calc(-50% * 3))',
+      'color(srgb 1.5 -0.5 0.5 / 0)',
+    ],
+    ['color(srgb 10% none none / none)', 'color(srgb 0.1 none none / none)'],
+    // a legacy function with a none in it says so in its own form
+    ['hsl(120 80% none)', 'hsl(120 80% none)'],
+    ['hsla(none none none / none)', 'hsl(none none none / none)'],
+    // and any other legacy colour is rgb()'s, which says what it is
+    ['hsl(120 100% 50%)', null],
+    ['rgb(10 20 30 / 50%)', null],
+    ['#abc', null],
+    ['rebeccapurple', null],
+    ['contrast-color(oklch(0.5 0.1 200))', null],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(colorFormText(value), want, value);
+  }
+});
+
+test('a mix computes to the space it is mixed in, a missing component taken from the other colour', () => {
+  // CSS Color 5, 3: in an RGB or an XYZ space as color(), in hsl() and
+  // hwb() as color(srgb …) but where a none is left, and in the others as
+  // themselves; a none on one side is the other's, and on both stays none
+  const cases: [string, string][] = [
+    ['color-mix(in srgb, red, blue)', 'color(srgb 0.5 0 0.5)'],
+    [
+      'color-mix(in srgb, red 30%, blue 40%)',
+      'color(srgb 0.428571 0 0.571429 / 0.7)',
+    ],
+    [
+      'color-mix(in srgb, color(srgb 2 3 4 / 5), color(srgb 4 6 8 / 10))',
+      'color(srgb 3 4.5 6)',
+    ],
+    [
+      'color-mix(in xyz, color(xyz .1 .2 .3), color(xyz .5 .6 .7))',
+      'color(xyz-d65 0.3 0.4 0.5)',
+    ],
+    [
+      'color-mix(in display-p3, color(display-p3 .1 .2 .3) 25%, color(display-p3 .5 .6 .7))',
+      'color(display-p3 0.4 0.5 0.6)',
+    ],
+    [
+      'color-mix(in hsl, hsl(120deg 10% 20%), hsl(30deg 30% 40%))',
+      'color(srgb 0.33 0.36 0.24)',
+    ],
+    [
+      'color-mix(in hsl, transparent, hsl(30deg 30% 40%))',
+      'color(srgb 0.52 0.4 0.28 / 0.5)',
+    ],
+    [
+      'color-mix(in hsl, hsl(120deg 40% 40% / none), hsl(0deg 40% 40% / none))',
+      'hsl(60 40% 40% / none)',
+    ],
+    [
+      'color-mix(in hwb, hwb(120deg 10% 20%), hwb(30deg 30% 40%))',
+      'color(srgb 0.575 0.7 0.2)',
+    ],
+    ['color-mix(in lab, lab(10 20 30), lab(50 60 70))', 'lab(30 40 50)'],
+    ['color-mix(in lab, transparent, lab(30 40 50))', 'lab(30 40 50 / 0.5)'],
+    ['color-mix(in lch, lch(10 20 none), lch(50 60 70deg))', 'lch(30 40 70)'],
+    // a grey's hue is powerless, and missing
+    ['color-mix(in lch, lab(50 0 0), black)', 'lch(25 0 none)'],
+    [
+      'color-mix(in oklch, oklch(0.1 0.2 30deg) 25%, oklch(0.5 0.6 70deg))',
+      'oklch(0.4 0.5 60)',
+    ],
+    // no space named is oklab
+    ['color-mix(oklab(0.1 0.2 0.3), oklab(0.5 0.6 0.7))', 'oklab(0.3 0.4 0.5)'],
+    [
+      'color-mix(oklab(0.1 0.2 0.3 / none), oklab(0.5 0.6 0.7 / none))',
+      'oklab(0.3 0.4 0.5 / none)',
+    ],
+    // Tailwind 4's `bg-blue-500/50`
+    [
+      'color-mix(in oklab, oklch(62.3% 0.214 259.815) 50%, transparent)',
+      'oklab(0.623 -0.037841 -0.210628 / 0.5)',
+    ],
+    // over contrast-color(), which is white or black
+    [
+      'color-mix(in srgb, contrast-color(blue) 100%, purple)',
+      'color(srgb 1 1 1)',
+    ],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(colorFormText(value), want, value);
+  }
+  // and what is drawn is the sRGB colour it always was
+  assert.strictEqual(parseColor('color-mix(in srgb, red, blue)'), '#800080');
+  assert.strictEqual(
+    parseColor('color-mix(in display-p3, red, blue)'),
+    parseColor('color-mix(in display-p3, red 50%, blue 50%)'),
+  );
+});
+
+test('a relative colour computes to its function, and rgb(), hsl() and hwb() to color(srgb …) unclamped', () => {
+  // CSS Color 5, 4: the channels of a legacy function's relative form need
+  // not be in sRGB's gamut, so it is kept as color(srgb …), or in its own
+  // form where a channel is none; the others keep their own function, and
+  // take an origin of their own space as it is kept, past what sRGB holds
+  const cases: [string, string][] = [
+    ['rgb(from rebeccapurple r g b)', 'color(srgb 0.4 0.2 0.6)'],
+    ['rgb(from rebeccapurple r calc(g * 2) 255)', 'color(srgb 0.4 0.4 1)'],
+    ['rgb(from red calc(r * 2) g b)', 'color(srgb 2 0 0)'],
+    ['rgb(from rebeccapurple r g none / alpha)', 'color(srgb 0.4 0.2 none)'],
+    [
+      'rgb(from rgb(from rebeccapurple r g b / calc(alpha + 0.5)) r g b / calc(alpha - 0.5))',
+      'color(srgb 0.4 0.2 0.6 / 0.5)',
+    ],
+    ['hsl(from rebeccapurple h s l)', 'color(srgb 0.4 0.2 0.6)'],
+    ['hsl(from rebeccapurple h s none)', 'hsl(270 50% none)'],
+    ['hwb(from rebeccapurple h w w / w)', 'color(srgb 0.5 0.2 0.8)'],
+    ['lab(from lab(25 20 50) l a b)', 'lab(25 20 50)'],
+    ['lab(from lab(200 300 400 / 500%) l a b / alpha)', 'lab(100 300 400)'],
+    [
+      'lch(from lch(0.7 45 30 / 40%) 50 120 -400deg / -500)',
+      'lch(50 120 320 / 0)',
+    ],
+    ['oklab(from oklab(2 3 4 / 500%) l a b / alpha)', 'oklab(1 3 4)'],
+    ['oklch(from blue .5 .3 calc(0.25turn + 100grad))', 'oklch(0.5 0.3 180)'],
+    [
+      'color(from color(xyz 7 -20.5 100) xyz x y z)',
+      'color(xyz-d65 7 -20.5 100)',
+    ],
+    [
+      'color(from color(srgb-linear 0.25 0.5 0.75) srgb r g b)',
+      'color(srgb 0.537099 0.735357 0.880825)',
+    ],
+    ['rgb(from contrast-color(blue) r g b)', 'color(srgb 1 1 1)'],
+    [
+      'rgb(from color-mix(in srgb, red, red) r g b / alpha)',
+      'color(srgb 1 0 0)',
+    ],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(colorFormText(value), want, value);
+  }
+});
+
+test('getComputedStyle reads each colour in the space its computed value keeps, through shorthands, inheritance and currentColor', async () => {
+  const { node } = await render(
+    '<style>' +
+      '#a { color: oklch(62.3% 0.214 259.815); ' +
+      'background-color: color-mix(in srgb, red, blue); ' +
+      'border: 1px solid lab(50 20 -30); outline: 2px solid color(display-p3 1 0 0) }' +
+      // a child inherits the colour as it is kept, and currentColor is it
+      '#b { background-color: currentColor; border-top: 1px solid }' +
+      '#c { color: color-mix(in srgb, currentColor, white) }' +
+      // a shorthand, a keyword, a custom property, and the colours that
+      // are legacy sRGB, which stay rgb()
+      '#d { --brand: oklch(62.3% 0.214 259.815); ' +
+      'background: color-mix(in oklab, var(--brand) 50%, transparent); ' +
+      'border-color: #ff0000 hsl(120 100% 50%) rgb(from red r g b) lab(50 0 0); ' +
+      'color: rebeccapurple; outline-color: color-mix(in lab, currentColor, white) }' +
+      '#e { background-color: inherit; border-left-color: contrast-color(oklch(0.2 0.1 20)) }' +
+      '#f { background-color: lab(50 20 -30); background-color: initial }' +
+      '</style>' +
+      '<div id="a"><div id="b"><p id="c">c</p></div></div>' +
+      '<div id="d"><div id="e">e</div><div id="f">f</div></div>',
+  );
+  const el = view(node);
+  const cs = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  const a = cs('a');
+  assert.strictEqual(a.color, 'oklch(0.623 0.214 259.815)');
+  assert.strictEqual(a['background-color'], 'color(srgb 0.5 0 0.5)');
+  for (const side of ['top', 'right', 'bottom', 'left']) {
+    assert.strictEqual(a[`border-${side}-color`], 'lab(50 20 -30)', side);
+  }
+  assert.strictEqual(a['outline-color'], 'color(display-p3 1 0 0)');
+  const b = cs('b');
+  assert.strictEqual(b.color, 'oklch(0.623 0.214 259.815)');
+  assert.strictEqual(b['background-color'], 'oklch(0.623 0.214 259.815)');
+  assert.strictEqual(b['border-top-color'], 'oklch(0.623 0.214 259.815)');
+  // currentColor in a mix in `color` is the inherited colour as it is
+  // kept: that oklch() is past sRGB's blue, which its hex would have cut
+  assert.strictEqual(cs('c').color, 'color(srgb 0.584666 0.749025 1.01142)');
+  const d = cs('d');
+  assert.strictEqual(
+    d['background-color'],
+    'oklab(0.623 -0.037841 -0.210628 / 0.5)',
+  );
+  assert.strictEqual(d['border-top-color'], 'rgb(255, 0, 0)');
+  assert.strictEqual(d['border-right-color'], 'rgb(0, 255, 0)');
+  assert.strictEqual(d['border-bottom-color'], 'color(srgb 1 0 0)');
+  assert.strictEqual(d['border-left-color'], 'lab(50 0 0)');
+  assert.strictEqual(d.color, 'rgb(102, 51, 153)');
+  assert.match(
+    d['outline-color'],
+    /^lab\(\d+(\.\d+)? \d+(\.\d+)? -\d+(\.\d+)?\)$/,
+  );
+  const e = cs('e');
+  assert.strictEqual(
+    e['background-color'],
+    'oklab(0.623 -0.037841 -0.210628 / 0.5)',
+  );
+  assert.strictEqual(e['border-left-color'], 'rgb(255, 255, 255)');
+  assert.strictEqual(cs('f')['background-color'], 'rgba(0, 0, 0, 0)');
+});
+
+test('a colour field written alone, as an animation writes it, reads as the sRGB colour it holds', () => {
+  // the source a field keeps is the field's only while it reads to the
+  // field's value
+  assert.strictEqual(
+    cssomColor('#ff0000', 'oklch(0.5 0.1 200)', '#000000', null),
+    'rgb(255, 0, 0)',
+  );
+  const drawn = parseColor('oklch(0.5 0.1 200)')!;
+  assert.strictEqual(
+    cssomColor(drawn, 'oklch(0.5 0.1 200)', '#000000', null),
+    'oklch(0.5 0.1 200)',
+  );
+  // and currentColor in a mix is the element's colour as its own is kept
+  assert.strictEqual(
+    cssomColor(
+      'color-mix(in lab, currentColor, currentColor)',
+      null,
+      parseColor('lab(40 10 20)')!,
+      'lab(40 10 20)',
+    ),
+    'lab(40 10 20)',
+  );
+});
+
+test("el.style keeps a contrast-color()'s colour with its calculations simplified", () => {
+  assert.strictEqual(
+    specifiedValue(
+      'background-color',
+      'contrast-color(color(srgb calc(0.5) calc(1 + 1 / 1) 1 / .5))',
+    ),
+    'contrast-color(color(srgb calc(0.5) calc(2) 1 / 0.5))',
+  );
+  assert.strictEqual(
+    specifiedValue(
+      'background-color',
+      'contrast-color(HSL(calc(90deg + 50deg) 45% 42%))',
+    ),
+    'contrast-color(hsl(calc(140deg) 45% 42%))',
+  );
+  // and one with nothing to simplify is kept as written
+  for (const value of [
+    'contrast-color(lab(0.2 0.5 0.2))',
+    'contrast-color(color(srgb 10 10 10))',
+    'contrast-color(rgba(255, 255, 255, 0.2))',
+    'contrast-color(rgb(from blue r g b))',
+  ]) {
+    assert.strictEqual(specifiedValue('background-color', value), undefined);
+  }
 });
 
 test('a relative colour takes its origin into its function and reads its channels', () => {
