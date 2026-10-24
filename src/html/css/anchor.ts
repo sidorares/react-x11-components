@@ -95,6 +95,11 @@ export function parseAnchor(value: string, ctx: UnitContext): AnchorRef | null {
       const n = Number(part.slice(0, -1));
       if (!Number.isFinite(n)) return null;
       side = n / 100;
+    } else if (/^(?:calc|min|max|clamp)\(/i.test(lower) && side === null) {
+      // a percentage a math function comes to, `calc(50%)`
+      const len = parseLength(part, ctx);
+      if (!len || typeof len !== 'object' || len.px || len.of) return null;
+      side = len.pct / 100;
     } else return null;
   }
   if (side === null) return null;
@@ -137,6 +142,155 @@ export function parseAnchorSize(
     fallback = len;
   }
   return { name, size: size ?? property, fallback };
+}
+
+/**
+ * A math function an inset or a size is with `anchor()` or `anchor-size()`
+ * calls among its terms — `calc(anchor(bottom) + 8px)`, `max(anchor(top),
+ * 1em)` (CSS Anchor Positioning 1, 3.2 and 5.1): the calls, each read as a
+ * lone call is, and the text around them, which is read as a length once
+ * each call has come to one (`anchorMathValue`), at layout, where the
+ * anchors are known.
+ */
+export interface AnchorMath<R> {
+  calls: readonly R[];
+  /** Each call's fallback as written, or null where it has none. */
+  fallbacks: readonly (string | null)[];
+  /** The value's text before each call, and after the last. */
+  between: readonly string[];
+  /** What its other lengths are read with: the element's units, as they
+   *  were where the value was computed. */
+  units: UnitContext;
+}
+
+/** An inset written with `anchor()`: the call alone, or a math function
+ *  with calls among its terms. */
+export type AnchorInset = AnchorRef | AnchorMath<AnchorRef>;
+
+/** A size written with `anchor-size()`, the same two ways. */
+export type AnchorSize = AnchorSizeRef | AnchorMath<AnchorSizeRef>;
+
+/** Whether an inset or a size is a math function of its calls. */
+export function isAnchorMath<R>(
+  value: R | AnchorMath<R>,
+): value is AnchorMath<R> {
+  return (value as AnchorMath<R>).calls !== undefined;
+}
+
+/** Each call an inset or a size holds, one for a lone call. */
+export function anchorCalls<R>(value: R | AnchorMath<R>): readonly R[] {
+  return isAnchorMath(value) ? value.calls : [value];
+}
+
+/** An inset or a size with each of its calls made another. */
+export function mapAnchorCalls<R>(
+  value: R | AnchorMath<R>,
+  fn: (call: R) => R,
+): R | AnchorMath<R> {
+  return isAnchorMath(value)
+    ? { ...value, calls: value.calls.map(fn) }
+    : fn(value);
+}
+
+/**
+ * A math function holding `anchor()` calls, for an inset (`size` null), or
+ * `anchor-size()` calls, for a width or a height; null where it is none —
+ * a call that does not parse, or a value that is no length with each call
+ * a length. Read once with every call at nought, which tells the cascade
+ * of the viewport's units and `rem`s it reads, as any length does.
+ */
+export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
+  value: string,
+  ctx: UnitContext,
+  size: 'width' | 'height' | null,
+): AnchorMath<R> | null {
+  const text = value.trim();
+  const re = /(?<![\w-])(anchor-size|anchor)\(/gi;
+  const calls: R[] = [];
+  const fallbacks: (string | null)[] = [];
+  const between: string[] = [];
+  let from = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index < from) continue;
+    if ((m[1].toLowerCase() === 'anchor-size') !== (size !== null)) {
+      return null;
+    }
+    let depth = 1;
+    let end = m.index + m[0].length;
+    for (; end < text.length && depth > 0; end += 1) {
+      if (text[end] === '(') depth += 1;
+      else if (text[end] === ')') depth -= 1;
+    }
+    if (depth !== 0) return null;
+    const call = text.slice(m.index, end);
+    const read =
+      size === null ? parseAnchor(call, ctx) : parseAnchorSize(call, size, ctx);
+    if (!read) return null;
+    const args = splitCommas(call.slice(m[0].length, -1));
+    calls.push(read as R);
+    fallbacks.push(args[1] !== undefined ? args[1].trim() : null);
+    between.push(text.slice(from, m.index));
+    from = end;
+    re.lastIndex = end;
+  }
+  if (!calls.length) return null;
+  between.push(text.slice(from));
+  // the units its other lengths are in, as numbers: what a value read at
+  // layout is read with holds nothing of the cascade's
+  const reads = (unit: string) =>
+    new RegExp(`\\d${unit}(?![a-z])`, 'i').test(text);
+  const fixed = (fn: (() => number) | undefined, unit: string) => {
+    if (!fn || !reads(unit)) return undefined;
+    const n = fn();
+    return () => n;
+  };
+  const units: UnitContext = {
+    em: ctx.em,
+    rem: ctx.rem,
+    vw: ctx.vw,
+    vh: ctx.vh,
+    scale: ctx.scale,
+    zoom: ctx.zoom,
+    ex: fixed(ctx.ex, 'ex'),
+    ch: fixed(ctx.ch, 'ch'),
+    lh: fixed(ctx.lh, 'lh'),
+    rlh: fixed(ctx.rlh, 'rlh'),
+  };
+  if (ctx.cq && /\dcq/i.test(text)) {
+    const inline = ctx.cq('inline');
+    const block = ctx.cq('block');
+    units.cq = (axis) => (axis === 'inline' ? inline : block);
+  }
+  const math: AnchorMath<R> = { calls, fallbacks, between, units };
+  // a length with every call one, which the cascade is told the units of
+  let probe = between[0];
+  for (let i = 0; i < calls.length; i += 1) probe += `0px${between[i + 1]}`;
+  if (parseLength(probe, ctx) === null) return null;
+  return math;
+}
+
+/**
+ * What a math function of anchor calls comes to (`parseAnchorMath`), each
+ * call `values[i]` device pixels, or its fallback where that is null; null
+ * where a call has neither, which makes the property `auto` (CSS Anchor
+ * Positioning 1, 3.2: invalid at computed-value time).
+ */
+export function anchorMathValue<R>(
+  math: AnchorMath<R>,
+  values: readonly (number | null)[],
+): Len | null {
+  const s = math.units.scale || 1;
+  let text = math.between[0];
+  for (let i = 0; i < math.calls.length; i += 1) {
+    const v = values[i];
+    const fallback = math.fallbacks[i];
+    if (v !== null && Number.isFinite(v)) text += `(${v / s}px)`;
+    else if (fallback !== null) text += `(${fallback})`;
+    else return null;
+    text += math.between[i + 1];
+  }
+  const len = parseLength(text, math.units);
+  return len === AUTO ? null : len;
 }
 
 /**
@@ -401,18 +555,24 @@ export function areaAlignment(tracks: readonly [number, number]): number {
   return a === 0 ? 1 : 0;
 }
 
-/** Where along an axis each of a `position-area`'s four grid lines is: the
- *  containing block's start, the anchor's two edges and the containing
- *  block's end, each held inside the containing block. */
+/** Where along an axis each of a `position-area`'s four grid lines is
+ *  (CSS Anchor Positioning 1, 3.1.1): the containing block's start, or the
+ *  anchor's where it is further out, the anchor's two edges, and the
+ *  containing block's end, or the anchor's where it is further out — so an
+ *  anchor partly outside the containing block leaves a track of nought. */
 export function areaLines(
   cbStart: number,
   cbSize: number,
   anchorStart: number,
   anchorSize: number,
 ): [number, number, number, number] {
-  const end = cbStart + cbSize;
-  const clamp = (v: number) => Math.min(end, Math.max(cbStart, v));
-  return [cbStart, clamp(anchorStart), clamp(anchorStart + anchorSize), end];
+  const anchorEnd = anchorStart + Math.max(0, anchorSize);
+  return [
+    Math.min(cbStart, anchorStart),
+    anchorStart,
+    anchorEnd,
+    Math.max(cbStart + cbSize, anchorEnd),
+  ];
 }
 
 /**

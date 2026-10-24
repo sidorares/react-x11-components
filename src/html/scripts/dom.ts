@@ -10987,6 +10987,216 @@ export function installDom(
       return conditionOf(this._text).replace(/^["']|["']$/g, '');
     }
   }
+  /** What a `@position-try` rule takes (CSS Anchor Positioning 1, 4.4,
+   *  the accepted `@position-try` properties), in the order its
+   *  descriptors' interface lists them (8.1): the margins, the insets,
+   *  the sizes, the self-alignment, `position-anchor` and
+   *  `position-area`. */
+  const POSITION_TRY_PROPERTIES = [
+    'margin',
+    'margin-top',
+    'margin-right',
+    'margin-bottom',
+    'margin-left',
+    'margin-block',
+    'margin-block-start',
+    'margin-block-end',
+    'margin-inline',
+    'margin-inline-start',
+    'margin-inline-end',
+    'inset',
+    'inset-block',
+    'inset-block-start',
+    'inset-block-end',
+    'inset-inline',
+    'inset-inline-start',
+    'inset-inline-end',
+    'top',
+    'left',
+    'right',
+    'bottom',
+    'width',
+    'min-width',
+    'max-width',
+    'height',
+    'min-height',
+    'max-height',
+    'block-size',
+    'min-block-size',
+    'max-block-size',
+    'inline-size',
+    'min-inline-size',
+    'max-inline-size',
+    'place-self',
+    'align-self',
+    'justify-self',
+    'position-anchor',
+    'position-area',
+  ];
+  const POSITION_TRY_TAKES = new Set(POSITION_TRY_PROPERTIES);
+  /** A `@position-try` rule's declarations of what it takes, in order, a
+   *  name declared again standing where it was declared last. */
+  const tryDeclarations = (
+    block: string,
+  ): { name: string; value: string; important: boolean }[] => {
+    const out: { name: string; value: string; important: boolean }[] = [];
+    for (const part of block.split(/;(?![^(]*\))/)) {
+      const colon = part.indexOf(':');
+      if (colon < 0) continue;
+      const name = part.slice(0, colon).trim().toLowerCase();
+      if (!POSITION_TRY_TAKES.has(name)) continue;
+      let value = part.slice(colon + 1).trim();
+      const important = /!\s*important$/i.test(value);
+      if (important) value = value.replace(/\s*!\s*important$/i, '');
+      if (!value) continue;
+      const at = out.findIndex((d) => d.name === name);
+      if (at >= 0) out.splice(at, 1);
+      out.push({ name, value, important });
+    }
+    return out;
+  };
+  /**
+   * A `@position-try` rule's declarations (CSS Anchor Positioning 1, 8.1):
+   * a declaration block of what the rule takes, read from the rule's text,
+   * and written back to it as it changes, which edits the rule in its sheet
+   * (`replaceRule`). Each property it takes is an attribute, by its name
+   * and in camel case; any other is none.
+   */
+  class CSSPositionTryDescriptors {
+    _rule: Any;
+    constructor(rule: Any) {
+      this._rule = rule;
+    }
+    _decls(): { name: string; value: string; important: boolean }[] {
+      return tryDeclarations(blockOf(this._rule._text));
+    }
+    _write(decls: { name: string; value: string; important: boolean }[]) {
+      replaceRule(this._rule, positionTryText(this._rule.name, decls));
+    }
+    get parentRule(): Any {
+      return this._rule;
+    }
+    get length(): number {
+      return this._decls().length;
+    }
+    item(i: Any): string {
+      return this._decls()[Number(i) >>> 0]?.name ?? '';
+    }
+    getPropertyValue(name: Any): string {
+      const n = str(name).toLowerCase();
+      return this._decls().find((d) => d.name === n)?.value ?? '';
+    }
+    getPropertyPriority(name: Any): string {
+      const n = str(name).toLowerCase();
+      return this._decls().find((d) => d.name === n)?.important
+        ? 'important'
+        : '';
+    }
+    setProperty(name: Any, value: Any, priority: Any = ''): void {
+      const n = str(name).toLowerCase();
+      if (!POSITION_TRY_TAKES.has(n)) return;
+      const v = value === null || value === undefined ? '' : str(value).trim();
+      const decls = this._decls();
+      const at = decls.findIndex((d) => d.name === n);
+      if (!v) {
+        if (at < 0) return;
+        decls.splice(at, 1);
+      } else {
+        const decl = {
+          name: n,
+          value: v,
+          important: str(priority).toLowerCase() === 'important',
+        };
+        if (at >= 0) decls[at] = decl;
+        else decls.push(decl);
+      }
+      this._write(decls);
+    }
+    removeProperty(name: Any): string {
+      const was = this.getPropertyValue(name);
+      if (was) this.setProperty(name, '');
+      return was;
+    }
+    get cssText(): string {
+      return declarationsText(this._decls());
+    }
+    set cssText(v: Any) {
+      this._write(tryDeclarations(str(v)));
+    }
+  }
+  for (const name of POSITION_TRY_PROPERTIES) {
+    const descriptor = {
+      get(this: Any): string {
+        return this.getPropertyValue(name);
+      },
+      set(this: Any, v: Any): void {
+        this.setProperty(name, v);
+      },
+      configurable: true,
+      enumerable: true,
+    };
+    Object.defineProperty(
+      CSSPositionTryDescriptors.prototype,
+      name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase()),
+      descriptor,
+    );
+    if (name.includes('-')) {
+      Object.defineProperty(CSSPositionTryDescriptors.prototype, name, {
+        ...descriptor,
+      });
+    }
+  }
+  /** Declarations as CSSOM serializes a block: each ended. */
+  const declarationsText = (
+    decls: readonly { name: string; value: string; important: boolean }[],
+  ): string =>
+    decls
+      .map((d) => `${d.name}: ${d.value}${d.important ? ' !important' : ''};`)
+      .join(' ');
+  /** A `@position-try` rule as CSSOM serializes it. */
+  const positionTryText = (
+    name: string,
+    decls: readonly { name: string; value: string; important: boolean }[],
+  ): string => {
+    const body = declarationsText(decls);
+    return `@position-try ${name} { ${body ? `${body} ` : ''}}`;
+  };
+  /**
+   * Put a rule's new text in its place: where it is one of a sheet's own
+   * rules, deleted from the sheet and its new text inserted where it was,
+   * as a page's own `deleteRule` and `insertRule` would — which the host
+   * writes back to the sheet, for the document to be styled by — with the
+   * rule's object standing for it in the sheet's rules still.
+   */
+  const replaceRule = (rule: Any, text: string): void => {
+    rule._text = text;
+    const sheet = rule.parentStyleSheet;
+    if (!sheet || rule.parentRule) return;
+    const at = Array.prototype.indexOf.call(sheet.cssRules, rule);
+    if (at < 0) return;
+    sheet.deleteRule(at);
+    sheet.insertRule(text, at);
+    const list = sheet.cssRules;
+    if (list && list[at] !== rule) list[at] = rule;
+  };
+  /** A `@position-try` rule (CSS Anchor Positioning 1, 8.1): its name, and
+   *  its declarations, which a page may set. */
+  class CSSPositionTryRule extends CSSRule {
+    _style: Any = null;
+    get name(): string {
+      return conditionOf(this._text).trim();
+    }
+    get style(): Any {
+      return (this._style ??= new CSSPositionTryDescriptors(this));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
+    }
+    override get cssText(): string {
+      return positionTryText(this.name, tryDeclarations(blockOf(this._text)));
+    }
+    override set cssText(_v: Any) {}
+  }
   /** A container condition's parts at its top level: a group in
    *  parentheses, a function, or a word, each as written. */
   const conditionParts = (
@@ -11229,6 +11439,7 @@ export function installDom(
     import: CSSImportRule,
     'font-face': CSSFontFaceRule,
     keyframes: CSSKeyframesRule,
+    'position-try': CSSPositionTryRule,
   };
   const AT_RULE_TYPES: Record<string, number> = {
     charset: 2,
@@ -23333,6 +23544,8 @@ export function installDom(
     CSSFontFaceRule,
     CSSKeyframesRule,
     CSSViewTransitionRule,
+    CSSPositionTryRule,
+    CSSPositionTryDescriptors,
   };
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) {

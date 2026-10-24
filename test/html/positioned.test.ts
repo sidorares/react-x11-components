@@ -1,7 +1,9 @@
 // <Html> — positioned boxes, stacking and translation.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup, pixelAt } from 'react-x11/test';
+import { act, cleanup, pixelAt, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
 import {
@@ -14,10 +16,12 @@ import {
   parseContainerPrelude,
 } from '../../src/html/css/containers.js';
 import {
+  FONTS,
   boxOf,
   clipsAround,
   fillsOf,
   findById,
+  h,
   linesOf,
   metric,
   pathsOf,
@@ -1668,6 +1672,142 @@ test('position-visibility hides a box whose anchor a scroll cuts away, or that o
   assert.strictEqual(hidden('seen'), false, 'and back');
 });
 
+test('a box anchored to something a scroller scrolls tries its position options again where a scroll leaves it overflowing, and keeps the one it has while it fits', async () => {
+  // WPT anchor-scroll-position-try-001: the box keeps the option it was
+  // last placed by while that fits, shifted by the scroll (CSS Anchor
+  // Positioning 1, 6.5.1.1), and where it does not, each other option is
+  // tried where the anchor is now (6.5) — its own first
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:399px;transform:scale(1)}' +
+      '#s{width:400px;height:400px;overflow:scroll}' +
+      '#a{width:100px;height:100px;anchor-name:--a;margin:300px 275px 300px 150px}' +
+      '#t{position:absolute;width:100px;height:100px;position-anchor:--a;' +
+      'position-try-fallbacks:--left, --right;left:anchor(left);bottom:anchor(top)}' +
+      '@position-try --left { right: anchor(left); top: anchor(top); bottom: auto; left: auto }' +
+      '@position-try --right { left: anchor(right); top: anchor(top); bottom: auto }' +
+      '</style><div id="cb"><div id="s"><div id="a"></div></div><div id="t"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const side = () => {
+    const a = boxOf(el, 'a');
+    const t = boxOf(el, 't');
+    if (t.y + t.height === a.y && t.x === a.x) return 'top';
+    if (t.x + t.width === a.x && t.y === a.y) return 'left';
+    if (t.x === a.x + a.width && t.y === a.y) return 'right';
+    return `nowhere: ${t.x},${t.y} by ${a.x},${a.y}`;
+  };
+  const scroller = findById(el.document, 's')!;
+  const scrolled = async (x: number, y: number) => {
+    el.scrollElementTo(scroller, { x, y });
+    // the layout that tries them is the next frame's
+    await act();
+    return side();
+  };
+  assert.strictEqual(side(), 'top');
+  assert.strictEqual(await scrolled(0, 200), 'top', 'touching the top');
+  assert.strictEqual(await scrolled(0, 201), 'left', 'over it by a pixel');
+  assert.strictEqual(await scrolled(0, 1), 'left', 'which still fits');
+  assert.strictEqual(await scrolled(0, 0), 'top', 'which no longer does');
+  assert.strictEqual(await scrolled(51, 249), 'right');
+});
+
+/** A document in a pane 400 by 200 that scrolls it. */
+async function paned(source: string) {
+  await renderX11(
+    h(
+      'box',
+      {
+        'data-testname': 'pane',
+        style: { width: 400, height: 200, overflow: 'scroll' },
+      },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    ),
+    { width: 440, height: 300, fonts: FONTS! },
+  );
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const pane = screen.getByTestName('pane') as DrawnNode & {
+    scrollTo(y: number): void;
+  };
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  const scrolled = async (y: number) => {
+    await act(async () => pane.scrollTo(y));
+    await act();
+  };
+  return { el, rect, scrolled };
+}
+
+metric(
+  'a box fixed to the viewport follows an anchor the pane scrolls, and a box in the document a fixed anchor',
+  async () => {
+    // CSS Anchor Positioning 1, 3.3: the default scroll shift, which a
+    // scroll of the pane makes as a scroll container's does, laying nothing
+    // out; and the options tried again where it leaves the box overflowing
+    // what it is placed in — at an edge of the viewport's, since the edges
+    // that are the anchor's move with it
+    const { rect, scrolled } = await paned(
+      '<style>body{margin:0}#a{anchor-name:--a;margin:160px 0 0 50px;width:60px;height:20px}' +
+        '#tip{position:fixed;position-anchor:--a;top:anchor(bottom);left:anchor(left);' +
+        'width:40px;height:30px;position-try-fallbacks:flip-block}' +
+        '#bar{position:fixed;top:20px;left:300px;width:10px;height:10px;anchor-name:--f}' +
+        '#under{position:absolute;position-anchor:--f;top:anchor(bottom);left:anchor(left);' +
+        'width:10px;height:10px}</style><div id="a"></div><div id="tip"></div>' +
+        '<div id="bar"></div><div id="under"></div><div style="height:2000px"></div>',
+    );
+    const at = (id: string) => [rect(id).x, rect(id).y];
+    // below the anchor is past the viewport's foot: above it
+    assert.deepStrictEqual(at('tip'), [50, 130]);
+    assert.deepStrictEqual(at('under'), [300, 30]);
+    await scrolled(20);
+    assert.deepStrictEqual(at('a'), [50, 160]);
+    assert.deepStrictEqual(
+      at('tip'),
+      [50, 130],
+      'with its anchor, still above',
+    );
+    assert.deepStrictEqual(at('under'), [300, 50], 'with the fixed one');
+    // above it is over the viewport's top: below it
+    await scrolled(140);
+    assert.deepStrictEqual(at('tip'), [50, 180]);
+    assert.deepStrictEqual(at('under'), [300, 170]);
+    await scrolled(0);
+    assert.deepStrictEqual(at('tip'), [50, 130], 'and back');
+  },
+);
+
+metric(
+  'position-visibility hides a box fixed to the viewport whose anchor the pane scrolls out of it, or over its edge',
+  async () => {
+    const { el, scrolled } = await paned(
+      '<style>body{margin:0}.a{height:20px;width:20px}#a{anchor-name:--a;margin-top:100px}' +
+        '#b{anchor-name:--b;margin-top:20px}' +
+        '.t{position:fixed;width:20px;height:20px;left:0}' +
+        '#seen{position-anchor:--a;top:anchor(bottom)}' +
+        '#fits{position-anchor:--b;bottom:anchor(top);position-visibility:no-overflow}' +
+        '</style><div class="a" id="a"></div><div class="a" id="b"></div>' +
+        '<div class="t" id="seen"></div><div class="t" id="fits"></div>' +
+        '<div style="height:2000px"></div>',
+    );
+    const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+    assert.strictEqual(hidden('seen'), false);
+    assert.strictEqual(hidden('fits'), false);
+    // its anchor half out of the viewport's top
+    await scrolled(110);
+    assert.strictEqual(hidden('seen'), false);
+    // and all of it out: anchors-visible, the initial value
+    await scrolled(130);
+    assert.strictEqual(hidden('seen'), true, 'its anchor scrolled away');
+    await scrolled(120);
+    assert.strictEqual(hidden('fits'), false, 'at the top of the viewport');
+    await scrolled(121);
+    assert.strictEqual(hidden('fits'), true, 'no-overflow: over it');
+    await scrolled(0);
+    assert.strictEqual(hidden('seen'), false, 'and back');
+    assert.strictEqual(hidden('fits'), false);
+  },
+);
+
 test("an anchor is its element's own box, not the label inside it", async () => {
   const { node } = await render(
     '<style>body{margin:0}#wrap{position:relative;width:300px;height:200px}' +
@@ -1719,6 +1859,226 @@ test('position-area places a box in the cells around its anchor, aligned towards
     [fit.x, fit.width, fit.y + fit.height / 2],
     [160, 30, 35],
   );
+});
+
+test('position-area aligns a box in its cells less its insets, towards the anchor or centred on it', async () => {
+  // WPT position-area-align-justify: the cells are the containing block
+  // the insets are against, and `normal` aligns the box in what they
+  // leave — towards the anchor, or on its centre where the cells are all
+  // three tracks of the axis (CSS Anchor Positioning 1, 4.1)
+  const areas = [
+    ['span-all', 145, 145],
+    ['top left', 75, 70],
+    ['top center', 150, 70],
+    ['top right', 225, 70],
+    ['center left', 75, 140],
+    ['bottom right', 225, 210],
+    ['top span-left', 175, 70],
+    ['top span-right', 125, 70],
+    ['span-top left', 75, 170],
+    ['span-bottom left', 75, 110],
+  ] as const;
+  const { node } = await render(
+    '<style>body{margin:0}#c{position:relative;width:300px;height:300px}' +
+      '#a{position:absolute;left:100px;top:100px;width:100px;height:100px;anchor-name:--a}' +
+      '.t{position:absolute;position-anchor:--a;width:10px;height:10px;' +
+      'top:10px;right:15px;bottom:20px;left:25px}</style><div id="c"><div id="a"></div>' +
+      areas
+        .map(
+          ([area], i) =>
+            `<div class="t" id="t${i}" style="position-area:${area}"></div>`,
+        )
+        .join('') +
+      '</div>',
+    400,
+  );
+  const el = view(node);
+  areas.forEach(([area, x, y], i) => {
+    const b = boxOf(el, `t${i}`);
+    assert.deepStrictEqual([b.x, b.y], [x, y], area);
+  });
+});
+
+test("the position-area grid reaches an anchor past its containing block's edge", async () => {
+  // WPT position-area-anchor-partially-outside: the grid's outer lines are
+  // the containing block's, or the anchor's where it is further out
+  // (3.1.1), so a box stretched in the cells reaches the anchor's far edge
+  const areas = [
+    ['span-all', 0, -50, 450, 450],
+    ['left span-all', 0, -50, 350, 450],
+    ['right span-all', 450, -50, 0, 450],
+    ['top span-all', 0, -50, 450, 0],
+    ['bottom span-all', 0, 50, 450, 350],
+  ] as const;
+  const { node } = await render(
+    '<style>body{margin:0}#c{position:relative;width:400px;height:400px;margin:100px}' +
+      '#a{position:absolute;right:-50px;top:-50px;width:100px;height:100px;anchor-name:--a}' +
+      '.t{position:absolute;position-anchor:--a;place-self:stretch}</style>' +
+      '<div id="c"><div id="a"></div>' +
+      areas
+        .map(
+          ([area], i) =>
+            `<div class="t" id="t${i}" style="position-area:${area}"></div>`,
+        )
+        .join('') +
+      '</div>',
+    700,
+  );
+  const el = view(node);
+  areas.forEach(([area, x, y, w, h], i) => {
+    const b = boxOf(el, `t${i}`);
+    assert.deepStrictEqual(
+      [b.x - 100, b.y - 100, b.width, b.height],
+      [x, y, w, h],
+      area,
+    );
+  });
+});
+
+test('anchor-center centres a box on its anchor in what its insets leave, as wide as its content there', async () => {
+  // WPT anchor-center-htb-htb: an `auto` inset is nought, the box is as
+  // wide as its content in the rectangle its insets leave, and it is
+  // centred on the anchor as far as it can be inside that rectangle
+  // (CSS Anchor Positioning 1, 4.2; CSS Box Alignment 3, 4.4.1.2)
+  const cases = [
+    ['', 100, 0],
+    ['max-width:60px', 60, 35],
+    ['left:20px', 80, 20],
+    ['right:20px', 80, 0],
+    ['right:-20px', 120, 0],
+    ['max-width:100px;right:-20px', 100, 15],
+    ['left:10px;right:20px', 70, 10],
+    ['left:-10px;right:-50px', 160, -10],
+  ] as const;
+  // content 180px wide at most, which wraps to any width
+  const content =
+    '<div style="display:flex;flex-wrap:wrap">' +
+    '<i style="display:block;flex:none;width:10px;height:5px"></i>'.repeat(18) +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0}#c{width:100px;height:100px;border:3px solid;position:relative}' +
+      '#a{anchor-name:--a;position:relative;width:50px;height:50px;left:40px;top:40px}' +
+      '.t{position:absolute;position-anchor:--a;justify-self:anchor-center;' +
+      'top:anchor(bottom);height:20px}</style><div id="c"><div id="a"></div>' +
+      cases
+        .map(
+          ([css], i) =>
+            `<div class="t" id="t${i}" style="${css}">${content}</div>`,
+        )
+        .join('') +
+      '</div>',
+    400,
+  );
+  const el = view(node);
+  cases.forEach(([css, width, x], i) => {
+    const b = boxOf(el, `t${i}`);
+    assert.deepStrictEqual([b.width, b.x - 3, b.y - 3], [width, x, 90], css);
+  });
+});
+
+test('anchor-center makes auto margins nought, and is center for a box with no default anchor', async () => {
+  // WPT anchor-center-004 and no-anchor-anchor-center
+  const { node } = await render(
+    '<style>body{margin:0}#c{position:relative;width:200px;height:200px}' +
+      '#a{anchor-name:--a;position:relative;width:50px;height:50px;left:30px;top:20px}' +
+      '.t{position:absolute;width:24px;height:24px}' +
+      '#justify{position-anchor:--a;justify-self:anchor-center;top:anchor(bottom);margin-inline:auto}' +
+      '#align{position-anchor:--a;align-self:anchor-center;right:anchor(left);margin-block:auto}' +
+      '#none{place-self:anchor-center;inset:0}' +
+      '#both{position-anchor:--a;place-self:anchor-center}</style>' +
+      '<div id="c"><div id="a"></div><div class="t" id="justify"></div>' +
+      '<div class="t" id="align"></div><div class="t" id="none"></div>' +
+      '<div class="t" id="both"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  // the anchor's centre is at 55, 45
+  assert.strictEqual(at('justify')[0], 43);
+  assert.strictEqual(at('align')[1], 33);
+  assert.deepStrictEqual(at('none'), [88, 88], 'centred in its insets');
+  assert.deepStrictEqual(at('both'), [43, 33]);
+});
+
+test('justify-self and align-self align an absolute box between two insets, as wide as its content', async () => {
+  // CSS Position 3, 4.3: aligned in its inset-modified containing block
+  // where neither inset is `auto`, and sized to its content there; `auto`
+  // margins and one `auto` inset place it as they always did
+  const { node } = await render(
+    '<style>body{margin:0}#c{position:relative;width:300px;height:200px}' +
+      '.t{position:absolute;inset:10px}i{display:block;width:40px;height:20px}' +
+      '#centre{place-self:center}' +
+      '#end{justify-self:end;align-self:end}' +
+      '#margins{place-self:center;margin:auto 0 0 auto}' +
+      '#one{place-self:center;inset:10px auto auto 10px}' +
+      '#fill{place-self:stretch}</style><div id="c">' +
+      '<div class="t" id="centre"><i></i></div><div class="t" id="end"><i></i></div>' +
+      '<div class="t" id="margins"><i></i></div><div class="t" id="one"><i></i></div>' +
+      '<div class="t" id="fill"><i></i></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height];
+  };
+  assert.deepStrictEqual(at('centre'), [130, 90, 40, 20]);
+  assert.deepStrictEqual(at('end'), [250, 170, 40, 20]);
+  // the margins take what is left, and the box fills it
+  assert.deepStrictEqual(at('margins'), [10, 10, 280, 180]);
+  assert.deepStrictEqual(at('one'), [10, 10, 40, 20], 'at its one inset');
+  assert.deepStrictEqual(at('fill'), [10, 10, 280, 180]);
+});
+
+test('an anchor() in a math function is the edge it reads, and its fallback where there is no anchor', async () => {
+  const { node } = await render(
+    anchored(
+      '.t{position:absolute;position-anchor:--b;width:20px;height:10px}' +
+        '#gap{top:calc(anchor(bottom) + 8px);left:calc(anchor(left) - 1em);font-size:10px}' +
+        '#mid{left:calc((anchor(left) + anchor(right)) / 2)}' +
+        '#cap{top:max(anchor(top), 40px)}' +
+        // no anchor of the name: the fallback in its place, or `auto`
+        '#lost{top:calc(anchor(--nobody bottom, 7px) + 3px);left:calc(anchor(--nobody left) + 5px)}' +
+        // and the calls flipped with the rest of the box
+        '#flip{bottom:calc(anchor(top) + 5px);height:40px;position-try-fallbacks:flip-block}',
+      '<div class="t" id="gap"></div><div class="t" id="mid"></div>' +
+        '<div class="t" id="cap"></div><div class="t" id="lost"></div>' +
+        '<div class="t" id="flip"></div>',
+    ),
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('gap'), [90, 58]);
+  assert.strictEqual(at('mid')[0], 130);
+  assert.strictEqual(at('cap')[1], 40);
+  assert.deepStrictEqual(at('lost'), [0, 10]);
+  // above the anchor is 15 - 40, over the top: below it, 5px past it
+  assert.strictEqual(at('flip')[1], 55);
+});
+
+test('a box too big for its cells is held in its containing block, which is no position that fits', async () => {
+  // CSS Anchor Positioning 1, 4.1 and 6.5: a box overflowing its cells
+  // shifts to stay inside its containing block (CSS Box Alignment 3,
+  // 4.4.1.2), and still overflows its inset-modified containing block,
+  // which is what a position option has to fit — as are insets that go
+  // past each other, which leave nought of it
+  const { node } = await render(
+    anchored(
+      '.t{position:absolute;position-anchor:--b;width:40px;height:30px}' +
+        '#held{position-area:top}' +
+        '#cells{position-area:top;position-try-fallbacks:flip-block}' +
+        '#past{top:anchor(bottom);bottom:anchor(top);position-try-fallbacks:--right}' +
+        '@position-try --right { top: anchor(top); bottom: auto; left: anchor(right) }',
+      '<div class="t" id="held"></div><div class="t" id="cells"></div>' +
+        '<div class="t" id="past"></div>',
+      10,
+    ),
+  );
+  const el = view(node);
+  // the 10px above the anchor's top are too few: at the top of the
+  // containing block, over the anchor
+  assert.strictEqual(boxOf(el, 'held').y, 0);
+  // and with somewhere else to go, below it
+  assert.strictEqual(boxOf(el, 'cells').y, 40);
+  assert.deepStrictEqual([boxOf(el, 'past').x, boxOf(el, 'past').y], [160, 10]);
 });
 
 test('position-try-fallbacks places a box that overflows by the first option that fits, which anchored() asks', async () => {
@@ -1773,8 +2133,11 @@ test('position-try-fallbacks places a box that overflows by the first option tha
 test('a @position-try rule is an option of its own', async () => {
   const { node } = await render(
     anchored(
+      // the rule's insets in place of the box's own, `bottom` among them:
+      // left as it was, it and `top` would leave the box no room at all,
+      // which is no option that fits (CSS Anchor Positioning 1, 6.5)
       '@position-try --under { top: anchor(bottom); left: anchor(left);' +
-        ' position-area: none; color: red }' +
+        ' bottom: auto; position-area: none; color: red }' +
         '#tip{position:absolute;position-anchor:--b;bottom:anchor(top);' +
         'left:anchor(left);width:40px;height:20px;' +
         'position-try-fallbacks:--missing, --under}',
