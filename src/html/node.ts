@@ -126,7 +126,12 @@ import {
   parseMediaQuery,
   parseStylesheet,
 } from './css/parse.js';
-import type { Declaration, MediaCondition, Stylesheet } from './css/parse.js';
+import type {
+  Declaration,
+  MediaCondition,
+  StyleRule,
+  Stylesheet,
+} from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
@@ -793,6 +798,11 @@ export class HtmlViewNode extends Node {
   /** The sheets the cascade in force was made from, parsed, by their text
    *  (`_parseSheet`), and those the one being made takes. */
   private _parsed = new Map<string, ParsedSheet[]>();
+  /** Whether the document's sheets may read otherwise than the cascade's
+   *  were read, which a build makes the cascade again for before it styles
+   *  anything (`_sheetsAdded`): a `<style>` a script put in or wrote to, a
+   *  sheet that came. */
+  private _sheetsOwed = false;
   private _parsing: Map<string, ParsedSheet[]> | null = null;
   /** Each `<link>` and `<style>` whose sheet the cascade in force read,
    *  with the `href` a link's was read from and what the sheet imports
@@ -976,6 +986,12 @@ export class HtmlViewNode extends Node {
   private _styledHeight = -1;
   /** The cascade the box tree's styles were computed by. */
   private _styledWith: Cascade | null = null;
+  /** A cascade made again for sheets that only added rules, which the
+   *  styles the boxes have are kept under, but for what those rules can
+   *  style (`_sheetsAdded`). Not the one they were styled with
+   *  (`_styledWith`): what a change of sheets makes is no change to
+   *  transition through (`_previousStyle`). */
+  private _keptFor: Cascade | null = null;
   private _documentHeight = 0;
   private _documentWidth = 0;
   /**
@@ -1164,8 +1180,14 @@ export class HtmlViewNode extends Node {
           if (!this._tree) this._invalidate(Stale.Style);
         } else if (what === 'image' && !layout) this._imagePainted();
         else if (what === 'image') this._imageArrived();
-        else
+        else if (what === 'stylesheet' && this._tree && this._cascade) {
+          // a sheet as one more of the document's, whose rules style what
+          // they can style (`_sheetsAdded`)
+          this._sheetsOwed = true;
+          this._invalidate(Stale.Boxes, EMPTY_SET, true);
+        } else {
           this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
+        }
       },
       this._urls,
     );
@@ -1802,6 +1824,8 @@ export class HtmlViewNode extends Node {
 
   /** Rebuild the cascade — the document's sheets plus the host's. */
   private _restyle(width: number): void {
+    this._sheetsOwed = false;
+    this._keptFor = null;
     const props = this._props();
     this._styledAt = this._scale;
     const look = this._deviceLook();
@@ -1851,6 +1875,7 @@ export class HtmlViewNode extends Node {
       const sheets: Stylesheet[] = [uaStylesheet(props.look)];
       this._parsing = new Map();
       const imports: ImportRead[][] = [];
+      const parsed: Stylesheet[] = [];
       faces = [];
       let order = 0;
       const layers = new Map<string, number>();
@@ -1883,6 +1908,7 @@ export class HtmlViewNode extends Node {
           under,
         );
         imports.push(seen);
+        parsed.push(sheet);
         place(sheet, element);
       }
       for (const text of extras) {
@@ -1954,6 +1980,7 @@ export class HtmlViewNode extends Node {
         bases: read.map((r) => r.base),
         media: read.map((r) => r.media),
         imports,
+        sheets: parsed,
         extras,
         shadows: shadowImports,
         faces,
@@ -2878,6 +2905,18 @@ export class HtmlViewNode extends Node {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
       restyleOnly = null;
+    } else if (this._sheetsOwed) {
+      // Sheets put in, written to or come: the cascade made again, and
+      // what the rules it adds can style styled besides what the change
+      // reached, every other element keeping its style — where all the
+      // sheets did is add rules (`_sheetsAdded`). The Guardian's, BBC's and
+      // GitHub's scripts write their components' rules into a `<style>` as
+      // each first renders, and each restyled the whole document.
+      const reached = this._sheetsAdded(target, viewport);
+      if (reached && restyleOnly) {
+        for (const el of reached) restyleOnly.add(el);
+        follow = true;
+      } else restyleOnly = null;
     } else if (this._cascade.mediaBand(target, viewport) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
       // does have to restyle. Knowing which resizes those are is why the
@@ -3052,7 +3091,9 @@ export class HtmlViewNode extends Node {
         // (`Cascade.beginSharing`): the first build only, since a second is
         // one the first found a reason for — a face, an image's size.
         let kept: KeptStyles | null =
-          restyleOnly && this._tree && this._styledWith === cascade
+          restyleOnly &&
+          this._tree &&
+          (this._styledWith === cascade || this._keptFor === cascade)
             ? {
                 styles: this._tree.styles,
                 restyle: this._withAnimated(restyleOnly, this._tree),
@@ -3100,6 +3141,7 @@ export class HtmlViewNode extends Node {
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
         this._styledWith = cascade;
+        this._keptFor = null;
         this._styledWidth = target;
         this._styledHeight = viewport;
         this._requestBackgrounds(this._tree);
@@ -8731,7 +8773,11 @@ export class HtmlViewNode extends Node {
         changesCascade(el, name, change.oldValue ?? null) &&
         !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
       ) {
-        return false;
+        // a sheet's element in the document's tree: the cascade is made
+        // again before the build, which styles what the rules it adds can
+        // style besides what the change reaches (`_sheetsAdded`)
+        if (!SHEET_TAGS.has(tagOf(el)) || inShadowTree(el)) return false;
+        scope.sheets = true;
       }
       const reach = cascade.attributeChange(
         name,
@@ -8779,7 +8825,12 @@ export class HtmlViewNode extends Node {
       CASCADE_TAGS.has(tagOf(parent as Element)) &&
       !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
     ) {
-      return false;
+      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
+      // rules into one as their components first render
+      if (tagOf(parent as Element) !== 'style' || inShadowTree(parent)) {
+        return false;
+      }
+      scope.sheets = true;
     }
     let drawn = false;
     if (change.type === 'childList') {
@@ -8789,7 +8840,8 @@ export class HtmlViewNode extends Node {
           const held = cascadeHeld(node);
           if (held === HELD_PRAGMA) return false;
           if (held === HELD_SHEET && !this._sheetsKept(parent, scope)) {
-            return false;
+            if (inShadowTree(parent)) return false;
+            scope.sheets = true;
           }
           if (node.type !== 'comment') counted = true;
           if (drawsSomething(node)) drawn = true;
@@ -8838,6 +8890,41 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * The cascade made again for sheets that may read otherwise
+   * (`_sheetsOwed`), and the elements the rules they add can style
+   * (`Cascade.addedReach`): where every sheet the cascade was made from is
+   * still there, in its order, as it read or with rules after its last, and
+   * nothing else changed that every style reads (`addedRules`) — every other
+   * element is styled by the rules it was. Null where that cannot be said,
+   * and every element is styled again; an empty set where the sheets read
+   * as they did.
+   */
+  private _sheetsAdded(target: number, viewport: number): Set<Element> | null {
+    const was = this._sheetsRead;
+    const cascade = this._cascade;
+    const tree = this._tree;
+    // a width that crossed a breakpoint as well, which the styles kept were
+    // not computed at
+    const band =
+      !!cascade && cascade.mediaBand(target, viewport) === this._mediaBand;
+    this._restyle(target);
+    const now = this._sheetsRead;
+    if (this._cascade === cascade) return new Set();
+    if (!was || !now || !tree || !band || this._styledWith !== cascade) {
+      return null;
+    }
+    const added = addedRules(was, now);
+    if (!added) return null;
+    const reached = this._cascade!.addedReach(
+      added,
+      this._source.document,
+      !!tree.impliedHtml,
+    );
+    if (reached) this._keptFor = this._cascade;
+    return reached;
+  }
+
+  /**
    * Whether a change to a sheet's element — a `<style>`, a `<link>` — at
    * `at`, or one put in or taken away there, leaves the cascade as it is:
    * where it is in the document's tree and its sheets read as the
@@ -8850,9 +8937,7 @@ export class HtmlViewNode extends Node {
    * change to the cascade whatever they read.
    */
   private _sheetsKept(at: AnyNode, scope: ChangeScope): boolean {
-    for (let up: AnyNode | null = at; up; up = up.parent) {
-      if (up instanceof ShadowRoot) return false;
-    }
+    if (inShadowTree(at)) return false;
     scope.sheetsAsRead ??= this._sheetsAsRead();
     return scope.sheetsAsRead;
   }
@@ -8886,6 +8971,13 @@ export class HtmlViewNode extends Node {
    */
   private _restyleChanged(scope: ChangeScope): void {
     if (scope.drawings.size) this._drawAgain(scope.drawings);
+    if (scope.sheets) {
+      // what the new rules style is known once they are read, before the
+      // build (`_sheetsAdded`)
+      this._sheetsOwed = true;
+      this._invalidate(Stale.Boxes, scope.own, true);
+      return;
+    }
     if (!scope.own.size && !scope.boxes) return;
     if (!scope.boxes) {
       // the change's elements and all they hold, or where that is more than
@@ -11416,6 +11508,167 @@ interface ParsedSheet {
   layers: { before: string[]; added: string[] } | null;
 }
 
+/**
+ * The rules the sheets `now` reads add to the ones `was` read, where that
+ * is all they do (`_sheetsAdded`): every sheet of `was` is in `now`, in its
+ * order, under the same base and media and importing the same, reading as
+ * it did or with style rules after its last — a CSS-in-JS library's
+ * `<style>` written to — and every other sheet is new; neither is in a
+ * shadow tree, and the host's sheets are as they were. And nothing added
+ * reaches past what its selectors name: no `@import`, `@font-face`,
+ * `@keyframes`, `@property`, `@function`, `@position-try`, `@counter-style`
+ * or cascade layer, no `@scope`, `@starting-style` or `@namespace`, and no
+ * selector at a shadow tree's edge or for a highlight or a view
+ * transition. Null otherwise.
+ */
+function addedRules(was: SheetsRead, now: SheetsRead): StyleRule[] | null {
+  if (
+    now.look !== was.look ||
+    now.scale !== was.scale ||
+    now.fonts !== was.fonts ||
+    now.extras.length !== was.extras.length ||
+    now.extras.some((text, i) => text !== was.extras[i]) ||
+    now.shadows.size !== was.shadows.size ||
+    [...now.shadows.keys()].some((key) => !was.shadows.has(key))
+  ) {
+    return null;
+  }
+  const added: StyleRule[] = [];
+  let j = 0;
+  for (let i = 0; i < now.texts.length; i += 1) {
+    const sheet = now.sheets[i];
+    const text = now.texts[i];
+    if (
+      j < was.texts.length &&
+      now.encodings[i] === was.encodings[j] &&
+      now.bases[i] === was.bases[j] &&
+      sameValue(now.media[i], was.media[j]) &&
+      sameImportsRead(now.imports[i], was.imports[j])
+    ) {
+      if (text === was.texts[j]) {
+        j += 1;
+        continue;
+      }
+      // one that names layers as the last of the document's, after which
+      // no sheet can name one first
+      const tail =
+        !sheet.layered || (i === now.texts.length - 1 && !now.extras.length)
+          ? rulesAfter(was.sheets[j], sheet)
+          : null;
+      if (tail && !ADDS_REACH.test(text)) {
+        added.push(...tail);
+        j += 1;
+        continue;
+      }
+    }
+    // a sheet after every one of the cascade's may name layers: a layer
+    // ranks where the document first names it, so ones it names first rank
+    // after all the others, and a rule of its in one already named is one
+    // more rule there, as any added rule is (React Aria's `@layer { … }`)
+    const last = j === was.texts.length && !now.extras.length;
+    if (
+      now.imports[i].length ||
+      !onlyRules(sheet, last) ||
+      ADDS_REACH.test(text)
+    ) {
+      return null;
+    }
+    added.push(...sheet.rules);
+  }
+  if (j !== was.texts.length) return null;
+  for (const rule of added)
+    if (EDGE_OR_HIGHLIGHT.test(rule.selector)) return null;
+  return added;
+}
+
+/** The at-rules whose reach no selector says. */
+const ADDS_REACH =
+  /@(?:scope|starting-style|namespace|view-transition)(?![\w-])/i;
+
+/** What a selector of an added rule may not be: at a shadow tree's edge,
+ *  or for a highlight or a view transition, which no element's index holds
+ *  (`Cascade.addedReach`). */
+const EDGE_OR_HIGHLIGHT =
+  /:host|::?(?:part|slotted|highlight)\(|::(?:selection|target-text|spelling-error|grammar-error|view-transition)/i;
+
+/** Whether a sheet holds style rules and nothing a selector does not
+ *  reach (`addedRules`) — layers too, where `layers`. */
+function onlyRules(sheet: Stylesheet, layers = false): boolean {
+  return (
+    !sheet.imports.length &&
+    (layers || !sheet.layered) &&
+    !sheet.fontFaces.length &&
+    !sheet.keyframes?.length &&
+    !sheet.properties?.length &&
+    !sheet.functions?.length &&
+    !sheet.positionTries?.length &&
+    !sheet.counterStyles?.length
+  );
+}
+
+/**
+ * The style rules `now` has that `was` has not, where it holds every rule
+ * of `was` as it was, in its order, and nothing else `was` has not: a
+ * sheet written to — at its end, as emotion writes, or between its rules,
+ * as styled-components writes each component's group (BBC's). Each
+ * element no new rule matches is styled by the rules it was, in their
+ * order. Null otherwise.
+ */
+function rulesAfter(was: Stylesheet, now: Stylesheet): StyleRule[] | null {
+  if (now.rules.length < was.rules.length) return null;
+  // its at-rules as they were — not only as many: a page's CSSOM sets a
+  // `@position-try`'s descriptors in place
+  if (
+    now.layered !== was.layered ||
+    !sameValue(now.imports, was.imports) ||
+    !sameValue(now.importConditions, was.importConditions) ||
+    !sameValue(now.fontFaces, was.fontFaces) ||
+    !sameValue(now.keyframes ?? null, was.keyframes ?? null) ||
+    !sameValue(now.properties ?? null, was.properties ?? null) ||
+    !sameValue(now.functions ?? null, was.functions ?? null) ||
+    !sameValue(now.positionTries ?? null, was.positionTries ?? null) ||
+    !sameValue(now.counterStyles ?? null, was.counterStyles ?? null)
+  ) {
+    return null;
+  }
+  // the old rules matched in order: a rule a new one stands in for, read
+  // alike, is as good as it, since the two style alike
+  const added: StyleRule[] = [];
+  let j = 0;
+  for (const rule of now.rules) {
+    if (j < was.rules.length && sameRule(was.rules[j], rule)) j += 1;
+    else added.push(rule);
+    // more new rules than there are rules left to hold the old ones
+    if (now.rules.length - added.length < j) return null;
+  }
+  return j === was.rules.length ? added : null;
+}
+
+/** Whether two style rules read alike, wherever their sheets put them. */
+function sameRule(a: StyleRule, b: StyleRule): boolean {
+  return (
+    a.selector === b.selector &&
+    a.specificity === b.specificity &&
+    sameValue(a.declarations, b.declarations) &&
+    sameValue(a.media, b.media) &&
+    sameValue(a.layer, b.layer) &&
+    sameValue(a.containers ?? null, b.containers ?? null)
+  );
+}
+
+/** Whether two sheets imported the same, as they read. */
+function sameImportsRead(
+  a: readonly ImportRead[],
+  b: readonly ImportRead[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].url !== b[i].url || a[i].text !== b[i].text) return false;
+    if (a[i].base !== b[i].base) return false;
+  }
+  return true;
+}
+
 /** Whether `layers` ranks the names of `before`, in that order, and no
  *  others. */
 function sameNames(
@@ -11443,6 +11696,9 @@ interface SheetsRead {
    *  again at every revision, a streamed append's too. */
   media: (MediaCondition[] | null)[];
   imports: ImportRead[][];
+  /** Each sheet as it was parsed, by `texts`: what a cascade made again
+   *  where sheets were only added holds besides (`addedRules`). */
+  sheets: Stylesheet[];
   extras: string[];
   /** Each set of shadow trees' sheets, by how they read (`_sheetsKey`), and
    *  what each of its sheets imports. */
@@ -13310,6 +13566,10 @@ interface ChangeScope {
   /** Whether the document's sheets read as the cascade's were, asked once
    *  a list where a change is a sheet's element's (`_sheetsAsRead`). */
   sheetsAsRead?: boolean;
+  /** Whether they read otherwise, and the cascade is to be made again
+   *  before the build, which styles what the rules it adds can style
+   *  besides `own` (`_sheetsAdded`). */
+  sheets?: boolean;
 }
 
 /** The elements whose changes are changes to the cascade: a sheet's, what
@@ -13430,6 +13690,15 @@ function drawingAround(node: AnyNode): Element | null {
     if (tagOf(at) === 'svg') found = at;
   }
   return found;
+}
+
+/** Whether a node is in a shadow tree, whose sheets are bound to it by
+ *  how they read: a change to one is a refresh of everything. */
+function inShadowTree(node: AnyNode): boolean {
+  for (let up: AnyNode | null = node; up; up = up.parent) {
+    if (up instanceof ShadowRoot) return true;
+  }
+  return false;
 }
 
 /**

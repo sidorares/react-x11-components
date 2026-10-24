@@ -1886,7 +1886,23 @@ otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
 it is under and the layers ranked before it joins `ParsedSheet`, and
-nothing after a parse changes a sheet but that `order`. A `<meta>` the
+nothing after a parse changes a sheet but that `order`. **Where all the
+sheets did is add rules, what those rules can style is styled and nothing
+else** (`_sheetsAdded`): a sheet put in, a `<style>` written to at its
+end — a CSS-in-JS library's as each component first renders — and a
+`<link>`'s sheet that came are a build keeping every other element's
+style, the cascade made again before it, and the elements an added rule's
+selector matches, whatever its media, styled with what the change reached
+(`addedRules`, `Cascade.addedReach`, which finds an added rule by its
+declarations). The Guardian's, BBC's and GitHub's scripts each restyled
+the whole document a few times a load so. Anything else a sheet does
+styles every element again: one taken out or written over, and one adding
+what reaches past its selectors — an `@import`, `@font-face`,
+`@keyframes`, `@property`, `@function`, `@position-try`, `@counter-style`
+or layer, a rule at a shadow tree's edge or for a highlight. **Anything
+new a sheet can declare that reaches past the elements its selectors name
+joins `onlyRules`' and `rulesAfter`'s checks**, or a sheet bringing it
+restyles too little. A `<meta>` the
 cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
 `<base>`, a sheet in a shadow tree, a `:has()` every element could anchor
 that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`
