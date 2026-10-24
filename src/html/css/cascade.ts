@@ -635,7 +635,7 @@ type PseudoElement =
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*(-?[_a-zA-Z\u0080-\uffff][-\w\u0080-\uffff]*)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
 
 /**
  * The name `::target-text`'s rules are kept under among the custom
@@ -645,6 +645,85 @@ const PSEUDO_ELEMENT =
  * `::highlight()` can name it, since no identifier starts with a space.
  */
 export const TARGET_TEXT = ' target-text';
+
+/** The names `::spelling-error`'s and `::grammar-error`'s rules are kept
+ *  under, as `TARGET_TEXT` is: nothing here checks a spelling, so they
+ *  paint nothing, and `getComputedStyle` reads them all the same. */
+const SPELLING_ERROR = ' spelling-error';
+const GRAMMAR_ERROR = ' grammar-error';
+/** And the one `highlightPseudoStyle` asks for `::selection`'s, whose
+ *  rules are indexed with the other pseudo-elements'. */
+const SELECTION = ' selection';
+
+/**
+ * The key a highlight pseudo-element's rules are kept under, from its name
+ * as `getComputedStyle` hands it over without its colons: `selection`,
+ * `target-text`, `spelling-error`, `grammar-error`, or `highlight(name)`
+ * with the custom highlight's name unescaped. Null for any other.
+ */
+export function highlightKey(pseudo: string): string | null {
+  switch (pseudo) {
+    case 'selection':
+      return SELECTION;
+    case 'target-text':
+      return TARGET_TEXT;
+    case 'spelling-error':
+      return SPELLING_ERROR;
+    case 'grammar-error':
+      return GRAMMAR_ERROR;
+  }
+  const m = /^highlight\(([\s\S]+)\)$/.exec(pseudo);
+  return m ? m[1] : null;
+}
+
+/** A highlight pseudo-element's style as `getComputedStyle` reads it
+ *  (`Cascade.highlightPseudoStyle`), and whether its `color` is
+ *  `currentColor`, the originating element's, which a descendant's that
+ *  inherits it is its own originating element's. */
+export interface HighlightPseudoStyle {
+  style: ComputedStyle;
+  currentColor: boolean;
+}
+
+/** What each property a highlight pseudo-element takes sets of its
+ *  computed style (CSS Pseudo 4, 3.2): the rest are its originating
+ *  element's. */
+const HIGHLIGHT_FIELDS: Record<string, readonly HighlightField[]> = {
+  color: ['color'],
+  'background-color': ['backgroundColor', 'backgroundColorSource'],
+  background: ['backgroundColor', 'backgroundColorSource'],
+  'text-decoration': [
+    'textDecorationLine',
+    'textDecorationColor',
+    'textDecorationStyle',
+    'textDecorationThickness',
+  ],
+  'text-decoration-line': ['textDecorationLine'],
+  'text-decoration-color': ['textDecorationColor'],
+  'text-decoration-style': ['textDecorationStyle'],
+  'text-decoration-thickness': ['textDecorationThickness'],
+  'text-underline-offset': ['textUnderlineOffset'],
+  'text-shadow': ['textShadow'],
+  fill: ['fill'],
+  stroke: ['stroke'],
+  'stroke-width': ['strokeWidth'],
+};
+type HighlightField =
+  | 'color'
+  | 'backgroundColor'
+  | 'backgroundColorSource'
+  | 'textDecorationLine'
+  | 'textDecorationColor'
+  | 'textDecorationStyle'
+  | 'textDecorationThickness'
+  | 'textUnderlineOffset'
+  | 'textShadow'
+  | 'fill'
+  | 'stroke'
+  | 'strokeWidth';
+const HIGHLIGHT_FIELD_LIST: readonly HighlightField[] = [
+  ...new Set(Object.values(HIGHLIGHT_FIELDS).flat()),
+];
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -697,16 +776,27 @@ function splitPseudoElement(rule: StyleRule): {
     : head !== trimmed || /[>+~]$/.test(trimmed)
       ? `${trimmed} *`
       : trimmed;
-  // a custom highlight's, by its name, which is case-sensitive
+  // a custom highlight's, by its name, which is case-sensitive and may be
+  // written with escapes: `::highlight(multi\ word)` is `multi word`'s
   if (m[3] !== undefined) {
-    return { which: 'highlight', rule: { ...rule, selector }, name: m[3] };
-  }
-  const name = (m[1] ?? m[2]).toLowerCase();
-  if (name === 'target-text') {
+    const ident = startsIdent(m[3], 0) ? readIdent(m[3], 0) : null;
+    if (!ident || ident.end !== m[3].length) return null;
     return {
       which: 'highlight',
       rule: { ...rule, selector },
-      name: TARGET_TEXT,
+      name: ident.value,
+    };
+  }
+  const name = (m[1] ?? m[2]).toLowerCase();
+  if (
+    name === 'target-text' ||
+    name === 'spelling-error' ||
+    name === 'grammar-error'
+  ) {
+    return {
+      which: 'highlight',
+      rule: { ...rule, selector },
+      name: ` ${name}`,
     };
   }
   return {
@@ -5768,6 +5858,98 @@ export class Cascade {
       decoration,
       shadow,
     };
+  }
+
+  /**
+   * A highlight pseudo-element's computed style, as `getComputedStyle`
+   * reads it (CSS Pseudo 4, 7.3), over its originating element's parent's
+   * (`parent`, null at the root): `key` is `highlightKey`'s. Only the
+   * properties a highlight takes are its own (3.2) — the colour, the
+   * background colour, the text decoration, the text shadow, the fill and
+   * the stroke — and each the rules leave alone, or set to `inherit` or
+   * `unset`, is the parent's highlight's, inherited or not (3.5). At the
+   * root it is its initial value, and the colour `currentColor`. Every
+   * other property is the element's, which is what a font-relative length
+   * is resolved against, and a custom property is the element's where the
+   * highlight's rules set none.
+   *
+   * Worked out as it is asked for, and kept nowhere: the painter has its
+   * own (`highlightStyle`), which is what a frame draws.
+   */
+  highlightPseudoStyle(
+    el: Element,
+    style: ComputedStyle,
+    key: string,
+    parent: HighlightPseudoStyle | null,
+  ): HighlightPseudoStyle {
+    const index =
+      key === SELECTION ? this._pseudo.selection : this._highlights.get(key);
+    // the value each field is last given, in cascade order
+    const given = new Map<HighlightField, string>();
+    let own: ComputedStyle | null = null;
+    if (index?.size && index.reaches(el)) {
+      const matched: Candidate[] = [];
+      this._matchInto(index, el, matched);
+      const candidates: Candidate[] = [];
+      for (const c of matched) {
+        // the user agent's look — `::target-text`'s marks — is a paired
+        // default (3.3.1) the painter falls back on, and no part of what
+        // the cascade computes: Chrome reads the originating element's
+        // colour where no author's rule sets one
+        if (
+          c.origin === Origin.UserAgent ||
+          c.origin === Origin.UserAgentImportant
+        ) {
+          continue;
+        }
+        const declarations = pick(c).filter(
+          (d) => d.custom || Object.hasOwn(HIGHLIGHT_FIELDS, d.prop),
+        );
+        if (declarations.length) {
+          candidates.push({ ...c, declarations, only: -1 });
+        }
+      }
+      if (candidates.length) {
+        candidates.sort(byCascade);
+        for (const c of candidates) {
+          for (const d of c.declarations) {
+            for (const field of HIGHLIGHT_FIELDS[d.prop] ?? []) {
+              given.set(field, d.value.trim().toLowerCase());
+            }
+          }
+        }
+        own = this._computeStyle(el, style, false, candidates);
+      }
+    }
+    const out: ComputedStyle = {
+      ...style,
+      custom: own?.custom ?? style.custom,
+    };
+    const set = (field: HighlightField): boolean => {
+      const value = given.get(field);
+      return value !== undefined && value !== 'inherit' && value !== 'unset';
+    };
+    for (const field of HIGHLIGHT_FIELD_LIST) {
+      if (field === 'color') continue;
+      const from = set(field) ? own! : (parent?.style ?? this.initial);
+      (out as unknown as Record<string, unknown>)[field] = from[field];
+    }
+    // the colour with the colour it was read from (`colorSource`)
+    let currentColor: boolean;
+    let from: ComputedStyle;
+    if (set('color')) {
+      currentColor = given.get('color') === 'currentcolor';
+      from = currentColor ? style : own!;
+    } else if (parent && !parent.currentColor) {
+      currentColor = false;
+      from = parent.style;
+    } else {
+      currentColor = true;
+      from = style;
+    }
+    out.color = from.color;
+    out.colorSource = from.colorSource;
+    return { style: out, currentColor };
   }
 
   /**

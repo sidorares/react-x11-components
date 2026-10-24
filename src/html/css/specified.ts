@@ -270,6 +270,138 @@ function splitTopLevel(text: string): string[] {
   return out;
 }
 
+/** A custom highlight's pseudo-element in a selector (CSS Highlight API
+ *  1, 4.1). */
+const HIGHLIGHT_PSEUDO = /::highlight(?![\w-])/gi;
+/** A CSS identifier, its escapes in it: a hex escape and the one white
+ *  space that may end it, or any other character escaped. */
+const IDENT_ESCAPED =
+  /^(?:--|-?(?:[_a-zA-Z\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f0-9a-fA-F]))(?:[-_a-zA-Z0-9\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f0-9a-fA-F])*$/;
+/** A legacy pseudo-element a selector may spell with one colon. */
+const LEGACY_PSEUDO =
+  /(?<!:):(?:before|after|first-line|first-letter)(?![\w-])/i;
+
+/**
+ * The `::highlight()`s of one complex selector, each with where its
+ * argument is: or null where one is not written as a selector takes it —
+ * outside any function, after no pseudo-element but a `::part()`, with an
+ * identifier for its argument, and nothing after it (CSS Highlight API 1,
+ * 4.1; Selectors 4, 3.6.1). An empty list where it has none.
+ */
+function highlightsIn(
+  complex: string,
+): { from: number; to: number; name: string }[] | null {
+  const out: { from: number; to: number; name: string }[] = [];
+  HIGHLIGHT_PSEUDO.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HIGHLIGHT_PSEUDO.exec(complex))) {
+    if (depthAt(complex, m.index) !== 0) return null;
+    // what comes before it in the selector: no other pseudo-element
+    const before = complex.slice(0, m.index).replace(/::part\([^()]*\)/gi, '');
+    if (/::/.test(before) || LEGACY_PSEUDO.test(before)) return null;
+    const open = m.index + m[0].length;
+    if (complex[open] !== '(') return null;
+    let close = open + 1;
+    while (close < complex.length && complex[close] !== ')') {
+      close += complex[close] === '\\' ? 2 : 1;
+    }
+    if (close >= complex.length) return null;
+    const arg = complex.slice(open + 1, close).trim();
+    if (!IDENT_ESCAPED.test(arg)) return null;
+    if (complex.slice(close + 1).trim()) return null;
+    out.push({ from: open + 1, to: close, name: unescapeIdent(arg) });
+  }
+  return out;
+}
+
+/**
+ * Whether a selector list's `::highlight()`s are written as selectors take
+ * them (`highlightsIn`); null where it has none, which leaves the selector
+ * to whatever else reads it. No element is a highlight: a query a valid
+ * one is in matches nothing by it (`withoutHighlights`), and an invalid one
+ * is a syntax error.
+ */
+export function highlightSelectorValid(selector: string): boolean | null {
+  if (!/::highlight/i.test(selector)) return null;
+  for (const complex of splitTopLevel(selector)) {
+    if (!highlightsIn(complex)) return false;
+  }
+  return true;
+}
+
+/** A selector list's complex selectors that name no highlight, which are
+ *  what a query of it can match. */
+export function withoutHighlights(selector: string): string[] {
+  return splitTopLevel(selector)
+    .map((complex) => complex.trim())
+    .filter((complex) => complex && !highlightsIn(complex)?.length);
+}
+
+/** A valid selector list with each `::highlight()`'s name written as CSSOM
+ *  serializes an identifier (`CSS.escape`): `::highlight(\31\32\33)` is
+ *  `::highlight(\31 23)`, as `selectorText` reads it. */
+export function canonicalHighlights(selector: string): string {
+  return splitTopLevel(selector)
+    .map((complex) => {
+      const found = highlightsIn(complex) ?? [];
+      let out = complex;
+      for (let i = found.length - 1; i >= 0; i -= 1) {
+        const { from, to, name } = found[i];
+        out = out.slice(0, from) + serializeIdent(name) + out.slice(to);
+      }
+      return out.trim();
+    })
+    .join(', ');
+}
+
+/** An identifier's escapes made the characters they stand for (CSS
+ *  Syntax 3, 4.3.7). */
+function unescapeIdent(ident: string): string {
+  return ident.replace(
+    /\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|([^\n\r\f]))/g,
+    (_m, hex: string | undefined, ch: string | undefined) => {
+      if (hex === undefined) return ch!;
+      const code = parseInt(hex, 16);
+      return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
+        ? '�'
+        : String.fromCodePoint(code);
+    },
+  );
+}
+
+/** An identifier as CSSOM serializes one (CSSOM 2.1, "serialize an
+ *  identifier"), which `CSS.escape` is. */
+export function serializeIdent(value: string): string {
+  let out = '';
+  const first = value.charCodeAt(0);
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value.charCodeAt(i);
+    if (c === 0) out += '�';
+    else if (
+      (c >= 1 && c <= 0x1f) ||
+      c === 0x7f ||
+      (i === 0 && c >= 0x30 && c <= 0x39) ||
+      (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)
+    ) {
+      out += `\\${c.toString(16)} `;
+    } else if (i === 0 && c === 0x2d && value.length === 1) {
+      out += `\\${value[i]}`;
+    } else if (
+      c >= 0x80 ||
+      c === 0x2d ||
+      c === 0x5f ||
+      (c >= 0x30 && c <= 0x39) ||
+      (c >= 0x41 && c <= 0x5a) ||
+      (c >= 0x61 && c <= 0x7a)
+    ) {
+      out += value[i];
+    } else {
+      out += `\\${value[i]}`;
+    }
+  }
+  return out;
+}
+
 /** How many brackets are open at `at`. */
 function depthAt(text: string, at: number): number {
   let depth = 0;

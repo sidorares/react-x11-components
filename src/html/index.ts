@@ -461,6 +461,15 @@ export interface HtmlProps {
   'data-testname'?: string;
 }
 
+/** A highlight pseudo-element as `HtmlHandle.computedStyle` names it,
+ *  without its colons: a custom highlight's by its name, unescaped. */
+export type HighlightPseudo =
+  | 'selection'
+  | 'target-text'
+  | 'spelling-error'
+  | 'grammar-error'
+  | `highlight(${string})`;
+
 /** What an application holds to read or change the document it rendered. */
 export interface HtmlHandle {
   /** The live DOM. Mutable: this is domhandler's tree, and `domutils` speaks
@@ -592,13 +601,17 @@ export interface HtmlHandle {
    * An element's style as `getComputedStyle` reads it, laid out first:
    * the properties a script reads, by name, lengths in CSS pixels and
    * colours as `rgb()`. `pseudo` asks for a `::before` or an `::after`, and
-   * is null where no rule gives the element one; or, for the root element,
-   * for one of a view transition's pseudo-elements, written without its
-   * colons — `view-transition-group(name)`.
+   * is null where no rule gives the element one; for a highlight
+   * pseudo-element — `selection`, `target-text`, `spelling-error`,
+   * `grammar-error` or `highlight(name)`, the name unescaped — as though
+   * that highlight were the one active (CSS Pseudo 4, 7.3); or, for the
+   * root element, for one of a view transition's pseudo-elements, written
+   * without its colons — `view-transition-group(name)`.
    */
   computedStyle(
     element: Element,
-    pseudo?: 'before' | 'after' | `view-transition${string}` | null,
+    pseudo?:
+      'before' | 'after' | HighlightPseudo | `view-transition${string}` | null,
   ): Record<string, string> | null;
   /**
    * A custom property's computed value, as `getComputedStyle` reads it by
@@ -610,7 +623,7 @@ export interface HtmlHandle {
   customProperty(
     element: Element,
     name: string,
-    pseudo?: 'before' | 'after' | null,
+    pseudo?: 'before' | 'after' | HighlightPseudo | null,
   ): string | null;
   /**
    * Whether a media query holds for the document, as `matchMedia` answers:
@@ -1206,12 +1219,14 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         target?: Element | null,
       ) =>
         nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
-      computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
-        nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+      computedStyle: (
+        element: Element,
+        pseudo?: 'before' | 'after' | HighlightPseudo | null,
+      ) => nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
       customProperty: (
         element: Element,
         name: string,
-        pseudo?: 'before' | 'after' | null,
+        pseudo?: 'before' | 'after' | HighlightPseudo | null,
       ) =>
         nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>

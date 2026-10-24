@@ -106,11 +106,13 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  highlightKey,
 } from './css/cascade.js';
 import type {
   BelowReach,
   ChangeAnchors,
   FocusState,
+  HighlightPseudoStyle,
   HoverTouch,
   KeptStyles,
   MetricFace,
@@ -4728,7 +4730,21 @@ export class HtmlViewNode extends Node {
   /** A page's custom highlights changed: drawn again with the new ones. */
   setHighlights(highlights: readonly HighlightRanges[]): void {
     if (!this._highlights.length && !highlights.length) return;
+    const was = this._replacedLit?.lit;
     this._highlights = highlights;
+    // a surface kept around a replaced element is of the colours it was lit
+    // in (`_dropSprites`)
+    const now = this._litReplaced();
+    for (const [these, those] of [
+      [was, now],
+      [now, was],
+    ]) {
+      for (const [box, colours] of these ?? []) {
+        if (those?.get(box)?.join() !== colours.join()) {
+          this._dropSprites(box, true);
+        }
+      }
+    }
     this.invalidate();
   }
 
@@ -4790,6 +4806,82 @@ export class HtmlViewNode extends Node {
         out.push({ selection: { start: last[0], end: last[1] }, styler: lit });
     }
     return out.length ? out : undefined;
+  }
+
+  /** What `_litReplaced` worked out last, for the highlights and the
+   *  tree it was worked out for. */
+  private _replacedLit: {
+    highlights: readonly HighlightRanges[];
+    tree: BoxTree;
+    generation: number;
+    lit: ReadonlyMap<Box, readonly string[]> | undefined;
+  } | null = null;
+
+  /**
+   * The colours the custom highlights lay over the replaced elements their
+   * ranges hold whole — an image, an `<svg>`, a canvas or a frame — by
+   * the element's box, the lowest priority first (CSS Pseudo 4, 3.4: a
+   * replaced element's piece of the overlay is the replaced object). Each
+   * is the highlight's background, its `currentColor` the colour of the
+   * layer under it and then the element's (3.6.3), and as the author
+   * wrote it (3.2): an opaque one hides the image. Undefined where none
+   * does, which is every document with no highlight or no replaced
+   * element, and kept until the highlights or the boxes change.
+   */
+  private _litReplaced(): ReadonlyMap<Box, readonly string[]> | undefined {
+    const tree = this._tree;
+    const styler = tree?.highlightStyler;
+    if (!this._highlights.length || !tree || !styler || !this._cascade) {
+      return undefined;
+    }
+    const generation = this._cascade.highlightGeneration;
+    const kept = this._replacedLit;
+    if (
+      kept?.tree === tree &&
+      kept.highlights === this._highlights &&
+      kept.generation === generation
+    ) {
+      return kept.lit;
+    }
+    const boxes = replacedBoxesOf(tree);
+    let lit: Map<Box, string[]> | undefined;
+    const under = new Map<Box, string>();
+    if (boxes.length) {
+      const ordered = this._highlights
+        .map((h, i) => ({ h, i }))
+        .sort((a, b) => a.h.priority - b.h.priority || a.i - b.i);
+      for (const { h } of ordered) {
+        // a range inside one text holds no element: a search's matches
+        const spans = h.ranges
+          .filter((r) => r.sc !== r.ec || isElement(r.sc))
+          .map((r) => spanOf(r));
+        if (!spans.length) continue;
+        const style = styler(h.name);
+        for (const { box, root, before, after } of boxes) {
+          if (
+            !spans.some(
+              (span) =>
+                span.root === root &&
+                comparePaths(span.start, before) <= 0 &&
+                comparePaths(after, span.end) <= 0,
+            )
+          ) {
+            continue;
+          }
+          const look = style(box);
+          if (!look) continue;
+          const colour = look.color ?? under.get(box) ?? box.style.color;
+          if (look.color) under.set(box, look.color);
+          if (!look.background || isTransparent(look.background)) continue;
+          lit ??= new Map();
+          let list = lit.get(box);
+          if (!list) lit.set(box, (list = []));
+          list.push(inkColor(look.background, colour));
+        }
+      }
+    }
+    this._replacedLit = { highlights: this._highlights, tree, generation, lit };
+    return lit;
   }
 
   textRects(
@@ -5033,6 +5125,11 @@ export class HtmlViewNode extends Node {
         null,
       );
     }
+    const key = pseudo ? highlightKey(pseudo) : null;
+    if (key !== null) {
+      const own = this._highlightPseudo(element, key);
+      return own ? cssomStyle(own, this._scale, null) : null;
+    }
     if (pseudo) return null;
     const box = boxFor(tree.root, element);
     if (!box) return cssomStyle(style, this._scale, null);
@@ -5177,16 +5274,48 @@ export class HtmlViewNode extends Node {
   customProperty(
     element: Element,
     name: string,
-    pseudo: 'before' | 'after' | null = null,
+    pseudo: string | null = null,
   ): string | null {
     this._prepare(this.abs.width || 1);
     const style = this._styleOf(element);
+    const key = pseudo ? highlightKey(pseudo) : null;
     // a pseudo-element no rule styles inherits every one of its element's
     const own =
-      style && pseudo
-        ? (this._cascade?.pseudoComputedStyle(element, pseudo, style) ?? style)
-        : style;
+      !style || !pseudo
+        ? style
+        : key !== null
+          ? this._highlightPseudo(element, key)
+          : pseudo === 'before' || pseudo === 'after'
+            ? (this._cascade?.pseudoComputedStyle(element, pseudo, style) ??
+              style)
+            : null;
     return own ? (own.custom?.get(name) ?? '') : null;
+  }
+
+  /**
+   * A highlight pseudo-element's style (`Cascade.highlightPseudoStyle`),
+   * worked out down the flat tree from the root, since each element's
+   * highlight inherits from its parent's: a shadow tree's top from its
+   * host's, and a slotted element's through its slot (CSS Pseudo 4, 3.5).
+   * Null for an element the document has not styled.
+   */
+  private _highlightPseudo(
+    element: Element,
+    key: string,
+  ): ComputedStyle | null {
+    const cascade = this._cascade;
+    if (!cascade) return null;
+    const chain: Element[] = [];
+    for (let at: Element | null = element; at; at = flatParentOf(at)) {
+      chain.push(at);
+    }
+    let found: HighlightPseudoStyle | null = null;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const style = this._styledNow(chain[i]);
+      if (!style) return null;
+      found = cascade.highlightPseudoStyle(chain[i], style, key, found);
+    }
+    return found?.style ?? null;
   }
 
   /**
@@ -10970,6 +11099,7 @@ export class HtmlViewNode extends Node {
         : null,
       selectionColor: this.selectionColor,
       highlights: this._litRanges(),
+      litReplaced: this._litReplaced(),
       scrollbarHidden: (box) =>
         box.el && this._cascade
           ? this._cascade.scrollbarHidden(box.el, box.style)
@@ -14505,4 +14635,80 @@ function snapContainersIn(root: Box): Box[] {
   };
   walk(root);
   return out;
+}
+
+/** The replaced kinds a highlight lays its colour over: what draws a
+ *  picture, and not a form control, which is a widget. */
+const LIT_REPLACED = new Set(['image', 'svg', 'frame']);
+
+/** A replaced box a highlight may cover, with where its element's edges
+ *  are in its tree (`pointPath`): a range holds it whole where it starts
+ *  at or before the first and ends at or after the second (DOM 5.5,
+ *  "contained"). */
+interface ReplacedBox {
+  box: Box;
+  root: AnyNode;
+  before: number[];
+  after: number[];
+}
+
+/** The boxes of a tree's replaced elements a highlight may cover, in the
+ *  order the tree has them: found once a tree, and none in most. */
+const REPLACED_BOXES = new WeakMap<BoxTree, ReplacedBox[]>();
+function replacedBoxesOf(tree: BoxTree): ReplacedBox[] {
+  let found = REPLACED_BOXES.get(tree);
+  if (found) return found;
+  found = [];
+  const stack: Box[] = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const el = box.el;
+    if (el?.parent && LIT_REPLACED.has(box.replaced)) {
+      const before = pointPath(el.parent, el.parent.children.indexOf(el));
+      const after = before.slice();
+      after[after.length - 1] += 1;
+      found.push({ box, root: rootOf(el), before, after });
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  REPLACED_BOXES.set(tree, found);
+  return found;
+}
+
+/** A range's boundary points as paths (`pointPath`), and its root. */
+function spanOf(r: { sc: AnyNode; so: number; ec: AnyNode; eo: number }): {
+  root: AnyNode;
+  start: number[];
+  end: number[];
+} {
+  return {
+    root: rootOf(r.sc) === rootOf(r.ec) ? rootOf(r.sc) : r.sc,
+    start: pointPath(r.sc, r.so),
+    end: pointPath(r.ec, r.eo),
+  };
+}
+
+/** Where a DOM boundary point is, as the child indices down to it from its
+ *  root and its offset last: two points of a tree compare as their paths
+ *  do, a path that is a prefix of another's before it (DOM 5.2). */
+function pointPath(node: AnyNode, offset: number): number[] {
+  const path = [offset];
+  for (let at: AnyNode = node; at.parent; at = at.parent) {
+    path.push(at.parent.children.indexOf(at as ChildNode));
+  }
+  return path.reverse();
+}
+function comparePaths(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+function rootOf(node: AnyNode): AnyNode {
+  let at = node;
+  while (at.parent) at = at.parent;
+  return at;
 }

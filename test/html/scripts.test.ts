@@ -7301,6 +7301,299 @@ metric(
   },
 );
 
+test("getComputedStyle reads a highlight pseudo-element's own style, inherited along its highlight's chain, and an ill-formed one as an empty declaration", async () => {
+  // CSS Pseudo 4, 3.5 and 7.3: a highlight's colour, background and
+  // decoration are its rules', and its parent's highlight's where they
+  // set none — a background as much as a colour — down the flat tree; at
+  // the root its colour is currentColor, so a child no rule reaches has
+  // its own; its other properties, a font size among them, are its
+  // element's, which an `em` is resolved against; the UA's look for
+  // `::target-text` is no part of it
+  const doc = await hosted(
+    '<style>body { color: #000000 }' +
+      ' #p::highlight(foo) { background-color: #008000; color: #00ff00;' +
+      '  text-underline-offset: 0.5em; text-decoration: underline #0000ff 4px;' +
+      '  --x: own }' +
+      ' #p { font-size: 20px; --x: elem; --y: elem }' +
+      ' #c::highlight(foo) { color: inherit }' +
+      ' #p::selection { background-color: #ff0000 }' +
+      ' #p::spelling-error { color: #0000ff }' +
+      ' ::highlight(\\66 oo-bar) { color: #ffff00 }' +
+      ' #q { color: #ff00ff } #h::selection { background-color: #010203 }' +
+      '</style>' +
+      '<div id="p"><span id="c"></span></div><p id="q"></p><div id="h"></div>' +
+      '<p id="out"></p><script>' +
+      'var p = document.getElementById("p"), c = document.getElementById("c");' +
+      'var q = document.getElementById("q"), h = document.getElementById("h");' +
+      'var inner = h.attachShadow({ mode: "open" });' +
+      'inner.innerHTML = "<span id=in></span>";' +
+      'var g = function (el, pseudo) { return getComputedStyle(el, pseudo); };' +
+      'var r = [];' +
+      'var s = g(p, "::highlight(foo)");' +
+      'r.push(s.backgroundColor, s.color, s.textUnderlineOffset, s.textDecorationThickness,' +
+      ' s.textDecorationColor, s.fontSize, s.getPropertyValue("--x"), s.getPropertyValue("--y"));' +
+      's = g(c, "::highlight(foo)"); r.push(s.backgroundColor, s.color, s.textUnderlineOffset);' +
+      's = g(q, "::highlight(foo)"); r.push(s.color, s.backgroundColor);' +
+      'r.push(g(c, "::selection").backgroundColor, g(p, "::spelling-error").color,' +
+      ' g(q, "::target-text").color, g(q, "::highlight(foo-bar)").color,' +
+      ' g(inner.getElementById("in"), "::selection").backgroundColor);' +
+      'var bad = ["::highlight(foo)(", "::highlight(foo bar)", ":::highlight(foo)", "::highlight",' +
+      ' "::selection(foo)", "::selection.", ":hover"].map(function (pseudo) {' +
+      '  var e = g(p, pseudo); return e.length + "/" + JSON.stringify(e.backgroundColor); });' +
+      'r.push(bad.join(" "), g(p, ":before").length > 0, g(p, "before").color);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'rgb(0, 128, 0)',
+      'rgb(0, 255, 0)',
+      '10px',
+      '4px',
+      'rgb(0, 0, 255)',
+      '20px',
+      'own',
+      'elem',
+      // the child's: the parent's highlight's, the colour it inherits too
+      'rgb(0, 128, 0)',
+      'rgb(0, 255, 0)',
+      '10px',
+      // nothing reaches `q`'s: its own colour, and no background
+      'rgb(255, 0, 255)',
+      'rgba(0, 0, 0, 0)',
+      'rgb(255, 0, 0)',
+      'rgb(0, 0, 255)',
+      'rgb(255, 0, 255)',
+      'rgb(255, 255, 0)',
+      // in a shadow tree, its host's
+      'rgb(1, 2, 3)',
+      Array(7).fill('0/""').join(' '),
+      'true',
+      'rgb(0, 0, 0)',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  'highlightsFromPoint answers the highlights over a point, the highest priority and then the one registered last first, and none in a shadow tree it is not handed',
+  async () => {
+    const doc = await hosted(
+      '<style>body { margin: 0; font: 20px/30px monospace } p { margin: 0 }</style>' +
+        '<p><span id="t">0123456789</span></p><div id="h"></div><p id="out"></p><script>' +
+        'var t = document.getElementById("t").firstChild;' +
+        'var range = function (node, a, b) { var r = new Range(); r.setStart(node, a); r.setEnd(node, b); return r; };' +
+        'var r1 = range(t, 2, 10), r2 = range(t, 5, 10), r3 = range(t, 0, 6);' +
+        'var h1 = new Highlight(r1), h2 = new Highlight(r2, r3);' +
+        'CSS.highlights.set("one", h1); CSS.highlights.set("two", h2);' +
+        'var box = document.getElementById("t").getBoundingClientRect();' +
+        'var w = box.width / 10, y = box.top + box.height / 2;' +
+        'var at = function (i, o) { return CSS.highlights.highlightsFromPoint(box.left + (i + 0.5) * w, y, o); };' +
+        'var label = function (hits) { return hits.map(function (x) {' +
+        '  return (x.highlight === h1 ? "one" : "two") + ":" + x.ranges.length; }).join(","); };' +
+        'var r = [label(at(0)), label(at(3)), label(at(5))];' +
+        'h1.priority = 1; r.push(label(at(5)));' +
+        'r.push(CSS.highlights.highlightsFromPoint(-1, y).length,' +
+        ' CSS.highlights.highlightsFromPoint(document.documentElement.clientWidth + 1, y).length);' +
+        'var errors = [];' +
+        '[[], [1], ["x", 1], [1, NaN], [1, 1, "x"], [1, 1, { shadowRoots: [document.body] }]].forEach(function (args) {' +
+        '  try { CSS.highlights.highlightsFromPoint.apply(CSS.highlights, args); errors.push("none"); }' +
+        '  catch (e) { errors.push(e.name); } });' +
+        'r.push(errors.join(","), CSS.highlights.highlightsFromPoint.length);' +
+        // over a shadow tree's text, the tree's root has to be handed
+        'var root = document.getElementById("h").attachShadow({ mode: "closed" });' +
+        'root.innerHTML = "<span id=s>abcdefghij</span>";' +
+        'var s = root.getElementById("s").firstChild;' +
+        'CSS.highlights.set("inner", new Highlight(range(s, 0, 10)));' +
+        'var sbox = root.getElementById("s").getBoundingClientRect();' +
+        'var sy = sbox.top + sbox.height / 2, sx = sbox.left + 3 * w;' +
+        'r.push(CSS.highlights.highlightsFromPoint(sx, sy).length,' +
+        ' CSS.highlights.highlightsFromPoint(sx, sy, { shadowRoots: [root] }).length);' +
+        'document.getElementById("out").textContent = r.join("|");' +
+        '</script>',
+    );
+    assert.equal(
+      doc.text('out'),
+      [
+        'two:1',
+        // two of the same priority: the one registered last first
+        'two:1,one:1',
+        // and each with the ranges over the point
+        'two:2,one:1',
+        'one:1,two:2',
+        '0',
+        '0',
+        'TypeError,TypeError,TypeError,TypeError,TypeError,TypeError',
+        '2',
+        '0',
+        '1',
+      ].join('|'),
+      doc.logs.join('\n'),
+    );
+  },
+);
+
+test('a ::highlight() selector matches no element, is a syntax error where it is not last or is in a function, and is read back with its name escaped', async () => {
+  const doc = await hosted(
+    '<style id="s"></style><div class="a" id="d"></div><p id="out"></p><script>' +
+      'var sheet = document.getElementById("s").sheet, d = document.getElementById("d"), r = [];' +
+      'var take = function (selector) {' +
+      '  try { sheet.insertRule(selector + "{}"); var t = sheet.cssRules[0].selectorText;' +
+      '    sheet.deleteRule(0); return t; } catch (e) { return e.name; } };' +
+      '["::highlight(foo)", ".a::highlight(foo)", "div ::highlight(foo)", "::highlight(\\\\31\\\\32\\\\33)",' +
+      ' "::highlight(multi\\\\ word)", "::highlight", "::before::highlight(foo)", "::highlight(foo).a",' +
+      ' "::highlight(foo) div", "::highlight(foo):hover", ":not(::highlight(foo))"].forEach(function (s) {' +
+      '  r.push(take(s)); });' +
+      'r.push(document.querySelector("::highlight(foo)"), d.matches(".a::highlight(foo)"),' +
+      ' document.querySelector("::highlight(foo), .a") === d, d.closest("::highlight(foo)"));' +
+      'try { document.querySelector(":not(::highlight(foo))"); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '::highlight(foo)',
+      '.a::highlight(foo)',
+      'div ::highlight(foo)',
+      '::highlight(\\31 23)',
+      '::highlight(multi\\ word)',
+      ...Array(6).fill('SyntaxError'),
+      '',
+      'false',
+      'true',
+      '',
+      'SyntaxError',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('Highlight and HighlightRegistry are setlike and maplike as Web IDL makes them', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var d = function (o, k) { return Object.getOwnPropertyDescriptor(o, k); };' +
+      'var H = Highlight.prototype, R = HighlightRegistry.prototype;' +
+      'r.push(["add", "delete", "has", "clear", "forEach", "values", "keys", "entries"].every(function (k) {' +
+      '  return d(H, k).enumerable; }), H[Symbol.iterator] === H.values, H.forEach.length, d(H, "size").enumerable);' +
+      'r.push(["set", "get", "has", "delete", "clear", "forEach", "keys", "values", "entries", "highlightsFromPoint"].every(function (k) {' +
+      '  return d(R, k).enumerable; }), R[Symbol.iterator] === R.entries, R.forEach.length);' +
+      'var errors = [];' +
+      '[function () { return H.priority; }, function () { d(H, "type").set.call({}, "highlight"); },' +
+      ' function () { d(H, "priority").set.call({}, 1); }, function () { return R.size; }].forEach(function (f) {' +
+      '  try { f(); errors.push("none"); } catch (e) { errors.push(e.name); } });' +
+      'r.push(errors.join(","));' +
+      // and whatever a page does to `Set.prototype`, a registry's change goes on
+      'Set.prototype.has = "x"; var h = new Highlight(); CSS.highlights.set("a", h); h.priority = 2;' +
+      'r.push(CSS.highlights.get("a").priority);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'true|true|1|true|true|true|1|TypeError,TypeError,TypeError,TypeError|2',
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  "a highlight that holds a replaced element whole lays its background over the element's content box, the higher priority over the lower",
+  async () => {
+    // CSS Pseudo 4, 3.4: a replaced element's piece of a highlight is the
+    // replaced object, and an author's colour is drawn as written (3.2);
+    // a `currentColor` is the colour of the layer under it (3.6.3)
+    const doc = await hosted(
+      '<style>body { margin: 0; color: #0000ff } div { line-height: 0 }' +
+        ' svg { display: block } ::highlight(low) { background-color: #ff0000; color: #008000 }' +
+        ' ::highlight(high) { background-color: currentColor }' +
+        ' ::highlight(text) { background-color: #ff0000 }</style>' +
+        '<div id="a"><svg width="40" height="40"><rect width="40" height="40" fill="#ffffff"/></svg></div>' +
+        '<div id="b"><svg width="40" height="40"><rect width="40" height="40" fill="#ffffff"/></svg>x</div>' +
+        '<p id="out"></p><script>' +
+        'var a = document.getElementById("a"), b = document.getElementById("b");' +
+        'var whole = function (el) { return new StaticRange({ startContainer: el, startOffset: 0,' +
+        '  endContainer: el, endOffset: 1 }); };' +
+        'var low = new Highlight(whole(a)), high = new Highlight(whole(a));' +
+        'high.priority = 1; CSS.highlights.set("high", high); CSS.highlights.set("low", low);' +
+        // the text after the drawing, which holds no part of it
+        'var r = new Range(); r.setStart(b.lastChild, 0); r.setEnd(b.lastChild, 1);' +
+        'CSS.highlights.set("text", new Highlight(r));' +
+        'document.getElementById("out").textContent = "set";' +
+        '</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'set');
+    await settle(40);
+    const a = doc.view.elementRect(doc.byId('a'))!;
+    const b = doc.view.elementRect(doc.byId('b'))!;
+    assert.equal(
+      await colourAt(doc, a.x + 20, a.y + 20),
+      '#008000',
+      "the higher highlight's currentColor, the lower one's colour, over the drawing",
+    );
+    assert.equal(
+      await colourAt(doc, b.x + 20, b.y + 20),
+      '#ffffff',
+      'a range that holds none of it leaves it',
+    );
+  },
+);
+
+metric(
+  "a highlight a page registers in a frame's CSS.highlights is drawn in the frame, and only its ranges in the frame's document",
+  async () => {
+    const { result, text, logs } = await hostedFrames(
+      '<style>body { margin: 0 } iframe { display: block; border: 0 }' +
+        ' p { margin: 0; font: 20px/30px sans-serif }' +
+        ' ::highlight(lit) { background-color: #ff0000 }</style>' +
+        '<iframe id="f" src="static.html" width="200" height="60"></iframe>' +
+        '<p id="mine">&nbsp;&nbsp;&nbsp;&nbsp;</p><p id="out"></p><script>' +
+        'var f = document.getElementById("f");' +
+        'f.onload = function () {' +
+        '  var d = f.contentDocument, w = f.contentWindow;' +
+        '  var inFrame = d.createRange(); inFrame.selectNodeContents(d.getElementById("t"));' +
+        '  var mine = new Range(); mine.selectNodeContents(document.getElementById("mine"));' +
+        '  w.CSS.highlights.set("lit", new w.Highlight(inFrame, mine));' +
+        '  document.getElementById("out").textContent = [w.CSS.highlights !== CSS.highlights,' +
+        '    CSS.highlights.size, w.CSS.highlights.size, typeof w.CSS.escape].join(":");' +
+        '};' +
+        '</script>',
+      {
+        'static.html':
+          '<style>body { margin: 0 } p { margin: 0; font: 20px/30px sans-serif }' +
+          ' ::highlight(lit) { background-color: #00ff00 }</style>' +
+          '<p id="t">&nbsp;&nbsp;&nbsp;&nbsp;</p>',
+      },
+    );
+    assert.equal(
+      await until(
+        () => text('page', 'out'),
+        (t) => t !== '',
+      ),
+      'true:0:1:function',
+      logs.join('\n'),
+    );
+    // the frame's text in the frame's look, white space whose band no
+    // glyph is drawn over
+    await waitForPixel(result.ctx, 10, 15, '#00ff00', {
+      message: "the frame's range, in the frame's ::highlight()",
+    });
+    await settle(40);
+    const [r, g, b] = await pixelsIn(result.ctx, {
+      x: 10,
+      y: 75,
+      width: 1,
+      height: 1,
+    });
+    assert.notDeepEqual(
+      [r, g, b],
+      [255, 0, 0],
+      "the page's range is lit in neither",
+    );
+  },
+);
+
 test('document.startViewTransition calls its update at the next frame, and settles updateCallbackDone, ready and finished in order; a new one, a shared name and a throw skip it', async () => {
   // CSS View Transitions 1, 7: run as the specification has it, which is
   // what a page waits on

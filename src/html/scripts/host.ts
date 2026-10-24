@@ -30,7 +30,12 @@ import {
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
-import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
+import type {
+  HighlightPseudo,
+  HtmlChange,
+  HtmlDomEvent,
+  HtmlHandle,
+} from '../index.js';
 import type {
   CssAnimationInfo,
   CssTransitionInfo,
@@ -71,12 +76,16 @@ import {
   treesChanged,
 } from '../dom.js';
 import {
+  canonicalHighlights,
   composeShorthand,
   expandShorthand,
+  highlightSelectorValid,
   specifiedValue,
   transitionSelectorValid,
+  withoutHighlights,
 } from '../css/specified.js';
-import { Cascade } from '../css/cascade.js';
+import { Cascade, highlightKey } from '../css/cascade.js';
+import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
 import type { ComputedStyle, RootLook } from '../css/style.js';
@@ -527,6 +536,19 @@ const FRAME_LOOK: RootLook = {
 
 /** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
 const FRAME_SIZE = { width: 300, height: 150 };
+
+/** The pseudo-elements the host answers a computed style for: a `::before`
+ *  or an `::after`, and the highlights (`highlightKey`). */
+type ComputedPseudo = 'before' | 'after' | HighlightPseudo | null;
+
+/** What `computed` and `customProperty` are asked of, as the facade names
+ *  it (`getComputedStyle`): any other name is the element's own. */
+function computedPseudo(b: Primitive): ComputedPseudo {
+  if (b === 'before' || b === 'after') return b;
+  return typeof b === 'string' && highlightKey(b) !== null
+    ? (b as HighlightPseudo)
+    : null;
+}
 
 /** A selector that names the node a query is asked from (`_query`). */
 const QUERY_SCOPED = /:scope(?![\w-])/i;
@@ -2215,10 +2237,17 @@ export class DomHost {
       }
       // the page's custom highlights (`CSS.highlights`), as JSON: each one's
       // name, priority and ranges — a live range by its id, a static one by
-      // its two points — drawn at the next flush
-      case 'highlights':
-        this._highlightSpec = JSON.parse(text(a)) as HighlightSpec[];
+      // its two points — drawn at the next flush; or, with a document's
+      // id, a frame's window's, drawn in the frame
+      case 'highlights': {
+        const doc = b ? (this._node(b) as Document) : this.document;
+        const spec = JSON.parse(text(a)) as HighlightSpec[];
+        if (spec.length) this._highlightSpecs.set(doc, spec);
+        else if (this._highlightsTold.has(doc)) {
+          this._highlightSpecs.set(doc, []);
+        } else this._highlightSpecs.delete(doc);
         return null;
+      }
       case 'rangeGet': {
         const r = this._ranges.get(Number(a));
         return `${this.idOf(r.sc)},${r.so},${this.idOf(r.ec)},${r.eo}`;
@@ -2751,10 +2780,13 @@ export class DomHost {
       case 'query': {
         const root = this._node(a);
         const options = this._queryOptions();
-        // a view transition's pseudo-element is no element
+        // a view transition's pseudo-element is no element, and nor is a
+        // highlight's
         if (this._transitionSelector(text(b))) return c ? '' : 0;
+        const selector = this._withoutHighlights(text(b));
+        if (selector === null) return c ? '' : 0;
         try {
-          const query = this._query(text(b), root);
+          const query = this._query(selector, root);
           if (c) {
             return selectAll(query, root as Element, options)
               .map((el) => this.idOf(el))
@@ -2768,22 +2800,27 @@ export class DomHost {
           );
         }
       }
-      case 'matches':
+      case 'matches': {
         if (this._transitionSelector(text(b))) return false;
+        const selector = this._withoutHighlights(text(b));
+        if (selector === null) return false;
         try {
           const el = this._element(a);
-          return this._query(text(b), el)(el);
+          return this._query(selector, el)(el);
         } catch {
           throw new DomError(
             'SyntaxError',
             `'${text(b)}' is not a valid selector.`,
           );
         }
+      }
       case 'closest': {
         if (this._transitionSelector(text(b))) return 0;
+        const selector = this._withoutHighlights(text(b));
+        if (selector === null) return 0;
         try {
           const from = this._element(a);
-          const query = this._query(text(b), from);
+          const query = this._query(selector, from);
           for (let at: AnyNode | null = from; at; at = at.parent) {
             if (at instanceof Element && query(at)) return this.idOf(at);
           }
@@ -2845,16 +2882,26 @@ export class DomHost {
         const state = this._sheetOf(el);
         const rules = cssRulesOf(text(b));
         const brace = rules.length === 1 ? rules[0].indexOf('{') : -1;
+        const prelude =
+          brace > 0 && !rules[0].startsWith('@')
+            ? rules[0].slice(0, brace)
+            : null;
+        const highlights =
+          prelude === null ? null : highlightSelectorValid(prelude);
         if (
           rules.length !== 1 ||
-          (brace > 0 &&
-            !rules[0].startsWith('@') &&
-            transitionSelectorValid(rules[0].slice(0, brace)) === false)
+          (prelude !== null &&
+            (transitionSelectorValid(prelude) === false ||
+              highlights === false))
         ) {
           throw new DomError(
             'SyntaxError',
             `Failed to parse the rule '${text(b)}'.`,
           );
+        }
+        // a highlight's name as `selectorText` serializes it
+        if (highlights) {
+          rules[0] = `${canonicalHighlights(prelude!)} ${rules[0].slice(brace)}`;
         }
         const index = Number(c);
         if (!(index >= 0 && index <= state.rules.length)) {
@@ -3324,7 +3371,7 @@ export class DomHost {
       }
       case 'computed': {
         this.flush();
-        const pseudo = b === 'before' || b === 'after' ? b : null;
+        const pseudo = computedPseudo(b);
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
           const style = this._seams.handle.computedStyle(
@@ -3349,7 +3396,7 @@ export class DomHost {
       case 'customProperty': {
         this.flush();
         const el = this._element(a);
-        const pseudo = b === 'before' || b === 'after' ? b : null;
+        const pseudo = computedPseudo(b);
         if (!this._inDocument(el)) {
           return this._frameComputed(el, pseudo)?.custom?.get(text(c)) ?? '';
         }
@@ -4306,6 +4353,23 @@ export class DomHost {
     return valid === true;
   }
 
+  /** A page's selector less the complex selectors in it that name a
+   *  custom highlight, which match no element; null where nothing is
+   *  left, and one written as no selector takes it is a syntax error
+   *  (`highlightSelectorValid`). */
+  private _withoutHighlights(selector: string): string | null {
+    const valid = highlightSelectorValid(selector);
+    if (valid === null) return selector;
+    if (!valid) {
+      throw new DomError(
+        'SyntaxError',
+        `'${selector}' is not a valid selector.`,
+      );
+    }
+    const rest = withoutHighlights(selector);
+    return rest.length ? rest.join(', ') : null;
+  }
+
   private _selectOptions(): {
     pseudos: Record<string, (el: Element, arg?: string | null) => boolean>;
   } {
@@ -4463,53 +4527,71 @@ export class DomHost {
    *  core's range (`documentSelection`). */
   private _selectionTold = '';
 
-  /** The page's custom highlights, as `highlights` was last told them. */
-  private _highlightSpec: HighlightSpec[] = [];
-  /** What the document was last told of them, as a key: their names,
-   *  priorities and ranges' boundary points. */
-  private _highlightsTold = '';
+  /** The custom highlights of each document's registry, as `highlights`
+   *  was last told them: the page's, and a frame's window's. */
+  private readonly _highlightSpecs = new Map<Document, HighlightSpec[]>();
+  /** What each document's `<Html>` was last told of them, as a key: their
+   *  names, priorities and ranges' boundary points. */
+  private readonly _highlightsTold = new Map<Document, string>();
 
-  /** Tell the document its custom highlights where they changed: their
+  /** Tell each document its custom highlights where they changed: their
    *  live ranges move with the tree, so they are read again at each flush,
-   *  and told only where a boundary, a name or a priority moved. */
+   *  and told only where a boundary, a name or a priority moved. A range
+   *  in another document than its registry's is drawn in neither (CSS
+   *  Highlight API 1, 3.2). A frame's that no `<Html>` draws yet is told
+   *  once one does. */
   private _syncHighlights(): void {
-    if (!this._highlightSpec.length && !this._highlightsTold) return;
-    const resolved: HighlightRanges[] = [];
-    const key: string[] = [];
-    for (const h of this._highlightSpec) {
-      const ranges: HighlightRanges['ranges'] = [];
-      for (const r of h.ranges) {
-        let point: { sc: AnyNode; so: number; ec: AnyNode; eo: number };
-        try {
-          if (typeof r === 'number') {
-            const live = this._ranges.get(r);
-            point = { sc: live.sc, so: live.so, ec: live.ec, eo: live.eo };
-          } else {
-            point = {
-              sc: this._node(r[0]),
-              so: r[1],
-              ec: this._node(r[2]),
-              eo: r[3],
-            };
+    if (!this._highlightSpecs.size) return;
+    for (const [doc, spec] of this._highlightSpecs) {
+      const handle: (HtmlHandle & Partial<HandleInternals>) | undefined =
+        doc === this.document ? this._seams.handle : this._s.drawn.get(doc);
+      if (!handle) continue;
+      const resolved: HighlightRanges[] = [];
+      const key: string[] = [];
+      for (const h of spec) {
+        const ranges: HighlightRanges['ranges'] = [];
+        for (const r of h.ranges) {
+          let point: { sc: AnyNode; so: number; ec: AnyNode; eo: number };
+          try {
+            if (typeof r === 'number') {
+              const live = this._ranges.get(r);
+              point = { sc: live.sc, so: live.so, ec: live.ec, eo: live.eo };
+            } else {
+              point = {
+                sc: this._node(r[0]),
+                so: r[1],
+                ec: this._node(r[2]),
+                eo: r[3],
+              };
+            }
+          } catch {
+            continue;
           }
-        } catch {
-          continue;
+          if (
+            shadowIncludingRoot(point.sc) !== doc ||
+            shadowIncludingRoot(point.ec) !== doc
+          ) {
+            continue;
+          }
+          ranges.push(point);
+          key.push(
+            `${this.idOf(point.sc)},${point.so},${this.idOf(point.ec)},${point.eo}`,
+          );
         }
-        if (!this._inDocument(point.sc) || !this._inDocument(point.ec)) {
-          continue;
-        }
-        ranges.push(point);
-        key.push(
-          `${this.idOf(point.sc)},${point.so},${this.idOf(point.ec)},${point.eo}`,
-        );
+        resolved.push({ name: h.name, priority: h.priority, ranges });
+        key.push(`|${h.name}:${h.priority}`);
       }
-      resolved.push({ name: h.name, priority: h.priority, ranges });
-      key.push(`|${h.name}:${h.priority}`);
+      const told = key.join(';');
+      if (told === (this._highlightsTold.get(doc) ?? '')) {
+        if (!spec.length) {
+          this._highlightSpecs.delete(doc);
+          this._highlightsTold.delete(doc);
+        }
+        continue;
+      }
+      this._highlightsTold.set(doc, told);
+      handle.setHighlights?.(resolved);
     }
-    const told = key.join(';');
-    if (told === this._highlightsTold) return;
-    this._highlightsTold = told;
-    this._seams.handle.setHighlights?.(resolved);
   }
 
   /** Each document's names, with where `edits` and the parser were when
@@ -5085,7 +5167,7 @@ export class DomHost {
    */
   private _frameStyle(
     el: Element,
-    pseudo: 'before' | 'after' | null,
+    pseudo: ComputedPseudo,
   ): Record<string, string> | null {
     const style = this._frameComputed(el, pseudo);
     return style ? cssomStyle(style, 1, null) : null;
@@ -5094,7 +5176,7 @@ export class DomHost {
   /** `_frameStyle`, as the cascade computed it. */
   private _frameComputed(
     el: Element,
-    pseudo: 'before' | 'after' | null,
+    pseudo: ComputedPseudo,
   ): ComputedStyle | null {
     let top: AnyNode = el;
     while (top.parent) top = top.parent;
@@ -5134,7 +5216,26 @@ export class DomHost {
         false,
       );
     const style = styleOf(el);
-    return pseudo ? cascade.pseudoComputedStyle(el, pseudo, style) : style;
+    if (pseudo === 'before' || pseudo === 'after') {
+      return cascade.pseudoComputedStyle(el, pseudo, style);
+    }
+    const name = pseudo ? highlightKey(pseudo) : null;
+    if (name === null) return style;
+    // a highlight's, each over its parent's (`Cascade.highlightPseudoStyle`)
+    const chain: Element[] = [];
+    for (let at: AnyNode | null = el; at instanceof Element; at = at.parent) {
+      chain.push(at);
+    }
+    let found: HighlightPseudoStyle | null = null;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      found = cascade.highlightPseudoStyle(
+        chain[i],
+        styleOf(chain[i]),
+        name,
+        found,
+      );
+    }
+    return found?.style ?? null;
   }
 
   /** The size of a frame's viewport: its element's content box in the
