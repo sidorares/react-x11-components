@@ -71,6 +71,7 @@ import { focusableElement } from '../focus.js';
 import {
   atDensity,
   concreteSize,
+  drawsForeignObjects,
   inlineDrawing,
   svgIntrinsics,
 } from '../svg.js';
@@ -2172,9 +2173,11 @@ class Builder {
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       setIntrinsics(box, svgIntrinsics(el, style.fontSize / scale), scale);
       // and the HTML its `<foreignObject>`s hold, which most drawings have
-      // none of
+      // none of, where `SvgView` hands an object over to be drawn
       const objects = inlineDrawing(el).foreignObjects();
-      if (objects.length) this._foreignObjects(el, box, style, objects);
+      if (objects.length && drawsForeignObjects()) {
+        this._foreignObjects(el, box, style, objects);
+      }
       return;
     }
     if (replaced === 'frame') {

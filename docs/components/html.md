@@ -3486,6 +3486,12 @@ an object, or a group around it, that asks for SVG 1.1's `Extensibility`
 in `requiredFeatures` is drawn, and the fallback after it is not, as a
 browser draws draw.io's exports.
 
+The drawing hands each object over through ntk's `SvgView`, whose hook
+for it is new in [sidorares/ntk#549](https://github.com/sidorares/ntk/pull/549):
+an ntk from before it draws nothing of an object, as before, and nothing
+is built or laid out for one; a `<switch>` then draws its fallback, the
+`<text>` draw.io writes after each object.
+
 What an object holds draws, and does nothing else yet: it takes no press,
 no focus and no part in the document's text — the pointer is over the
 drawing, a link in it is not followed, a selection does not reach it and

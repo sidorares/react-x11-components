@@ -201,9 +201,9 @@ interface ViewOptions {
   color?: string;
   surface?: SurfaceMaker;
   font?: DrawingFont;
-  /** What paints a `<foreignObject>`'s HTML (`ForeignPainter`): only a
-   *  view of `foreignViewClass` reads it. */
-  foreignObject?: ForeignPainter;
+  /** What draws what a `<foreignObject>` holds (`ForeignPainter`), which
+   *  an `SvgView` from before sidorares/ntk#549 does not call. */
+  foreignObject?: (element: Element, ctx: ClipContext, box: ForeignBox) => void;
 }
 
 type SvgViewConstructor = new (window: null) => SvgViewLike;
@@ -217,19 +217,24 @@ export interface ForeignRect {
   height: number;
 }
 
+/** What `SvgView` hands `opts.foreignObject` of an object: its rectangle
+ *  in its user space, and what the opacities down to it come to. */
+export interface ForeignBox extends ForeignRect {
+  opacity: number;
+}
+
 /**
  * What paints the HTML a `<foreignObject>` holds, where the drawing reaches
- * it in its paint order: `el` is the document's element, `ctx` the context
- * the drawing draws it on — its matrix the object's user space, clipped to
- * whatever clips the object in the drawing, and lent as the drawing's is
- * (`lend`) — `alpha` what the drawing's opacities come to there, and
- * `rect` where the object is in that user space.
+ * it in its paint order (`SvgView`'s `opts.foreignObject`, sidorares/ntk#549):
+ * `el` is the document's element, `ctx` the context the drawing draws it
+ * on — its matrix the object's user space, clipped to whatever clips the
+ * object in the drawing, and lent as the drawing's is (`lend`) — and `box`
+ * where the object is in that user space, with its opacity.
  */
 export type ForeignPainter = (
   el: Element,
   ctx: ClipContext,
-  alpha: number,
-  rect: ForeignRect,
+  box: ForeignBox,
 ) => void;
 
 function svgViewClass(): SvgViewConstructor | null {
@@ -237,114 +242,54 @@ function svgViewClass(): SvgViewConstructor | null {
   return typeof ctor === 'function' ? (ctor as SvgViewConstructor) : null;
 }
 
-/** The part of `SvgView` a view that draws `<foreignObject>`s stands on:
- *  where it draws an element in its user space, where it measures one, and
- *  the viewport a percentage in it is of. */
-interface SvgViewInternals extends SvgViewLike {
-  _viewport: [number, number];
-  _renderElement(
-    node: Element,
-    ctx: ClipContext,
-    style: { visibility?: string },
-    alpha: number,
-    depth: number,
-  ): void;
-  _bbox(
-    node: Element,
-    ctx: ClipContext,
-    style: unknown,
-    depth: number,
-  ): { x: number; y: number; w: number; h: number } | null;
-}
-
 /** The copies `copyTree` made of the document's `<foreignObject>`s, by the
- *  copy: what `SvgView` is handed is the copy, and what paints it is
+ *  copy: what `SvgView` hands over is the copy, and what paints it is
  *  found by the element. */
 const FOREIGN_COPIES = new WeakMap<Element, Element>();
 
-let foreignView: {
-  base: SvgViewConstructor;
-  view: SvgViewConstructor | null;
-} | null = null;
+/** Whether `SvgView` hands an object over, by the `draw` it was asked of:
+ *  a test's stand-in for the hook wraps it. */
+const HANDS_OVER = new WeakMap<object, boolean>();
+
+/** A context that draws nothing, for `drawsForeignObjects`. */
+const NOWHERE = {
+  globalAlpha: 1,
+  save() {},
+  restore() {},
+  translate() {},
+  scale() {},
+  transform() {},
+};
 
 /**
- * `SvgView` with a `<foreignObject>` drawn by what is handed it as
- * `opts.foreignObject` (`ForeignPainter`), where the drawing reaches it in
- * its order — after its `transform`, its `opacity`, its `mask` and its
- * `clip-path`, which `SvgView` applies to any element before it asks the
- * element to draw itself — and measured as its rectangle, which a clip
- * path in `objectBoundingBox` units is set in. `SvgView` draws nothing of
- * one, and has no seam for it: this stands on the two methods it draws and
- * measures an element with, and where a release has neither, it is null and
- * a `<foreignObject>` draws nothing, as before. Used only for a drawing that
- * has one, so every other drawing is the view it was.
+ * Whether `SvgView` hands a `<foreignObject>` to `opts.foreignObject` to
+ * draw (sidorares/ntk#549): asked of the view itself, by drawing an object
+ * on a context that draws nothing and seeing whether it was handed over.
+ * Where it is not, no object's HTML is built or drawn, as an engine with no
+ * seam for it draws none — and a `<switch>` draws what is after it.
  */
-function foreignViewClass(): SvgViewConstructor | null {
-  const Base = svgViewClass();
-  if (!Base) return null;
-  if (foreignView?.base === Base) return foreignView.view;
-  const proto = Base.prototype as Partial<SvgViewInternals>;
-  if (
-    typeof proto._renderElement !== 'function' ||
-    typeof proto._bbox !== 'function'
-  ) {
-    foreignView = { base: Base, view: null };
-    return null;
+export function drawsForeignObjects(): boolean {
+  const View = svgViewClass();
+  if (!View) return false;
+  const draw = View.prototype.draw as object;
+  let known = HANDS_OVER.get(draw);
+  if (known === undefined) {
+    known = false;
+    try {
+      const view = new View(null);
+      const object = new Element('foreignObject', { width: '1', height: '1' });
+      view.setSvgDom(new Element('svg', { width: '1', height: '1' }, [object]));
+      view.draw(NOWHERE, 0, 0, 1, 1, {
+        foreignObject: () => {
+          known = true;
+        },
+      });
+    } catch {
+      known = false;
+    }
+    HANDS_OVER.set(draw, known);
   }
-  const Internal = Base as unknown as new (window: null) => SvgViewInternals;
-  class ForeignView extends Internal {
-    _foreign: ForeignPainter | null = null;
-    override draw(
-      ctx: unknown,
-      x: number,
-      y: number,
-      w: number,
-      h: number,
-      opts: ViewOptions = {},
-    ): void {
-      this._foreign = opts.foreignObject ?? null;
-      try {
-        super.draw(ctx, x, y, w, h, opts);
-      } finally {
-        this._foreign = null;
-      }
-    }
-    override _renderElement(
-      node: Element,
-      ctx: ClipContext,
-      style: { visibility?: string },
-      alpha: number,
-      depth: number,
-    ): void {
-      if (localName(node.name) !== 'foreignobject') {
-        super._renderElement(node, ctx, style, alpha, depth);
-        return;
-      }
-      // what the object holds inherits its `visibility`, and is shown
-      // again by none of it here
-      if (!this._foreign || (style.visibility ?? 'visible') !== 'visible') {
-        return;
-      }
-      const rect = foreignRect(node, this._viewport);
-      if (!(rect.width > 0 && rect.height > 0)) return;
-      this._foreign(FOREIGN_COPIES.get(node) ?? node, ctx, alpha, rect);
-    }
-    override _bbox(
-      node: Element,
-      ctx: ClipContext,
-      style: unknown,
-      depth: number,
-    ): { x: number; y: number; w: number; h: number } | null {
-      if (localName(node.name) !== 'foreignobject') {
-        return super._bbox(node, ctx, style, depth);
-      }
-      const rect = foreignRect(node, this._viewport);
-      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
-    }
-  }
-  const view = ForeignView as unknown as SvgViewConstructor;
-  foreignView = { base: Base, view };
-  return view;
+  return known;
 }
 
 /** A `<foreignObject>`'s `x`, `y`, `width` or `height` in user units: a
@@ -585,8 +530,6 @@ export class SvgDrawing {
    *  looked for (`foreignObjects`). */
   private _foreign: Element[] | null = null;
   private _foreignEnd: End | null = null;
-  /** Whether the view was made to draw them (`foreignViewClass`). */
-  private _viewForeign = false;
 
   /** The element an SVG image's URL names by its fragment, its own
    *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
@@ -694,8 +637,8 @@ export class SvgDrawing {
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
     const view = box
-      ? this._viewFor(box[2], box[3], paint, shapes, inherited, !!foreign)
-      : this._viewFor(vw, vh, paint, shapes, inherited, !!foreign);
+      ? this._viewFor(box[2], box[3], paint, shapes, inherited)
+      : this._viewFor(vw, vh, paint, shapes, inherited);
     if (!view) return;
     ctx.save();
     // the view draws on the context lent, which counts its saves and keeps
@@ -713,7 +656,11 @@ export class SvgDrawing {
       if (color) opts.color = color;
       if (surface) opts.surface = surface;
       if (font) opts.font = font;
-      if (foreign) opts.foreignObject = foreign;
+      if (foreign) {
+        // what is handed over is the tree's: a copy, where it was copied
+        opts.foreignObject = (node, on, object) =>
+          foreign(FOREIGN_COPIES.get(node) ?? node, on, object);
+      }
       if (!box) {
         view.draw(
           lent.ctx,
@@ -907,8 +854,6 @@ export class SvgDrawing {
     shapes: ShapeStyles | null = null,
     /** What else the root inherits, as declarations (`draw`). */
     inherited = '',
-    /** Whether it is drawn with its `<foreignObject>`s' HTML. */
-    foreign = false,
   ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
@@ -931,8 +876,7 @@ export class SvgDrawing {
       this._view &&
       !grown &&
       viewport === this._seenViewport &&
-      painted === this._seenPaint &&
-      foreign === this._viewForeign
+      painted === this._seenPaint
     ) {
       return this._view;
     }
@@ -941,23 +885,12 @@ export class SvgDrawing {
       this._failed = true;
       return null;
     }
-    // one that draws its `<foreignObject>`s, where the view can be made to
-    const Foreign = foreign ? foreignViewClass() : null;
     try {
-      const view =
-        this._view && foreign === this._viewForeign
-          ? this._view
-          : new (Foreign ?? View)(null);
+      const view = this._view ?? new View(null);
       const reached: Reached = { missing: false, outside: new Set() };
       const tree =
-        sized || shapes || foreign || root.name.includes(':')
-          ? copyTree(
-              root,
-              sized ? [width, height] : null,
-              reached,
-              shapes,
-              foreign,
-            )
+        sized || shapes || root.name.includes(':')
+          ? copyTree(root, sized ? [width, height] : null, reached, shapes)
           : root;
       view.setSvgDom(
         paint || inherited ? withPaint(tree, paint, inherited) : tree,
@@ -968,7 +901,6 @@ export class SvgDrawing {
       const ends = [endOf(root)];
       for (const el of reached.outside) ends.push(endOf(el));
       this._view = view;
-      this._viewForeign = foreign;
       this._seen = count;
       this._seenEnds = ends;
       this._seenViewport = viewport;
@@ -1494,9 +1426,6 @@ function copyTree(
   viewport: [number, number] | null,
   reached?: Reached,
   shapes: ShapeStyles | null = null,
-  /** Whether the view draws its `<foreignObject>`s (`foreignViewClass`),
-   *  which a `requiredFeatures` may ask for (`EXTENSIBILITY`). */
-  foreign = false,
 ): Element {
   const colon = root.name.indexOf(':');
   const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
@@ -1659,7 +1588,6 @@ function copyTree(
     const here = resolve && !OWN_UNITS.has(localName(el.name));
     const attribs = { ...el.attribs };
     if (own) restyle(attribs, own);
-    if (foreign) drawsExtensibility(attribs);
     if (here && viewport && el !== root) {
       for (const name in attribs) {
         const axis = PERCENT_OF[name];
@@ -1685,29 +1613,6 @@ function copyTree(
   for (const el of brought.values()) if (el) defs.push(el);
   if (defs.length) tree.children.push(new Element('defs', {}, defs));
   return tree;
-}
-
-/** SVG 1.1's name for what a `<foreignObject>` draws (SVG 1.1, 23.3). */
-const EXTENSIBILITY = 'http://www.w3.org/TR/SVG11/feature#Extensibility';
-
-/**
- * An element's attributes, in a drawing whose `<foreignObject>`s are drawn,
- * with `EXTENSIBILITY` taken out of its `requiredFeatures`: `SvgView` holds
- * it of none, since it drew none, and draw.io's exports ask it of the
- * object, or a group around it, in a `<switch>` ahead of the `<text>` that
- * a renderer without it draws. A browser holds every feature (SVG 2 drops
- * the attribute), and draws the object.
- */
-function drawsExtensibility(attribs: Record<string, string>): void {
-  for (const name of ['requiredFeatures', 'requiredfeatures']) {
-    const value = attribs[name];
-    if (value === undefined) continue;
-    const rest = value
-      .split(/\s+/)
-      .filter((feature) => feature && feature !== EXTENSIBILITY);
-    if (rest.length) attribs[name] = rest.join(' ');
-    else delete attribs[name];
-  }
 }
 
 /** What `display: none` takes nothing from: `SvgView` draws none of them
