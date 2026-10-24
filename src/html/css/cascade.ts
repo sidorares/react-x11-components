@@ -8783,9 +8783,13 @@ function closestTable(el: Element): Element | null {
 }
 
 /** Whether an element is the document's root: its parent the document, or
- *  none, as the `<html>` the cascade supplies where the markup has none. */
+ *  none, as the `<html>` the cascade supplies where the markup has none —
+ *  and not a shadow tree, whose top is under its host. Taken for the root,
+ *  the top of every tree was what a `rem` styled after it measured from,
+ *  and GitHub's, sized in `rem`s, measured each build from the last. */
 function isRootElement(el: Element): boolean {
-  return !el.parent || el.parent.type === 'root';
+  const parent = el.parent;
+  return !parent || (parent.type === 'root' && !(parent instanceof ShadowRoot));
 }
 
 /**
@@ -8856,6 +8860,7 @@ function propagateOverflow(
     // the root `<html>`'s, or one written with none, in the `<html>` the
     // cascade supplies
     const parent = el.parent;
+    if (parent instanceof ShadowRoot) return;
     if (
       parent &&
       parent.type !== 'root' &&
