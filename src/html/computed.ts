@@ -21,8 +21,18 @@ import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
 import type { Len } from './css/values.js';
-import { currentColorIn, inkColor, liveSource } from './css/values.js';
+import {
+  currentColorIn,
+  inkColor,
+  keptColorText,
+  liveSource,
+  parseColor,
+  splitCommas,
+  splitValue,
+} from './css/values.js';
 import { colorFormText, rgbaOf } from './css/color.js';
+import { parseUrl } from './css/parse.js';
+import { closingParen } from './css/vars.js';
 
 /** What a layout made of an element's principal box, in device pixels:
  *  its border box's size, and its margins, borders and padding. */
@@ -370,6 +380,146 @@ export function cssomColor(
   return a >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${num(a)})`;
 }
 
+/**
+ * `background-image` as it computes, from the layers as they were written
+ * (`ComputedStyle.backgroundImageText`), as Chrome serializes it: a URL
+ * as a `url()` of a string, and so the string an `image()`, a `src()` or
+ * an `image-set()` names one by; a gradient's colours as computed colours,
+ * its direction left out where it is the one it would have, `to bottom`;
+ * an `image-set()` option's resolution in `dppx`, `1dppx` where it gives
+ * none. What none of that reads is as written.
+ */
+export function backgroundImageText(text: string | null): string {
+  if (text === null) return 'none';
+  return splitCommas(text)
+    .map((layer) => imageText(layer.trim()))
+    .join(', ');
+}
+
+function imageText(text: string): string {
+  const lower = text.toLowerCase();
+  if (lower === 'none') return 'none';
+  if (lower.startsWith('url(')) {
+    const url = parseUrl(text);
+    return url ? urlText(url) : text;
+  }
+  const open = text.indexOf('(');
+  if (open <= 0 || closingParen(text, open + 1) !== text.length - 1) {
+    return text;
+  }
+  const name = lower.slice(0, open);
+  const inner = text.slice(open + 1, -1).trim();
+  if (name === 'src') {
+    const quoted = QUOTED_FIRST.exec(inner);
+    if (!quoted) return text;
+    const url = parseUrl(quoted[1]) ?? '';
+    const rest = quoted[2].trim();
+    return `src(${urlText(url)}${rest ? ` ${rest}` : ''})`;
+  }
+  const args = splitCommas(inner).map((arg) => arg.trim());
+  if (name === 'image') {
+    return `image(${args
+      .map((arg, k) => {
+        const quoted = k === 0 ? QUOTED_FIRST.exec(arg) : null;
+        if (quoted && !quoted[2].trim()) {
+          return urlText(parseUrl(quoted[1]) ?? '');
+        }
+        return imageWords(arg);
+      })
+      .join(', ')})`;
+  }
+  if (name === 'image-set' || name === '-webkit-image-set') {
+    return `${name}(${args.map(imageSetOptionText).join(', ')})`;
+  }
+  if (GRADIENT.test(name)) {
+    // the line a linear gradient runs along by default is left out
+    if (
+      name.endsWith('linear-gradient') &&
+      args.length > 2 &&
+      DOWNWARD.test(args[0])
+    ) {
+      args.shift();
+    }
+    return `${name}(${args.map(imageWords).join(', ')})`;
+  }
+  return text;
+}
+
+/** A gradient's function names, which are serialized a word at a time. */
+const GRADIENT =
+  /^(?:-(?:webkit|moz|o)-)?(?:repeating-)?(?:linear|radial|conic)-gradient$/;
+
+/** A linear gradient's direction that is its default one. */
+const DOWNWARD = /^(?:to\s+bottom|180deg|0\.5turn|200grad)$/i;
+
+/** A string at a value's start, and what follows it. */
+const QUOTED_FIRST = /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')([\s\S]*)$/;
+
+/** An `image-set()` option's resolution: a number and its unit. */
+const RESOLUTION_WORD =
+  /^\+?(\d+(?:\.\d+)?(?:e[+-]?\d+)?|\.\d+(?:e[+-]?\d+)?)(x|dppx|dpi|dpcm)$/i;
+
+/** Dots per CSS pixel in each unit (CSS Values 4, 7.4). */
+const DPPX: Record<string, number> = {
+  x: 1,
+  dppx: 1,
+  dpi: 1 / 96,
+  dpcm: 2.54 / 96,
+};
+
+/** One of an `image-set()`'s options: its image, its resolution in
+ *  `dppx`, and its `type()`. */
+function imageSetOptionText(option: string): string {
+  const quoted = QUOTED_FIRST.exec(option);
+  const [first, ...rest] = quoted
+    ? [quoted[1], ...splitValue(quoted[2])]
+    : splitValue(option);
+  if (!first) return option;
+  const image = quoted ? urlText(parseUrl(first) ?? '') : imageText(first);
+  let resolution = '1dppx';
+  const types: string[] = [];
+  for (const word of rest) {
+    const m = RESOLUTION_WORD.exec(word);
+    if (m) {
+      resolution = `${num(Number(m[1]) * DPPX[m[2].toLowerCase()])}dppx`;
+    } else types.push(word);
+  }
+  return [image, resolution, ...types].join(' ');
+}
+
+/** A part of an image function, a word at a time: a colour computed, a
+ *  keyword and a unit in lowercase, and anything else as written. */
+function imageWords(text: string): string {
+  return splitValue(text)
+    .map((word) => {
+      const color = colorText(word);
+      if (color !== null) return color;
+      if (/^[a-z-]+$/i.test(word)) return word.toLowerCase();
+      return word.replace(
+        /^([+-]?(?:\d*\.)?\d+(?:e[+-]?\d+)?)([a-z]+)$/i,
+        (_, n: string, unit: string) => n + unit.toLowerCase(),
+      );
+    })
+    .join(' ');
+}
+
+/** A colour as a computed value serializes it, `currentcolor` as itself;
+ *  null for a word that is no colour. */
+function colorText(word: string): string | null {
+  const parsed = parseColor(word);
+  if (parsed === null) return null;
+  if (parsed === 'currentColor') return 'currentcolor';
+  return cssomColor(parsed, keptColorText(word, parsed), parsed, null);
+}
+
+/** A URL as CSSOM serializes one: a `url()` of a string. */
+function urlText(url: string): string {
+  const escaped = url
+    .replace(/[\\"]/g, '\\$&')
+    .replace(/[\n\r\f]/g, (c) => `\\${c.charCodeAt(0).toString(16)} `);
+  return `url("${escaped}")`;
+}
+
 /** `display` as the author wrote it, where the box tree reads it as
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
@@ -646,6 +796,7 @@ function cssomAt(
       color,
       style.colorSource,
     ),
+    'background-image': backgroundImageText(style.backgroundImageText),
     'font-family': style.fontFamily,
     'font-size': px(style.fontSize, scale),
     'font-weight': String(style.fontWeight),

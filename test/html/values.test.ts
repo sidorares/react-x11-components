@@ -1212,6 +1212,264 @@ test("a typed attr()'s units are lowercase, and an attr() in a container's style
   assert.notStrictEqual(style('f').color, 'rgb(0, 128, 0)', "another's");
 });
 
+test('what an attr() reads is tainted, and a tainted value as or in a URL makes its declaration invalid, through var(), a fallback, if() and a registered property', async () => {
+  // CSS Values 5, 8.7.2: a style sheet cannot send an attribute's value
+  // anywhere. The value an attr() substitutes is tainted, and so is the
+  // whole of a substitution made with one — a custom property, a var(),
+  // its fallback, an if() whose condition read one. As or in a url(), a
+  // src(), or a string an image() or an image-set() takes as a URL, it
+  // leaves the property as though unset, and nothing is asked for;
+  // anywhere else it stands
+  const u = 'https://does-not-exist.test/404.png';
+  const leak = 'https://leak.test/token.png';
+  const asked: string[] = [];
+  const rows: [string, string][] = [
+    ['set', 'background-image: image-set(attr(data-foo))'],
+    ['shorthand', 'background: image-set(attr(data-foo))'],
+    ['src', 'background-image: src(attr(data-foo))'],
+    ['image', 'background-image: image(attr(data-foo))'],
+    ['string', 'background-image: attr(data-foo)'],
+    ['typed', 'background-image: attr(data-url type(*))'],
+    ['var', 'background-image: image-set(var(--s))'],
+    ['registered', 'background-image: image-set(var(--r))'],
+    ['fallback', 'background-image: image-set(var(--none, attr(data-foo)))'],
+    ['if', `background-image: if(style(--s): url(${leak}); else: none)`],
+    [
+      'whole',
+      `--w: url("${leak}") type(attr(data-foo)); background-image: var(--w)`,
+    ],
+    [
+      'list',
+      `--l: linear-gradient(red, blue), image-set(attr(data-foo)); background-image: var(--l)`,
+    ],
+    [
+      'untouched',
+      `background-image: if(style(--t): url(${u}); else: attr(data-foo))`,
+    ],
+    ['beside', `background-image: url(${u}), attr(data-g type(<image>))`],
+    ['colour', `background-image: image("${u}", attr(data-c type(<color>)))`],
+  ];
+  const { node } = await render(
+    '<style>@property --r {syntax: "<string>"; inherits: false; initial-value: "x"}' +
+      ` div { --s: attr(data-foo); --r: attr(data-foo); --t: 1;` +
+      ` --x: image-set(attr(data-foo)) }</style>` +
+      rows
+        .map(
+          ([id, css]) =>
+            `<div id="${id}" data-foo="${leak}" data-url="url(${leak})"` +
+            ` data-g="linear-gradient(#000000, #ffffff)" data-c="blue"` +
+            ` style='${css}'></div>`,
+        )
+        .join(''),
+    400,
+    {
+      onResource: (r: { url: string }) => {
+        asked.push(r.url);
+        return null;
+      },
+    },
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['background-image'];
+  for (const id of [
+    'set',
+    'shorthand',
+    'src',
+    'image',
+    'string',
+    'typed',
+    'var',
+    'registered',
+    'fallback',
+    'if',
+    'whole',
+    'list',
+  ]) {
+    assert.strictEqual(image(id), 'none', id);
+  }
+  // a branch not taken reads nothing, and an untainted url beside a
+  // tainted image, or a tainted colour in an image(), is no tainted URL
+  assert.strictEqual(image('untouched'), `url("${u}")`);
+  assert.strictEqual(
+    image('beside'),
+    `url("${u}"), linear-gradient(rgb(0, 0, 0), rgb(255, 255, 255))`,
+  );
+  assert.strictEqual(image('colour'), `image(url("${u}"), rgb(0, 0, 255))`);
+  // what a custom property holds is its own to show
+  assert.strictEqual(
+    el.customProperty(findById(el.document, 'set')!, '--x'),
+    `image-set("${leak}")`,
+  );
+  assert.ok(asked.includes(u), 'the untainted url is asked for');
+  assert.ok(!asked.includes(leak), 'no tainted one is');
+});
+
+test("a tainted custom property is tainted where an element inherits it or a rule wins over an untainted one's", async () => {
+  // attr-universal-selector.html: `*` sets the property to the URL, `div`
+  // to the attribute, and the attribute's is the one that stands
+  const u = 'https://does-not-exist.test/404.png';
+  const { node } = await render(
+    '<style>@property --s {syntax: "<string>"; inherits: true; initial-value: "e"}' +
+      ` * { --s: "${u}" } div { --s: attr(data-foo) }` +
+      ' div, p { background-image: image-set(var(--s)) }' +
+      ` #free { --s: "${u}" }</style>` +
+      `<div id="d" data-foo="${u}"><p id="kid"></p><p id="free"></p></div>`,
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['background-image'];
+  assert.strictEqual(image('d'), 'none');
+  // `*` sets the child its own, untainted
+  assert.strictEqual(image('kid'), `image-set(url("${u}") 1dppx)`);
+  assert.strictEqual(image('free'), `image-set(url("${u}") 1dppx)`);
+});
+
+test('an inherited tainted custom property stays tainted, and an untainted one that reads a tainted one is tainted whole', async () => {
+  const u = 'https://does-not-exist.test/404.png';
+  const { node } = await render(
+    '<style>#p { --s: attr(data-foo) } #c { --t: var(--s) }' +
+      ' p { background-image: image-set(var(--s)) }' +
+      ' #c { background-image: image-set(var(--t)) }</style>' +
+      `<div id="p" data-foo="${u}"><p id="k"></p><span id="c"></span></div>`,
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['background-image'];
+  assert.strictEqual(image('k'), 'none', 'inherited');
+  assert.strictEqual(image('c'), 'none', 'through another');
+});
+
+test('background-image computes to the images as written, its urls, colours and resolutions serialized', async () => {
+  // CSSOM, as Chrome answers getComputedStyle: a url as a url() of a
+  // string, and so the strings image(), src() and image-set() take; a
+  // gradient's colours computed and its default direction left out; an
+  // image-set() option's resolution in dppx, 1dppx where it has none
+  const u = 'https://does-not-exist.test/404.png';
+  const rows: [string, string, string][] = [
+    ['none', 'none', 'none'],
+    ['url', `url(${u})`, `url("${u}")`],
+    ['set', `image-set("${u}")`, `image-set(url("${u}") 1dppx)`],
+    [
+      'set2',
+      `image-set("a.png" 1x, url(b.png) 2X type("image/png"), "c.png" 192dpi)`,
+      'image-set(url("a.png") 1dppx, url("b.png") 2dppx type("image/png"), url("c.png") 2dppx)',
+    ],
+    ['src', `src("${u}")`, `src(url("${u}"))`],
+    ['image', `image("${u}")`, `image(url("${u}"))`],
+    [
+      'linear',
+      'linear-gradient(to bottom, black, WHITE 50%)',
+      'linear-gradient(rgb(0, 0, 0), rgb(255, 255, 255) 50%)',
+    ],
+    [
+      'to',
+      'linear-gradient(to right, #f00, transparent)',
+      'linear-gradient(to right, rgb(255, 0, 0), rgba(0, 0, 0, 0))',
+    ],
+    [
+      'radial',
+      'radial-gradient(circle at center, red, currentColor)',
+      'radial-gradient(circle at center, rgb(255, 0, 0), currentcolor)',
+    ],
+    [
+      'layers',
+      `url(a.png), linear-gradient(45deg, red 10PX, blue)`,
+      'url("a.png"), linear-gradient(45deg, rgb(255, 0, 0) 10px, rgb(0, 0, 255))',
+    ],
+  ];
+  const { node } = await render(
+    rows
+      .map(
+        ([id, css]) => `<div id="${id}" style='background-image:${css}'></div>`,
+      )
+      .join('') +
+      `<p id="short" style='background: url(${u}) no-repeat red'></p>` +
+      `<p id="many" style='background: url(a.png), none, red'></p>` +
+      '<p id="bad" style=\'background-image:url(a.png);background-image:"b.png"\'></p>',
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['background-image'];
+  for (const [id, , want] of rows) assert.strictEqual(image(id), want, id);
+  assert.strictEqual(image('short'), `url("${u}")`);
+  assert.strictEqual(image('many'), 'url("a.png"), none, none');
+  // a string alone is no image: the declaration is invalid
+  assert.strictEqual(image('bad'), 'url("a.png")');
+});
+
+test("attr()'s name may be a var(), and a type too, which are read once they are substituted", async () => {
+  // attr-argument-grammar.html: `attr(var(--x))` is the attribute and the
+  // type `--x` holds; one that is no name and type once it is substituted
+  // is its fallback, or no value
+  const { node } = await render(
+    '<body style="margin:0"><style>div { height: 5px }' +
+      ' #n { --x: data-w px; width: attr(var(--x)) }' +
+      ' #t { --type: type(<length>); width: attr(data-l var(--type)) }' +
+      ' #f { --x: data-w px; width: attr(var(--x), 9px) }' +
+      ' #b { --x: data-w px, 1px; width: 50px; width: attr(var(--x), 8px) }' +
+      ' #c { --y: data-c type(*); --c: attr(var(--y)) }' +
+      '</style>' +
+      '<div id="n" data-w="12"></div>' +
+      '<div id="t" data-l="calc(10px + 3px)"></div>' +
+      '<div id="f" data-w="wide"></div>' +
+      '<div id="b" data-w="12"></div>' +
+      '<div id="c" data-c="var(--c)"></div></body>',
+  );
+  const el = view(node);
+  const width = (id: string) => boxOf(el, id).width;
+  assert.strictEqual(width('n'), 12);
+  assert.strictEqual(width('t'), 13);
+  assert.strictEqual(width('f'), 9, 'not a number: the fallback');
+  assert.strictEqual(width('b'), 8, 'no name and type: the fallback');
+  // an attribute that reads the property its attr() is in is a cycle
+  assert.strictEqual(el.customProperty(findById(el.document, 'c')!, '--c'), '');
+});
+
+test('attr() reads an attribute in a namespace a @namespace rule declares, and no prefix it does not, nor any', async () => {
+  // CSS Values 5, 8.7: `attr(ns|name)` is the attribute in the namespace
+  // the sheet's prefix stands for — as an XHTML document read as HTML
+  // holds it, `prefix:name` under an `xmlns:prefix` — `|name` one in none,
+  // an undeclared prefix none at all, and `*|name` no attr() at all
+  const { node } = await render(
+    '<style>@namespace color "http://www.example.com/";' +
+      ' @namespace Other url(http://www.example.com/other);' +
+      ' div { --a: attr(color|myAttr type(*), red);' +
+      ' --b: attr(Other|myAttr type(*), red);' +
+      ' --c: attr(foo|bar type(*), green);' +
+      ' --d: attr(|bar type(*), red);' +
+      ' --e: initial; --e: attr(*|bar type(*), green);' +
+      ' --f: attr(other|myAttr type(*), none) }</style>' +
+      '<section xmlns:color="http://www.example.com/" xmlns:o="http://www.example.com/other">' +
+      '<div id="t" color:myAttr="green" o:myattr="blue" bar="lime"></div></section>',
+  );
+  const el = view(node);
+  const prop = (name: string) =>
+    el.customProperty(findById(el.document, 't')!, name);
+  assert.strictEqual(prop('--a'), 'green');
+  assert.strictEqual(prop('--b'), 'blue');
+  assert.strictEqual(prop('--c'), 'green', 'undeclared: the fallback');
+  assert.strictEqual(prop('--d'), 'lime', 'no namespace');
+  assert.strictEqual(prop('--e'), '', 'a wildcard is no attr()');
+  assert.strictEqual(prop('--f'), 'none', 'a prefix is case-sensitive');
+});
+
+test("a change of an attribute an attr() reads only by a var()'s name, or in a namespace, restyles the element", async () => {
+  const { node } = await render(
+    '<body style="margin:0"><style>div { height: 5px }' +
+      ' #v { --x: data-w px; width: attr(var(--x)) }</style>' +
+      '<div id="v" data-w="12"></div></body>',
+  );
+  const el = view(node);
+  const v = findById(el.document, 'v')!;
+  assert.strictEqual(boxOf(el, 'v').width, 12);
+  v.attribs['data-w'] = '30';
+  el.touchDocument([
+    { type: 'attributes', target: v, attributeName: 'data-w', oldValue: '12' },
+  ]);
+  await waitFor(() => assert.strictEqual(boxOf(el, 'v').width, 30));
+});
+
 test('view-transition-name takes none, match-element, auto or a name, and view-transition-class names, none of them a keyword', () => {
   assert.strictEqual(specifiedValue('view-transition-name', 'Foo'), 'Foo');
   assert.strictEqual(

@@ -1468,6 +1468,24 @@ inherit leaks from the parent, and one that inherits loses its initial
 value at the root. A page drew a gradient's stops from `--blob-core`,
 registered at `0%` and set on few elements, and the rest drew none.
 
+**What an `attr()` reads never reaches a URL** (CSS Values 5, 8.7.2). The
+value an `attr()` substitutes is tainted, and so is the whole of anything
+a substitution made with one: a custom property (`CustomProps.taint`), a
+`var()`, its fallback, an `if()` whose condition read one. Nothing is
+passed down for it: `vars.ts` counts every tainted value read (`taints`),
+and a substitution compares the count before and after. A property that
+is no custom property's goes through `substituteIn`, which makes the
+declaration invalid where a tainted range is or is in a `url()`, a
+`src()`, or a string an `image()` or an `image-set()` takes as one
+(`taintsUrl`). Three things are load-bearing. **A substitution reads a
+custom property with `read`, never `get`**, which counts it; a `get`
+leaves what it read untainted. **Anything new that takes a string as a
+URL joins `URL_STRINGS`**, and a string alone is no image
+(`backgroundImageOf`): read leniently as one, `background-image:
+attr(data-token)` would have asked for the attribute's value. And
+**anything new that substitutes a value for a property goes through
+`substituteIn`**, not `substitute`, whose result is not checked.
+
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
 until no limit stops an item, divides by a running sum (react/yoga#2006),
@@ -1943,7 +1961,13 @@ a marker's — asks `urlOf`, `densityOf` and `gradientOf`**, and never
 `typeof image === 'string'`: that test passes a 2x image over silently,
 and its negation took one for a gradient. `decodesImageType` is in
 `image-types.ts`, a module that imports nothing, because the cascade asks
-it and `resources.ts` reaches the cascade through `svg.ts`.
+it and `resources.ts` reaches the cascade through `svg.ts`. What
+`getComputedStyle` answers for `background-image` is none of these: the
+choice drops the options, and a gradient its direction as written, so it
+is serialized from the layers as they were written
+(`backgroundImageText`, `computed.ts`). **Anything new that sets a
+background's layers sets that field too**, or a page reads the image the
+declaration before it set.
 
 **`zoom` is in every length a style holds, as Blink keeps it.** The
 cascade sees the parent at the element's own zoom (`zoomedBy`) and resolves
