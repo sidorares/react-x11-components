@@ -1038,6 +1038,52 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
   assert.ok(partial(el), 'and the step after it the drag’s');
 });
 
+test('a dragged width restyles what it set aside, which the layout at rest lays out in its new style', async (t) => {
+  // A step that takes a `vw` in place restyles the boxes from the elements
+  // its new viewport reaches, and the last step set some of them aside: a
+  // walk down the boxes the paint finds went past them, and the layout at
+  // rest laid them out in the style of the step before — text below the
+  // fold at the last width's size, and a box at its width.
+  const clock = holdClock(t, resizeClock);
+  const doc =
+    '<body style="margin:0;font-size:calc(8px + 2vw)">' +
+    Array.from(
+      { length: 80 },
+      (_, i) =>
+        `<p id="p${i}" style="margin:0;width:90vw">paragraph ${i}, ` +
+        'with words enough to wrap</p>',
+    ).join('') +
+    '</body>';
+  const { el, resize } = await renderScrolled(doc, 300, 400);
+  await resize(300, 330);
+  await resize(300, 320);
+  await resize(300, 310);
+  assert.ok(partial(el), 'a step');
+  assert.ok(!reached(el, 'p79'), 'with the end set aside');
+  await clock.finish();
+  assert.ok(!partial(el), 'rested');
+  const tree = (el as unknown as { _tree: BoxTree })._tree;
+  const stale: string[] = [];
+  const stack = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const kept = box.el && !box.pseudo ? tree.styles.get(box.el) : undefined;
+    if (box.kind !== 'text' && kept && kept.style !== box.style) {
+      stale.push(String(box.el!.attribs.id));
+    }
+    stack.push(...box.children);
+  }
+  assert.deepStrictEqual(stale, [], 'every box in its element’s style');
+  const drawn = ['p0', 'p40', 'p79'].map((id) => geometry(boxOf(el, id)));
+  await cleanup();
+  const fresh = await renderScrolled(doc, 300, 310);
+  assert.deepStrictEqual(
+    drawn,
+    ['p0', 'p40', 'p79'].map((id) => geometry(boxOf(fresh.el, id))),
+    'laid out as the document at that width is',
+  );
+});
+
 test('a dragged width that builds again what holds a vw goes on laying out what can be seen', async (t) => {
   // A `vw` a box's text is spaced by builds the boxes again at every step, and
   // the tree it builds is laid out as a crossing's is: down to what can be

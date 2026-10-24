@@ -3124,11 +3124,21 @@ that box's children are set aside (`setAside`) — the box's `children` is
 the part laid out until the next layout puts the whole list back
 (`putBack`), so the paint, the hit test and every walk from the root miss
 them — and the box is as tall as they last were. The whole document is laid
-out once the width rests (`resizeClock`). Three things are load-bearing.
+out once the width rests (`resizeClock`). Four things are load-bearing.
 **Anything that reaches boxes from a list of the tree's rather than from
 the root asks `heldBack`**, as `controlRectsOf` and `mediaRectsOf` do: a
 box set aside is where it was a width ago, which may be over what is laid
-out there now. **A layout that cannot set a box aside leaves it laid out**:
+out there now. **And a restyle in place leaves what is set aside to a
+build** (`_asideOwed`): it walks down `children`, which pass it, and where
+it passed some, the boxes are built again, keeping every element's style it
+gave, before the next layout that puts them back whole. A step that took a
+`vw` in place had left the text below the fold in the last width's style,
+and the layout at rest set it there; restyled at every step instead, the
+set-aside half of a page in fluid type was restyled each time, and its
+icons sized in `em` built the boxes for it. **Anything new that changes a
+box's style outside a build does the same**, and the index of boxes by
+element goes down what `asideOf` keeps, so it holds what is set aside whenever
+it is made. **A layout that cannot set a box aside leaves it laid out**:
 a multicol container's content is one strip its columns balance
 (`multicolAround`), and the boxes that hold a fixed box, or an absolute one
 placed against something outside them, are laid out where they would be set
