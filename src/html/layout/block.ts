@@ -80,6 +80,7 @@ import {
   noteAnchorScroll,
   noteDefaultAnchor,
   noteVisibility,
+  scrollBack,
   scrollContextOf,
   settleAnchorScrolls,
   updatePositionVisibility,
@@ -220,6 +221,21 @@ export interface LayoutContext {
   /** Whether the layout answers a question about the document's size,
    *  which no frame draws (`layoutAsks`). */
   question?: boolean;
+  /** Which layout this is, where it may keep a block an earlier layout laid
+   *  out (`reuseLaid`): one of the whole document, of a tree with no
+   *  anchor, no vertical flow, no `::first-line` and no foreign object. */
+  reusePass?: number;
+  /** The blocks this layout kept rather than laid out, which the passes
+   *  after the flow move as wholes and do not look inside: what is in one
+   *  was moved by its relative offsets and its scrolls when it was laid
+   *  out, and has been since (`applyRelativeOffsets`, `applyScrollOffsets`). */
+  reused?: Set<Box>;
+  /** The boxes no layout keeps, and those that hold a box out of the flow
+   *  (`reuseBlockers`). */
+  blockers?: Blockers;
+  /** The boxes out of the flow in the blocks this layout kept, which it
+   *  does not lay out and the document reaches as far as (`keptPositionedIn`). */
+  keptPositioned?: Box[];
   /**
    * Lay a box and everything under it out at a width, at the origin.
    *
@@ -694,6 +710,234 @@ const FLOW_PLACE = new WeakMap<Box, FlowPlace>();
 const FLOW_GEN = new WeakMap<Box, number>();
 
 /**
+ * What a block's last layout in its parent's flow was laid out from, from
+ * outside it, and what of the box it left that its parent's flow resets
+ * before it lays a child out (`resolveEdges`): where nothing it is laid out
+ * from has changed, and neither it nor anything in it has been laid out
+ * since or changed (`Box.layoutSerial`, `forgetSizes`), a later layout of
+ * the flow keeps it, moved to where it goes (`reuseLaid`). A page's script
+ * that changes one card lays out the card and the boxes it is in, and moves
+ * the rest.
+ */
+interface Laid {
+  /** The layout it was laid out in (`LayoutContext.reusePass`). */
+  pass: number;
+  serial: number;
+  /** The room its flow had, its percentage height base, the viewport and
+   *  the scale and the fonts it was laid out at. */
+  width: number;
+  base: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scale: number | undefined;
+  fonts: FontsLike | null;
+  /** Where it went from where the flow had it, before any offset moved it. */
+  dx: number;
+  dy: number;
+  /** Its bottom margin with what came out through its bottom edge. */
+  marginBottom: number;
+  bottomStrut: MarginStrut | null;
+}
+
+const LAID = new WeakMap<Box, Laid>();
+
+/** Every layout that may keep blocks counted, for `Laid.pass`. */
+let reusePasses = 0;
+
+/** How many blocks layouts have kept (`reuseLaid`), for a test to say that
+ *  some were. */
+let keptBlocks = 0;
+export function blocksKept(): number {
+  return keptBlocks;
+}
+
+/** Note what a block just laid out in a flow at `contentLeft` and `y`, in
+ *  `width`, was laid out from (`Laid`). */
+function noteLaid(
+  child: Box,
+  ctx: LayoutContext,
+  contentLeft: number,
+  y: number,
+  width: number,
+): void {
+  if (ctx.blockers!.blockers.has(child)) {
+    LAID.delete(child);
+    return;
+  }
+  LAID.set(child, {
+    pass: ctx.reusePass!,
+    serial: child.layoutSerial,
+    width,
+    base: child.percentHeightBase,
+    viewportWidth: ctx.viewportWidth,
+    viewportHeight: ctx.viewportHeight,
+    scale: ctx.scale,
+    fonts: ctx.fonts,
+    dx: child.x - contentLeft,
+    dy: child.y - y,
+    marginBottom: child.marginBottom,
+    bottomStrut: child.bottomStrut,
+  });
+}
+
+/**
+ * Keep a block an earlier layout laid out (`Laid`), where it goes in this
+ * one: moved there with all it holds, from where it is drawn — its own
+ * relative offset and those of the boxes it is in are put on again after
+ * the flow, and the offsets inside it are still on, which those passes
+ * leave (`LayoutContext.reused`). False where anything it was laid out from
+ * is otherwise, or it was laid out since: a probe of what it is in, or a
+ * layout earlier in this one.
+ */
+function reuseLaid(
+  child: Box,
+  ctx: LayoutContext,
+  contentLeft: number,
+  y: number,
+  width: number,
+): boolean {
+  const laid = LAID.get(child);
+  if (
+    laid === undefined ||
+    laid.pass === ctx.reusePass ||
+    laid.serial !== child.layoutSerial ||
+    laid.width !== width ||
+    !Object.is(laid.base, child.percentHeightBase) ||
+    laid.viewportWidth !== ctx.viewportWidth ||
+    laid.viewportHeight !== ctx.viewportHeight ||
+    laid.scale !== ctx.scale ||
+    laid.fonts !== ctx.fonts ||
+    ctx.blockers!.blockers.has(child) ||
+    !Number.isFinite(child.x) ||
+    !Number.isFinite(child.y)
+  ) {
+    return false;
+  }
+  child.marginBottom = laid.marginBottom;
+  child.bottomStrut = laid.bottomStrut;
+  // what it holds, where its layout put it, as a flow reads a block it has
+  // just laid out: the offsets the passes after the last flow put on are
+  // taken off, and put on again after this one — once a layout, however
+  // many times it keeps the block
+  if (!ctx.reused!.has(child)) unoffsetHeld(child);
+  moveTo(child, contentLeft + laid.dx, y + laid.dy);
+  ctx.reused!.add(child);
+  if (ctx.blockers!.holders.has(child)) {
+    keptPositionedIn(child, ctx.keptPositioned!);
+  }
+  keptBlocks += 1;
+  return true;
+}
+
+/**
+ * The boxes no layout keeps (`LayoutContext.blockers`), and the ones that
+ * hold a box out of the flow (`Blockers.holders`). A box out of the flow is
+ * laid out after the flow against its containing block, so a block that
+ * holds one can be kept where that block is in it too, and the box moves
+ * with it; the boxes between the two cannot, and neither can the box. A
+ * sticky box sticks to a scroll container outside what holds it, a box in
+ * the top layer, or fixed to the viewport, is placed against no box in the
+ * document, and a relative inline box broken around blocks moves blocks
+ * beside what holds it (`CUT_BLOCKS`): every box around one is a blocker.
+ * Once a tree.
+ */
+function reuseBlockers(tree: BoxTree): Blockers {
+  let found = BLOCKERS.get(tree);
+  if (found) return found;
+  const blockers = new Set<Box>();
+  const holders = new Set<Box>();
+  found = { blockers, holders };
+  BLOCKERS.set(tree, found);
+  const stack: Box[] = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const position = box.style.position;
+    if (
+      box.outOfFlow ||
+      box.topLayer ||
+      position === 'sticky' ||
+      // an inline box broken around blocks moves them with its offset,
+      // and they are beside the block that holds it (`CUT_BLOCKS`)
+      (position === 'relative' && box.kind === 'inline' && box.cut !== 0)
+    ) {
+      const placed = box.outOfFlow || box.topLayer;
+      // the box it is placed against, which holds it whole
+      const containing =
+        placed && !box.topLayer && box.style.position !== 'fixed'
+          ? containingBlockFor(box)
+          : null;
+      let at: Box | null = box;
+      for (; at && at !== containing; at = at.parent) blockers.add(at);
+      if (placed) {
+        for (let up = box.parent; up && !holders.has(up); up = up.parent) {
+          holders.add(up);
+        }
+      }
+    }
+    for (const child of box.children) stack.push(child);
+  }
+  return found;
+}
+
+/** What `reuseBlockers` found of a tree. */
+interface Blockers {
+  blockers: Set<Box>;
+  holders: Set<Box>;
+}
+
+const BLOCKERS = new WeakMap<BoxTree, Blockers>();
+
+/**
+ * Take off what the passes after a flow moved the boxes in a block by —
+ * their transforms' translations, their relative offsets and their
+ * scrolls (`applyRelativeOffsets`, `applyScrollOffsets`) — and not the
+ * block's own, which moves all it holds alike: what it holds is where the
+ * block's last layout put it, from its corner, and a flow that reads it
+ * finds it there. Each is a move of the same boxes, worked out from sizes
+ * a kept block keeps, and moves add up in any order. What a sticky box, a
+ * box in the top layer or a relative inline broken around blocks moves is
+ * in no kept block (`reuseBlockers`).
+ */
+function unoffsetHeld(block: Box): void {
+  for (const child of block.children) unoffset(child);
+  scrollBack(block, translate);
+}
+
+function unoffset(box: Box): void {
+  for (const child of box.children) unoffset(child);
+  const style = box.style;
+  if (transformed(style) && box.kind !== 'inline') {
+    const [dx, dy] = translationOf(box);
+    if (dx || dy) translate(box, -dx, -dy, inTopLayer);
+  }
+  if (style.position === 'relative') {
+    const [dx, dy] = relativeOffset(box);
+    if (dx || dy) {
+      offsetBox(box, -dx, -dy, false);
+      if (box.kind === 'inline') offsetInline(box, -dx, -dy);
+    }
+  }
+  scrollBack(box, translate);
+}
+
+/** The boxes out of the flow in a block a layout kept, which it lays out
+ *  none of and counts in the document's reach (`LayoutContext.keptPositioned`). */
+function keptPositionedIn(box: Box, into: Box[]): void {
+  for (const child of box.children) {
+    if (child.outOfFlow) into.push(child);
+    if (child.children.length) keptPositionedIn(child, into);
+  }
+}
+
+/** Whether a flow is in a multicol container, or is one's. */
+function inMulticol(box: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at.style.columns) return true;
+  }
+  return false;
+}
+
+/**
  * The blocks a layout made while the width is still moving keeps above
  * where it starts, by the box whose flow they lead (`LayoutContext.keep`):
  * the run of first children of each box on the way down to what is at
@@ -933,6 +1177,12 @@ export function layoutDocument(
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
   const keep = cuts && above !== undefined ? keepAbove(tree, above) : null;
+  const reusing =
+    !cuts &&
+    !tree.anchors &&
+    !tree.vertical &&
+    !tree.firstLine &&
+    !tree.foreign;
   const ctx: LayoutContext = {
     fonts,
     scale,
@@ -946,6 +1196,14 @@ export function layoutDocument(
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
     anchorRoot: tree.anchors ? tree.root : null,
+    ...(reusing
+      ? {
+          reusePass: ++reusePasses,
+          reused: new Set<Box>(),
+          blockers: reuseBlockers(tree),
+          keptPositioned: [],
+        }
+      : null),
     ...(tree.anchors
       ? {
           viewport: viewportOf(tree),
@@ -1112,6 +1370,12 @@ export function layoutDocument(
   // on to 980, blank
   let bottom = Math.max(flowBottom, reach);
   let fixed: Box[] | null = null;
+  // and the ones in the blocks it kept, which no box fixed to the viewport
+  // is among (`reuseBlockers`)
+  for (const box of ctx.keptPositioned ?? []) {
+    if (box.style.position === 'fixed' || clipsFor(box, root).length) continue;
+    bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
+  }
   for (const { box } of ctx.positioned) {
     if (box.style.position === 'fixed') {
       if (fixedToViewport(box)) (fixed ??= []).push(box);
@@ -1719,6 +1983,10 @@ function layoutChildren(
   // a probe, which stops nowhere, lays out what was set aside too
   let children = wholeAgain(box, ctx);
   let stopped = false;
+  /** Whether this flow is in a multicol container, which sets what it
+   *  holds in its columns once it is laid out: no child of it is kept
+   *  (`reuseLaid`). Asked once, where a child might be. */
+  let inColumnsFlow: boolean | null = null;
   /** Whether this flow is a multicol container's or a scroll
    *  container's, or in one, which is laid out whole (`laidWholeAround`).
    *  Asked once, where the layout would stop. */
@@ -1800,6 +2068,9 @@ function layoutChildren(
       if (!FIRST_LINE.has(child)) HANDED.set(child, firstLine);
       firstLine = null;
     }
+    // the room a marker takes on the line this child starts, which its
+    // layout reads (`MARKER_ROOM`), is no part of what it was laid out from
+    const markedHere = marked !== null;
     if (marked && !child.outOfFlow && !child.isFloat) {
       MARKER_ROOM.set(child, marked);
       marked = null;
@@ -1884,13 +2155,41 @@ function layoutChildren(
 
     const counted = clamp?.fit?.lines ?? 0;
     const floatMark = floats.count;
-    if (
-      !floats.isEmpty &&
-      (child.kind === 'replaced' || establishesBFC(child))
-    ) {
-      layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
+    // A block laid out by an earlier layout from what it has now — the same
+    // room, the same percentage base, no float reaching into it — and
+    // neither laid out nor changed since (`reuseLaid`) is moved to where
+    // this one puts it, all it holds with it (`LAID`)
+    const keepable =
+      ctx.reused !== undefined &&
+      !probing &&
+      clamp === null &&
+      !markedHere &&
+      child.kind !== 'replaced' &&
+      floats.bottom <= childY &&
+      !(columned.any && (inColumnsFlow ??= inMulticol(box)));
+    if (keepable && reuseLaid(child, ctx, contentLeft, childY, contentWidth)) {
+      // laid out where it was, and moved here
     } else {
-      layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+      if (
+        !floats.isEmpty &&
+        (child.kind === 'replaced' || establishesBFC(child))
+      ) {
+        layoutBesideFloats(
+          child,
+          ctx,
+          floats,
+          contentLeft,
+          childY,
+          contentWidth,
+        );
+      } else {
+        layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+      }
+      // what it was laid out from, for a later layout to keep it by, where
+      // it put no float in this flow
+      if (keepable && floats.count === floatMark) {
+        noteLaid(child, ctx, contentLeft, childY, contentWidth);
+      } else LAID.delete(child);
     }
     if (pushed !== null) {
       const line = firstLineIn(child);
@@ -2870,6 +3169,8 @@ function layoutBoxAt(
   outerFloats?: FloatContext,
 ): void {
   box.layoutSerial = ++layoutSerial;
+  // laid out after all, and what it holds with it
+  if (ctx.reused?.size) ctx.reused.delete(box);
   box.x = x;
   box.y = y;
   box.width = borderBoxWidth;
@@ -4312,6 +4613,7 @@ export function forgetSizes(box: Box): void {
     PREFERRED.delete(at);
     PERCENT_HEIGHTS.delete(at);
     FLOW_PLACE.delete(at);
+    LAID.delete(at);
     forgetMaxContent(at);
   }
 }

@@ -172,6 +172,8 @@ import type { ContainerSize, ScrollStates } from './css/containers.js';
 import {
   BOX_RAISES,
   buildBoxes,
+  buildSubtrees,
+  canRebuild,
   containerBoxes,
   CONTENT_IMAGES,
   CLEARED_FROM,
@@ -197,6 +199,7 @@ import {
 import type {
   Box,
   BoxTree,
+  BuildOptions,
   ForeignObject,
   LineBox,
   LineText,
@@ -1099,6 +1102,11 @@ export class HtmlViewNode extends Node {
    * a `vw` reads, a face that arrived.
    */
   private _restyleOnly: Set<Element> | null = null;
+  /** The elements whose boxes the build that is due can make otherwise,
+   *  where every change it is for said which (`_invalidate`'s `seeds`):
+   *  what a build of only their subtrees builds (`_subtreeBuild`). Null
+   *  where the whole tree is to be built. */
+  private _buildSeeds: Set<Element> | null = null;
   /** Whether `_restyleOnly` names the elements whose own styles a change
    *  may have changed and not what is under them, which is styled again
    *  where its parent's style came out other than it was (`KeptStyles.
@@ -1325,19 +1333,28 @@ export class HtmlViewNode extends Node {
     stale: Stale,
     restyle: ReadonlySet<Element> | null = null,
     follow = false,
+    /** The elements whose boxes it can make otherwise, where the change
+     *  said (`_buildSeeds`): none, for one that did not. */
+    seeds: ReadonlySet<Element> | null = null,
   ): void {
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
+      const seeded = only !== null && seeds !== null;
       if (this._stale < Stale.Boxes) {
         this._restyleOnly = only ? new Set(only) : null;
         this._restyleFollows = follow;
+        this._buildSeeds = seeded ? new Set(seeds) : null;
       } else if (this._restyleOnly && only) {
         for (const el of only) this._restyleOnly.add(el);
         // styling what follows a change of its parent's style again as
         // well styles more, and never less, than either asked
         if (follow) this._restyleFollows = true;
+        if (this._buildSeeds && seeded) {
+          for (const el of seeds) this._buildSeeds.add(el);
+        } else this._buildSeeds = null;
       } else {
         this._restyleOnly = null;
+        this._buildSeeds = null;
       }
     }
     if (stale > this._stale) this._stale = stale;
@@ -2896,6 +2913,12 @@ export class HtmlViewNode extends Node {
     // found below changes them all
     let restyleOnly = this._stale === Stale.Boxes ? this._restyleOnly : null;
     this._restyleOnly = null;
+    // and the elements whose boxes it can make otherwise, where every change
+    // said which — for as long as nothing below asks for more than they
+    // did, which gives `restyleOnly` another set (`_subtreeBuild`)
+    const seeds = restyleOnly ? this._buildSeeds : null;
+    this._buildSeeds = null;
+    const seededWith = restyleOnly;
     // whether `restyleOnly` names only what a crossing or a change to the
     // tree reached, and whether a crossing is what restyles (`_stopAt`)
     let follow = restyleOnly !== null && this._restyleFollows;
@@ -2914,7 +2937,10 @@ export class HtmlViewNode extends Node {
       // each first renders, and each restyled the whole document.
       const reached = this._sheetsAdded(target, viewport);
       if (reached && restyleOnly) {
-        for (const el of reached) restyleOnly.add(el);
+        for (const el of reached) {
+          restyleOnly.add(el);
+          seeds?.add(el);
+        }
         follow = true;
       } else restyleOnly = null;
     } else if (this._cascade.mediaBand(target, viewport) !== this._mediaBand) {
@@ -3102,41 +3128,50 @@ export class HtmlViewNode extends Node {
               }
             : null;
         const timeline = this._clockIn(cascade);
-        const boxes = () =>
-          buildBoxes(this._source.document, {
-            cascade,
-            kept,
-            transition:
-              this._vt?.phase === 'live' ? this._transitionTree : null,
-            scale: this._scale,
-            imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
-            holdsDocument: (el) =>
-              this._resources.holdsDocument(imageUrlOf(el) ?? ''),
-            imagePending: (el) => this._imagePending(el),
-            urlSize: (url) => this._resources.imageSize(url),
-            faceAscent: (style) => {
-              const fonts = this._fonts();
-              return fonts ? faceExtentOf(fonts, style).ascent : undefined;
-            },
-            faceExtent: (style) => {
-              const fonts = this._fonts();
-              return fonts ? faceExtentOf(fonts, style) : undefined;
-            },
-            controlSize: (el, kind, style) =>
-              measureControl(el, kind, style, this._fonts(), look),
-          });
+        const options = (): BuildOptions => ({
+          cascade,
+          kept,
+          transition: this._vt?.phase === 'live' ? this._transitionTree : null,
+          scale: this._scale,
+          imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
+          holdsDocument: (el) =>
+            this._resources.holdsDocument(imageUrlOf(el) ?? ''),
+          imagePending: (el) => this._imagePending(el),
+          urlSize: (url) => this._resources.imageSize(url),
+          faceAscent: (style) => {
+            const fonts = this._fonts();
+            return fonts ? faceExtentOf(fonts, style).ascent : undefined;
+          },
+          faceExtent: (style) => {
+            const fonts = this._fonts();
+            return fonts ? faceExtentOf(fonts, style) : undefined;
+          },
+          controlSize: (el, kind, style) =>
+            measureControl(el, kind, style, this._fonts(), look),
+        });
+        const boxes = () => buildBoxes(this._source.document, options());
+        // Where every change the build is for said which elements its boxes
+        // can differ in, the tree keeps every box they cannot, and only
+        // their subtrees are built (`_subtreeBuild`) — the first build of
+        // the pass only, whose `restyleOnly` is still theirs.
+        const subtrees =
+          kept && seeds && restyleOnly === seededWith && pass === 0
+            ? seeds
+            : null;
         // a build that styles every element ends the animations of the ones
         // it does not reach: under `display: none`, or out of the document
-        const build = () => {
+        const build = (first = false) => {
           timeline?.beginPass(!kept);
-          const tree = boxes();
+          const tree =
+            (first && subtrees && this._subtreeBuild(subtrees, options())) ||
+            boxes();
           timeline?.endPass();
           // and one that keeps styles ends the transitions of the elements
           // it left out, taken out of the document
           if (kept) timeline?.endOutside(tree.styles);
           return tree;
         };
-        this._tree = build();
+        this._tree = build(true);
         this._asideOwed = false;
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
@@ -7147,12 +7182,17 @@ export class HtmlViewNode extends Node {
     const blocks = new Set<Box>();
     for (const el of changed) {
       let box: Box | null = first.get(el) ?? null;
+      const broken = box?.kind === 'inline' && box.cut !== 0;
       while (
         box?.parent &&
         (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break')
       ) {
         box = box.parent;
       }
+      // the pieces of one broken around a block are its container's, each
+      // run of them in an anonymous block of its own: a link around a
+      // `<div>` kept its old colour after the block, where a script set it
+      if (broken && box?.parent && !box.el && !box.pseudo) box = box.parent;
       if (box) blocks.add(box);
     }
     const out: Box[] = [];
@@ -8726,6 +8766,7 @@ export class HtmlViewNode extends Node {
     if (!cascade || !tree || this._stale >= Stale.Style) return null;
     const scope: ChangeScope = {
       own: new Set(),
+      targets: new Set(),
       boxes: false,
       drawings: new Set(),
       pseudo: HOVER_PSEUDO_NONE,
@@ -8766,6 +8807,12 @@ export class HtmlViewNode extends Node {
       scope.drawings.add(drawing);
       return true;
     }
+    // where the boxes can differ: the element an attribute changed of, or
+    // what holds what came, went or changed (`_subtreeRoots`)
+    const changed =
+      change.type === 'characterData' ? change.target.parent : change.target;
+    const target = changed instanceof ShadowRoot ? changed.host : changed;
+    if (target && isElement(target)) scope.targets.add(target as Element);
     if (change.type === 'attributes') {
       const el = change.target;
       const name = change.attributeName.toLowerCase();
@@ -8890,6 +8937,82 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * The tree a build of only the subtrees `seeds` can change makes
+   * (`buildSubtrees`), with every other box the tree's own, kept with what
+   * its layouts learnt — or null where it cannot be told, and the whole
+   * document is built. Not where a drag's layout set boxes aside, whose
+   * styles a build puts right (`_asideOwed`), nor in a document with shadow
+   * trees, whose flat tree a build walks and the document's order is not.
+   */
+  private _subtreeBuild(
+    seeds: ReadonlySet<Element>,
+    options: BuildOptions,
+  ): BoxTree | null {
+    const tree = this._tree;
+    if (!tree || asideIn(tree) || this._source.facts().shadows.length) {
+      return null;
+    }
+    const roots = this._subtreeRoots(tree, seeds, options.kept?.restyle);
+    if (!roots) return null;
+    const built = buildSubtrees(
+      tree,
+      this._source.document,
+      roots,
+      options,
+      this._firstBoxesOf(tree),
+    );
+    if (!built) return null;
+    // what the boxes around each new one measured of the old, for their
+    // lives, is measured again
+    for (const box of built.made) forgetSizes(box);
+    return built.tree;
+  }
+
+  /**
+   * The elements whose subtrees a build of only what `seeds` can change
+   * builds (`buildSubtrees`): for each seed still in the document, the
+   * nearest element at or around it whose box can be built apart from its
+   * siblings (`canRebuild`), and of those the outermost. A seed under an
+   * element the last build left `display: none` draws nothing before or
+   * after, where that element's style is none a change can reach
+   * (`restyled`): the `<style>` a CSS-in-JS library writes to, in the
+   * `<head>`. Null where a seed's nearest such element is the document's
+   * top.
+   */
+  private _subtreeRoots(
+    tree: BoxTree,
+    seeds: ReadonlySet<Element>,
+    restyled: ReadonlySet<Element> | undefined,
+  ): Element[] | null {
+    const first = this._firstBoxesOf(tree);
+    const roots = new Set<Element>();
+    for (const seed of seeds) {
+      if (!inDocument(seed, this._source.document)) continue;
+      let hidden: Element | null = null;
+      for (let at: Element | null = seed; at; at = flatParentOf(at)) {
+        if (tree.styles.get(at)?.style.display === 'none') {
+          hidden = at;
+          break;
+        }
+      }
+      if (hidden && !restyled?.has(hidden) && !first.has(seed)) continue;
+      let at: Element | null = seed;
+      while (at && !canRebuild(at, first)) at = flatParentOf(at);
+      if (!at) return null;
+      roots.add(at);
+    }
+    const outermost: Element[] = [];
+    for (const root of roots) {
+      let inner = false;
+      for (let at = flatParentOf(root); at && !inner; at = flatParentOf(at)) {
+        if (roots.has(at)) inner = true;
+      }
+      if (!inner) outermost.push(root);
+    }
+    return outermost;
+  }
+
+  /**
    * The cascade made again for sheets that may read otherwise
    * (`_sheetsOwed`), and the elements the rules they add can style
    * (`Cascade.addedReach`): where every sheet the cascade was made from is
@@ -8975,7 +9098,7 @@ export class HtmlViewNode extends Node {
       // what the new rules style is known once they are read, before the
       // build (`_sheetsAdded`)
       this._sheetsOwed = true;
-      this._invalidate(Stale.Boxes, scope.own, true);
+      this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope));
       return;
     }
     if (!scope.own.size && !scope.boxes) return;
@@ -9007,7 +9130,7 @@ export class HtmlViewNode extends Node {
         return;
       }
     }
-    this._invalidate(Stale.Boxes, scope.own, true);
+    this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope));
   }
 
   /**
@@ -13570,6 +13693,10 @@ interface ChangeScope {
    *  before the build, which styles what the rules it adds can style
    *  besides `own` (`_sheetsAdded`). */
   sheets?: boolean;
+  /** The elements whose boxes a change can make otherwise beside `own`:
+   *  the one whose attribute changed, and what holds what came, went or
+   *  changed (`_subtreeRoots`). */
+  targets: Set<Element>;
 }
 
 /** The elements whose changes are changes to the cascade: a sheet's, what
@@ -13690,6 +13817,14 @@ function drawingAround(node: AnyNode): Element | null {
     if (tagOf(at) === 'svg') found = at;
   }
   return found;
+}
+
+/** The elements whose boxes a change scope can make otherwise: what it
+ *  restyles, and what the changes were to (`_subtreeRoots`). */
+function seedsOf(scope: ChangeScope): Set<Element> {
+  const seeds = new Set(scope.own);
+  for (const el of scope.targets) seeds.add(el);
+  return seeds;
 }
 
 /** Whether a node is in a shadow tree, whose sheets are bound to it by

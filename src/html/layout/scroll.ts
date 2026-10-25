@@ -205,6 +205,24 @@ export function scrollContent(
 }
 
 /**
+ * Take a scroll container's content back to where its layout put it, from
+ * where it is scrolled to (`APPLIED`): what a layout that keeps a block an
+ * earlier one laid out does to each container in it, which the scroll after
+ * the flow then scrolls as it does a container just laid out
+ * (`applyScrollOffsets`). Nothing anchored, in a tree that keeps a block.
+ */
+export function scrollBack(box: Box, move: MoveBox): void {
+  const at = APPLIED.get(box);
+  if (!at) return;
+  APPLIED.delete(box);
+  const stays = (child: Box) => escapes(child, box);
+  moveLines(box.lines, at.x, at.y);
+  for (const child of box.children) {
+    if (!stays(child)) move(child, at.x, at.y, stays);
+  }
+}
+
+/**
  * How far the scroll containers around a box moved it from where layout
  * put it, across and down, in the device pixels its boxes are laid out in:
  * the offsets of those that move it, which a box positioned against

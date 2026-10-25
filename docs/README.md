@@ -75,6 +75,12 @@ parts.
   builds that throw away every kept size, scroll containers, grids, flex
   columns and an escaping fixed box — measured on seventeen pages, and the
   order of work that removes each.
+- [Building only what changed](prd-subtree-build.md) — design: where a
+  build that keeps every style spends its time on thirteen scripted
+  loads — a third making boxes, two thirds laying all of them out again —
+  and the two phases that make a change cost what it changed: a changed
+  subtree built into the kept tree, then a layout that leaves alone what
+  did not move.
 - [`<Html>` animations off the JavaScript clock](prd-html-animations.md) —
   investigation: what Core Animation, react-x11's two presenters and the
   X11 and Wayland backends can run of a CSS animation, which animations
