@@ -52,9 +52,11 @@ export const TRI_STRIDE = 6;
 
 /** One run of one kind of instance, drawn in turn. `scissor` limits it to a
  *  rect — the minimap's viewport box is allowed to spill past the panel in
- *  the scene and has to be cut, as the 2D painter's `clipRect` cuts it. */
+ *  the scene and has to be cut, as the 2D painter's `clipRect` cuts it. A
+ *  `'body'` range is one GL body's texture (`PackedScene.bodies[first]`),
+ *  drawn where its card is in the order. */
 export interface DrawRange {
-  kind: 'grid' | 'line' | 'box' | 'tri';
+  kind: 'grid' | 'line' | 'box' | 'tri' | 'body';
   first: number;
   count: number;
   scissor?: FlowRect;
@@ -93,6 +95,13 @@ export interface WaitingLabel {
   text: SceneText;
 }
 
+/** Where a node's GL body goes (`FlowNodeType.glBody`): the node, and its
+ *  box in the scene's units. */
+export interface PackedBody {
+  id: string;
+  rect: FlowRect;
+}
+
 /** A label packed drawn from a field, and the placement of the field it
  *  was drawn from (`LabelAtlas.slotOf`): a box whose field was dropped or
  *  moved is found by comparing the two. */
@@ -121,6 +130,8 @@ export interface PackedScene {
   waiting: WaitingLabel[];
   /** Labels in `boxes` drawn from their fields. */
   drawn: DrawnLabel[];
+  /** The GL bodies, in the order their `'body'` ranges draw them. */
+  bodies: PackedBody[];
 }
 
 /**
@@ -166,6 +177,7 @@ export class ScenePacker {
   private gaps: PackGaps = { text: 0, custom: 0 };
   private waiting: WaitingLabel[] = [];
   private drawn: DrawnLabel[] = [];
+  private bodies: PackedBody[] = [];
   /** The scissor for whatever is appended until it is changed. */
   private scissor: FlowRect | undefined;
 
@@ -189,6 +201,7 @@ export class ScenePacker {
     this.gaps = { text: 0, custom: 0 };
     this.waiting = [];
     this.drawn = [];
+    this.bodies = [];
     this.cut = false;
     this.nodesAt = 0;
     this.scissor = undefined;
@@ -257,6 +270,19 @@ export class ScenePacker {
         } else if (node.card) {
           this.box(node.card.shape);
           if (node.card.accent) this.box(node.card.accent);
+          // The body over its card and under the card's title, its handles
+          // and every card after it: a range of its own, between two of the
+          // boxes, which is the order the 2D renderer stacks a mounted body
+          // in. A graph with none packs exactly what it did.
+          if (node.glBody) {
+            this.bodies.push({ id: node.id, rect: node.glBody });
+            this.ranges.push({
+              kind: 'body',
+              first: this.bodies.length - 1,
+              count: 1,
+            });
+            this.cut = true;
+          }
           for (const ink of node.ink) this.ink(ink);
         }
         for (const handle of node.handles) this.handle(handle);
@@ -314,6 +340,7 @@ export class ScenePacker {
       gaps: this.gaps,
       waiting: this.waiting,
       drawn: this.drawn,
+      bodies: this.bodies,
     };
   }
 
