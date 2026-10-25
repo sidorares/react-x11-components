@@ -4,7 +4,7 @@
 // rule results-analysis scores a run with.
 //
 //   npx tsx scripts/conformance/interop.ts <wpt root> <wpt-metadata root>
-//     [--jobs N] [--out dir] [--chunk N] [--only label,label] [--memory 4G]
+//     [--jobs N] [--out dir] [--chunk N] [--only area,area] [--memory 4G]
 //
 // `<wpt root>` must be serving: `./wpt serve` in it, with `server_host` set
 // to 127.0.0.1 and `check_subdomains` off where the machine does not map
