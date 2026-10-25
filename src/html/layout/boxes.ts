@@ -3741,7 +3741,9 @@ class Builder {
     if (style.translate || style.transform) this._relative = true;
     if (outOfPlane(style)) this._tilted = true;
     if (style.readingFlow !== 'normal') this._readingFlow = true;
-    if (style.anchorNames !== null) this._anchors = true;
+    if (style.anchorNames !== null || mayAnchorImplicitly(style)) {
+      this._anchors = true;
+    }
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
@@ -4269,8 +4271,11 @@ class Builder {
     // a translation is moved by the same pass
     if (style.translate || style.transform) this._relative = true;
     if (outOfPlane(style)) this._tilted = true;
-    // a `::before` or an `::after` is an anchor as its element is
-    if (style.anchorNames !== null) this._anchors = true;
+    // a `::before` or an `::after` is an anchor as its element is, and is
+    // anchored to its element as its implicit anchor
+    if (style.anchorNames !== null || mayAnchorImplicitly(style)) {
+      this._anchors = true;
+    }
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
@@ -6181,6 +6186,33 @@ const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
 
 function isRelative(style: ComputedStyle): boolean {
   return style.position === 'relative' || style.position === 'sticky';
+}
+
+/** Whether a box may be placed against its implicit anchor element, which
+ *  no `anchor-name` says is there: a positioned box with an `auto`
+ *  `position-anchor` that anchors anything, or a `normal` one in a
+ *  `position-area`, its own or an option's. A tree with one is a tree with
+ *  anchors (`BoxTree.anchors`). */
+function mayAnchorImplicitly(style: ComputedStyle): boolean {
+  if (style.positionAnchor !== null) return false;
+  if (style.position !== 'absolute' && style.position !== 'fixed') {
+    return false;
+  }
+  const text = style.positionAnchorText;
+  if (text === 'normal') {
+    return !!(style.positionArea || style.positionTryFallbacks);
+  }
+  return (
+    text === 'auto' &&
+    !!(
+      style.positionArea ||
+      style.anchorInsets ||
+      style.anchorSizes ||
+      style.positionTryFallbacks ||
+      style.justifyAnchorCenter ||
+      style.alignAnchorCenter
+    )
+  );
 }
 
 /** Whether `position: relative` moves a box: an inset is set. An inline box

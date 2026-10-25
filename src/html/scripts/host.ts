@@ -2679,13 +2679,19 @@ export class DomHost {
       }
       // a popover shown or hidden (HTML 6.12), told as a change of an
       // attribute nothing has, which only `:popover-open` reads; given no
-      // `b`, whether it is showing — taken out of the document, it is not
+      // `b`, whether it is showing — taken out of the document, it is not.
+      // Shown, `c` is what showed it, its implicit anchor element, if
+      // anything did
       case 'popoverOpen': {
         const el = this._element(a);
         if (
           typeof b === 'boolean' &&
           (!b || this._inDocument(el)) &&
-          setPopoverOpen(el, b) &&
+          setPopoverOpen(
+            el,
+            b,
+            b && typeof c === 'number' ? this._element(c) : null,
+          ) &&
           this._inDocument(el)
         ) {
           this._tell(el, {

@@ -3521,6 +3521,89 @@ test('a modal dialog anchored to a box in the document is placed against it, and
   assert.deepEqual(at('target'), [300, 300], 'with its anchor');
 });
 
+test('a popover is anchored to what showed it, its popovertarget button or showPopover()’s source, until it is hidden', async () => {
+  // WPT popover-implicit-anchor: a `position-area` and no anchor name
+  // places a popover against its implicit anchor element (CSS Anchor
+  // Positioning 1, `position-anchor: normal`; HTML 6.12, "show popover")
+  const doc = await hosted(
+    '<style>body{margin:0}' +
+      'button{position:relative;display:block;width:40px;height:20px;border:0;padding:0}' +
+      '#a{top:100px;left:100px}#b{top:150px;left:200px}' +
+      '#p{inset:auto;margin:0;border:0;padding:0;width:30px;height:10px;position-area:top left}' +
+      '#q{inset:auto;margin:0;border:0;padding:0;width:30px;height:10px;position-anchor:auto;top:anchor(bottom);left:anchor(right)}' +
+      '</style><button id="a" popovertarget="p"></button><button id="b"></button>' +
+      '<div id="p" popover></div><div id="q" popover="manual"></div>',
+    { pane: 300 },
+  );
+  const node = doc.view as unknown as DrawnNode;
+  const press = async (id: string) => {
+    const rect = doc.view.elementRect(doc.byId(id))!;
+    await act(async () => {
+      const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+      const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+      fireEvent.mouseDown(node, { dx, dy });
+      fireEvent.mouseUp(node, { dx, dy });
+    });
+    await settle();
+  };
+  const at = (id: string) => {
+    const r = doc.view.elementRect(doc.byId(id));
+    return r && [r.x, r.y];
+  };
+  const run = async (code: string) => {
+    await act(() => doc.run(code));
+    await settle();
+  };
+  assert.deepEqual(at('a'), [100, 100]);
+  assert.deepEqual(at('b'), [200, 170]);
+  // its right and bottom edges at the button's left and top
+  await press('a');
+  assert.deepEqual(at('p'), [70, 90], 'by its popovertarget button');
+  await press('a');
+  assert.equal(at('p'), null, 'hidden by it');
+  await run('p.showPopover({ source: b })');
+  assert.deepEqual(at('p'), [170, 160], 'by its source');
+  await run('p.hidePopover(); p.showPopover()');
+  const none = at('p');
+  assert.ok(
+    none && none[0] !== 170 && none[0] !== 70,
+    `shown by nothing, it is anchored to nothing: ${none}`,
+  );
+  // and `auto` reads it in an `anchor()` that names no anchor, and follows
+  // it as the pane scrolls
+  await run('p.hidePopover(); q.togglePopover({ source: a })');
+  assert.deepEqual(at('q'), [140, 120], 'by togglePopover()’s source');
+  await act(async () => doc.pane!.scrollTo({ y: 50 }));
+  await act();
+  assert.deepEqual(at('q'), [140, 120], 'with its anchor');
+});
+
+test('an anchor inside a popover anchors a popover inside it, and a box in the top layer has no offsetParent', async () => {
+  // WPT anchor-in-popover: each popover's `offsetLeft` is from the initial
+  // containing block, where Blink hangs a top layer box's layout object
+  // off the view, and not from the box around it in the tree
+  const doc = await hosted(
+    '<style>body{margin:0}' +
+      '#cb{position:relative;width:100px;height:100px;border:1px solid}' +
+      '#a1,#a2{width:50px;height:50px;position:absolute;top:25px;left:25px}' +
+      '#a1{anchor-name:--a1}#a2{anchor-name:--a2}' +
+      '[popover]{margin:0;border:1px solid;padding:0;width:100px;height:100px;position:absolute;position-area:bottom right}' +
+      '#p1{position-anchor:--a1}#p2{position-anchor:--a2}' +
+      '</style><div id="cb"><div id="a1"></div></div>' +
+      '<div id="p1" popover><div id="a2"><div id="p2" popover></div></div></div>' +
+      '<p id="out"></p><script>p1.showPopover(); p2.showPopover();' +
+      'document.getElementById("out").textContent = [p1.offsetLeft, p1.offsetParent, p2.offsetLeft, p2.offsetParent, a2.offsetParent.id].join(",");' +
+      '</script>',
+  );
+  const at = (id: string) => {
+    const r = doc.view.elementRect(doc.byId(id))!;
+    return [r.x, r.y];
+  };
+  assert.deepEqual(at('p1'), [76, 76]);
+  assert.deepEqual(at('p2'), [152, 152]);
+  assert.equal(doc.text('out'), '76,,152,,p1');
+});
+
 test('Escape the page lets be closes the last modal dialog opened, after a cancel it may cancel, and gives the focus back', async () => {
   const doc = await hosted(
     '<input type="button" id="opener" value="open">' +

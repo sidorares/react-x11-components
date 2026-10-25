@@ -12303,8 +12303,9 @@ function boxOf(tree: BoxTree, element: Element): Box | null {
  * absolute box, or the `<body>`, or a `<td>`, a `<th>` or a `<table>` where
  * the element is not positioned. Whichever tree that one is in: a shadow
  * tree's is the caller's to pass over (`shadowHidden`). Null for the root,
- * the `<body>`, a box fixed to the viewport and an element nothing around
- * holds.
+ * the `<body>`, a box fixed to the viewport, a box in the top layer —
+ * whose layout object Blink hangs off the view, which is no element — and
+ * an element nothing around holds.
  */
 function offsetParentOf(box: Box, element: Element): Box | null {
   // the root element
@@ -12314,7 +12315,8 @@ function offsetParentOf(box: Box, element: Element): Box | null {
     !box.parent ||
     !above ||
     (above.type === 'root' && !(above instanceof ShadowRoot)) ||
-    tagOf(element) === 'body'
+    tagOf(element) === 'body' ||
+    box.topLayer
   ) {
     return null;
   }

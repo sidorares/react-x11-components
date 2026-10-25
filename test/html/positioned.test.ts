@@ -1643,6 +1643,37 @@ test('a ::before or an ::after is an anchor, as its element is', async () => {
   assert.deepStrictEqual(at('tb'), [100, text.y + text.height]);
 });
 
+test('a ::before or an ::after is anchored to its element, its implicit anchor, for auto, and for normal in a position-area', async () => {
+  // CSS Anchor Positioning 1, 2.2 and `position-anchor`: `normal` is
+  // `auto` in a `position-area` and `none` without; and no name is needed,
+  // in a document with no `anchor-name` anywhere
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      '.a{margin:20px 0 0 50px;width:100px;height:40px}' +
+      '.a::before,.a::after{content:"";position:absolute;width:10px;height:10px}' +
+      '#auto::before{position-anchor:auto;left:anchor(right);top:anchor(bottom)}' +
+      '#auto::after{position-anchor:auto;position-area:top left}' +
+      '#normal::before{position-area:bottom center}' +
+      // no default anchor: the fallback
+      '#normal::after{left:anchor(right, 7px);top:anchor(top, 9px)}' +
+      '#none::before{position-anchor:none;position-area:top left;left:3px;top:4px}' +
+      '</style><div class="a" id="auto"></div><div class="a" id="normal"></div>' +
+      '<div class="a" id="none"></div>',
+  );
+  const el = view(node);
+  const pseudo = (id: string, which: string) => {
+    const b = boxOf(el, id).children.find(
+      (box) => (box as LaidBox & { pseudo?: string }).pseudo === which,
+    )!;
+    return [b.x, b.y];
+  };
+  assert.deepStrictEqual(pseudo('auto', 'before'), [150, 60]);
+  assert.deepStrictEqual(pseudo('auto', 'after'), [40, 10]);
+  assert.deepStrictEqual(pseudo('normal', 'before'), [95, 120]);
+  assert.deepStrictEqual(pseudo('normal', 'after'), [7, 9]);
+  assert.deepStrictEqual(pseudo('none', 'before'), [3, 4]);
+});
+
 test("a box is placed against where its anchor's relative offset moved it", async () => {
   // CSS Anchor Positioning 1, 2: an anchor's box is where layout put it,
   // relative positioning included, which is applied after the boxes

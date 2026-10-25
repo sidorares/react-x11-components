@@ -4069,7 +4069,8 @@ them first. Two things are load-bearing. **Anything new that walks up
 from a box for what it is under — a clip, a matrix, an opacity, a
 filter, a containing block — stops once it has passed a top-layer box**,
 as `fixedToViewport`, `containingBlockOf`, `clipAround`,
-`throughTransforms`, `controlRectsOf` and `liftableBox` do, and the
+`throughTransforms`, `controlRectsOf`, `liftableBox` and `offsetParentOf`
+do, and the
 layout's `containingBlockFor` answers as paint's `containingBlockOf`
 does: the viewport for a fixed one and the root for an absolute one,
 whatever transform is around it. A walk that went on past it would draw
@@ -4288,13 +4289,37 @@ keeps the queue in this order**, or an anchor is read before its layout.
 the sizes, and `position-try-fallbacks`, the shadow root of the tree whose
 rule set each, null for the document's (`noteTree`, `TREE_SCOPED`). A
 name then matches only a reference of the same tree, as Chrome matches
-them (`anchorBoxFor`, `refTree`). A scope reaches only its own tree's
-names, from the anchor's side and from the box's (`scopedAway`), and a
+them (`anchorBoxFor`, `referencedAnchor`). A scope reaches only its own
+tree's names, from the anchor's side and from the box's (`scopedAway`), and a
 `@position-try` is looked for in the reference's tree and then in each
 tree around it (`_positionTry`, by `TreeRules.positionTries`). Two cards'
 shadow trees each named their own `--a`, and a target in the second found
 the first card's. **Anything new that names an anchor, or refers to one,
 notes its tree with `noteTree`**: without one, it is the document's.
+
+**A box's default anchor is found in one place, and an implicit one has no
+name** (CSS Anchor Positioning 1, 2.2 and `position-anchor`;
+`defaultAnchorBox`). `position-anchor: auto`, and `normal` where the box is
+in a `position-area`, is its implicit anchor element (`implicitAnchorBox`):
+a `::before`'s or an `::after`'s originating element (`GENERATED_FROM`),
+and a popover's whatever showed it — its `popovertarget` button, or
+`showPopover()`'s and `togglePopover()`'s `source` — which the facade hands
+the host with the `popoverOpen` op, and `dom.ts` keeps by element until the
+popover is hidden (`implicitAnchorOf`). An `anchor()` or an
+`anchor-size()` that names no anchor, a `position-area`, `anchor-center`,
+the scroll a box follows its anchor by (`noteDefaultAnchor`) and
+`position-visibility` all reach the default anchor through
+`referencedAnchor`, so an implicit anchor is followed and hidden as a named
+one is; it is acceptable or not as any anchor is (`acceptableAnchor`), and
+no tree and no `anchor-scope` reach it, since it is no name. Two things are
+load-bearing. **A tree with a box that may be anchored implicitly is a tree
+with anchors** (`mayAnchorImplicitly`, in the builder): nothing names an
+anchor there, and `BoxTree.anchors` gates the whole of anchor layout — a
+popover's `position-area` found no anchor in a document with no
+`anchor-name`. **And anything new that gives an element an implicit anchor
+— an invoker command's `show-popover`, an interest invoker — sets it where
+the popover goes into the top layer**, through `setPopoverOpen`'s `source`,
+whose change of `:popover-open` builds the boxes the layout reads it from.
 
 **A position option a box is placed by is the box's style, and its last
 successful one changes once a rendering** (CSS Anchor Positioning 1, 6.2
