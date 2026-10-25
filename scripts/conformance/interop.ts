@@ -146,8 +146,32 @@ const capped =
   spawnSync('systemd-run', ['--user', '--scope', '--quiet', 'true'], {
     stdio: 'ignore',
   }).status === 0;
+/** `--memory` in bytes, for a child watched rather than capped. */
+const memoryBytes = (() => {
+  const m = /^(\d+(?:\.\d+)?)([KMGT]?)$/i.exec(memory);
+  if (!m) throw new Error(`--memory ${memory}: a size like 4G or 512M`);
+  const unit = { '': 1, K: 1 << 10, M: 1 << 20, G: 1 << 30, T: 2 ** 40 };
+  return Number(m[1]) * unit[m[2].toUpperCase() as keyof typeof unit];
+})();
 if (!capped) {
-  console.log('no systemd-run --user: the children run without a memory cap');
+  console.log(
+    `no systemd-run --user: a child is killed once it is resident past ${memory}`,
+  );
+}
+
+/**
+ * Where no cgroup holds a child (a Mac), the cap is a watch: the child's
+ * resident memory every two seconds, and its group killed past `--memory` —
+ * recorded as a crash, as the cgroup's kill is. Coarser than a cgroup, since
+ * a document can grow a few gigabytes between two looks, but without it
+ * `request-upload.h2.any.worker.html` took the machine's memory.
+ */
+function residentBytes(pid: number): number {
+  const ps = spawnSync('ps', ['-o', 'rss=', '-p', String(pid)], {
+    encoding: 'utf8',
+  });
+  const kb = Number(ps.stdout?.trim());
+  return Number.isFinite(kb) ? kb * 1024 : 0;
 }
 
 function runChunk(chunk: string[]): Promise<void> {
@@ -201,6 +225,11 @@ function runChunk(chunk: string[]): Promise<void> {
         size = now;
         moved = Date.now();
       } else if (Date.now() - moved > STALL_MS) {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {}
+      }
+      if (!capped && residentBytes(child.pid!) > memoryBytes) {
         try {
           process.kill(-child.pid!, 'SIGKILL');
         } catch {}
