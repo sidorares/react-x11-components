@@ -5270,6 +5270,18 @@ function isControl(box: Box): boolean {
   }
 }
 
+/** The style of the position option an anchor-positioned box was placed
+ *  by, where that was one of its `position-try-fallbacks`: its computed
+ *  style, as `getComputedStyle` reads it (CSS Anchor Positioning 1, 6.2:
+ *  the position option's styles are the box's). */
+const PLACED_STYLE = new WeakMap<Box, ComputedStyle>();
+
+/** The style a box was placed by (`PLACED_STYLE`), or null where it is its
+ *  own. */
+export function placedStyleOf(box: Box): ComputedStyle | null {
+  return PLACED_STYLE.get(box) ?? null;
+}
+
 /** The position option an anchor-positioned box was placed by, by box:
  *  the option's text, as an anchored container query matches it, where it
  *  was one of its `position-try-fallbacks`; none where it was its own. */
@@ -5328,6 +5340,73 @@ interface LastPosition {
   option: number;
 }
 const LAST_POSITIONS = new WeakMap<object, Map<string, LastPosition>>();
+
+/** The options layouts placed boxes by since the last rendering, which
+ *  become their last successful ones there (`commitLastPositions`). */
+const PENDING_POSITIONS = new Map<
+  Map<string, LastPosition>,
+  Map<string, LastPosition>
+>();
+
+/** A layout placed a box by an option: kept for the next rendering. */
+function notePosition(
+  map: Map<string, LastPosition>,
+  at: string,
+  position: LastPosition,
+): void {
+  let pending = PENDING_POSITIONS.get(map);
+  if (!pending) PENDING_POSITIONS.set(map, (pending = new Map()));
+  pending.set(at, position);
+}
+
+/**
+ * Make the options the layouts since the last rendering placed boxes by
+ * their last successful position options (CSS Anchor Positioning 1,
+ * 6.5.1.1): HTML updates it as it gathers the resize observations, once a
+ * rendering, so a layout a script forces between two — `offsetTop` read
+ * after a style change — tries what the last rendering had, and what it
+ * places a box by is no box's last successful option until a rendering.
+ */
+export function commitLastPositions(): void {
+  if (!PENDING_POSITIONS.size) return;
+  for (const [map, pending] of PENDING_POSITIONS) {
+    for (const [at, position] of pending) map.set(at, position);
+  }
+  PENDING_POSITIONS.clear();
+}
+
+/** The options in the order `position-try-order` sorts them (CSS Anchor
+ *  Positioning 1, 6.3): by the room each leaves the box on its axis, the
+ *  most first, a tie in the order written. */
+function sortedOptions(
+  count: number,
+  _order: string,
+  room: (index: number) => number,
+): number[] {
+  const rooms = Array.from({ length: count }, (_, i) => room(i));
+  return rooms.map((_, i) => i).sort((a, b) => rooms[b] - rooms[a]);
+}
+
+/**
+ * How much room an option's insets leave a box, along the axis its
+ * `position-try-order` names (6.3): the size of its inset-modified
+ * containing block there — its containing block, or its area's cells —
+ * with `auto` insets nought.
+ */
+function roomOf(style: ComputedStyle, cb: CbRect, axes: AnchorAxes): number {
+  const order = style.positionTryOrder;
+  let down: boolean;
+  if (order === 'most-width' || order === 'most-height') {
+    // the page's axis, which a frame of a vertical flow has turned
+    down = (order === 'most-height') !== !!axes.frame;
+  } else {
+    const block = blockDown(axes, axes.cb);
+    down = order === 'most-block-size' ? block : !block;
+  }
+  const size = down ? cb.height : cb.width;
+  const [a, b] = down ? [style.top, style.bottom] : [style.left, style.right];
+  return size - (resolveOrNull(a, size) ?? 0) - (resolveOrNull(b, size) ?? 0);
+}
 
 /** Where an anchored box's last position is kept: by its element, or by
  *  the element a pseudo-element's box hangs off. */
@@ -5405,11 +5484,15 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const kept = options.length ? lastPositionOf(box) : null;
   const key = `${style.position} ${style.positionAnchor} ${options
     .map((o) => o.text)
-    .join(',')}`;
+    .join(',')} ${style.positionTryRules}`;
   const last = kept?.[0].get(kept[1]);
   let start =
     last?.key === key && last.option < options.length ? last.option : -1;
-  const place = (index: number): Placement | null => {
+  // the style each option made of the box's, its tactics applied
+  const triedStyles = new Map<number, ComputedStyle>();
+  const triedStyle = (index: number): ComputedStyle | null => {
+    const known = triedStyles.get(index);
+    if (known) return known;
     const option = index < 0 ? null : options[index];
     let tried = style;
     if (option?.name != null) {
@@ -5424,6 +5507,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       option?.area ?? null,
       axes,
     );
+    triedStyles.set(index, tried);
+    return tried;
+  };
+  const place = (index: number): Placement | null => {
+    const tried = triedStyle(index);
+    if (!tried) return null;
     ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
@@ -5441,9 +5530,31 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     placed = place(-1);
   }
   if (options.length && !(placed && fitsIn(box, placed))) {
-    // each option it is not placed by, its own first (6.5)
+    // each option it is not placed by, its own first (6.5), and the others
+    // in the order `position-try-order` sorts them
     let found = false;
-    for (let i = -1; i < options.length; i += 1) {
+    const order =
+      style.positionTryOrder === 'normal' || options.length < 2
+        ? options.map((_, i) => i)
+        : sortedOptions(options.length, style.positionTryOrder, (i) => {
+            const tried = triedStyle(i);
+            if (!tried) return -Infinity;
+            ctx.anchorShift =
+              anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+            try {
+              const { resolved, anchoring } = anchoredStyle(
+                box,
+                tried,
+                cb,
+                ctx,
+                axes,
+              );
+              return roomOf(resolved, anchoring?.area ?? cb, axes);
+            } finally {
+              ctx.anchorShift = null;
+            }
+          });
+    for (const i of [-1, ...order]) {
       if (i === start) continue;
       const tried = place(i);
       if (tried && fitsIn(box, tried)) {
@@ -5456,9 +5567,15 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     // and where none does, the one it had
     if (!found) placed = place(start);
   }
-  if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
-  else ANCHOR_FALLBACK.delete(box);
-  if (kept && !ctx.question) kept[0].set(kept[1], { key, option: chosen });
+  if (chosen >= 0) {
+    ANCHOR_FALLBACK.set(box, options[chosen].text);
+    PLACED_STYLE.set(box, triedStyles.get(chosen) ?? style);
+  } else {
+    ANCHOR_FALLBACK.delete(box);
+    PLACED_STYLE.delete(box);
+  }
+  if (kept && !ctx.question)
+    notePosition(kept[0], kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
   // where it ends up (5.4)
   if (root && style.positionVisibility & 3) {

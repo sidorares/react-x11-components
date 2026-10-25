@@ -4170,6 +4170,22 @@ shadow trees each named their own `--a`, and a target in the second found
 the first card's. **Anything new that names an anchor, or refers to one,
 notes its tree with `noteTree`**: without one, it is the document's.
 
+**A position option a box is placed by is the box's style, and its last
+successful one changes once a rendering** (CSS Anchor Positioning 1, 6.2
+and 6.5.1.1). The style the chosen option made of the box's, its tactics
+applied, is kept by the box (`placedStyleOf`), and `getComputedStyle`
+reads it, a `::before`'s and an `::after`'s too (`_placedStyle`): a box
+flipped by `flip-start` reads its `width` and `height` swapped. What a
+layout places a box by becomes its last successful option only when the
+element paints (`commitLastPositions`), as HTML updates it with the
+resize observations, so a layout a script forces between two renderings
+tries what the last one had; and the option's key holds the declarations
+of the `@position-try` rules it names (`positionTryRules`), so a change
+to one forgets it. `position-try-order` sorts the options by the room
+each leaves on its axis before they are tried (`sortedOptions`,
+`roomOf`). **Anything new that lays a box out by an option goes through
+`triedStyle`**, or the style it reads back is another.
+
 **An anchored box in a vertical writing mode is placed in its frame's
 axes, and what it is placed by is read in the page's** (CSS Anchor
 Positioning 1, 3.1–4.1). `framedStyle` turns what a box's anchor functions

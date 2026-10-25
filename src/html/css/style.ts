@@ -923,6 +923,10 @@ export interface ComputedStyle {
   anchorScopeTree: object | null;
   anchorFunctionsTree: object | null;
   positionTryTree: object | null;
+  /** The `@position-try` rules the options name, as their declarations
+   *  read: a change of one is a change of the box's position options,
+   *  which forgets its last successful one (6.5.1). */
+  positionTryRules: string;
   /** `position-try-order`. */
   positionTryOrder: string;
   /** `position-visibility` (CSS Anchor Positioning 1, 5.4): when the box
@@ -1771,6 +1775,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     anchorScopeTree: null,
     anchorFunctionsTree: null,
     positionTryTree: null,
+    positionTryRules: '',
     positionTryOrder: 'normal',
     positionVisibility: 1,
     anchorInsets: null,

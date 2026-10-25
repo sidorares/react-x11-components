@@ -226,6 +226,8 @@ import {
   showsUnseen,
   unseenHeld,
   unseenIn,
+  commitLastPositions,
+  placedStyleOf,
   resolvedInsets,
   restickToViewport,
   restickWithin,
@@ -5211,6 +5213,17 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      // one placed by a position option has that option's style, and the
+      // insets its layout came to (CSS Anchor Positioning 1, 6.2)
+      const generated = this._pseudoBoxOf(tree, element, pseudo);
+      const placed = generated && this._placedStyle(generated);
+      if (generated && placed) {
+        return cssomStyle(
+          placed,
+          this._scale,
+          this._usedBox(generated, placed),
+        );
+      }
       // one the rules give no `content` is styled by them all the same
       const own = this._atNow(element, () =>
         cascade.pseudoComputedStyle(element, pseudo, style),
@@ -5231,7 +5244,18 @@ export class HtmlViewNode extends Node {
     if (pseudo) return null;
     const box = boxFor(tree.root, element);
     if (!box) return cssomStyle(style, this._scale, null);
-    return cssomStyle(style, this._scale, this._usedBox(box, style));
+    const own = this._placedStyle(box) ?? style;
+    return cssomStyle(own, this._scale, this._usedBox(box, own));
+  }
+
+  /** The style of the position option a box was placed by
+   *  (`placedStyleOf`), which is its computed style; null where it was
+   *  placed by its own, or is laid out in a vertical flow's frame, whose
+   *  styles are turned (`layout/writing.ts`). */
+  private _placedStyle(box: Box): ComputedStyle | null {
+    const placed = placedStyleOf(box);
+    if (!placed) return null;
+    return this._tree?.vertical && frameModeOf(box) ? null : placed;
   }
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
@@ -10593,6 +10617,9 @@ export class HtmlViewNode extends Node {
     this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
     this._counted(() => this._paintContent(ctx));
+    // what the layouts since the last rendering placed anchored boxes by
+    // is their last successful position option now
+    commitLastPositions();
     this._noteFrame();
     this._notePaneScroll();
     this._props().onPaint?.();
