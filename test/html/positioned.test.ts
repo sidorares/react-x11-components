@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import { act, cleanup, pixelAt, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import { setModal } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
 import {
@@ -1546,6 +1547,80 @@ test('an anchor a positioned box holds is laid out before a box anchored to it t
   const el = view(node);
   assert.strictEqual(boxOf(el, 'first').width, 30);
   assert.strictEqual(boxOf(el, 'after').width, 30);
+});
+
+test("anchor-size() is a length in a box's least and greatest sizes, its insets and its margins, and an anchor() of the other axis is its fallback", async () => {
+  // CSS Anchor Positioning 1, 5.1: anchor-size() is allowed in the sizing
+  // properties, the insets and the margins, the axis it reads the
+  // property's where it names none; one with no anchor is its fallback,
+  // or the property's initial value, as getComputedStyle reads it; and
+  // 3.2.1: an anchor() of a side of the other axis is invalid
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:200px;height:200px}' +
+      '#a{anchor-name:--a1;width:5px;height:7px}' +
+      '.t{position:absolute;position-anchor:--a1}' +
+      '#mn{min-width:anchor-size(width);height:1px}' +
+      '#mx{max-height:anchor-size(width)}' +
+      '#ins{left:anchor-size(height);top:anchor-size();width:1px;height:1px}' +
+      '#mar{margin-left:anchor-size(width);margin-top:anchor-size();' +
+      'left:0;top:0;width:1px;height:1px}' +
+      '#cross{left:anchor(--a1 top, 13px);top:0;width:1px;height:1px}' +
+      '#flow{width:100px;max-width:anchor-size(width, 28%);' +
+      'margin-left:anchor-size(width, 6px)}' +
+      '</style><div id="cb"><div id="a"></div>' +
+      '<div class="t" id="mn"></div>' +
+      '<div class="t" id="mx"><div style="height:100px"></div></div>' +
+      '<div class="t" id="ins"></div><div class="t" id="mar"></div>' +
+      '<div class="t" id="cross"></div><div id="flow"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height];
+  };
+  const cs = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.strictEqual(boxOf(el, 'mn').width, 5);
+  assert.strictEqual(boxOf(el, 'mx').height, 5);
+  assert.deepStrictEqual(at('ins'), [7, 7, 1, 1]);
+  assert.deepStrictEqual(at('mar'), [5, 7, 1, 1]);
+  assert.deepStrictEqual(
+    [cs('mar')['margin-left'], cs('mar')['margin-top']],
+    ['5px', '7px'],
+  );
+  assert.strictEqual(boxOf(el, 'cross').x, 13);
+  // in the flow: the fallbacks
+  assert.deepStrictEqual(
+    [cs('flow')['max-width'], cs('flow')['margin-left']],
+    ['28%', '6px'],
+  );
+});
+
+test('an anchor in the top layer is no anchor of a box laid out before it', async () => {
+  // 2.3: what is in the top layer is laid out after everything that is
+  // not, in the order it went in
+  const { node } = await render(
+    '<style>body{margin:0}dialog{margin:0;border:0;padding:0;inset:auto}' +
+      '#d{position:absolute;left:200px;top:300px;width:100px;height:100px;' +
+      'anchor-name:--a}' +
+      '#t{position:fixed;position-anchor:--a;top:anchor(bottom, 20px);' +
+      'left:anchor(left, 30px);width:10px;height:10px}' +
+      '</style><dialog id="d" open></dialog><div id="t"></div>',
+  );
+  const el = view(node);
+  // open in the page, an anchor like any
+  assert.deepStrictEqual([boxOf(el, 't').x, boxOf(el, 't').y], [200, 400]);
+  const d = findById(el.document, 'd')!;
+  setModal(d, true);
+  el.touchDocument([
+    { type: 'attributes', target: d, attributeName: '-rx-modal' },
+    { type: 'attributes', target: d, attributeName: 'open' },
+  ] as never);
+  await act();
+  assert.deepStrictEqual(
+    [boxOf(el, 't').x, boxOf(el, 't').y],
+    [30, 20],
+    'the fallbacks',
+  );
 });
 
 test('a ::before or an ::after is an anchor, as its element is', async () => {
