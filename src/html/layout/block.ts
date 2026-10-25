@@ -11,7 +11,7 @@
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
 import type { Element } from 'domhandler';
-import { isInputButton, topLayerOrder } from '../dom.js';
+import { implicitAnchorOf, isInputButton, topLayerOrder } from '../dom.js';
 import {
   AUTO,
   gapOf,
@@ -63,6 +63,7 @@ import {
   WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
   INLINE_BEFORE_ABSOLUTE,
+  anchorsImplicitly,
   scrolls,
 } from '../css/style.js';
 import {
@@ -131,6 +132,7 @@ import {
   CUT_BLOCKS,
   GRID_TRACKS,
   FIRST_LINE,
+  GENERATED_FROM,
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
   LINE_BOX_RAISES,
@@ -221,7 +223,7 @@ export interface LayoutContext {
    *  whose size is not known until its in-flow content has been laid out. */
   positioned: { box: Box; containing: Box }[];
   /** The boxes each anchor name is on, in the document's order, found the
-   *  first time a positioned box asks (`anchorFor`); null where the tree
+   *  first time a positioned box asks (`indexAnchors`); null where the tree
    *  has no `anchor-name`, and undefined until then. */
   anchors?: Map<string, Box[]> | null;
   /** The root the anchors are found under. */
@@ -229,6 +231,9 @@ export interface LayoutContext {
   /** Each box's place in the tree's order, found with the anchors: what
    *  says whether an anchor precedes the box it anchors. */
   anchorOrder?: Map<Box, number>;
+  /** Each element's own box, its first, found with the anchors: what an
+   *  implicit anchor element is found as (`implicitAnchorBox`). */
+  elementBoxes?: Map<Element, Box>;
   /** Where the pane around the document has the viewport (`setViewport`),
    *  for a box fixed to it anchored in the document, or the other way
    *  round. */
@@ -239,7 +244,7 @@ export interface LayoutContext {
   /** While an anchored box is placed, the displacement of its default
    *  anchor its anchor references are taken at (`layoutPositioned`), which
    *  the anchors scrolled with that one are seen moved back by
-   *  (`anchorFor`). */
+   *  (`anchorRect`). */
   anchorShift?: { anchor: Box; x: number; y: number } | null;
   /** Whether the layout answers a question about the document's size,
    *  which no frame draws (`layoutAsks`). */
@@ -5516,12 +5521,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const root = ctx.anchorRoot ?? null;
   const axes = anchorAxesOf(box, containing);
   // what scrolls its default anchor and not it, and how far it has now
-  const anchor = anchorBoxFor(
-    box,
-    style.positionAnchor,
-    ctx,
-    style.positionAnchorTree,
-  );
+  const anchor = defaultAnchorBox(box, style, ctx);
   const context =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
@@ -5703,18 +5703,8 @@ function anchoredStyle(
     startsLow(axes, false, axes.own),
     startsLow(axes, true, axes.own),
   ];
-  const anchor = anchorFor(
-    box,
-    style.positionAnchor,
-    ctx,
-    style.positionAnchorTree,
-  );
-  const defaultAnchor = anchorBoxFor(
-    box,
-    style.positionAnchor,
-    ctx,
-    style.positionAnchorTree,
-  );
+  const defaultAnchor = defaultAnchorBox(box, style, ctx);
+  const anchor = defaultAnchor && anchorRect(defaultAnchor, box, ctx);
   // the edges a scroll of the default anchor moves with it
   let moving = 0;
   // the cells of its `position-area` (3.1.1): between lines at the
@@ -5759,12 +5749,10 @@ function anchoredStyle(
         if (typeof ref.side === 'string' && OTHER_AXIS[side].has(ref.side)) {
           return null;
         }
-        const name = ref.name ?? style.positionAnchor;
-        const tree = refTree(style, ref.name);
-        const of = anchorFor(box, name, ctx, tree);
-        if (!of) return null;
-        const at = anchorBoxFor(box, name, ctx, tree);
-        if (at && defaultAnchor && sameScrollContext(at, defaultAnchor)) {
+        const at = referencedAnchor(box, style, ref.name, ctx);
+        if (!at) return null;
+        const of = anchorRect(at, box, ctx);
+        if (defaultAnchor && sameScrollContext(at, defaultAnchor)) {
           scrolled = true;
         }
         return anchorInset(
@@ -5792,13 +5780,9 @@ function anchoredStyle(
     ][]) {
       if (!size) continue;
       const values = anchorCalls(size).map((ref) => {
-        const of = anchorFor(
-          box,
-          ref.name ?? style.positionAnchor,
-          ctx,
-          refTree(style, ref.name),
-        );
-        if (!of) return null;
+        const at = referencedAnchor(box, style, ref.name, ctx);
+        if (!at) return null;
+        const of = anchorRect(at, box, ctx);
         return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
       });
       const set = own() as unknown as Record<string, unknown>;
@@ -5861,20 +5845,10 @@ const EDGE_OF: Record<InsetSide, number> = {
 };
 
 /**
- * The rectangle of the box an anchor name finds for `box`, in document
- * coordinates: the last box in the document's order with the name that is
- * not `box` or inside it (CSS Anchor Positioning 1, 2.2) — an inline box
- * by the rectangle around its fragments. Null where there is none, or the
- * name is null.
+ * The rectangle of an anchor `box` found (`referencedAnchor`), in document
+ * coordinates — an inline box by the rectangle around its fragments.
  */
-function anchorFor(
-  box: Box,
-  name: string | null,
-  ctx: LayoutContext,
-  tree: object | null,
-): CbRect | null {
-  const anchor = anchorBoxFor(box, name, ctx, tree);
-  if (!anchor) return null;
+function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
   const rect =
     anchor.kind === 'inline'
       ? inlineContainingBlock(anchor, box, ctx)
@@ -6053,63 +6027,77 @@ function relativeShift(anchor: Box, box: Box): [number, number] {
   return [dx, dy];
 }
 
-/** The box an anchor name finds for `box` (`anchorFor`), or null. */
+/**
+ * The box an anchor reference of `style` finds for `box`: the anchor a name
+ * it gives finds, in the tree its anchor functions were written in, and
+ * where it gives none, the box's default anchor (`defaultAnchorBox`).
+ */
+function referencedAnchor(
+  box: Box,
+  style: ComputedStyle,
+  name: string | null,
+  ctx: LayoutContext,
+): Box | null {
+  return name === null
+    ? defaultAnchorBox(box, style, ctx)
+    : anchorBoxFor(box, name, ctx, style.anchorFunctionsTree);
+}
+
+/**
+ * A box's default anchor (CSS Anchor Positioning 1, `position-anchor`): the
+ * anchor its `position-anchor` names, in the tree that name was written in,
+ * or its implicit anchor element for `auto`, and for `normal` where it is
+ * in a `position-area` (`anchorsImplicitly`); none for `none`.
+ */
+function defaultAnchorBox(
+  box: Box,
+  style: ComputedStyle,
+  ctx: LayoutContext,
+): Box | null {
+  const name = style.positionAnchor;
+  if (name !== null) {
+    return anchorBoxFor(box, name, ctx, style.positionAnchorTree);
+  }
+  return anchorsImplicitly(style) ? implicitAnchorBox(box, ctx) : null;
+}
+
+/**
+ * The box of a box's implicit anchor element (CSS Anchor Positioning 1,
+ * 2.2), where it is an acceptable anchor: a pseudo-element's originating
+ * element's, and a popover's the element that showed it (HTML 6.12,
+ * `implicitAnchorOf`) — its `popovertarget` button, or `showPopover()`'s
+ * `source`. A name has nothing to do with it, so no tree scopes it and no
+ * `anchor-scope` keeps it away.
+ */
+function implicitAnchorBox(box: Box, ctx: LayoutContext): Box | null {
+  const el = box.pseudo ? GENERATED_FROM.get(box) : box.el;
+  const of = box.pseudo ? el : el && implicitAnchorOf(el);
+  if (!of || !indexAnchors(ctx)) return null;
+  const anchor = ctx.elementBoxes!.get(of);
+  if (!anchor || holds(box, anchor)) return null;
+  return acceptableAnchor(anchor, box, ctx.anchorOrder!) ? anchor : null;
+}
+
+/**
+ * The box an anchor name finds for `box` (`referencedAnchor`): the last in
+ * the document's order with the name that is not `box` or inside it, and
+ * is an acceptable anchor (CSS Anchor Positioning 1, 2.2 and 2.3). Null
+ * where there is none.
+ */
 function anchorBoxFor(
   box: Box,
-  name: string | null,
+  name: string,
   ctx: LayoutContext,
   /** The tree the reference was written in (`ComputedStyle.anchorNamesTree`
    *  and its kin): a name of another tree is not the one it means. */
   tree: object | null,
 ): Box | null {
-  if (name === null || !ctx.anchorRoot) return null;
-  if (ctx.anchors === undefined) {
-    // what the last layout noted of default anchors is of its boxes
-    clearDefaultAnchors(ctx.anchorRoot);
-    const found = new Map<string, Box[]>();
-    // an element's first box, which is its own: the boxes inside it that
-    // carry its style — a button's label, an anonymous block — are not
-    // the anchor; and a `::before`'s or an `::after`'s, which is one too
-    // (CSS Anchor Positioning 1, 2.1)
-    const seen = new Set<object>();
-    const order = new Map<Box, number>();
-    const stack: Box[] = [ctx.anchorRoot];
-    while (stack.length) {
-      const at = stack.pop()!;
-      order.set(at, order.size);
-      const names = at.style.anchorNames;
-      const own =
-        at.pseudo === null
-          ? !!at.el && !seen.has(at.el)
-          : (at.pseudo === 'before' || at.pseudo === 'after') &&
-            at.parent?.pseudo !== at.pseudo;
-      if (names && own) {
-        if (at.el) seen.add(at.el);
-        for (const n of names) {
-          let list = found.get(n);
-          if (!list) found.set(n, (list = []));
-          list.push(at);
-        }
-      }
-      for (let i = at.children.length - 1; i >= 0; i -= 1) {
-        stack.push(at.children[i]);
-      }
-    }
-    ctx.anchors = found;
-    ctx.anchorOrder = order;
-  }
+  if (!indexAnchors(ctx)) return null;
   const list = ctx.anchors?.get(name);
   if (!list) return null;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const anchor = list[i];
-    let inside = false;
-    for (let at: Box | null = anchor; at; at = at.parent) {
-      if (at === box) {
-        inside = true;
-        break;
-      }
-    }
-    if (inside) continue;
+    if (holds(box, anchor)) continue;
     // a tree-scoped name, matched strictly (CSS Shadow 1, 3.5): a shadow
     // tree's `--a` is not the page's
     if (anchor.style.anchorNamesTree !== tree) continue;
@@ -6120,11 +6108,54 @@ function anchorBoxFor(
   return null;
 }
 
-/** The tree an anchor reference of a style was written in: its
- *  `position-anchor`'s where it names no anchor, and its anchor
- *  functions' where it does. */
-function refTree(style: ComputedStyle, name: string | null): object | null {
-  return name === null ? style.positionAnchorTree : style.anchorFunctionsTree;
+/**
+ * The anchors of the tree a layout is under, found the first time a
+ * positioned box asks: the boxes each name is on, each box's place in the
+ * tree's order, and each element's own box. False where the tree has none.
+ */
+function indexAnchors(ctx: LayoutContext): boolean {
+  if (!ctx.anchorRoot) return false;
+  if (ctx.anchors !== undefined) return true;
+  // what the last layout noted of default anchors is of its boxes
+  clearDefaultAnchors(ctx.anchorRoot);
+  const found = new Map<string, Box[]>();
+  // an element's first box with its names, which is its own: the boxes
+  // inside it that carry its style — a button's label, an anonymous block
+  // — are not the anchor; and a `::before`'s or an `::after`'s, which is
+  // one too (CSS Anchor Positioning 1, 2.1)
+  const seen = new Set<object>();
+  // and the first of all, what the element is as an implicit anchor
+  const elements = new Map<Element, Box>();
+  const order = new Map<Box, number>();
+  const stack: Box[] = [ctx.anchorRoot];
+  while (stack.length) {
+    const at = stack.pop()!;
+    order.set(at, order.size);
+    if (at.pseudo === null && at.el && !elements.has(at.el)) {
+      elements.set(at.el, at);
+    }
+    const names = at.style.anchorNames;
+    const own =
+      at.pseudo === null
+        ? !!at.el && !seen.has(at.el)
+        : (at.pseudo === 'before' || at.pseudo === 'after') &&
+          at.parent?.pseudo !== at.pseudo;
+    if (names && own) {
+      if (at.el) seen.add(at.el);
+      for (const n of names) {
+        let list = found.get(n);
+        if (!list) found.set(n, (list = []));
+        list.push(at);
+      }
+    }
+    for (let i = at.children.length - 1; i >= 0; i -= 1) {
+      stack.push(at.children[i]);
+    }
+  }
+  ctx.anchors = found;
+  ctx.anchorOrder = order;
+  ctx.elementBoxes = elements;
+  return true;
 }
 
 /**

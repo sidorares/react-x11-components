@@ -5573,6 +5573,15 @@ export function scrolls(style: ComputedStyle): boolean {
   return (x !== 'visible' && x !== 'clip') || (y !== 'visible' && y !== 'clip');
 }
 
+/** Whether a style's default anchor is its box's implicit anchor element
+ *  (CSS Anchor Positioning 1, `position-anchor`): `auto`'s, and
+ *  `normal`'s where it has a `position-area`, which is `none` without. */
+export function anchorsImplicitly(style: ComputedStyle): boolean {
+  if (style.positionAnchor !== null) return false;
+  const text = style.positionAnchorText;
+  return text === 'auto' || (text === 'normal' && style.positionArea !== null);
+}
+
 /** A `justify-content`: the writing mode's `start` and `end`, and `left`
  *  and `right`, kept for the flex box to resolve against its direction;
  *  `normal` and `stretch` pack as `flex-start` does (`overflowAligned`). */

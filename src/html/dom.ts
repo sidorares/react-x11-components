@@ -699,13 +699,36 @@ export function setModal(el: Element, modal: boolean): boolean {
   return was?.kind === 'modal' && leaveTopLayer(el);
 }
 
-/** Show an element as a popover, last of its document's top layer, or hide
- *  one (HTML 6.12, "show popover" and "hide popover", and its removal from
- *  the document). False where nothing changed. */
-export function setPopoverOpen(el: Element, open: boolean): boolean {
+/** Each showing popover's implicit anchor element (HTML 6.12, "show
+ *  popover"): the element that showed it — its `popovertarget` button, or
+ *  `showPopover()`'s `source` — which a `position-anchor: auto` anchors it
+ *  to (CSS Anchor Positioning 1, 2.2). */
+const IMPLICIT_ANCHORS = new WeakMap<Element, Element>();
+
+/** Show an element as a popover, last of its document's top layer, with
+ *  `source` its implicit anchor element, or hide one, which leaves it none
+ *  (HTML 6.12, "show popover" and "hide popover", and its removal from the
+ *  document). False where nothing changed. */
+export function setPopoverOpen(
+  el: Element,
+  open: boolean,
+  source: Element | null = null,
+): boolean {
   const was = IN_TOP_LAYER.get(el);
-  if (open) return !was && enterTopLayer(el, 'popover');
-  return was?.kind === 'popover' && leaveTopLayer(el);
+  if (open) {
+    if (was) return false;
+    if (source) IMPLICIT_ANCHORS.set(el, source);
+    return enterTopLayer(el, 'popover');
+  }
+  if (was?.kind !== 'popover') return false;
+  IMPLICIT_ANCHORS.delete(el);
+  return leaveTopLayer(el);
+}
+
+/** A popover's implicit anchor element (`setPopoverOpen`), or null: one
+ *  shown with no source, or not showing. */
+export function implicitAnchorOf(el: Element): Element | null {
+  return IMPLICIT_ANCHORS.get(el) ?? null;
 }
 
 /** Make an element its document's fullscreen element, last of its top

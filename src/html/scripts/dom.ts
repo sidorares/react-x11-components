@@ -7842,7 +7842,14 @@ export function installDom(
       if (!popoverValid(el, false, raise)) return;
       const restore = topPopover() === null;
       const focused = document.activeElement;
-      call('popoverOpen', el._id, true);
+      // what showed it is its implicit anchor element, from now until it
+      // is hidden
+      call(
+        'popoverOpen',
+        el._id,
+        true,
+        source instanceof Element ? source._id : null,
+      );
       if (!popoverShowing(el)) return;
       const state = popoverState(el);
       state.mode = effective;
