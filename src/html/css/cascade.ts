@@ -81,6 +81,7 @@ import type {
   Stylesheet,
 } from './parse.js';
 import { matchesSyntax } from './syntax.js';
+import { readsAnchor } from './anchor.js';
 import { computedText } from '../computed.js';
 import {
   NO_ANIMATIONS,
@@ -273,10 +274,19 @@ interface TreeRules {
   slotted: SlottedRule[];
   parts: PartRule[];
   keyframes: Map<string, KeyframesRule[]>;
+  /** Its `@position-try` rules' declarations, the last of each name. */
+  positionTries: Map<string, Declaration[]>;
 }
 
 function newTreeRules(id: number): TreeRules {
-  return { id, host: [], slotted: [], parts: [], keyframes: new Map() };
+  return {
+    id,
+    host: [],
+    slotted: [],
+    parts: [],
+    keyframes: new Map(),
+    positionTries: new Map(),
+  };
 }
 
 /** The tree an element is in: its shadow root, null for the document's,
@@ -3350,8 +3360,8 @@ export class Cascade {
   /** The document's `@function` rules by name, in the order written; null
    *  for a document with none. */
   private _functions: Map<string, FunctionRule[]> | null = null;
-  /** Each `@position-try` rule's declarations, by its name. */
-  private _positionTries: Map<string, Declaration[]> | null = null;
+  /** Whether any tree has a `@position-try` rule (`TreeRules`). */
+  private _positionTries = false;
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -3514,10 +3524,6 @@ export class Cascade {
           syntax,
         });
       }
-      // and a position option, the last of a name
-      for (const { name, declarations } of sheet.positionTries ?? []) {
-        (this._positionTries ??= new Map()).set(name, declarations);
-      }
       // and the functions, every one of a name: which one a call finds is
       // asked as it is made (`_functionNamed`)
       for (const rule of sheet.functions ?? []) {
@@ -3636,6 +3642,11 @@ export class Cascade {
             : 2,
         rule.declarations,
       );
+    }
+    // a position option, the last of a name in the tree
+    for (const { name, declarations } of sheet.positionTries ?? []) {
+      rules.positionTries.set(name, declarations);
+      this._positionTries = true;
     }
     for (const rule of sheet.keyframes ?? []) {
       let named = rules.keyframes.get(rule.name);
@@ -4163,6 +4174,24 @@ export class Cascade {
         : '0';
     }
     return key;
+  }
+
+  /**
+   * The `@position-try` rule a position option's name finds, and the tree
+   * it is in, or null. Its name is tree-scoped, as a `@keyframes` name is
+   * (CSS Shadow 1, 3.5): looked for in the tree whose rule named it, then
+   * in each tree around that one out to the document's.
+   */
+  private _positionTry(
+    name: string,
+    tree: ShadowRoot | null,
+  ): { declarations: Declaration[]; tree: ShadowRoot | null } | null {
+    for (let root = tree; root; root = shadowRootAround(root.host)) {
+      const found = this._rootInfo(root).rules.positionTries.get(name);
+      if (found) return { declarations: found, tree: root };
+    }
+    const found = this._document.positionTries.get(name);
+    return found ? { declarations: found, tree: null } : null;
   }
 
   /**
@@ -6758,6 +6787,7 @@ export class Cascade {
           d.prop === 'line-height' ? ctxLine : ctx,
         );
         if (scoped && ANIMATION_NAMES.has(d.prop)) animationTree = c.tree;
+        if (scoped && TREE_SCOPED.has(d.prop)) noteTree(style, d, c.tree);
       }
     }
     // kept beside the lists, which are shared by what they were read from
@@ -6854,16 +6884,29 @@ export class Cascade {
     // each `@position-try` rule its fallbacks name, its declarations over
     // the style as though they were the element's own, for layout to try
     // in turn (`positionTryStyles`); an option naming no rule is none
-    const tries = this._positionTries;
-    if (tries && style.positionTryFallbacks) {
+    if (this._positionTries && style.positionTryFallbacks) {
+      let rules = '';
       style.positionTryStyles = style.positionTryFallbacks.map((option) => {
-        const rule = option.name === null ? undefined : tries.get(option.name);
-        if (!rule) return null;
+        const found =
+          option.name === null
+            ? null
+            : this._positionTry(
+                option.name,
+                style.positionTryTree as ShadowRoot | null,
+              );
+        if (!found) return null;
+        rules += `${option.name}{${found.declarations
+          .map((d) => `${d.prop}:${d.value}`)
+          .join(';')}}`;
         const tried = copyStyle(style);
-        for (const d of rule) this._apply(tried, parentStyle, d, ctx);
+        for (const d of found.declarations) {
+          this._apply(tried, parentStyle, d, ctx);
+          if (TREE_SCOPED.has(d.prop)) noteTree(tried, d, found.tree);
+        }
         tried.positionTryStyles = null;
         return tried;
       });
+      style.positionTryRules = rules;
     }
     decorate(style);
     return style;
@@ -7752,6 +7795,66 @@ const ANIMATION_NAMES = new Set([
   '-webkit-animation',
   '-webkit-animation-name',
 ]);
+
+/** The declarations whose names are tree-scoped references, or define
+ *  tree-scoped names, for anchor positioning (`noteTree`). */
+const TREE_SCOPED = new Set([
+  'anchor-name',
+  'position-anchor',
+  'anchor-scope',
+  'position-try-fallbacks',
+  'position-try',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'inset',
+  'inset-block',
+  'inset-inline',
+  'inset-block-start',
+  'inset-block-end',
+  'inset-inline-start',
+  'inset-inline-end',
+  'width',
+  'height',
+  'min-width',
+  'min-height',
+  'max-width',
+  'max-height',
+  'block-size',
+  'inline-size',
+  'min-block-size',
+  'min-inline-size',
+  'max-block-size',
+  'max-inline-size',
+]);
+
+/** Note the tree of the rule a declaration came from beside what it set,
+ *  where it names anchors or `@position-try` rules: what a name matches is
+ *  a name of the same tree (CSS Anchor Positioning 1, 2.1). */
+function noteTree(
+  style: ComputedStyle,
+  d: Declaration,
+  tree: ShadowRoot | null,
+): void {
+  switch (d.prop) {
+    case 'anchor-name':
+      style.anchorNamesTree = tree;
+      return;
+    case 'position-anchor':
+      style.positionAnchorTree = tree;
+      return;
+    case 'anchor-scope':
+      style.anchorScopeTree = tree;
+      return;
+    case 'position-try-fallbacks':
+    case 'position-try':
+      style.positionTryTree = tree;
+      return;
+    default:
+      if (readsAnchor(d.value)) style.anchorFunctionsTree = tree;
+  }
+}
 
 /** The shadow tree whose rule named an element's animations, by its lists
  *  (`Cascade._cascadeStyle`): where their names are looked for first. The

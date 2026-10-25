@@ -629,7 +629,8 @@ export function updatePositionVisibility(
       (!!(bits & 2) && overflows) ||
       (!!(bits & 1) &&
         !!anchor &&
-        (clippedAway(anchor, box) ||
+        (invisible(anchor) ||
+          clippedAway(anchor, box) ||
           (scrolled?.get(box)?.pane === 1 &&
             !!viewport &&
             outside(anchor, viewport))));
@@ -639,6 +640,19 @@ export function updatePositionVisibility(
     changed.push(box);
   }
   return changed;
+}
+
+/** Whether an anchor is not seen however it is placed (CSS Anchor
+ *  Positioning 1, 5.4): `visibility` hides it, or it is in a box hidden
+ *  already — by `position-visibility`, an anchored box whose own anchor is
+ *  gone, which a box anchored to it goes with in turn, the boxes before it
+ *  in the order they are laid out having been asked first. */
+function invisible(anchor: Box): boolean {
+  if (anchor.style.visibility !== 'visible') return true;
+  for (let at: Box | null = anchor; at; at = at.parent) {
+    if (CLAMPED.has(at)) return true;
+  }
+  return false;
 }
 
 /** Whether a box is wholly outside a rectangle — but for one of no size,
@@ -719,25 +733,81 @@ function movedBy(scroller: Box, b: Box): boolean {
 }
 
 /** The boxes anchored to something inside `scroller`, that are outside it
- *  themselves: what its scroll moves with their anchors. */
+ *  themselves: what its scroll moves with their anchors — and what is
+ *  anchored to those in turn (`followersOf`). */
 export function anchoredAcross(
   scroller: Box,
 ): { box: Box; x: boolean; y: boolean }[] {
-  let root = scroller;
+  return followersOf(
+    scroller,
+    (anchor, anchored) =>
+      anchor !== scroller &&
+      movedBy(scroller, anchor) &&
+      !movedBy(scroller, anchored),
+  );
+}
+
+/** The boxes anchored to `moved` or to something in it, that are outside
+ *  it themselves, and what is anchored to those in turn: what a move of it
+ *  that is no layout's — `position: sticky` placing it again, for one —
+ *  moves with their anchors (CSS Anchor Positioning 1, 3.3: the remembered
+ *  scroll offset takes in what a scroll does to a sticky box). */
+export function anchoredWith(
+  moved: Box,
+): { box: Box; x: boolean; y: boolean }[] {
+  return followersOf(
+    moved,
+    (anchor, anchored) => within(anchor, moved) && !within(anchored, moved),
+  );
+}
+
+/**
+ * The anchored boxes of the tree `at` is in whose default anchors a move
+ * moves and the boxes not (`moves`), on the axes each follows its anchor
+ * on — and, as a chain, every box anchored to one of those or to something
+ * in it, and not in it itself, on the axes it and the one before it both
+ * follow on: the default scroll shift of a box whose default anchor is an
+ * anchored box a scroll shifts is that one's, since its anchor is where
+ * that shift has it (3.3).
+ */
+function followersOf(
+  at: Box,
+  moves: (anchor: Box, anchored: Box) => boolean,
+): { box: Box; x: boolean; y: boolean }[] {
+  let root = at;
   while (root.parent) root = root.parent;
   const map = DEFAULT_ANCHORS.get(root);
   if (!map?.size) return [];
   const out: { box: Box; x: boolean; y: boolean }[] = [];
+  const taken = new Set<Box>();
   for (const [anchored, { anchor, x, y }] of map) {
-    if (
-      anchor !== scroller &&
-      movedBy(scroller, anchor) &&
-      !movedBy(scroller, anchored)
-    ) {
+    if (moves(anchor, anchored)) {
       out.push({ box: anchored, x, y });
+      taken.add(anchored);
+    }
+  }
+  // what is anchored to a box that moves, the boxes it moves taken in
+  // turn, which a chain of any length comes to
+  for (let i = 0; i < out.length; i += 1) {
+    const by = out[i];
+    for (const [anchored, { anchor, x, y }] of map) {
+      if (taken.has(anchored)) continue;
+      if (!within(anchor, by.box) || within(anchored, by.box)) continue;
+      const along = { box: anchored, x: x && by.x, y: y && by.y };
+      if (!along.x && !along.y) continue;
+      out.push(along);
+      taken.add(anchored);
     }
   }
   return out;
+}
+
+/** Whether `box` is `around` or in it. */
+function within(box: Box, around: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at === around) return true;
+  }
+  return false;
 }
 
 /** Where the pane around a document has the viewport: its corner, in the

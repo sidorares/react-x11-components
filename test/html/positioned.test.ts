@@ -7,10 +7,11 @@ import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
 import {
+  areaTracks,
   parsePositionArea,
   parseTryFallbacks,
-  physicalCols,
 } from '../../src/html/css/anchor.js';
+import type { WritingAxes } from '../../src/html/css/anchor.js';
 import {
   anchoredHolds,
   parseContainerPrelude,
@@ -1528,6 +1529,25 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
 });
 
+test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
+  // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
+  // positioned box that is before the target among their containing
+  // block's boxes; it is laid out with that box, as that box's
+  // containing block ends its layout, before the target's does
+  const { node } = await render(
+    '<style>body{margin:0}.t{position:absolute;height:10px;' +
+      'width:anchor-size(--a1 width)}.rel{position:relative}' +
+      '#a{anchor-name:--a1;position:absolute;width:30px;height:10px}</style>' +
+      '<div class="rel"><div class="t" id="first"></div><div>' +
+      '<div class="rel"><div style="position:absolute"><div class="rel">' +
+      '<div id="a"></div></div></div></div>' +
+      '<div class="t" id="after"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'first').width, 30);
+  assert.strictEqual(boxOf(el, 'after').width, 30);
+});
+
 test('a ::before or an ::after is an anchor, as its element is', async () => {
   // CSS Anchor Positioning 1, 2.1: anchor-name applies to every element,
   // and to the tree-abiding pseudo-elements
@@ -1570,6 +1590,56 @@ test("a box is placed against where its anchor's relative offset moved it", asyn
   const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
   assert.deepStrictEqual(at('by'), [210, 200]);
   assert.deepStrictEqual(at('area'), [110, 200]);
+});
+
+test('an anchor name, a position option name and anchor-scope are of the tree their rule was written in', async () => {
+  // CSS Anchor Positioning 1, 2.1 and 2.4, CSS Shadow 1, 3.5: two shadow
+  // trees' `--a` are two names; a shadow tree's reference does not find
+  // the page's name on its host; a `@position-try` is looked for in the
+  // tree whose rule named it and the trees around it; and an
+  // `anchor-scope` set through `::part()` scopes the page's names in the
+  // part, slotted ones included
+  const tree = (n: number) =>
+    `<div class="host" id="h${n}"><template shadowrootmode="open"><style>` +
+    'div{width:100px;height:100px}.a{anchor-name:--a}' +
+    '.t{position:fixed;left:anchor(--a left);top:anchor(--a bottom)}' +
+    `</style><div class="a"></div><div class="t" id="t${n}"></div>` +
+    '</template></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.host{width:100px;height:100px}#h2{margin-left:200px}' +
+      '@position-try --doc{left:100px}' +
+      '.abs{position:absolute;width:10px;height:10px;left:999999px}' +
+      '#doc-own{position-try-fallbacks:--own}' +
+      '#scoped::part(scope){anchor-scope:--s}' +
+      '#s{anchor-name:--s;width:10px;height:10px}' +
+      '#under{position:absolute;top:anchor(--s bottom, 1px);width:5px;height:5px}' +
+      '</style>' +
+      tree(1) +
+      tree(2) +
+      '<div id="named" style="anchor-name:--h"><template shadowrootmode="open">' +
+      '<style>div{position:absolute;left:anchor(--h left, 37px)}</style>' +
+      '<div id="in"></div></template></div>' +
+      '<div id="tries"><template shadowrootmode="open"><style>' +
+      '@position-try --own{left:200px}' +
+      '.abs{position:absolute;width:10px;height:10px;left:999999px}' +
+      '#own{position-try-fallbacks:--own}#doc{position-try-fallbacks:--doc}' +
+      '</style><div class="abs" id="own"></div><div class="abs" id="doc"></div>' +
+      '</template></div><div class="abs" id="doc-own"></div>' +
+      '<div id="s"></div><div id="scoped" style="position:relative">' +
+      '<template shadowrootmode="open"><div part="scope"><slot></slot></div>' +
+      '</template><div id="under"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('t1'), [0, 100]);
+  assert.deepStrictEqual(at('t2'), [200, 200]);
+  assert.strictEqual(boxOf(el, 'in').x, 37, 'the fallback');
+  assert.strictEqual(boxOf(el, 'own').x, 200);
+  assert.strictEqual(boxOf(el, 'doc').x, 100, 'from the tree around it');
+  assert.strictEqual(boxOf(el, 'doc-own').x, 999999, "not a shadow tree's");
+  const under = boxOf(el, 'under');
+  const scoped = boxOf(el, 'scoped');
+  assert.strictEqual(under.y - scoped.y, 1, 'scoped away: the fallback');
 });
 
 test('anchor-scope keeps an anchor name to the boxes inside the element that scopes it', async () => {
@@ -1670,6 +1740,82 @@ test('position-visibility hides a box whose anchor a scroll cuts away, or that o
   assert.strictEqual(hidden('always'), false, 'always is always');
   el.scrollElementTo(findById(el.document, 's')!, { y: 50 });
   assert.strictEqual(hidden('seen'), false, 'and back');
+});
+
+test('a box anchored to an anchored box a scroll moves moves with it, and one anchored to a sticky box with where it sticks', async () => {
+  // CSS Anchor Positioning 1, 3.3: a default anchor's remembered scroll
+  // offset takes in what moves it with a scroll — a default scroll shift
+  // of its own, where it is anchored itself (a chain), and `position:
+  // sticky` — and a box anchored to it moves with it
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:100px}' +
+      '#s{overflow:scroll}#a{anchor-name:--a1;height:20px}' +
+      '#one{position:absolute;position-anchor:--a1;left:anchor(left);' +
+      'top:anchor(bottom);anchor-name:--a2}' +
+      '#two{position:absolute;position-anchor:--a2;left:anchor(left);' +
+      'top:anchor(bottom)}' +
+      '#k{overflow:scroll;position:absolute;left:200px;top:0}' +
+      '#stuck{anchor-name:--s;position:sticky;top:0;height:20px}' +
+      '#under{position:absolute;position-anchor:--s;left:anchor(left);' +
+      'top:anchor(bottom);height:10px}' +
+      '</style><div id="s"><div style="height:230px"></div><div id="a"></div>' +
+      '<div style="height:230px"></div></div>' +
+      '<div id="one"></div><div id="two"></div>' +
+      '<div id="k"><div style="height:50px"></div><div id="stuck"></div>' +
+      '<div style="height:300px"></div></div><div id="under"></div>',
+  );
+  const el = view(node);
+  const top = (id: string) => boxOf(el, id).y;
+  assert.deepStrictEqual([top('one'), top('two')], [250, 350]);
+  el.scrollElementTo(findById(el.document, 's')!, { y: 200 });
+  assert.deepStrictEqual([top('one'), top('two')], [50, 150], 'the chain');
+  assert.strictEqual(top('under'), 70);
+  // scrolled past where it sticks: held at the scroller's top, and the
+  // box below it with it
+  el.scrollElementTo(findById(el.document, 'k')!, { y: 200 });
+  assert.deepStrictEqual([top('stuck'), top('under')], [0, 20]);
+});
+
+test('position-visibility hides a box whose anchor is not seen: hidden by visibility, or in a box it hides', async () => {
+  // 5.4: `anchors-visible` asks whether the default anchor is visible, so
+  // a box anchored inside one `position-visibility` hid goes with it, and
+  // `visibility` hiding the anchor hides it, and showing it shows it
+  const { node } = await render(
+    '<style>body{margin:0}#s{overflow:hidden scroll;width:300px;height:100px}' +
+      '#a1{anchor-name:--a1;width:100px;height:100px}.space{height:100px}' +
+      '.t{position:absolute;top:0;left:0;position-area:bottom;width:100px;' +
+      'height:50px}#chained{position-anchor:--a1}' +
+      '#a2{anchor-name:--a2;height:50px}#target{position-anchor:--a2}' +
+      '#hid{visibility:hidden}#h{anchor-name:--h;height:20px}' +
+      '#shy{position:absolute;position-anchor:--h;position-area:bottom;' +
+      'width:20px;height:20px}' +
+      '</style><div id="s"><div id="a1"></div><div class="space"></div>' +
+      '<div class="t" id="chained"><div id="a2"></div></div>' +
+      '<div class="t" id="target"></div></div>' +
+      '<div id="hid"><div id="h"></div></div><div id="shy"></div>',
+  );
+  const el = view(node);
+  const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+  assert.deepStrictEqual([hidden('chained'), hidden('target')], [false, false]);
+  el.scrollElementTo(findById(el.document, 's')!, { y: 100 });
+  assert.deepStrictEqual(
+    [hidden('chained'), hidden('target')],
+    [true, true],
+    'its anchor in a box hidden with its own anchor',
+  );
+  assert.strictEqual(hidden('shy'), true, 'visibility: hidden');
+  // and shown by a restyle that shows its anchor
+  const hid = findById(el.document, 'hid') as unknown as {
+    attribs: Record<string, string>;
+  };
+  hid.attribs.style = 'visibility:visible';
+  await act(() =>
+    el.touchDocument([
+      { type: 'attributes', target: hid as never, attributeName: 'style' },
+    ]),
+  );
+  await act();
+  assert.strictEqual(hidden('shy'), false, 'shown');
 });
 
 test('a box anchored to something a scroller scrolls tries its position options again where a scroll leaves it overflowing, and keeps the one it has while it fits', async () => {
@@ -2151,25 +2297,246 @@ test('a @position-try rule is an option of its own', async () => {
   assert.deepStrictEqual([tip.x, tip.y], [100, 40]);
 });
 
+/** Where each of a document's elements is drawn, in CSS pixels, by id. */
+function drawnAt(node: Parameters<typeof view>[0]) {
+  const el = view(node);
+  return (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return [r.x, r.y, r.width, r.height];
+  };
+}
+
+test("a box anchored in a vertical writing mode is placed in the page's axes, its logical sides its containing block's", async () => {
+  // CSS Anchor Positioning 1, 3.2: an inset's physical side is the page's,
+  // `start` and `end` the containing block's writing mode's and `self-start`
+  // its own's; `anchor-size(inline)` the containing block's inline size.
+  // The boxes are laid out in the frame the vertical flow turns
+  // (`layout/writing.ts`), and placed where the page has them.
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:600px;height:400px}' +
+      '#a,#b{width:100px;height:50px}' +
+      '#a{anchor-name:--a;margin:100px 200px 0 0}' +
+      '#b{anchor-name:--b;margin:100px 0 0 200px}' +
+      '.t{position:absolute;width:10px;height:10px}' +
+      '#plain{left:30px;top:40px}' +
+      '#phys{left:anchor(--a right);top:anchor(--a bottom)}' +
+      '#logical{left:anchor(--a start);top:anchor(--a end)}' +
+      '#self{writing-mode:horizontal-tb;left:anchor(--a self-start)}' +
+      '#sized{width:anchor-size(--a inline);top:0;left:0}' +
+      '#lr{left:anchor(--b start);top:anchor(--b start)}' +
+      '</style>' +
+      '<div class="cb" style="writing-mode:vertical-rl"><div id="a"></div>' +
+      '<div class="t" id="plain"></div><div class="t" id="phys"></div>' +
+      '<div class="t" id="logical"></div><div class="t" id="self"></div>' +
+      '<div class="t" id="sized"></div></div>' +
+      '<div class="cb" style="writing-mode:vertical-lr;direction:rtl">' +
+      '<div id="b"></div><div class="t" id="lr"></div></div>',
+  );
+  const at = drawnAt(node);
+  // the anchor 200px in from the right, where `vertical-rl` starts
+  assert.deepStrictEqual(at('a'), [300, 100, 100, 50]);
+  assert.deepStrictEqual(at('plain'), [30, 40, 10, 10]);
+  assert.deepStrictEqual(at('phys'), [400, 150, 10, 10]);
+  // across the block axis starts at the right, down the inline at the top
+  assert.deepStrictEqual(at('logical'), [400, 150, 10, 10]);
+  // its own writing mode is horizontal, and starts across at the left
+  assert.deepStrictEqual(at('self').slice(0, 1), [300]);
+  // its containing block's inline axis is down the page
+  assert.deepStrictEqual(at('sized'), [0, 0, 50, 10]);
+  // `vertical-lr` starts across at the left, and a right-to-left one down
+  // at the bottom
+  assert.deepStrictEqual(at('b'), [200, 750, 100, 50]);
+  assert.deepStrictEqual(at('lr'), [200, 800, 10, 10]);
+});
+
+test("a position-area and the tactics read the containing block's writing mode, in the page's axes", async () => {
+  // 3.1.1 and 4.1: `block-start` is the right in `vertical-rl`, and
+  // `inline-end` the bottom; `flip-block` mirrors the box across, which is
+  // its block axis
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:400px;height:300px;' +
+      'writing-mode:vertical-rl}' +
+      '#a{anchor-name:--a;width:100px;height:100px;margin:100px 280px 0 0}' +
+      '#area{position:absolute;position-anchor:--a;' +
+      'position-area:block-start inline-end;width:10px;height:10px}' +
+      '#flip{position:absolute;position-anchor:--a;right:anchor(left);' +
+      'top:anchor(top);width:50px;height:10px;' +
+      'position-try-fallbacks:flip-block}' +
+      '</style>' +
+      '<div class="cb"><div id="a"></div><div id="area"></div>' +
+      '<div id="flip"></div></div>',
+  );
+  const at = drawnAt(node);
+  assert.deepStrictEqual(at('a'), [20, 100, 100, 100]);
+  // after the anchor across and down, towards it
+  assert.deepStrictEqual(at('area'), [120, 200, 10, 10]);
+  // left of the anchor it would be 30px past the containing block's edge:
+  // mirrored to its right
+  assert.deepStrictEqual(at('flip'), [120, 100, 50, 10]);
+});
+
+test("an element laid out in a vertical writing mode's frame is offset as the page has it", async () => {
+  // CSSOM View 7: the offset attributes are in the page's axes, which the
+  // frame's turn is no transform of the page's (`onPage`)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="cb" style="position:relative;writing-mode:vertical-rl;' +
+      'width:300px;height:200px"><div id="a" style="width:30px;height:40px;' +
+      'margin:5px 10px"></div></div>',
+  );
+  const el = view(node);
+  const a = el.offsetRect(findById(el.document, 'a')!)!;
+  assert.deepStrictEqual([a.x, a.y, a.width, a.height], [260, 5, 30, 40]);
+});
+
+test('a box placed by a position option has its style, which getComputedStyle reads, a ::before too', async () => {
+  // CSS Anchor Positioning 1, 6.2: the option's styles are the box's
+  // computed style, its tactics applied
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '@position-try --pf{left:50px;top:50px;min-width:1px;max-height:200px}' +
+      '.t{position:absolute;left:99999px;width:30px;height:40px}' +
+      '#plain{position-try-fallbacks:--pf}' +
+      '#turned{position-try-fallbacks:--pf flip-start}' +
+      '#g::before{content:"";position:absolute;left:99999px;width:10px;' +
+      'height:10px;position-try-fallbacks:--pf}' +
+      '</style><div id="cb"><div class="t" id="plain"></div>' +
+      '<div class="t" id="turned"></div><div id="g"></div></div>',
+  );
+  const el = view(node);
+  const cs = (id: string, pseudo: string | null = null) =>
+    el.computedStyle(findById(el.document, id)!, pseudo)!;
+  const plain = cs('plain');
+  assert.deepStrictEqual(
+    [plain.left, plain['min-width'], plain['max-height']],
+    ['50px', '1px', '200px'],
+  );
+  const turned = cs('turned');
+  assert.deepStrictEqual(
+    [turned.width, turned.height, turned['min-height'], turned['max-width']],
+    ['40px', '30px', '1px', '200px'],
+  );
+  const before = cs('g', 'before');
+  assert.deepStrictEqual([before.left, before.top], ['50px', '50px']);
+});
+
+test('position-try-order tries the options that leave the most room first', async () => {
+  // 6.3: sorted by the size of the inset-modified containing block each
+  // leaves on the axis it names, `auto` insets nought, ties as written
+  const doc = (order: string) =>
+    render(
+      '<style>body{margin:0}#cb{position:absolute;width:400px;height:400px}' +
+        '#a{position:absolute;left:150px;top:200px;width:150px;height:150px;' +
+        'anchor-name:--a}' +
+        '@position-try --right{inset:unset;left:anchor(right)}' +
+        '@position-try --left{inset:unset;right:anchor(left)}' +
+        '@position-try --top{inset:unset;bottom:anchor(top)}' +
+        `#t{position:absolute;left:450px;width:40px;height:40px;position-anchor:--a;position-try:${order}}` +
+        '</style><div id="cb"><div id="a"></div><div id="t"></div></div>',
+    );
+  const at = async (order: string) => {
+    const { node } = await doc(order);
+    const b = boxOf(view(node), 't');
+    return [b.x, b.y];
+  };
+  // the first that fits
+  assert.deepStrictEqual(await at('--right, --left'), [300, 0]);
+  // more room across to the anchor's left
+  assert.deepStrictEqual(await at('most-width --right, --left'), [110, 0]);
+  // the same room down: as written
+  assert.deepStrictEqual(await at('most-height --right, --left'), [300, 0]);
+  // more room across above the anchor than to its right
+  assert.deepStrictEqual(await at('most-width --right, --top'), [0, 160]);
+});
+
+test('the option a layout places a box by is its last successful one only once it is rendered', async () => {
+  // 6.5.1.1: HTML keeps the last successful position option as it gathers
+  // the resize observations, once a rendering; a layout a script forces
+  // before then tries what the last rendering had
+  const { node } = await render(
+    '<style>#cb{position:relative;width:400px;height:400px}' +
+      '#a{position:relative;top:100px;left:100px;width:100px;height:100px;' +
+      'anchor-name:--a}' +
+      '#t{position:absolute;position-anchor:--a;position-area:top center;' +
+      'position-try-fallbacks:flip-block;width:100px;height:200px}' +
+      '</style><div id="cb"><div id="a"></div><div id="t"></div></div>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a') as unknown as {
+    attribs: Record<string, string>;
+  };
+  const t = findById(el.document, 't')!;
+  const top = () => el.offsetRect(t)!.y;
+  // no room above the anchor: below it
+  assert.strictEqual(top(), 200);
+  const move = (y: number) => {
+    a.attribs.style = `top:${y}px`;
+    el.touchDocument([
+      { type: 'attributes', target: a as never, attributeName: 'style' },
+    ]);
+  };
+  // room above it now, and no rendering since
+  move(200);
+  assert.strictEqual(top(), 0);
+  // room on neither side: the one rendered last, not the one forced,
+  // held in the containing block
+  move(150);
+  assert.strictEqual(top(), 200);
+});
+
 test('position-area, position-try-fallbacks and anchored() are read', () => {
-  assert.deepStrictEqual(parsePositionArea('top'), {
-    cols: [0, 2],
-    rows: [0, 0],
-    logicalCols: false,
-    text: 'top',
-  });
-  // either order, and a logical keyword across reads right to left; its
-  // text the canonical one
-  assert.deepStrictEqual(parsePositionArea('bottom span-right'), {
-    cols: [1, 2],
+  const ltr = { mode: 'horizontal-tb', rtl: false } as const;
+  const tracks = (
+    value: string,
+    cb: WritingAxes = ltr,
+    own: WritingAxes = ltr,
+  ) => {
+    const area = parsePositionArea(value)!;
+    return [area.text, areaTracks(area, cb, own)];
+  };
+  assert.deepStrictEqual(tracks('top'), [
+    'top',
+    { cols: [0, 2], rows: [0, 0] },
+  ]);
+  // either order, its text the canonical one
+  assert.deepStrictEqual(tracks('bottom span-right'), [
+    'span-right bottom',
+    { cols: [1, 2], rows: [2, 2] },
+  ]);
+  // a logical keyword read against the containing block's writing mode,
+  // and a `self-` one against the box's own: the inline axis down the page
+  // where its lines are vertical, and the block axis from the right
+  const rtl = { mode: 'horizontal-tb', rtl: true } as const;
+  const vrl = { mode: 'vertical-rl', rtl: false } as const;
+  const vlrRtl = { mode: 'vertical-lr', rtl: true } as const;
+  assert.deepStrictEqual(tracks('block-end inline-start')[1], {
+    cols: [0, 0],
     rows: [2, 2],
-    logicalCols: false,
-    text: 'span-right bottom',
   });
-  const start = parsePositionArea('block-end inline-start')!;
-  assert.deepStrictEqual(start.rows, [2, 2]);
-  assert.deepStrictEqual(physicalCols(start, false), [0, 0]);
-  assert.deepStrictEqual(physicalCols(start, true), [2, 2]);
+  assert.deepStrictEqual(tracks('block-end inline-start', rtl)[1], {
+    cols: [2, 2],
+    rows: [2, 2],
+  });
+  assert.deepStrictEqual(tracks('block-end inline-start', vrl)[1], {
+    cols: [0, 0],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('start start', vlrRtl)[1], {
+    cols: [0, 0],
+    rows: [2, 2],
+  });
+  assert.deepStrictEqual(tracks('x-start y-start', vrl)[1], {
+    cols: [2, 2],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('self-start self-start', vrl, ltr)[1], {
+    cols: [0, 0],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('self-x-start self-y-start', ltr, vrl)[1], {
+    cols: [2, 2],
+    rows: [0, 0],
+  });
   assert.strictEqual(parsePositionArea('none'), null);
   assert.strictEqual(parsePositionArea('top bottom'), undefined);
   assert.strictEqual(parsePositionArea('left nowhere'), undefined);

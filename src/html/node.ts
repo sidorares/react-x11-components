@@ -226,6 +226,8 @@ import {
   showsUnseen,
   unseenHeld,
   unseenIn,
+  commitLastPositions,
+  placedStyleOf,
   resolvedInsets,
   restickToViewport,
   restickWithin,
@@ -234,7 +236,7 @@ import {
   translationOf,
   VIEWPORT_STICKY,
 } from './layout/block.js';
-import { frameModeOf, pageSides } from './layout/writing.js';
+import { frameModeOf, onPage, pageSides } from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -5211,6 +5213,17 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      // one placed by a position option has that option's style, and the
+      // insets its layout came to (CSS Anchor Positioning 1, 6.2)
+      const generated = this._pseudoBoxOf(tree, element, pseudo);
+      const placed = generated && this._placedStyle(generated);
+      if (generated && placed) {
+        return cssomStyle(
+          placed,
+          this._scale,
+          this._usedBox(generated, placed),
+        );
+      }
       // one the rules give no `content` is styled by them all the same
       const own = this._atNow(element, () =>
         cascade.pseudoComputedStyle(element, pseudo, style),
@@ -5231,7 +5244,18 @@ export class HtmlViewNode extends Node {
     if (pseudo) return null;
     const box = boxFor(tree.root, element);
     if (!box) return cssomStyle(style, this._scale, null);
-    return cssomStyle(style, this._scale, this._usedBox(box, style));
+    const own = this._placedStyle(box) ?? style;
+    return cssomStyle(own, this._scale, this._usedBox(box, own));
+  }
+
+  /** The style of the position option a box was placed by
+   *  (`placedStyleOf`), which is its computed style; null where it was
+   *  placed by its own, or is laid out in a vertical flow's frame, whose
+   *  styles are turned (`layout/writing.ts`). */
+  private _placedStyle(box: Box): ComputedStyle | null {
+    const placed = placedStyleOf(box);
+    if (!placed) return null;
+    return this._tree?.vertical && frameModeOf(box) ? null : placed;
   }
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
@@ -5732,8 +5756,14 @@ export class HtmlViewNode extends Node {
       dx -= tx;
       dy -= ty;
     }
-    if (!dx && !dy) return fragments;
-    const move = (r: Rect): Rect => ({ ...r, x: r.x + dx, y: r.y + dy });
+    // and laid out in the frame of a vertical writing mode, where the turn
+    // has it on the page, which is no transform the page wrote
+    const turned = tree.vertical;
+    if (!dx && !dy && !turned) return fragments;
+    const move = (r: Rect): Rect => {
+      const at = { ...r, x: r.x + dx, y: r.y + dy };
+      return turned ? onPage(box, at) : at;
+    };
     return { first: move(fragments.first), all: move(fragments.all) };
   }
 
@@ -6830,12 +6860,33 @@ export class HtmlViewNode extends Node {
       const ink = this._inkOf(box);
       if (ink) inks.push(ink);
     }
+    // an anchor `visibility` hid or showed hides or shows what
+    // `position-visibility` keeps to it (CSS Anchor Positioning 1, 5.4)
+    if (tree.anchors) this._revisit(tree, inks);
     this._repaintInk(inks);
     // a snap area's alignment, or its container's type, that changed
     // without a layout: what a container was snapped to may be no snap
     // position now (CSS Scroll Snap 1, 5.4)
     if (cascade.snaps) this._resnap(!snapTyped);
     return true;
+  }
+
+  /** What `position-visibility` hides or shows now, where a restyle in
+   *  place may have hidden or shown an anchor: drawn again where it was
+   *  and where it is, into `inks`. */
+  private _revisit(tree: BoxTree, inks: Rect[]): void {
+    const root = tree.root;
+    const boxes = positionVisibilityBoxes(root);
+    if (!boxes.length) return;
+    const before = boxes.map((b) => this._inkOf(b));
+    if (!updatePositionVisibility(root, this._viewportAt()).length) return;
+    stackLayers(root);
+    computePaintBounds(root, tree.movedInline);
+    for (const ink of before) if (ink) inks.push(ink);
+    for (const box of boxes) {
+      const ink = this._inkOf(box);
+      if (ink) inks.push(ink);
+    }
   }
 
   /** An element's first box in document order, for the tree it was asked
@@ -10566,6 +10617,9 @@ export class HtmlViewNode extends Node {
     this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
     this._counted(() => this._paintContent(ctx));
+    // what the layouts since the last rendering placed anchored boxes by
+    // is their last successful position option now
+    commitLastPositions();
     this._noteFrame();
     this._notePaneScroll();
     this._props().onPaint?.();

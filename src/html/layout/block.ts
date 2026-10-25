@@ -27,20 +27,25 @@ import {
   anchorMathValue,
   areaAlignment,
   areaLines,
+  areaTracks,
   isAnchorMath,
   mapAnchorCalls,
-  physicalCols,
+  startOf,
 } from '../css/anchor.js';
 import type {
   AnchorInset,
   AnchorSide,
+  AnchorSizeKind,
+  AnchorSizeRef,
   InsetSide,
   PositionArea,
   TryTactic,
+  WritingAxes,
 } from '../css/anchor.js';
 import type {
   BorderStyle,
   ComputedStyle,
+  WritingMode,
   ContentSize,
   GridLine,
   SizeOf,
@@ -70,6 +75,7 @@ import {
 import {
   ASIDE_REACH,
   STUCK,
+  anchoredWith,
   applyScrollOffsets,
   clearDefaultAnchors,
   defaultAnchorOf,
@@ -158,7 +164,20 @@ import type { TextRun } from '../../richtext/index.js';
 import { forgetMaxContent, layoutFlex } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
-import { FRAMES, framed, reflectFrame, reflects, turnsUp } from './writing.js';
+import {
+  FRAMES,
+  FRAME_ROOTS,
+  framed,
+  frameOf,
+  frameRectOf,
+  frameSideOf,
+  pageRectOf,
+  pageSideOf,
+  reflectFrame,
+  reflects,
+  turnsUp,
+} from './writing.js';
+import type { PhysicalSide } from './writing.js';
 import {
   clipsFor,
   computePaintBounds,
@@ -1321,6 +1340,12 @@ export function layoutDocument(
   // at rest (`unseenWhileStopped`).
   const stopped = aside !== undefined && ctx.until !== undefined;
   let unseen: Set<Box> | null = null;
+  // in a tree with anchors, in the order a browser lays them out: as each
+  // containing block's layout ends, and those a positioned box holds with
+  // it — so an anchor is laid out before a box anchored to it that comes
+  // first in the tree, as CSS Anchor Positioning 1, 2.3 has it acceptable
+  const finish = tree.anchors ? finishOrder(root) : null;
+  if (finish) inFinishOrder(ctx.positioned, 0, finish);
   for (let i = 0; i < ctx.positioned.length; i += 1) {
     const { box, containing } = ctx.positioned[i];
     if (stopped && unseenWhileStopped(tree, box)) {
@@ -1328,7 +1353,19 @@ export function layoutDocument(
       (unseen ??= new Set()).add(box);
       continue;
     }
+    const found = ctx.positioned.length;
     layoutPositioned(box, containing, ctx);
+    if (finish && ctx.positioned.length > found) {
+      if (found > i + 1) {
+        ctx.positioned.splice(i + 1, 0, ...ctx.positioned.splice(found));
+      }
+      inFinishOrder(
+        ctx.positioned,
+        i + 1,
+        finish,
+        i + 1 + ctx.positioned.length - found,
+      );
+    }
   }
   if (unseen) {
     UNSEEN.set(tree, unseen);
@@ -5233,6 +5270,18 @@ function isControl(box: Box): boolean {
   }
 }
 
+/** The style of the position option an anchor-positioned box was placed
+ *  by, where that was one of its `position-try-fallbacks`: its computed
+ *  style, as `getComputedStyle` reads it (CSS Anchor Positioning 1, 6.2:
+ *  the position option's styles are the box's). */
+const PLACED_STYLE = new WeakMap<Box, ComputedStyle>();
+
+/** The style a box was placed by (`PLACED_STYLE`), or null where it is its
+ *  own. */
+export function placedStyleOf(box: Box): ComputedStyle | null {
+  return PLACED_STYLE.get(box) ?? null;
+}
+
 /** The position option an anchor-positioned box was placed by, by box:
  *  the option's text, as an anchored container query matches it, where it
  *  was one of its `position-try-fallbacks`; none where it was its own. */
@@ -5292,6 +5341,73 @@ interface LastPosition {
 }
 const LAST_POSITIONS = new WeakMap<object, Map<string, LastPosition>>();
 
+/** The options layouts placed boxes by since the last rendering, which
+ *  become their last successful ones there (`commitLastPositions`). */
+const PENDING_POSITIONS = new Map<
+  Map<string, LastPosition>,
+  Map<string, LastPosition>
+>();
+
+/** A layout placed a box by an option: kept for the next rendering. */
+function notePosition(
+  map: Map<string, LastPosition>,
+  at: string,
+  position: LastPosition,
+): void {
+  let pending = PENDING_POSITIONS.get(map);
+  if (!pending) PENDING_POSITIONS.set(map, (pending = new Map()));
+  pending.set(at, position);
+}
+
+/**
+ * Make the options the layouts since the last rendering placed boxes by
+ * their last successful position options (CSS Anchor Positioning 1,
+ * 6.5.1.1): HTML updates it as it gathers the resize observations, once a
+ * rendering, so a layout a script forces between two — `offsetTop` read
+ * after a style change — tries what the last rendering had, and what it
+ * places a box by is no box's last successful option until a rendering.
+ */
+export function commitLastPositions(): void {
+  if (!PENDING_POSITIONS.size) return;
+  for (const [map, pending] of PENDING_POSITIONS) {
+    for (const [at, position] of pending) map.set(at, position);
+  }
+  PENDING_POSITIONS.clear();
+}
+
+/** The options in the order `position-try-order` sorts them (CSS Anchor
+ *  Positioning 1, 6.3): by the room each leaves the box on its axis, the
+ *  most first, a tie in the order written. */
+function sortedOptions(
+  count: number,
+  _order: string,
+  room: (index: number) => number,
+): number[] {
+  const rooms = Array.from({ length: count }, (_, i) => room(i));
+  return rooms.map((_, i) => i).sort((a, b) => rooms[b] - rooms[a]);
+}
+
+/**
+ * How much room an option's insets leave a box, along the axis its
+ * `position-try-order` names (6.3): the size of its inset-modified
+ * containing block there — its containing block, or its area's cells —
+ * with `auto` insets nought.
+ */
+function roomOf(style: ComputedStyle, cb: CbRect, axes: AnchorAxes): number {
+  const order = style.positionTryOrder;
+  let down: boolean;
+  if (order === 'most-width' || order === 'most-height') {
+    // the page's axis, which a frame of a vertical flow has turned
+    down = (order === 'most-height') !== !!axes.frame;
+  } else {
+    const block = blockDown(axes, axes.cb);
+    down = order === 'most-block-size' ? block : !block;
+  }
+  const size = down ? cb.height : cb.width;
+  const [a, b] = down ? [style.top, style.bottom] : [style.left, style.right];
+  return size - (resolveOrNull(a, size) ?? 0) - (resolveOrNull(b, size) ?? 0);
+}
+
 /** Where an anchored box's last position is kept: by its element, or by
  *  the element a pseudo-element's box hangs off. */
 function lastPositionOf(box: Box): [Map<string, LastPosition>, string] | null {
@@ -5348,8 +5464,14 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
   const options = style.positionTryFallbacks ?? [];
   const root = ctx.anchorRoot ?? null;
+  const axes = anchorAxesOf(box, containing);
   // what scrolls its default anchor and not it, and how far it has now
-  const anchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  const anchor = anchorBoxFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
   const context =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
@@ -5362,25 +5484,38 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const kept = options.length ? lastPositionOf(box) : null;
   const key = `${style.position} ${style.positionAnchor} ${options
     .map((o) => o.text)
-    .join(',')}`;
+    .join(',')} ${style.positionTryRules}`;
   const last = kept?.[0].get(kept[1]);
   let start =
     last?.key === key && last.option < options.length ? last.option : -1;
-  const place = (index: number): Placement | null => {
+  // the style each option made of the box's, its tactics applied
+  const triedStyles = new Map<number, ComputedStyle>();
+  const triedStyle = (index: number): ComputedStyle | null => {
+    const known = triedStyles.get(index);
+    if (known) return known;
     const option = index < 0 ? null : options[index];
     let tried = style;
-    if (option) {
-      if (option.name !== null) {
-        const named = style.positionTryStyles?.[index];
-        // an option naming no rule there is is none
-        if (!named) return null;
-        tried = named;
-      }
-      tried = triedWith(tried, option.tactics, option.area);
+    if (option?.name != null) {
+      const named = style.positionTryStyles?.[index];
+      // an option naming no rule there is is none
+      if (!named) return null;
+      tried = named;
     }
+    tried = triedWith(
+      tried,
+      option?.tactics ?? NO_TACTICS,
+      option?.area ?? null,
+      axes,
+    );
+    triedStyles.set(index, tried);
+    return tried;
+  };
+  const place = (index: number): Placement | null => {
+    const tried = triedStyle(index);
+    if (!tried) return null;
     ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
-      const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx);
+      const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       box.style = resolved;
       return positionedIn(box, containing, ctx, anchoring);
     } finally {
@@ -5395,9 +5530,31 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     placed = place(-1);
   }
   if (options.length && !(placed && fitsIn(box, placed))) {
-    // each option it is not placed by, its own first (6.5)
+    // each option it is not placed by, its own first (6.5), and the others
+    // in the order `position-try-order` sorts them
     let found = false;
-    for (let i = -1; i < options.length; i += 1) {
+    const order =
+      style.positionTryOrder === 'normal' || options.length < 2
+        ? options.map((_, i) => i)
+        : sortedOptions(options.length, style.positionTryOrder, (i) => {
+            const tried = triedStyle(i);
+            if (!tried) return -Infinity;
+            ctx.anchorShift =
+              anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+            try {
+              const { resolved, anchoring } = anchoredStyle(
+                box,
+                tried,
+                cb,
+                ctx,
+                axes,
+              );
+              return roomOf(resolved, anchoring?.area ?? cb, axes);
+            } finally {
+              ctx.anchorShift = null;
+            }
+          });
+    for (const i of [-1, ...order]) {
       if (i === start) continue;
       const tried = place(i);
       if (tried && fitsIn(box, tried)) {
@@ -5410,9 +5567,15 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     // and where none does, the one it had
     if (!found) placed = place(start);
   }
-  if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
-  else ANCHOR_FALLBACK.delete(box);
-  if (kept && !ctx.question) kept[0].set(kept[1], { key, option: chosen });
+  if (chosen >= 0) {
+    ANCHOR_FALLBACK.set(box, options[chosen].text);
+    PLACED_STYLE.set(box, triedStyles.get(chosen) ?? style);
+  } else {
+    ANCHOR_FALLBACK.delete(box);
+    PLACED_STYLE.delete(box);
+  }
+  if (kept && !ctx.question)
+    notePosition(kept[0], kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
   // where it ends up (5.4)
   if (root && style.positionVisibility & 3) {
@@ -5475,13 +5638,32 @@ function anchoredStyle(
   style: ComputedStyle,
   cb: CbRect,
   ctx: LayoutContext,
+  axes: AnchorAxes,
 ): { resolved: ComputedStyle; anchoring: Anchoring | null } {
   let resolved = style;
   const own = (): ComputedStyle =>
     resolved === style ? (resolved = { ...style }) : resolved;
-  const rtl = style.direction === 'rtl';
-  const anchor = anchorFor(box, style.positionAnchor, ctx);
-  const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  // which end of each of its axes the logical sides start at
+  const startLow = [
+    startsLow(axes, false, axes.cb),
+    startsLow(axes, true, axes.cb),
+  ];
+  const selfLow = [
+    startsLow(axes, false, axes.own),
+    startsLow(axes, true, axes.own),
+  ];
+  const anchor = anchorFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
+  const defaultAnchor = anchorBoxFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
   // the edges a scroll of the default anchor moves with it
   let moving = 0;
   // the cells of its `position-area` (3.1.1): between lines at the
@@ -5490,10 +5672,10 @@ function anchoredStyle(
   let area: CbRect | null = null;
   let alongX: number | null = null;
   let alongY: number | null = null;
+  // its tracks those of its layout (`triedWith`)
   const positionArea = style.positionArea;
   if (positionArea && anchor) {
-    const cols = physicalCols(positionArea, rtl);
-    const rows = positionArea.rows;
+    const { cols, rows } = positionArea;
     const xs = areaLines(cb.x, cb.width, anchor.x, anchor.width);
     const ys = areaLines(cb.y, cb.height, anchor.y, anchor.height);
     area = {
@@ -5522,9 +5704,10 @@ function anchoredStyle(
       let scrolled = false;
       const values = anchorCalls(inset).map((ref) => {
         const name = ref.name ?? style.positionAnchor;
-        const of = anchorFor(box, name, ctx);
+        const tree = refTree(style, ref.name);
+        const of = anchorFor(box, name, ctx, tree);
         if (!of) return null;
-        const at = anchorBoxFor(box, name, ctx);
+        const at = anchorBoxFor(box, name, ctx, tree);
         if (at && defaultAnchor && sameScrollContext(at, defaultAnchor)) {
           scrolled = true;
         }
@@ -5535,7 +5718,8 @@ function anchoredStyle(
           across ? of.width : of.height,
           across ? against.x : against.y,
           across ? against.width : against.height,
-          rtl,
+          startLow[across ? 0 : 1],
+          selfLow[across ? 0 : 1],
         );
       });
       if (isAnchorMath(inset)) {
@@ -5550,8 +5734,14 @@ function anchoredStyle(
       const size = sizes[prop];
       if (!size) continue;
       const values = anchorCalls(size).map((ref) => {
-        const of = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
-        return of ? (ref.size === 'width' ? of.width : of.height) : null;
+        const of = anchorFor(
+          box,
+          ref.name ?? style.positionAnchor,
+          ctx,
+          refTree(style, ref.name),
+        );
+        if (!of) return null;
+        return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
       });
       if (isAnchorMath(size)) {
         // a length like any other, which `box-sizing` says the box of
@@ -5617,8 +5807,9 @@ function anchorFor(
   box: Box,
   name: string | null,
   ctx: LayoutContext,
+  tree: object | null,
 ): CbRect | null {
-  const anchor = anchorBoxFor(box, name, ctx);
+  const anchor = anchorBoxFor(box, name, ctx, tree);
   if (!anchor) return null;
   const rect =
     anchor.kind === 'inline'
@@ -5635,8 +5826,122 @@ function anchorFor(
   const shift = ctx.anchorShift;
   const back =
     shift && sameScrollContext(anchor, shift.anchor) ? shift : NO_SHIFT;
-  return { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+  const at = { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+  return framed.any ? inFrameOf(at, anchor, box) : at;
 }
+
+/**
+ * A rectangle laid out where `from` is, in the axes `box` is laid out in:
+ * the page's, through the turn of the frame of a vertical writing mode
+ * `from` is in, and into the frame `box` is in (`layout/writing.ts`). Two
+ * boxes in one frame are in its axes both.
+ */
+function inFrameOf(rect: CbRect, from: Box, box: Box): CbRect {
+  const theirs = frameOf(from);
+  const ours = frameOf(box);
+  if (theirs === ours) return rect;
+  const page = theirs
+    ? pageRectOf(theirs, rect, FRAME_ROOTS.get(theirs)!.style.writingMode)
+    : rect;
+  return ours
+    ? frameRectOf(ours, page, FRAME_ROOTS.get(ours)!.style.writingMode)
+    : page;
+}
+
+/**
+ * The axes an anchored box is laid out in, as the page has them: the frame
+ * of a vertical writing mode it is in, turned (`layout/writing.ts`), or the
+ * page's own; and the writing modes the logical keywords it is placed by
+ * read — its containing block's (CSS Anchor Positioning 1, 3.2), and its
+ * own for the `self-` ones.
+ */
+interface AnchorAxes {
+  frame: Box | null;
+  /** The frame's writing mode, which says which way it is turned. */
+  mode: WritingMode;
+  cb: WritingAxes;
+  own: WritingAxes;
+}
+
+function anchorAxesOf(box: Box, containing: Box): AnchorAxes {
+  const frame = framed.any ? frameOf(box) : null;
+  return {
+    frame,
+    mode: frame ? FRAME_ROOTS.get(frame)!.style.writingMode : 'horizontal-tb',
+    cb: {
+      mode: containing.style.writingMode,
+      rtl: containing.style.direction === 'rtl',
+    },
+    own: {
+      mode: box.style.writingMode,
+      rtl: box.style.direction === 'rtl',
+    },
+  };
+}
+
+/** The side of a box's layout a side of the page is. */
+function laidSide(axes: AnchorAxes, side: PhysicalSide): PhysicalSide {
+  return axes.frame ? frameSideOf(side, axes.mode) : side;
+}
+
+/** The page's axis one of a box's layout's is — down where `down`. */
+function pageAxisOf(axes: AnchorAxes, down: boolean): 'x' | 'y' {
+  return down !== !!axes.frame ? 'y' : 'x';
+}
+
+/** Whether a writing mode starts an axis of a box's layout — down where
+ *  `down` — at its top or its left, which its logical keywords read from. */
+function startsLow(
+  axes: AnchorAxes,
+  down: boolean,
+  writing: WritingAxes,
+): boolean {
+  const pageAxis = pageAxisOf(axes, down);
+  const side = laidSide(axes, startOf(pageAxis, writing.mode, writing.rtl));
+  return side === 'top' || side === 'left';
+}
+
+/** Whether a writing mode's block axis is down a box's layout. */
+function blockDown(axes: AnchorAxes, writing: WritingAxes): boolean {
+  const pageBlock = writing.mode === 'horizontal-tb' ? 'y' : 'x';
+  return pageAxisOf(axes, true) === pageBlock;
+}
+
+/** The size of a box's layout an `anchor-size()` reads: a physical one as
+ *  it is, the frame having turned it (`framedStyle`), and a logical one
+ *  along the axis its writing mode has it on. */
+function laidDimension(
+  axes: AnchorAxes,
+  size: AnchorSizeKind,
+): 'width' | 'height' {
+  if (size === 'width' || size === 'height') return size;
+  const writing = size.startsWith('self-') ? axes.own : axes.cb;
+  const block = blockDown(axes, writing);
+  const down = size.endsWith('block') ? block : !block;
+  return down ? 'height' : 'width';
+}
+
+/** A `position-area` as the tracks of a box's layout (`areaTracks`), the
+ *  frame's of a vertical writing mode turned from the page's. */
+function laidArea(area: PositionArea, axes: AnchorAxes): PositionArea {
+  const { cols, rows } = areaTracks(area, axes.cb, axes.own);
+  if (!axes.frame) return { cols, rows, logicalCols: false, text: area.text };
+  // each of the frame's axes is one of the page's, from the side the
+  // frame's start of it is drawn at
+  const from = (side: PhysicalSide): [number, number] => {
+    const page = pageSideOf(side, axes.mode);
+    const t = page === 'left' || page === 'right' ? cols : rows;
+    return page === 'left' || page === 'top' ? t : [2 - t[1], 2 - t[0]];
+  };
+  return {
+    cols: from('left'),
+    rows: from('top'),
+    logicalCols: false,
+    text: area.text,
+  };
+}
+
+const NO_TACTICS: readonly TryTactic[] = [];
 
 const NO_SHIFT = { x: 0, y: 0 };
 
@@ -5678,6 +5983,9 @@ function anchorBoxFor(
   box: Box,
   name: string | null,
   ctx: LayoutContext,
+  /** The tree the reference was written in (`ComputedStyle.anchorNamesTree`
+   *  and its kin): a name of another tree is not the one it means. */
+  tree: object | null,
 ): Box | null {
   if (name === null || !ctx.anchorRoot) return null;
   if (ctx.anchors === undefined) {
@@ -5727,6 +6035,9 @@ function anchorBoxFor(
       }
     }
     if (inside) continue;
+    // a tree-scoped name, matched strictly (CSS Shadow 1, 3.5): a shadow
+    // tree's `--a` is not the page's
+    if (anchor.style.anchorNamesTree !== tree) continue;
     if (scopedAway(anchor, box, name)) continue;
     if (!acceptableAnchor(anchor, box, ctx.anchorOrder!)) continue;
     return anchor;
@@ -5734,25 +6045,45 @@ function anchorBoxFor(
   return null;
 }
 
+/** The tree an anchor reference of a style was written in: its
+ *  `position-anchor`'s where it names no anchor, and its anchor
+ *  functions' where it does. */
+function refTree(style: ComputedStyle, name: string | null): object | null {
+  return name === null ? style.positionAnchorTree : style.anchorFunctionsTree;
+}
+
 /**
  * Whether `anchor-scope` keeps an anchor's name from a box (CSS Anchor
  * Positioning 1, 2.4): the nearest element around the anchor, itself
  * included, that scopes the name — by naming it, or by `all` — has the box
- * outside it. An element's own box is the one asked, and not the boxes
- * inside it that carry its style.
+ * outside it; or an element around the box that scopes it has the anchor
+ * outside it, since a scope limits what is in it to the anchors in it as
+ * well. A scope reaches only the names of its own tree, as a strictly
+ * matched tree-scoped name does (CSS Shadow 1, 3.5): `anchor-scope` set
+ * through `::part()` scopes the page's names inside the part, and one a
+ * shadow tree sets on its host none of the page's. An element's own box is
+ * the one asked, and not the boxes inside it that carry its style.
  */
 function scopedAway(anchor: Box, box: Box, name: string): boolean {
-  for (let at: Box | null = anchor; at; at = at.parent) {
+  const tree = anchor.style.anchorNamesTree;
+  const scopes = (at: Box): boolean => {
     const scope = at.style.anchorScope;
-    if (scope === 'none') continue;
+    if (scope === 'none' || at.style.anchorScopeTree !== tree) return false;
     const own =
       at.pseudo === null
         ? !!at.el && at.parent?.el !== at.el
         : at.pseudo === 'before' || at.pseudo === 'after';
-    if (!own) continue;
-    if (scope !== 'all' && !scope.split(', ').includes(name)) continue;
-    for (let b: Box | null = box; b; b = b.parent) if (b === at) return false;
-    return true;
+    return own && (scope === 'all' || scope.split(', ').includes(name));
+  };
+  const holds = (at: Box, b: Box): boolean => {
+    for (let c: Box | null = b; c; c = c.parent) if (c === at) return true;
+    return false;
+  };
+  for (let at: Box | null = anchor; at; at = at.parent) {
+    if (scopes(at)) return !holds(at, box);
+  }
+  for (let at = box.parent; at; at = at.parent) {
+    if (scopes(at) && !holds(at, anchor)) return true;
   }
   return false;
 }
@@ -5815,13 +6146,31 @@ function triedWith(
   style: ComputedStyle,
   tactics: readonly TryTactic[],
   area: PositionArea | null,
+  axes: AnchorAxes,
 ): ComputedStyle {
-  if (!tactics.length && !area) return style;
+  const placed = area ?? style.positionArea;
+  if (!tactics.length && !placed) return style;
   const out: ComputedStyle = { ...style };
-  if (area) out.positionArea = area;
+  // the area as the tracks of the box's layout, which a tactic flips
+  if (placed) out.positionArea = laidArea(placed, axes);
+  // the axes of the containing block's writing mode, and the page's, as
+  // the box's layout has them (4.1)
+  const block = blockDown(axes, axes.cb);
+  const x = pageAxisOf(axes, true) === 'x';
   for (const tactic of tactics) {
-    if (tactic === 'flip-start') flipStart(out);
-    else flipAxis(out, tactic === 'flip-block' || tactic === 'flip-y');
+    if (tactic === 'flip-start') flipStart(out, axes);
+    else {
+      flipAxis(
+        out,
+        tactic === 'flip-block'
+          ? block
+          : tactic === 'flip-inline'
+            ? !block
+            : tactic === 'flip-x'
+              ? x
+              : !x,
+      );
+    }
   }
   return out;
 }
@@ -5884,23 +6233,41 @@ function flipAxis(style: ComputedStyle, down: boolean): void {
   }
 }
 
-function flipStart(style: ComputedStyle): void {
-  [style.top, style.left] = [style.left, style.top];
-  [style.bottom, style.right] = [style.right, style.bottom];
-  [style.marginTop, style.marginLeft] = [style.marginLeft, style.marginTop];
-  [style.marginBottom, style.marginRight] = [
-    style.marginRight,
-    style.marginBottom,
-  ];
+/**
+ * `flip-start` (CSS Anchor Positioning 1, 4.1): the box mirrored about the
+ * diagonal from the start corner of its containing block's writing mode —
+ * each side swapped with the side the diagonal takes it to, in the axes the
+ * box is laid out in, and its sizes, its `anchor-size()`s' axes, its
+ * area's tracks and its self-alignment with them.
+ */
+function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
+  // the start sides of the two axes, which the diagonal swaps, and their
+  // ends with them
+  const blockStart = startSide(axes, blockDown(axes, axes.cb));
+  const inlineStart = startSide(axes, !blockDown(axes, axes.cb));
+  const swap: Record<PhysicalSide, PhysicalSide> = {
+    [blockStart]: inlineStart,
+    [inlineStart]: blockStart,
+    [OPPOSITE[blockStart]]: OPPOSITE[inlineStart],
+    [OPPOSITE[inlineStart]]: OPPOSITE[blockStart],
+  } as Record<PhysicalSide, PhysicalSide>;
+  const from = { ...style };
+  for (const side of SIDES) {
+    const to = swap[side];
+    style[to] = from[side];
+    style[MARGIN_OF[to]] = from[MARGIN_OF[side]];
+  }
   [style.width, style.height] = [style.height, style.width];
   [style.minWidth, style.minHeight] = [style.minHeight, style.minWidth];
   [style.maxWidth, style.maxHeight] = [style.maxHeight, style.maxWidth];
-  const swap: Record<string, AnchorSide> = {
-    top: 'left',
-    left: 'top',
-    bottom: 'right',
-    right: 'bottom',
-  };
+  [style.justifySelf, style.alignSelf] = [
+    alignSelfAs(style.alignSelf),
+    justifySelfAs(style.justifySelf),
+  ];
+  [style.justifyAnchorCenter, style.alignAnchorCenter] = [
+    style.alignAnchorCenter,
+    style.justifyAnchorCenter,
+  ];
   const insets = style.anchorInsets;
   if (insets) {
     const out: Partial<Record<InsetSide, AnchorInset>> = {};
@@ -5908,10 +6275,9 @@ function flipStart(style: ComputedStyle): void {
       InsetSide,
       AnchorInset,
     ][]) {
-      const to = swap[side] as InsetSide;
-      out[to] = mapAnchorCalls(inset, (ref) =>
-        typeof ref.side === 'string' && swap[ref.side]
-          ? { ...ref, side: swap[ref.side] }
+      out[swap[side]] = mapAnchorCalls(inset, (ref) =>
+        typeof ref.side === 'string' && ref.side in swap
+          ? { ...ref, side: swap[ref.side as PhysicalSide] }
           : ref,
       );
     }
@@ -5919,19 +6285,79 @@ function flipStart(style: ComputedStyle): void {
   }
   const sizes = style.anchorSizes;
   if (sizes) {
+    const across = (ref: AnchorSizeRef): AnchorSizeRef => ({
+      ...ref,
+      size: OTHER_SIZE[ref.size],
+    });
     style.anchorSizes = {
-      ...(sizes.width ? { height: sizes.width } : null),
-      ...(sizes.height ? { width: sizes.height } : null),
+      ...(sizes.width ? { height: mapAnchorCalls(sizes.width, across) } : null),
+      ...(sizes.height
+        ? { width: mapAnchorCalls(sizes.height, across) }
+        : null),
     };
   }
   const area = style.positionArea;
   if (area) {
+    // a track's index runs from the top or the left: the tracks down go
+    // across from the side the top goes to, and the other way round
+    const moved = (
+      tracks: readonly [number, number],
+      side: PhysicalSide,
+    ): [number, number] =>
+      side === 'top' || side === 'left'
+        ? [tracks[0], tracks[1]]
+        : [2 - tracks[1], 2 - tracks[0]];
     style.positionArea = {
-      cols: area.rows,
-      rows: area.cols,
+      cols: moved(area.rows, swap.top),
+      rows: moved(area.cols, swap.left),
       logicalCols: false,
     };
   }
+}
+
+/** The side of a box's layout a writing mode starts one of its axes at. */
+function startSide(axes: AnchorAxes, down: boolean): PhysicalSide {
+  const low = startsLow(axes, down, axes.cb);
+  return down ? (low ? 'top' : 'bottom') : low ? 'left' : 'right';
+}
+
+const SIDES: readonly PhysicalSide[] = ['top', 'right', 'bottom', 'left'];
+
+const OPPOSITE: Record<PhysicalSide, PhysicalSide> = {
+  top: 'bottom',
+  bottom: 'top',
+  left: 'right',
+  right: 'left',
+};
+
+const MARGIN_OF = {
+  top: 'marginTop',
+  right: 'marginRight',
+  bottom: 'marginBottom',
+  left: 'marginLeft',
+} as const;
+
+const OTHER_SIZE: Record<AnchorSizeKind, AnchorSizeKind> = {
+  width: 'height',
+  height: 'width',
+  inline: 'block',
+  block: 'inline',
+  'self-inline': 'self-block',
+  'self-block': 'self-inline',
+};
+
+/** An `align-self` as a `justify-self` (`flip-start`): the two take the
+ *  same positions, and `baseline` only down. */
+function alignSelfAs(
+  value: ComputedStyle['alignSelf'],
+): ComputedStyle['justifySelf'] {
+  return value === 'baseline' ? 'normal' : value;
+}
+
+function justifySelfAs(
+  value: ComputedStyle['justifySelf'],
+): ComputedStyle['alignSelf'] {
+  return value;
 }
 
 /**
@@ -6617,9 +7043,22 @@ function paddingRectOf(
   containing: Box,
   viewportWidth: number,
   viewportHeight: number,
+  /** Whether the tree may hold a frame, which a layout knows already. */
+  turned = framed.any,
 ): CbRect {
   if (!containing.parent) {
     return { x: 0, y: 0, width: viewportWidth, height: viewportHeight };
+  }
+  // a frame's, which its turn makes the containing block of what it
+  // holds, is its root's padding box as the frame lays it out: the frame
+  // itself is only as tall as what is in it, which the page has as wide
+  const root = turned ? FRAME_ROOTS.get(containing) : undefined;
+  if (root) {
+    return frameRectOf(
+      containing,
+      paddingRectOf(root, viewportWidth, viewportHeight, false),
+      root.style.writingMode,
+    );
   }
   return {
     x: containing.x + containing.borderLeft,
@@ -7265,6 +7704,45 @@ export function establishesBFC(box: Box): boolean {
   return box.parent === null && !STANDS_FOR_BODY.has(box);
 }
 
+/** Each box of a tree by where its layout ends, in a walk of it: what is
+ *  in a box ends before it, and a box before another in the tree ends
+ *  before it where neither holds the other. */
+function finishOrder(root: Box): Map<Box, number> {
+  const order = new Map<Box, number>();
+  const stack: [Box, number][] = [[root, 0]];
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    const [box, next] = top;
+    if (next < box.children.length) {
+      top[1] = next + 1;
+      stack.push([box.children[next], 0]);
+    } else {
+      order.set(box, order.size);
+      stack.pop();
+    }
+  }
+  return order;
+}
+
+/** Sort the positioned boxes from `from` to `to` by where the layouts of
+ *  their containing blocks end (`finishOrder`), keeping the order they
+ *  were found in for one containing block. */
+function inFinishOrder(
+  list: { box: Box; containing: Box }[],
+  from: number,
+  finish: Map<Box, number>,
+  to = list.length,
+): void {
+  if (to - from < 2) return;
+  const part = list.slice(from, to);
+  part.sort(
+    (a, b) =>
+      (finish.get(a.containing) ?? finish.size) -
+      (finish.get(b.containing) ?? finish.size),
+  );
+  for (let i = 0; i < part.length; i += 1) list[from + i] = part[i];
+}
+
 /** The root boxes that stand in for a fragment's `<body>` (`BoxTree.impliedHtml`):
  *  blocks in the formatting context of the `<html>` around them, which has no
  *  box, rather than its root. Marked as each is laid out. */
@@ -7301,6 +7779,7 @@ export function applyRelativeOffsets(
   if (sticky) STUCK.set(box, [dx, dy]);
   if (!(dx || dy)) return;
   offsetBox(box, dx, dy, sticky);
+  if (sticky) followSticky(box, dx, dy);
   if (box.kind !== 'inline') {
     movedOffLine(box);
     return;
@@ -7582,7 +8061,7 @@ export function resolvedInsets(
   }
   const containing = containingBlockFor(box);
   if (!containing || containing.kind === 'inline') return null;
-  const cb = paddingRectOf(containing, viewportWidth, viewportHeight);
+  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
   // where layout placed them, before a scroll moved either: a scroll
   // moves a box back by its offset, which is added back
   const [bx, by] = scrolledBy(box);
@@ -7915,7 +8394,21 @@ function placeSticky(
   if (!mx && !my) return false;
   offsetBox(box, mx, my, true);
   movedOffLine(box);
+  followSticky(box, mx, my);
   return true;
+}
+
+/** Move what is anchored to a sticky box, or to something in it, as far
+ *  as its stickiness moved it, on the axes each follows its anchor on
+ *  (`anchoredWith`): a box anchored below a header stuck to the top of a
+ *  list stays below it. */
+function followSticky(box: Box, dx: number, dy: number): void {
+  if (box.kind === 'inline') return;
+  for (const { box: anchored, x, y } of anchoredWith(box)) {
+    if (!(x && dx) && !(y && dy)) continue;
+    translate(anchored, x ? dx : 0, y ? dy : 0, () => false);
+    movedOffLine(anchored);
+  }
 }
 
 /**

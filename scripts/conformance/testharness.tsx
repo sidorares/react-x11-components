@@ -136,13 +136,18 @@ export function urlFor(test: string): string {
 const MARK = '\u0001WPT';
 const REPORTER = `(function () {
   function send(o) { console.log(${JSON.stringify(MARK)} + JSON.stringify(o)); }
+  // a message's end is where check-layout-th.js says what it found
+  function cut(m) {
+    m = String(m);
+    return m.length > 300 ? m.slice(0, 120) + ' … ' + m.slice(-180) : m;
+  }
   function brief(t) {
-    return { name: String(t.name), status: t.status, message: t.message == null ? null : String(t.message).slice(0, 300) };
+    return { name: String(t.name), status: t.status, message: t.message == null ? null : cut(t.message) };
   }
   setup({ output: false });
   add_result_callback(function (t) { send({ kind: 'result', test: brief(t) }); });
   add_completion_callback(function (tests, status) {
-    send({ kind: 'done', status: status.status, message: status.message == null ? null : String(status.message).slice(0, 300), tests: tests.map(brief) });
+    send({ kind: 'done', status: status.status, message: status.message == null ? null : cut(status.message), tests: tests.map(brief) });
   });
 })();`;
 
