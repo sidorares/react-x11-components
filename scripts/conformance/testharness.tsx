@@ -27,7 +27,12 @@
 // process resolves to the loopback itself, so nothing on the machine has to
 // change; `interop.ts` hands Node WPT's CA for the https ones.
 import dns from 'node:dns';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import React from 'react';
@@ -86,12 +91,21 @@ if (!listFile || !outFile) {
   };
 }
 
-const FONTS: Record<string, string> = {
-  serif: '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
-  'sans-serif':
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  monospace: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
-};
+// The generic families as files: Liberation where it is installed, and on a
+// Mac the faces it is metric-compatible with.
+const LIBERATION = '/usr/share/fonts/truetype/liberation';
+const MAC = '/System/Library/Fonts/Supplemental';
+const FONTS: Record<string, string> = existsSync(LIBERATION)
+  ? {
+      serif: `${LIBERATION}/LiberationSerif-Regular.ttf`,
+      'sans-serif': `${LIBERATION}/LiberationSans-Regular.ttf`,
+      monospace: `${LIBERATION}/LiberationMono-Regular.ttf`,
+    }
+  : {
+      serif: `${MAC}/Times New Roman.ttf`,
+      'sans-serif': `${MAC}/Arial.ttf`,
+      monospace: `${MAC}/Courier New.ttf`,
+    };
 
 const PALETTE = {
   text: '#000000',
@@ -120,13 +134,18 @@ export function urlFor(test: string): string {
 const MARK = '\u0001WPT';
 const REPORTER = `(function () {
   function send(o) { console.log(${JSON.stringify(MARK)} + JSON.stringify(o)); }
+  // a message's end is where check-layout-th.js says what it found
+  function cut(m) {
+    m = String(m);
+    return m.length > 300 ? m.slice(0, 120) + ' … ' + m.slice(-180) : m;
+  }
   function brief(t) {
-    return { name: String(t.name), status: t.status, message: t.message == null ? null : String(t.message).slice(0, 300) };
+    return { name: String(t.name), status: t.status, message: t.message == null ? null : cut(t.message) };
   }
   setup({ output: false });
   add_result_callback(function (t) { send({ kind: 'result', test: brief(t) }); });
   add_completion_callback(function (tests, status) {
-    send({ kind: 'done', status: status.status, message: status.message == null ? null : String(status.message).slice(0, 300), tests: tests.map(brief) });
+    send({ kind: 'done', status: status.status, message: status.message == null ? null : cut(status.message), tests: tests.map(brief) });
   });
 })();`;
 
