@@ -5830,6 +5830,12 @@ export class Cascade {
     return this._pseudo['first-line'].size > 0;
   }
 
+  /** Whether any rule styles a `::first-letter`, which a block's letter is
+   *  looked for through its first blocks for (`buildSubtrees`). */
+  get hasFirstLetter(): boolean {
+    return this._pseudo['first-letter'].size > 0;
+  }
+
   /**
    * A list item's `::marker` style, inheriting from its own, or null when no
    * rule reaches it (CSS Lists 3, 3.1): the colour and the font a bullet or
