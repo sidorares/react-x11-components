@@ -42,8 +42,11 @@ has to be installed. Where another server holds WPT's default ports, set
 "h2": [9100], "webtransport-h3": [11100]`, say) and hand the runner the
 three it opens documents on as `WPT_HTTP_PORT`, `WPT_HTTPS_PORT` and
 `WPT_H2_PORT`; the tests read the rest from the server's own substitutions.
-Without `systemd-run` — a Mac — the children run without a memory cap, and
-the runner says so.
+Without `systemd-run` — a Mac — a child is watched instead: its resident
+memory every two seconds, and its group killed past `--memory`, a crash as
+the cgroup's kill is. A document can grow a few gigabytes between two looks,
+so this is coarser than a cgroup, and it is what keeps
+`request-upload.h2.any.worker.html` from taking the machine's memory.
 
 Each test is loaded from WPT's own server, as the example browser loads a
 page — `HtmlNetwork` for the document and what it asks for, the page's

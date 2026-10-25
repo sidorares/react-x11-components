@@ -935,7 +935,15 @@ import. **`quico.ts` reaches into quico once**, to add the page's `Origin`
 and headers to the CONNECT (`_sendConnect`, `_h3.sendHeaders`), which quico
 has no option for and a browser always sends; it wraps them only where both
 are there, so a quico without them sends its CONNECT as it would. Ask quico
-for a request-headers option before reaching in anywhere else.
+for a request-headers option before reaching in anywhere else. Three
+upstream issues track what the adapter does for quico today:
+colocohen/quico#8 (an `origin`/`headers` option, which retires the reach),
+#9 (any 2xx answer to the CONNECT establishes the session, where only 200
+does — the four "status code 204" subtests left in `webtransport/`) and #10
+(a CONNECT stream ended with no capsule closes cleanly, and a lost
+connection rejects `closed`, both of which `quico.ts` maps itself). **When
+a quico release fixes one, delete the adapter's half of it and move the
+peer range**, as "Vendored from core" has it for a copy.
 
 ## Running someone else's program
 
