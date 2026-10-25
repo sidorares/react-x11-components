@@ -47,6 +47,8 @@ import type {
   VmScript,
 } from './platform.js';
 import { installRaster } from './raster.js';
+import { installStreams } from './streams.js';
+import { installWebTransport } from './webtransport.js';
 import { installWebGL } from './webgl.js';
 import type { Bridge, Primitive } from './dom.js';
 
@@ -240,11 +242,13 @@ const INSTALL = `(function () {
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
+  const streams = (${installStreams.toString()});
+  const transport = (${installWebTransport.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, named);
+  install(bridge, webgl, raster, streams, transport, named);
 })()`;
 
 /**

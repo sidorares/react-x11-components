@@ -53,9 +53,11 @@ const h = React.createElement;
 const WIDTH = 800;
 const HEIGHT = 600;
 const HOST = 'web-platform.test';
-const HTTP_PORT = 8000;
-const HTTPS_PORT = 8443;
-const H2_PORT = 9000;
+// the ports `./wpt serve` listens on: its defaults, or what its
+// `config.json` moved them to where another server holds those
+const HTTP_PORT = Number(process.env.WPT_HTTP_PORT || 8000);
+const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
+const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
 const [listFile, outFile] = process.argv.slice(2);
 if (!listFile || !outFile) {
@@ -284,6 +286,8 @@ function Page(props: {
   const scripts: HtmlScripts = {
     // WPT's `.any.serviceworker.html` variants register their tests' worker
     serviceWorkers: true,
+    // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
+    webTransport: network.webTransport,
     fetch: (request, signal) => {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
       if (path.startsWith('/__testdriver__/')) {

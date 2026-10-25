@@ -744,15 +744,15 @@ const net = useHtmlNetwork(url);
     source={source}
     baseUrl={url}
     onResource={net.onResource}
-    scripts={{ fetch: net.fetch }}
+    scripts={{ fetch: net.fetch, webTransport: net.webTransport }}
   />
 </box>;
 ```
 
 `scripts` runs a document's scripts: classic scripts and modules, an import
-map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, the DOM, a
-canvas a script draws on, frames running in realms of their own and
-dedicated workers on threads of their own. It is the engine the example
+map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, WHATWG
+streams, WebTransport, the DOM, a canvas a script draws on, frames running
+in realms of their own and dedicated workers on threads of their own. It is the engine the example
 browser was built over — a `node:vm` context a document, a DOM inside it
 over the tree drawn here, and only primitives crossing between the two —
 and [the PRD](../prd-html-scripts.md) is its design. **Off unless it is
@@ -790,8 +790,8 @@ charset }` — the `<script>` is the request's `element`, and the root
   same way. `HtmlNetwork` answers so, and bounds only the wait for the
   headers.
 
-`useHtmlNetwork(url)` is both, from one line: `onResource` and a `fetch` for
-the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
+`useHtmlNetwork(url)` is all three, from one line: `onResource`, a `fetch`
+and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
 cache, six requests a host at a time, `file:` only for a `file:` page, no
 mixed content, no cookies — shared by every document in the process
 (`defaultHtmlNetwork`), or one handed in. `new HtmlNetwork(options)` takes
@@ -834,9 +834,65 @@ since this component navigates nowhere by itself:
 | `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
 | `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
 | `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
+| `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+
+**A page's streams are the standard's** (WHATWG Streams): readable
+streams of chunks and of bytes, a reader that brings its own buffer
+(`getReader({ mode: 'byob' })`, `read(view, { min })`), the controllers'
+`byobRequest`, `tee()` of either kind, `pipeTo()` with its signal and its
+three `prevent…` options, writable streams that hold a writer back while
+their queue is past its high-water mark (`writer.ready`,
+`desiredSize`), transform streams with `cancel`, and the two queuing
+strategies. Every algorithm is the standard's, run in the page's realm
+(`src/html/scripts/streams.ts`), and WPT's `streams/` tests pass but the
+tentative `owning` type's.
+
+**A page's WebTransport is the host's to carry** (W3C WebTransport). The
+page has the whole API — `WebTransport` with `ready`, `closed`, `draining`,
+`close({ closeCode, reason })`, `protocol`, `reliability`,
+`congestionControl`, `getStats()` and `createSendGroup()`; its
+`datagrams`, readable as chunks or into a reader's own buffer
+(`datagramsReadableType: 'bytes'`), each `createWritable()` a writer with
+its `sendOrder` and `sendGroup`, the four age and buffer limits;
+`createBidirectionalStream()`, `createUnidirectionalStream()` and the
+incoming streams, each a `WebTransportSendStream` or a
+`WebTransportReceiveStream` with `getStats()`, a send stream's
+`getWriter()` a `WebTransportWriter`; and `WebTransportError` — in a
+secure context, as Web IDL's `[SecureContext]` has it. A worker has the
+interfaces too, and its sessions fail as with no network: its thread has
+no seam yet. What carries a session is
+`scripts.webTransport`, an `HtmlWebTransport`: handed what the page asked
+to open — the URL, the page's origin, its protocols, its headers, its
+certificate hashes — and the events to tell what becomes of the session,
+it answers a session whose streams are written to, read from, reset and
+stopped with the page's application codes. **With none, every session
+fails** as one a browser with no network opens: `ready` rejects with a
+`WebTransportError`, a task later. A port a browser does not connect to
+(Fetch's bad ports, `0` among them) is refused before the seam is asked.
+
+`HtmlNetwork.webTransport` is a real one, over
+[quico](https://github.com/colocohen/quico): QUIC, TLS 1.3, HTTP/3 and
+WebTransport over HTTP/3 in JavaScript, on the runtime's own `node:dgram`
+and `node:crypto`, so the same on Node and Bun. It is an **optional peer**,
+not installed for anyone — an app that wants a page's sessions installs it
+(`npm install quico`) — and loaded the first time a page opens one; without
+it, a session fails as with no network. A server's certificate is verified
+against the runtime's own roots and `NODE_EXTRA_CA_CERTS`, the ones its
+`fetch` trusts, or the `ca` handed to `new HtmlNetwork({ webTransport: { ca
+} })`, or pinned by the page's `serverCertificateHashes` (a certificate good
+for 14 days at most, as the spec has it); `webTransport: false` opens none.
+Each session is a connection of its own. Where quico differs from a browser
+it shows: a server's 2xx other than 200 is refused,
+`exportKeyingMaterial()` rejects with `NotSupportedError`, and a
+`Content-Security-Policy` `connect-src` is not consulted.
+
+A host with a network of its own answers the seam itself — a QUIC stack of
+its own, a proxy, a test's server — and `test/fake-transport.ts` is one
+that opens no connection at all. `HtmlWebTransport`, the request, the
+session, the stream and their events are exported for it.
 
 **A service worker is a worker that is installed, and nothing more**
 (Service Workers 1), where `serviceWorkers` is on and the page is a secure

@@ -31,6 +31,8 @@
 // workers, canvas and `document.write` are not here.
 
 import type { installRaster, PathData } from './raster.js';
+import type { installStreams } from './streams.js';
+import type { installWebTransport } from './webtransport.js';
 import type { installWebGL } from './webgl.js';
 
 // The page context's own built-ins this reaches by name, for the type
@@ -57,6 +59,8 @@ export function installDom(
   bridge: Bridge,
   webgl: typeof installWebGL,
   raster: typeof installRaster,
+  streams: typeof installStreams,
+  transport: typeof installWebTransport,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -17647,527 +17651,31 @@ export function installDom(
 
   // --- streams -------------------------------------------------------------------
   //
-  // WHATWG Streams' default kinds: a readable stream that a source starts,
-  // pulls and cancels, read by one reader at a time; a writable one whose
-  // sink is written one chunk after the last; and a transform between the
-  // two. What it is for is the app router of Next.js, whose first module
-  // makes one of the flight data the server inlined, and the libraries
-  // that pipe a fetch through a decoder. Byte streams are default ones of
-  // bytes, and a reader that brings its own buffer is refused.
-
-  class ReadableStreamDefaultController {
-    _stream: Any;
-    constructor(stream: Any) {
-      this._stream = stream;
-    }
-    get desiredSize(): number | null {
-      const stream = this._stream;
-      if (stream._state === 'errored') return null;
-      if (stream._state === 'closed') return 0;
-      return stream._hwm - stream._queue.length;
-    }
-    enqueue(chunk: Any): void {
-      const stream = this._stream;
-      if (stream._closing || stream._state !== 'readable') {
-        throw new TypeError(
-          'The stream is not in a state that permits enqueue.',
-        );
-      }
-      const read = stream._reads.shift();
-      if (read) read.resolve({ value: chunk, done: false });
-      else stream._queue.push(chunk);
-      stream._pullIfNeeded();
-    }
-    close(): void {
-      const stream = this._stream;
-      if (stream._closing || stream._state !== 'readable') {
-        throw new TypeError('The stream is not in a state that permits close.');
-      }
-      stream._closing = true;
-      if (!stream._queue.length) stream._finish();
-    }
-    error(reason: Any): void {
-      this._stream._fail(reason);
-    }
-  }
-
-  class ReadableStream {
-    _state: 'readable' | 'closed' | 'errored' = 'readable';
-    _queue: Any[] = [];
-    _reads: { resolve: Any; reject: Any }[] = [];
-    _reader: Any = null;
-    _error: Any = undefined;
-    _closing = false;
-    _source: Any;
-    _controller: Any;
-    _hwm: number;
-    _started = false;
-    _pulling = false;
-    _pullAgain = false;
-    constructor(source: Any = {}, strategy: Any = {}) {
-      this._source = source ?? {};
-      const hwm = Number(strategy?.highWaterMark ?? 1);
-      this._hwm = Number.isNaN(hwm) ? 1 : hwm;
-      this._controller = new ReadableStreamDefaultController(this);
-      const started = this._source.start
-        ? this._source.start.call(this._source, this._controller)
-        : undefined;
-      Promise.resolve(started).then(
-        () => {
-          this._started = true;
-          this._pullIfNeeded();
-        },
-        (e) => this._fail(e),
-      );
-    }
-    static from(iterable: Any): Any {
-      const it = iterable[Symbol.asyncIterator]
-        ? iterable[Symbol.asyncIterator]()
-        : iterable[Symbol.iterator]();
-      return new ReadableStream({
-        pull(controller: Any) {
-          return Promise.resolve(it.next()).then((r: Any) => {
-            if (r.done) controller.close();
-            else controller.enqueue(r.value);
-          });
-        },
-        cancel(reason: Any) {
-          return it.return?.(reason);
-        },
-      });
-    }
-    _pullIfNeeded(): void {
-      if (!this._started || this._state !== 'readable' || this._closing) {
-        return;
-      }
-      if (!this._source.pull) return;
-      if (this._queue.length >= this._hwm && !this._reads.length) return;
-      if (this._pulling) {
-        this._pullAgain = true;
-        return;
-      }
-      this._pulling = true;
-      Promise.resolve()
-        .then(() => this._source.pull.call(this._source, this._controller))
-        .then(
-          () => {
-            this._pulling = false;
-            if (this._pullAgain) {
-              this._pullAgain = false;
-              this._pullIfNeeded();
-            }
-          },
-          (e: Any) => this._fail(e),
-        );
-    }
-    _finish(): void {
-      if (this._state !== 'readable') return;
-      this._state = 'closed';
-      for (const read of this._reads.splice(0)) {
-        read.resolve({ value: undefined, done: true });
-      }
-      this._reader?._settle();
-    }
-    _fail(reason: Any): void {
-      if (this._state !== 'readable') return;
-      this._state = 'errored';
-      this._error = reason;
-      this._queue = [];
-      for (const read of this._reads.splice(0)) read.reject(reason);
-      this._reader?._settle();
-    }
-    _read(): Promise<Any> {
-      if (this._queue.length) {
-        const value = this._queue.shift();
-        if (this._closing && !this._queue.length) this._finish();
-        else this._pullIfNeeded();
-        return Promise.resolve({ value, done: false });
-      }
-      if (this._state === 'closed') {
-        return Promise.resolve({ value: undefined, done: true });
-      }
-      if (this._state === 'errored') return Promise.reject(this._error);
-      return new Promise((resolve, reject) => {
-        this._reads.push({ resolve, reject });
-        this._pullIfNeeded();
-      });
-    }
-    _cancel(reason: Any): Promise<void> {
-      if (this._state === 'closed') return Promise.resolve();
-      if (this._state === 'errored') return Promise.reject(this._error);
-      this._queue = [];
-      this._finish();
-      return Promise.resolve(
-        this._source.cancel?.call(this._source, reason),
-      ).then(() => undefined);
-    }
-    get locked(): boolean {
-      return !!this._reader;
-    }
-    getReader(options?: Any): Any {
-      if (options?.mode === 'byob') {
-        throw new TypeError(
-          'A reader that brings its own buffer is not supported here.',
-        );
-      }
-      return new ReadableStreamDefaultReader(this);
-    }
-    cancel(reason?: Any): Promise<void> {
-      if (this._reader) {
-        return Promise.reject(
-          new TypeError('The stream is locked to a reader.'),
-        );
-      }
-      return this._cancel(reason);
-    }
-    tee(): Any[] {
-      const reader = this.getReader();
-      const controllers: Any[] = [];
-      let reading: Promise<void> | null = null;
-      const pull = (): Promise<void> =>
-        (reading ??= reader.read().then(
-          (r: Any) => {
-            reading = null;
-            for (const c of controllers) {
-              try {
-                if (r.done) c.close();
-                else c.enqueue(r.value);
-              } catch {
-                // that branch was cancelled
-              }
-            }
-          },
-          (e: Any) => {
-            for (const c of controllers) c.error(e);
-          },
-        ));
-      const branch = (): Any =>
-        new ReadableStream({
-          start(c: Any) {
-            controllers.push(c);
-          },
-          pull,
-        });
-      return [branch(), branch()];
-    }
-    pipeTo(dest: Any, options: Any = {}): Promise<void> {
-      const reader = this.getReader();
-      const writer = dest.getWriter();
-      const signal = options.signal;
-      return new Promise<void>((resolve, reject) => {
-        let done = false;
-        const finish = (error?: Any, failed = false): void => {
-          if (done) return;
-          done = true;
-          reader.releaseLock();
-          writer.releaseLock();
-          if (failed) reject(error);
-          else resolve();
-        };
-        if (signal) {
-          const abort = (): void => {
-            const reason =
-              signal.reason ?? new DOMException('Aborted.', 'AbortError');
-            if (!options.preventCancel) reader.cancel(reason).catch(() => {});
-            if (!options.preventAbort) writer.abort(reason).catch(() => {});
-            finish(reason, true);
-          };
-          if (signal.aborted) {
-            abort();
-            return;
-          }
-          signal.addEventListener('abort', abort, { once: true });
-        }
-        const step = (): void => {
-          if (done) return;
-          reader.read().then(
-            (r: Any) => {
-              if (done) return;
-              if (r.done) {
-                const closed = options.preventClose
-                  ? Promise.resolve()
-                  : writer.close();
-                closed.then(
-                  () => finish(),
-                  (e: Any) => finish(e, true),
-                );
-                return;
-              }
-              writer.write(r.value).then(step, (e: Any) => {
-                if (!options.preventCancel) reader.cancel(e).catch(() => {});
-                finish(e, true);
-              });
-            },
-            (e: Any) => {
-              if (!options.preventAbort) writer.abort(e).catch(() => {});
-              finish(e, true);
-            },
-          );
-        };
-        step();
-      });
-    }
-    pipeThrough(transform: Any, options?: Any): Any {
-      this.pipeTo(transform.writable, options).catch(() => {});
-      return transform.readable;
-    }
-    values(options: Any = {}): Any {
-      const reader = this.getReader();
-      return {
-        next: () =>
-          reader.read().then((r: Any) => {
-            if (r.done) reader.releaseLock();
-            return r;
-          }),
-        return: (value: Any) => {
-          const cancelled = options.preventCancel
-            ? Promise.resolve()
-            : reader.cancel(value);
-          return cancelled.then(() => {
-            reader.releaseLock();
-            return { value, done: true };
-          });
-        },
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-      };
-    }
-    [Symbol.asyncIterator](options?: Any): Any {
-      return this.values(options);
-    }
-  }
-
-  class ReadableStreamDefaultReader {
-    _stream: Any;
-    _closed: Promise<void>;
-    _resolveClosed!: () => void;
-    _rejectClosed!: (e: Any) => void;
-    constructor(stream: Any) {
-      if (!(stream instanceof ReadableStream)) {
-        throw new TypeError('A reader is made of a ReadableStream.');
-      }
-      if (stream._reader) {
-        throw new TypeError('The stream is locked to a reader.');
-      }
-      this._stream = stream;
-      stream._reader = this;
-      this._closed = new Promise<void>((resolve, reject) => {
-        this._resolveClosed = resolve;
-        this._rejectClosed = reject;
-      });
-      // a reader nobody asks `closed` of rejects quietly
-      this._closed.catch(() => {});
-      this._settle();
-    }
-    _settle(): void {
-      const stream = this._stream;
-      if (stream?._state === 'closed') this._resolveClosed();
-      else if (stream?._state === 'errored') this._rejectClosed(stream._error);
-    }
-    get closed(): Promise<void> {
-      return this._closed;
-    }
-    read(): Promise<Any> {
-      if (!this._stream) {
-        return Promise.reject(new TypeError('The reader has been released.'));
-      }
-      return this._stream._read();
-    }
-    cancel(reason?: Any): Promise<void> {
-      if (!this._stream) {
-        return Promise.reject(new TypeError('The reader has been released.'));
-      }
-      return this._stream._cancel(reason);
-    }
-    releaseLock(): void {
-      const stream = this._stream;
-      if (!stream) return;
-      const released = new TypeError('The reader was released.');
-      for (const read of stream._reads.splice(0)) read.reject(released);
-      if (stream._state === 'readable') this._rejectClosed(released);
-      stream._reader = null;
-      this._stream = null;
-    }
-  }
-
-  class WritableStream {
-    _sink: Any;
-    _state: 'writable' | 'closing' | 'closed' | 'errored' = 'writable';
-    _error: Any = undefined;
-    _writer: Any = null;
-    _chain: Promise<Any>;
-    _controller: Any;
-    constructor(sink: Any = {}, _strategy: Any = {}) {
-      this._sink = sink ?? {};
-      const aborts = new AbortController();
-      this._controller = {
-        error: (e: Any) => this._fail(e),
-        signal: aborts.signal,
-        _abort: aborts,
-      };
-      this._chain = Promise.resolve(
-        this._sink.start?.call(this._sink, this._controller),
-      );
-      this._chain.catch((e: Any) => this._fail(e));
-    }
-    _fail(reason: Any): void {
-      if (this._state === 'errored' || this._state === 'closed') return;
-      this._state = 'errored';
-      this._error = reason;
-    }
-    _write(chunk: Any): Promise<void> {
-      if (this._state !== 'writable') {
-        return Promise.reject(
-          this._error ?? new TypeError('The stream is closed.'),
-        );
-      }
-      const written = this._chain.then(() =>
-        this._sink.write?.call(this._sink, chunk, this._controller),
-      );
-      this._chain = written.catch((e: Any) => this._fail(e));
-      return written.then(() => undefined);
-    }
-    _close(): Promise<void> {
-      if (this._state !== 'writable') {
-        return Promise.reject(
-          this._error ?? new TypeError('The stream is closed.'),
-        );
-      }
-      this._state = 'closing';
-      const closed = this._chain
-        .then(() => this._sink.close?.call(this._sink))
-        .then(() => {
-          this._state = 'closed';
-        });
-      this._chain = closed.catch((e: Any) => this._fail(e));
-      return closed;
-    }
-    _abort(reason: Any): Promise<void> {
-      if (this._state === 'closed' || this._state === 'errored') {
-        return Promise.resolve();
-      }
-      this._fail(reason);
-      this._controller._abort.abort(reason);
-      return Promise.resolve(this._sink.abort?.call(this._sink, reason)).then(
-        () => undefined,
-      );
-    }
-    get locked(): boolean {
-      return !!this._writer;
-    }
-    getWriter(): Any {
-      return new WritableStreamDefaultWriter(this);
-    }
-    close(): Promise<void> {
-      if (this._writer) {
-        return Promise.reject(
-          new TypeError('The stream is locked to a writer.'),
-        );
-      }
-      return this._close();
-    }
-    abort(reason?: Any): Promise<void> {
-      if (this._writer) {
-        return Promise.reject(
-          new TypeError('The stream is locked to a writer.'),
-        );
-      }
-      return this._abort(reason);
-    }
-  }
-
-  class WritableStreamDefaultWriter {
-    _stream: Any;
-    constructor(stream: Any) {
-      if (!(stream instanceof WritableStream)) {
-        throw new TypeError('A writer is made of a WritableStream.');
-      }
-      if (stream._writer) {
-        throw new TypeError('The stream is locked to a writer.');
-      }
-      this._stream = stream;
-      stream._writer = this;
-    }
-    get desiredSize(): number | null {
-      return this._stream?._state === 'errored' ? null : 1;
-    }
-    get ready(): Promise<void> {
-      return Promise.resolve();
-    }
-    get closed(): Promise<void> {
-      const stream = this._stream;
-      return stream ? stream._chain.then(() => undefined) : Promise.resolve();
-    }
-    write(chunk: Any): Promise<void> {
-      if (!this._stream) {
-        return Promise.reject(new TypeError('The writer has been released.'));
-      }
-      return this._stream._write(chunk);
-    }
-    close(): Promise<void> {
-      if (!this._stream) {
-        return Promise.reject(new TypeError('The writer has been released.'));
-      }
-      return this._stream._close();
-    }
-    abort(reason?: Any): Promise<void> {
-      if (!this._stream) {
-        return Promise.reject(new TypeError('The writer has been released.'));
-      }
-      return this._stream._abort(reason);
-    }
-    releaseLock(): void {
-      if (!this._stream) return;
-      this._stream._writer = null;
-      this._stream = null;
-    }
-  }
-
-  class TransformStream {
-    readonly readable: Any;
-    readonly writable: Any;
-    constructor(transformer: Any = {}, _writable?: Any, _readable?: Any) {
-      const t = transformer ?? {};
-      let out!: Any;
-      this.readable = new ReadableStream({
-        start(c: Any) {
-          out = c;
-        },
-        cancel(reason: Any) {
-          return t.cancel?.call(t, reason);
-        },
-      });
-      const controller = {
-        enqueue: (chunk: Any) => out.enqueue(chunk),
-        error: (e: Any) => out.error(e),
-        terminate: () => {
-          try {
-            out.close();
-          } catch {
-            // closed already
-          }
-        },
-        get desiredSize() {
-          return out.desiredSize;
-        },
-      };
-      const started = Promise.resolve(t.start?.call(t, controller));
-      this.writable = new WritableStream({
-        write: (chunk: Any) =>
-          started.then(() =>
-            t.transform
-              ? t.transform.call(t, chunk, controller)
-              : controller.enqueue(chunk),
-          ),
-        close: () =>
-          started
-            .then(() => t.flush?.call(t, controller))
-            .then(() => controller.terminate()),
-        abort: (reason: Any) => out.error(reason),
-      });
-    }
-  }
+  // WHATWG Streams, the standard's algorithms (`streams.ts`): readable
+  // streams of chunks and of bytes, with readers that bring their own
+  // buffer; writable streams that hold a writer back while their queue is
+  // full; transform streams between the two. What WebTransport's send and
+  // receive streams are made of, and fetch's bodies.
+  const STREAMS = streams(
+    () => AbortController,
+    () => AbortSignal,
+  );
+  const streamInternals = STREAMS.internals;
+  const {
+    ReadableStream,
+    ReadableStreamDefaultReader,
+    ReadableStreamBYOBReader,
+    ReadableStreamDefaultController,
+    ReadableByteStreamController,
+    ReadableStreamBYOBRequest,
+    WritableStream,
+    WritableStreamDefaultWriter,
+    WritableStreamDefaultController,
+    TransformStream,
+    TransformStreamDefaultController,
+    ByteLengthQueuingStrategy,
+    CountQueuingStrategy,
+  } = STREAMS.classes as Record<string, Any>;
 
   class TextDecoderStream extends TransformStream {
     readonly encoding: string;
@@ -18202,25 +17710,6 @@ export function installDom(
       });
     }
   }
-  class CountQueuingStrategy {
-    readonly highWaterMark: number;
-    constructor(init: Any = {}) {
-      this.highWaterMark = Number(init.highWaterMark);
-    }
-    size(): number {
-      return 1;
-    }
-  }
-  class ByteLengthQueuingStrategy {
-    readonly highWaterMark: number;
-    constructor(init: Any = {}) {
-      this.highWaterMark = Number(init.highWaterMark);
-    }
-    size(chunk: Any): number {
-      return chunk?.byteLength ?? 0;
-    }
-  }
-
   // --- IndexedDB -------------------------------------------------------------------
   //
   // IndexedDB 3, in memory, for as long as the document: a page's databases
@@ -19767,9 +19256,12 @@ export function installDom(
       const s = this.signal;
       if (s.aborted) return;
       s.aborted = true;
+      // only a reason left out is the default one: `abort(null)` aborts
+      // with null
       s.reason =
-        reason ??
-        new DOMException('signal is aborted without reason', 'AbortError');
+        reason === undefined
+          ? new DOMException('signal is aborted without reason', 'AbortError')
+          : reason;
       const ev = new Event('abort');
       if (typeof s.onabort === 'function') {
         try {
@@ -24052,10 +23544,15 @@ export function installDom(
     DOMStringList,
     ReadableStream,
     ReadableStreamDefaultReader,
+    ReadableStreamBYOBReader,
     ReadableStreamDefaultController,
+    ReadableByteStreamController,
+    ReadableStreamBYOBRequest,
     WritableStream,
     WritableStreamDefaultWriter,
+    WritableStreamDefaultController,
     TransformStream,
+    TransformStreamDefaultController,
     TextDecoderStream,
     TextEncoderStream,
     CountQueuingStrategy,
@@ -24474,7 +23971,13 @@ export function installDom(
       }
     });
   });
-  define('structuredClone', (value: Any) => structuredCopy(value, new Map()));
+  // what the options transfer is given up once it is copied, as a
+  // `postMessage`'s is
+  define('structuredClone', (value: Any, options: Any = undefined) => {
+    const copy = structuredCopy(value, new Map());
+    giveUp(options);
+    return copy;
+  });
   define('reportError', report);
   define('alert', (message?: Any) =>
     bridge(
@@ -24692,6 +24195,46 @@ export function installDom(
     Object.setPrototypeOf(G, named);
   }
 
+  /** WebTransport's entries, registered once `entry` is there. */
+  const transportEntries: [string, () => Primitive][] = [];
+
+  // --- WebTransport -------------------------------------------------------------------
+  //
+  // W3C WebTransport (`webtransport.ts`), over this realm's streams, its
+  // sessions the host's (`transports.ts`, the `wt…` ops and `__wt…`
+  // entries). In a secure context only, as Web IDL's `[SecureContext]` has
+  // it: a page served over plain `http:` from anywhere but this machine has
+  // no `WebTransport` to feature-detect.
+  {
+    const interfaces = transport({
+      call: call as Any,
+      // its entries are registered with the rest, below
+      entry: (name: string, fn: () => Primitive) => {
+        transportEntries.push([name, fn]);
+      },
+      input: () => input(),
+      DOMException,
+      Headers,
+      URL,
+      setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      streams: streamInternals,
+      ReadableStream,
+      WritableStream,
+      WritableStreamDefaultWriter,
+      bytesOfBase64,
+      base64OfBytes,
+    });
+    const protocol = str(location.protocol);
+    const loopback = /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(
+      str(location.hostname),
+    );
+    if (protocol !== 'http:' || loopback) {
+      for (const name of Object.getOwnPropertyNames(interfaces)) {
+        define(name, interfaces[name]);
+      }
+    }
+  }
+
   // What a frame's window shares with this one (`frameWindowOf`): every
   // global defined as a value, as it is before any page code runs.
   realmGlobals = Object.getOwnPropertyNames(G).flatMap((name) => {
@@ -24734,6 +24277,7 @@ export function installDom(
       enumerable: false,
     });
   };
+  for (const [name, fn] of transportEntries) entry(name, fn);
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's

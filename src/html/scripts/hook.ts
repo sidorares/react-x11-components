@@ -185,6 +185,9 @@ export function useScripts(
     get serviceWorkers() {
       return latest.current.serviceWorkers;
     },
+    get webTransport() {
+      return latest.current.webTransport;
+    },
     get drawsFrames() {
       return latest.current.drawsFrames;
     },

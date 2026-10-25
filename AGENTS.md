@@ -921,6 +921,22 @@ where a genuinely undeclared package would not be. The TextMate adapter
 (`textmate.ts`) needs no dependency at all: the app hands it an initialized
 grammar object, typed structurally.
 
+`src/html/quico.ts` is the third shape of it: `quico`, the QUIC, HTTP/3 and
+WebTransport stack a page's `WebTransport` sessions are opened over, is an
+**optional peer** as `node-pty` is — never installed for anyone, since
+three megabytes of a network stack is what an app that shows no
+WebTransport page should never pay — and a devDependency, as `ondine` is,
+for the loopback test. It is pure JavaScript on `node:dgram` and
+`node:crypto`, which is why it was chosen over a native addon (it runs on
+Bun as it does on Node, and needs no build) and over `node:quic` (in no
+release build of Node 24); `docs/prd-html-scripts.md` has the comparison.
+Absent, a session fails as one with no network does, and nothing throws at
+import. **`quico.ts` reaches into quico once**, to add the page's `Origin`
+and headers to the CONNECT (`_sendConnect`, `_h3.sendHeaders`), which quico
+has no option for and a browser always sends; it wraps them only where both
+are there, so a quico without them sends its CONNECT as it would. Ask quico
+for a request-headers option before reaching in anywhere else.
+
 ## Running someone else's program
 
 `src/embed/`, `src/terminal/` and `src/media-player/` are the first things
@@ -2578,6 +2594,37 @@ closes a way out a DOM binding opens by accident:
   `back()` — while `history` counts and steps through all of them; with no
   session the two are one list, which is why every test of a document's
   own history passed either way.
+- **A page's streams are the standard's, and none of their state is the
+  page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
+  operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
+  the public object, and the promise and array methods they call are taken
+  before page code runs. So **anything new that makes or drives a stream
+  goes through `StreamsInternals`** — `readable`, `readableBytes`,
+  `writable`, `controllerOf`, `errorReadable`, `errorWritable`,
+  `writableSignal` — never through a field of the object, and a subclass
+  (WebTransport's send and receive streams) is made with `INTERNAL` and set
+  up by them. A byte stream a source closes answers a pending BYOB read
+  with `respond(0)` after `close()`, or the reader waits for ever
+  (`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
+  it after a change, through `scripts/conformance/testharness.tsx` and a
+  list.
+- **WebTransport's network is a seam whose default opens nothing**
+  (`HtmlScripts.webTransport`, `NO_WEBTRANSPORT`, `src/html/transport.ts`).
+  The page's API is the facade's (`webtransport.ts`); the host's half is
+  the `wt…` ops and `__wt…` entries (`transports.ts`), where a session and a
+  stream are numbers and bytes are base64. **A stream's bytes are pulled**,
+  `wtRead` answered from the seam's buffer and `__wtReadable` waited for, so
+  a page that reads nothing leaves its bytes in the seam, which is what
+  holds the peer back. **A session's fate is told, never asked**: `ready`,
+  `failed`, `closed`, `draining`, a datagram, an incoming stream, and a
+  stream's `readable`, `end`, `reset` and `stopSending` — the shape a proxy
+  across a worker's thread carries and a fake server drives
+  (`test/fake-transport.ts`). Anything new the page can ask of a session
+  either is an event or answers from what the seam has at once; a seam
+  method that blocked on the network could not be proxied. What a page is
+  handed — every rejection, every `WebTransportError`, every stats object
+  — is made in its realm, and the escape test reads what a refused
+  session's `ready` rejects with.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
