@@ -51,7 +51,7 @@ import type {
 } from 'react-x11/node';
 import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
-import type { AnyNode, ChildNode, Element } from 'domhandler';
+import type { AnyNode, ChildNode, Element, ParentNode } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
 import type { HighlightRanges } from './scripts/host.js';
 import {
@@ -174,6 +174,8 @@ import {
   buildBoxes,
   buildSubtrees,
   canRebuild,
+  idIndex,
+  tailFrom,
   containerBoxes,
   CONTENT_IMAGES,
   CLEARED_FROM,
@@ -211,6 +213,7 @@ import type {
 import {
   ANCHOR_FALLBACK,
   anchorAt,
+  carryBlockers,
   containmentApplies,
   containsOutOfFlow,
   forgetSizes,
@@ -1110,6 +1113,14 @@ export class HtmlViewNode extends Node {
    *  what a build of only their subtrees builds (`_subtreeBuild`). Null
    *  where the whole tree is to be built. */
   private _buildSeeds: Set<Element> | null = null;
+  /** And what holds what a stream's chunks touched, by the first child of
+   *  it each touched (`ChangeScope.tails`): the ends of what it holds are
+   *  all a build of subtrees builds of it. Null where none is said. */
+  private _buildTails: Map<ParentNode, ChildNode> | null = null;
+  /** Whether every change the build is for was a stream's chunk, which
+   *  puts nodes in and moves and takes away none (`SubtreeRoots.
+   *  appendOnly`). */
+  private _buildParsed = false;
   /** Whether `_restyleOnly` names the elements whose own styles a change
    *  may have changed and not what is under them, which is styled again
    *  where its parent's style came out other than it was (`KeptStyles.
@@ -1339,6 +1350,9 @@ export class HtmlViewNode extends Node {
     /** The elements whose boxes it can make otherwise, where the change
      *  said (`_buildSeeds`): none, for one that did not. */
     seeds: ReadonlySet<Element> | null = null,
+    /** And for a stream's chunk, what holds what it touched, from where
+     *  (`ChangeScope.tails`). */
+    tails: ReadonlyMap<ParentNode, ChildNode> | null = null,
   ): void {
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
@@ -1347,17 +1361,30 @@ export class HtmlViewNode extends Node {
         this._restyleOnly = only ? new Set(only) : null;
         this._restyleFollows = follow;
         this._buildSeeds = seeded ? new Set(seeds) : null;
+        this._buildTails = seeded && tails ? new Map(tails) : null;
+        this._buildParsed = seeded && tails !== null;
       } else if (this._restyleOnly && only) {
         for (const el of only) this._restyleOnly.add(el);
         // styling what follows a change of its parent's style again as
         // well styles more, and never less, than either asked
         if (follow) this._restyleFollows = true;
         if (this._buildSeeds && seeded) {
+          this._buildTails = mergeTails(
+            this._buildSeeds,
+            this._buildTails,
+            seeds,
+            tails,
+          );
+          if (!tails) this._buildParsed = false;
           for (const el of seeds) this._buildSeeds.add(el);
-        } else this._buildSeeds = null;
+        } else {
+          this._buildSeeds = null;
+          this._buildTails = null;
+        }
       } else {
         this._restyleOnly = null;
         this._buildSeeds = null;
+        this._buildTails = null;
       }
     }
     if (stale > this._stale) this._stale = stale;
@@ -1376,7 +1403,15 @@ export class HtmlViewNode extends Node {
       ? this._source.adopt(props.document)
       : this._source.setSource(props.source ?? '', props.complete !== false);
     if (changed) {
-      this._invalidate(Stale.Style);
+      // A stream's chunk restyles and builds what it reaches, as a change
+      // an application tells of does (`touchDocument`): the nodes the
+      // parser put in, at the ends of what was open, and the texts it wrote
+      // on to (`HtmlSource.takeAppended`). Where that cannot be said, every
+      // element is styled again.
+      const appended = this._source.takeAppended();
+      if (released || !appended || !this._parsedChanges(appended)) {
+        this._invalidate(Stale.Style);
+      }
       props.onDocument?.(this._source.document);
       this._reportedDomRevision = props.domRevision ?? 0;
     } else if (released) {
@@ -2920,7 +2955,11 @@ export class HtmlViewNode extends Node {
     // said which — for as long as nothing below asks for more than they
     // did, which gives `restyleOnly` another set (`_subtreeBuild`)
     const seeds = restyleOnly ? this._buildSeeds : null;
+    const tails = seeds ? this._buildTails : null;
+    const parsed = !!seeds && this._buildParsed;
     this._buildSeeds = null;
+    this._buildTails = null;
+    this._buildParsed = false;
     const seededWith = restyleOnly;
     // whether `restyleOnly` names only what a crossing or a change to the
     // tree reached, and whether a crossing is what restyles (`_stopAt`)
@@ -3133,6 +3172,7 @@ export class HtmlViewNode extends Node {
         const timeline = this._clockIn(cascade);
         const options = (): BuildOptions => ({
           cascade,
+          streaming: !this._source.complete,
           kept,
           transition: this._vt?.phase === 'live' ? this._transitionTree : null,
           scale: this._scale,
@@ -3166,7 +3206,9 @@ export class HtmlViewNode extends Node {
         const build = (first = false) => {
           timeline?.beginPass(!kept);
           const tree =
-            (first && subtrees && this._subtreeBuild(subtrees, options())) ||
+            (first &&
+              subtrees &&
+              this._subtreeBuild(subtrees, options(), tails, parsed)) ||
             boxes();
           timeline?.endPass();
           // and one that keeps styles ends the transitions of the elements
@@ -8786,8 +8828,18 @@ export class HtmlViewNode extends Node {
     this._source.touch();
     this._updateBase();
     this._sweep();
-    // a rule a change turns on or off for a custom highlight restyles no
-    // element of its own, and its text is painted again in the new look
+    this._highlightsChanged();
+    const scope = changes ? this._changeScope(changes) : null;
+    if (!scope) {
+      this._invalidate(Stale.Style);
+      return;
+    }
+    this._restyleChanged(scope);
+  }
+
+  /** A rule a change turns on or off for a custom highlight restyles no
+   *  element of its own, and its text is painted again in the new look. */
+  private _highlightsChanged(): void {
     if (
       (this._highlights.length || this._targetText?.ranges.some(Boolean)) &&
       this._cascade?.hasHighlights
@@ -8795,12 +8847,36 @@ export class HtmlViewNode extends Node {
       this._cascade.highlightGeneration += 1;
       this.invalidate();
     }
-    const scope = changes ? this._changeScope(changes) : null;
-    if (!scope) {
-      this._invalidate(Stale.Style);
-      return;
+  }
+
+  /**
+   * What a stream's chunk did to the tree (`HtmlSource.takeAppended`),
+   * restyled and built as a change an application tells of is
+   * (`touchDocument`) — with what the parser does known besides: it puts
+   * nodes in at the end of what holds them and writes on to the text that
+   * ends one, so no node before them sits elsewhere, and the boxes a build
+   * can keep are those of everything before the first thing it touched in
+   * each (`ChangeScope.tails`). False where it cannot be said, and every
+   * element is to be styled again.
+   */
+  private _parsedChanges(changes: readonly HtmlChange[]): boolean {
+    if (!changes.length) return true;
+    this._highlightsChanged();
+    const scope = this._changeScope(changes, true);
+    if (!scope) return false;
+    // What a drawing names by an id — a sprite's symbol, a gradient, a clip
+    // — may be what came, or grow, and a drawing kept from before draws it
+    // as it has it now, matched by the rules again (`SHAPE_STYLES`): where
+    // a chunk brings an id, or writes into a drawing, every drawing is
+    // drawn again. A build of the whole made every drawing anew.
+    if (namesAnew(changes)) {
+      this._tree?.shapeCopies?.forget(
+        idIndex(this._source.document as unknown as Element),
+      );
+      for (const el of this._source.facts().drawings) scope.drawings.add(el);
     }
     this._restyleChanged(scope);
+    return true;
   }
 
   /**
@@ -8812,7 +8888,11 @@ export class HtmlViewNode extends Node {
    * coming, going or changing, a `<meta>` or a `<base>` — so every
    * element is styled again.
    */
-  private _changeScope(changes: readonly HtmlChange[]): ChangeScope | null {
+  private _changeScope(
+    changes: readonly HtmlChange[],
+    /** Whether they are what a stream's chunk did (`_parsedChanges`). */
+    parsed = false,
+  ): ChangeScope | null {
     const cascade = this._cascade;
     const tree = this._tree;
     if (!cascade || !tree || this._stale >= Stale.Style) return null;
@@ -8823,11 +8903,16 @@ export class HtmlViewNode extends Node {
       drawings: new Set(),
       pseudo: HOVER_PSEUDO_NONE,
       anchored: new Map(),
+      ...(parsed && { tails: new Map(), altered: new Set() }),
     };
     const unchanged = unchangedAttributes(changes);
     for (const change of changes) {
       if (unchanged?.has(change)) continue;
       if (!this._scopeOf(change, cascade, tree, scope)) return null;
+    }
+    // what holds an element whose own boxes can differ is no tail's
+    if (scope.tails && scope.altered) {
+      for (const el of scope.altered) scope.tails.delete(el);
     }
     return scope;
   }
@@ -8869,6 +8954,7 @@ export class HtmlViewNode extends Node {
     }
     if (change.type === 'attributes') {
       const el = change.target;
+      scope.altered?.add(el);
       const name = change.attributeName.toLowerCase();
       if (
         changesCascade(el, name, change.oldValue ?? null) &&
@@ -8920,9 +9006,13 @@ export class HtmlViewNode extends Node {
     // the top of a shadow tree holds what is in it as an element does,
     // with nothing above it in its tree for a selector to read
     const root = parent instanceof ShadowRoot ? parent : null;
-    if (!parent || (!root && !isElement(parent))) return false;
+    // and a stream's fragment is what the document holds, at its top
+    const atTop = !!scope.tails && parent === this._source.document;
+    if (!parent || (!root && !atTop && !isElement(parent))) return false;
+    if (scope.tails && root) return false;
     if (
       !root &&
+      !atTop &&
       CASCADE_TAGS.has(tagOf(parent as Element)) &&
       !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
     ) {
@@ -8957,6 +9047,8 @@ export class HtmlViewNode extends Node {
     } else if (change.target.type === 'comment') {
       return true;
     } else drawn = true;
+    if (scope.tails)
+      return this._appendedScope(change, parent, drawn, tree, scope);
     const reach = cascade.treeChange(change.type === 'characterData');
     if (!reach) return false;
     const { bits, kidsLater, anchors } = reach;
@@ -9008,6 +9100,106 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * `_scopeOf` for what a stream's chunk did to what an element holds, or
+   * the document (`_parsedChanges`): nodes put in at its end, or text
+   * written on to the one that ends it. So what can be restyled is less
+   * than for a change anywhere in what it holds: the new nodes and what is
+   * in them; the holder, where what tests whether it holds anything or its
+   * text can answer otherwise — `:empty` only where it held nothing; the
+   * children that were last, or last of their type, and every child where
+   * a rule counts from the end (`Cascade.appendChange`). A sibling
+   * combinator reaches what is after the child it follows, which is new.
+   * Its boxes can differ from the first child it touched on (`tails`).
+   */
+  private _appendedScope(
+    change: HtmlChange,
+    parent: ParentNode,
+    drawn: boolean,
+    tree: BoxTree,
+    scope: ChangeScope,
+  ): boolean {
+    const cascade = this._cascade!;
+    const reach = cascade.appendChange();
+    if (!reach) return false;
+    const text = change.type === 'characterData';
+    const added = change.type === 'childList' ? change.addedNodes : [];
+    const kids = parent.children;
+    const touched = (text ? change.target : added[0]) as ChildNode;
+    const at = kids.lastIndexOf(touched);
+    if (at < 0) return false;
+    const holder = isElement(parent) ? parent : null;
+    // the holder's own: whether it holds anything — where nothing before
+    // what came is more than a comment or white space — or text, and its
+    // text
+    let own = 0;
+    if (text) own = reach.text | reach.blank;
+    else {
+      let held = false;
+      for (let i = 0; i < at && !held; i += 1) {
+        const kid = kids[i];
+        held = isElement(kid) || (isText(kid) && NOT_BLANK.test(kid.data));
+      }
+      if (!held) own |= reach.empty;
+      if (added.some((node) => isText(node))) own |= reach.text;
+    }
+    // the children before what came that were last, and last of a type
+    // that came, or every one of them where a rule counts from the end
+    const elements = added.filter(isElement) as Element[];
+    const before: Element[] = [];
+    if (elements.length && (reach.last || reach.every)) {
+      const types = new Set(elements.map((el) => tagOf(el)));
+      let first = true;
+      for (let i = at - 1; i >= 0; i -= 1) {
+        const kid = kids[i];
+        if (!isElement(kid)) continue;
+        if (reach.every || first || types.has(tagOf(kid))) before.push(kid);
+        first = false;
+        types.delete(tagOf(kid));
+        if (!reach.every && !types.size) break;
+      }
+    }
+    const anchors = reach.anchors;
+    if (!drawn && !own && !before.length && !anchors) return true;
+    // under a holder nothing draws nothing it reaches is drawn — but its
+    // own later siblings, which are not under it, and itself where what
+    // tests what it holds is what it reaches: an `:empty` one hid
+    const under = own ? holder?.parent : holder;
+    if (
+      under &&
+      isElement(under) &&
+      !anchors &&
+      !(own & CHANGES_LATER) &&
+      undrawn(under, tree)
+    ) {
+      return true;
+    }
+    if (drawn) {
+      scope.boxes = true;
+      if (holder) scope.targets.add(holder);
+      const tails = scope.tails!;
+      const had = tails.get(parent);
+      if (!had || kids.lastIndexOf(had) > at) tails.set(parent, touched);
+    }
+    const crossing = cascade.changesCrossTrees;
+    for (const node of added) {
+      if (isElement(node)) addSubtree(node, scope.own, crossing);
+    }
+    if (holder && own) spreadChange(holder, own, false, scope.own, crossing);
+    const kin = reach.last | reach.every;
+    for (const el of before) spreadChange(el, kin, false, scope.own, crossing);
+    return (
+      !anchors ||
+      spreadAnchors(
+        parent as Element | ShadowRoot,
+        true,
+        anchors,
+        scope,
+        crossing,
+      )
+    );
+  }
+
+  /**
    * The tree a build of only the subtrees `seeds` can change makes
    * (`buildSubtrees`), with every other box the tree's own, kept with what
    * its layouts learnt — or null where it cannot be told, and the whole
@@ -9019,22 +9211,45 @@ export class HtmlViewNode extends Node {
   private _subtreeBuild(
     seeds: ReadonlySet<Element>,
     options: BuildOptions,
+    tails: ReadonlyMap<ParentNode, ChildNode> | null = null,
+    /** Whether all of it is a stream's chunks' (`_buildParsed`). */
+    parsed = false,
   ): BoxTree | null {
     const tree = this._tree;
     if (!tree || asideIn(tree)) return null;
-    const found = this._subtreeRoots(tree, seeds, options.kept?.restyle);
+    const found = this._subtreeRoots(tree, seeds, options.kept?.restyle, tails);
     if (!found) return null;
+    found.appendOnly = parsed;
+    const first = this._firstBoxesOf(tree);
     const built = buildSubtrees(
       tree,
       this._source.document,
       found,
       options,
-      this._firstBoxesOf(tree),
+      first,
     );
     if (!built) return null;
     // what the boxes around each new one measured of the old, for their
     // lives, is measured again
     for (const box of built.made) forgetSizes(box);
+    // and each element's first box is the new tree's: its old where it was
+    // kept, its new where it was built (`_firstBoxesOf`) — the index the
+    // build was found with, which belongs to the tree it replaces
+    for (const boxes of built.replaced) {
+      for (const box of boxes) {
+        if (box.el && first.get(box.el) === box) first.delete(box.el);
+      }
+    }
+    const stack = built.added.slice().reverse();
+    while (stack.length) {
+      const box = stack.pop()!;
+      if (box.el && !first.has(box.el)) first.set(box.el, box);
+      for (let i = box.children.length - 1; i >= 0; i -= 1) {
+        stack.push(box.children[i]);
+      }
+    }
+    this._firstBoxes = { tree: built.tree, of: first };
+    carryBlockers(tree, built.tree, built.replaced, built.added);
     return built.tree;
   }
 
@@ -9053,17 +9268,77 @@ export class HtmlViewNode extends Node {
     tree: BoxTree,
     seeds: ReadonlySet<Element>,
     restyled: ReadonlySet<Element> | undefined,
+    tails: ReadonlyMap<ParentNode, ChildNode> | null = null,
   ): SubtreeRoots | null {
     const first = this._firstBoxesOf(tree);
     const document = this._source.document;
     const roots = new Set<Element>();
     const hidden = new Set<Element>();
     const gone: Element[] = [];
+    // The ends of what holds what a stream's chunk touched: from the child
+    // after the last block-level box of its own before the first thing the
+    // chunk touched, which stays (`tailFrom`). What is in one is its, and so
+    // is the change to what holds it. One that cannot be is a seed of a
+    // change to what it holds, as any other — but for the document's, whose
+    // children no seed says.
+    const atTails = new Map<ParentNode, number>();
+    const tailed = new Set<ChildNode>();
+    const addTail = (node: ParentNode, from: number): void => {
+      const had = atTails.get(node);
+      if (had !== undefined && had <= from) return;
+      atTails.set(node, from);
+      const kids = node.children;
+      for (let i = from; i < (had ?? kids.length); i += 1) tailed.add(kids[i]);
+    };
+    for (const [node, touched] of tails ?? []) {
+      const from =
+        isElement(node) && restyled?.has(node)
+          ? -1
+          : tailFrom(node, touched, first, tree);
+      if (from < 0) {
+        if (!isElement(node)) return null;
+        continue;
+      }
+      addTail(node, from);
+    }
+    const holders = new Set(atTails.keys());
+    const inTail = (node: ChildNode): boolean => {
+      for (let at: AnyNode | null = node; at; at = at.parent) {
+        if (tailed.has(at as ChildNode)) return true;
+      }
+      return false;
+    };
+    // and for a seed of a chunk's that no element around it can be built
+    // apart for — text a stream writes into an inline box at the top of
+    // its document — the end of what holds the child it is in, or of what
+    // holds that, from a block of its own before it, which stays
+    const tailAround = (seed: Element): boolean => {
+      let child: ChildNode = seed;
+      for (let node = seed.parent; node;) {
+        if (node instanceof ShadowRoot) return false;
+        const el = isElement(node) ? (node as Element) : null;
+        if (
+          !el ||
+          ((!seeds.has(el) || holders.has(el)) && !restyled?.has(el))
+        ) {
+          const from = tailFrom(node, child, first, tree);
+          if (from >= 0) {
+            addTail(node, from);
+            return true;
+          }
+        }
+        if (!el) return false;
+        child = el;
+        node = el.parent;
+      }
+      return false;
+    };
     for (const seed of seeds) {
       if (!inDocument(seed, document)) {
         gone.push(seed);
         continue;
       }
+      if (holders.has(seed) || (tailed.size && inTail(seed))) continue;
       let hiding: Element | null = null;
       for (let at: Element | null = seed; at; at = flatParentOf(at)) {
         if (tree.styles.get(at)?.style.display === 'none') {
@@ -9088,8 +9363,8 @@ export class HtmlViewNode extends Node {
       }
       let at: Element | null = seed;
       while (at && !canRebuild(at, first)) at = flatParentOf(at);
-      if (!at) return null;
-      roots.add(at);
+      if (at) roots.add(at);
+      else if (!tails || !tailAround(seed)) return null;
     }
     const outermost = (set: ReadonlySet<Element>, also = set): Element[] => {
       const out: Element[] = [];
@@ -9098,12 +9373,32 @@ export class HtmlViewNode extends Node {
         for (let at = flatParentOf(el); at && !inner; at = flatParentOf(at)) {
           if (roots.has(at) || also.has(at)) inner = true;
         }
-        if (!inner) out.push(el);
+        // and none in a tail, which builds it
+        if (!inner && !(tailed.size && inTail(el))) out.push(el);
       }
       return out;
     };
+    // and a tail in a root's subtree is the root's, and one in another
+    // tail's that tail's
+    const keptTails: { node: ParentNode; from: number }[] = [];
+    for (const [node, from] of atTails) {
+      if (isElement(node)) {
+        if (inTail(node as Element)) continue;
+        let inRoot = false;
+        for (
+          let at: Element | null = node as Element;
+          at && !inRoot;
+          at = flatParentOf(at)
+        ) {
+          if (roots.has(at)) inRoot = true;
+        }
+        if (inRoot) continue;
+      }
+      keptTails.push({ node, from });
+    }
     return {
       roots: outermost(roots),
+      tails: keptTails,
       hidden: outermost(hidden),
       gone,
     };
@@ -9195,7 +9490,13 @@ export class HtmlViewNode extends Node {
       // what the new rules style is known once they are read, before the
       // build (`_sheetsAdded`)
       this._sheetsOwed = true;
-      this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope));
+      this._invalidate(
+        Stale.Boxes,
+        scope.own,
+        true,
+        seedsOf(scope),
+        scope.tails,
+      );
       return;
     }
     if (!scope.boxes && scope.targets.size && this._tree) {
@@ -9243,7 +9544,7 @@ export class HtmlViewNode extends Node {
         return;
       }
     }
-    this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope));
+    this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope), scope.tails);
   }
 
   /**
@@ -13793,6 +14094,10 @@ function sameStylesheets(
   return x.length === y.length && x.every((sheet, i) => sheet === y[i]);
 }
 
+/** Text that is more than white space: what `:blank` and `:empty` have
+ *  held nothing but before a child came (`_appendedScope`). */
+const NOT_BLANK = /[^ \t\n\f\r]/;
+
 /** What a list of changes to the tree can restyle (`_changeScope`). */
 interface ChangeScope {
   own: Set<Element>;
@@ -13813,6 +14118,14 @@ interface ChangeScope {
    *  the one whose attribute changed, and what holds what came, went or
    *  changed (`_subtreeRoots`). */
   targets: Set<Element>;
+  /** For a stream's chunk (`_parsedChanges`): what holds what the parser
+   *  put in or wrote on to — an element, or the document — by the first of
+   *  its children it touched, from where on its boxes can differ and none
+   *  before (`_subtreeRoots`). */
+  tails?: Map<ParentNode, ChildNode>;
+  /** The elements of a chunk an attribute of changed — a second `<body>`'s
+   *  on the first — whose own boxes can differ: no tail of theirs. */
+  altered?: Set<Element>;
 }
 
 /** The elements whose changes are changes to the cascade: a sheet's, what
@@ -13937,6 +14250,70 @@ function drawingAround(node: AnyNode): Element | null {
 
 /** The elements whose boxes a change scope can make otherwise: what it
  *  restyles, and what the changes were to (`_subtreeRoots`). */
+/** Whether a stream's chunk puts in an element with an id, or anything in
+ *  a drawing, which a drawing elsewhere may name (`_parsedChanges`). */
+function namesAnew(changes: readonly HtmlChange[]): boolean {
+  for (const change of changes) {
+    if (change.type === 'attributes') {
+      if (change.attributeName === 'id') return true;
+      continue;
+    }
+    if (drawingAround(change.target) || tagOfNode(change.target) === 'svg') {
+      return true;
+    }
+    if (change.type !== 'childList') continue;
+    for (const node of change.addedNodes) {
+      if (!isElement(node)) continue;
+      const stack: Element[] = [node];
+      while (stack.length) {
+        const el = stack.pop()!;
+        if (el.attribs.id !== undefined || tagOf(el) === 'svg') return true;
+        for (const child of el.children)
+          if (isElement(child)) stack.push(child);
+      }
+    }
+  }
+  return false;
+}
+
+/** An element's tag, or '' for any other node. */
+function tagOfNode(node: AnyNode): string {
+  return isElement(node) ? tagOf(node) : '';
+}
+
+/**
+ * Two changes' tails as one (`_invalidate`): what holds what each touched,
+ * from the first child either did — but for what one of them seeds as a
+ * change of any kind to what it holds, which is no tail. The document's
+ * own is never a seed, so it is never dropped: what it holds is told by
+ * its tail alone.
+ */
+function mergeTails(
+  seeds: ReadonlySet<Element>,
+  tails: ReadonlyMap<ParentNode, ChildNode> | null,
+  more: ReadonlySet<Element>,
+  moreTails: ReadonlyMap<ParentNode, ChildNode> | null,
+): Map<ParentNode, ChildNode> | null {
+  if (!tails && !moreTails) return null;
+  const out = new Map<ParentNode, ChildNode>();
+  for (const [node, from] of tails ?? []) {
+    if (more.has(node as Element) && !moreTails?.has(node)) continue;
+    out.set(node, from);
+  }
+  for (const [node, from] of moreTails ?? []) {
+    if (seeds.has(node as Element) && !tails?.has(node)) {
+      out.delete(node);
+      continue;
+    }
+    const had = out.get(node);
+    const kids = node.children;
+    if (!had || kids.lastIndexOf(from) < kids.lastIndexOf(had)) {
+      out.set(node, from);
+    }
+  }
+  return out;
+}
+
 function seedsOf(scope: ChangeScope): Set<Element> {
   const seeds = new Set(scope.own);
   for (const el of scope.targets) seeds.add(el);

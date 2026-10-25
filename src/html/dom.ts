@@ -1075,6 +1075,10 @@ export interface DocumentFacts {
   /** The first `<base>` with an `href`, as written: the document's base URL
    *  wherever in the document it stands (HTML 2.5.3). */
   base: string | null;
+  /** Every inline drawing, an `<svg>` in no other, in the document's tree:
+   *  what one names by an id — a sprite's symbol, a gradient — may come in
+   *  a stream's later chunk (`HtmlViewNode._parsedChanges`). */
+  drawings: Element[];
 }
 
 export type SheetRef = (
@@ -1157,6 +1161,19 @@ export class HtmlSource {
   /** What the parser made since `takeMade` was last asked, from the first
    *  script it waited at on: null before it. */
   private _made: ChildNode[] | null = null;
+  /** What the chunks written since `takeAppended` was last asked did to the
+   *  tree (`ParseRecord`), or null where that cannot be said: a source that
+   *  was not an extension of the one before, a tree handed over, a parse
+   *  that yields to its scripts — and the first chunk, which is the whole
+   *  document, not worth recording node by node. */
+  private _record: ParseRecord | null = null;
+  /** The scan of the tree as it was where the record's `factsAt` says, which
+   *  a scan of what was put in since extends (`_extendFacts`). */
+  private _factsBefore: ScannedFacts | null = null;
+  /** The record `takeAppended` last took, which the scan after it still
+   *  extends its scan by (`_extendFacts`): null once anything else is
+   *  written. */
+  private _taken: ParseRecord | null = null;
 
   constructor() {
     const { parser, handler } = createParser();
@@ -1173,6 +1190,8 @@ export class HtmlSource {
     if (on === this.yields) return false;
     this.yields = on;
     if (on || this._adopted) return false;
+    this._record = null;
+    this._taken = null;
     // what is left of the input stream, read as one
     this.held = null;
     this._pending = null;
@@ -1203,7 +1222,11 @@ export class HtmlSource {
    *  written, into a parser that has not been ended — and re-parses when it
    *  cannot. */
   setSource(source: string, complete: boolean): boolean {
-    if (this.yields) return this._setYielding(source, complete);
+    if (this.yields) {
+      this._record = null;
+      this._taken = null;
+      return this._setYielding(source, complete);
+    }
     let changed = false;
     if (this._adopted) {
       // a source after a tree handed over is a document of its own
@@ -1223,6 +1246,16 @@ export class HtmlSource {
       // edit crashed depended on the caret — one in the middle of the document
       // is not a prefix and took the reset path, one at the end was a prefix,
       // took this branch, and threw inside the reconciler's commit.
+      //
+      // What the chunk does to the tree is recorded where there is a tree
+      // to say it of (`takeAppended`): a stream's chunk is told as the
+      // nodes it put in and the texts it wrote on to, and restyles and
+      // builds what those reach.
+      if (this._written) this._recordInto();
+      else {
+        this._record = null;
+        this._taken = null;
+      }
       this._parser.write(source.slice(this._written.length));
       this._written = source;
       changed = true;
@@ -1237,8 +1270,86 @@ export class HtmlSource {
       this.complete = true;
       changed = true;
     }
+    this._handler.recording = null;
     if (changed) this._changed();
     return changed;
+  }
+
+  /** Record what the parser does to the tree from here on, into the record
+   *  `takeAppended` has yet to take, or a new one. */
+  private _recordInto(): void {
+    if (!this._record) {
+      this._taken = null;
+      this._record = {
+        added: [],
+        addedSet: new Set(),
+        grown: [],
+        grownSet: new Set(),
+        attributes: [],
+        unknown: false,
+        factsAt: 0,
+        grownAt: 0,
+      };
+      // the scan of the tree the record begins on, where it is current
+      this._factsBefore =
+        this._facts.scanned === this.revision ? this._facts : null;
+    }
+    this._handler.recording = this._record;
+  }
+
+  /**
+   * What the chunks written since this was last asked did to the tree, as
+   * the change records an application's `refresh` is told (`HtmlChange`):
+   * a `childList` for each node already in the tree that the parser put
+   * nodes in — at its end, which is the only place the parser puts them —
+   * a `characterData` for each text it wrote on to, and an `attributes`
+   * for what a second `<html>` or `<body>` set on the first. Null where it
+   * cannot be said: the source was not an extension of the one before, the
+   * parse yields to its scripts, or a chunk did something no record says —
+   * a `<body>` taking in what went before it, a shadow root attached.
+   */
+  takeAppended(): HtmlChange[] | null {
+    const record = this._record;
+    this._record = null;
+    // and the scan of the tree takes it in, until the next chunk
+    this._taken = record;
+    if (!record || record.unknown) return null;
+    const changes: HtmlChange[] = [];
+    for (const { target, name, old } of record.attributes) {
+      changes.push({
+        type: 'attributes',
+        target,
+        attributeName: name,
+        oldValue: old,
+      });
+    }
+    for (const text of record.grown) {
+      changes.push({ type: 'characterData', target: text });
+    }
+    // by the node that holds them, where that was there before: what is in
+    // a node put in is in its record
+    const byParent = new Map<ParentNode, ChildNode[]>();
+    for (const node of record.added) {
+      const parent = node.parent;
+      if (!parent) return null;
+      if (record.addedSet.has(parent as ChildNode)) continue;
+      const nodes = byParent.get(parent);
+      if (nodes) nodes.push(node);
+      else byParent.set(parent, [node]);
+    }
+    for (const [parent, nodes] of byParent) {
+      // each the run at its holder's end, in order, as the parser put it
+      const kids = parent.children;
+      const at = kids.length - nodes.length;
+      if (at < 0 || nodes.some((node, i) => kids[at + i] !== node)) return null;
+      changes.push({
+        type: 'childList',
+        target: parent,
+        addedNodes: nodes,
+        removedNodes: [],
+      });
+    }
+    return changes;
   }
 
   /** `setSource` where the parse yields: the source is the input stream's,
@@ -1358,6 +1469,8 @@ export class HtmlSource {
    */
   write(script: Element, markup: string): boolean {
     if (!this.yields || this.held !== script || this.complete) return false;
+    this._record = null;
+    this._taken = null;
     const ahead = this._ahead;
     this._ahead =
       ahead.slice(0, this._insertion) + markup + ahead.slice(this._insertion);
@@ -1383,6 +1496,8 @@ export class HtmlSource {
    */
   resume(script: Element): boolean {
     if (this.held !== script) return false;
+    this._record = null;
+    this._taken = null;
     this.held = null;
     if (this._pending) {
       this.held = this._pending;
@@ -1423,6 +1538,8 @@ export class HtmlSource {
    */
   adopt(document: Document): boolean {
     if (this._adopted && this.document === document) return false;
+    this._record = null;
+    this._taken = null;
     this._parser.reset();
     this._adopted = true;
     this.document = document;
@@ -1437,6 +1554,8 @@ export class HtmlSource {
 
   /** Start over — a source that is not an extension of what was written. */
   reset(): void {
+    this._record = null;
+    this._taken = null;
     this._parser.reset();
     const { parser, handler } = createParser();
     handler.marksSheets = true;
@@ -1467,6 +1586,8 @@ export class HtmlSource {
   /** The DOM changed under us — an app mutated it, or a stylesheet arrived
    *  and was spliced in. Anything cached on the old revision is stale. */
   touch(): void {
+    this._record = null;
+    this._taken = null;
     this.revision += 1;
     this._facts = freshFacts();
     treesChanged();
@@ -1480,6 +1601,8 @@ export class HtmlSource {
     this.scripting = on;
     this.revision += 1;
     this._facts = freshFacts();
+    // a scan that walks into other elements than the one before
+    this._factsBefore = null;
     return true;
   }
 
@@ -1497,6 +1620,11 @@ export class HtmlSource {
    */
   facts(): DocumentFacts {
     if (this._facts.scanned === this.revision) return this._facts;
+    const extended = this._extendFacts();
+    if (extended) {
+      this._facts = extended;
+      return extended;
+    }
     const facts = freshFacts();
     facts.scanned = this.revision;
     // The document's tree, then each shadow tree as the walk meets its
@@ -1515,68 +1643,97 @@ export class HtmlSource {
       // nothing, a script in it runs nothing, and its `<title>` and
       // `<base>` are not the document's. Nor into a `<noscript>` where the
       // host runs scripts, which is drawn as nothing then.
-      for (const el of elementsIn(
-        root,
-        this.scripting ? NON_RENDERED_SCRIPTING : NON_RENDERED,
-      )) {
-        const hosted = SHADOW_ROOTS.get(el);
-        if (hosted) {
-          const tree = { root: hosted, sheets: [] };
-          facts.shadows.push(tree);
-          trees.push(tree);
-        }
-        const tag = tagOf(el);
-        if (tag === 'style') {
-          // A sheet whose `media` can hold nowhere here, `print`, is left
-          // out; any other is under it, as though an `@media` block of it
-          // were around all of it (HTML 4.2.6, 4.2.4).
-          const media = sheetConditions(attr(el, 'media') ?? '');
-          if (media !== false) {
-            sheets.push({
-              kind: 'inline',
-              text: rawTextOf(el),
-              element: el,
-              media,
-            });
-          }
-        } else if (tag === 'link') {
-          const rel = (attr(el, 'rel') ?? '').toLowerCase();
-          const href = attr(el, 'href');
-          if (href && rel.split(/\s+/).includes('stylesheet')) {
-            // One left out is not asked for either. One under a width,
-            // `(max-width: 600px)`, is, whatever the width: as a browser
-            // asks for it, and as an `@import` under one is asked for.
-            const media = sheetConditions(attr(el, 'media') ?? '');
-            if (media !== false) {
-              sheets.push({ kind: 'link', href, element: el, media });
-              facts.resources.push(el);
-            }
-          }
-        } else if (tag === 'script') {
-          facts.scripts.push(el);
-        } else if (tag === 'img' && choosesSource(el)) {
-          facts.pictures.push(el);
-        } else if (
-          tag === 'img' ||
-          tag === 'image' ||
-          tag === 'object' ||
-          tag === 'embed' ||
-          tag === 'video' ||
-          (tag === 'input' &&
-            (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
-        ) {
-          if (imageUrlOf(el)) facts.resources.push(el);
-        } else if (shadow) {
-          continue;
-        } else if (tag === 'title' && facts.title === null) {
-          facts.title = rawTextOf(el).trim();
-        } else if (tag === 'base' && facts.base === null) {
-          const href = attr(el, 'href');
-          if (href !== undefined) facts.base = href;
-        }
-      }
+      scanElements(
+        facts,
+        elementsIn(
+          root,
+          this.scripting ? NON_RENDERED_SCRIPTING : NON_RENDERED,
+        ),
+        sheets,
+        shadow,
+        trees,
+      );
     }
     this._facts = facts;
+    // and a chunk recorded after it extends it
+    const record = this._record ?? this._taken;
+    if (record) {
+      record.factsAt = record.added.length;
+      record.grownAt = record.grown.length;
+      this._factsBefore = facts;
+    }
+    return facts;
+  }
+
+  /**
+   * The scan of the tree after what a stream's chunks put in, from the
+   * scan before them (`_factsBefore`) and a scan of what they put in
+   * alone: the parser puts each element in after every element already in
+   * the tree, so what each list gains comes at its end. Null where the
+   * whole tree is to be scanned: there is no scan before, a sheet or the
+   * title was written on to, or something went into a shadow tree. Every
+   * chunk of a long stream scanned the document whole for its sheets, its
+   * scripts and its images.
+   */
+  private _extendFacts(): ScannedFacts | null {
+    const record = this._record ?? this._taken;
+    const was = this._factsBefore;
+    if (!record || record.unknown || !was) return null;
+    for (let i = record.grownAt; i < record.grown.length; i += 1) {
+      const holder = record.grown[i].parent;
+      if (holder && isElement(holder) && FACT_TEXT.has(tagOf(holder))) {
+        return null;
+      }
+    }
+    const facts: ScannedFacts = {
+      ...was,
+      sheets: was.sheets.slice(),
+      shadows: was.shadows,
+      scripts: was.scripts.slice(),
+      resources: was.resources.slice(),
+      pictures: was.pictures.slice(),
+      drawings: was.drawings.slice(),
+      scanned: this.revision,
+    };
+    const opaque = this.scripting ? NON_RENDERED_SCRIPTING : NON_RENDERED;
+    const added = record.added;
+    const since = new Set(added.slice(record.factsAt));
+    for (let i = record.factsAt; i < added.length; i += 1) {
+      const node = added[i];
+      const parent = node.parent;
+      // a sheet's text, or the title's, put in after its element
+      if (!isElement(node)) {
+        if (parent && isElement(parent) && FACT_TEXT.has(tagOf(parent))) {
+          return null;
+        }
+        continue;
+      }
+      if (parent && since.has(parent as ChildNode)) continue;
+      // in what is not rendered nothing is the document's, and what is in
+      // a shadow tree is its tree's
+      let inert = false;
+      for (let at = parent; at; at = at.parent) {
+        if (at instanceof ShadowRoot) return null;
+        if (isElement(at) && opaque.has(tagOf(at))) inert = true;
+      }
+      if (inert) continue;
+      if (!scanElements(facts, [node], facts.sheets, false, null)) return null;
+      if (opaque.has(tagOf(node))) continue;
+      if (
+        !scanElements(
+          facts,
+          elementsIn(node, opaque),
+          facts.sheets,
+          false,
+          null,
+        )
+      ) {
+        return null;
+      }
+    }
+    record.factsAt = added.length;
+    record.grownAt = record.grown.length;
+    this._factsBefore = facts;
     return facts;
   }
 
@@ -1586,6 +1743,96 @@ export class HtmlSource {
     this._handler.onreset?.();
   }
 }
+
+/**
+ * What `elements` tell `HtmlSource.facts` of the document, into `facts` and
+ * their tree's `sheets` (`shadow` where that is a shadow tree's). The shadow
+ * trees their hosts hold go on `trees`, for the walk to take in turn; with
+ * none, false at the first host, which only the whole scan walks into
+ * (`_extendFacts`). One loop with all of it in it, as the whole scan has it:
+ * a call for each element was a twentieth of the scan.
+ */
+function scanElements(
+  facts: ScannedFacts,
+  elements: Iterable<Element>,
+  sheets: SheetRef[],
+  shadow: boolean,
+  trees: { root: ParentNode; sheets: SheetRef[] }[] | null,
+): boolean {
+  for (const el of elements) {
+    const hosted = SHADOW_ROOTS.get(el);
+    if (hosted) {
+      if (!trees) return false;
+      const tree = { root: hosted, sheets: [] };
+      facts.shadows.push(tree);
+      trees.push(tree);
+    }
+    const tag = tagOf(el);
+    if (tag === 'style') {
+      // A sheet whose `media` can hold nowhere here, `print`, is left
+      // out; any other is under it, as though an `@media` block of it
+      // were around all of it (HTML 4.2.6, 4.2.4).
+      const media = sheetConditions(attr(el, 'media') ?? '');
+      if (media !== false) {
+        sheets.push({
+          kind: 'inline',
+          text: rawTextOf(el),
+          element: el,
+          media,
+        });
+      }
+    } else if (tag === 'link') {
+      const rel = (attr(el, 'rel') ?? '').toLowerCase();
+      const href = attr(el, 'href');
+      if (href && rel.split(/\s+/).includes('stylesheet')) {
+        // One left out is not asked for either. One under a width,
+        // `(max-width: 600px)`, is, whatever the width: as a browser
+        // asks for it, and as an `@import` under one is asked for.
+        const media = sheetConditions(attr(el, 'media') ?? '');
+        if (media !== false) {
+          sheets.push({ kind: 'link', href, element: el, media });
+          facts.resources.push(el);
+        }
+      }
+    } else if (tag === 'script') {
+      facts.scripts.push(el);
+    } else if (tag === 'img' && choosesSource(el)) {
+      facts.pictures.push(el);
+    } else if (
+      tag === 'img' ||
+      tag === 'image' ||
+      tag === 'object' ||
+      tag === 'embed' ||
+      tag === 'video' ||
+      (tag === 'input' &&
+        (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
+    ) {
+      if (imageUrlOf(el)) facts.resources.push(el);
+    } else if (shadow) {
+      continue;
+    } else if (tag === 'svg') {
+      if (!inDrawing(el)) facts.drawings.push(el);
+    } else if (tag === 'title' && facts.title === null) {
+      facts.title = rawTextOf(el).trim();
+    } else if (tag === 'base' && facts.base === null) {
+      const href = attr(el, 'href');
+      if (href !== undefined) facts.base = href;
+    }
+  }
+  return true;
+}
+
+/** Whether an element is inside an `<svg>`. */
+function inDrawing(el: Element): boolean {
+  for (let at = el.parent; at && isElement(at); at = at.parent) {
+    if (tagOf(at) === 'svg') return true;
+  }
+  return false;
+}
+
+/** The elements whose text the scan reads (`facts`): a chunk that writes
+ *  on to one scans the tree whole. */
+const FACT_TEXT = new Set(['style', 'title']);
 
 /** Nothing made (`HtmlSource.takeMade`). */
 const NO_NODES: readonly ChildNode[] = [];
@@ -1638,6 +1885,7 @@ function freshFacts(): ScannedFacts {
     pictures: [],
     title: null,
     base: null,
+    drawings: [],
     scanned: -1,
   };
 }
@@ -1683,6 +1931,10 @@ class Handler extends DomHandler {
    *  which the page's mutation observers and custom elements hear of. */
   inserted: ChildNode[] | null = null;
 
+  /** What the parser does to the tree while it is set (`HtmlSource.
+   *  takeAppended`). */
+  recording: ParseRecord | null = null;
+
   /** Whether an element is open: its end tag not met yet. */
   isOpen(el: Element): boolean {
     return this.tagStack.includes(el);
@@ -1698,6 +1950,11 @@ class Handler extends DomHandler {
    */
   protected override addNode(node: ChildNode): void {
     this.inserted?.push(node);
+    const record = this.recording;
+    if (record) {
+      record.added.push(node);
+      record.addedSet.add(node);
+    }
     const stack = this.tagStack;
     if (stack.length <= MAX_DEPTH) {
       super.addNode(node);
@@ -1735,7 +1992,7 @@ class Handler extends DomHandler {
     if (name === 'body' && this._body) {
       // a second body is its attributes, on the first; the parser will end
       // it, so what it ends is the body outside one, or else what is open
-      for (const key in attribs) this._body.attribs[key] ??= attribs[key];
+      this._mergeAttributes(this._body, attribs);
       const stack = this.tagStack;
       if (this._outsideBody()) this._reopen();
       else stack.push(stack[stack.length - 1]);
@@ -1789,9 +2046,7 @@ class Handler extends DomHandler {
     const top = stack[stack.length - 1];
     if (name === 'html') {
       if (top === this.root && !this._html && !this._body) return false;
-      if (this._html) {
-        for (const key in attribs) this._html.attribs[key] ??= attribs[key];
-      }
+      if (this._html) this._mergeAttributes(this._html, attribs);
     } else if (name === 'head') {
       if (
         !this._headSeen &&
@@ -1806,6 +2061,16 @@ class Handler extends DomHandler {
     stack.push(top);
     this._afterPre = false;
     return true;
+  }
+
+  /** The attributes of a second `<html>` or `<body>` that the first has
+   *  none of, set on it — and told, where a chunk is recorded. */
+  private _mergeAttributes(el: Element, attribs: Record<string, string>): void {
+    for (const key in attribs) {
+      if (el.attribs[key] !== undefined) continue;
+      el.attribs[key] = attribs[key];
+      this.recording?.attributes.push({ target: el, name: key, old: null });
+    }
   }
 
   /** A doctype past the start of the document, which HTML's parser leaves
@@ -1873,6 +2138,8 @@ class Handler extends DomHandler {
       return false;
     }
     const delegates = attribs.shadowrootdelegatesfocus !== undefined;
+    // a tree for the host to be drawn as, which no record of a chunk says
+    if (this.recording) this.recording.unknown = true;
     const root = new ShadowRoot(host, mode, delegates);
     root.registryNull = attribs.shadowrootcustomelementregistry !== undefined;
     if (root.registryNull) nullRegistriesParsed = true;
@@ -1964,6 +2231,8 @@ class Handler extends DomHandler {
   /** Move into a `<body>` written at the top of the document what went
    *  before it there from the first thing that is not head content on. */
   private _adopt(body: Element): void {
+    // nodes moved, which no record of a chunk says
+    if (this.recording) this.recording.unknown = true;
     const kids = this.root.children;
     const end = kids.length - 1;
     let start = 0;
@@ -2022,8 +2291,40 @@ class Handler extends DomHandler {
         data = data.slice(skip);
       }
     }
+    // a text written on to that a chunk before this one put in
+    const record = this.recording;
+    const last = this.lastNode;
+    if (
+      record &&
+      last instanceof Text &&
+      !record.addedSet.has(last) &&
+      !record.grownSet.has(last)
+    ) {
+      record.grown.push(last);
+      record.grownSet.add(last);
+    }
     super.ontext(data);
   }
+}
+
+/**
+ * What a chunk of a source did to its tree (`HtmlSource.takeAppended`):
+ * the nodes the parser put in, in order — each at the end of what holds it,
+ * the one place the parser puts anything — the texts it wrote on to that
+ * were there before, and the attributes a second `<html>` or `<body>` set
+ * on the first; and whether it did anything none of those say.
+ */
+interface ParseRecord {
+  added: ChildNode[];
+  addedSet: Set<ChildNode>;
+  grown: Text[];
+  grownSet: Set<Text>;
+  attributes: { target: Element; name: string; old: null }[];
+  unknown: boolean;
+  /** How much of `added` and `grown` the scan the record began after, or
+   *  its last one, has taken in (`HtmlSource._extendFacts`). */
+  factsAt: number;
+  grownAt: number;
 }
 
 /** How deep a document's elements nest (`Handler.addNode`). */

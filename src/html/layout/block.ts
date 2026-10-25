@@ -91,6 +91,7 @@ import {
   noteVisibility,
   scrollBack,
   scrollContextOf,
+  scrollsAny,
   settleAnchorScrolls,
   updatePositionVisibility,
   scrollStateOf,
@@ -258,6 +259,13 @@ export interface LayoutContext {
   /** The boxes out of the flow in the blocks this layout kept, which it
    *  does not lay out and the document reaches as far as (`keptPositionedIn`). */
   keptPositioned?: Box[];
+  /** Whether a box in the tree is offset after the flow — relative, by a
+   *  transform's translation or by a scroll — whose offsets a kept block
+   *  has taken off what it holds (`unoffsetHeld`). Where none is, nothing
+   *  is taken off, and a kept block is not walked: a walk of all it holds
+   *  that reads each box's style was, for a stream's chunk, a walk of the
+   *  whole document above the chunk. */
+  offsets?: boolean;
   /**
    * Lay a box and everything under it out at a width, at the origin.
    *
@@ -841,7 +849,7 @@ function reuseLaid(
   // just laid out: the offsets the passes after the last flow put on are
   // taken off, and put on again after this one — once a layout, however
   // many times it keeps the block
-  if (!ctx.reused!.has(child)) unoffsetHeld(child);
+  if (ctx.offsets !== false && !ctx.reused!.has(child)) unoffsetHeld(child);
   moveTo(child, contentLeft + laid.dx, y + laid.dy);
   ctx.reused!.add(child);
   if (ctx.blockers!.holders.has(child)) {
@@ -866,11 +874,18 @@ function reuseLaid(
 function reuseBlockers(tree: BoxTree): Blockers {
   let found = BLOCKERS.get(tree);
   if (found) return found;
-  const blockers = new Set<Box>();
-  const holders = new Set<Box>();
-  found = { blockers, holders };
+  found = { blockers: new Set<Box>(), holders: new Set<Box>() };
   BLOCKERS.set(tree, found);
-  const stack: Box[] = [tree.root];
+  noteBlockers([tree.root], found);
+  return found;
+}
+
+/** `reuseBlockers` of the boxes on `stack` and all they hold: where one
+ *  is placed against what is outside it, the boxes between, and those that
+ *  hold it. One loop with all of it in it: a walk of every box of a tree,
+ *  whose step a function of its own made a loop that its optimized code
+ *  left at every box with children, and was thrown away for leaving. */
+function noteBlockers(stack: Box[], { blockers, holders }: Blockers): void {
   while (stack.length) {
     const box = stack.pop()!;
     const position = box.style.position;
@@ -898,7 +913,37 @@ function reuseBlockers(tree: BoxTree): Blockers {
     }
     for (const child of box.children) stack.push(child);
   }
-  return found;
+}
+
+/**
+ * `reuseBlockers` of a tree a build of subtrees made from `from`
+ * (`buildSubtrees`), from `from`'s: its boxes but those it `replaced`, and
+ * what each of the `added` boxes is and holds — where a box around one of
+ * them stays a blocker for what a replaced box was, which keeps less and
+ * never more. Nothing where `from` was never laid out keeping blocks: the
+ * walk of the new tree is its first layout's. A stream's chunk makes a new
+ * tree, and a walk of all of it for this was a twentieth of its layout.
+ */
+export function carryBlockers(
+  from: BoxTree,
+  to: BoxTree,
+  replaced: readonly ReadonlySet<Box>[],
+  added: readonly Box[],
+): void {
+  const was = BLOCKERS.get(from);
+  if (!was) return;
+  const found: Blockers = {
+    blockers: new Set(was.blockers),
+    holders: new Set(was.holders),
+  };
+  for (const boxes of replaced) {
+    for (const box of boxes) {
+      found.blockers.delete(box);
+      found.holders.delete(box);
+    }
+  }
+  noteBlockers([...added], found);
+  BLOCKERS.set(to, found);
 }
 
 /** What `reuseBlockers` found of a tree. */
@@ -1224,6 +1269,7 @@ export function layoutDocument(
           reused: new Set<Box>(),
           blockers: reuseBlockers(tree),
           keptPositioned: [],
+          offsets: tree.relative || scrollsAny(tree),
         }
       : null),
     ...(tree.anchors

@@ -109,6 +109,12 @@ export function wantedScrollTop(tree: BoxTree, box: Box): number {
   return want ? want.y * given!.scale : 0;
 }
 
+/** Whether a layout of `tree` moves any scroll container's content, or
+ *  did: what a kept block's offsets are taken off for (`unoffsetHeld`). */
+export function scrollsAny(tree: BoxTree): boolean {
+  return !!OFFSETS.get(tree)?.offsets.size || SCROLLED.has(tree);
+}
+
 /** Hand a tree the offsets its layouts move its scroll containers by, in
  *  CSS pixels, and the scale its boxes are laid out at. */
 export function setScrollOffsets(

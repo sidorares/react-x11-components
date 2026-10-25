@@ -105,6 +105,32 @@ metric(
   },
 );
 
+metric(
+  'a layout of the boxes a layout laid out lays them out where it did',
+  async () => {
+    // An inline-block holding nothing but an empty inline box that clips: in
+    // a flex row beside a box out of the flow, its baseline was read from the
+    // inline box's rectangle, which no layout sets, and every layout after
+    // the first stood it somewhere else. A stream's chunk lays out the boxes
+    // a build of its tail kept, as a resize lays all of them out again.
+    const { node } = await render(
+      '<div style="display:flex"><span style="position:absolute"></span>' +
+        '<section><b id="ib" style="display:inline-block;width:40px">' +
+        '<span style="overflow:hidden"></span></b>two</section></div>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const box = () => boxOf(el, 'ib');
+    const first = [box().x, box().y];
+    for (let i = 0; i < 3; i += 1) {
+      (el as unknown as { _invalidate(stale: number): void })._invalidate(1);
+      await act();
+      assert.deepStrictEqual([box().x, box().y], first, `layout ${i + 2}`);
+    }
+  },
+);
+
 metric('an edit lays out again only the text it changed', async () => {
   const doc = (word: string) =>
     h(

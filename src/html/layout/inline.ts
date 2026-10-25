@@ -3769,6 +3769,13 @@ function childBaseline(
   if (child.outOfFlow || child.isFloat || child.kind === 'replaced') {
     return null;
   }
+  // An inline box gives a baseline only through the lines it is on, which
+  // are its block's, and holds no line of its own, clipped or not: no
+  // overflow applies to it, and its rectangle is never laid out — it is
+  // moved with what holds it, pass after pass (`translate`). Read for one
+  // that clipped, an empty inline-block's baseline drifted at every layout
+  // after its first, and stood it where the last one left that rectangle.
+  if (child.kind === 'inline' || child.kind === 'text') return null;
   // a table is passed over for a block's last baseline (`lastBaselineIn`)
   if (inside === lastBaselineIn && child.kind === 'table') return null;
   // the legacy rule is a block container's last baseline alone (CSS Box
@@ -5302,6 +5309,8 @@ class SpanMap {
    *  a spacer, a bidi control. */
   private _gaps: number[] | null = null;
   laidOut = 0;
+  /** The build of subtrees that last moved it (`shiftDocument`). */
+  private _shiftedIn = 0;
 
   add(
     documentStart: number,
@@ -5355,6 +5364,14 @@ class SpanMap {
   documentAt(offset: number): number {
     const i = this._entryAt(offset);
     return i < 0 ? 0 : this._doc[i] + (offset - this._laid[i]);
+  }
+
+  shiftDocument(by: number, pass: number): void {
+    // once a pass, however many lines' texts share it
+    if (this._shiftedIn === pass) return;
+    this._shiftedIn = pass;
+    const doc = this._doc;
+    for (let i = 0; i < doc.length; i += 1) doc[i] += by;
   }
 
   /** The entry an offset falls in, or -1 when there are none. */
