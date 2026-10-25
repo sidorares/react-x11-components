@@ -110,7 +110,8 @@ const WHEEL_EASE_MS = 55;
 const EASE_FIRST_MS = 16;
 
 /**
- * How often a glide steps: a 60Hz frame.
+ * How often a glide steps where the display's rate is not known: a 60Hz
+ * frame.
  *
  * A timer rather than the frame the step is drawn in, because a step *is* a
  * camera move and the views already know what to do with one — the retained
@@ -123,9 +124,15 @@ const EASE_FIRST_MS = 16;
  * Nothing here outruns the display. The step is exponential in the *time*
  * since the last one, so a view that paints at half this rate sees every
  * other step and the same glide; what the timer decides is the finest the
- * map can move, not how fast it gets there.
+ * map can move, not how fast it gets there. But a frame no step came in
+ * shows nothing new, so a display faster than the timer is not: at 16 ms a
+ * wheel zoom drew 63 frames a second on a 75Hz Mac, and would draw 62 of a
+ * ProMotion panel's 120. A display whose rate is known sets the tick to its
+ * frame ({@link MapController.setFrameRate}), down to {@link MIN_GLIDE_TICK_MS}.
  */
 const GLIDE_TICK_MS = 16;
+/** The finest a glide steps, whatever a screen says: a 240Hz frame. */
+const MIN_GLIDE_TICK_MS = 1000 / 240;
 
 /**
  * A zoom the wheel asked for and the frames are still delivering.
@@ -334,6 +341,8 @@ export class MapController {
   private _settleTimer: unknown = null;
   private _glide: ZoomGlide | null = null;
   private _glideTimer: unknown = null;
+  /** A glide's step: the display's frame, or {@link GLIDE_TICK_MS}. */
+  private _glideTickMs = GLIDE_TICK_MS;
   private _pendingFit: {
     bounds: LngLatBounds;
     options?: FitBoundsOptions;
@@ -701,7 +710,20 @@ export class MapController {
       this.stepZoom(at, at - glide.at);
       this._armGlide();
     };
-    this._glideTimer = glideClock.arm(tick, GLIDE_TICK_MS);
+    this._glideTimer = glideClock.arm(tick, this._glideTickMs);
+  }
+
+  /**
+   * The display's refresh rate, in Hz, so a glide steps at every frame — or
+   * null where no screen says, which leaves it at a 60Hz frame. Only a rate
+   * faster than that shortens the step: on a slower display the views
+   * already see a step at every frame, and more would be steps nobody saw.
+   */
+  setFrameRate(hz: number | null): void {
+    this._glideTickMs =
+      hz !== null && hz > 1000 / GLIDE_TICK_MS
+        ? Math.max(MIN_GLIDE_TICK_MS, 1000 / hz)
+        : GLIDE_TICK_MS;
   }
 
   /**

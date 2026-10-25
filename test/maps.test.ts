@@ -78,7 +78,12 @@ import type {
   TileData,
 } from '../src/maps/index.js';
 import { GeomType } from '../src/maps/mvt.js';
-import { settleClock } from '../src/maps/controller.js';
+import {
+  glideClock,
+  MapController,
+  settleClock,
+} from '../src/maps/controller.js';
+import type { MapView as ControllerView } from '../src/maps/controller.js';
 import { restyleClock } from '../src/maps/node.js';
 import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
@@ -4429,6 +4434,48 @@ test('a second notch lengthens the glide instead of restarting it', async (t) =>
   // second arrived: 12 + 2 × 0.384, on the grid.
   const zoom = handle.getCamera().zoom;
   assert.ok(Math.abs(zoom - 12.75) < 1e-9, `both notches landed: ${zoom}`);
+});
+
+test("a wheel's glide steps at the display's frame where a screen says how fast it is", (t) => {
+  // A frame no step came in shows the zoom standing still, so a 16 ms step
+  // under a faster display drops frames out of the glide: a wheel zoom drew
+  // 63 frames a second on a 75Hz Mac. <Map> hands the controller the
+  // fastest screen's rate (`useScreens()`); a slower one keeps the 60Hz
+  // step, since its frames already each have one.
+  const waits: number[] = [];
+  t.mock.method(glideClock, 'arm', (_step: () => void, ms: number) => {
+    waits.push(ms);
+    return {};
+  });
+  t.mock.method(glideClock, 'disarm', () => {});
+  const view: ControllerView = {
+    pane: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+    scale: () => 1,
+    moved: () => {},
+    settled: () => {},
+    refresh: () => {},
+    stats: () => null,
+    focus: () => {},
+  };
+  const stepFor = (hz: number | null): number => {
+    const controller = new MapController({
+      center: { lon: -0.1281, lat: 51.508 },
+      zoom: 12,
+    });
+    controller.attach(view);
+    controller.setFrameRate(hz);
+    waits.length = 0;
+    controller.wheel({ x: 400, y: 300 }, -120);
+    controller.dispose();
+    assert.equal(waits.length, 1, `a notch at ${hz} Hz armed one step`);
+    return waits[0];
+  };
+  assert.equal(stepFor(null), 16, 'no rate: a 60Hz frame');
+  assert.equal(stepFor(60), 16, 'a 60Hz screen keeps it');
+  assert.equal(stepFor(50), 16, 'and so does a slower one');
+  assert.equal(stepFor(75), 1000 / 75, 'a 75Hz screen steps at its frame');
+  assert.equal(stepFor(120), 1000 / 120, 'and a 120Hz one at its');
+  assert.equal(stepFor(1000), 1000 / 240, 'never finer than a 240Hz frame');
 });
 
 test('interactive={false} freezes the camera and still reports clicks', async () => {

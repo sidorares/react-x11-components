@@ -16,7 +16,7 @@
 // (AGENTS.md, "Tree-shaking is a constraint").
 import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { useApp, useSupports, useTheme } from 'react-x11';
+import { useApp, useScreens, useSupports, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -110,6 +110,12 @@ export function Map(props: MapProps): ReactElement {
   // that count — and the controlled/uncontrolled fork is simply whether
   // `camera` is among them.
   controller.setProps(props);
+  // The fastest screen's refresh rate, which a wheel's glide steps at
+  // (`setFrameRate` in ./controller.ts). The fastest rather than the one the
+  // window is on: a step a slower screen does not show is a camera move and
+  // nothing more, and a frame a faster one shows without a step is a frame
+  // of the zoom standing still.
+  controller.setFrameRate(fastestRefresh(useScreens().screens));
   // The controller's own handle, made once: the same object for the whole
   // mount, whatever draws the map — across a renderer switch too.
   useImperativeHandle(props.ref, () => controller.handle, [controller]);
@@ -185,6 +191,18 @@ interface PaneProps {
   map: MapProps;
   controller: MapController;
   onFailure: (error: Error) => void;
+}
+
+/** The highest refresh rate any screen reports, or null where none does. */
+function fastestRefresh(
+  screens: readonly { readonly refreshRate: number | null }[],
+): number | null {
+  let hz: number | null = null;
+  for (const screen of screens) {
+    const rate = screen.refreshRate;
+    if (rate !== null && (hz === null || rate > hz)) hz = rate;
+  }
+  return hz;
 }
 
 /**
