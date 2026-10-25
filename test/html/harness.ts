@@ -15,7 +15,6 @@ import React from 'react';
 import { act, renderX11, screen } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
-import { TextInputNode } from 'react-x11/node';
 import * as ntk from 'react-x11/ntk';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
@@ -107,95 +106,6 @@ export async function mountBetweenFrames(
   await act(async () => step());
   while (laid < 1) await act(() => new Promise((r) => setTimeout(r, 5)));
   await act(async () => step());
-}
-
-/**
- * Core's selection API on a field — `selectionStart`, `selectionEnd`,
- * `selectionDirection` and `setSelectionRange()` on `<textinput>` and
- * `<textarea>`, react-x11#1006 — for a core that has none, as that change
- * writes it over the field's own caret, so a test sees what `<Html>` does
- * with it: the field shows a script's selection, Backspace deletes it, and
- * the user's caret is read back. Installed until the test ends; on a core
- * that has the API nothing is installed, and the test runs against core's.
- * Delete it once the floor reaches the release that carries the API.
- */
-export function withFieldSelection(t: { after(fn: () => void): void }): void {
-  type Field = {
-    value: string;
-    _caret: number;
-    _anchor: number;
-    _fieldDirection?: { direction: string; caret: number; anchor: number };
-    _breakUndoRun(): void;
-    _repaint(): void;
-  };
-  const proto = TextInputNode.prototype as unknown as Record<string, unknown>;
-  if (typeof proto.setSelectionRange === 'function') return;
-  // code points before a UTF-16 offset, and UTF-16 units before an index
-  const pointAt = (value: string, offset: number) => {
-    let units = 0;
-    let points = 0;
-    for (const ch of value) {
-      if (units + ch.length > offset) break;
-      units += ch.length;
-      points += 1;
-    }
-    return points;
-  };
-  const unitsTo = (value: string, index: number) =>
-    Array.from(value).slice(0, index).join('').length;
-  const clamp = (field: Field, offset: number) => {
-    const n = Math.trunc(Number(offset));
-    return Number.isNaN(n) ? 0 : Math.min(Math.max(0, n), field.value.length);
-  };
-  const members: PropertyDescriptorMap = {
-    selectionStart: {
-      get(this: Field) {
-        return unitsTo(this.value, Math.min(this._caret, this._anchor));
-      },
-      configurable: true,
-    },
-    selectionEnd: {
-      get(this: Field) {
-        return unitsTo(this.value, Math.max(this._caret, this._anchor));
-      },
-      configurable: true,
-    },
-    selectionDirection: {
-      get(this: Field) {
-        const set = this._fieldDirection;
-        if (set && set.caret === this._caret && set.anchor === this._anchor) {
-          return set.direction;
-        }
-        if (this._caret < this._anchor) return 'backward';
-        return this._caret > this._anchor ? 'forward' : 'none';
-      },
-      configurable: true,
-    },
-    setSelectionRange: {
-      value(this: Field, start: number, end: number, direction = 'none') {
-        const to = clamp(this, end);
-        const from = Math.min(clamp(this, start), to);
-        const a = pointAt(this.value, from);
-        const b = pointAt(this.value, to);
-        const backward = direction === 'backward';
-        this._anchor = backward ? b : a;
-        this._caret = backward ? a : b;
-        this._fieldDirection = {
-          direction: backward || direction === 'forward' ? direction : 'none',
-          caret: this._caret,
-          anchor: this._anchor,
-        };
-        this._breakUndoRun();
-        this._repaint();
-      },
-      configurable: true,
-      writable: true,
-    },
-  };
-  Object.defineProperties(proto, members);
-  t.after(() => {
-    for (const name of Object.keys(members)) delete proto[name];
-  });
 }
 
 /** What `SvgView` is to the stand-in below: the slice it wraps. */
