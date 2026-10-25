@@ -1013,8 +1013,50 @@ is a `popstate`, not a document. The host's own Back and Forward are
 next document is at, or null where there is none, or where the entry is
 one of the document shown now, which goes there itself, as `history.go`
 would. `session.reload()` and `session.replace()` say the next document is
-a reload of the current entry, or takes its place. `entries`, `index` and
-`current` are the history as a host draws it, a Back menu say.
+a reload of the current entry, or takes its place, and `session.push()`
+that it is a new entry whatever the page planned and did not go through
+with — an address typed. `entries`, `index` and `current` are the history
+as a host draws it, a Back menu say.
+
+**A host follows the history, and keeps the history of what runs no
+scripts.** `session.onChange(listener)` tells the host each change a
+microtask after it, once for the changes made in between — a document
+shown, and what a document's own navigations write, `pushState` and a step
+among its entries included — and answers the way to stop. What a host
+draws from the history follows it from there: an address bar that moves
+with a single-page app's routes, and a Back button that goes back one of
+them rather than off the site. A document shown with no scripts running
+in it — JavaScript off for its site — never reaches an engine, so the host
+says it was shown: `session.show(url)` makes it the next of the history as
+an engine would, by the navigation planned for it or as a push, and
+answers its entry; `session.fragment(url)` adds an entry of its own for a
+fragment followed in it, as a fragment navigation does; and
+`session.go()` to one of its entries moves there at once and answers null,
+for the host to scroll. A host that keeps the history somewhere that
+outlives what shows the documents — a browser whose tab's page runs in a
+process that can end — makes the session again from what it kept:
+`new HtmlSessionHistory({ entries, index })`, each entry its `url` and,
+where kept, its `key`, `id` and `document`, entries of one `document`
+being one document's again.
+
+```ts
+const session = new HtmlSessionHistory();
+const stop = session.onChange(() =>
+  setToolbar({
+    address: session.current?.url ?? '',
+    back: session.index > 0,
+    forward: session.index < session.entries.length - 1,
+  }),
+);
+// a page with JavaScript off, shown, and a fragment link followed in it
+session.show('https://example.com/guide');
+session.fragment('https://example.com/guide#install');
+```
+
+The example browser runs a tab this way (`examples/browser/page.tsx`): the
+session lives in the tab's page process, every document the tab shows is
+handed it or shown to it, and the browser's toolbar is drawn from what
+`onChange` reports.
 
 **A document shown hears how, and the one it replaces where it goes.**
 `navigation.activation` is the navigation that showed it: its current

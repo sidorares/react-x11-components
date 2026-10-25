@@ -78,9 +78,12 @@ interface Tab {
 async function tab(
   pages: Record<string, string>,
   first: string,
-  options: { session?: boolean; remount?: boolean } = {},
+  options: { session?: boolean | HtmlSessionHistory; remount?: boolean } = {},
 ): Promise<Tab> {
-  const session = new HtmlSessionHistory();
+  const session =
+    options.session instanceof HtmlSessionHistory
+      ? options.session
+      : new HtmlSessionHistory();
   const out = { session, logs: [], asked: [] } as unknown as Tab;
   let load: (url: string) => void = () => {};
   let shownUrl = first;
@@ -456,6 +459,102 @@ test('the host steps the session itself: among the document’s own entries the 
     (await logged(doc, 'view ', 4))[3],
     'a.html 3 a.html*,a.html#x*,b.html 0 reload a.html null',
   );
+});
+
+test('the host hears each change of the history a microtask after it, once for the changes in between', async () => {
+  const doc = await tab(
+    { 'a.html': `<p>a</p>${VIEW}`, 'b.html': `<p>b</p>${VIEW}` },
+    `${SITE}a.html`,
+  );
+  await logged(doc, 'view ', 1);
+  const heard: string[] = [];
+  const stop = doc.session.onChange(() =>
+    heard.push(
+      `${doc.session.index} ${doc.session.current?.url.slice(SITE.length)}`,
+    ),
+  );
+  // the page's own entries: two in one task are one change heard
+  doc.run(
+    'history.pushState(null, "", "#one"); history.pushState(null, "", "#two");',
+  );
+  assert.deepEqual(heard, [], 'never inside the page’s script');
+  await settle();
+  assert.deepEqual(heard, ['2 a.html#two']);
+  // a traversal among them, which the document makes as a task
+  doc.run('history.back();');
+  await logged(doc, 'popstate ', 1);
+  await settle();
+  assert.equal(heard.at(-1), '1 a.html#one');
+  // and the next document shown
+  heard.length = 0;
+  doc.run('location.href = "b.html";');
+  await logged(doc, 'view ', 2);
+  await settle();
+  assert.equal(heard.at(-1), '2 b.html');
+  stop();
+  doc.run('history.pushState(null, "", "#three");');
+  await settle();
+  assert.equal(heard.at(-1), '2 b.html', 'nothing once it stopped');
+});
+
+test('a document the host shows with no scripts takes its place in the history, and the host keeps its fragments and its steps among them', async () => {
+  const session = new HtmlSessionHistory();
+  const changes: number[] = [];
+  session.onChange(() => changes.push(session.index));
+  const a = session.show(`${SITE}a.html`);
+  assert.equal(a.document, 1);
+  assert.equal(session.fragment(`${SITE}a.html#x`)?.document, 1);
+  assert.equal(session.fragment(`${SITE}a.html#y`)?.document, 1);
+  await Promise.resolve();
+  assert.deepEqual(changes, [2], 'told once, after');
+  // a step among its own entries is the host's, taken at once
+  assert.equal(session.go(-2), null);
+  assert.equal(session.current?.url, `${SITE}a.html`);
+  // a fragment from the middle drops what was ahead, as a push does
+  session.fragment(`${SITE}a.html#z`);
+  assert.deepEqual(
+    session.entries.map((e) => e.url.slice(SITE.length)),
+    ['a.html', 'a.html#z'],
+  );
+  // a stale plan the host did not go through with is no plan
+  session.replace();
+  session.push();
+  // the next document shown — here one whose scripts run — is a push, and
+  // reaches the entries the host kept
+  const doc = await tab({ 'b.html': `<p>b</p>${VIEW}` }, `${SITE}b.html`, {
+    session,
+  });
+  assert.deepEqual(await logged(doc, 'view ', 1), [
+    'b.html 3 a.html,a.html#z,b.html* 2 push a.html#z null',
+  ]);
+  // whose fragments are its engine's, not the host's
+  assert.equal(session.fragment(`${SITE}b.html#q`), null);
+  // and a step back is to another document: the entry to load
+  assert.equal(session.go(-1)?.url, `${SITE}a.html#z`);
+});
+
+test('a session a host kept is restored, and the document shown again at its entry has the entries of its document as its own', async () => {
+  const session = new HtmlSessionHistory({
+    entries: [
+      { url: `${SITE}a.html`, document: 7 },
+      { url: `${SITE}a.html#x`, document: 7 },
+      { url: `${SITE}b.html`, document: 9, key: 'kept-key' },
+    ],
+    index: 1,
+  });
+  assert.deepEqual(
+    session.entries.map((e) => e.document),
+    [1, 1, 2],
+  );
+  assert.equal(session.entries[2].key, 'kept-key');
+  assert.equal(session.index, 1);
+  session.reload();
+  const doc = await tab({ 'a.html': `<p>a</p>${VIEW}` }, `${SITE}a.html#x`, {
+    session,
+  });
+  assert.deepEqual(await logged(doc, 'view ', 1), [
+    'a.html#x 3 a.html*,a.html#x*,b.html 1 reload a.html#x null',
+  ]);
 });
 
 test('a host that mounts an <Html> for each document keeps one session, and the document it replaces still hears pageswap', async () => {

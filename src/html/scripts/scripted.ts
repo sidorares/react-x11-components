@@ -109,8 +109,10 @@ export interface HtmlScripts {
    * `navigation.entries()`, `back()`, `forward()` and `traverseTo()`
    * reach the documents' entries before and after it; it hears how it was
    * shown (`navigation.activation`), and the document it replaces hears
-   * where it goes (`pageswap`). Default: none, and each document's
-   * history is its own.
+   * where it goes (`pageswap`). The host draws its address bar and its
+   * Back and Forward from it as it changes (`session.onChange`), and shows
+   * it the documents it runs no scripts in (`session.show`). Default:
+   * none, and each document's history is its own.
    */
   session?: HtmlSessionHistory;
   /**

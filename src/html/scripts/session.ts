@@ -13,6 +13,12 @@
 // to load into the same history has said everything: that the new document
 // replaces the old one, and in which history.
 //
+// A document shown with no scripts running in it has no engine to do that,
+// so the host says it was shown (`show`) and keeps its fragments itself
+// (`fragment`); and whatever made a change, the host hears of it
+// (`onChange`), which is how an address bar and a Back button follow the
+// history the documents write.
+//
 // Light on purpose: a host makes one without the engine (`./hook.ts`), and
 // nothing here imports anything heavy. What the engine reads and writes is
 // kept out of the class, in `STATES`, so the class's declaration is the
@@ -22,6 +28,7 @@ import type { UrlClass } from './platform.js';
 
 declare const crypto: { randomUUID?(): string } | undefined;
 declare const URL: UrlClass;
+declare const queueMicrotask: (fn: () => void) => void;
 
 /** How a document came to be shown (the Navigation API's
  *  `NavigationType`). */
@@ -41,6 +48,17 @@ export interface HtmlSessionEntry {
    *  or a traversal to an entry whose document has gone, makes the
    *  document again under the same number. */
   readonly document: number;
+}
+
+/** What a session is made from where a host restores one: a tab whose
+ *  history the host kept while what showed its documents started again. */
+export interface HtmlSessionRestore {
+  /** The entries, oldest first: each its URL and, where the host kept
+   *  them, its key, its id and its document. Entries with the same
+   *  `document` are one document's, numbered anew. */
+  entries: readonly (Partial<HtmlSessionEntry> & { url: string })[];
+  /** Which of them is current: the last where it is left out. */
+  index?: number;
 }
 
 /** What the engine keeps of an entry: its address, its place, its
@@ -119,6 +137,12 @@ interface SessionState {
    *  plans are taken. */
   shown: SessionArrival | null;
   live: Live | null;
+  /** The document shown last where the host showed it with no scripts
+   *  (`show`), whose entries are the host's to keep. */
+  hosted: SessionArrival | null;
+  /** Who hears of a change (`onChange`), and whether one is owed them. */
+  listeners: Set<() => void>;
+  owed: boolean;
 }
 
 const STATES = new WeakMap<HtmlSessionHistory, SessionState>();
@@ -133,10 +157,26 @@ function stateOf(session: HtmlSessionHistory): SessionState {
       docs: 0,
       shown: null,
       live: null,
+      hosted: null,
+      listeners: new Set(),
+      owed: false,
     };
     STATES.set(session, state);
   }
   return state;
+}
+
+/** The entries or the current one changed: those listening hear of it a
+ *  microtask later, once for every change made in between. Never at once,
+ *  since a change is made inside a page's script, or as `<Html>` reads a
+ *  new document. */
+function changed(state: SessionState): void {
+  if (state.owed || !state.listeners.size) return;
+  state.owed = true;
+  queueMicrotask(() => {
+    state.owed = false;
+    for (const listener of [...state.listeners]) listener();
+  });
 }
 
 /** A key or an id: a random UUID, as a browser's are. */
@@ -175,11 +215,50 @@ function publicOf(record: SessionRecord): HtmlSessionEntry {
  * `reload` and `go` ask for into the same `<Html>`, or into a new one with
  * the same session. The next document is a push, unless the page planned
  * otherwise or the host says so here first: `go()` for its own Back and
- * Forward, `reload()` and `replace()`.
+ * Forward, `reload()`, `replace()` and `push()`. A document the host shows
+ * with no scripts running in it is one the engine never sees, so the host
+ * says it was shown (`show()`), and what the host draws from the history
+ * follows it through `onChange()`.
  */
 export class HtmlSessionHistory {
-  constructor() {
-    stateOf(this);
+  /** A new history, empty; or one a host kept, restored (`restore`). */
+  constructor(restore?: HtmlSessionRestore) {
+    const state = stateOf(this);
+    if (!restore?.entries.length) return;
+    // the host's numbers for its documents, each made one of this session's
+    const docs = new Map<number, number>();
+    state.entries = restore.entries.map((e) => {
+      let doc = e.document === undefined ? undefined : docs.get(e.document);
+      if (doc === undefined) {
+        doc = ++state.docs;
+        if (e.document !== undefined) docs.set(e.document, doc);
+      }
+      return {
+        url: withoutFragmentDirective(String(e.url)),
+        key: e.key ?? uuid(),
+        id: e.id ?? uuid(),
+        doc,
+        state: null,
+        navState: null,
+        scroll: null,
+      };
+    });
+    const last = state.entries.length - 1;
+    state.index = Math.max(0, Math.min(last, restore.index ?? last));
+  }
+
+  /**
+   * Hear each change of the history: a document shown with it, and what
+   * the documents' own navigations write — a push, a replace, a traversal
+   * among their entries, a state set. Told a microtask after the change,
+   * once for the changes made in between; `entries`, `index` and `current`
+   * are what it came to. What a host draws from the history, an address
+   * bar or a Back button, follows it from here. Answers the way to stop.
+   */
+  onChange(listener: () => void): () => void {
+    const { listeners } = stateOf(this);
+    listeners.add(listener);
+    return () => void listeners.delete(listener);
   }
 
   /** The entries, oldest first. */
@@ -204,7 +283,9 @@ export class HtmlSessionHistory {
    * the entry to show, whose `url` the host loads with this session — the
    * next document shown is at that entry — or null where there is no entry
    * there, or where it is one of the document shown now, which goes there
-   * itself, as `history.go` would, and nothing is loaded. A page's own
+   * itself, as `history.go` would, and nothing is loaded: its engine
+   * traverses as a task, and one the host showed (`show()`) is at the
+   * entry when this returns, for the host to scroll. A page's own
    * `history.back()` planned its step before it asked the host's `go`, so
    * a `go` seam that asks this for the entry is answered the same entry.
    */
@@ -230,6 +311,68 @@ export class HtmlSessionHistory {
    *  place, as `location.replace` would put it. */
   replace(): void {
     stateOf(this).plan = { type: 'replace' };
+  }
+
+  /** The next document shown with this session is a new entry after the
+   *  current one, whatever the page planned and did not go through with:
+   *  an address the host goes to itself, typed or chosen. */
+  push(): void {
+    stateOf(this).plan = null;
+  }
+
+  /**
+   * A document the host shows with this session and no scripts running in
+   * it — JavaScript off for its site, say — which no engine tells the
+   * session of: it takes its place in the history as a document whose
+   * scripts run does as they start, by the navigation planned for it, or
+   * as a push where none was, and the document shown before it goes.
+   * Answers its entry. The host keeps its entries from then on: `go()` to
+   * one of them moves there and answers null, and `fragment()` adds one.
+   */
+  show(url: string): HtmlSessionEntry {
+    const arrival = arriveAt(this, url);
+    const state = stateOf(this);
+    state.hosted = arrival;
+    state.live = {
+      arrival,
+      traverse: (key) => {
+        const at = state.entries.findIndex((e) => e.key === key);
+        if (at < 0 || state.shown !== arrival) return;
+        state.index = at;
+        changed(state);
+      },
+      swap: () => {},
+    };
+    return publicOf(arrival.entry);
+  }
+
+  /**
+   * The document the host showed (`show()`) went to a fragment of its own,
+   * with no scripts to write it — a link to one followed, or one typed: an
+   * entry of the same document after the current one, the entries ahead
+   * dropped, as a fragment navigation makes one. Answers it, or null where
+   * the document shown is not one the host showed itself, whose engine
+   * writes its own.
+   */
+  fragment(url: string): HtmlSessionEntry | null {
+    const state = stateOf(this);
+    const from = state.entries[state.index];
+    if (!state.hosted || state.shown !== state.hosted || !from) return null;
+    const record: SessionRecord = {
+      url: withoutFragmentDirective(url),
+      key: uuid(),
+      id: uuid(),
+      doc: state.hosted.doc,
+      state: null,
+      // a fragment's entry keeps the Navigation API's state (HTML 7.4.2.3.3)
+      navState: from.navState,
+      scroll: null,
+    };
+    state.entries.splice(state.index + 1);
+    state.entries.push(record);
+    state.index = state.entries.length - 1;
+    changed(state);
+    return publicOf(record);
   }
 }
 
@@ -310,6 +453,7 @@ export function arriveAt(
         }
       : { type },
   );
+  changed(state);
   return arrival;
 }
 
@@ -409,6 +553,7 @@ export function writeSession(
   if (!next.length) return;
   state.entries = next;
   state.index = Math.max(0, Math.min(next.length - 1, index));
+  changed(state);
 }
 
 /** The page planned a navigation to another document, which the next one

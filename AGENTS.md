@@ -2649,7 +2649,18 @@ closes a way out a DOM binding opens by accident:
   current entry of its origin) — an index, a key looked up, `canGoBack`,
   `back()` — while `history` counts and steps through all of them; with no
   session the two are one list, which is why every test of a document's
-  own history passed either way.
+  own history passed either way. **A host follows the session, and a
+  document with no scripts is the host's to show it**: `onChange` tells a
+  host each change a microtask after it (`changed`, in `session.ts`), which
+  is how the example browser's address bar follows a single-page app's
+  `pushState` and its Back goes back one route rather than off the site,
+  and `show()` and `fragment()` are what an engine does for a document
+  shown with JavaScript off, which the browser's switch makes most of them.
+  So **anything new in `session.ts` that changes the entries or the index
+  calls `changed`**, or the host draws the history as it was; and the
+  browser's history is the page process's session mirrored
+  (`PageProps.onHistory`), never a second list kept beside it — that list,
+  stepped by the browser alone, was the bug.
 - **A page's streams are the standard's, and none of their state is the
   page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
   operation of WHATWG Streams is there, over slots kept in a `WeakMap` by

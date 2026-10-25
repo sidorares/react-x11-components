@@ -19,19 +19,30 @@
 // bounds it: a page that runs away is stopped by a timeout and says so in
 // the bubble, and one that grows without bound costs this tab.
 //
-// What crosses the boundary is small on purpose. In: which history step to
-// show, what to load, the zoom, whether scripts run — numbers, strings and a
-// flag, so a browser re-render that changed none of them sends nothing. Out, through callbacks that
-// arrive as one-way messages: a document to make a history step of, its
-// title and icon, a link followed or a form submitted — which is a link
-// with, for a POST, a body. The history is the browser's; the
-// documents are this process's, kept by the id the browser gave the
-// navigation that loaded each one.
+// The tab's history is here too: one `HtmlSessionHistory` a tab, handed to
+// every document the tab shows, so a page's `pushState` and its own Back are
+// entries of the same history the toolbar's Back and Forward step through.
+// A document whose scripts run takes its place in it as they start, and
+// writes its own entries; one shown with JavaScript off is shown to it here
+// (`show`), and its fragments are kept here (`fragment`). Which document
+// is shown follows from it: a step to another document's entry shows the
+// document the tab still has, or asks the browser to load it again.
+//
+// What crosses the boundary is small on purpose. In: what to load and how
+// it comes into the history, a step to take in it, the zoom, whether
+// scripts run — numbers, strings and a flag, so a browser re-render that
+// changed none of them sends nothing. Out, through callbacks that arrive as
+// one-way messages: the history as it stands, which the browser draws its
+// toolbar from, a document's title and icon, a link followed or a form
+// submitted — which is a link with, for a POST, a body — and a document to
+// load again. The documents are this process's, kept by the id the browser
+// gave the navigation that loaded each one.
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react';
@@ -66,11 +77,13 @@ import {
 import {
   Html,
   HtmlNetwork,
+  HtmlSessionHistory,
   NetworkError,
   canPlayMedia,
   decodeText as decode,
   linkTarget,
   navigableFor,
+  preloadHtmlScripts,
   resourceResult,
   schemeOf,
   sniffCharset,
@@ -83,6 +96,7 @@ import type {
   Element,
   FormSubmission,
   HtmlScripts,
+  HtmlSessionEntry,
   PostData,
   ResourceKind,
   ResourceRequest,
@@ -148,34 +162,72 @@ const network = new HtmlNetwork({
 /** Where a followed link goes: this tab, a new one, or one behind this. */
 export type LinkTarget = 'here' | 'tab' | 'background';
 
+/**
+ * How a navigation's document comes into the tab's history:
+ *
+ *  - `push`: a new entry, the browser's own — an address typed, a tab
+ *    opened.
+ *  - `page`: as the page planned it, the navigation its scripts started —
+ *    a push or a replace — and a push where none ran: a link, a form,
+ *    `location`.
+ *  - `reload`: the current entry again, from the toolbar; `pageReload` the
+ *    same from the page's own `location.reload()`, which planned it.
+ *  - `traverse`: the entry `key`, a step back or forward to a document the
+ *    page no longer has.
+ */
+export type LoadHow = 'push' | 'page' | 'reload' | 'pageReload' | 'traverse';
+
+/** One entry of a tab's history as the page tells the browser of it
+ *  (`onHistory`). */
+export interface HistoryEntry {
+  /** The session's id for it, which no other entry has. */
+  id: string;
+  /** Its key, which a replace keeps. */
+  key: string;
+  url: string;
+  /** The document it is an entry of, by the id of the navigation that
+   *  loaded it, or 0 for one nothing has loaded yet. */
+  doc: number;
+}
+
+/** A tab's history: its entries, and which is shown. */
+export interface History {
+  entries: HistoryEntry[];
+  index: number;
+}
+
 /** What the browser tells a tab's page, and hears back. */
 export interface PageProps {
-  /** The history step to show, and the document it shows; 0 before the
-   *  tab's first document arrives. A `#fragment` link is a step of its own
-   *  that shows the same document. */
-  entryId: number;
-  doc: number;
-  url: string;
   /** The navigation to load, until its document has all arrived — its id
    *  becomes the document's — or 0. */
   loadSeq: number;
   loadUrl: string;
+  /** How it comes into the history, and for a traversal the entry's key. */
+  loadHow: LoadHow;
+  loadKey: string;
   /** Past the cache: a reload with Shift. */
   loadFresh: boolean;
   /** The form data to POST, where the navigation is a form's POST — or a
    *  reload of the page one answered. */
   loadPost: PostData | null;
+  /** A step to take in the history, once for each `stepSeq`: `stepDelta`
+   *  entries back or forward, or with `stepUrl`, to that fragment of the
+   *  document shown. */
+  stepSeq: number;
+  stepDelta: number;
+  stepUrl: string;
+  /** The tab's history as the browser last heard it (`History`, as JSON):
+   *  what a page process new to the tab — its last one having ended —
+   *  starts from. Read once. */
+  history: string;
   zoom: number;
   /** Whether the page's scripts run: the browser's switch, for the site
    *  the page is from. Read as a document is made; the browser reloads the
    *  page when it changes. */
   scripts: boolean;
-  /** The documents the tab's history still holds, comma-separated. Any
-   *  other is let go. */
-  docs: string;
-  /** A navigation's document started to arrive: a history step for it.
-   *  `posted` when it is the answer to a POST — not to the GET a redirect
-   *  after one turned it into — so a reload sends the POST again. */
+  /** A navigation's document started to arrive. `posted` when it is the
+   *  answer to a POST — not to the GET a redirect after one turned it into
+   *  — so a reload sends the POST again. */
   onCommit(
     seq: number,
     url: string,
@@ -184,6 +236,10 @@ export interface PageProps {
   ): void;
   /** …and all of it has. */
   onFinish(seq: number): void;
+  /** The history changed (`History`, as JSON): a document shown, a page's
+   *  `pushState`, a step back. The address bar and Back and Forward
+   *  follow it. */
+  onHistory(history: string): void;
   /** A document's title or icon, as the page learns them; `undefined` is
    *  "no news". */
   onMeta(
@@ -193,9 +249,10 @@ export interface PageProps {
   ): void;
   /** A link followed, or a form submitted: with `post`, a POST of it. */
   onLink(url: string, target: LinkTarget, post: PostData | null): void;
-  /** The step shown has no document here — this process is newer than the
-   *  step, after a crash — so it wants loading again. */
-  onLost(entryId: number): void;
+  /** An entry wants its document loaded, which this process does not have:
+   *  a step to one it let go, the page's own reload, or the entry shown
+   *  after a crash. `doc` is the document it was, whose POST to send. */
+  onLoad(url: string, how: LoadHow, key: string, doc: number): void;
   /** One of the browser's own chords, pressed while this page had the key
    *  (`keys.ts`). */
   onCommand(command: Command): void;
@@ -210,6 +267,69 @@ interface Doc {
   /** What its relative URLs resolve against; null for the browser's own
    *  pages, which name only absolute ones. */
   baseUrl: string | null;
+  /** Where it was loaded from, where a redirect ended. */
+  url: string;
+}
+
+/** The document shown, and how it is shown. */
+interface Shown {
+  /** Counts the documents shown, each an `<Html>` of its own. */
+  n: number;
+  /** Which, by the navigation that loaded it. */
+  seq: number;
+  /** The address it is shown at: where it was loaded, or the entry a step
+   *  went to. */
+  url: string;
+  /** Whether its scripts run, which is whether its engine keeps its
+   *  entries or this process does. */
+  scripted: boolean;
+  zoom: number;
+}
+
+/** Where to scroll the document shown once it is drawn: where an entry was
+ *  left, its fragment, or the top. */
+interface ScrollTarget {
+  n: number;
+  entry: string | null;
+  fragment: boolean;
+}
+
+/** Whether this process can run a page's scripts, once it is known: the
+ *  engine is loaded the first time a document would run them. */
+let engine: boolean | null = null;
+let engineAsked: Promise<boolean> | null = null;
+function askEngine(): Promise<boolean> {
+  engineAsked ??= preloadHtmlScripts().then((runs) => (engine = runs));
+  return engineAsked;
+}
+
+/** A history the browser kept, as a session again, with the documents its
+ *  entries were of by this process's number for each. */
+function restored(json: string): {
+  session: HtmlSessionHistory;
+  seqOf: Map<number, number>;
+} {
+  let kept: History | null = null;
+  try {
+    kept = json ? (JSON.parse(json) as History) : null;
+  } catch {
+    kept = null;
+  }
+  const entries = kept?.entries ?? [];
+  const session = new HtmlSessionHistory({
+    entries: entries.map((e) => ({
+      url: e.url,
+      key: e.key,
+      id: e.id,
+      document: e.doc || undefined,
+    })),
+    index: kept?.index,
+  });
+  const seqOf = new Map<number, number>();
+  session.entries.forEach((e, i) => {
+    if (entries[i].doc) seqOf.set(e.document, entries[i].doc);
+  });
+  return { session, seqOf };
 }
 
 /**
@@ -236,11 +356,22 @@ if (isFramed()) {
 }
 
 export default function Page(props: PageProps): ReactElement {
-  const { entryId, doc, url, loadSeq, zoom } = props;
+  const { loadSeq, zoom } = props;
   const cocoa = useSupports('nativeControls');
   // whether a page's `<video>` is handed to the platform's player
   const plays = useSupports('mediaPlayback');
   const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(new Map());
+  const docsNow = useRef(docs);
+  docsNow.current = docs;
+  // The tab's history, and which navigation's document each of its
+  // documents is: from what the browser kept, where this process is new to
+  // a tab whose last one ended.
+  const [{ session, seqOf }] = useState(() => restored(props.history));
+  const [shown, setShown] = useState<Shown | null>(null);
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
+  const doc = shown?.seq ?? 0;
+  const url = shown?.url ?? '';
   const page = docs.get(doc) ?? null;
   const handle = useHtmlHandle();
   const scroller = useRef<ScrollableNode | null>(null);
@@ -250,8 +381,11 @@ export default function Page(props: PageProps): ReactElement {
   const [menuLink, setMenuLink] = useState<string | null>(null);
   const clipboard = useClipboard();
   const [pending, setPending] = useState(0);
-  /** Where each history step was scrolled to, for Back and Forward. */
-  const scrolls = useRef(new Map<number, number>());
+  /** Where each entry of the history was scrolled to, by its id, for Back
+   *  and Forward. */
+  const scrolls = useRef(new Map<string, number>());
+  const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
+  const shows = useRef(0);
   // What the document asks of the pane that scrolls it, by the document
   // that asked: a new one says nothing until it has been laid out.
   const [viewport, setViewport] = useState<{
@@ -289,12 +423,71 @@ export default function Page(props: PageProps): ReactElement {
     });
   }, []);
 
+  /** The entry shown, where it is the document shown's: not while a
+   *  document whose scripts run is on its way in, which its engine takes
+   *  its place in the history for as they start. */
+  const shownEntry = (): HtmlSessionEntry | null => {
+    const current = session.current;
+    const now = shownNow.current;
+    return current && now && seqOf.get(current.document) === now.seq
+      ? current
+      : null;
+  };
+
+  /** Show a document the tab has, in an `<Html>` of its own, at `at`:
+   *  scrolled to where the entry `entry` was left, or its fragment, or the
+   *  top. */
+  const showDoc = (seq: number, doc: Doc, at: string, entry: string | null) => {
+    const n = ++shows.current;
+    // the browser's own pages run nothing, and a document whose scripts
+    // turn out not to run here is shown to the history as one with none
+    const runs = live.current.scripts && doc.baseUrl !== null;
+    if (runs) void askEngine();
+    setShown({
+      n,
+      seq,
+      url: at,
+      scripted: runs && engine !== false,
+      zoom: live.current.zoom,
+    });
+    setScrollTarget({ n, entry, fragment: at.includes('#') });
+  };
+
+  /**
+   * What the history makes of the document a navigation loaded, before it
+   * is shown: a new entry, the page's own plan, the current entry again, or
+   * the entry a step went to. Answers the entry it is shown at where that is
+   * known — whose place it is scrolled to — and notes which document it is.
+   */
+  const plan = (how: LoadHow, key: string, seq: number): string | null => {
+    const at =
+      how === 'traverse'
+        ? session.entries.findIndex((e) => e.key === key)
+        : session.index;
+    if (how === 'push' || (how === 'traverse' && at < 0)) {
+      session.push();
+      return null;
+    }
+    if (how === 'page') return null;
+    if (how === 'traverse' && at !== session.index) {
+      const to = session.go(at - session.index);
+      if (to) seqOf.set(to.document, seq);
+      return to?.id ?? null;
+    }
+    // the current entry again: the page's own reload planned itself
+    if (how !== 'pageReload') session.reload();
+    const current = session.current;
+    if (current) seqOf.set(current.document, seq);
+    return current?.id ?? null;
+  };
+
   // The navigation in progress, loaded; a new one, or none, aborts it. A
   // document cut off mid-stream stays as far as it got — the stop button's
   // meaning — rather than waiting for the rest forever.
   useEffect(() => {
     if (!loadSeq) return;
     const seq = loadSeq;
+    const { loadHow: how, loadKey: key } = props;
     const controller = new AbortController();
     void loadDocument(
       {
@@ -308,6 +501,7 @@ export default function Page(props: PageProps): ReactElement {
       {
         commit: (committed, first, title, posted) => {
           store(seq, first);
+          showDoc(seq, first, committed, plan(how, key, seq));
           live.current.onCommit(seq, committed, title, posted);
         },
         progress: (next) => store(seq, next),
@@ -324,28 +518,153 @@ export default function Page(props: PageProps): ReactElement {
     };
   }, [loadSeq]);
 
-  // documents no step of the history shows any more
-  useEffect(() => {
-    const kept = new Set(props.docs.split(',').filter(Boolean).map(Number));
-    setDocs((all) => {
-      let out: Map<number, Doc> | null = null;
-      for (const id of all.keys()) {
-        if (kept.has(id) || id === loadSeq) continue;
-        out ??= new Map(all);
-        out.delete(id);
-      }
-      return out ?? all;
-    });
-  }, [props.docs]);
+  // A document shown with no scripts running in it is shown to the
+  // history here, as its engine would as they start.
+  useLayoutEffect(() => {
+    if (!shown || shown.scripted) return;
+    seqOf.set(session.show(shown.url).document, shown.seq);
+  }, [shown?.n, shown?.scripted]);
 
-  // A step this process has no document for: it was loaded by the process
-  // before this one, which is gone. Asked for once per step.
-  const lost = useRef(0);
+  // A new zoom is a new `<Html>`, and where the document's scripts run, a
+  // new document at the entry shown — which its own navigations may have
+  // moved on from where it was shown: a reload, as the history has it.
+  useLayoutEffect(() => {
+    if (!shown || shown.zoom === zoom) return;
+    if (shown.scripted) session.reload();
+    setShown({ ...shown, zoom, url: shownEntry()?.url ?? shown.url });
+  }, [zoom]);
+
+  // A document shown to run its scripts, in a process that turned out to
+  // run none: shown to the history here instead.
+  const [, engineKnown] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    if (!entryId || page || loadSeq || lost.current === entryId) return;
-    lost.current = entryId;
-    live.current.onLost(entryId);
-  }, [entryId, page, loadSeq]);
+    if (props.scripts && engine === null) void askEngine().then(engineKnown);
+  }, [props.scripts]);
+  useEffect(() => {
+    if (engine === false && shown?.scripted) {
+      setShown({ ...shown, scripted: false });
+    }
+  });
+
+  // The history as it changes: the browser hears of it — its address bar
+  // and its Back and Forward follow it — and the documents no entry is of
+  // any more are let go.
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const toldHistory = useRef('');
+  useEffect(() => {
+    const changed = () => {
+      // the document shown came into the history, under a number of its own
+      const current = session.current;
+      const now = shownNow.current;
+      if (current && now && !seqOf.has(current.document)) {
+        seqOf.set(current.document, now.seq);
+      }
+      const history: History = {
+        entries: session.entries.map((e) => ({
+          id: e.id,
+          key: e.key,
+          url: e.url,
+          doc: seqOf.get(e.document) ?? 0,
+        })),
+        index: session.index,
+      };
+      const json = JSON.stringify(history);
+      if (json !== toldHistory.current) {
+        toldHistory.current = json;
+        live.current.onHistory(json);
+      }
+      const kept = new Set(history.entries.map((e) => e.doc));
+      kept.add(shownNow.current?.seq ?? 0);
+      kept.add(live.current.loadSeq);
+      setDocs((all) => {
+        let out: Map<number, Doc> | null = null;
+        for (const id of all.keys()) {
+          if (kept.has(id)) continue;
+          out ??= new Map(all);
+          out.delete(id);
+        }
+        return out ?? all;
+      });
+      redraw();
+    };
+    return session.onChange(changed);
+  }, []);
+
+  /** Show the document of another document's entry: the one the tab still
+   *  has, where the entry is at its address, or else loaded again. */
+  const showEntry = (to: HtmlSessionEntry) => {
+    const seq = seqOf.get(to.document) ?? 0;
+    const held = docsNow.current.get(seq);
+    // a document's scripts may have moved its entry to another address with
+    // `pushState`, which a step back to it loads, as a browser that kept no
+    // document would
+    if (held && withoutHash(held.url) === withoutHash(to.url)) {
+      showDoc(seq, held, to.url, to.id);
+    } else {
+      live.current.onLoad(to.url, 'traverse', to.key, seq);
+    }
+  };
+
+  /** Go `delta` entries back or forward. Among the document's own entries
+   *  it goes there itself — its engine as a task, and here, at once, where
+   *  it runs none; to another document's, that document is shown. */
+  const goBy = (delta: number) => {
+    const from = session.index;
+    const to = session.go(delta);
+    if (to) return showEntry(to);
+    const current = shownEntry();
+    if (!current || shownNow.current?.scripted || session.index === from) {
+      return;
+    }
+    setScrollTarget({
+      n: ++shows.current,
+      entry: current.id,
+      fragment: current.url.includes('#'),
+    });
+  };
+
+  /** A fragment of the document shown, as an entry of its own, scrolled
+   *  to. Where its scripts run their engine keeps its fragments, and one
+   *  the browser asks for (a typed one) loads the document again. */
+  const toFragment = (to: string, typed: boolean): boolean => {
+    const current = shownEntry();
+    if (
+      current &&
+      to.includes('#') &&
+      withoutHash(to) === withoutHash(current.url) &&
+      session.fragment(to)
+    ) {
+      setScrollTarget({ n: ++shows.current, entry: null, fragment: true });
+      return true;
+    }
+    if (typed) live.current.onLoad(to, 'push', '', 0);
+    return false;
+  };
+
+  // A step the browser asks for — Back, Forward, a fragment typed — taken
+  // once: a process new to the tab has taken none of the ones before it.
+  const stepped = useRef(props.stepSeq);
+  useEffect(() => {
+    if (props.stepSeq === stepped.current) return;
+    stepped.current = props.stepSeq;
+    if (props.stepUrl) toFragment(props.stepUrl, true);
+    else goBy(props.stepDelta);
+  }, [props.stepSeq]);
+
+  // The entry shown has no document here: this process is newer than the
+  // history, which the one before it kept, and is gone. Asked for once.
+  const lost = useRef(false);
+  useEffect(() => {
+    const current = session.current;
+    if (shown || loadSeq || lost.current || !current) return;
+    lost.current = true;
+    live.current.onLoad(
+      current.url,
+      'reload',
+      current.key,
+      seqOf.get(current.document) ?? 0,
+    );
+  }, [shown, loadSeq]);
 
   // a document's resources are fetched while it is the one showing
   const pageUrl = withoutHash(url);
@@ -403,17 +722,22 @@ export default function Page(props: PageProps): ReactElement {
     [page, doc, url],
   );
 
-  // scroll: to where this step was left, or to its fragment, or the top
-  const fragment = url.split('#')[1] ?? '';
+  // Scroll: to where the entry was left, or to its fragment, or the top —
+  // as a document is shown, and as one with no scripts goes among its own
+  // entries. One whose scripts run scrolls itself among its own (HTML's
+  // scroll restoration), and is left to.
   const finished = !!page && !page.partial;
+  const savedFor = (target: ScrollTarget | null) =>
+    target?.entry ? scrolls.current.get(target.entry) : undefined;
   useLayoutEffect(() => {
-    if (!page) return;
-    const saved = scrolls.current.get(entryId);
-    if (saved === undefined && fragment) return;
+    if (!page || !scrollTarget) return;
+    const saved = savedFor(scrollTarget);
+    if (saved === undefined && scrollTarget.fragment) return;
     scroller.current?.scrollTo({ x: 0, y: saved ?? 0 });
-  }, [entryId, !!page]);
+  }, [scrollTarget?.n, !!page]);
   useEffect(() => {
-    if (!fragment || !finished || scrolls.current.has(entryId)) return;
+    if (!scrollTarget?.fragment || !finished) return;
+    if (savedFor(scrollTarget) !== undefined) return;
     // Where the element is is a question for the layout, which runs after
     // this commit rather than in it: asked a macrotask later, a page just
     // built has been laid out at the width it is shown at.
@@ -432,7 +756,7 @@ export default function Page(props: PageProps): ReactElement {
       pane.scrollTo({ y: Math.max(0, y) });
     }, 0);
     return () => clearTimeout(timer);
-  }, [fragment, finished, entryId]);
+  }, [scrollTarget?.n, finished]);
 
   const onLink = (href: string, ev: X11MouseEvent<DrawnNode>) => {
     if (/^javascript:/i.test(href)) {
@@ -465,7 +789,11 @@ export default function Page(props: PageProps): ReactElement {
     // one whose target names a frame of the page's is loaded there by
     // `<Html scripts>` before it gets here, and goes nowhere without them
     const to = navigableFor(handle.document, linkTarget(link, handle.document));
-    if (typeof to === 'string') live.current.onLink(href, to, null);
+    if (typeof to !== 'string') return;
+    // a fragment of the document shown loads nothing: an entry of its own
+    // (one whose scripts run took the link before it got here)
+    if (to === 'here' && toFragment(href, false)) return;
+    live.current.onLink(href, to, null);
   };
 
   // A form is a link it writes itself: a GET is one to `submission.url`,
@@ -492,21 +820,37 @@ export default function Page(props: PageProps): ReactElement {
   };
 
   // The page's scripts, where they run: the browser's seams, the latest of
-  // each. Where the page is shown — the pane, its scroll and the zoom — is
-  // `<Html>`'s to read, from the scroller around it and the `scale` between;
-  // a script's source comes through `onResource` like any other resource.
-  const scripts: HtmlScripts | false = props.scripts && {
+  // each, and the tab's history. Where the page is shown — the pane, its
+  // scroll and the zoom — is `<Html>`'s to read, from the scroller around it
+  // and the `scale` between; a script's source comes through `onResource`
+  // like any other resource.
+  const scripts: HtmlScripts | false = !!shown?.scripted && {
     userAgent: USER_AGENT,
     language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
     // what the platform's player opens, where there is one: a stream's
     // playlist among it, which a page with no `MediaSource` hands it
     canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
-    navigate: (to, how) =>
-      live.current.onLink(to, how === 'tab' ? 'tab' : 'here', null),
-    reload: () => live.current.onCommand('reload'),
-    go: (delta) => {
-      if (delta) live.current.onCommand(delta < 0 ? 'back' : 'forward');
+    session,
+    navigate: (to, how) => {
+      if (how === 'tab') return live.current.onLink(to, 'tab', null);
+      // a fragment the document went to itself, which its engine has
+      // written to the history already
+      if (to.includes('#') && session.current?.url === to) return;
+      live.current.onLink(to, 'here', null);
     },
+    reload: () => {
+      const current = session.current;
+      if (!current) return;
+      live.current.onLoad(
+        current.url,
+        'pageReload',
+        current.key,
+        seqOf.get(current.document) ?? 0,
+      );
+    },
+    // `history.go` past the document's own entries, and `back()` to another
+    // document's: the history planned the step, which is taken here
+    go: (delta) => goBy(delta),
     log: (level, text) => {
       if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
     },
@@ -633,7 +977,8 @@ export default function Page(props: PageProps): ReactElement {
             }
           }}
           onScroll={(ev) => {
-            if (entryId) scrolls.current.set(entryId, ev.scrollY);
+            const entry = shownEntry();
+            if (entry) scrolls.current.set(entry.id, ev.scrollY);
           }}
           onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
             const href = handle.hrefAt(ev.x, ev.y);
@@ -647,7 +992,7 @@ export default function Page(props: PageProps): ReactElement {
             if (href) live.current.onLink(href, 'background', null);
           }}
         >
-          {page ? (
+          {page && shown ? (
             // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's scale
             // is constant for its life by core's contract, and `<Html>` keeps
             // its device-pixel work on that promise, so a new zoom is a new
@@ -657,9 +1002,12 @@ export default function Page(props: PageProps): ReactElement {
             // Both grow: a page shorter than the window is still as tall as
             // it, as a browser's canvas is, so its background reaches the
             // bottom at any size rather than stopping where the text does.
-            <box scale={zoom} style={{ flexDirection: 'column', flexGrow: 1 }}>
+            <box
+              scale={shown.zoom}
+              style={{ flexDirection: 'column', flexGrow: 1 }}
+            >
               <Html
-                key={`${doc}@${zoom}`}
+                key={`${shown.n}@${shown.zoom}`}
                 ref={handle.ref}
                 // the web's `medium`: every page's `rem` is sixteen pixels in
                 // a browser, and a design system spaces a page in them, where
@@ -673,12 +1021,9 @@ export default function Page(props: PageProps): ReactElement {
                 source={page.source}
                 partial={page.partial}
                 charset={page.charset}
-                // with the fragment this step is at, which is `:target`
-                baseUrl={
-                  page.baseUrl && fragment
-                    ? `${withoutHash(page.baseUrl)}#${fragment}`
-                    : page.baseUrl
-                }
+                // where it is shown, and where it runs no scripts, at the
+                // fragment of the entry shown, which is `:target`
+                baseUrl={page.baseUrl && addressOf(shown, shownEntry())}
                 onResource={onResource}
                 onLink={onLink}
                 onSubmit={onSubmit}
@@ -728,6 +1073,15 @@ export default function Page(props: PageProps): ReactElement {
 
 const withoutHash = (url: string): string => url.split('#')[0];
 
+/** The address a document is shown at: where it was shown, and where it
+ *  runs no scripts, at the fragment of its entry shown now — one whose
+ *  scripts run keeps its own fragments. */
+function addressOf(shown: Shown, entry: HtmlSessionEntry | null): string {
+  if (shown.scripted || !entry) return shown.url;
+  const at = entry.url.indexOf('#');
+  return withoutHash(shown.url) + (at < 0 ? '' : entry.url.slice(at));
+}
+
 // --- loading a document ------------------------------------------------------
 
 /**
@@ -773,7 +1127,12 @@ async function loadDocument(
     url = nav.url,
     posted = false,
   ) => {
-    on.commit(url, { source, partial: false, baseUrl: null }, title, posted);
+    on.commit(
+      url,
+      { source, partial: false, baseUrl: null, url },
+      title,
+      posted,
+    );
     on.finish();
   };
   if (nav.url === HOME) return own(homePage(cocoa), 'New Tab');
@@ -841,6 +1200,7 @@ async function loadDocument(
     head = concat(head, value);
   }
   const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
+  const at = landedAt(response.url, target);
   let decoder: TextDecoder;
   try {
     decoder = new TextDecoder(charset);
@@ -852,9 +1212,10 @@ async function loadDocument(
     source,
     partial: !ended,
     charset,
-    baseUrl: response.url,
+    baseUrl: at,
+    url: at,
   };
-  on.commit(response.url, first, null, posted);
+  on.commit(at, first, null, posted);
   let last = Date.now();
   let interval = STREAM_FIRST;
   while (!ended) {
@@ -874,6 +1235,18 @@ async function loadDocument(
   source += decoder.decode();
   on.progress({ ...first, source, partial: false });
   on.finish();
+}
+
+/** Where a navigation's document is: where its response came from, at the
+ *  fragment the navigation asked for where that names none — a fetch's
+ *  response never does, and a redirect keeps the one it was asked for (HTML
+ *  7.4.5, "process a navigate fetch"). Dropped, a link to another page's
+ *  `#section`, or its `#:~:text=`, landed at the top. */
+function landedAt(response: string, asked: string): string {
+  const at = asked.indexOf('#');
+  return response.includes('#') || at < 0
+    ? response
+    : response + asked.slice(at);
 }
 
 function kindOf(

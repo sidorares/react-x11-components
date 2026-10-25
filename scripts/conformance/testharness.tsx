@@ -22,6 +22,14 @@
 // - **`test_driver`** is answered by this host: the vendor script it loads
 //   sends each command to a path the page's `fetch` reaches the host
 //   through, and the host injects the input into the in-process X server.
+// - **A test's own navigations** — `location`, `navigation.navigate()`,
+//   `history` past its document's entries, `reload()` — load into the place
+//   the test was shown, each document the next of one session history a
+//   test (`HtmlSessionHistory`), as a browser's tab holds them. A frame's
+//   are the engine's, a `window.open` opens nothing, and a link or a form
+//   activated in the test's window goes nowhere, as before: a test that
+//   left its own window would end its harness, and a script's `a.click()` in
+//   a frame's document reaches `onLink` with no point to tell it by.
 //
 // The server's hosts are `web-platform.test` and its subdomains, which this
 // process resolves to the loopback itself, so nothing on the machine has to
@@ -35,12 +43,17 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
-import React from 'react';
+import React, { useState } from 'react';
 import { ThemeProvider } from 'react-x11';
 import { act, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
-import { Html, HtmlNetwork, useHtmlHandle } from '../../src/html/index.js';
+import {
+  Html,
+  HtmlNetwork,
+  HtmlSessionHistory,
+  useHtmlHandle,
+} from '../../src/html/index.js';
 import type {
   HtmlHandle,
   HtmlProps,
@@ -258,18 +271,53 @@ let harness: RenderX11Result | null = null;
 /** The document's node, whose parent is the surface it is drawn on. */
 let view: { parent?: { focus?(): void } | null } | null = null;
 
-/** Mounted once per document: hands its handle out. */
-function Page(props: {
+/** A document of a test's, as it was loaded. */
+interface Loaded {
   source: string;
   baseUrl: string;
   charset: string;
+}
+
+/**
+ * Mounted once per test, as a browser's tab is: hands its handle out, and
+ * shows the test's document and then whatever its scripts navigate it to,
+ * each the next of one session history (`HtmlSessionHistory`), in an
+ * `<Html>` of its own.
+ */
+function Page(props: {
+  first: Loaded;
   network: HtmlNetwork;
   page: Current;
 }): React.ReactElement {
   const handleOf = useHtmlHandle();
   handle = handleOf;
   const { network, page } = props;
-  const resources = network.resources(props.baseUrl);
+  const [session] = useState(() => new HtmlSessionHistory());
+  const [shown, setShown] = useState({ doc: props.first, n: 0 });
+  const load = (url: string) => {
+    void network
+      .html(url)
+      .then((doc) => {
+        if (page !== current) return;
+        // at the fragment it was asked for, which a fetch's answer drops
+        const hash = url.indexOf('#');
+        const at =
+          doc.url.includes('#') || hash < 0
+            ? doc.url
+            : doc.url + url.slice(hash);
+        setShown(({ n }) => ({
+          doc: { source: doc.source, baseUrl: at, charset: doc.charset },
+          n: n + 1,
+        }));
+      })
+      .catch((error) => {
+        if (page === current && page.errors.length < 8) {
+          page.errors.push(`navigation to ${url}: ${String(error)}`);
+        }
+      });
+  };
+  const doc = shown.doc;
+  const resources = network.resources(doc.baseUrl);
   const onResource = (request: ResourceRequest) => {
     if (request.kind === 'script') {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0];
@@ -282,10 +330,26 @@ function Page(props: {
     }
     return resources(request);
   };
-  const fetcher = network.fetcher(props.baseUrl);
+  const fetcher = network.fetcher(doc.baseUrl);
   const scripts: HtmlScripts = {
     // WPT's `.any.serviceworker.html` variants register their tests' worker
     serviceWorkers: true,
+    session,
+    navigate: (url, how) => {
+      // a fragment the document went to itself, which its engine wrote
+      if (
+        how === 'tab' ||
+        (url.includes('#') && session.current?.url === url)
+      ) {
+        return;
+      }
+      load(url);
+    },
+    reload: () => load(session.current?.url ?? doc.baseUrl),
+    go: (delta) => {
+      const to = session.go(delta);
+      if (to) load(to.url);
+    },
     // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
     webTransport: network.webTransport,
     fetch: (request, signal) => {
@@ -340,21 +404,18 @@ function Page(props: {
     userAgent:
       'Mozilla/5.0 (X11; Linux x86_64) react-x11-components (wpt runner)',
   };
-  const htmlProps: HtmlProps & { ref: React.Ref<unknown> } = {
+  const htmlProps: HtmlProps & { ref: React.Ref<unknown>; key: number } = {
     ref: (node: unknown) => {
       const ref = handleOf.ref as React.Ref<unknown>;
       if (typeof ref === 'function') ref(node);
       else if (ref) (ref as React.MutableRefObject<unknown>).current = node;
       view = node as typeof view;
     },
-    source: props.source,
-    charset: props.charset,
+    key: shown.n,
+    source: doc.source,
+    charset: doc.charset,
     partial: false,
-    baseUrl: props.baseUrl,
-    fontSize: 16,
-    fontFamily: 'serif',
-    monoFamily: 'monospace',
-    defaultColorScheme: 'light',
+    baseUrl: doc.baseUrl,
     onResource,
     scripts,
     onLoaded: () => {
@@ -627,9 +688,11 @@ async function render(
   await show(
     h(Page, {
       key: `${serial++}`,
-      source: withTestRendered(doc.source),
-      baseUrl: doc.url,
-      charset: doc.charset,
+      first: {
+        source: withTestRendered(doc.source),
+        baseUrl: doc.url,
+        charset: doc.charset,
+      },
       network,
       page,
     }),
@@ -769,9 +832,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   await show(
     h(Page, {
       key: `${serial++}`,
-      source: doc.source,
-      baseUrl: doc.url,
-      charset: doc.charset,
+      first: { source: doc.source, baseUrl: doc.url, charset: doc.charset },
       network,
       page,
     }),
