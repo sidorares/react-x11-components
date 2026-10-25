@@ -6885,6 +6885,7 @@ export class Cascade {
     // the style as though they were the element's own, for layout to try
     // in turn (`positionTryStyles`); an option naming no rule is none
     if (this._positionTries && style.positionTryFallbacks) {
+      let rules = '';
       style.positionTryStyles = style.positionTryFallbacks.map((option) => {
         const found =
           option.name === null
@@ -6894,6 +6895,9 @@ export class Cascade {
                 style.positionTryTree as ShadowRoot | null,
               );
         if (!found) return null;
+        rules += `${option.name}{${found.declarations
+          .map((d) => `${d.prop}:${d.value}`)
+          .join(';')}}`;
         const tried = copyStyle(style);
         for (const d of found.declarations) {
           this._apply(tried, parentStyle, d, ctx);
@@ -6902,6 +6906,7 @@ export class Cascade {
         tried.positionTryStyles = null;
         return tried;
       });
+      style.positionTryRules = rules;
     }
     decorate(style);
     return style;

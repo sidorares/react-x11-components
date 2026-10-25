@@ -2389,6 +2389,101 @@ test("an element laid out in a vertical writing mode's frame is offset as the pa
   assert.deepStrictEqual([a.x, a.y, a.width, a.height], [260, 5, 30, 40]);
 });
 
+test('a box placed by a position option has its style, which getComputedStyle reads, a ::before too', async () => {
+  // CSS Anchor Positioning 1, 6.2: the option's styles are the box's
+  // computed style, its tactics applied
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '@position-try --pf{left:50px;top:50px;min-width:1px;max-height:200px}' +
+      '.t{position:absolute;left:99999px;width:30px;height:40px}' +
+      '#plain{position-try-fallbacks:--pf}' +
+      '#turned{position-try-fallbacks:--pf flip-start}' +
+      '#g::before{content:"";position:absolute;left:99999px;width:10px;' +
+      'height:10px;position-try-fallbacks:--pf}' +
+      '</style><div id="cb"><div class="t" id="plain"></div>' +
+      '<div class="t" id="turned"></div><div id="g"></div></div>',
+  );
+  const el = view(node);
+  const cs = (id: string, pseudo: string | null = null) =>
+    el.computedStyle(findById(el.document, id)!, pseudo)!;
+  const plain = cs('plain');
+  assert.deepStrictEqual(
+    [plain.left, plain['min-width'], plain['max-height']],
+    ['50px', '1px', '200px'],
+  );
+  const turned = cs('turned');
+  assert.deepStrictEqual(
+    [turned.width, turned.height, turned['min-height'], turned['max-width']],
+    ['40px', '30px', '1px', '200px'],
+  );
+  const before = cs('g', 'before');
+  assert.deepStrictEqual([before.left, before.top], ['50px', '50px']);
+});
+
+test('position-try-order tries the options that leave the most room first', async () => {
+  // 6.3: sorted by the size of the inset-modified containing block each
+  // leaves on the axis it names, `auto` insets nought, ties as written
+  const doc = (order: string) =>
+    render(
+      '<style>body{margin:0}#cb{position:absolute;width:400px;height:400px}' +
+        '#a{position:absolute;left:150px;top:200px;width:150px;height:150px;' +
+        'anchor-name:--a}' +
+        '@position-try --right{inset:unset;left:anchor(right)}' +
+        '@position-try --left{inset:unset;right:anchor(left)}' +
+        '@position-try --top{inset:unset;bottom:anchor(top)}' +
+        `#t{position:absolute;left:450px;width:40px;height:40px;position-anchor:--a;position-try:${order}}` +
+        '</style><div id="cb"><div id="a"></div><div id="t"></div></div>',
+    );
+  const at = async (order: string) => {
+    const { node } = await doc(order);
+    const b = boxOf(view(node), 't');
+    return [b.x, b.y];
+  };
+  // the first that fits
+  assert.deepStrictEqual(await at('--right, --left'), [300, 0]);
+  // more room across to the anchor's left
+  assert.deepStrictEqual(await at('most-width --right, --left'), [110, 0]);
+  // the same room down: as written
+  assert.deepStrictEqual(await at('most-height --right, --left'), [300, 0]);
+  // more room across above the anchor than to its right
+  assert.deepStrictEqual(await at('most-width --right, --top'), [0, 160]);
+});
+
+test('the option a layout places a box by is its last successful one only once it is rendered', async () => {
+  // 6.5.1.1: HTML keeps the last successful position option as it gathers
+  // the resize observations, once a rendering; a layout a script forces
+  // before then tries what the last rendering had
+  const { node } = await render(
+    '<style>#cb{position:relative;width:400px;height:400px}' +
+      '#a{position:relative;top:100px;left:100px;width:100px;height:100px;' +
+      'anchor-name:--a}' +
+      '#t{position:absolute;position-anchor:--a;position-area:top center;' +
+      'position-try-fallbacks:flip-block;width:100px;height:200px}' +
+      '</style><div id="cb"><div id="a"></div><div id="t"></div></div>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a') as unknown as {
+    attribs: Record<string, string>;
+  };
+  const t = findById(el.document, 't')!;
+  const top = () => el.offsetRect(t)!.y;
+  // no room above the anchor: below it
+  assert.strictEqual(top(), 200);
+  const move = (y: number) => {
+    a.attribs.style = `top:${y}px`;
+    el.touchDocument([
+      { type: 'attributes', target: a as never, attributeName: 'style' },
+    ]);
+  };
+  // room above it now, and no rendering since
+  move(200);
+  assert.strictEqual(top(), 0);
+  // room on neither side: the one rendered last, not the one forced,
+  // held in the containing block
+  move(150);
+  assert.strictEqual(top(), 200);
+});
+
 test('position-area, position-try-fallbacks and anchored() are read', () => {
   const ltr = { mode: 'horizontal-tb', rtl: false } as const;
   const tracks = (
