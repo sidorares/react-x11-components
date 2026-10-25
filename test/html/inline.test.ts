@@ -137,6 +137,29 @@ test('white space collapses across elements, and not at a line start', async () 
   );
 });
 
+test("a float's preserved space stays where a space before the float ends the line", async () => {
+  // the space after "a" is the line's last collapsible one, and the float
+  // is no part of the line, but its text was pushed after the space: the
+  // line's end took a character off the float's own text, so a float that
+  // ends on a preserved space lost it and came out a space narrower
+  const float = async (before: string) => {
+    const { node } = await render(
+      `<p>${before}<span id="f" style="float:left;white-space:pre">f </span></p>`,
+      300,
+    );
+    const el = view(node);
+    return {
+      text: (el as unknown as { _tree: { text: string } })._tree.text,
+      width: boxOf(el, 'f').width,
+    };
+  };
+  const alone = await float('');
+  const after = await float('a ');
+  assert.strictEqual(alone.text, 'f ');
+  assert.strictEqual(after.text, 'a f ');
+  assert.strictEqual(after.width, alone.width, 'the float keeps its space');
+});
+
 test('a first line keeps its first box after the indent, however wide', async () => {
   // there is no break before a line's first content, and a first line's
   // `text-indent` is room, not content: an inline-block that did not fit
