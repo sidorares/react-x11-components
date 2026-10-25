@@ -7,6 +7,7 @@
 //          thumb  the scrollbar thumb dragged the whole track and back
 //          keys   ArrowDown every 16 ms (the cursor walking, the view following)
 //   ROWS     rows to generate (default 100,000)
+//   AWAY=1   with keys: the pointer moved off the tree after the click
 //   FRAMES=1 each painted frame's scroll offset and where the selection
 //            sits in it (in, above, below the viewport), the first 40
 import { fileURLToPath } from 'node:url';
@@ -262,17 +263,35 @@ const log: string[] = [];
 if (ACTION === 'keys') {
   emit('mousedown', cx, cy, { keycode: 1, buttons: 0 });
   emit('mouseup', cx, cy, { keycode: 1 });
+  // AWAY=1: the pointer off the tree once it has the focus, so no row is
+  // hovered as the view follows the cursor
+  if (process.env.AWAY === '1') emit('mousemove', W - 4, 4, { buttons: 0 });
   await wait(100);
 }
 if (ACTION === 'keys')
-  await every(16, () =>
+  await every(16, () => {
+    if (cocoa) {
+      // through the app, as AppKit's key arrives (kVK_DownArrow): the
+      // frame is scheduled after it routes the event (`_afterInput`), and
+      // a key emitted on the window directly waited for whatever came
+      // next — 0.75 frames a second. A key-down alone, as a held arrow
+      // repeats: a key-up straight after each flushed the frames it owed
+      // ahead of the display, two a key that nobody saw
+      wnd.app._route({
+        type: 'keydown',
+        handle: wnd._key,
+        keyCode: 125,
+        time: tm(),
+      });
+      return;
+    }
     wnd.emit('keydown', {
       keycode: downCode,
       keysym: XK_DOWN,
       buttons: 0,
       time: tm(),
-    }),
-  );
+    });
+  });
 else if (ACTION === 'wheel') await every(16, () => wheel(1));
 else if (ACTION === 'fling') await every(16, () => wheel(10));
 else if (ACTION === 'jump') {
