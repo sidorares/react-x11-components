@@ -42,7 +42,6 @@ import {
   mountBetweenFrames,
   render,
   view,
-  withFieldSelection,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
 
@@ -440,7 +439,6 @@ metric(
 metric(
   "a field's selection is set in its widget and read back from it, the user's caret included",
   async (t) => {
-    withFieldSelection(t);
     const doc = await hosted(
       '<p id="p">p</p><input id="a" value="copy this link">',
     );
@@ -496,7 +494,6 @@ metric(
 metric(
   "a field's selection outlives its widget, and one set before a widget is mounted is the widget's",
   async (t) => {
-    withFieldSelection(t);
     const doc = await hosted(
       '<style>.gone { display: none }</style>' +
         '<input id="a" class="gone" value="abcdef">',
@@ -546,7 +543,6 @@ metric(
 metric(
   'text the user selects in a field is told as select, and a caret moved is not',
   async (t) => {
-    withFieldSelection(t);
     const doc = await hosted('<input id="a" value="abcdef">');
     const api = doc.el.interactive!;
     textbox().focus();

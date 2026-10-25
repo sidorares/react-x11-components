@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.54.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.54.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.55.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.55.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -804,6 +804,20 @@ it up. **The floor is a running one and moves often** — every move since
   processor time across the process, since each worker warms the decoders
   on its own. 2.53.0 under it converts a `<video frames>` frame on the GPU
   on Linux (#1003).
+- `^2.55.0` — a field's selection set and read from outside
+  (react-x11#1006): `selectionStart`, `selectionEnd`, `selectionDirection`,
+  `setSelectionRange()` and `select()` on `<textinput>` and `<textarea>`,
+  in the DOM's UTF-16 offsets. `<Html>` had asked for them at run time
+  since #972 (`selectingField`), and on a core without them a page's
+  `select()` set what a script read back while the widget showed none of
+  it: Backspace after it took one letter, which is WPT's
+  `user-select-none-on-input`, and Interop's webcompat area went from 77.7%
+  to 88.8% with the move. The same release tells whether a `<Select>`'s
+  menu is down through `onOpenChange` and lets an owner hold it through
+  `open` (#1010), which a `<select>`'s picker drops through (#983), so
+  `showPicker()` drops it and `:open` matches. Both are read at run time,
+  so an older core still mounts the fields. `withFieldSelection` in
+  `test/html/harness.ts`, which stood in for #1006, went with the move.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

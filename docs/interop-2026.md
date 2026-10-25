@@ -104,7 +104,7 @@ timed out on it and after, in the same nine seconds when they passed; why
 is not settled. Every other area is the same as or higher than its last
 figure below.
 
-By focus area, from the first run to the eleventh. Four areas have been
+By focus area, from the first run to the eleventh. Five areas have been
 measured again since, each by the PR that moved it, and their "now" is that
 PR's run, which the last column names.
 
@@ -126,7 +126,7 @@ PR's run, which the last column names.
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | shape                            | 24    | 41.6% | 95.8% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860), `CSSAnimation`s and `CSSTransition`s (#906, #928)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| webcompat                        | 9     | 22.2% | 77.7% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | webtransport                     | 58    | 0.0%  | 97.8% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), and its sessions held to the document's `connect-src` ([#1021]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -149,11 +149,12 @@ PR that measured it again. Most of those PRs were checked against ports
 and models of the WPT cases they name rather than a run, so what they
 moved shows in the next run.
 
-Three of them are whole only once an upstream release is cut, and until
-then they draw what was drawn before: a field's selection in its widget
-([#972]) needs [react-x11#1006], a `<select>`'s picker ([#983]) needs
-[react-x11#1010], and the HTML in a `foreignObject` ([#979], [#982]) needs
-[ntk#549]. All three are merged upstream and are in no release yet.
+Three of them were whole only once an upstream release was cut, and drew
+what was drawn before until then: a field's selection in its widget
+([#972]) needed [react-x11#1006] and a `<select>`'s picker ([#983])
+[react-x11#1010], which react-x11 2.55.0 carries and the floor has moved
+to; the HTML in a `foreignObject` ([#979], [#982]) needs [ntk#549], which
+is merged and in no release yet.
 
 Two runs between the eighth and the eleventh moved because of the runner
 rather than the engine. Before #927, the harness entered React's `act()`
@@ -281,9 +282,12 @@ now and then).
 **dialogs-and-popovers (94.7%).** Whether a drop-down `<select>`'s menu is
 down is the document's now: `:open` and `:closed` match it, and
 `select.showPicker()` drops it, with HTML's checks and the transient
-activation it spends ([#983]). The menu drops only on a core with
-[react-x11#1010]; until that is released, `showPicker()` makes its checks
-and spends the activation, nothing drops, and `:open` matches no select.
+activation it spends ([#983]). The menu drops on react-x11 2.55.0, which
+carries [react-x11#1010]: in a run of the area on it, on a Mac,
+`open-pseudo.html` and `open-pseudo-class-in-has.html` pass whole, where
+each failed its `<select>` subtest in the twelfth run. The area read 86.1%
+there, the two `closedby` tests timing out under two jobs as they did in
+the twelfth run.
 What is left: `input.showPicker()`, which shows nothing, since `<Html>` has
 no date, time, colour or file picker and no `<datalist>` list; the
 `SecurityError` for a cross-origin frame; and an activation shared across
@@ -402,11 +406,11 @@ capture — between them most of what is left; a transition in a frame; and
 a transition's vertical axes, which [#975] leaves, though `writing-mode`
 and `text-orientation` are in `getComputedStyle()` now.
 
-**webcompat (77.7%).** A page's `select()` and `setSelectionRange()` reach
+**webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user
-selects is told as `select` ([#972]), on a core with [react-x11#1006];
-until that is released, the selection is kept and read back as before and
-the widget shows none of it. A frame's window answers for its own viewport
+selects is told as `select` ([#972]), on react-x11 2.55.0, which carries
+[react-x11#1006]: `user-select-none-on-input.html` passes whole in a run of
+the area on it, made on a Mac, which is the number here. A frame's window answers for its own viewport
 and hears its `resize` and its media queries' `change` in HTML's order
 ([#977]). What is left is the order of a frame's `scroll` events against
 its animation frames: a frame in the page's realm scrolls nothing —

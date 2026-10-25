@@ -69,7 +69,6 @@ import {
   pixelsIn,
   rebuilt,
   snapshot,
-  withFieldSelection,
 } from './harness.js';
 import { animationClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -4925,7 +4924,6 @@ test("setRangeText edits a field's text and selects as its mode says, and a valu
 });
 
 test("a script's select() is the field's widget's: shown, typed over, and read back where the user leaves the caret", async (t) => {
-  withFieldSelection(t);
   const doc = await hosted(
     '<p id="out"></p><input id="i" value="https://example.test/share" onfocus="this.select()">' +
       '<script>' +
@@ -4956,7 +4954,6 @@ test("a script's select() is the field's widget's: shown, typed over, and read b
 });
 
 test('text the user selects in a field is the page’s select event', async (t) => {
-  withFieldSelection(t);
   const doc = await hosted(
     '<p id="out"></p><input id="i" value="abcdef"><script>' +
       'var i = document.getElementById("i"), r = [];' +
