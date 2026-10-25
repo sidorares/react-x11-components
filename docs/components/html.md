@@ -887,9 +887,17 @@ against the runtime's own roots and `NODE_EXTRA_CA_CERTS`, the ones its
 } })`, or pinned by the page's `serverCertificateHashes` (a certificate good
 for 14 days at most, as the spec has it); `webTransport: false` opens none.
 Each session is a connection of its own. Where quico differs from a browser
-it shows: a server's 2xx other than 200 is refused,
-`exportKeyingMaterial()` rejects with `NotSupportedError`, and a
-`Content-Security-Policy` `connect-src` is not consulted.
+it shows: a server's 2xx other than 200 is refused, and
+`exportKeyingMaterial()` rejects with `NotSupportedError`.
+
+**A session is held to the document's Content Security Policy**: its
+`connect-src`, or its `default-src` where it names none (CSP 3), in every
+policy a `<meta http-equiv="Content-Security-Policy">` brought — the
+parser's in the head, and a script's as it goes into the head, kept once
+it is met as a browser keeps it. One the policy does not allow is refused
+before the seam is asked, as a bad port is, and said so on the console. A
+page's `fetch` is not held to it yet, nor a policy a response header
+carries, which `<Html>` is not handed.
 
 A host with a network of its own answers the seam itself — a QUIC stack of
 its own, a proxy, a test's server — and `test/fake-transport.ts` is one

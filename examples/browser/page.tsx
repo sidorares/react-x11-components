@@ -512,6 +512,8 @@ export default function Page(props: PageProps): ReactElement {
     },
     title: (title) => live.current.onMeta(doc, title, undefined),
     fetch: (request, signal) => network.fetcher(pageUrl)(request, signal),
+    // a page's WebTransport sessions, over quico where it is installed
+    webTransport: network.webTransport,
     onTimeout: () =>
       setNotice('A script on this page ran too long, and was stopped.'),
     // the browser's own chords stay the browser's, whatever a page's

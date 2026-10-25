@@ -2628,7 +2628,12 @@ closes a way out a DOM binding opens by accident:
   too, carried across its thread as plain data (`TransportProxy` in the
   thread, `TransportRelay` in the page process, `transport-relay.ts`):
   **anything new on the seam is added to both and to the `wt` messages**,
-  or a worker's realm has a member that never answers.
+  or a worker's realm has a member that never answers. A session is held
+  to the document's `connect-src` before the seam is asked
+  (`connectAllowed`, `src/html/csp.ts`), its policies noted as a `<meta>`
+  goes into the head (`_noteCsp`, from `_childList`) and kept after it
+  goes: **anything new that opens a connection from a page asks
+  `connectAllowed` first**, which is where `fetch` would join it.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

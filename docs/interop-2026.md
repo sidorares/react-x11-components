@@ -111,7 +111,7 @@ run's.
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | webcompat                        | 9     | 22.2% | 77.7% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| webtransport                     | 58    | 0.0%  | 96.0% | WebTransport over quico and the page's streams to the standard ([#1019]), and its workers' sessions carried over the page's seam ([#1020]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| webtransport                     | 58    | 0.0%  | 97.8% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), and its sessions held to the document's `connect-src` ([#1021]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 The second run's jump is the runner's as much as the engine's: WPT's
@@ -388,18 +388,18 @@ business opening peer connections behind its host's back. Were it wanted,
 it would go through a seam the host answers, as a page's `fetch` and
 `WebTransport` do.
 
-**webtransport (96.0%).** A page has the W3C API whole, over its own
+**webtransport (97.8%).** A page has the W3C API whole, over its own
 WHATWG streams, now the standard's algorithms (WPT's `streams/` passes but
 for the tentative `owning` type), and its sessions go through a seam the
 host answers, `scripts.webTransport`, whose default opens nothing.
 `HtmlNetwork` answers it over quico, an optional peer: QUIC, HTTP/3 and
 WebTransport in JavaScript ([#1019]). A worker's sessions — dedicated,
 shared and service — are carried across its thread to the page's seam
-([#1020]). In [#1020]'s run, made against WPT's aioquic server on a Mac,
-everything passes but six subtests: the 204 a server establishes a
-session with, in each of `connect`'s four variants, which quico refuses
-as other than 200; a `Content-Security-Policy` `connect-src`
-(`csp-fail`), which nothing here consults; and
+([#1020]), and a session is held to the document's `connect-src`
+([#1021]). In [#1021]'s run, made against WPT's aioquic server on a Mac,
+everything passes but five subtests: the 204 a server establishes a
+session with, in each of `connect`'s four variants, which quico's client
+refuses as other than 200 and which wants an upstream change; and
 `back-forward-cache-with-closed-webtransport-connection`, which needs a
 back-forward cache.
 
@@ -475,3 +475,4 @@ Across areas, three things recurred, and each now has its first slice:
 [ntk#549]: https://github.com/sidorares/ntk/pull/549
 [#1019]: https://github.com/sidorares/react-x11-components/pull/1019
 [#1020]: https://github.com/sidorares/react-x11-components/pull/1020
+[#1021]: https://github.com/sidorares/react-x11-components/pull/1021
