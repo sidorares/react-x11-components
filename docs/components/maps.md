@@ -526,9 +526,13 @@ in between — so applying it where it lands is a jump, and a scroll is a
 staircase of them. A notch therefore sets a _target_ and the frames after it
 glide to it, and a second notch arriving mid-glide moves the target rather
 than starting again, so a fast scroll is one continuous zoom rather than six
-jolts. A touchpad reports what it **measured** instead, in fractions of a
-notch (`ev.smooth`, which rides react-x11's XI2 selection — it takes it on
-the first wheel a window sees), and that stream is already as smooth as the
+jolts. The glide steps at the fastest screen's frame, read from
+`useScreens()`, and at a 60Hz one where no screen says: a step at 60Hz under
+a faster display leaves frames with nothing new in them, and a wheel zoom
+drew 63 frames a second on a 75Hz Mac and 72 at its frame. A touchpad
+reports what it **measured** instead, in fractions of a notch
+(`ev.smooth`, which rides react-x11's XI2 selection — it takes it on the
+first wheel a window sees), and that stream is already as smooth as the
 hand making it: easing it would only add lag. What it needs is somewhere to
 keep the fractions, because the zoom is quantized to a sixteenth of a level
 and a twenty-fourth of a notch is a quarter of one of those — rounded
