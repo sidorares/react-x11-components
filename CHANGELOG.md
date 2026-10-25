@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.30.1](https://github.com/sidorares/react-x11-components/compare/v0.30.0...v0.30.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **html:** a float's preserved space stays where a space before it ends the line ([#1006](https://github.com/sidorares/react-x11-components/issues/1006)) ([2b8b47e](https://github.com/sidorares/react-x11-components/commit/2b8b47e69b6213505d33a6364ab1808159803d66))
+* **html:** a link broken around a block takes a restyle on every piece of it ([#1005](https://github.com/sidorares/react-x11-components/issues/1005)) ([e0ec449](https://github.com/sidorares/react-x11-components/commit/e0ec44997715cde5ade98c8f365b1a2faf29945f))
+* **html:** a rem measures from the document's root, not a shadow tree's top ([#1001](https://github.com/sidorares/react-x11-components/issues/1001)) ([090780f](https://github.com/sidorares/react-x11-components/commit/090780fc7dad55d8696992497979ee5580907eaf))
+* **html:** an inline box's outline is ink its block's repaint reaches ([#999](https://github.com/sidorares/react-x11-components/issues/999)) ([7f7ec96](https://github.com/sidorares/react-x11-components/commit/7f7ec96fc8d701f5e86750e82a54f3f0f145acc1))
+
+
+### Performance Improvements
+
+* **html:** a hover or a focus at a shadow tree's edge restyles where it is ([#998](https://github.com/sidorares/react-x11-components/issues/998)) ([346c064](https://github.com/sidorares/react-x11-components/commit/346c0640d8b682e7ffb92fe14fc28ac6b2590713))
+* **html:** a hover's subject is read without its functions, which only narrow it ([#1002](https://github.com/sidorares/react-x11-components/issues/1002)) ([09c10f7](https://github.com/sidorares/react-x11-components/commit/09c10f733e03f0f9a264cbc3d1fa30b6900063c9))
+* **html:** build the subtrees a change reached, and keep the blocks a layout before laid out ([#1007](https://github.com/sidorares/react-x11-components/issues/1007)) ([657af7c](https://github.com/sidorares/react-x11-components/commit/657af7c402b4c34482efb6aee2186820acd3b48b))
+* **html:** sheets that only add rules, and a &lt;meta&gt; no pragma reads, restyle what they can style ([#1003](https://github.com/sidorares/react-x11-components/issues/1003)) ([b3d7bfa](https://github.com/sidorares/react-x11-components/commit/b3d7bfa8d70d2c05354d382693e0f4bdeb4d2cbc))
+* **maps:** a wheel's glide steps at the display's frame ([#1009](https://github.com/sidorares/react-x11-components/issues/1009)) ([b406248](https://github.com/sidorares/react-x11-components/commit/b406248498dbe5ee890501e0b58130dbd4693f9f))
+
 ## [0.30.0](https://github.com/sidorares/react-x11-components/compare/v0.29.0...v0.30.0) (2026-10-24)
 
 
