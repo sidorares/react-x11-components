@@ -115,6 +115,8 @@ import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import { PageTransports } from './transports.js';
+import type { HtmlWebTransport } from '../transport.js';
 import * as ntk from 'react-x11/ntk';
 import type {
   AbortControllerClass,
@@ -485,6 +487,9 @@ export interface HostSeams {
   /** Whether a page may register service workers (`HtmlScripts`'
    *  `serviceWorkers`). */
   serviceWorkers?: boolean;
+  /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
+   *  `webTransport`). Absent, every session fails, as with no network. */
+  webTransport?: HtmlWebTransport;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -1732,6 +1737,8 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    this._transportsMade?.dispose();
+    this._transportsMade = null;
     if (this._s.drawn.get(this.document) === this._seams.handle) {
       this._s.drawn.delete(this.document);
     }
@@ -1969,6 +1976,10 @@ export class DomHost {
     d: Primitive,
   ): Primitive {
     const text = (v: Primitive): string => (typeof v === 'string' ? v : '');
+    // a WebTransport session's or stream's (`transports.ts`)
+    if (op.charCodeAt(0) === 119 && op.charCodeAt(1) === 116) {
+      return this._transports().op(op, a, b, c);
+    }
     switch (op) {
       // --- the tree
       case 'info': {
@@ -5355,6 +5366,21 @@ export class DomHost {
     } catch {
       return 'null';
     }
+  }
+
+  /** The page's WebTransport sessions, made the first time it opens one. */
+  private _transportsMade: PageTransports | null = null;
+  private _transports(): PageTransports {
+    if (!this._transportsMade) {
+      this._transportsMade = new PageTransports({
+        connector: () => this._seams.webTransport,
+        origin: () => this._origin(),
+        tell: (name, input) => {
+          if (!this._disposed) this.entries?.call(name, input);
+        },
+      });
+    }
+    return this._transportsMade;
   }
 
   private _storage(

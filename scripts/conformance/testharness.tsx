@@ -27,7 +27,12 @@
 // process resolves to the loopback itself, so nothing on the machine has to
 // change; `interop.ts` hands Node WPT's CA for the https ones.
 import dns from 'node:dns';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import React from 'react';
@@ -48,9 +53,11 @@ const h = React.createElement;
 const WIDTH = 800;
 const HEIGHT = 600;
 const HOST = 'web-platform.test';
-const HTTP_PORT = 8000;
-const HTTPS_PORT = 8443;
-const H2_PORT = 9000;
+// the ports `./wpt serve` listens on: its defaults, or what its
+// `config.json` moved them to where another server holds those
+const HTTP_PORT = Number(process.env.WPT_HTTP_PORT || 8000);
+const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
+const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
 const [listFile, outFile] = process.argv.slice(2);
 if (!listFile || !outFile) {
@@ -86,12 +93,21 @@ if (!listFile || !outFile) {
   };
 }
 
-const FONTS: Record<string, string> = {
-  serif: '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
-  'sans-serif':
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  monospace: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
-};
+// The generic families as files: Liberation where it is installed, and on a
+// Mac the faces it is metric-compatible with.
+const LIBERATION = '/usr/share/fonts/truetype/liberation';
+const MAC = '/System/Library/Fonts/Supplemental';
+const FONTS: Record<string, string> = existsSync(LIBERATION)
+  ? {
+      serif: `${LIBERATION}/LiberationSerif-Regular.ttf`,
+      'sans-serif': `${LIBERATION}/LiberationSans-Regular.ttf`,
+      monospace: `${LIBERATION}/LiberationMono-Regular.ttf`,
+    }
+  : {
+      serif: `${MAC}/Times New Roman.ttf`,
+      'sans-serif': `${MAC}/Arial.ttf`,
+      monospace: `${MAC}/Courier New.ttf`,
+    };
 
 const PALETTE = {
   text: '#000000',
@@ -265,6 +281,8 @@ function Page(props: {
   const scripts: HtmlScripts = {
     // WPT's `.any.serviceworker.html` variants register their tests' worker
     serviceWorkers: true,
+    // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
+    webTransport: network.webTransport,
     fetch: (request, signal) => {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
       if (path.startsWith('/__testdriver__/')) {

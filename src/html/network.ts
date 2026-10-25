@@ -36,6 +36,8 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { NO_WEBTRANSPORT, deferredSession } from './transport.js';
+import type { HtmlWebTransport } from './transport.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { nodeModule } from './scripts/platform.js';
 import type {
@@ -127,6 +129,15 @@ export interface HtmlNetworkOptions {
   /** Where each request and what came of it is told: a line of words a
    *  request. Default nowhere. */
   log?: (...parts: unknown[]) => void;
+  /**
+   * How a page's WebTransport sessions are opened (`webTransport`): over
+   * `quico`, an optional peer — pure JavaScript QUIC, HTTP/3 and
+   * WebTransport — with the server's certificate verified against `ca`,
+   * by default the runtime's own roots and `NODE_EXTRA_CA_CERTS`, the
+   * ones its `fetch` trusts. False: no session is opened, as with no
+   * network.
+   */
+  webTransport?: { ca?: string[] } | false;
 }
 
 /**
@@ -253,6 +264,8 @@ export class HtmlNetwork {
   private readonly _files: boolean;
   private _connectTimeout: number | null;
   private readonly _log: (...parts: unknown[]) => void;
+  private readonly _webTransport: { ca?: string[] } | false;
+  private _sessions: HtmlWebTransport | null = null;
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
@@ -263,6 +276,33 @@ export class HtmlNetwork {
     this._connectTimeout =
       options.connectTimeout === undefined ? 2500 : options.connectTimeout;
     this._log = options.log ?? (() => {});
+    this._webTransport = options.webTransport ?? {};
+  }
+
+  /**
+   * A page's WebTransport sessions (`<Html scripts={{ webTransport }}>`):
+   * each over QUIC and HTTP/3 to the server the page names, through
+   * `quico` where it is installed — loaded the first time a page opens a
+   * session — and failed, as with no network, where it is not.
+   */
+  get webTransport(): HtmlWebTransport {
+    if (this._sessions) return this._sessions;
+    const options = this._webTransport;
+    if (options === false) return (this._sessions = NO_WEBTRANSPORT);
+    let made: Promise<HtmlWebTransport> | null = null;
+    const log = this._log;
+    // the adapter is a chunk of its own, reached once a page asks
+    const adapter = (): Promise<HtmlWebTransport> =>
+      (made ??= import('./quico.js').then((m) =>
+        m.quicoWebTransport({ ca: options.ca }),
+      ));
+    this._sessions = {
+      connect(request, events) {
+        log('webtransport', request.url);
+        return deferredSession(adapter(), request, events);
+      },
+    };
+    return this._sessions;
   }
 
   /** The User-Agent this network's requests carry. */
@@ -1438,7 +1478,7 @@ export function defaultHtmlNetwork(): HtmlNetwork {
 }
 
 /** What `useHtmlNetwork` hands a component: `<Html onResource>`, and
- *  `<Html scripts={{ fetch }}>`. */
+ *  `<Html scripts={{ fetch, webTransport }}>`. */
 export interface HtmlNetworkSeams {
   onResource: (
     request: ResourceRequest,
@@ -1447,6 +1487,7 @@ export interface HtmlNetworkSeams {
     request: FetchRequest,
     signal: AbortSignalLike,
   ) => Promise<FetchResponse>;
+  webTransport: HtmlWebTransport;
 }
 
 /**
@@ -1478,6 +1519,7 @@ export function useHtmlNetwork(
         video: plays,
       }),
       fetch: net.fetcher(address),
+      webTransport: net.webTransport,
     }),
     [net, address, plays, controller],
   );

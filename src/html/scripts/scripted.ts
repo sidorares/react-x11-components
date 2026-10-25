@@ -37,6 +37,8 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { HTML_USER_AGENT } from '../network.js';
+import { NO_WEBTRANSPORT } from '../transport.js';
+import type { HtmlWebTransport } from '../transport.js';
 import type { CssEventInfo } from '../node.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
@@ -155,6 +157,14 @@ export interface HtmlScripts {
   /** Whether the page may start dedicated workers, each a thread of its
    *  own. Default true. */
   workers?: boolean;
+  /**
+   * What a page's `WebTransport` sessions are carried over: a session's
+   * QUIC connection and HTTP/3 CONNECT, its datagrams and its streams'
+   * bytes (`HtmlWebTransport`). Default: none, and every session fails,
+   * as one a browser with no network opens. `useHtmlNetwork(url)` hands
+   * one, over the optional peer `quico` where it is installed.
+   */
+  webTransport?: HtmlWebTransport;
   /**
    * Whether a page may register service workers (`navigator.serviceWorker`,
    * Service Workers 1), each a worker thread with its lifecycle and its
@@ -340,6 +350,7 @@ export function useScriptedHtml(
     timeout: config.timeout,
     workers: config.workers ?? true,
     serviceWorkers: config.serviceWorkers ?? false,
+    webTransport: config.webTransport ?? NO_WEBTRANSPORT,
     drawsFrames: frames,
   };
   const url = props.baseUrl ?? 'about:blank';
