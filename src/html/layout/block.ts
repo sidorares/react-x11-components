@@ -1340,6 +1340,12 @@ export function layoutDocument(
   // at rest (`unseenWhileStopped`).
   const stopped = aside !== undefined && ctx.until !== undefined;
   let unseen: Set<Box> | null = null;
+  // in a tree with anchors, in the order a browser lays them out: as each
+  // containing block's layout ends, and those a positioned box holds with
+  // it — so an anchor is laid out before a box anchored to it that comes
+  // first in the tree, as CSS Anchor Positioning 1, 2.3 has it acceptable
+  const finish = tree.anchors ? finishOrder(root) : null;
+  if (finish) inFinishOrder(ctx.positioned, 0, finish);
   for (let i = 0; i < ctx.positioned.length; i += 1) {
     const { box, containing } = ctx.positioned[i];
     if (stopped && unseenWhileStopped(tree, box)) {
@@ -1347,7 +1353,19 @@ export function layoutDocument(
       (unseen ??= new Set()).add(box);
       continue;
     }
+    const found = ctx.positioned.length;
     layoutPositioned(box, containing, ctx);
+    if (finish && ctx.positioned.length > found) {
+      if (found > i + 1) {
+        ctx.positioned.splice(i + 1, 0, ...ctx.positioned.splice(found));
+      }
+      inFinishOrder(
+        ctx.positioned,
+        i + 1,
+        finish,
+        i + 1 + ctx.positioned.length - found,
+      );
+    }
   }
   if (unseen) {
     UNSEEN.set(tree, unseen);
@@ -7519,6 +7537,45 @@ export function establishesBFC(box: Box): boolean {
   // stands in for a fragment's body, which is a block in the `<html>`
   // implied around it (`layoutDocument`)
   return box.parent === null && !STANDS_FOR_BODY.has(box);
+}
+
+/** Each box of a tree by where its layout ends, in a walk of it: what is
+ *  in a box ends before it, and a box before another in the tree ends
+ *  before it where neither holds the other. */
+function finishOrder(root: Box): Map<Box, number> {
+  const order = new Map<Box, number>();
+  const stack: [Box, number][] = [[root, 0]];
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    const [box, next] = top;
+    if (next < box.children.length) {
+      top[1] = next + 1;
+      stack.push([box.children[next], 0]);
+    } else {
+      order.set(box, order.size);
+      stack.pop();
+    }
+  }
+  return order;
+}
+
+/** Sort the positioned boxes from `from` to `to` by where the layouts of
+ *  their containing blocks end (`finishOrder`), keeping the order they
+ *  were found in for one containing block. */
+function inFinishOrder(
+  list: { box: Box; containing: Box }[],
+  from: number,
+  finish: Map<Box, number>,
+  to = list.length,
+): void {
+  if (to - from < 2) return;
+  const part = list.slice(from, to);
+  part.sort(
+    (a, b) =>
+      (finish.get(a.containing) ?? finish.size) -
+      (finish.get(b.containing) ?? finish.size),
+  );
+  for (let i = 0; i < part.length; i += 1) list[from + i] = part[i];
 }
 
 /** The root boxes that stand in for a fragment's `<body>` (`BoxTree.impliedHtml`):

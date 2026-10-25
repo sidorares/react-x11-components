@@ -4145,6 +4145,17 @@ without a layout moves its followers through one of the two. And
 which a restyle in place can change without a layout, so it asks again
 where the tree has anchors (`_revisit`).
 
+**In a tree with anchors, positioned boxes are laid out in the order a
+browser lays them out** (`finishOrder`, `inFinishOrder` in
+`layoutDocument`): as the layout of each one's containing block ends, the
+boxes in a block before the block's own, and those a positioned box holds
+straight after it. Found in the flow's order, a box anchored to an anchor
+inside an absolute box after it was placed before the anchor was laid out,
+and read a box of no size (CSS Anchor Positioning 1, 2.3 makes that
+anchor acceptable). A tree with no anchors keeps the order the boxes were
+found in. **Anything new that queues positioned boxes during that loop
+keeps the queue in this order**, or an anchor is read before its layout.
+
 **An anchored box in a vertical writing mode is placed in its frame's
 axes, and what it is placed by is read in the page's** (CSS Anchor
 Positioning 1, 3.1–4.1). `framedStyle` turns what a box's anchor functions

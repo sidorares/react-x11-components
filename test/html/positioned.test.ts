@@ -1529,6 +1529,25 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
 });
 
+test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
+  // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
+  // positioned box that is before the target among their containing
+  // block's boxes; it is laid out with that box, as that box's
+  // containing block ends its layout, before the target's does
+  const { node } = await render(
+    '<style>body{margin:0}.t{position:absolute;height:10px;' +
+      'width:anchor-size(--a1 width)}.rel{position:relative}' +
+      '#a{anchor-name:--a1;position:absolute;width:30px;height:10px}</style>' +
+      '<div class="rel"><div class="t" id="first"></div><div>' +
+      '<div class="rel"><div style="position:absolute"><div class="rel">' +
+      '<div id="a"></div></div></div></div>' +
+      '<div class="t" id="after"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'first').width, 30);
+  assert.strictEqual(boxOf(el, 'after').width, 30);
+});
+
 test('a ::before or an ::after is an anchor, as its element is', async () => {
   // CSS Anchor Positioning 1, 2.1: anchor-name applies to every element,
   // and to the tree-abiding pseudo-elements
