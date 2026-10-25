@@ -436,6 +436,15 @@ export {
 
 export { setGunzip } from './gzip.js';
 
+export { GlMapLayer, useGlMapLayer } from './layer.js';
+export type {
+  GlMapLayerFrame,
+  GlMapLayerHost,
+  GlMapLayerPointer,
+  GlMapLayerProps,
+  GlMapLayerTexture,
+} from './layer.js';
+
 export {
   DARK_PALETTE,
   LIGHT_PALETTE,
