@@ -7,7 +7,8 @@
 // docs/prd-subtree-build.md).
 import { afterEach } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup } from 'react-x11/test';
+import { act, cleanup, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
 import * as DomUtils from 'domutils';
 import {
   appendChild,
@@ -17,10 +18,11 @@ import {
 } from '../../src/html/index.js';
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
-import { GENERATED_FROM } from '../../src/html/layout/boxes.js';
+import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
 import { blocksKept } from '../../src/html/layout/block.js';
 import { shadowRootOf } from '../../src/html/dom.js';
-import { metric, render, view } from './harness.js';
+import { FONTS, h, metric, render, view } from './harness.js';
+import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
 
@@ -287,6 +289,13 @@ function boxLine(box: Box): string {
     s.userSelect,
     box.outOfFlow ? 'out' : '',
     box.isFloat ? 'float' : '',
+    // and where it inks, which a block a layout kept is walked for again;
+    // a text's is its line's
+    box.kind === 'text' || box.kind === 'break'
+      ? ''
+      : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
+          .map((n) => Math.round(n * 1000) / 1000)
+          .join(','),
     box.lines?.length ?? '',
     // a list item's number
     box.marker ? JSON.stringify(box.marker.text) : '',
@@ -308,6 +317,18 @@ function boxLine(box: Box): string {
       .join(';'),
   ].join('|');
 }
+
+/** The elements the UA's sheet never draws, whose styles a build that
+ *  restyles what a change reached may leave out. */
+const UNDRAWN = [
+  'script',
+  'style',
+  'link',
+  'meta',
+  'title',
+  'base',
+  'template',
+];
 
 /** A tree as two builds of one document must have it alike. */
 function treeLines(tree: BoxTree): string[] {
@@ -337,7 +358,7 @@ function treeLines(tree: BoxTree): string[] {
   out.push(
     // but for what is never drawn, which a restyle in place leaves out
     `styles: ${[...tree.styles]
-      .filter(([el]) => !['script', 'title', 'template'].includes(el.name))
+      .filter(([el]) => !UNDRAWN.includes(el.name))
       .map(
         ([el, { style, inFlex }]) =>
           `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
@@ -414,5 +435,257 @@ metric(
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** Rules a stream's chunk can change the answer of for what was there
+ *  before it: where a child sits from the end, whether an element holds
+ *  anything, what follows a sibling — and counters, which a tail at the
+ *  document's end may count with nothing after it to read them. */
+const STREAM_SHEETS = [
+  '',
+  `p:last-child { color: #00aa00 }
+li:nth-last-child(2) { color: #aa00aa }
+div:empty { display: none }
+section:empty { padding: 3px }
+h2 + p { margin-top: 0 }
+span:last-of-type { font-size: 12px }
+b:only-child { color: #0000aa }
+div > :first-child { padding-left: 2px }
+p ~ div { border-left: 2px solid #333 }`,
+  `body { counter-reset: n }
+h2 { counter-increment: n }
+h2::before { content: counter(n) ". " }
+ol { counter-reset: item }
+ol > li::marker { content: counter(item) ") " }
+ol > li { counter-increment: item }
+blockquote::before { content: open-quote }
+blockquote::after { content: close-quote }`,
+];
+
+/** More of what a model writes than `element` makes: lists, a table, code
+ *  and a quote. */
+function streamed(next: () => number, depth: number): Element {
+  const roll = next();
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  if (roll < 0.12) {
+    const list = createElement(pick(['ul', 'ol']), {});
+    const items = 1 + Math.floor(next() * 4);
+    for (let i = 0; i < items; i += 1) {
+      appendChild(
+        list,
+        createElement('li', {}, [createText(pick(WORDS) + ' item')]),
+      );
+    }
+    return list;
+  }
+  if (roll < 0.17) {
+    return createElement('pre', {}, [createText('code\n  more\n')]);
+  }
+  if (roll < 0.22) {
+    return createElement('blockquote', {}, [
+      createElement('p', {}, [createText(pick(WORDS))]),
+    ]);
+  }
+  if (roll < 0.26) {
+    return createElement('table', {}, [
+      createElement('tr', {}, [
+        createElement('td', {}, [createText('a')]),
+        createElement('td', {}, [createText(pick(WORDS))]),
+      ]),
+    ]);
+  }
+  if (roll < 0.32) {
+    const attribs: Record<string, string> = next() < 0.5 ? { id: 'h' } : {};
+    return createElement('h2', attribs, [createText(pick(WORDS))]);
+  }
+  // and what the document's scan collects: a sheet, an image, a script,
+  // a drawing that names a sprite, and the sprite
+  if (roll < 0.35) {
+    return createElement('style', {}, [createText('.r { color: #006600 }')]);
+  }
+  if (roll < 0.37) {
+    return createElement('img', { src: 'a.png', width: '10', height: '8' });
+  }
+  if (roll < 0.39) return createElement('script', {}, [createText('1')]);
+  if (roll < 0.42) {
+    return createElement('svg', { width: '10', height: '10' }, [
+      createElement('use', { href: '#s' }),
+    ]);
+  }
+  if (roll < 0.44) {
+    return createElement('svg', { style: 'display:none' }, [
+      createElement('symbol', { id: 's', viewBox: '0 0 2 2' }, [
+        createElement('rect', { class: 'r', width: '2', height: '2' }),
+      ]),
+    ]);
+  }
+  return element(next, depth);
+}
+
+/** What the document's scan found (`HtmlSource.facts`), as two parses of
+ *  one document must have it alike. */
+function factsLine(el: unknown): string {
+  const facts = (
+    el as { _source: { facts(): Record<string, unknown> } }
+  )._source.facts() as {
+    sheets: { kind: string; element: Element; text?: string }[];
+    scripts: Element[];
+    resources: Element[];
+    pictures: Element[];
+    drawings: Element[];
+    title: string | null;
+    base: string | null;
+  };
+  return JSON.stringify([
+    facts.sheets.map((s) => [s.kind, pathOf(s.element), s.text ?? '']),
+    facts.scripts.map(pathOf),
+    facts.resources.map(pathOf),
+    facts.pictures.map(pathOf),
+    facts.drawings.map(pathOf),
+    facts.title,
+    facts.base,
+  ]);
+}
+
+/** Places to cut `markup` at after `from`, in order: anywhere — inside a
+ *  word, a tag, an attribute — and as often just after a tag ends. */
+function cutsOf(next: () => number, markup: string, from: number): number[] {
+  const cuts = new Set<number>();
+  const count = 5 + Math.floor(next() * 12);
+  for (let i = 0; i < count; i += 1) {
+    let at = from + Math.floor(next() * (markup.length - from));
+    if (next() < 0.5) {
+      const close = markup.indexOf('>', at);
+      if (close >= 0) at = close + 1;
+    }
+    if (at > from && at < markup.length) cuts.add(at);
+  }
+  return [...cuts].sort((a, b) => a - b).concat(markup.length);
+}
+
+metric(
+  'a stream fed a chunk at a time makes the tree a build of the whole prefix makes',
+  async () => {
+    let subtrees = 0;
+    let wholes = 0;
+    let steps = 0;
+    const keptAtStart = blocksKept();
+    const endsAtStart = buildsAtEnd();
+    // STREAM_SEEDS sweeps more of them, and STREAM_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.STREAM_SEEDS ?? 40);
+    for (let seed = Number(env.STREAM_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 7919);
+      const holder = createElement('body', {});
+      const blocks = 3 + Math.floor(next() * 6);
+      for (let i = 0; i < blocks; i += 1) {
+        appendChild(holder, streamed(next, 0));
+      }
+      // a document, or a fragment the way a model writes one, whose
+      // children are the document's own
+      const sheet = SHEET + '\n' + STREAM_SHEETS[seed % STREAM_SHEETS.length];
+      const content = holder.children
+        .map((n) => DomUtils.getOuterHTML(n as never))
+        .join(next() < 0.5 ? '\n' : '');
+      const fragment = seed % 3 === 0;
+      const head = fragment
+        ? `<style>${sheet}</style>`
+        : `<!doctype html><html><head><style>${sheet}</style></head><body>`;
+      const markup = head + content + (fragment ? '' : '</body></html>');
+      const cuts = cutsOf(next, markup, head.length);
+      // The stream, and beside it the same chunks, each styled and built
+      // whole, as every chunk was before a chunk built its tails — the
+      // same parse, since how a chunk cut inside a `<style>` reads depends
+      // on where it was cut, and scanned whole at each.
+      const pair = (prefix: string, last: boolean) =>
+        h(
+          'box',
+          { style: { flexDirection: 'column' } },
+          h(
+            'box',
+            { style: { width: 320, flexDirection: 'column' } },
+            h(Html, {
+              source: prefix,
+              partial: !last,
+              'data-testname': 'stream',
+            }),
+          ),
+          h(
+            'box',
+            { style: { width: 320, flexDirection: 'column' } },
+            h(Html, {
+              source: prefix,
+              partial: !last,
+              'data-testname': 'whole',
+            }),
+          ),
+        );
+      const result = await renderX11(pair(markup.slice(0, cuts[0]), false), {
+        width: 360,
+        height: 600,
+        fonts: FONTS!,
+      });
+      const stream = () => view(screen.getByTestName('stream') as DrawnNode);
+      const reference = view(screen.getByTestName('whole') as DrawnNode);
+      Object.assign(reference, { _parsedChanges: () => false });
+      Object.assign((reference as unknown as { _source: object })._source, {
+        _extendFacts: () => null,
+      });
+      await act();
+      for (let step = 1; step < cuts.length; step += 1) {
+        // the last step ends the source
+        const last = step === cuts.length - 1;
+        const prefix = markup.slice(0, cuts[step]);
+        const internals = stream() as unknown as Record<
+          string,
+          (...a: unknown[]) => unknown
+        > & { _tree: BoxTree };
+        const subtreeBuild = internals._subtreeBuild;
+        let built: unknown = undefined;
+        internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+          built = subtreeBuild.apply(this, a);
+          return built;
+        };
+        await act(() => result.rerender(pair(prefix, last)));
+        delete internals._subtreeBuild;
+        steps += 1;
+        if (built) subtrees += 1;
+        else if (built === null) wholes += 1;
+        const a = stream();
+        const b = reference;
+        const domA = DomUtils.getOuterHTML(a.document as never);
+        const domB = DomUtils.getOuterHTML(b.document as never);
+        assert.strictEqual(domA, domB, `seed ${seed}, step ${step}: the DOM`);
+        assert.strictEqual(
+          factsLine(a),
+          factsLine(b),
+          `seed ${seed}, step ${step}: what the scan found`,
+        );
+        const kept = treeLines((a as unknown as { _tree: BoxTree })._tree);
+        const whole = treeLines((b as unknown as { _tree: BoxTree })._tree);
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step} (${built ? 'subtrees' : 'whole'}): ` +
+            `line ${at}\nkept  ${kept[at]}\nwhole ${whole[at]}\n` +
+            `${JSON.stringify(markup.slice(0, cuts[step - 1]))}\n+ ` +
+            JSON.stringify(prefix.slice(cuts[step - 1])),
+        );
+      }
+      result.unmount();
+    }
+    assert.ok(
+      subtrees > steps / 3,
+      `${subtrees} of ${steps} chunks built only their subtrees (${wholes} the whole)`,
+    );
+    const kept = blocksKept() - keptAtStart;
+    assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+    // and most of them spliced where the document ends
+    const ends = buildsAtEnd() - endsAtStart;
+    assert.ok(ends > subtrees / 2, `${ends} of them at the document's end`);
   },
 );

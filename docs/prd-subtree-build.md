@@ -1,6 +1,7 @@
 # Building only what changed
 
-> **Status: phase 1 built, and phase 2 for blocks in a block's flow.**
+> **Status: phase 1 built, phase 2 for blocks in a block's flow, and
+> phase 3: a stream's chunk builds the ends of what it touched.**
 > Written 2026-10-25, from the fifteen pages `htmlpagejs.mjs` loads with
 > their scripts running, on react-x11's macOS backend at 2x. Every number
 > here is from those loads unless it says otherwise.
@@ -211,3 +212,194 @@ On X11, the same pages on Xvfb: 22,359 → 21,295 ms of settling and 36,011
 → 33,857 ms of processor, the Guardian, MDN, Tailwind, GitHub and react.dev
 apart in every run. Reddit, three milliseconds of ninety the other way, was
 the same run alone.
+
+## Phase 3: a stream's chunk
+
+`<Html partial>` fed a source that grows — a model writing HTML — took
+every chunk through a restyle, a build and a layout of the whole
+document, since `_read` invalidated the style whenever the parser wrote:
+45 ms a chunk at 670 KB on a Mac, where `<Markdown>` streaming the same
+content holds at 11–14 ms. A chunk now costs what it added.
+
+### What the parser says it did
+
+The parser records what a chunk does to the tree (`ParseRecord`, through
+`Handler`): each node it put in — always at the end of what holds it, the
+one place it puts anything — the texts it wrote on to, and the attributes
+a second `<html>` or `<body>` set on the first. `HtmlSource.takeAppended`
+hands them over as the change records a `refresh` is told, and
+`_parsedChanges` scopes them as `touchDocument` does, with what an append
+means known besides (`_appendedScope`, `Cascade.appendChange`): what came
+is new, and styled whole; of what was there, a rule reaches the children
+that were last, or last of a type that came (`'e'`: `:last-child` and its
+kin), every child where it counts from the end (`'n'`: `:nth-last-child()`),
+the holder only where it held nothing (`:empty`) or held text that was
+white space (`:blank`), and a sibling combinator nothing — it reaches only
+what is after the child it follows, which is new. Anything the record cannot
+say — a `<body>` taking in what went before it, a shadow root attached, a
+parse that yields to its scripts — restyles everything, as before.
+
+The document's scan (`facts()`) extends the scan before the chunk by the
+elements it put in (`_extendFacts`), which come after every element already
+in the tree; a text put into a `<style>` or a `<title>`, or anything into
+a shadow tree, scans the tree whole.
+
+### A tail
+
+A chunk's changes reach the ends of what was open: the parser's stack of
+open elements is the last child of each down from the root. So where a
+holder's own box and style stay, its boxes can differ only from the first
+child the chunk touched on. A **tail** of it (`tailRoot`, `runTail`) is the
+run of its box's children after the last block-level box of its own before
+that child — a block, a flex box or a table in the flow, which ended the
+line before what follows (`endsLine`) — with its `::after`. The builder's
+state there is the one it starts a build of its own at:
+
+| builder state                      | why a tail is safe for it                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| white space, a word's first letter | the block before it ended its line (`_endLine`, `after`); and a float or a box out of the flow around it holds the space before it from its line's end only where it pushed text (`after`'s `held`), so one whose text comes to some, or to none, is refused — as a root is                                                                                |
+| the document's text                | the tail's text starts where the block before it left the text (`textAfterBox`: the end of the text the tree's ranges say is at or before it, and past it what the fix-up dropped from it, which the list of text boxes keeps) and ends where the holder's did; what follows moves by the difference, its lines and their span maps with it (`shiftLines`) |
+| `::first-letter`, `::first-line`   | refused where any rule styles one                                                                                                                                                                                                                                                                                                                          |
+| counters and quotes                | a build apart notes a read of any counter it did not make, or of one whose reach a counter outside could change, and refuses (`CounterScopes.detach`); it counts otherwise than the old run did only where nothing kept after it reads a counter                                                                                                           |
+| the fix-up                         | the tail is fixed up after a stand-in block, with what the fix-up saw before the block among the holder's children (`ranBefore`, from the first block after each, which `RAN_FROM` keeps by the holder): inline content, which wraps every run, and floats or boxes out of the flow, wrapped only so; refused where the tail would change how they are     |
+| the holder                         | its box and style stay: a block container in the document's own tree, hosting no shadow tree, of no element that lays out its children otherwise (`TAILS_REFUSED`), and none whose style the change can reach                                                                                                                                              |
+
+A seed no rebuild root can be found for — text written into an inline box
+at the document's top — is in a tail of what holds the child it is in, or
+of what holds that, from a block before it (`tailAround`). A root inside a
+tail, and a tail inside a root or another tail, are the outer one's.
+
+The counters rule is what lets a tail add a list: a `<ul>` resets
+`list-item`, and a root or a tail that changes a counter was refused. In a
+build apart every counter used has to have been made by its own elements,
+and reached from inside the element that made it or past one whose reach
+no counter outside could change; where the counts before and after differ,
+the boxes kept after it are walked for one that reads a counter
+(`boxesAfter`, `readsCounter`) — at the document's end, none — with none
+counting down in the document (`BoxTree.reversed`), since that reads every
+item before its scope's end.
+
+### At the document's end
+
+Where every root and tail a build makes ends the document (`atEnd`: no box
+kept after the first of them, but those around them) and the change only
+put nodes in, the lists, the text nodes, the text boxes and the styles are
+spliced at their ends, and only the boxes around the new ones have their
+text ranges worked out again. The element keeps its index of first boxes
+and its reuse blockers for the new tree (`carryBlockers`), each of which
+was a walk of the whole tree a chunk. The layout after takes nothing off
+a kept block where nothing in the tree is offset after the flow
+(`LayoutContext.offsets`): `unoffsetHeld` walked all a kept block holds,
+reading each box's style, at every layout that kept it.
+
+A walk of the bounds that kept a block's where the layout kept the block
+where it was was tried, and taken out: it came to a quarter of a
+millisecond a chunk at 300 sections, and a layout that kept everything
+walked two boxes where it had walked the document, so `computePaintBounds`
+went into the next document's first layout less warm — inline-l after
+text-l in `htmlsweep.mjs`'s synthetic suite, 40 ms of a 600 ms mount. Its
+reach was a double field on `Box` too, made a small integer: written a
+fraction after the first layout, it moved every box to a new map as the
+paint after reached it, and table-l's first paint took twice as long.
+
+### What a whole build pays
+
+What a tail reads of the boxes before it — where a block's line ended in
+the text, and what the fix-up saw before the block — was first noted on
+every box as it was built, two fields of `Box`. A document's first paint
+at 300 sections (`docsweep.tsx`, `ACTION=mount`) came out 2% later on a
+Mac, and two fields that nothing read, put on the base's `Box`, made the
+base as much later: it was the size of every box a build makes, and not
+what was written in it. Kept in a map by the box instead, the same two
+cost every whole build of that document a millisecond, 2% of an edit's
+frame.
+
+So nothing a tail reads is noted on every box. Where a block's line ended
+is worked out where a tail needs it (`textAfterBox`), from the text ranges
+the tree keeps, and past them from the text boxes the fix-up dropped,
+which keep their parent: a grid's white space under `white-space: pre` is
+the document's text and in no box's range, and read off the ranges alone,
+a tail after one cut the white space out of the text. What the fix-up saw
+is kept by the boxes it wrapped (`RAN_FROM`), noted in the wrapping's own
+loop and only in a build a chunk may follow (`BuildOptions.streaming`): a
+box it did not wrap has its children as they were built, and a tail reads
+them. The fix-up's loop over every box's children, the scan of the
+document's facts and the walk for a tree's reuse blockers have the loops
+they had (`scanElements`, `noteBlockers`, shared with what a chunk scans
+and walks): two branches more in the first, a call for each element out of
+the second's, and the third's step in a function of its own, whose
+optimized code was thrown away for leaving the loop at every box with
+children, were together half a millisecond of an edit's or an insert's
+whole build. And the span maps a build of subtrees moves with a kept
+block's lines are moved once by a stamp of the build (`shiftLines`), where
+a set of them, an entry for every block kept after the change, was 0.3% of
+what github.com allocates as its scripts build its subtrees.
+
+### Measured
+
+`docsweep.tsx` with `COMP=html`, a section appended every 50 ms to a
+`<Html partial>` of 30, 100 and 300 sections (300 is 670 KB), run with
+plain Node in the production build as A B B A A B, three runs a side, the
+base the commit this one is on. Latency is from a chunk to the end of the
+frame that first painted after it, in milliseconds; processor time is a
+share of one core across the run.
+
+| sections | backend | latency, median, before | after     | p95 before | after     | processor before | after  |
+| -------- | ------- | ----------------------- | --------- | ---------- | --------- | ---------------- | ------ |
+| 30       | macOS   | 14.1–14.6               | 10.4–10.9 | 19.0–19.1  | 14.6–15.4 | 52–53%           | 30–31% |
+| 100      | macOS   | 22.1–22.4               | 11.6–12.2 | 25.9–26.9  | 15.5–16.1 | 72–73%           | 31–32% |
+| 300      | macOS   | 40.0–44.2               | 14.6–14.8 | 68.5–75.3  | 16.9–17.6 | 125–134%         | 36–37% |
+| 30       | X11     | 12.6–13.8               | 8.9–9.5   | 19.6–29.2  | 12.1–13.0 | 53–55%           | 30–33% |
+| 100      | X11     | 20.8–21.5               | 8.9–10.0  | 26.5–33.9  | 13.8–15.7 | 74–75%           | 31–33% |
+| 300      | X11     | 41.6–42.1               | 13.4–13.8 | 71.1–83.9  | 15.6–25.5 | 127–142%         | 38–39% |
+
+A chunk's frame hardly grows with the document any more: from 30
+sections to 300 its median goes from 10.8 ms to 14.7 on a Mac, where it
+went from 14.4 to 40.4. What still grows is what a chunk copies or walks
+whole — the source compared with what was written before it, the new
+tree's lists and its map of styles copied from the old one, and the
+children of what holds the tail, which the layout keeps one by one.
+
+The same sweep's other cells at 300 sections — a mount, a paragraph
+rewritten and one inserted mid-document, a scroll, a width dragged — came
+out within each other's ranges on both backends, and so did
+`htmlpage.mjs`'s loads, on a Mac, of react.dev, nextjs.org/blog,
+tailwindcss.com, MDN and github.com with their scripts running, but for
+MDN's processor time, which came out lower; tailwindcss.com's first frame
+came out 3 ms later in one batch of three runs a side and within range in
+the next. None of them is a stream, and a whole document's build, scan,
+fix-up and layout are what they were.
+
+### What it found
+
+Holding a stream to a whole build of the same chunks found four bugs
+that were there before it, which a whole build at every chunk had hidden:
+
+- **A kept block's lines named the text where it was.** A build that
+  lengthens the text before a block a layout keeps moved its boxes and not
+  its lines, whose text offsets and span maps are what the selection, the
+  hit test and an inline box's fragments are found by: a padded link's ink
+  was found on no line. `shiftLines` moves them with the text.
+- **An empty inline-block's baseline drifted at every layout.** Its
+  baseline was read from the rectangle of an inline box in it that clips,
+  which no layout sets (`childBaseline`): every layout after the first
+  stood it elsewhere, a resize's as much as a chunk's.
+- **A space before a float came and went with what the float held.** A
+  float or a box out of the flow holds the collapsible space before it from
+  its line's end only where it pushed text, so a root inside one whose text
+  came to some, from none, made the space outside it another. A build apart
+  of one is refused where its text comes to some or to none, a root's as
+  much as a tail's.
+- **A drawing kept from before drew a sprite as it was.** What a `<use>`
+  names, the rules matched in its copy (`ShapeCopies`) and the id index
+  they were looked up in were the last build's. A chunk that brings an id,
+  or writes into a drawing, forgets them and draws every drawing again
+  (`namesAnew`).
+
+`test/html/subtree-build.test.ts` feeds generated documents and fragments
+a chunk at a time — cut inside words, tags and attributes, and as often
+between tags — with lists, tables, code, quotes, sheets, images, scripts,
+drawings and sprites among them, and holds every step to the same chunks
+styled, built and scanned whole: every box, line, list, style and bound,
+and what the scan found. `STREAM_SEEDS` sweeps more of them, and
+`STREAM_FROM` starts at one.

@@ -1970,6 +1970,54 @@ holds a subtree build and the layout after it to a whole build, box,
 line, list and style, over generated documents; `SUBTREE_SEEDS` sweeps
 more of them, and `SUBTREE_FROM` starts at the one that failed.
 
+**A stream's chunk is a change the parser tells of, and builds the ends of
+what it touched** (`HtmlSource.takeAppended`, `_parsedChanges`,
+`ChangeScope.tails`, `tailRoot`, `runTail`, docs/prd-subtree-build.md). The
+parser records what a chunk does — the nodes it put in, each at the end of
+what holds it, the texts it wrote on to, the attributes a second `<body>`
+set — and those are the change records a `refresh` is told, scoped as an
+append reaches: the new nodes, `:last-child` and its kin of the children
+that were last, every child where a rule counts from the end, `:empty` only
+of a holder that held nothing. A holder's boxes then differ from the first
+child the chunk touched on, so a **tail** of it is built: its box stays, and
+its children after the last block-level box of its own before that child are
+built after a stand-in block, as the fix-up has them after it (`ranBefore`,
+from the first blocks `RAN_FROM` keeps by the holder), from where that box's
+line ended in the text (`textAfterBox`: the text ranges, and past them what
+the fix-up dropped from the box). A build apart counts no counter it did not
+make (`CounterScopes.detach`), and counts otherwise than it did only where
+nothing kept after it reads a counter or a quote — at the document's end,
+nothing does. Where every root and tail ends the document, what the build
+lists, its text and its styles are spliced at their ends (`atEnd`), the
+element keeps its index of first boxes and its reuse blockers
+(`carryBlockers`), and the layout after it walks no kept block to take its
+offsets off where nothing in the tree is offset (`LayoutContext.offsets`).
+Seven rules hold it up. **Anything new the parser does to the tree is
+recorded, or marks the record unknown**, as a body taking in what went
+before it and a shadow root attached do — a chunk the record cannot say
+restyles everything. **State the builder carries across siblings is at a
+known value after a block-level box in the flow, or a tail refuses**, as it
+does for a root. **Anything new a `BoxTree` lists in document order is
+spliced at the end as well as in the middle** (`atEnd`'s branch). **Anything
+new a layout keeps on a box that names a place in the document's text moves
+with the text** (`shiftLines`, which moves a kept block's lines and their
+span maps): a build that lengthens the text before a block a layout keeps
+had left its lines pointing at the old text, and an inline box's fragments
+were found on no line. A float or a box out of the flow holds the space
+before it from its line's end only where it pushed text (`after`'s `held`),
+so **a root or a tail in one whose text comes to some, or to none, is
+refused**: the space outside it is another. **A drawing kept from before is
+drawn again where a chunk brings an id or writes into a drawing**
+(`namesAnew`), since what one names may be what came. And **nothing a tail
+needs is noted on every box a build makes**: two fields more on `Box` were a
+fiftieth of a document's first paint, and a map with an entry for every
+block a fiftieth of every whole build, so what a tail reads is worked out
+where it needs it, or kept by the few boxes it is about.
+`test/html/subtree-build.test.ts` feeds generated documents and fragments a
+chunk at a time, cut inside words, tags and attributes, and holds every step
+to the same chunks styled, built and scanned whole; `STREAM_SEEDS` sweeps
+more of them, and `STREAM_FROM` starts at one.
+
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
 `_update`, for the width the boxes are about to be built at

@@ -1924,11 +1924,20 @@ export class ShapeCopies {
   readonly matched = new Map<Element, CopyMatch>();
   /** @internal What each copy comes to for a drawing of a style, and the
    *  key that names it. */
-  readonly resolved = new WeakMap<
+  resolved = new WeakMap<
     ComputedStyle,
     Map<Element, { into: Map<Element, ShapeStyle> | null; key: string }>
   >();
-  constructor(readonly byId: (id: string) => Element | null) {}
+  constructor(public byId: (id: string) => Element | null) {}
+
+  /** All of it forgotten, the ids looked up in `byId` from now on: what a
+   *  `<use>` names came, or grew, in a stream's chunk, which builds none
+   *  of the drawings that name it (`HtmlViewNode._parsedChanges`). */
+  forget(byId: (id: string) => Element | null): void {
+    this.matched.clear();
+    this.resolved = new WeakMap();
+    this.byId = byId;
+  }
 }
 
 /** What the rules asked of every element of a drawing, or of every one of
@@ -2385,14 +2394,18 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   // what an element holds, and so where its own later siblings are
   // reached from (`treeChange`), beside where it sits
   empty: ['s', 'h'],
-  blank: ['s', 'h'],
+  // and whether it holds text of its own, which a text written on to that
+  // was white space alone changes (`'k'`)
+  blank: ['s', 'h', 'k'],
   parent: ['s', 'h'],
+  // and where it sits from the end, which a child put in at the end of
+  // its parent changes for the one that was last (`'e'`)
   'first-child': ['s'],
-  'last-child': ['s'],
-  'only-child': ['s'],
+  'last-child': ['s', 'e'],
+  'only-child': ['s', 'e'],
   'first-of-type': ['s'],
-  'last-of-type': ['s'],
-  'only-of-type': ['s'],
+  'last-of-type': ['s', 'e'],
+  'only-of-type': ['s', 'e'],
   // css-select's own, after jQuery's
   header: [],
   checkbox: ['a:type'],
@@ -2562,6 +2575,8 @@ function scanFunctionChanges(
     }
   } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
     note('s', bits, has);
+    // counted from the end: every child's place, where one is put in at it
+    if (name.startsWith('nth-last-')) note('n', bits, has);
     // `of S`: what S tests decides where an element's siblings count it
     const of = /\bof\b/i.exec(arg);
     if (of) {
@@ -2905,6 +2920,17 @@ export interface TreeReach {
    *  in them, past `bits`: a sibling combinator, or a test of where an
    *  element sits that one follows, which ask how the children line up. */
   kidsLater: boolean;
+  anchors: ChangeAnchors | null;
+}
+
+/** What children put in at the end of an element reach, from where
+ *  (`Cascade.appendChange`). */
+export interface AppendReach {
+  empty: number;
+  blank: number;
+  text: number;
+  last: number;
+  every: number;
   anchors: ChangeAnchors | null;
 }
 
@@ -3991,6 +4017,40 @@ export class Cascade {
     return {
       bits,
       kidsLater,
+      anchors: this._changeAnchors([rules.everyAnchor]),
+    };
+  }
+
+  /**
+   * What putting children in at the end of an element, or writing on to
+   * the text that ends one, can restyle besides what is new (`treeChange`
+   * for any change of what one holds), from where (`CHANGES_*`): `empty`,
+   * from the element, what tests whether it holds anything, `:empty` and
+   * its kin, and of those `blank`, whether it holds text; `text`, from the
+   * element, a test of its text; `last`, from the children before what
+   * came that were last, or last of their type — `:last-child` and its kin;
+   * and `every`, from every child before it — what counts from the end,
+   * `:nth-last-child()`. A sibling combinator reaches only what is after
+   * the child it follows, which is what came. And every `:has()`. Null as
+   * `attributeChange`.
+   */
+  appendChange(): AppendReach | null {
+    const rules = this._changeRules;
+    if (rules.hasAnywhere) return null;
+    const empty = rules.bits('h');
+    const blank = rules.bits('k');
+    const text = rules.bits('t');
+    const last = rules.bits('e');
+    const every = rules.bits('n');
+    if ((empty | text | last | every | rules.bits('s')) & CHANGES_ANYWHERE) {
+      return null;
+    }
+    return {
+      empty,
+      blank,
+      text,
+      last,
+      every,
       anchors: this._changeAnchors([rules.everyAnchor]),
     };
   }

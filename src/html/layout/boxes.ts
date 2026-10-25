@@ -16,7 +16,7 @@
 // reason richtext's node gives for answering from what it draws: an index
 // built by a second traversal can disagree with the boxes, and a selection
 // that disagrees with the glyphs is worse than no selection.
-import type { ChildNode, Element, Text } from 'domhandler';
+import type { ChildNode, Element, ParentNode, Text } from 'domhandler';
 
 import type { TextRun } from '../../richtext/index.js';
 import {
@@ -266,6 +266,11 @@ export interface LineText {
     documentAt(offset: number): number;
     /** The text box an offset's text is, where the layout knows. */
     boxAt?(offset: number): Box | null;
+    /** Every document index it answers moved by `by`: a block a layout
+     *  keeps, whose text a build of subtrees before it moved
+     *  (`shiftLines`). Once in a `pass`, which lines that share it ask of
+     *  it each. */
+    shiftDocument?(by: number, pass: number): void;
   };
 }
 
@@ -880,6 +885,99 @@ export const SHAPE_STYLES = new WeakMap<Box, ShapeStyles | null>();
  *  when the host is asked for them. */
 export const GENERATED_FROM = new WeakMap<Box, Element>();
 
+/** What came before a block among its parent's children (`ranBefore`). */
+const RAN_INLINE = 1;
+const RAN_OUT = 2;
+
+/**
+ * For a box whose children the fix-up wrapped (`fixUpOwn`) in a build a
+ * chunk may follow (`notesWrapped`), where it holds
+ * blocks and inline-level content both: the first block in the flow among
+ * them with inline-level content before it, as they were built — white
+ * space the wrap then dropped among it — and the first with a float or a
+ * box out of the flow before it, which is wrapped where anything is. What a
+ * tail after a block is fixed up as coming after (`ranBefore`); each holds
+ * for every block after it, since what came before only grows. A box the
+ * fix-up did not wrap has no entry, and its children are as they were
+ * built, none of them inline-level where one is a block. Noted in the
+ * wrap's own loop, and not on every box or in the loop every box's
+ * children go through: two fields more on a box were a fiftieth of a
+ * document's first paint.
+ */
+const RAN_FROM = new WeakMap<Box, RanFrom>();
+
+/** Whether the fix-up notes `RAN_FROM`: in a build of a source the parser
+ *  has not been told is all in (`BuildOptions.streaming`), which a chunk,
+ *  and a tail of what it touched, may follow. A document handed over whole
+ *  is built again whole, and its many wrapped boxes noted nothing. */
+let notesWrapped = false;
+
+interface RanFrom {
+  inline: Box | null;
+  out: Box | null;
+}
+
+/** What the fix-up saw before `block` among `holder`'s children, as
+ *  `RAN_INLINE` and `RAN_OUT`; -1 where `block`, or a box `RAN_FROM` names,
+ *  is no longer among them. */
+function ranBefore(block: Box, holder: Box): number {
+  const kids = holder.children;
+  const at = kids.indexOf(block);
+  if (at < 0) return -1;
+  const from = RAN_FROM.get(holder);
+  if (!from) {
+    for (let i = 0; i < at; i += 1) {
+      if (kids[i].outOfFlow || kids[i].isFloat) return RAN_OUT;
+    }
+    return 0;
+  }
+  let bits = 0;
+  for (const [first, bit] of [
+    [from.inline, RAN_INLINE],
+    [from.out, RAN_OUT],
+  ] as const) {
+    if (!first) continue;
+    const index = kids.indexOf(first);
+    if (index < 0) return -1;
+    if (index <= at) bits |= bit;
+  }
+  return bits;
+}
+
+/**
+ * Where the document's text had got to once the builder had built `box`'s
+ * element and ended its line (`_endLine`): what a tail after a block starts
+ * from, and where the text of all a holder holds ends (`tailRoot`). The end
+ * of the last text the tree's ranges say is at or before the end of the box
+ * (`assignSubtreeRanges`, `textBefore`), and past it what the fix-up took
+ * out of the box right there — a grid's white space, a run's start under
+ * `white-space: pre` — which is the document's text where the builder
+ * pushed it, and in no box's range: a dropped text keeps its parent, and
+ * the list of text boxes keeps it (`subtreeRoot` reads it so too). -1 where
+ * such a text is not the box's and it holds none of its own, which says
+ * nothing of whether the text is before it or after. Worked out, where a
+ * tail needs it, and not noted as each box is built: on every box, two
+ * fields more were a fiftieth of a document's first paint, and in a map a
+ * fiftieth of every build of it.
+ */
+function textAfterBox(box: Box, textBoxes: readonly Box[]): number {
+  const own = box.subtreeTextEnd > box.subtreeTextStart;
+  let end = own ? box.subtreeTextEnd : textBefore(box);
+  if (end === null) return -1;
+  for (let k = textBoxAt(textBoxes, end); k < textBoxes.length; k += 1) {
+    const next = textBoxes[k];
+    if (next.textStart !== end) break;
+    if (next.textEnd === next.textStart) continue;
+    // the next text the tree holds comes after the box
+    if (inTree(next)) break;
+    let held = false;
+    for (let at = next.parent; at && !held; at = at.parent) held = at === box;
+    if (!held) return own ? end : -1;
+    end = next.textEnd;
+  }
+  return end;
+}
+
 /**
  * What a view transition's tree is built from (CSS View Transitions 1,
  * 3.4): the style of its root, and for each name a group, an image pair
@@ -1129,6 +1227,10 @@ export interface BoxTree {
   /** Whether any box paints its background through its text
    *  (`background-clip: text`): where none does, no paragraph looks. */
   clipText: boolean;
+  /** Whether a counter counts down from what its scope adds up to
+   *  (`reversed()`), which every item before the scope's end reads: where
+   *  one does, no subtree is built apart that counts (`buildSubtrees`). */
+  reversed?: boolean;
   /** The style of the `<html>` a document with neither an `<html>` nor a
    *  `<body>` implies around the body the root box stands in for
    *  (`Cascade.rootStyle`), whose background is the canvas's; null where
@@ -1175,6 +1277,9 @@ export interface ForeignObject {
 
 export interface BuildOptions {
   cascade: Cascade;
+  /** Whether the source is not all in yet: a chunk may follow, whose
+   *  tails read what the fix-up wrapped (`RAN_FROM`). */
+  streaming?: boolean;
   /** A view transition's tree, where one is under way: what hangs off the
    *  root element in the top layer (`TransitionTree`). */
   transition?:
@@ -1228,10 +1333,16 @@ export function buildBoxes(
   return builder.run(root as Element);
 }
 
-/** What a build of one subtree made (`Builder.runSubtree`): its box, its
- *  text numbered from 0, and its part of each of the tree's lists. */
+/** What a build of one subtree made (`Builder.runSubtree`, `runTail`): its
+ *  boxes, its text numbered from 0, and its part of each of the tree's
+ *  lists. */
 interface SubtreeBuild {
-  box: Box;
+  /** The root's box, or the boxes of what a tail holds, in order. */
+  boxes: Box[];
+  /** For a tail, the first of its blocks that what came before makes each
+   *  of `RAN_FROM`'s, before it or in it, and whether it holds inline-level
+   *  content, which wraps what its holder holds. */
+  ranFrom?: RanFrom & { wraps: boolean };
   text: string;
   textBoxes: Box[];
   unselectable: number[];
@@ -1250,6 +1361,11 @@ interface SubtreeBuild {
   awaitingKind: Element[];
   /** How many list items it counted, none of whose markers is a number. */
   listItems: number;
+  /** Whether it did anything else to a counter, or read one, or a quote's
+   *  depth (`Builder._counts`). */
+  counts: boolean;
+  /** Whether a counter counts down in it (`BoxTree.reversed`). */
+  reversed: boolean;
   flags: Pick<
     BoxTree,
     | 'relative'
@@ -1263,14 +1379,38 @@ interface SubtreeBuild {
   >;
 }
 
-/** One root of a subtree build, before it is built: its element, its old
- *  box, where that is in its parent's children, and the part of the
- *  document's text its subtree had. */
+/**
+ * One root of a subtree build, before it is built: an element whose boxes
+ * are built again (`subtreeRoot`), or the end of what an element — or the
+ * document — holds, from a child on (`tailRoot`); the run of its parent's
+ * children its old boxes are; and the part of the document's text they
+ * had.
+ */
 interface SubtreeRoot {
-  el: Element;
+  /** The root's element, or the element whose children a tail is of: null
+   *  for the document's own. */
+  el: Element | null;
+  /** For a tail: what holds it, the first of its children it builds, and
+   *  those children. */
+  tail: {
+    node: ParentNode;
+    from: number;
+    nodes: Set<ChildNode>;
+    /** What came before it among its holder's children (`ranBefore`),
+     *  and whether that is wrapped where it is floats and boxes out of the
+     *  flow alone. */
+    ran: number;
+    wrapped: boolean;
+  } | null;
+  /** The first node of the document it builds, in the document's order. */
+  first: ChildNode;
+  /** The root's old box, or the box of what holds a tail, which stays. */
   box: Box;
+  /** The box whose children the new boxes go in, and the run of them the
+   *  old ones are. */
   parent: Box;
   index: number;
+  count: number;
   depth: number;
   start: number;
   end: number;
@@ -1278,31 +1418,42 @@ interface SubtreeRoot {
   boxes: Set<Box>;
   /** How many list items it held, none numbered (`counts`). */
   listItems: number;
+  /** Whether a box of it changed a counter or read one, or a quote, beyond
+   *  those list items (`counts`). */
+  counts: boolean;
 }
 
 /** What a change reaches, as a subtree build takes it (`buildSubtrees`). */
 export interface SubtreeRoots {
   /** The elements whose subtrees are built again, none in another. */
   roots: Element[];
+  /** The ends of what elements hold, or the document, built again from a
+   *  child on — the one after a block-level box of their own that stays,
+   *  whose line it ended (`tailRoot`) — none in a root or another tail. */
+  tails: { node: ParentNode; from: number }[];
   /** Elements with no box, new or `display: none` before, styled where
    *  they are: a build of only these finds them `display: none` again, or
    *  is no subtree build. */
   hidden: Element[];
   /** Elements out of the document, whose styles go. */
   gone: Element[];
+  /** Whether all that changed is what a stream's chunks put in, which
+   *  moves and takes away nothing (`HtmlViewNode._buildParsed`). */
+  appendOnly?: boolean;
 }
 
 /**
- * The tree `tree` becomes where only the subtrees of `roots` can differ:
- * the boxes of each root built again (`Builder.runSubtree`) and put where
- * its old box was, and every other box the tree's own, kept with all that
- * its layouts learnt — with the document's text, every box's place in it
- * and the tree's lists made to say what a build of the whole document
- * says. A new `BoxTree`, so that what is kept by the tree is not kept for
- * it, with the new boxes beside: their ancestors are the caller's to make
- * forget their sizes (`forgetSizes`). Null where a root's subtree cannot be
- * built apart from what is around it (`prd-subtree-build.md`), and the
- * whole document is to be built.
+ * The tree `tree` becomes where only the subtrees of `roots` and the ends of
+ * what `tails` hold can differ: the boxes of each built again
+ * (`Builder.runSubtree`, `runTail`) and put where its old boxes were, and
+ * every other box the tree's own, kept with all that its layouts learnt —
+ * with the document's text, every box's place in it and the tree's lists
+ * made to say what a build of the whole document says. A new `BoxTree`, so
+ * that what is kept by the tree is not kept for it, with the new boxes
+ * beside, and the box of what holds each tail: their ancestors are the
+ * caller's to make forget their sizes (`forgetSizes`). Null where a root's
+ * subtree cannot be built apart from what is around it
+ * (`prd-subtree-build.md`), and the whole document is to be built.
  */
 export function buildSubtrees(
   tree: BoxTree,
@@ -1310,8 +1461,8 @@ export function buildSubtrees(
   found: SubtreeRoots,
   options: BuildOptions,
   firstBoxes: ReadonlyMap<Element, Box>,
-): { tree: BoxTree; made: Box[] } | null {
-  const { roots, hidden, gone } = found;
+): SubtreesBuilt | null {
+  const { roots, tails, hidden, gone } = found;
   const cascade = options.cascade;
   if (
     tree.foreign ||
@@ -1334,10 +1485,27 @@ export function buildSubtrees(
     if (!old) return null;
     olds.push(old);
   }
-  // in the document's order, which their text is in
-  olds.sort((a, b) => a.start - b.start || a.end - b.end);
+  for (const { node, from } of tails) {
+    const old = tailRoot(node, from, tree, document, firstBoxes);
+    if (!old) return null;
+    olds.push(old);
+  }
+  // in the document's order, which their text is in: two at one place are
+  // in the order of their nodes, the one with no text first
+  olds.sort(
+    (a, b) =>
+      a.start - b.start ||
+      (a.first === b.first ? 0 : precedes(a.first, b.first) ? -1 : 1),
+  );
   for (let i = 1; i < olds.length; i += 1) {
     if (olds[i].start < olds[i - 1].end) return null;
+  }
+  // and none in another's boxes
+  for (const o of olds) {
+    for (const other of olds) {
+      if (other !== o && (other.boxes.has(o.box) || other.boxes.has(o.parent)))
+        return null;
+    }
   }
   const copies = new ShapeCopies(idIndex(document as Element));
   if (!olds.length && !hidden.length) {
@@ -1351,12 +1519,20 @@ export function buildSubtrees(
       false,
       copies,
     );
-    return { tree: { ...tree, ...stylers, styles }, made: [] };
+    return {
+      tree: { ...tree, ...stylers, styles },
+      made: [],
+      replaced: [],
+      added: [],
+    };
   }
   const built: SubtreeBuild[] = [];
   const fresh = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
   /** The boxless elements' styles (`SubtreeRoots.hidden`). */
   const unboxed = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
+  /** The first root that counts, or whose list items are another number,
+   *  from which nothing kept may read a counter (`boxesAfter`). */
+  let counting: SubtreeRoot | null = null;
   const outer = cascade.stylesOf;
   cascade.stylesOf = (el) => fresh.get(el)?.style ?? tree.styles.get(el)?.style;
   cascade.beginSharing(options.kept ?? null);
@@ -1383,17 +1559,49 @@ export function buildSubtrees(
       fresh.set(el, { style, inFlex });
     }
     for (const old of olds) {
-      const parentStyle = tree.styles.get(old.parent.el!)?.style;
-      if (!parentStyle) return null;
-      const made = new Builder(options, copies).runSubtree(
-        old.el,
-        old.parent,
-        parentStyle,
-        old.depth,
-        tree.anonymous,
-      );
-      // as many list items as it had, or what follows it counts otherwise
-      if (!made || made.listItems !== old.listItems) return null;
+      let made: SubtreeBuild | null;
+      if (old.tail) {
+        made = new Builder(options, copies).runTail(
+          old.el,
+          old.tail.node,
+          old.box,
+          old.tail.from,
+          old.depth,
+          tree.anonymous,
+          old.tail.ran,
+          old.tail.wrapped,
+        );
+      } else {
+        const parentStyle = tree.styles.get(old.parent.el!)?.style;
+        if (!parentStyle) return null;
+        made = new Builder(options, copies).runSubtree(
+          old.el!,
+          old.parent,
+          parentStyle,
+          old.depth,
+          tree.anonymous,
+        );
+      }
+      if (!made) return null;
+      // As many list items as it had, numbering nothing, and nothing else
+      // done to a counter or a quote, before or after: what follows it
+      // counts as it did. Or else nothing kept after it reads a counter or
+      // a quote (`readsCounter`) — a stream's tail, at the document's
+      // end, adding a list — with none counting down in the document.
+      if (old.counts || made.counts || made.listItems !== old.listItems) {
+        if (tree.reversed || made.reversed) return null;
+        counting ??= old;
+      }
+      // A float or a box out of the flow that pushed text holds the space
+      // before it from the end of the line it is on (`after`'s `held`),
+      // and one that pushed none leaves it to be taken back: where what is
+      // built in one comes to text, or to none, from the other, the space
+      // outside it is another.
+      if (old.end > old.start !== made.text.length > 0) {
+        for (let at: Box | null = old.parent; at; at = at.parent) {
+          if (at.outOfFlow || at.isFloat) return null;
+        }
+      }
       for (const [el, entry] of made.styles) fresh.set(el, entry);
       built.push(made);
     }
@@ -1401,6 +1609,19 @@ export function buildSubtrees(
     cascade.endSharing();
     cascade.stylesOf = outer;
   }
+  if (counting && boxesAfter(counting, olds, readsCounter)) return null;
+  // A stream's chunk at the document's end: what it builds replaces all
+  // there is after the first thing it touched, but the boxes around it, so
+  // every list, the text and the styles end with what it builds, and what
+  // is kept before it stays where it is in each. Where it only put nodes in,
+  // nothing kept is gone or moved, and each is spliced at its end.
+  const atEnd =
+    !!found.appendOnly &&
+    !gone.length &&
+    !hidden.length &&
+    olds.length > 0 &&
+    !boxesAfter(olds[0], olds, () => true);
+  if (atEnd) endBuilds += 1;
   // each new boxless element's style goes before the style of the element
   // after it in the document's order, as a build sets them
   const goneSet = new Set(gone);
@@ -1442,20 +1663,87 @@ export function buildSubtrees(
       copies,
     );
     cascade.stylesOf = (el) => styles.get(el)?.style;
-    return { tree: { ...tree, ...stylers, styles }, made: [] };
+    return {
+      tree: { ...tree, ...stylers, styles },
+      made: [],
+      replaced: [],
+      added: [],
+    };
   }
 
-  // the new boxes where the old were
+  // the styles, in the order a build sets them, which is the tree's: a
+  // root's where its element's was, and a tail's before the first style
+  // of what it held, or else of what comes after what holds it
+  const tailStyles: {
+    at: number;
+    els: Set<Element>;
+    next: Element | null;
+  }[] = [];
+  olds.forEach((o, i) => {
+    if (!o.tail || atEnd) return;
+    const els = new Set<Element>();
+    for (const node of o.tail.nodes) {
+      if (!isElement(node)) continue;
+      const stack: Element[] = [node];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (tree.styles.has(at)) els.add(at);
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+      }
+    }
+    const next = o.el
+      ? styledAfter(o.el, (at) => tree.styles.has(at) && !els.has(at))
+      : null;
+    tailStyles.push({ at: i, els, next });
+  });
+  // where a boxless element's style goes there too, which of the two is
+  // first is more than can be said here
+  for (const { next } of tailStyles) {
+    if (next ? styledAt.has(next) : last.length) return null;
+  }
+
+  // the boxes around each root and tail, before they hold the new boxes:
+  // where the line of one of them ends is past it
+  const around = olds.map((o) => {
+    const up = new Set<Box>();
+    for (let at: Box | null = o.parent; at; at = at.parent) up.add(at);
+    return up;
+  });
+
+  // the new boxes where the old were: a root's in its old box's place, a
+  // tail's for the run that ends its parent's children
   for (let i = 0; i < olds.length; i += 1) {
-    const { parent, index, box } = olds[i];
-    parent.children[index] = built[i].box;
-    built[i].box.parent = parent;
-    box.parent = null;
+    const { parent, index, count, boxes, tail, box: was } = olds[i];
+    for (let k = index; k < index + count; k += 1) {
+      const old = parent.children[k];
+      if (boxes.has(old)) old.parent = null;
+    }
+    parent.children.splice(index, count, ...built[i].boxes);
+    for (const box of built[i].boxes) box.parent = parent;
+    // what came before the blocks of the parent's is as it was: a root's
+    // box stands where its old one did, and a tail's first blocks are the
+    // first kept before it, or its own
+    const from = RAN_FROM.get(parent);
+    if (!tail) {
+      if (from?.inline === was) from.inline = built[i].boxes[0];
+      if (from?.out === was) from.out = built[i].boxes[0];
+    } else if (from || built[i].ranFrom?.wraps) {
+      // one the tail wraps had no float or box out of the flow before it,
+      // which a whole build would wrap then (`runTail`'s `wrapped`)
+      const kept = (first: Box | null | undefined): Box | null =>
+        first && !boxes.has(first) ? first : null;
+      RAN_FROM.set(parent, {
+        inline: kept(from?.inline) ?? built[i].ranFrom?.inline ?? null,
+        out: kept(from?.out) ?? built[i].ranFrom?.out ?? null,
+      });
+    }
   }
 
   // The text: each root's old part of it given the new subtree's, and every
   // place in it after moved by as much.
   const bases: number[] = [];
+  const deltas: number[] = [];
   let shift = 0;
   let text = '';
   let from = 0;
@@ -1463,13 +1751,14 @@ export function buildSubtrees(
     text += tree.text.slice(from, olds[i].start) + built[i].text;
     from = olds[i].end;
     bases.push(olds[i].start + shift);
-    shift += built[i].text.length - (olds[i].end - olds[i].start);
+    deltas.push(built[i].text.length - (olds[i].end - olds[i].start));
+    shift += deltas[i];
   }
   text += tree.text.slice(from);
   const moved = (at: number): number => {
     let by = 0;
     for (let i = 0; i < olds.length && at >= olds[i].end; i += 1) {
-      by += built[i].text.length - (olds[i].end - olds[i].start);
+      by += deltas[i];
     }
     return at + by;
   };
@@ -1478,11 +1767,13 @@ export function buildSubtrees(
   // holds), whose text is still the document's, as a build leaves them.
   const inside = (at: number): boolean =>
     olds.some((o) => at >= o.start && at < o.end);
-  const keptText = tree.textBoxes.filter((box) => !inside(box.textStart));
+  const keptText = atEnd
+    ? null
+    : tree.textBoxes.filter((box) => !inside(box.textStart));
   const made = new Set<Box>();
-  built.forEach(({ box, textBoxes }, i) => {
+  built.forEach(({ boxes, textBoxes }, i) => {
     const base = bases[i];
-    const stack = [box, ...textBoxes];
+    const stack = [...boxes, ...textBoxes];
     while (stack.length) {
       const at = stack.pop()!;
       if (made.has(at)) continue;
@@ -1495,6 +1786,7 @@ export function buildSubtrees(
     }
   });
   const shifted = new Set<Box>();
+  const pass = ++shiftPasses;
   const shiftBox = (at: Box): void => {
     if (made.has(at) || shifted.has(at)) return;
     shifted.add(at);
@@ -1503,16 +1795,64 @@ export function buildSubtrees(
       at.textStart += by;
       at.textEnd += by;
     }
+    // and the lines a layout laid it out in, which one that keeps it keeps
+    // with it: all of them before every root and tail, or after
+    const lines = at.lines;
+    if (lines?.length && lines[0].textStart >= olds[0].start) {
+      const by = movedFor(lines[0].textStart, at);
+      if (by) shiftLines(lines, by, pass);
+    }
   };
-  for (const box of keptText) shiftBox(box);
-  const stack = [tree.root];
-  while (stack.length) {
-    const at = stack.pop()!;
-    if (made.has(at)) continue;
-    shiftBox(at);
-    for (const child of at.children) stack.push(child);
+  // How far a place in the text that a kept box has moves: past each root
+  // or tail before it or in it. At one's end, it is past one with text, and
+  // past one with none where the box holds the one or comes after it.
+  const movedFor = (at: number, box: Box): number => {
+    let by = 0;
+    for (let i = 0; i < olds.length; i += 1) {
+      const o = olds[i];
+      if (
+        at > o.end ||
+        (at === o.end &&
+          (o.start < o.end ||
+            around[i].has(box) ||
+            (!!box.el && precedes(o.first, box.el))))
+      ) {
+        by += deltas[i];
+      }
+    }
+    return by;
+  };
+  // at the document's end, what is kept after the first is what holds them,
+  // and what the fix-up dropped from those
+  const ups = atEnd ? new Set<Box>() : null;
+  if (ups) {
+    for (const up of around) for (const at of up) ups.add(at);
+    for (const at of ups) shiftBox(at);
+    const boxes = tree.textBoxes;
+    for (let k = textBoxAt(boxes, olds[0].start); k < boxes.length; k += 1) {
+      if (!inside(boxes[k].textStart)) shiftBox(boxes[k]);
+    }
+    for (const b of built) for (const box of b.boxes) assignSubtreeRanges(box);
+    // and the ranges around them, from the innermost out
+    const depth = (box: Box): number => {
+      let n = 0;
+      for (let at = box.parent; at; at = at.parent) n += 1;
+      return n;
+    };
+    for (const box of [...ups].sort((a, b) => depth(b) - depth(a))) {
+      rangeOfChildren(box);
+    }
+  } else {
+    for (const box of keptText!) shiftBox(box);
+    const stack = [tree.root];
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (made.has(at)) continue;
+      shiftBox(at);
+      for (const child of at.children) stack.push(child);
+    }
+    assignSubtreeRanges(tree.root);
   }
-  assignSubtreeRanges(tree.root);
 
   // each list: its old run for a root's subtree given the new subtree's
   const dropped = (box: Box): boolean => olds.some((o) => o.boxes.has(box));
@@ -1527,7 +1867,7 @@ export function buildSubtrees(
     for (const entry of list) {
       if (gone(entry)) continue;
       const el = elementOf(entry);
-      while (next < olds.length && el && !before(el, entry, olds[next].el)) {
+      while (next < olds.length && el && !beforeRoot(el, entry, olds[next])) {
         out.push(...parts(built[next]));
         next += 1;
       }
@@ -1545,7 +1885,7 @@ export function buildSubtrees(
     return false;
   };
   const goneElement = (el: Element): boolean =>
-    !connected(el) || olds.some((o) => within(el, o.el));
+    !connected(el) || olds.some((o) => insideRoot(el, o));
   // and from a list, one no box is made for now: what a script moved out of
   // a root to under an element of `display: none`
   const goneEntry = (el: Element): boolean => goneElement(el) || undrawn(el);
@@ -1553,40 +1893,85 @@ export function buildSubtrees(
   // before the fix-up broke it around a block, which is in no tree
   const elementOfBox = (box: Box): Element | null =>
     box.el ?? GENERATED_FROM.get(box) ?? null;
+  const inRange = (el: Element): boolean => olds.some((o) => insideRoot(el, o));
+  // at the document's end: each list's entries of what was rebuilt end it,
+  // and the new ones end it now
+  const atEndOf = <T>(
+    list: readonly T[],
+    parts: (build: SubtreeBuild) => readonly T[],
+    replaced: (entry: T) => boolean,
+  ): T[] => {
+    let n = list.length;
+    while (n > 0 && replaced(list[n - 1])) n -= 1;
+    const out = list.slice(0, n);
+    for (const b of built) for (const entry of parts(b)) out.push(entry);
+    return out;
+  };
   const boxList = (
     list: readonly Box[],
     parts: (build: SubtreeBuild) => readonly Box[],
   ): Box[] =>
-    relist(list, parts, elementOfBox, (box) => {
-      if (dropped(box)) return true;
-      const el = elementOfBox(box);
-      return !!el && goneEntry(el);
-    });
+    atEnd
+      ? atEndOf(list, parts, (box) => {
+          if (dropped(box)) return true;
+          const el = elementOfBox(box);
+          return !!el && inRange(el);
+        })
+      : relist(list, parts, elementOfBox, (box) => {
+          if (dropped(box)) return true;
+          const el = elementOfBox(box);
+          return !!el && goneEntry(el);
+        });
+  const elementList = <T>(
+    list: readonly T[],
+    parts: (build: SubtreeBuild) => readonly T[],
+    elementOf: (entry: T) => Element,
+  ): T[] =>
+    atEnd
+      ? atEndOf(list, parts, (entry) => inRange(elementOf(entry)))
+      : relist(list, parts, elementOf, (entry) => goneEntry(elementOf(entry)));
 
-  const textBoxes = [...keptText, ...built.flatMap((b) => b.textBoxes)].sort(
-    (a, b) => a.textStart - b.textStart,
-  );
+  let textBoxes: Box[];
+  if (keptText) {
+    textBoxes = [...keptText, ...built.flatMap((b) => b.textBoxes)].sort(
+      (a, b) => a.textStart - b.textStart,
+    );
+  } else {
+    const at = textBoxAt(tree.textBoxes, olds[0].start);
+    textBoxes = tree.textBoxes.slice(0, at);
+    const rest = tree.textBoxes
+      .slice(at)
+      .filter((box) => !inside(box.textStart));
+    for (const b of built) rest.push(...b.textBoxes);
+    rest.sort((a, b) => a.textStart - b.textStart);
+    for (const box of rest) textBoxes.push(box);
+  }
 
-  const keptNodes: TextSource[] = [];
-  for (const source of tree.textNodes ?? []) {
+  // at the document's end, the text nodes before the first are as they
+  // were, where none moved
+  const sources = tree.textNodes ?? [];
+  const firstSource = atEnd ? textNodeAt(sources, olds[0].start) : 0;
+  const keptNodes: TextSource[] = sources.slice(0, firstSource);
+  for (let k = firstSource; k < sources.length; k += 1) {
+    const source = sources[k];
     // by where it starts, and where it is: one whose line took back the
     // space it ended on ends a unit past its text, and one whose line took
     // back all it had starts at its subtree's end
-    const node = source.node as unknown as Element;
+    const node = source.node as unknown as ChildNode;
     const holder = node.parent as Element | null;
     if (
       !holder ||
-      !connected(node) ||
+      !connected(node as unknown as Element) ||
       olds.some(
         (o) =>
-          within(holder, o.el) ||
+          insideRoot(node, o) ||
           // one moved out of a root to where nothing draws it, at its end
           // too where the root's line took back all it had — but not one
           // before it, drawn, whose space the root's line took back
           (source.start >= o.start &&
             source.start <= o.end &&
-            (undrawn(holder) ||
-              (source.start < o.end && !precedes(source.node, o.el)))),
+            ((isElement(holder) && undrawn(holder)) ||
+              (source.start < o.end && !precedes(source.node, o.first)))),
       )
     ) {
       continue;
@@ -1597,9 +1982,9 @@ export function buildSubtrees(
     olds.forEach((o, i) => {
       if (
         source.start > o.end ||
-        (source.start === o.end && !precedes(source.node, o.el))
+        (source.start === o.end && !precedes(source.node, o.first))
       ) {
-        by += built[i].text.length - (o.end - o.start);
+        by += deltas[i];
       }
     });
     keptNodes.push({
@@ -1628,7 +2013,7 @@ export function buildSubtrees(
       nextRoot < olds.length &&
       (source.start > bases[nextRoot] ||
         (source.start === bases[nextRoot] &&
-          !precedes(source.node, olds[nextRoot].el)))
+          !precedes(source.node, olds[nextRoot].first)))
     ) {
       flush();
     }
@@ -1674,10 +2059,45 @@ export function buildSubtrees(
   }
 
   // the styles, in the order a build sets them, which is the tree's
-  const styles = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
-  for (const [el, entry] of tree.styles) {
+  const styles = atEnd
+    ? new Map(tree.styles)
+    : new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
+  if (atEnd) {
+    // what each held, which ends the document: the old with what came, by
+    // the document as it is; and what each built, after it
+    for (const o of olds) {
+      for (const node of o.tail ? o.tail.nodes : [o.el!]) {
+        if (!isElement(node)) continue;
+        const stack: Element[] = [node];
+        while (stack.length) {
+          const at = stack.pop()!;
+          styles.delete(at);
+          for (const child of at.children) {
+            if (isElement(child)) stack.push(child);
+          }
+        }
+      }
+    }
+    for (const b of built) for (const [k, v] of b.styles) styles.set(k, v);
+  }
+  let nextTail = 0;
+  const tailHere = (el: Element | null): void => {
+    while (
+      nextTail < tailStyles.length &&
+      (el === null ||
+        tailStyles[nextTail].els.has(el) ||
+        tailStyles[nextTail].next === el)
+    ) {
+      for (const [k, v] of built[tailStyles[nextTail].at].styles) {
+        styles.set(k, v);
+      }
+      nextTail += 1;
+    }
+  };
+  for (const [el, entry] of atEnd ? [] : tree.styles) {
     placeUnboxed(styles, el);
-    const at = olds.findIndex((o) => o.el === el);
+    tailHere(el);
+    const at = olds.findIndex((o) => !o.tail && o.el === el);
     if (at >= 0) {
       for (const [k, v] of built[at].styles) styles.set(k, v);
       continue;
@@ -1690,10 +2110,15 @@ export function buildSubtrees(
     if (fresh.has(el) || goneElement(el)) continue;
     styles.set(el, entry);
   }
-  placeUnboxed(styles, null);
+  if (!atEnd) {
+    tailHere(null);
+    placeUnboxed(styles, null);
+  }
   // and none under an element of `display: none`, which a build styles and
-  // goes no further into: one a script moved out of a root, into one
-  for (const el of styles.keys()) {
+  // goes no further into: one a script moved out of a root, into one — at
+  // the document's end, of what was built, where nothing kept moved
+  const restyled = atEnd ? built.flatMap((b) => [...b.styles.keys()]) : null;
+  for (const el of restyled ?? styles.keys()) {
     for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
       if (styles.get(at)?.style.display === 'none') {
         styles.delete(el);
@@ -1731,17 +2156,15 @@ export function buildSubtrees(
     backgrounds: boxList(tree.backgrounds, (b) => b.backgrounds),
     awaiting: boxList(tree.awaiting, (b) => b.awaiting),
     images: boxList(tree.images, (b) => b.images),
-    contentImages: relist(
+    contentImages: elementList(
       tree.contentImages,
       (b) => b.contentImages,
       (entry) => entry.element,
-      (entry) => goneEntry(entry.element),
     ),
-    awaitingKind: relist(
+    awaitingKind: elementList(
       tree.awaitingKind,
       (b) => b.awaitingKind,
       (el) => el,
-      goneEntry,
     ),
     relative: flag('relative'),
     tilted: flag('tilted'),
@@ -1751,15 +2174,207 @@ export function buildSubtrees(
     nestedOutOfLine: flag('nestedOutOfLine'),
     movedInline: flag('movedInline'),
     clipText: flag('clipText'),
+    reversed: !!tree.reversed || built.some((b) => b.reversed),
   };
-  return { tree: next, made: built.map((b) => b.box) };
+  // what layout forgets the sizes of: each new box, and what holds a tail,
+  // whose content is another
+  const forget: Box[] = [];
+  olds.forEach((o, i) => {
+    if (o.tail) forget.push(o.box);
+    forget.push(...built[i].boxes);
+  });
+  return {
+    tree: next,
+    made: forget,
+    replaced: olds.map((o) => o.boxes),
+    added: built.flatMap((b) => b.boxes),
+  };
+}
+
+/** How many subtree builds were spliced at the document's end (`atEnd`),
+ *  for a test to say that some were. */
+let endBuilds = 0;
+export function buildsAtEnd(): number {
+  return endBuilds;
+}
+
+/** What `buildSubtrees` made: the tree, the boxes whose sizes and those of
+ *  what holds them are to be forgotten (`forgetSizes`), each root's and
+ *  tail's old boxes, and the new boxes at the top of each, in the
+ *  document's order. */
+export interface SubtreesBuilt {
+  tree: BoxTree;
+  made: Box[];
+  replaced: ReadonlySet<Box>[];
+  added: Box[];
+}
+
+/** A kept block's lines moved by `by` in the document's text, and the
+ *  texts on them, and what maps their layouts' text to the document's,
+ *  each once in the build of subtrees `pass` is (`SpanMap.shiftDocument`). */
+function shiftLines(lines: readonly LineBox[], by: number, pass: number): void {
+  for (const line of lines) {
+    line.textStart += by;
+    line.textEnd += by;
+    for (const text of line.texts) {
+      text.textStart += by;
+      text.textEnd += by;
+      text.spans.shiftDocument?.(by, pass);
+    }
+  }
+}
+
+/** Every build of subtrees counted, for `shiftLines`: a set of the span
+ *  maps one moved was one entry more for every block kept after a change,
+ *  at every build a page's scripts made. */
+let shiftPasses = 0;
+
+/** A box's range in the document's text from its own text and its
+ *  children's ranges, which are theirs already (`assignSubtreeRanges`). */
+function rangeOfChildren(box: Box): void {
+  let start = box.textEnd > box.textStart ? box.textStart : Infinity;
+  let end = box.textEnd > box.textStart ? box.textEnd : -Infinity;
+  for (const child of box.children) {
+    if (child.subtreeTextEnd > child.subtreeTextStart) {
+      start = Math.min(start, child.subtreeTextStart);
+      end = Math.max(end, child.subtreeTextEnd);
+    }
+  }
+  if (end <= start) {
+    box.subtreeTextStart = 0;
+    box.subtreeTextEnd = 0;
+  } else {
+    box.subtreeTextStart = start;
+    box.subtreeTextEnd = end;
+  }
+}
+
+/** The first of text boxes, in the order of the text, that starts at `at`
+ *  or past it. */
+function textBoxAt(boxes: readonly Box[], at: number): number {
+  let lo = 0;
+  let hi = boxes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (boxes[mid].textStart < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The same of the text's nodes (`TextSource`). */
+function textNodeAt(sources: readonly TextSource[], at: number): number {
+  let lo = 0;
+  let hi = sources.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sources[mid].start < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Whether `node` is in what a root or a tail builds: the root's element
+ *  or in it, or one of a tail's nodes or in one. */
+function insideRoot(node: ChildNode, o: SubtreeRoot): boolean {
+  const tail = o.tail;
+  if (!tail) {
+    const holder = isElement(node) ? node : (node.parent as Element | null);
+    return !!holder && isElement(holder) && within(holder, o.el!);
+  }
+  let at: ChildNode = node;
+  while (at.parent && at.parent !== tail.node) at = at.parent as ChildNode;
+  return at.parent === tail.node && tail.nodes.has(at);
+}
+
+/** Whether a list's entry for a box of `el` comes before what a build of a
+ *  root or a tail adds to the list (`before`): a tail's holder's own
+ *  entries do, but for its `::after`, which the tail builds. */
+function beforeRoot(el: Element, entry: unknown, o: SubtreeRoot): boolean {
+  if (!o.tail) return before(el, entry, o.el!);
+  if (insideRoot(el, o)) return false;
+  if (o.el && (el === o.el || within(o.el, el))) {
+    const box = entry instanceof Box ? entry : null;
+    return box?.pseudo !== 'after';
+  }
+  return precedes(el, o.first);
+}
+
+/**
+ * Whether a box kept after `from` in the document's order — none of the
+ * roots' and tails' — is one `test` says: one that reads a counter, or a
+ * quote's depth (`readsCounter`), which the new boxes' builds read none of
+ * they did not make (`CounterScopes`), and which a root that counts
+ * otherwise than it did would make another number; or any at all. A
+ * stream's tail is at the document's end, with nothing after it.
+ */
+function boxesAfter(
+  from: SubtreeRoot,
+  olds: readonly SubtreeRoot[],
+  test: (box: Box) => boolean,
+): boolean {
+  const replaced = (box: Box): boolean => olds.some((o) => o.boxes.has(box));
+  const reads = (root: Box): boolean => {
+    const stack = [root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      if (replaced(box)) continue;
+      if (test(box)) return true;
+      for (const child of box.children) stack.push(child);
+    }
+    return false;
+  };
+  // after its run in its parent, then after each box around it in theirs
+  let at = from.parent;
+  for (let k = from.index + from.count; k < at.children.length; k += 1) {
+    if (reads(at.children[k])) return true;
+  }
+  for (; at.parent; at = at.parent) {
+    const siblings = at.parent.children;
+    for (let k = siblings.indexOf(at) + 1; k < siblings.length; k += 1) {
+      if (reads(siblings[k])) return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a box reads a counter or a quote's depth: a numbered marker, a
+ *  `::marker` or a pseudo-element whose content has one. */
+function readsCounter(box: Box): boolean {
+  const style = box.style;
+  if (
+    style.display === 'list-item' &&
+    (box.el || box.pseudo) &&
+    numberedMarker(style)
+  ) {
+    return true;
+  }
+  const marker = box.marker?.style?.content;
+  if (Array.isArray(marker) && contentReads(marker as ContentItem[])) {
+    return true;
+  }
+  return (
+    !!box.pseudo &&
+    Array.isArray(style.content) &&
+    contentReads(style.content as ContentItem[])
+  );
+}
+
+/** Whether generated content has a counter or a quote in it. */
+function contentReads(items: readonly ContentItem[]): boolean {
+  for (const item of items) {
+    if (item.kind !== 'string' && item.kind !== 'url' && item.kind !== 'attr') {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
  * `el`'s old box, as the root of a subtree build: its only box, a block
  * or a flex box in the flow, the child of its parent element's block or
- * flex box, its subtree touching no counter, no quote and no top layer,
- * and where in the document's text its subtree's is — from what the
+ * flex box, its subtree hosting no shadow tree and with no box in the top
+ * layer, and where in the document's text its subtree's is — from what the
  * boxes before it in its ancestors hold, where it holds none. Null where
  * any of that is not so.
  */
@@ -1777,18 +2392,8 @@ function subtreeRoot(
   let depth = 0;
   for (let at: Box | null = parent; at?.parent; at = at.parent) depth += 1;
   if (depth > MAX_DEPTH - 64) return null;
-  const boxes = new Set<Box>();
-  let listItems = 0;
-  const stack = [box];
-  while (stack.length) {
-    const at = stack.pop()!;
-    boxes.add(at);
-    if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
-      listItems += 1;
-    }
-    if (counts(at) || (at.el && holdsShadow(at.el))) return null;
-    for (const child of at.children) stack.push(child);
-  }
+  const { boxes, listItems, counts: counted } = oldBoxes([box]) ?? {};
+  if (!boxes) return null;
   let start = Infinity;
   let end = -Infinity;
   if (box.subtreeTextEnd > box.subtreeTextStart) {
@@ -1811,8 +2416,203 @@ function subtreeRoot(
     if (at === null) return null;
     start = end = pastDropped(at, el, textBoxes, textNodes);
   }
-  return { el, box, parent, index, depth, start, end, boxes, listItems };
+  return {
+    el,
+    tail: null,
+    first: el,
+    box,
+    parent,
+    index,
+    count: 1,
+    depth,
+    start,
+    end,
+    boxes,
+    listItems: listItems!,
+    counts: counted!,
+  };
 }
+
+/** Every box of a run of old boxes and what they hold, with how many list
+ *  items they hold that number nothing and whether any other changes a
+ *  counter or reads one, or a quote (`counts`): null where one hosts a
+ *  shadow tree or is in the top layer, which no build apart takes apart. */
+function oldBoxes(
+  run: readonly Box[],
+): { boxes: Set<Box>; listItems: number; counts: boolean } | null {
+  const boxes = new Set<Box>();
+  let listItems = 0;
+  let counted = false;
+  const stack = [...run];
+  while (stack.length) {
+    const at = stack.pop()!;
+    boxes.add(at);
+    if (at.topLayer || (at.el && holdsShadow(at.el))) return null;
+    if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
+      listItems += 1;
+    }
+    if (counts(at)) counted = true;
+    for (const child of at.children) stack.push(child);
+  }
+  return { boxes, listItems, counts: counted };
+}
+
+/**
+ * The end of what `node` holds — an element, or the document — from its
+ * child at `from` on, as the root of a subtree build (`Builder.runTail`):
+ * where the child before is a block-level box of the holder's own in the
+ * flow, which stays, and whose line it ended, so that what comes after it
+ * starts where the builder starts a build of its own — its white space,
+ * the word it is in and the holder's anonymous blocks as a block leaves
+ * them. The holder's box stays as it is: a block container in the
+ * document's own tree, hosting no shadow tree and with nothing it holds
+ * moved elsewhere (`TAILS_REFUSED`). Its old boxes are the run of the
+ * holder box's children after the box before, its `::after` with them, and
+ * its text from where that box's line ended (`textAfterBox`) to where the
+ * holder's did. Null where any of that is not so.
+ */
+function tailRoot(
+  node: ParentNode,
+  from: number,
+  tree: BoxTree,
+  document: { children: unknown },
+  firstBoxes: ReadonlyMap<Element, Box>,
+): SubtreeRoot | null {
+  const kids = node.children;
+  if (from <= 0 || from >= kids.length) return null;
+  const holder = isElement(node) ? node : null;
+  let box: Box | undefined;
+  if (holder) {
+    box = firstBoxes.get(holder);
+    if (
+      !box ||
+      box.el !== holder ||
+      box.pseudo ||
+      !inLightTree(holder) ||
+      holdsShadow(holder) ||
+      flatChildrenOf(holder) !== holder.children ||
+      TAILS_REFUSED.has(tagOf(holder))
+    ) {
+      return null;
+    }
+  } else {
+    // the document's own children, which the root box holds
+    if (node !== document) return null;
+    box = tree.root;
+  }
+  if (box.kind !== 'block' || box.style.contentVisibility === 'hidden') {
+    return null;
+  }
+  const before = kids[from - 1];
+  const after = isElement(before) ? firstBoxes.get(before) : undefined;
+  if (!after || !endsLine(after, before as Element, box)) return null;
+  const index = box.children.indexOf(after);
+  if (index < 0) return null;
+  const ran = ranBefore(after, box);
+  if (ran < 0) return null;
+  // where only floats and boxes out of the flow came before, whether they
+  // are wrapped, which a whole build wraps as the tail has it
+  let wrapped = false;
+  if (!(ran & RAN_INLINE) && ran & RAN_OUT) {
+    for (let k = index - 1; k >= 0; k -= 1) {
+      const at = box.children[k];
+      if (!at.el && !at.pseudo && at.kind === 'block') {
+        wrapped = true;
+        break;
+      }
+      if (at.outOfFlow || at.isFloat) break;
+    }
+  }
+  const start = textAfterBox(after, tree.textBoxes);
+  const end = holder ? textAfterBox(box, tree.textBoxes) : tree.text.length;
+  if (start < 0 || end < start) return null;
+  let depth = 0;
+  for (let at: Box | null = box; at?.parent; at = at.parent) depth += 1;
+  if (depth > MAX_DEPTH - 64) return null;
+  const run = box.children.slice(index + 1);
+  const found = oldBoxes(run);
+  if (!found) return null;
+  return {
+    el: holder,
+    tail: { node, from, nodes: new Set(kids.slice(from)), ran, wrapped },
+    first: kids[from],
+    box,
+    parent: box,
+    index: index + 1,
+    count: run.length,
+    depth,
+    start,
+    end,
+    boxes: found.boxes,
+    listItems: found.listItems,
+    counts: found.counts,
+  };
+}
+
+/** Whether `el`'s box can be what a tail of `holder`'s box follows
+ *  (`tailRoot`): its element's only box, a block-level box of the holder's
+ *  own — a block, a flex box, a table — in the flow, which ends the line
+ *  before what follows it. */
+function endsLine(box: Box, el: Element, holder: Box): boolean {
+  return (
+    box.el === el &&
+    !box.pseudo &&
+    box.parent === holder &&
+    (box.kind === 'block' || box.kind === 'flex' || box.kind === 'table') &&
+    isBlockLevel(box) &&
+    !box.outOfFlow &&
+    !box.isFloat &&
+    !box.topLayer &&
+    box.style.overlay !== 'auto' &&
+    // a break that clears the floats is a block that ended no line
+    // (`_elementIn`), and every other the builder made ended one
+    tagOf(el) !== 'br'
+  );
+}
+
+/**
+ * Where a tail of what `node` holds starts, for a change that touched its
+ * children from `touched` on (`HtmlViewNode._subtreeRoots`): after the last
+ * of its children before that whose box ends the line in the holder's box
+ * (`endsLine`) — what comes between is built again with what changed. -1
+ * where there is none, or the holder's box holds no block (`tailRoot`
+ * says the rest).
+ */
+export function tailFrom(
+  node: ParentNode,
+  touched: ChildNode,
+  firstBoxes: ReadonlyMap<Element, Box>,
+  tree: BoxTree,
+): number {
+  const holder = isElement(node) ? firstBoxes.get(node) : tree.root;
+  if (!holder || holder.kind !== 'block') return -1;
+  const kids = node.children;
+  for (let i = kids.lastIndexOf(touched) - 1; i >= 0; i -= 1) {
+    const kid = kids[i];
+    if (!isElement(kid)) continue;
+    const box = firstBoxes.get(kid);
+    if (box && endsLine(box, kid, holder)) return i + 1;
+  }
+  return -1;
+}
+
+/** The elements whose children no tail is built of: what holds them is
+ *  laid out or drawn otherwise than its children are in a block — a
+ *  `<details>`'s content in a `::details-content`, a fieldset's legend on
+ *  its border, a control's — or is the root element. */
+const TAILS_REFUSED = new Set([
+  'html',
+  'details',
+  'summary',
+  'fieldset',
+  'legend',
+  'button',
+  'select',
+  'option',
+  'optgroup',
+  'textarea',
+  'datalist',
+]);
 
 /**
  * Where a root with no text of its own starts in the document's text, from
@@ -2051,7 +2851,7 @@ function flatPrecedes(a: ChildNode, b: ChildNode): boolean {
 
 /** A document's first element with an id: one walk of it, the first time
  *  an id is asked for (`ShapeCopies`). */
-function idIndex(root: Element): (id: string) => Element | null {
+export function idIndex(root: Element): (id: string) => Element | null {
   let index: Map<string, Element> | null = null;
   return (id) => {
     if (!index) {
@@ -2232,6 +3032,8 @@ class Builder {
   private _listItems = 0;
   /** How many quotes generated content has opened and not closed. */
   private _quoteDepth = 0;
+  /** Whether a counter counts down (`BoxTree.reversed`). */
+  private _reversed = false;
   /** Where the inline content being built stands, for collapsing white
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
@@ -2366,6 +3168,7 @@ class Builder {
     const inFlex =
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex';
     this._depth = depth;
+    this._scopes.detach();
     this._scopes.open();
     // an `@container` rule finds its container among the subtree's styles
     // as this build makes them, and among the tree's above it
@@ -2387,21 +3190,150 @@ class Builder {
       box.outOfFlow ||
       box.isFloat ||
       box.topLayer ||
-      this._counts ||
+      !this._apart()
+    ) {
+      return null;
+    }
+    box.parent = null;
+    this._fixUp(box, anonymous);
+    return this._subtree([box]);
+  }
+
+  /**
+   * The boxes of what an element holds from its child at `from` on, and
+   * its `::after` — or what the document holds, the root box's — built as
+   * a build of the whole document builds them there (`buildSubtrees`): into
+   * a box of the holder's kind and style, at the depth its children are
+   * at, from where the block before them left the builder — its line ended,
+   * no word begun (`_endLine`) — and with no counter or quote in scope,
+   * fixed up as what follows a block in the holder's box is (`fixUp`). Its
+   * text is numbered from 0, as `runSubtree`'s is. Null as there.
+   */
+  runTail(
+    holder: Element | null,
+    node: ParentNode,
+    box: Box,
+    from: number,
+    depth: number,
+    anonymous: AnonymousStyle,
+    /** What came before among the holder's children (`ranBefore`), and
+     *  whether it is wrapped. */
+    ran: number,
+    wrapped: boolean,
+  ): SubtreeBuild | null {
+    const cascade = this._options.cascade;
+    const style = box.style;
+    const into = new Box(box.kind, null, style);
+    const inFlex = style.display === 'flex' || style.display === 'inline-flex';
+    this._depth = depth;
+    this._scopes.detach();
+    this._scopes.open();
+    const styles = this._styles;
+    const outer = cascade.stylesOf;
+    cascade.stylesOf = (at) => styles.get(at)?.style ?? outer?.(at);
+    // styled under a parent no other element's key stands for, as a
+    // subtree's root is
+    const key = cascade.freshShareKey();
+    try {
+      const kids = node.children;
+      for (let i = from; i < kids.length; i += 1) {
+        const child = kids[i];
+        if (isText(child)) {
+          const start = this._length;
+          this._textNode(child.data, into, style, holder);
+          if (this._length > start) {
+            this._textNodes.push({ node: child, start, end: this._length });
+          }
+          continue;
+        }
+        if (!isElement(child)) continue;
+        this._element(child, into, style, inFlex, key);
+      }
+      if (holder) this._pseudo(holder, 'after', style, into);
+      this._endLine();
+    } finally {
+      cascade.stylesOf = outer;
+    }
+    if (!this._apart()) return null;
+    // Fixed up after a block, as the holder's children after the one before
+    // them are: the runs among them wrapped where the holder holds anything
+    // inline, before them or among them — and the floats and boxes out of
+    // the flow before them wrapped as they were, or this is no tail.
+    let inline = (ran & RAN_INLINE) !== 0;
+    let out = (ran & RAN_OUT) !== 0;
+    const ranFrom = { inline: null, out: null, wraps: false } as RanFrom & {
+      wraps: boolean;
+    };
+    for (const child of into.children) {
+      if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
+        if (inline) ranFrom.inline ??= child;
+        if (out) ranFrom.out ??= child;
+      }
+      if (child.outOfFlow || child.isFloat) out = true;
+      if (!child.outOfFlow && !isBlockLevel(child)) {
+        inline = true;
+        ranFrom.wraps = true;
+      }
+    }
+    if (ran & RAN_OUT && !(ran & RAN_INLINE) && inline !== wrapped) return null;
+    // a block of the holder's, whose own display may be inline-block
+    const before = new Box('block', null, anonymous(style, 'block'));
+    before.parent = into;
+    into.children.unshift(before);
+    // and what is inline before the block, white space a whole build drops
+    // where it wraps the rest
+    if (ran & RAN_INLINE) {
+      const held = new Box('text', null, style);
+      held.text = '';
+      held.parent = into;
+      into.children.unshift(held);
+    }
+    this._fixUp(into, anonymous);
+    if (into.children[0] !== before) return null;
+    into.children.shift();
+    const boxes = into.children;
+    for (const child of boxes) child.parent = null;
+    const built = this._subtree(boxes);
+    built.ranFrom = ranFrom;
+    return built;
+  }
+
+  /** `fixUp`, noting what it wraps where a chunk may follow
+   *  (`notesWrapped`). */
+  private _fixUp(box: Box, anonymous: AnonymousStyle): void {
+    notesWrapped = this._options.streaming === true;
+    try {
+      fixUp(box, anonymous);
+    } finally {
+      notesWrapped = false;
+    }
+  }
+
+  /** Whether what was just built can be built apart from what is around it
+   *  (`runSubtree`, `runTail`): it read no counter it did not make, and
+   *  holds nothing a build of the whole finishes across the tree — an
+   *  orthogonal flow, a `<foreignObject>`, a first line's style — nor a
+   *  shadow tree's host (`holdsShadow`). */
+  private _apart(): boolean {
+    if (
+      this._scopes.escapedRead ||
       this._orthogonal.length ||
       this._foreign ||
       this._firstLine
     ) {
-      return null;
+      return false;
     }
-    // and none of what it holds hosts a shadow tree (`holdsShadow`)
     for (const at of this._styles.keys()) {
-      if (shadowRootOf(at) !== null) return null;
+      if (shadowRootOf(at) !== null) return false;
     }
-    box.parent = null;
-    fixUp(box, anonymous);
+    return true;
+  }
+
+  /** What `runSubtree` or `runTail` made: `boxes` and what was found as
+   *  they were built. */
+  private _subtree(boxes: Box[]): SubtreeBuild {
     return {
-      box,
+      boxes,
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
       unselectable: this._unselectable,
@@ -2419,6 +3351,8 @@ class Builder {
       images: this._images,
       awaitingKind: this._awaitingKind,
       listItems: this._listItems,
+      counts: this._counts,
+      reversed: this._reversed,
       flags: {
         relative: this._relative,
         tilted: this._tilted,
@@ -2470,7 +3404,7 @@ class Builder {
   ): BoxTree {
     const cascade = this._options.cascade;
     const anonymous = anonymousStyles(cascade.initial);
-    fixUp(rootBox, anonymous);
+    this._fixUp(rootBox, anonymous);
     for (const box of this._orthogonal) {
       makeFrame(box, anonymous(box.style, 'block'));
     }
@@ -2513,6 +3447,7 @@ class Builder {
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
+      reversed: this._reversed,
       impliedHtml: root.impliedHtml,
       impliedRoot: root.impliedRoot,
       paletteScheme: root.paletteScheme,
@@ -2948,7 +3883,7 @@ class Builder {
       // the item's number, the `list-item` counter it has just counted
       const written = markerFor(
         style,
-        this._scopes.value('list-item'),
+        this._listItemValue(style),
         this._options.cascade.counterStyles,
       );
       let text = written.text;
@@ -3368,7 +4303,7 @@ class Builder {
       style.display === 'list-item'
         ? markerFor(
             style,
-            this._scopes.value('list-item'),
+            this._listItemValue(style),
             this._options.cascade.counterStyles,
           )
         : null;
@@ -3444,6 +4379,13 @@ class Builder {
    * that counts down. `place` is where an element is, for a reversed
    * counter to be counted from; a pseudo-element has none.
    */
+  /** The number a list item's marker shows: the `list-item` counter it
+   *  has just counted, read only where its marker is a number — a symbol's
+   *  reads none, so a build apart need not know it (`CounterScopes`). */
+  private _listItemValue(style: ComputedStyle): number {
+    return numberedMarker(style) ? this._scopes.value('list-item') : 0;
+  }
+
   private _counterChanges(
     style: ComputedStyle,
     place: CounterPlace | null,
@@ -3463,6 +4405,12 @@ class Builder {
         const change = resets[i];
         // a name reset twice is reset by the last
         if (resets.some((c, j) => j > i && c.name === change.name)) continue;
+        // a counter that counts down from what its scope adds up to reads
+        // all of that scope, and is read by every item before the end of it
+        if (change.counted || change.reversed) {
+          this._reversed = true;
+          this._scopes.escape();
+        }
         const value = change.counted
           ? this._countedStart(change.name, style, place)
           : change.value;
@@ -3658,11 +4606,15 @@ class Builder {
           break;
         case 'open-quote':
           this._counts = true;
+          // the depth the quotes around it left, which a build apart has not
+          this._scopes.escape();
           text += quoteAt(style.quotes, this._quoteDepth, 0, languageOf(el));
           this._quoteDepth += 1;
           break;
         case 'close-quote':
           this._counts = true;
+          // the depth the quotes around it left, which a build apart has not
+          this._scopes.escape();
           // a close with nothing open writes nothing and closes nothing
           if (this._quoteDepth > 0) {
             this._quoteDepth -= 1;
@@ -3671,10 +4623,14 @@ class Builder {
           break;
         case 'no-open-quote':
           this._counts = true;
+          // the depth the quotes around it left, which a build apart has not
+          this._scopes.escape();
           this._quoteDepth += 1;
           break;
         case 'no-close-quote':
           this._counts = true;
+          // the depth the quotes around it left, which a build apart has not
+          this._scopes.escape();
           if (this._quoteDepth > 0) this._quoteDepth -= 1;
           break;
       }
@@ -3977,13 +4933,51 @@ class CounterScopes {
   /** The levels of the open elements with style containment, innermost
    *  last: below one, a counter made further out is not counted on. */
   private _contained: number[] = [];
+  /**
+   * A subtree's build, apart from the document around it (`runSubtree`,
+   * `runTail`), knows none of the counters in scope where it starts. So it
+   * notes where what it does would have met one of them in a build of the
+   * whole document: a read of a counter none of its own elements made, or
+   * of one whose reach a counter outside could have changed
+   * (`CounterInstance.uncertain`) from past the element that made it
+   * (`escapedRead`), which it cannot be built apart for; and a change to
+   * one of those (`escapedWrite`), which it can where nothing after it
+   * reads a counter (`buildSubtrees`). Null in a build of the whole.
+   */
+  private _detached: { escapedRead: boolean; escapedWrite: boolean } | null =
+    null;
+  /** Each open level's id, for an instance to say whether the element that
+   *  made it is still open (`CounterInstance.owner`). */
+  private _ids: number[] = [0];
+  private _nextId = 1;
+
+  /** Count apart from the document around (`_detached`). */
+  detach(): void {
+    this._detached = { escapedRead: false, escapedWrite: false };
+  }
+
+  get escapedRead(): boolean {
+    return this._detached?.escapedRead ?? false;
+  }
+
+  get escapedWrite(): boolean {
+    return this._detached?.escapedWrite ?? false;
+  }
+
+  /** A read of a counter, or of a quote's depth, that a build apart cannot
+   *  answer as the whole document's would. */
+  escape(): void {
+    if (this._detached) this._detached.escapedRead = true;
+  }
 
   open(): void {
     this._made.push(null);
+    if (this._detached) this._ids.push(this._nextId++);
   }
 
   close(): void {
     const level = this._made.length - 1;
+    if (this._detached) this._ids.pop();
     const made = this._made.pop();
     if (made) {
       for (const name of made) {
@@ -4033,20 +5027,57 @@ class CounterScopes {
     if (top?.level === level && top.own === own) {
       top.value = value;
       top.reversed = reversed;
+      if (this._detached) this._own(top, own);
       return;
     }
-    stack.push({ level, own, value, reversed });
+    const instance: CounterInstance = { level, own, value, reversed };
+    if (this._detached) this._own(instance, own);
+    stack.push(instance);
     (this._made[level] ??= []).push(name);
   }
 
-  /** The innermost instance, made here at 0 where there is none. */
+  /** An instance a reset here makes, or takes over, in a build apart: the
+   *  element that made it, and whether a counter outside could have made it
+   *  reach this element's descendants alone, where it reaches its later
+   *  siblings here (`CounterInstance.uncertain`). */
+  private _own(instance: CounterInstance, own: boolean): void {
+    const at = this._made.length - 1;
+    instance.ownerLevel = at;
+    instance.owner = this._ids[at];
+    instance.uncertain = !own;
+    instance.outer = false;
+  }
+
+  /** The innermost instance, made here at 0 where there is none. In a build
+   *  apart, one made so stands for one outside (`CounterInstance.outer`). */
   private _innermost(name: string): CounterInstance {
     let stack = this._instances.get(name);
     if (!stack?.length) {
       this.reset(name, 0, false);
       stack = this._instances.get(name)!;
+      if (this._detached) stack[stack.length - 1].outer = true;
     }
     return stack[stack.length - 1];
+  }
+
+  /** Whether a build apart answers for `instance` as a build of the whole
+   *  document would: one its own elements made, and reached from inside
+   *  the element that made it or past one whose reach is certain. */
+  private _answers(instance: CounterInstance): boolean {
+    if (instance.outer) return false;
+    if (!instance.uncertain) return true;
+    const at = instance.ownerLevel!;
+    return at < this._ids.length && this._ids[at] === instance.owner;
+  }
+
+  /** The instance a read in a build apart reads, noting where it is not one
+   *  it answers for. */
+  private _read(name: string): CounterInstance {
+    const instance = this._innermost(name);
+    if (this._detached && !this._answers(instance)) {
+      this._detached.escapedRead = true;
+    }
+    return instance;
   }
 
   increment(name: string, by: number): void {
@@ -4065,7 +5096,12 @@ class CounterScopes {
    *  then does not see (CSS Containment 2, 3.4). */
   private _counted(name: string): CounterInstance {
     const instance = this._innermost(name);
+    const detached = this._detached;
+    if (detached && !this._answers(instance)) detached.escapedWrite = true;
     const bound = this._contained[this._contained.length - 1];
+    // containment in a build apart: where the instance counted on is is
+    // too much to say
+    if (detached && bound !== undefined) detached.escapedRead = true;
     const level = this._made.length - 1;
     if (bound === undefined || level <= bound || instance.level >= bound) {
       return instance;
@@ -4080,15 +5116,22 @@ class CounterScopes {
   /** Whether the innermost instance counts down: a list item takes one
    *  from it rather than adding one. */
   reversed(name: string): boolean {
-    return this._innermost(name).reversed;
+    const instance = this._innermost(name);
+    // the way a list item counts, which is its write's
+    if (this._detached && !this._answers(instance)) {
+      this._detached.escapedWrite = true;
+    }
+    return instance.reversed;
   }
 
   value(name: string): number {
-    return this._innermost(name).value;
+    return this._read(name).value;
   }
 
   values(name: string): number[] {
     this._innermost(name);
+    // every instance, outermost first: the outer ones are the document's
+    this.escape();
     return this._instances.get(name)!.map((instance) => instance.value);
   }
 }
@@ -4098,6 +5141,15 @@ interface CounterInstance {
   own: boolean;
   value: number;
   reversed: boolean;
+  /** In a build apart (`CounterScopes._detached`): the level and the id of
+   *  the element whose reset made it; whether a counter of the name outside
+   *  could have made that reset reach the element's descendants alone,
+   *  where here it reaches its later siblings too; and whether it stands
+   *  for one outside, made where a counter was used with none in scope. */
+  ownerLevel?: number;
+  owner?: number;
+  uncertain?: boolean;
+  outer?: boolean;
 }
 
 /** A counter is a 32-bit integer in a browser, and saturates there. */
@@ -4771,6 +5823,12 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
 
   const next: Box[] = [];
   let run: Box[] | null = null;
+  // what came before the blocks in the flow, for a tail after one
+  // (`RAN_FROM`)
+  let inline = false;
+  let out = false;
+  let inlineFrom: Box | null = null;
+  let outFrom: Box | null = null;
   for (const child of box.children) {
     // A float or an absolutely positioned box sits in whichever context it
     // finds itself; it does not force an anonymous block on its own. In a
@@ -4783,6 +5841,10 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
       (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) ||
       (wrapAllInline && child.outOfFlow)
     ) {
+      if (!child.outOfFlow) {
+        if (inline) inlineFrom ??= child;
+        if (out) outFrom ??= child;
+      }
       if (run) {
         next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
@@ -4790,10 +5852,15 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
       next.push(child);
       continue;
     }
+    if (child.outOfFlow || child.isFloat) out = true;
+    else inline = true;
     // Whitespace between two blocks is not content and must not generate a
     // line box — `<div><p>a</p> <p>b</p></div>` has no blank line in it.
     if (!run && child.kind === 'text' && isBlank(child.text)) continue;
     (run ??= []).push(child);
+  }
+  if (notesWrapped && !wrapAllInline) {
+    RAN_FROM.set(box, { inline: inlineFrom, out: outFrom });
   }
   if (run) {
     if (run.every((c) => c.kind === 'text' && isBlank(c.text))) {
