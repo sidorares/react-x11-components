@@ -329,12 +329,12 @@ test('a capture longer than a block is drawn as blocks, and an append rebuilds o
   // One `<richtext>` for the whole capture was laid out whole for every line
   // appended: 0.9 s an append at 20,000 lines. The earlier blocks keep their
   // runs — the same array, so nothing is laid out again.
-  const lines = numberedLines(600);
+  const lines = numberedLines(150);
   const data = `${lines.join('\n')}\n`;
   const r = await renderX11(h(TerminalOutput, { data }), { backend: 'mock' });
   const before = richNodes().map(runsOf);
-  assert.equal(before.length, 3, 'three blocks of 256 lines');
-  await act(() => r.rerender(h(TerminalOutput, { data: `${data}line 600\n` })));
+  assert.equal(before.length, 3, 'three blocks of 64 lines and the rest');
+  await act(() => r.rerender(h(TerminalOutput, { data: `${data}line 150\n` })));
   const after = richNodes().map(runsOf);
   assert.strictEqual(after[0], before[0], 'the first block was not rebuilt');
   assert.strictEqual(after[1], before[1], 'nor the second');
@@ -343,7 +343,7 @@ test('a capture longer than a block is drawn as blocks, and an append rebuilds o
     richNodes()
       .map((n) => n.textContent())
       .join('\n'),
-    [...lines, 'line 600'].join('\n'),
+    [...lines, 'line 150'].join('\n'),
     'and together they are the capture',
   );
 });

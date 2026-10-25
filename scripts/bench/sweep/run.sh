@@ -106,9 +106,10 @@ for b in $BACKENDS; do
   if has widgets; then
     for a in flood type scroll resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=term ACTION=$a; done
     for a in drag resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=color ACTION=$a; done
-    for c in formula code; do
+    for c in formula code termout; do
       for a in mount scroll resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=$c ACTION=$a; done
     done
+    for c in code termout; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=$c ACTION=stream; done
     for a in mount scroll stream resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=mermaid ACTION=$a; done
   fi
   if has flow; then

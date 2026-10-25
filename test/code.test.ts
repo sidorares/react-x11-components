@@ -331,7 +331,7 @@ test('codeBlocks cuts runs into blocks of whole lines that stack back into the t
 test('a long source is drawn in blocks, and an edit to its end rebuilds only the last', async () => {
   // One `<richtext>` for the whole source was laid out, and repainted, whole
   // for every line a stream appended: 0.4 s at 5,000 lines.
-  const source = script(600);
+  const source = script(150);
   const r = await renderX11(
     h(Code, { source, lang: 'js', lineNumbers: true }),
     {
@@ -341,7 +341,7 @@ test('a long source is drawn in blocks, and an edit to its end rebuilds only the
   const blocks = () => richNodes().filter((n) => !/^\d/.test(n.textContent()));
   const gutter = () => richNodes().filter((n) => /^\d/.test(n.textContent()));
   const before = blocks().map(runsOf);
-  assert.equal(before.length, 3, 'three blocks of 256 lines');
+  assert.equal(before.length, 3, 'two blocks of 64 lines and the rest');
   assert.equal(
     blocks()
       .map((n) => n.textContent())
@@ -351,7 +351,7 @@ test('a long source is drawn in blocks, and an edit to its end rebuilds only the
   );
   assert.deepStrictEqual(
     gutter().map((n) => n.textContent().split('\n').filter(Boolean).length),
-    [256, 256, 88],
+    [64, 64, 22],
     'a block of numbers beside each block of code',
   );
   await act(() =>

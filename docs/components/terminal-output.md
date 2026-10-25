@@ -90,11 +90,13 @@ const [chunks, setChunks] = useState([]);
 <TerminalOutput data={chunks} />;
 ```
 
-**A long capture is drawn as blocks of lines**, 256 to a block, so an append
+**A long capture is drawn as blocks of lines**, 64 to a block, so an append
 lays out again the block it lands in rather than the whole capture. One
 element for everything was laid out whole for every line appended: 50 ms an
 append at 1,000 lines, 0.9 s at 20,000. As blocks it is about 4 ms at
-either. A block keeps its element while its lines are the ones the parser
+either on X11. The blocks were 256 lines at first, and an append laid out
+half of one on average: on macOS, where CoreText sets a line in some 60 µs,
+forty lines appended to a tail was 14 ms a frame, and it is 9 at 64. A block keeps its element while its lines are the ones the parser
 already made, and blocks are counted from the start of the capture, so
 `maxLines` dropping lines off the top changes only the first. A selection
 runs across the blocks, and copies as one text.
