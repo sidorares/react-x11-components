@@ -75,6 +75,7 @@ import {
 import {
   ASIDE_REACH,
   STUCK,
+  anchoredWith,
   applyScrollOffsets,
   clearDefaultAnchors,
   defaultAnchorOf,
@@ -7556,6 +7557,7 @@ export function applyRelativeOffsets(
   if (sticky) STUCK.set(box, [dx, dy]);
   if (!(dx || dy)) return;
   offsetBox(box, dx, dy, sticky);
+  if (sticky) followSticky(box, dx, dy);
   if (box.kind !== 'inline') {
     movedOffLine(box);
     return;
@@ -8170,7 +8172,21 @@ function placeSticky(
   if (!mx && !my) return false;
   offsetBox(box, mx, my, true);
   movedOffLine(box);
+  followSticky(box, mx, my);
   return true;
+}
+
+/** Move what is anchored to a sticky box, or to something in it, as far
+ *  as its stickiness moved it, on the axes each follows its anchor on
+ *  (`anchoredWith`): a box anchored below a header stuck to the top of a
+ *  list stays below it. */
+function followSticky(box: Box, dx: number, dy: number): void {
+  if (box.kind === 'inline') return;
+  for (const { box: anchored, x, y } of anchoredWith(box)) {
+    if (!(x && dx) && !(y && dy)) continue;
+    translate(anchored, x ? dx : 0, y ? dy : 0, () => false);
+    movedOffLine(anchored);
+  }
 }
 
 /**

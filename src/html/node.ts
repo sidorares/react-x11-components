@@ -6836,12 +6836,33 @@ export class HtmlViewNode extends Node {
       const ink = this._inkOf(box);
       if (ink) inks.push(ink);
     }
+    // an anchor `visibility` hid or showed hides or shows what
+    // `position-visibility` keeps to it (CSS Anchor Positioning 1, 5.4)
+    if (tree.anchors) this._revisit(tree, inks);
     this._repaintInk(inks);
     // a snap area's alignment, or its container's type, that changed
     // without a layout: what a container was snapped to may be no snap
     // position now (CSS Scroll Snap 1, 5.4)
     if (cascade.snaps) this._resnap(!snapTyped);
     return true;
+  }
+
+  /** What `position-visibility` hides or shows now, where a restyle in
+   *  place may have hidden or shown an anchor: drawn again where it was
+   *  and where it is, into `inks`. */
+  private _revisit(tree: BoxTree, inks: Rect[]): void {
+    const root = tree.root;
+    const boxes = positionVisibilityBoxes(root);
+    if (!boxes.length) return;
+    const before = boxes.map((b) => this._inkOf(b));
+    if (!updatePositionVisibility(root, this._viewportAt()).length) return;
+    stackLayers(root);
+    computePaintBounds(root, tree.movedInline);
+    for (const ink of before) if (ink) inks.push(ink);
+    for (const box of boxes) {
+      const ink = this._inkOf(box);
+      if (ink) inks.push(ink);
+    }
   }
 
   /** An element's first box in document order, for the tree it was asked
