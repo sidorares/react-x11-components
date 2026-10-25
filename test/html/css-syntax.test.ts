@@ -43,6 +43,25 @@ test('declarations survive semicolons, comments and !important', () => {
   );
 });
 
+test('the end of a declaration block closes the brackets its last value leaves open', () => {
+  // CSS Syntax 3, 5.4.8: a `style` attribute ending inside a function
+  assert.deepStrictEqual(
+    parseDeclarations('left: 1px; top: anchor-size(--a1 width').map((d) => [
+      d.prop,
+      d.value,
+    ]),
+    [
+      ['left', '1px'],
+      ['top', 'anchor-size(--a1 width)'],
+    ],
+  );
+  // a bracket in a string is none
+  assert.strictEqual(
+    parseDeclarations('content: "(" attr(x').at(-1)!.value,
+    '"(" attr(x)',
+  );
+});
+
 test('pseudo-class names and :lang() fold ASCII case only', async () => {
   // CSS 2.1 4.1.3: `:LINK` is `:link`, but a Kelvin sign is no K, where
   // Unicode's lower case makes one of it — and a rule with no pseudo-class

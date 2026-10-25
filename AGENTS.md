@@ -4233,6 +4233,20 @@ each leaves on its axis before they are tried (`sortedOptions`,
 `roomOf`). **Anything new that lays a box out by an option goes through
 `triedStyle`**, or the style it reads back is another.
 
+**An `anchor-size()` is kept by the field it is written in, wherever CSS
+allows one** (CSS Anchor Positioning 1, 5.1): the sizes, the least and the
+greatest ones, the insets and the margins (`setAnchorSize`, the
+`AnchorSizeField`s of `anchorSizes`), the field holding its fallback — or
+the field's initial value, `ANCHOR_SIZE_UNSET` — until layout makes it the
+anchor's length. A tactic and a frame move the fields with the sides they
+are of (`movedSizes`, `turnAnchoring`), and `getComputedStyle` reads the
+lengths the placement came to (`placedStyleOf`, which holds the resolved
+style of every anchored placement). **Anything new that takes an
+`anchor-size()` keeps it in `anchorSizes` by its field**, or a tactic
+leaves it on the side it was written on. An `anchor()` reading a side of
+the other axis is its fallback (`OTHER_AXIS`), and an anchor in the top
+layer is no anchor of a box laid out before it there (`topLayerRank`).
+
 **An anchored box in a vertical writing mode is placed in its frame's
 axes, and what it is placed by is read in the page's** (CSS Anchor
 Positioning 1, 3.1–4.1). `framedStyle` turns what a box's anchor functions
