@@ -183,6 +183,7 @@
     "examples:color-picker": "node --import tsx examples/color-picker.tsx",
     "examples:code-editor": "node --import tsx examples/code-editor.tsx",
     "examples:flow": "node --import tsx examples/flow.tsx",
+    "examples:flow-map": "node --import tsx examples/flow-map.tsx",
     "examples:flow-stress": "node --import tsx examples/flow-stress.tsx",
     "examples:formula": "node --import tsx examples/formula.tsx",
     "examples:html": "node --import tsx examples/html.tsx",
