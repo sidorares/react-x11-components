@@ -77,6 +77,14 @@ for b in $BACKENDS; do
     for gl in 0 1; do cell ../frames/e2p.tsx REACT_X11_BACKEND=$b GL=$gl; done
   fi
   if has maps; then
+    # the tile cache first: a gesture cancels most of what it asks for over
+    # a network, so a cell that had to fetch measured tiles arriving
+    # (mapsweep.tsx's WARM=1; a cell's `misses` says it was cold)
+    for r in retained gl; do
+      for a in pan drag wheel fly; do
+        env REACT_X11_BACKEND=$b RENDERER=$r ACTION=$a WARM=1 perl -e 'alarm 300; exec @ARGV' npx tsx "$here/mapsweep.tsx" >/dev/null 2>&1
+      done
+    done
     for r in retained gl; do
       for a in pan drag wheel fly; do cell mapsweep.tsx REACT_X11_BACKEND=$b RENDERER=$r ACTION=$a; done
     done

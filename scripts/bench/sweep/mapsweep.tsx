@@ -9,6 +9,13 @@
 //          wheel a wheel at the centre, 30 notches a second, turning back
 //                every 15 (a user's zoom)
 //          fly   camera animated through zoom 15 → 11 → 15 while panning
+//   WARM=1  run the action to fill the cache and measure nothing: a tile
+//           missing is fetched whether the map still wants it or not, and
+//           the run ends once every fetch has landed. Over the network a
+//           tile takes seconds, so a gesture that moves on cancels most of
+//           what it asked for, and without this each run of `wheel` and
+//           `fly` fetched hundreds of tiles again and measured them
+//           arriving (`misses` in the result says how many)
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { createRoot } from 'react-x11';
@@ -29,6 +36,8 @@ const RENDERER = process.env.RENDERER ?? 'gl';
 const { Map, shortbreadStyle } = await import(`${ROOT}/src/maps/index.js`);
 const { osmVector } = await import(`${ROOT}/examples/map-sources.js`);
 let misses = 0;
+const WARM = process.env.WARM === '1';
+const fetching = new Set<Promise<unknown>>();
 const source = {
   id: 'osm-vector',
   minZoom: 0,
@@ -40,7 +49,12 @@ const source = {
     if (fs.existsSync(file))
       return { kind: 'vector', data: new Uint8Array(fs.readFileSync(file)) };
     misses++;
-    const got = await osmVector.load(r);
+    const load = osmVector.load(WARM ? { ...r, signal: undefined } : r);
+    if (WARM) {
+      fetching.add(load);
+      load.finally(() => fetching.delete(load)).catch(() => {});
+    }
+    const got = await load;
     if (got?.data) {
       fs.mkdirSync(CACHE, { recursive: true });
       fs.writeFileSync(file, got.data);
@@ -262,6 +276,13 @@ if (ACTION === 'pan') {
   });
 }
 run = false;
+if (WARM) {
+  // what the map asked for while settling at the end is fetched too
+  await wait(2000);
+  while (fetching.size > 0) await Promise.allSettled([...fetching]);
+  console.log('WARMED ' + JSON.stringify({ action: ACTION, fetched: misses }));
+  process.exit(0);
+}
 const dt = (performance.now() - t0) / 1000;
 const cu = process.cpuUsage(c0);
 const x1 = cpuOf(server);
