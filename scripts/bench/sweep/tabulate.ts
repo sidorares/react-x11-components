@@ -210,6 +210,20 @@ const SUITES: Suite[] = [
       },
     ],
   },
+  {
+    name: 'widgets',
+    key: (r) => `${r.comp} · ${r.action}`,
+    metrics: (r) =>
+      r.action === 'mount'
+        ? [firstPaint]
+        : r.action === 'resize'
+          ? [latency]
+          : [fps, frame],
+    columns: [
+      { title: 'X11', match: onBackend('x11') },
+      { title: 'Cocoa', match: onBackend('cocoa') },
+    ],
+  },
   ...['docs', 'editors'].map((name): Suite => ({
     name,
     key: (r) => `${r.comp} · ${r.action}${r.variant ? ` (${r.variant})` : ''}`,
