@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Every probe in this directory on each backend, one JSON line per cell, into
 # $1. SUITES narrows it (default: "frames maps charts table tree docs
-# editors flow" — `frames` is ../frames, what a frame shows rather than what it costs);
+# editors widgets flow" — `frames` is ../frames, what a frame shows rather
+# than what it costs);
 # BACKENDS the backends (default: "x11 cocoa" on a Mac, "x11" elsewhere). A
 # cell that prints no RESULT is recorded as {"failed": "<probe> <env>"} and
 # the run goes on.
@@ -16,7 +17,7 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: run.sh <out.jsonl>}
 : >"$out"
-SUITES=${SUITES:-"frames maps charts table tree docs editors flow"}
+SUITES=${SUITES:-"frames maps charts table tree docs editors widgets flow"}
 if [ "$(uname)" = Darwin ]; then
   BACKENDS=${BACKENDS:-"x11 cocoa"}
 else
@@ -101,6 +102,14 @@ for b in $BACKENDS; do
     cell editorsweep.tsx REACT_X11_BACKEND=$b COMP=code ACTION=type-mid PLAIN=1
     for a in mount scroll type-mid type-long bold-all paste; do cell editorsweep.tsx REACT_X11_BACKEND=$b COMP=rte ACTION=$a; done
     cell editorsweep.tsx REACT_X11_BACKEND=$b COMP=rte ACTION=type-mid SIZE=1000
+  fi
+  if has widgets; then
+    for a in flood type scroll resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=term ACTION=$a; done
+    for a in drag resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=color ACTION=$a; done
+    for c in formula code; do
+      for a in mount scroll resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=$c ACTION=$a; done
+    done
+    for a in mount scroll stream resize; do cell widgetsweep.tsx REACT_X11_BACKEND=$b COMP=mermaid ACTION=$a; done
   fi
   if has flow; then
     for gl in 0 1; do
