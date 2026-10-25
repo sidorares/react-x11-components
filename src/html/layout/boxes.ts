@@ -31,6 +31,7 @@ import {
   inImpliedHead,
   NON_RENDERED,
   ShadowRoot,
+  shadowRootOf,
   tagOf,
 } from '../dom.js';
 import {
@@ -1247,6 +1248,8 @@ interface SubtreeBuild {
   awaiting: Box[];
   images: Box[];
   awaitingKind: Element[];
+  /** How many list items it counted, none of whose markers is a number. */
+  listItems: number;
   flags: Pick<
     BoxTree,
     | 'relative'
@@ -1273,6 +1276,20 @@ interface SubtreeRoot {
   end: number;
   /** Every box of the old subtree, for the lists to drop theirs. */
   boxes: Set<Box>;
+  /** How many list items it held, none numbered (`counts`). */
+  listItems: number;
+}
+
+/** What a change reaches, as a subtree build takes it (`buildSubtrees`). */
+export interface SubtreeRoots {
+  /** The elements whose subtrees are built again, none in another. */
+  roots: Element[];
+  /** Elements with no box, new or `display: none` before, styled where
+   *  they are: a build of only these finds them `display: none` again, or
+   *  is no subtree build. */
+  hidden: Element[];
+  /** Elements out of the document, whose styles go. */
+  gone: Element[];
 }
 
 /**
@@ -1290,10 +1307,11 @@ interface SubtreeRoot {
 export function buildSubtrees(
   tree: BoxTree,
   document: { children: unknown },
-  roots: readonly Element[],
+  found: SubtreeRoots,
   options: BuildOptions,
   firstBoxes: ReadonlyMap<Element, Box>,
 ): { tree: BoxTree; made: Box[] } | null {
+  const { roots, hidden, gone } = found;
   const cascade = options.cascade;
   if (
     tree.foreign ||
@@ -1322,22 +1340,48 @@ export function buildSubtrees(
     if (olds[i].start < olds[i - 1].end) return null;
   }
   const copies = new ShapeCopies(idIndex(document as Element));
-  if (!olds.length) {
+  if (!olds.length && !hidden.length) {
     // nothing drawn changed: the tree as it is, its stylers over the
-    // cascade the build is for, which sheets that added rules made again
+    // cascade the build is for, which sheets that added rules made again —
+    // and the styles of what went with none
+    const styles = gone.length ? new Map(tree.styles) : tree.styles;
+    for (const el of gone) styles.delete(el);
     const stylers = new Builder(options, copies).stylersFor(
-      tree.styles,
+      styles,
       false,
       copies,
     );
-    return { tree: { ...tree, ...stylers }, made: [] };
+    return { tree: { ...tree, ...stylers, styles }, made: [] };
   }
   const built: SubtreeBuild[] = [];
   const fresh = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
+  /** The boxless elements' styles (`SubtreeRoots.hidden`). */
+  const unboxed = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
   const outer = cascade.stylesOf;
   cascade.stylesOf = (el) => fresh.get(el)?.style ?? tree.styles.get(el)?.style;
   cascade.beginSharing(options.kept ?? null);
   try {
+    for (const el of hidden) {
+      const tag = tagOf(el);
+      // what a build does not style
+      if (NON_RENDERED.has(tag) || inImpliedHead(el, tag)) continue;
+      if (!inLightTree(el)) return null;
+      const up = flatParentOf(el);
+      const parentStyle = up && tree.styles.get(up)?.style;
+      if (!parentStyle) return null;
+      const inFlex =
+        parentStyle.display === 'flex' || parentStyle.display === 'inline-flex';
+      const { style } = cascade.sharedStyleFor(
+        el,
+        parentStyle,
+        cascade.freshShareKey(),
+        inFlex,
+      );
+      // drawn after all: its boxes are its parent's to build
+      if (style.display !== 'none') return null;
+      unboxed.set(el, { style, inFlex });
+      fresh.set(el, { style, inFlex });
+    }
     for (const old of olds) {
       const parentStyle = tree.styles.get(old.parent.el!)?.style;
       if (!parentStyle) return null;
@@ -1348,13 +1392,57 @@ export function buildSubtrees(
         old.depth,
         tree.anonymous,
       );
-      if (!made) return null;
+      // as many list items as it had, or what follows it counts otherwise
+      if (!made || made.listItems !== old.listItems) return null;
       for (const [el, entry] of made.styles) fresh.set(el, entry);
       built.push(made);
     }
   } finally {
     cascade.endSharing();
     cascade.stylesOf = outer;
+  }
+  // each new boxless element's style goes before the style of the element
+  // after it in the document's order, as a build sets them
+  const goneSet = new Set(gone);
+  const styledAt = new Map<Element, Element[]>();
+  const last: Element[] = [];
+  for (const el of unboxed.keys()) {
+    if (tree.styles.has(el)) continue;
+    const next = styledAfter(el, (at) => tree.styles.has(at));
+    if (!next) last.push(el);
+    else {
+      const at = styledAt.get(next);
+      if (at) at.push(el);
+      else styledAt.set(next, [el]);
+    }
+  }
+  const placeUnboxed = (
+    styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>,
+    el: Element | null,
+  ): void => {
+    for (const at of (el ? styledAt.get(el) : last) ?? []) {
+      styles.set(at, unboxed.get(at)!);
+    }
+  };
+  if (!olds.length) {
+    // only boxless elements: their styles, and the tree as it is
+    const styles = new Map<
+      Element,
+      { style: ComputedStyle; inFlex: boolean }
+    >();
+    for (const [el, entry] of tree.styles) {
+      placeUnboxed(styles, el);
+      if (goneSet.has(el)) continue;
+      styles.set(el, unboxed.get(el) ?? entry);
+    }
+    placeUnboxed(styles, null);
+    const stylers = new Builder(options, copies).stylersFor(
+      styles,
+      false,
+      copies,
+    );
+    cascade.stylesOf = (el) => styles.get(el)?.style;
+    return { tree: { ...tree, ...stylers, styles }, made: [] };
   }
 
   // the new boxes where the old were
@@ -1492,11 +1580,13 @@ export function buildSubtrees(
       olds.some(
         (o) =>
           within(holder, o.el) ||
-          // one moved out of a root to where nothing draws it — but not one
+          // one moved out of a root to where nothing draws it, at its end
+          // too where the root's line took back all it had — but not one
           // before it, drawn, whose space the root's line took back
           (source.start >= o.start &&
-            source.start < o.end &&
-            (!precedes(source.node, o.el) || undrawn(holder))),
+            source.start <= o.end &&
+            (undrawn(holder) ||
+              (source.start < o.end && !precedes(source.node, o.el)))),
       )
     ) {
       continue;
@@ -1586,14 +1676,21 @@ export function buildSubtrees(
   // the styles, in the order a build sets them, which is the tree's
   const styles = new Map<Element, { style: ComputedStyle; inFlex: boolean }>();
   for (const [el, entry] of tree.styles) {
+    placeUnboxed(styles, el);
     const at = olds.findIndex((o) => o.el === el);
     if (at >= 0) {
       for (const [k, v] of built[at].styles) styles.set(k, v);
       continue;
     }
+    const boxless = unboxed.get(el);
+    if (boxless) {
+      styles.set(el, boxless);
+      continue;
+    }
     if (fresh.has(el) || goneElement(el)) continue;
     styles.set(el, entry);
   }
+  placeUnboxed(styles, null);
   // and none under an element of `display: none`, which a build styles and
   // goes no further into: one a script moved out of a root, into one
   for (const el of styles.keys()) {
@@ -1672,7 +1769,7 @@ function subtreeRoot(
   textBoxes: readonly Box[],
   textNodes: readonly TextSource[],
 ): SubtreeRoot | null {
-  if (!canRebuild(el, firstBoxes)) return null;
+  if (!canRebuild(el, firstBoxes) || !inLightTree(el)) return null;
   const box = firstBoxes.get(el)!;
   const parent = box.parent!;
   const index = parent.children.indexOf(box);
@@ -1681,11 +1778,15 @@ function subtreeRoot(
   for (let at: Box | null = parent; at?.parent; at = at.parent) depth += 1;
   if (depth > MAX_DEPTH - 64) return null;
   const boxes = new Set<Box>();
+  let listItems = 0;
   const stack = [box];
   while (stack.length) {
     const at = stack.pop()!;
     boxes.add(at);
-    if (counts(at)) return null;
+    if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
+      listItems += 1;
+    }
+    if (counts(at) || (at.el && holdsShadow(at.el))) return null;
     for (const child of at.children) stack.push(child);
   }
   let start = Infinity;
@@ -1710,7 +1811,7 @@ function subtreeRoot(
     if (at === null) return null;
     start = end = pastDropped(at, el, textBoxes, textNodes);
   }
-  return { el, box, parent, index, depth, start, end, boxes };
+  return { el, box, parent, index, depth, start, end, boxes, listItems };
 }
 
 /**
@@ -1773,6 +1874,31 @@ export function canRebuild(
   return tag !== 'html' && tag !== 'body';
 }
 
+/**
+ * Whether an element is in the document's own tree and where its parent
+ * is in the flat tree too, as each element around it is: in no shadow tree,
+ * and assigned to no slot. A subtree of such an element is a run of the
+ * document's order, and its text one of the document's text, and a build
+ * of it finds the boxes and the entries it replaces by where their
+ * elements are in it (`within`, `before`).
+ */
+function inLightTree(el: Element): boolean {
+  for (let at: Element = el; ;) {
+    const parent = at.parent;
+    if (!parent || parent instanceof ShadowRoot) return false;
+    if (!isElement(parent)) return true;
+    if (flatParentOf(at) !== parent) return false;
+    at = parent;
+  }
+}
+
+/** Whether a box's element hosts a shadow tree, or is at the top of one:
+ *  what a subtree build of the document's own tree cannot take apart, since
+ *  what such a tree holds is no run of the document's order. */
+function holdsShadow(el: Element): boolean {
+  return shadowRootOf(el) !== null || el.parent instanceof ShadowRoot;
+}
+
 /** Whether a box changes or reads a counter, or a quote, or is in the top
  *  layer: what a subtree holding it cannot be built apart for. */
 function counts(box: Box): boolean {
@@ -1782,7 +1908,7 @@ function counts(box: Box): boolean {
     style.counterReset ||
     style.counterIncrement ||
     style.counterSet ||
-    style.display === 'list-item'
+    (style.display === 'list-item' && numberedMarker(style))
   ) {
     return true;
   }
@@ -1826,6 +1952,37 @@ function within(el: Element, root: Element): boolean {
   return false;
 }
 
+/** The first element after `el` in the document's order, and not in it,
+ *  that `has` holds: whose style a build sets after `el`'s. */
+function styledAfter(
+  el: Element,
+  has: (el: Element) => boolean,
+): Element | null {
+  for (let at: ChildNode = el; ;) {
+    for (let next = at.next; next; next = next.next) {
+      const found = firstStyled(next, has);
+      if (found) return found;
+    }
+    const parent: ChildNode | null = at.parent as ChildNode | null;
+    if (!parent || !isElement(parent)) return null;
+    at = parent;
+  }
+}
+
+/** The first element in `node`, `node` first, that `has` holds. */
+function firstStyled(
+  node: ChildNode,
+  has: (el: Element) => boolean,
+): Element | null {
+  if (!isElement(node)) return null;
+  if (has(node)) return node;
+  for (const child of node.children) {
+    const found = firstStyled(child, has);
+    if (found) return found;
+  }
+  return null;
+}
+
 /** Whether `el` is still in a document. */
 function connected(el: Element): boolean {
   let at: { parent: unknown } = el;
@@ -1864,9 +2021,31 @@ function precedes(a: { parent: unknown }, b: { parent: unknown }): boolean {
   const down = chain(b);
   let i = 0;
   while (i < up.length && i < down.length && up[i] === down[i]) i += 1;
-  // one in the other, or in no document with it
-  if (i === 0 || i === up.length || i === down.length) return false;
+  // in two trees: by their places in the flat tree, which the build walks
+  if (i === 0) return flatPrecedes(a as ChildNode, b as ChildNode);
+  // one in the other
+  if (i === up.length || i === down.length) return false;
   const siblings = (up[i - 1] as { children: unknown[] }).children;
+  return siblings.indexOf(up[i]) < siblings.indexOf(down[i]);
+}
+
+/** `precedes` in the flat tree, for a node in a shadow tree and one
+ *  outside it: by their places in the flat parent their chains last share
+ *  (`flatChildrenOf`). False where they share none. */
+function flatPrecedes(a: ChildNode, b: ChildNode): boolean {
+  const chain = (node: ChildNode): ChildNode[] => {
+    const out: ChildNode[] = [];
+    for (let at: ChildNode | null = node; at; at = flatParentOf(at)) {
+      out.unshift(at);
+    }
+    return out;
+  };
+  const up = chain(a);
+  const down = chain(b);
+  let i = 0;
+  while (i < up.length && i < down.length && up[i] === down[i]) i += 1;
+  if (i === 0 || i === up.length || i === down.length) return false;
+  const siblings = flatChildrenOf(up[i - 1] as Element);
   return siblings.indexOf(up[i]) < siblings.indexOf(down[i]);
 }
 
@@ -2047,6 +2226,10 @@ class Builder {
    *  closed a quote: what a subtree cannot be built apart from what is
    *  around it for (`runSubtree`). */
   private _counts = false;
+  /** How many list items counted the `list-item` counter and did nothing
+   *  else to a counter, their markers no number (`numberedMarker`): what a
+   *  subtree build holds to the count of the subtree it replaces. */
+  private _listItems = 0;
   /** How many quotes generated content has opened and not closed. */
   private _quoteDepth = 0;
   /** Where the inline content being built stands, for collapsing white
@@ -2211,6 +2394,10 @@ class Builder {
     ) {
       return null;
     }
+    // and none of what it holds hosts a shadow tree (`holdsShadow`)
+    for (const at of this._styles.keys()) {
+      if (shadowRootOf(at) !== null) return null;
+    }
     box.parent = null;
     fixUp(box, anonymous);
     return {
@@ -2231,6 +2418,7 @@ class Builder {
       awaiting: this._awaiting,
       images: this._images,
       awaitingKind: this._awaitingKind,
+      listItems: this._listItems,
       flags: {
         relative: this._relative,
         tilted: this._tilted,
@@ -3265,7 +3453,11 @@ class Builder {
     const sets = style.counterSet;
     const listItem = style.display === 'list-item';
     if (!resets && !increments && !sets && !listItem) return;
-    this._counts = true;
+    // a list item that counts and numbers nothing: what follows it is
+    // numbered as before wherever as many of them are where it was
+    if (!resets && !increments && !sets && !numberedMarker(style)) {
+      this._listItems += 1;
+    } else this._counts = true;
     if (resets) {
       for (let i = 0; i < resets.length; i += 1) {
         const change = resets[i];
@@ -4468,6 +4660,24 @@ function markerFor(
     text: prefix + text + (spaced ? suffix.trimEnd() : suffix),
     flush: !spaced,
   };
+}
+
+/** The marker styles that are one symbol whatever an item's number,
+ *  which no `@counter-style` may define again (CSS Counter Styles 3, 3). */
+const SYMBOL_MARKERS = new Set([
+  'disc',
+  'circle',
+  'square',
+  'disclosure-open',
+  'disclosure-closed',
+]);
+
+/** Whether a list item's marker shows its number: any but no marker, a
+ *  string, and one symbol (`markerFor`) — or a `::marker`'s content, which
+ *  reads what it reads where it is generated (`_generated`). */
+function numberedMarker(style: ComputedStyle): boolean {
+  const type = style.listStyleType;
+  return !(type === 'none' || type.startsWith('"') || SYMBOL_MARKERS.has(type));
 }
 
 /**

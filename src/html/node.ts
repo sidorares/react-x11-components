@@ -201,6 +201,7 @@ import type {
   BoxTree,
   BuildOptions,
   ForeignObject,
+  SubtreeRoots,
   LineBox,
   LineText,
   ReplacedKind,
@@ -8812,7 +8813,9 @@ export class HtmlViewNode extends Node {
     const changed =
       change.type === 'characterData' ? change.target.parent : change.target;
     const target = changed instanceof ShadowRoot ? changed.host : changed;
-    if (target && isElement(target)) scope.targets.add(target as Element);
+    if (target && isElement(target) && change.type !== 'childList') {
+      scope.targets.add(target as Element);
+    }
     if (change.type === 'attributes') {
       const el = change.target;
       const name = change.attributeName.toLowerCase();
@@ -8891,7 +8894,12 @@ export class HtmlViewNode extends Node {
             scope.sheets = true;
           }
           if (node.type !== 'comment') counted = true;
-          if (drawsSomething(node)) drawn = true;
+          if (
+            !drawn &&
+            draws(node, nodes === change.addedNodes, tree, cascade)
+          ) {
+            drawn = true;
+          }
         }
       }
       if (!counted) return true;
@@ -8911,6 +8919,18 @@ export class HtmlViewNode extends Node {
       return true;
     }
     if (drawn) scope.boxes = true;
+    if (change.type === 'childList') {
+      // what holds what came or went — but where none of it is ever drawn,
+      // a script or a style a page puts in or takes out, no box of the
+      // holder's can differ: what came is styled where it is, and what went
+      // is a seed of its own, whose style goes (`_subtreeRoots`)
+      if (drawn) scope.targets.add(holder);
+      else {
+        for (const node of change.removedNodes) {
+          if (isElement(node)) scope.targets.add(node);
+        }
+      }
+    }
     const crossing = cascade.changesCrossTrees;
     if (change.type === 'childList') {
       // what came in is styled whole, and so is what moved here from
@@ -8941,23 +8961,22 @@ export class HtmlViewNode extends Node {
    * (`buildSubtrees`), with every other box the tree's own, kept with what
    * its layouts learnt — or null where it cannot be told, and the whole
    * document is built. Not where a drag's layout set boxes aside, whose
-   * styles a build puts right (`_asideOwed`), nor in a document with shadow
-   * trees, whose flat tree a build walks and the document's order is not.
+   * styles a build puts right (`_asideOwed`). A root in a shadow tree, or
+   * one holding one, is no root (`inLightTree`, `holdsShadow`): a flat
+   * tree's order is not the document's there.
    */
   private _subtreeBuild(
     seeds: ReadonlySet<Element>,
     options: BuildOptions,
   ): BoxTree | null {
     const tree = this._tree;
-    if (!tree || asideIn(tree) || this._source.facts().shadows.length) {
-      return null;
-    }
-    const roots = this._subtreeRoots(tree, seeds, options.kept?.restyle);
-    if (!roots) return null;
+    if (!tree || asideIn(tree)) return null;
+    const found = this._subtreeRoots(tree, seeds, options.kept?.restyle);
+    if (!found) return null;
     const built = buildSubtrees(
       tree,
       this._source.document,
-      roots,
+      found,
       options,
       this._firstBoxesOf(tree),
     );
@@ -8983,33 +9002,60 @@ export class HtmlViewNode extends Node {
     tree: BoxTree,
     seeds: ReadonlySet<Element>,
     restyled: ReadonlySet<Element> | undefined,
-  ): Element[] | null {
+  ): SubtreeRoots | null {
     const first = this._firstBoxesOf(tree);
+    const document = this._source.document;
     const roots = new Set<Element>();
+    const hidden = new Set<Element>();
+    const gone: Element[] = [];
     for (const seed of seeds) {
-      if (!inDocument(seed, this._source.document)) continue;
-      let hidden: Element | null = null;
+      if (!inDocument(seed, document)) {
+        gone.push(seed);
+        continue;
+      }
+      let hiding: Element | null = null;
       for (let at: Element | null = seed; at; at = flatParentOf(at)) {
         if (tree.styles.get(at)?.style.display === 'none') {
-          hidden = at;
+          hiding = at;
           break;
         }
       }
-      if (hidden && !restyled?.has(hidden) && !first.has(seed)) continue;
+      if (!first.has(seed)) {
+        if (hiding && !restyled?.has(hiding)) continue;
+        // no box, before or after, where it was `display: none` or is new
+        // and of a kind the UA never draws: styled where it is, and the
+        // whole document built if it comes out drawn (`buildSubtrees`)
+        const boxless =
+          hiding ??
+          (!tree.styles.has(seed) && UNDRAWN_TAGS.has(tagOf(seed))
+            ? seed
+            : null);
+        if (boxless) {
+          hidden.add(boxless);
+          continue;
+        }
+      }
       let at: Element | null = seed;
       while (at && !canRebuild(at, first)) at = flatParentOf(at);
       if (!at) return null;
       roots.add(at);
     }
-    const outermost: Element[] = [];
-    for (const root of roots) {
-      let inner = false;
-      for (let at = flatParentOf(root); at && !inner; at = flatParentOf(at)) {
-        if (roots.has(at)) inner = true;
+    const outermost = (set: ReadonlySet<Element>, also = set): Element[] => {
+      const out: Element[] = [];
+      for (const el of set) {
+        let inner = false;
+        for (let at = flatParentOf(el); at && !inner; at = flatParentOf(at)) {
+          if (roots.has(at) || also.has(at)) inner = true;
+        }
+        if (!inner) out.push(el);
       }
-      if (!inner) outermost.push(root);
-    }
-    return outermost;
+      return out;
+    };
+    return {
+      roots: outermost(roots),
+      hidden: outermost(hidden),
+      gone,
+    };
   }
 
   /**
@@ -9100,6 +9146,22 @@ export class HtmlViewNode extends Node {
       this._sheetsOwed = true;
       this._invalidate(Stale.Boxes, scope.own, true, seedsOf(scope));
       return;
+    }
+    if (!scope.boxes && scope.targets.size && this._tree) {
+      // what went and drew nothing — a script, a hidden panel — takes its
+      // style with it, as a build would, and so does what moved under an
+      // element nothing draws, which a build styles no further into
+      const tree = this._tree;
+      const document = this._source.document;
+      for (const el of scope.targets) {
+        const parent = el.parent;
+        if (
+          !inDocument(el, document) ||
+          (parent && isElement(parent) && undrawn(parent, tree))
+        ) {
+          forgetStyles(el, tree.styles);
+        }
+      }
     }
     if (!scope.own.size && !scope.boxes) return;
     if (!scope.boxes) {
@@ -13889,11 +13951,46 @@ const SHEET_TAGS = new Set(['style', 'link']);
  *  comment, or an element nothing draws whatever the sheets say. A text
  *  of white space alone may be nothing too, but where it is, only layout
  *  knows. */
-function drawsSomething(node: AnyNode): boolean {
+/** The elements the UA's sheet never draws, `display: none`, which a
+ *  page's scripts put in and take out as they load: a seed of a subtree
+ *  build of its own, styled where it is (`_subtreeRoots`). */
+const UNDRAWN_TAGS = new Set([
+  'script',
+  'style',
+  'link',
+  'meta',
+  'title',
+  'base',
+  'template',
+]);
+
+/**
+ * Whether a node a change put in (`added`) or took out draws something: a
+ * text does, and an element did where the last build styled it drawn — one
+ * it did not style was under an element nothing draws, or never built. One
+ * put in draws but where it is of a kind the UA's sheet never draws, and no
+ * rule of the page draws it: a `<title>` a page set `display: inline`
+ * draws its text.
+ */
+function draws(
+  node: AnyNode,
+  added: boolean,
+  tree: BoxTree,
+  cascade: Cascade,
+): boolean {
   if (node.type === 'comment') return false;
   if (!isElement(node)) return true;
-  const tag = tagOf(node);
-  return tag !== 'script' && tag !== 'template' && tag !== 'title';
+  if (!added) {
+    const kept = tree.styles.get(node);
+    return kept !== undefined && kept.style.display !== 'none';
+  }
+  if (!UNDRAWN_TAGS.has(tagOf(node))) return true;
+  const parent = flatParentOf(node);
+  const parentStyle = parent && tree.styles.get(parent)?.style;
+  if (!parentStyle) return false;
+  const inFlex =
+    parentStyle.display === 'flex' || parentStyle.display === 'inline-flex';
+  return cascade.styleFor(node, parentStyle, inFlex).display !== 'none';
 }
 
 /** Whether `el`, or the nearest element around it the last build styled,
@@ -13904,6 +14001,14 @@ function undrawn(el: Element, tree: BoxTree): boolean {
     if (kept) return kept.style.display === 'none';
   }
   return true;
+}
+
+/** An element's style and those of everything in it, out of `styles`. */
+function forgetStyles(el: Element, styles: Map<Element, unknown>): void {
+  if (!styles.delete(el)) return;
+  for (const child of el.children) {
+    if (isElement(child)) forgetStyles(child, styles);
+  }
 }
 
 /** An element and everything in it into `into`. */

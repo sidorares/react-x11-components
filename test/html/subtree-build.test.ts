@@ -5,7 +5,7 @@
 // laid out where nothing they were laid out from changed (`reuseLaid`),
 // places them as a layout of all new boxes does (`buildSubtrees`,
 // docs/prd-subtree-build.md).
-import { afterEach, test } from 'node:test';
+import { afterEach } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup } from 'react-x11/test';
 import * as DomUtils from 'domutils';
@@ -15,15 +15,11 @@ import {
   createText,
   removeNode,
 } from '../../src/html/index.js';
-import type {
-  ChildNode,
-  Element,
-  HtmlChange,
-  HtmlViewNode,
-} from '../../src/html/index.js';
+import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { GENERATED_FROM } from '../../src/html/layout/boxes.js';
 import { blocksKept } from '../../src/html/layout/block.js';
+import { shadowRootOf } from '../../src/html/dom.js';
 import { metric, render, view } from './harness.js';
 
 afterEach(cleanup);
@@ -73,16 +69,30 @@ function element(next: () => number, depth: number): Element {
       ? pick(BLOCKS)
       : roll < 0.85
         ? pick(INLINES)
-        : pick(['ul', 'input', 'button', 'br']);
+        : pick(['ul', 'ol', 'input', 'button', 'br']);
   const classes = CLASSES.filter(() => next() < 0.12).join(' ');
   const attribs: Record<string, string> = classes ? { class: classes } : {};
   if (tag === 'a') attribs.href = '#x';
   const el = createElement(tag, attribs);
-  if (tag === 'ul') {
+  if (tag === 'ul' || tag === 'ol') {
     appendChild(el, createElement('li', {}, [createText('item')]));
     return el;
   }
   if (tag === 'input' || tag === 'br') return el;
+  // a host, now and then, whose light children go to its slot: a build of
+  // a subtree beside a shadow tree, or around one, holds to a whole build
+  if ((tag === 'div' || tag === 'section') && depth < 2 && next() < 0.12) {
+    appendChild(
+      el,
+      createElement('template', { shadowrootmode: 'open' }, [
+        createElement('b', { class: 'b' }, [createText('shadow ')]),
+        createElement('slot', {}),
+        createElement('p', { class: next() < 0.5 ? 'l' : 'h' }, [
+          createText('after'),
+        ]),
+      ]),
+    );
+  }
   const count = depth > 2 ? 1 : 1 + Math.floor(next() * 3);
   for (let i = 0; i < count; i += 1) {
     if (depth < 3 && next() < 0.45) appendChild(el, element(next, depth + 1));
@@ -112,7 +122,46 @@ function change(next: () => number, body: Element): HtmlChange[] {
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
   const inside = all.slice(1);
-  const kind = Math.floor(next() * 6);
+  const kind = Math.floor(next() * 7);
+  if (kind === 6) {
+    // what a page's scripts put in and take out as they load, which draws
+    // nothing: a script, a title, a template
+    const undrawn = all.flatMap((el) =>
+      el.children.filter(
+        (n) =>
+          (n as Element).attribs &&
+          ['script', 'title', 'template'].includes((n as Element).name),
+      ),
+    ) as Element[];
+    if (undrawn.length && next() < 0.4) {
+      const target = pick(undrawn);
+      const parent = target.parent as unknown as Element;
+      removeNode(target as unknown as ChildNode);
+      return [
+        {
+          type: 'childList',
+          target: parent,
+          addedNodes: [],
+          removedNodes: [target],
+        },
+      ];
+    }
+    const parent = pick(all);
+    const child = createElement(pick(['script', 'title', 'template']), {}, [
+      createText('x'),
+    ]);
+    const kids = parent.children.filter((n) => (n as Element).attribs);
+    if (kids.length && next() < 0.5) DomUtils.prepend(pick(kids), child);
+    else appendChild(parent, child);
+    return [
+      {
+        type: 'childList',
+        target: parent,
+        addedNodes: [child],
+        removedNodes: [],
+      },
+    ];
+  }
   if (kind === 0 || !inside.length) {
     const parent = pick(all);
     const child = element(next, 2);
@@ -191,6 +240,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
     'display: none',
     'padding-left: 6px',
     'display: inline',
+    'display: list-item',
     '',
   ]);
   return [
@@ -238,6 +288,8 @@ function boxLine(box: Box): string {
     box.outOfFlow ? 'out' : '',
     box.isFloat ? 'float' : '',
     box.lines?.length ?? '',
+    // a list item's number
+    box.marker ? JSON.stringify(box.marker.text) : '',
     // where its lines and the text on them are drawn, which a block kept
     // from an earlier layout carries with it
     (box.lines ?? [])
@@ -283,7 +335,9 @@ function treeLines(tree: BoxTree): string[] {
       .join(' ')}`,
   );
   out.push(
+    // but for what is never drawn, which a restyle in place leaves out
     `styles: ${[...tree.styles]
+      .filter(([el]) => !['script', 'title', 'template'].includes(el.name))
       .map(
         ([el, { style, inFlex }]) =>
           `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
@@ -299,6 +353,7 @@ metric(
     let subtrees = 0;
     let wholes = 0;
     const keptAtStart = blocksKept();
+    let shadowed = 0;
     // SUBTREE_SEEDS sweeps more of them, for a change to the splice, and
     // SUBTREE_FROM starts at the one a sweep failed at
     const env =
@@ -324,6 +379,7 @@ metric(
       const bodyEl = elementsUnder(el.document as unknown as Element).find(
         (e) => e.name === 'body',
       )!;
+      if (elementsUnder(bodyEl).some((e) => shadowRootOf(e))) shadowed += 1;
       const subtreeBuild = internals._subtreeBuild;
       for (let step = 0; step < 10; step += 1) {
         const changes = change(next, bodyEl);
@@ -352,8 +408,9 @@ metric(
       }
       result.unmount();
     }
-    assert.ok(subtrees > 80, `${subtrees} changes built only their subtrees`);
+    assert.ok(subtrees > 60, `${subtrees} changes built only their subtrees`);
     assert.ok(wholes > 10, `${wholes} changes built the whole document`);
+    assert.ok(shadowed > 5, `${shadowed} documents with a shadow tree`);
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);

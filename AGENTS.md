@@ -1923,6 +1923,37 @@ random documents, rules and changes, and fails if none of them went in
 place, through a frame or through a build; every way a reach was dropped
 on purpose was caught by it or by a test beside it.
 
+**A build for such a change builds the subtrees it reached, and the
+layout after it keeps the blocks it did not** (`buildSubtrees`,
+`reuseLaid`, docs/prd-subtree-build.md). Where every change said which
+elements it reached (`_buildSeeds`), the tree keeps every box outside
+them, and only the subtree of each **rebuild root** — the nearest
+in-flow block around a seed whose content the builder can build apart
+(`canRebuild`, `subtreeRoot`) — is built again, into the tree where the
+old one was, with the document's text, every box's place in it, the
+lists and the styles spliced to say what a whole build says. A seed with
+no box, new or `display: none` before, is styled where it is and its
+style put in, and where it comes out drawn the whole document is built.
+The layout after it keeps a block an earlier layout laid out where
+nothing it was laid out from changed (`Laid`), moving it to where the
+flow puts it now, with the offsets the passes after the flow put on what
+it holds taken off first (`unoffsetHeld`). Four rules hold it up. **State
+the builder carries across siblings is a root's to bring to a known
+value, or a refusal**: a new one goes in the table in the design record.
+**Anything new a `BoxTree` lists in document order is spliced in
+`buildSubtrees`**, or a subtree build leaves an entry of the old
+subtree, or none of the new. **Anything new a block's layout reads from
+outside it joins `Laid`**, and anything that changes what a box's layout
+reads calls `forgetSizes`, which forgets the record with the sizes. And
+**anything new a pass after the flow moves boxes by is taken off in
+`unoffsetHeld`**, or a block kept is moved by it twice. A block whose
+layout reaches outside it — what holds a box placed against something
+outside it, a sticky box, or a relative inline broken around blocks — is
+laid out every time (`reuseBlockers`). `test/html/subtree-build.test.ts`
+holds a subtree build and the layout after it to a whole build, box,
+line, list and style, over generated documents; `SUBTREE_SEEDS` sweeps
+more of them, and `SUBTREE_FROM` starts at the one that failed.
+
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
 `_update`, for the width the boxes are about to be built at
