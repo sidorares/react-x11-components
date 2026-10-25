@@ -11,7 +11,7 @@
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
 import type { Element } from 'domhandler';
-import { isInputButton } from '../dom.js';
+import { isInputButton, topLayerOrder } from '../dom.js';
 import {
   AUTO,
   gapOf,
@@ -35,6 +35,7 @@ import {
 import type {
   AnchorInset,
   AnchorSide,
+  AnchorSize,
   AnchorSizeKind,
   AnchorSizeRef,
   InsetSide,
@@ -43,6 +44,7 @@ import type {
   WritingAxes,
 } from '../css/anchor.js';
 import type {
+  AnchorSizeField,
   BorderStyle,
   ComputedStyle,
   WritingMode,
@@ -51,6 +53,7 @@ import type {
   SizeOf,
 } from '../css/style.js';
 import {
+  ANCHOR_SIZE_UNSET,
   CONTAIN_INLINE_SIZE,
   CONTAIN_LAYOUT,
   CONTAIN_PAINT,
@@ -5271,9 +5274,10 @@ function isControl(box: Box): boolean {
 }
 
 /** The style of the position option an anchor-positioned box was placed
- *  by, where that was one of its `position-try-fallbacks`: its computed
- *  style, as `getComputedStyle` reads it (CSS Anchor Positioning 1, 6.2:
- *  the position option's styles are the box's). */
+ *  by, its anchor functions come to lengths: its computed style, as
+ *  `getComputedStyle` reads it (CSS Anchor Positioning 1, 6.2: the
+ *  position option's styles are the box's; 5.1: an `anchor-size()` is a
+ *  length once the box is placed). None where it is the box's own. */
 const PLACED_STYLE = new WeakMap<Box, ComputedStyle>();
 
 /** The style a box was placed by (`PLACED_STYLE`), or null where it is its
@@ -5488,8 +5492,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const last = kept?.[0].get(kept[1]);
   let start =
     last?.key === key && last.option < options.length ? last.option : -1;
-  // the style each option made of the box's, its tactics applied
+  // the style each option made of the box's, its tactics applied, and
+  // with its anchor functions come to lengths
   const triedStyles = new Map<number, ComputedStyle>();
+  const resolvedStyles = new Map<number, ComputedStyle>();
   const triedStyle = (index: number): ComputedStyle | null => {
     const known = triedStyles.get(index);
     if (known) return known;
@@ -5516,6 +5522,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
+      resolvedStyles.set(index, resolved);
       box.style = resolved;
       return positionedIn(box, containing, ctx, anchoring);
     } finally {
@@ -5567,13 +5574,11 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     // and where none does, the one it had
     if (!found) placed = place(start);
   }
-  if (chosen >= 0) {
-    ANCHOR_FALLBACK.set(box, options[chosen].text);
-    PLACED_STYLE.set(box, triedStyles.get(chosen) ?? style);
-  } else {
-    ANCHOR_FALLBACK.delete(box);
-    PLACED_STYLE.delete(box);
-  }
+  if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
+  else ANCHOR_FALLBACK.delete(box);
+  const own = resolvedStyles.get(chosen);
+  if (own && own !== style) PLACED_STYLE.set(box, own);
+  else PLACED_STYLE.delete(box);
   if (kept && !ctx.question)
     notePosition(kept[0], kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
@@ -5703,6 +5708,11 @@ function anchoredStyle(
       const across = side === 'left' || side === 'right';
       let scrolled = false;
       const values = anchorCalls(inset).map((ref) => {
+        // a side of the other axis is no `anchor()` of this inset's, which
+        // is its fallback (CSS Anchor Positioning 1, 3.2.1)
+        if (typeof ref.side === 'string' && OTHER_AXIS[side].has(ref.side)) {
+          return null;
+        }
         const name = ref.name ?? style.positionAnchor;
         const tree = refTree(style, ref.name);
         const of = anchorFor(box, name, ctx, tree);
@@ -5730,8 +5740,10 @@ function anchoredStyle(
   }
   const sizes = style.anchorSizes;
   if (sizes) {
-    for (const prop of ['width', 'height'] as const) {
-      const size = sizes[prop];
+    for (const [prop, size] of Object.entries(sizes) as [
+      AnchorSizeField,
+      AnchorSize,
+    ][]) {
       if (!size) continue;
       const values = anchorCalls(size).map((ref) => {
         const of = anchorFor(
@@ -5743,13 +5755,19 @@ function anchoredStyle(
         if (!of) return null;
         return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
       });
+      const set = own() as unknown as Record<string, unknown>;
       if (isAnchorMath(size)) {
         // a length like any other, which `box-sizing` says the box of
-        own()[prop] = anchorMathValue(size, values) ?? AUTO;
+        set[prop] = anchorMathValue(size, values) ?? ANCHOR_SIZE_UNSET[prop];
         continue;
       }
       const value = values[0];
       if (value === null) continue;
+      // a least or a greatest size, an inset or a margin the length
+      if (prop !== 'width' && prop !== 'height') {
+        set[prop] = value;
+        continue;
+      }
       // the anchor's border box, which a box sized to it takes as its own
       // border box
       const extra =
@@ -5945,6 +5963,17 @@ const NO_TACTICS: readonly TryTactic[] = [];
 
 const NO_SHIFT = { x: 0, y: 0 };
 
+/** The physical sides an inset's `anchor()` may not read: the other
+ *  axis's. */
+const ACROSS = new Set(['left', 'right']);
+const DOWN = new Set(['top', 'bottom']);
+const OTHER_AXIS: Record<InsetSide, ReadonlySet<string>> = {
+  top: ACROSS,
+  bottom: ACROSS,
+  left: DOWN,
+  right: DOWN,
+};
+
 /** Whether one scroll moves two anchors alike: in the same scroll
  *  container, and fixed to the viewport both or neither. */
 function sameScrollContext(a: Box, b: Box): boolean {
@@ -6099,17 +6128,19 @@ function nearestScrollerOf(box: Box): Box | null {
 
 /**
  * Whether an anchor is laid out before the box it would anchor, as CSS
- * Anchor Positioning 1, 2.3 has an acceptable anchor element: inside the
- * box's containing block, or the box's containing block is the initial
- * one; and where the two share a containing block, the anchor not
- * absolutely positioned or before the box in the tree, and otherwise the
- * last containing block on the anchor's chain before the box's the same.
+ * Anchor Positioning 1, 2.3 has an acceptable anchor element: no later in
+ * the top layer than the box (`topLayerRank`); inside the box's containing
+ * block, or the box's containing block is the initial one; and where the
+ * two share a containing block, the anchor not absolutely positioned or
+ * before the box in the tree, and otherwise the last containing block on
+ * the anchor's chain before the box's the same.
  */
 function acceptableAnchor(
   anchor: Box,
   box: Box,
   order: Map<Box, number>,
 ): boolean {
+  if (topLayerRank(anchor) > topLayerRank(box)) return false;
   const positioned = (b: Box) =>
     b.style.position === 'absolute' || b.style.position === 'fixed';
   const cbOf = (b: Box): Box | null =>
@@ -6132,6 +6163,23 @@ function acceptableAnchor(
   for (let at = cbOf(anchor); at && at !== cb; at = cbOf(at)) last = at;
   if (!positioned(last)) return true;
   return (order.get(last) ?? 0) < (order.get(box) ?? 0);
+}
+
+/**
+ * Where a box is laid out among the top layer's (CSS Position 4, 3.1): 0
+ * for one in none, and after it each element's box in the order it went
+ * into the layer, its `::backdrop`'s first — what is in the top layer
+ * being laid out after everything that is not, as it is painted over it.
+ * A modal dialog anchored in the page is no anchor of a box below it.
+ */
+function topLayerRank(box: Box): number {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (!at.topLayer) continue;
+    const el = at.el ?? at.parent?.el;
+    if (!el) return 1;
+    return 2 + 2 * topLayerOrder(el) + (at.pseudo === 'backdrop' ? 0 : 1);
+  }
+  return 0;
 }
 
 /**
@@ -6196,6 +6244,17 @@ function mirroredSide(side: AnchorSide, down: boolean): AnchorSide {
         : 'self-start';
 }
 
+/** A self-alignment's position mirrored along its axis. */
+const FLIPPED_SELF: Partial<
+  Record<
+    ComputedStyle['alignSelf'],
+    ComputedStyle['alignSelf'] & ComputedStyle['justifySelf']
+  >
+> = {
+  'flex-start': 'flex-end',
+  'flex-end': 'flex-start',
+};
+
 function flipAxis(style: ComputedStyle, down: boolean): void {
   const [a, b] = down
     ? (['top', 'bottom'] as const)
@@ -6205,6 +6264,18 @@ function flipAxis(style: ComputedStyle, down: boolean): void {
     : (['marginLeft', 'marginRight'] as const);
   [style[a], style[b]] = [style[b], style[a]];
   [style[ma], style[mb]] = [style[mb], style[ma]];
+  // its self-alignment the other way along the axis (4.1): a box aligned
+  // to the start is aligned to the end
+  if (down) style.alignSelf = FLIPPED_SELF[style.alignSelf] ?? style.alignSelf;
+  else style.justifySelf = FLIPPED_SELF[style.justifySelf] ?? style.justifySelf;
+  if (style.anchorSizes) {
+    style.anchorSizes = movedSizes(style.anchorSizes, {
+      [a]: b,
+      [b]: a,
+      [ma]: mb,
+      [mb]: ma,
+    });
+  }
   const insets = style.anchorInsets;
   if (insets) {
     const out: Partial<Record<InsetSide, AnchorInset>> = { ...insets };
@@ -6285,16 +6356,22 @@ function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
   }
   const sizes = style.anchorSizes;
   if (sizes) {
-    const across = (ref: AnchorSizeRef): AnchorSizeRef => ({
+    const to: Partial<Record<AnchorSizeField, AnchorSizeField>> = {
+      width: 'height',
+      height: 'width',
+      minWidth: 'minHeight',
+      minHeight: 'minWidth',
+      maxWidth: 'maxHeight',
+      maxHeight: 'maxWidth',
+    };
+    for (const side of SIDES) {
+      to[side] = swap[side];
+      to[MARGIN_OF[side]] = MARGIN_OF[swap[side]];
+    }
+    style.anchorSizes = movedSizes(sizes, to, (ref) => ({
       ...ref,
       size: OTHER_SIZE[ref.size],
-    });
-    style.anchorSizes = {
-      ...(sizes.width ? { height: mapAnchorCalls(sizes.width, across) } : null),
-      ...(sizes.height
-        ? { width: mapAnchorCalls(sizes.height, across) }
-        : null),
-    };
+    }));
   }
   const area = style.positionArea;
   if (area) {
@@ -6313,6 +6390,23 @@ function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
       logicalCols: false,
     };
   }
+}
+
+/** A style's `anchor-size()`s each under the field `to` moves it to, or
+ *  its own, with each call made another by `call`. */
+function movedSizes(
+  sizes: Readonly<Partial<Record<AnchorSizeField, AnchorSize>>>,
+  to: Partial<Record<AnchorSizeField, AnchorSizeField>>,
+  call?: (ref: AnchorSizeRef) => AnchorSizeRef,
+): Partial<Record<AnchorSizeField, AnchorSize>> {
+  const out: Partial<Record<AnchorSizeField, AnchorSize>> = {};
+  for (const [field, size] of Object.entries(sizes) as [
+    AnchorSizeField,
+    AnchorSize,
+  ][]) {
+    out[to[field] ?? field] = call ? mapAnchorCalls(size, call) : size;
+  }
+  return out;
 }
 
 /** The side of a box's layout a writing mode starts one of its axes at. */

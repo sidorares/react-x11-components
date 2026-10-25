@@ -786,6 +786,10 @@ export function parseDeclarations(text: string): Declaration[] {
       if (text[colon] === ':') {
         const raw = text.slice(colon + 1, end);
         let value = raw.trim();
+        // the end of the block closes what is open, as the end of the
+        // input does every block (CSS Syntax 3, 5.4.8): a `style` that
+        // leaves a function's bracket open
+        if (end >= n) value = closedAtEnd(value);
         const important = IMPORTANT_RE.test(value);
         if (important) value = value.replace(IMPORTANT_RE, '').trim();
         const custom = name.value.startsWith('--');
@@ -821,6 +825,35 @@ export function parseDeclarations(text: string): Declaration[] {
     i = end + 1;
   }
   return out;
+}
+
+/** A value with the brackets it leaves open closed, the innermost first,
+ *  outside its strings, and a string it leaves open in one closed
+ *  before them. */
+function closedAtEnd(value: string): string {
+  let open: string[] | null = null;
+  let quote = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    if (quote) {
+      if (c === '\\') i += 1;
+      else if (c === quote) quote = '';
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '\\') i += 1;
+    else if (c === '(' || c === '[' || c === '{') (open ??= []).push(c);
+    else if (c === ')' || c === ']' || c === '}') open?.pop();
+  }
+  if (!open?.length) return value;
+  const closer: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+  // a string the end leaves open, the end closes first
+  return (
+    value +
+    quote +
+    open
+      .reverse()
+      .map((c) => closer[c])
+      .join('')
+  );
 }
 
 /**

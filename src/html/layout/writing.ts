@@ -30,7 +30,13 @@ import type { BoxShadow, ComputedStyle, WritingMode } from '../css/style.js';
 import { copyStyle } from '../css/style.js';
 import type { TransformFunction } from '../css/transform.js';
 import { mapAnchorCalls } from '../css/anchor.js';
-import type { AnchorInset, AnchorSizeRef, InsetSide } from '../css/anchor.js';
+import type {
+  AnchorInset,
+  AnchorSize,
+  AnchorSizeRef,
+  InsetSide,
+} from '../css/anchor.js';
+import type { AnchorSizeField } from '../css/style.js';
 import type { TextRun } from '../../richtext/index.js';
 
 /** Each orthogonal flow root's frame, by the root. */
@@ -234,12 +240,31 @@ function turnAnchoring(
         : ref.size === 'height'
           ? { ...ref, size: 'width' }
           : ref;
-    out.anchorSizes = {
-      ...(sizes.height
-        ? { width: mapAnchorCalls(sizes.height, across) }
-        : null),
-      ...(sizes.width ? { height: mapAnchorCalls(sizes.width, across) } : null),
+    // each field at the frame's the page's is laid out at, as
+    // `framedStyle` hands the box's own over: a margin as its margins are
+    const sides = turnsUp(mode) ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES;
+    const margins = reflects(mode) ? REFLECTED_MARGINS : sides;
+    const to: Record<string, AnchorSizeField> = {
+      width: 'height',
+      height: 'width',
+      minWidth: 'minHeight',
+      minHeight: 'minWidth',
+      maxWidth: 'maxHeight',
+      maxHeight: 'maxWidth',
     };
+    for (let i = 0; i < 4; i += 1) {
+      const frame = FRAME_SIDES[i];
+      to[sides[i].toLowerCase()] = frame.toLowerCase() as AnchorSizeField;
+      to[`margin${margins[i]}`] = `margin${frame}` as AnchorSizeField;
+    }
+    const turnedSizes: Partial<Record<AnchorSizeField, AnchorSize>> = {};
+    for (const [field, size] of Object.entries(sizes) as [
+      AnchorSizeField,
+      AnchorSize,
+    ][]) {
+      turnedSizes[to[field] ?? field] = mapAnchorCalls(size, across);
+    }
+    out.anchorSizes = turnedSizes;
   }
   if (style.positionTryStyles) {
     out.positionTryStyles = style.positionTryStyles.map(

@@ -939,9 +939,10 @@ export interface ComputedStyle {
    *  what it is with every call's fallback, or `auto`. Null where none
    *  is. */
   anchorInsets: Readonly<Partial<Record<InsetSide, AnchorInset>>> | null;
-  /** A `width` or a `height` written with an `anchor-size()`, as the
-   *  insets are. */
-  anchorSizes: Readonly<Partial<Record<'width' | 'height', AnchorSize>>> | null;
+  /** A property written with an `anchor-size()`, as the insets are with
+   *  an `anchor()`: a size, a least or a greatest one, an inset or a
+   *  margin (CSS Anchor Positioning 1, 5.1), by its field. */
+  anchorSizes: Readonly<Partial<Record<AnchorSizeField, AnchorSize>>> | null;
   /** `position-area`: the cells of the grid its anchor makes of its
    *  containing block that it is placed in; null for `none`. */
   positionArea: PositionArea | null;
@@ -3440,34 +3441,24 @@ export function applyDeclaration(
         }
       }
       // the anchor's size, kept beside the size, which takes the fallback
-      if ((name === 'width' || name === 'height') && readsAnchor(value)) {
-        const ref: AnchorSize | null =
-          parseAnchorSize(value, name, ctx) ??
-          parseAnchorMath<AnchorSizeRef>(value, ctx, name);
-        if (!ref) return;
-        style[name] =
-          'calls' in ref
-            ? (anchorMathValue(
-                ref,
-                ref.calls.map(() => null),
-              ) ?? AUTO)
-            : (ref.fallback ?? AUTO);
+      if (
+        setAnchorSize(
+          style,
+          camel(name) as AnchorSizeField,
+          value,
+          across ? 'width' : 'height',
+          ctx,
+        )
+      ) {
         if (name === 'width') {
           style.widthKeyword = null;
           style.widthSize = null;
-        } else {
+        } else if (name === 'height') {
           style.heightKeyword = null;
           style.heightSize = null;
-        }
-        style.anchorSizes = { ...style.anchorSizes, [name]: ref };
+        } else if (name === 'min-width') style.minWidthKeyword = null;
+        else style.minHeightKeyword = null;
         return;
-      }
-      if (
-        (name === 'width' || name === 'height') &&
-        style.anchorSizes?.[name]
-      ) {
-        const { [name]: _gone, ...rest } = style.anchorSizes;
-        style.anchorSizes = Object.keys(rest).length ? rest : null;
       }
       if (name === 'width') style.widthSize = null;
       else if (name === 'height') style.heightSize = null;
@@ -3514,6 +3505,20 @@ export function applyDeclaration(
     }
     case 'max-width':
     case 'max-height': {
+      const across = name === 'max-width';
+      if (
+        setAnchorSize(
+          style,
+          across ? 'maxWidth' : 'maxHeight',
+          value,
+          across ? 'width' : 'height',
+          ctx,
+        )
+      ) {
+        if (across) style.maxWidthKeyword = null;
+        else style.maxHeightKeyword = null;
+        return;
+      }
       const keyword = contentSizeOf(value, ctx, name === 'max-width');
       if (keyword || value.toLowerCase() === 'none') {
         (style as unknown as Record<string, unknown>)[camel(name)] = 'none';
@@ -3559,6 +3564,16 @@ export function applyDeclaration(
     case 'margin':
     case 'padding': {
       const keys = SIDE_PROPS[name];
+      if (name === 'margin' && (ANCHOR_SIZE.test(value) || style.anchorSizes)) {
+        // each side as its longhand takes it, an `anchor-size()` of any
+        const words = splitValue(value);
+        if (!words.length || words.length > 4) return;
+        const four = fourSides(words);
+        for (let i = 0; i < 4; i += 1) {
+          applyDeclaration(style, parent, MARGIN_SIDES[i], four[i], ctx);
+        }
+        return;
+      }
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
       if (parts.some((p) => p === null)) return;
       // padding is never `auto` and never negative: a value that is either
@@ -3578,6 +3593,20 @@ export function applyDeclaration(
     case 'padding-right':
     case 'padding-bottom':
     case 'padding-left': {
+      if (
+        name.startsWith('margin') &&
+        setAnchorSize(
+          style,
+          camel(name) as AnchorSizeField,
+          value,
+          name === 'margin-left' || name === 'margin-right'
+            ? 'width'
+            : 'height',
+          ctx,
+        )
+      ) {
+        return;
+      }
       const len = parseLength(value, ctx);
       if (len === null) return;
       if (name.startsWith('padding') && !validPadding(len)) return;
@@ -5123,6 +5152,23 @@ function setInset(
   value: string,
   ctx: UnitContext,
 ): void {
+  // an `anchor-size()` with no `anchor()` beside it, which is a length
+  if (
+    !/(?<![\w-])anchor\(/i.test(value) &&
+    setAnchorSize(
+      style,
+      side,
+      value,
+      side === 'left' || side === 'right' ? 'width' : 'height',
+      ctx,
+    )
+  ) {
+    if (style.anchorInsets?.[side]) {
+      const { [side]: _gone, ...rest } = style.anchorInsets;
+      style.anchorInsets = Object.keys(rest).length ? rest : null;
+    }
+    return;
+  }
   if (readsAnchor(value)) {
     // the call alone, or a math function with calls among its terms —
     // `calc(anchor(bottom) + 8px)` — which comes to what it is with each
@@ -5147,6 +5193,93 @@ function setInset(
     const { [side]: _gone, ...rest } = style.anchorInsets;
     style.anchorInsets = Object.keys(rest).length ? rest : null;
   }
+}
+
+/** The fields an `anchor-size()` may be written in (CSS Anchor
+ *  Positioning 1, 5.1): the sizes, the least and greatest ones, the
+ *  insets and the margins. */
+export type AnchorSizeField =
+  | 'width'
+  | 'height'
+  | 'minWidth'
+  | 'minHeight'
+  | 'maxWidth'
+  | 'maxHeight'
+  | 'top'
+  | 'right'
+  | 'bottom'
+  | 'left'
+  | 'marginTop'
+  | 'marginRight'
+  | 'marginBottom'
+  | 'marginLeft';
+
+const ANCHOR_SIZE = /(?<![\w-])anchor-size\(/i;
+
+const MARGIN_SIDES = [
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+] as const;
+
+/** What a field is where an `anchor-size()` in it has no anchor and no
+ *  fallback: invalid at computed-value time, so its initial value. */
+export const ANCHOR_SIZE_UNSET: Record<AnchorSizeField, Len | 'none'> = {
+  width: AUTO,
+  height: AUTO,
+  minWidth: AUTO,
+  minHeight: AUTO,
+  maxWidth: 'none',
+  maxHeight: 'none',
+  top: AUTO,
+  right: AUTO,
+  bottom: AUTO,
+  left: AUTO,
+  marginTop: 0,
+  marginRight: 0,
+  marginBottom: 0,
+  marginLeft: 0,
+};
+
+/**
+ * A field from a value with an `anchor-size()` in it (CSS Anchor
+ * Positioning 1, 5.1): the call, alone or in a math function with
+ * `axis` the size it reads where it names none, kept by the field
+ * (`anchorSizes`) with the field its fallback, which layout replaces for
+ * an anchored box. True where the value had one — a value whose call does
+ * not parse is dropped — and false for any other value, which clears what
+ * was kept for the field.
+ */
+function setAnchorSize(
+  style: ComputedStyle,
+  field: AnchorSizeField,
+  value: string,
+  axis: 'width' | 'height',
+  ctx: UnitContext,
+): boolean {
+  if (!ANCHOR_SIZE.test(value)) {
+    if (style.anchorSizes?.[field]) {
+      const { [field]: _gone, ...rest } = style.anchorSizes;
+      style.anchorSizes = Object.keys(rest).length ? rest : null;
+    }
+    return false;
+  }
+  const ref: AnchorSize | null =
+    parseAnchorSize(value, axis, ctx) ??
+    parseAnchorMath<AnchorSizeRef>(value, ctx, axis);
+  if (!ref) return true;
+  const unset = ANCHOR_SIZE_UNSET[field];
+  const fallback =
+    'calls' in ref
+      ? anchorMathValue(
+          ref,
+          ref.calls.map(() => null),
+        )
+      : ref.fallback;
+  (style as unknown as Record<string, unknown>)[field] = fallback ?? unset;
+  style.anchorSizes = { ...style.anchorSizes, [field]: ref };
+  return true;
 }
 
 /** A `container-name` value as the names it gives, one space between, ''
