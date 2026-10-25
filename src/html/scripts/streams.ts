@@ -125,7 +125,10 @@ export function installStreams(
   const mathTrunc = Math.trunc;
   const AB: Any = ArrayBuffer;
   const abProto = AB.prototype;
-  const abByteLength: Any = getOwnPropertyDescriptor(abProto, 'byteLength')!.get;
+  const abByteLength: Any = getOwnPropertyDescriptor(
+    abProto,
+    'byteLength',
+  )!.get;
   const abDetached: Any = getOwnPropertyDescriptor(abProto, 'detached')?.get;
   const abTransfer: Any = abProto.transfer;
   const abSlice: Any = abProto.slice;
@@ -133,15 +136,30 @@ export function installStreams(
   const U8: Any = Uint8Array;
   const u8Set: Any = U8.prototype.set;
   const TA_PROTO = getPrototypeOf(U8.prototype);
-  const taName: Any = getOwnPropertyDescriptor(TA_PROTO, Symbol.toStringTag)!.get;
+  const taName: Any = getOwnPropertyDescriptor(
+    TA_PROTO,
+    Symbol.toStringTag,
+  )!.get;
   const taBuffer: Any = getOwnPropertyDescriptor(TA_PROTO, 'buffer')!.get;
-  const taByteOffset: Any = getOwnPropertyDescriptor(TA_PROTO, 'byteOffset')!.get;
-  const taByteLength: Any = getOwnPropertyDescriptor(TA_PROTO, 'byteLength')!.get;
+  const taByteOffset: Any = getOwnPropertyDescriptor(
+    TA_PROTO,
+    'byteOffset',
+  )!.get;
+  const taByteLength: Any = getOwnPropertyDescriptor(
+    TA_PROTO,
+    'byteLength',
+  )!.get;
   const taLength: Any = getOwnPropertyDescriptor(TA_PROTO, 'length')!.get;
   const DV: Any = DataView;
   const dvBuffer: Any = getOwnPropertyDescriptor(DV.prototype, 'buffer')!.get;
-  const dvByteOffset: Any = getOwnPropertyDescriptor(DV.prototype, 'byteOffset')!.get;
-  const dvByteLength: Any = getOwnPropertyDescriptor(DV.prototype, 'byteLength')!.get;
+  const dvByteOffset: Any = getOwnPropertyDescriptor(
+    DV.prototype,
+    'byteOffset',
+  )!.get;
+  const dvByteLength: Any = getOwnPropertyDescriptor(
+    DV.prototype,
+    'byteLength',
+  )!.get;
   const G: Any = globalThis;
   const TYPED: Record<string, Any> = {
     Int8Array,
@@ -339,7 +357,9 @@ export function installStreams(
     const hwm = raw === undefined ? undefined : +raw;
     const size = d.size;
     if (size !== undefined && typeof size !== 'function') {
-      throw typeError("Failed to read the 'size' property from 'QueuingStrategy': The provided value is not a function.");
+      throw typeError(
+        "Failed to read the 'size' property from 'QueuingStrategy': The provided value is not a function.",
+      );
     }
     return { hwm, size };
   };
@@ -420,11 +440,15 @@ export function installStreams(
   /** An `ArrayBufferView` argument, not over a shared buffer. */
   const viewArgument = (v: Any, context: string): ViewInfo => {
     if (viewKind(v) === null) {
-      throw typeError(`${context}: parameter 1 is not of type 'ArrayBufferView'.`);
+      throw typeError(
+        `${context}: parameter 1 is not of type 'ArrayBufferView'.`,
+      );
     }
     const info = viewInfo(v);
     if (!isArrayBuffer(info.buffer)) {
-      throw typeError(`${context}: The provided ArrayBufferView value must not be shared.`);
+      throw typeError(
+        `${context}: The provided ArrayBufferView value must not be shared.`,
+      );
     }
     return info;
   };
@@ -435,7 +459,9 @@ export function installStreams(
     fromOffset: number,
     count: number,
   ): void => {
-    apply(u8Set, new U8(to, toOffset, count), [new U8(from, fromOffset, count)]);
+    apply(u8Set, new U8(to, toOffset, count), [
+      new U8(from, fromOffset, count),
+    ]);
   };
   const cloneBuffer = (b: Any, offset: number, length: number): Any =>
     apply(abSlice, b, [offset, offset + length]);
@@ -577,7 +603,9 @@ export function installStreams(
 
   const setUpDefaultReader = (obj: Any, rs: Any): Any => {
     if (isLocked(rs)) {
-      throw typeError("Failed to construct 'ReadableStreamDefaultReader': ReadableStreamDefaultReader constructor can only accept readable streams that are not yet locked to a reader");
+      throw typeError(
+        "Failed to construct 'ReadableStreamDefaultReader': ReadableStreamDefaultReader constructor can only accept readable streams that are not yet locked to a reader",
+      );
     }
     const reader = {
       tag: 'RDR',
@@ -592,10 +620,14 @@ export function installStreams(
   };
   const setUpBYOBReader = (obj: Any, rs: Any): Any => {
     if (isLocked(rs)) {
-      throw typeError("Failed to construct 'ReadableStreamBYOBReader': ReadableStreamBYOBReader constructor can only accept readable streams that are not yet locked to a reader");
+      throw typeError(
+        "Failed to construct 'ReadableStreamBYOBReader': ReadableStreamBYOBReader constructor can only accept readable streams that are not yet locked to a reader",
+      );
     }
     if (rs.controller.tag !== 'RBC') {
-      throw typeError("Failed to construct 'ReadableStreamBYOBReader': Cannot construct a ReadableStreamBYOBReader for a stream not constructed with a byte source");
+      throw typeError(
+        "Failed to construct 'ReadableStreamBYOBReader': Cannot construct a ReadableStreamBYOBReader for a stream not constructed with a byte source",
+      );
     }
     const reader = {
       tag: 'RBR',
@@ -636,7 +668,9 @@ export function installStreams(
     constructor(stream: Any) {
       const rs = slotOf(stream);
       if (!rs || rs.tag !== 'RS') {
-        throw typeError("Failed to construct 'ReadableStreamDefaultReader': parameter 1 is not of type 'ReadableStream'.");
+        throw typeError(
+          "Failed to construct 'ReadableStreamDefaultReader': parameter 1 is not of type 'ReadableStream'.",
+        );
       }
       setUpDefaultReader(this, rs);
     }
@@ -649,7 +683,11 @@ export function installStreams(
       const r = slotOf(this);
       if (!r || r.tag !== 'RDR') return rejectedWith(illegal());
       if (r.stream === undefined) {
-        return rejectedWith(typeError('This readable stream reader has been released and cannot be used to cancel its previous owner stream'));
+        return rejectedWith(
+          typeError(
+            'This readable stream reader has been released and cannot be used to cancel its previous owner stream',
+          ),
+        );
       }
       return readableStreamCancel(r.stream, reason);
     }
@@ -657,7 +695,11 @@ export function installStreams(
       const r = slotOf(this);
       if (!r || r.tag !== 'RDR') return rejectedWith(illegal());
       if (r.stream === undefined) {
-        return rejectedWith(typeError('This readable stream reader has been released and cannot be used to read from its previous owner stream'));
+        return rejectedWith(
+          typeError(
+            'This readable stream reader has been released and cannot be used to read from its previous owner stream',
+          ),
+        );
       }
       const d = deferred();
       defaultReaderRead(r, {
@@ -678,7 +720,9 @@ export function installStreams(
     constructor(stream: Any) {
       const rs = slotOf(stream);
       if (!rs || rs.tag !== 'RS') {
-        throw typeError("Failed to construct 'ReadableStreamBYOBReader': parameter 1 is not of type 'ReadableStream'.");
+        throw typeError(
+          "Failed to construct 'ReadableStreamBYOBReader': parameter 1 is not of type 'ReadableStream'.",
+        );
       }
       setUpBYOBReader(this, rs);
     }
@@ -691,7 +735,11 @@ export function installStreams(
       const r = slotOf(this);
       if (!r || r.tag !== 'RBR') return rejectedWith(illegal());
       if (r.stream === undefined) {
-        return rejectedWith(typeError('This readable stream reader has been released and cannot be used to cancel its previous owner stream'));
+        return rejectedWith(
+          typeError(
+            'This readable stream reader has been released and cannot be used to cancel its previous owner stream',
+          ),
+        );
       }
       return readableStreamCancel(r.stream, reason);
     }
@@ -701,10 +749,16 @@ export function installStreams(
       let info: ViewInfo;
       let min = 1;
       try {
-        info = viewArgument(view, "Failed to execute 'read' on 'ReadableStreamBYOBReader'");
+        info = viewArgument(
+          view,
+          "Failed to execute 'read' on 'ReadableStreamBYOBReader'",
+        );
         const d = dictionary(options, 'ReadableStreamBYOBReaderReadOptions');
         if (d && d.min !== undefined) {
-          min = enforceRange(d.min, "Failed to read the 'min' property from 'ReadableStreamBYOBReaderReadOptions'");
+          min = enforceRange(
+            d.min,
+            "Failed to read the 'min' property from 'ReadableStreamBYOBReaderReadOptions'",
+          );
         }
       } catch (e) {
         return rejectedWith(e);
@@ -716,7 +770,9 @@ export function installStreams(
         if (isDetached(info.buffer)) {
           return rejectedWith(typeError("view's buffer has been detached"));
         }
-        return rejectedWith(typeError("view's buffer must have non-zero byteLength"));
+        return rejectedWith(
+          typeError("view's buffer must have non-zero byteLength"),
+        );
       }
       if (isDetached(info.buffer)) {
         return rejectedWith(typeError("view's buffer has been detached"));
@@ -726,13 +782,25 @@ export function installStreams(
       }
       if (info.ctor !== DV) {
         if (min > info.length) {
-          return rejectedWith(rangeError('options.min must be less than or equal to view\'s length'));
+          return rejectedWith(
+            rangeError(
+              "options.min must be less than or equal to view's length",
+            ),
+          );
         }
       } else if (min > info.byteLength) {
-        return rejectedWith(rangeError("options.min must be less than or equal to view's byteLength"));
+        return rejectedWith(
+          rangeError(
+            "options.min must be less than or equal to view's byteLength",
+          ),
+        );
       }
       if (r.stream === undefined) {
-        return rejectedWith(typeError('This readable stream reader has been released and cannot be used to read from its previous owner stream'));
+        return rejectedWith(
+          typeError(
+            'This readable stream reader has been released and cannot be used to read from its previous owner stream',
+          ),
+        );
       }
       const d = deferred();
       byobReaderRead(r, info, min, {
@@ -898,14 +966,18 @@ export function installStreams(
     close(): void {
       const c = brand(this, 'RDC');
       if (!defaultControllerCanCloseOrEnqueue(c)) {
-        throw typeError("Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close a readable stream that has already been requested to be closed");
+        throw typeError(
+          "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close a readable stream that has already been requested to be closed",
+        );
       }
       defaultControllerClose(c);
     }
     enqueue(chunk: Any = undefined): void {
       const c = brand(this, 'RDC');
       if (!defaultControllerCanCloseOrEnqueue(c)) {
-        throw typeError("Failed to execute 'enqueue' on 'ReadableStreamDefaultController': Cannot enqueue a chunk into a readable stream that is closed or has been requested to be closed");
+        throw typeError(
+          "Failed to execute 'enqueue' on 'ReadableStreamDefaultController': Cannot enqueue a chunk into a readable stream that is closed or has been requested to be closed",
+        );
       }
       defaultControllerEnqueue(c, chunk);
     }
@@ -996,7 +1068,9 @@ export function installStreams(
     if (c.pendingPullIntos.length > 0) {
       const first = c.pendingPullIntos.peek();
       if (first.bytesFilled % first.elementSize !== 0) {
-        const e = typeError('Insufficient bytes to fill elements in the given buffer');
+        const e = typeError(
+          'Insufficient bytes to fill elements in the given buffer',
+        );
         byteControllerError(c, e);
         throw e;
       }
@@ -1148,7 +1222,9 @@ export function installStreams(
     if (c.pendingPullIntos.length > 0) {
       const first = c.pendingPullIntos.peek();
       if (isDetached(first.buffer)) {
-        throw typeError("The BYOB request's buffer has been detached and so cannot be filled with an enqueued chunk");
+        throw typeError(
+          "The BYOB request's buffer has been detached and so cannot be filled with an enqueued chunk",
+        );
       }
       byteControllerInvalidateBYOBRequest(c);
       first.buffer = transferBuffer(first.buffer);
@@ -1159,12 +1235,21 @@ export function installStreams(
     if (hasDefaultReader(rs)) {
       byteControllerProcessReadRequestsUsingQueue(c);
       if (numReadRequests(rs) === 0) {
-        byteControllerEnqueueChunkToQueue(c, transferred, byteOffset, byteLength);
+        byteControllerEnqueueChunkToQueue(
+          c,
+          transferred,
+          byteOffset,
+          byteLength,
+        );
       } else {
         if (c.pendingPullIntos.length > 0) {
           byteControllerShiftPendingPullInto(c);
         }
-        fulfillReadRequest(rs, new U8(transferred, byteOffset, byteLength), false);
+        fulfillReadRequest(
+          rs,
+          new U8(transferred, byteOffset, byteLength),
+          false,
+        );
       }
     } else if (hasBYOBReader(rs)) {
       byteControllerEnqueueChunkToQueue(c, transferred, byteOffset, byteLength);
@@ -1238,7 +1323,9 @@ export function installStreams(
         return;
       }
       if (c.closeRequested) {
-        const e = typeError('Insufficient bytes to fill elements in the given buffer');
+        const e = typeError(
+          'Insufficient bytes to fill elements in the given buffer',
+        );
         byteControllerError(c, e);
         request.error(e);
         return;
@@ -1280,7 +1367,12 @@ export function installStreams(
     const remainder = d.bytesFilled % d.elementSize;
     if (remainder > 0) {
       const end = d.byteOffset + d.bytesFilled;
-      byteControllerEnqueueClonedChunkToQueue(c, d.buffer, end - remainder, remainder);
+      byteControllerEnqueueClonedChunkToQueue(
+        c,
+        d.buffer,
+        end - remainder,
+        remainder,
+      );
     }
     d.bytesFilled -= remainder;
     const filled = byteControllerProcessPullIntoDescriptorsUsingQueue(c);
@@ -1302,11 +1394,15 @@ export function installStreams(
     const state = c.stream.state;
     if (state === 'closed') {
       if (bytesWritten !== 0) {
-        throw typeError('bytesWritten must be 0 when calling respond() on a closed stream');
+        throw typeError(
+          'bytesWritten must be 0 when calling respond() on a closed stream',
+        );
       }
     } else {
       if (bytesWritten === 0) {
-        throw typeError('bytesWritten must be greater than 0 when calling respond() on a readable stream');
+        throw typeError(
+          'bytesWritten must be greater than 0 when calling respond() on a readable stream',
+        );
       }
       if (first.bytesFilled + bytesWritten > first.byteLength) {
         throw rangeError('bytesWritten out of range');
@@ -1320,19 +1416,29 @@ export function installStreams(
     const state = c.stream.state;
     if (state === 'closed') {
       if (view.byteLength !== 0) {
-        throw typeError("The view's length must be 0 when calling respondWithNewView() on a closed stream");
+        throw typeError(
+          "The view's length must be 0 when calling respondWithNewView() on a closed stream",
+        );
       }
     } else if (view.byteLength === 0) {
-      throw typeError("The view's length must be greater than 0 when calling respondWithNewView() on a readable stream");
+      throw typeError(
+        "The view's length must be greater than 0 when calling respondWithNewView() on a readable stream",
+      );
     }
     if (first.byteOffset + first.bytesFilled !== view.byteOffset) {
-      throw rangeError('The region specified by view does not match byobRequest');
+      throw rangeError(
+        'The region specified by view does not match byobRequest',
+      );
     }
     if (first.bufferByteLength !== bufferByteLength(view.buffer)) {
-      throw rangeError('The buffer of view has different capacity than byobRequest');
+      throw rangeError(
+        'The buffer of view has different capacity than byobRequest',
+      );
     }
     if (first.bytesFilled + view.byteLength > first.byteLength) {
-      throw rangeError('The region specified by view is larger than byobRequest');
+      throw rangeError(
+        'The region specified by view is larger than byobRequest',
+      );
     }
     const viewByteLength = view.byteLength;
     first.buffer = transferBuffer(view.buffer);
@@ -1436,27 +1542,42 @@ export function installStreams(
     close(): void {
       const c = brand(this, 'RBC');
       if (c.closeRequested) {
-        throw typeError("Failed to execute 'close' on 'ReadableByteStreamController': The stream has already been closed.");
+        throw typeError(
+          "Failed to execute 'close' on 'ReadableByteStreamController': The stream has already been closed.",
+        );
       }
       if (c.stream.state !== 'readable') {
-        throw typeError("Failed to execute 'close' on 'ReadableByteStreamController': The stream is not in the readable state and cannot be closed");
+        throw typeError(
+          "Failed to execute 'close' on 'ReadableByteStreamController': The stream is not in the readable state and cannot be closed",
+        );
       }
       byteControllerClose(c);
     }
     enqueue(chunk: Any): void {
       const c = brand(this, 'RBC');
-      const info = viewArgument(chunk, "Failed to execute 'enqueue' on 'ReadableByteStreamController'");
+      const info = viewArgument(
+        chunk,
+        "Failed to execute 'enqueue' on 'ReadableByteStreamController'",
+      );
       if (info.byteLength === 0) {
-        throw typeError("Failed to execute 'enqueue' on 'ReadableByteStreamController': chunk must have non-zero byteLength");
+        throw typeError(
+          "Failed to execute 'enqueue' on 'ReadableByteStreamController': chunk must have non-zero byteLength",
+        );
       }
       if (bufferByteLength(info.buffer) === 0) {
-        throw typeError("Failed to execute 'enqueue' on 'ReadableByteStreamController': chunk's buffer must have non-zero byteLength");
+        throw typeError(
+          "Failed to execute 'enqueue' on 'ReadableByteStreamController': chunk's buffer must have non-zero byteLength",
+        );
       }
       if (c.closeRequested) {
-        throw typeError("Failed to execute 'enqueue' on 'ReadableByteStreamController': stream is closed or draining");
+        throw typeError(
+          "Failed to execute 'enqueue' on 'ReadableByteStreamController': stream is closed or draining",
+        );
       }
       if (c.stream.state !== 'readable') {
-        throw typeError("Failed to execute 'enqueue' on 'ReadableByteStreamController': The stream is not in the readable state and cannot be enqueued to");
+        throw typeError(
+          "Failed to execute 'enqueue' on 'ReadableByteStreamController': The stream is not in the readable state and cannot be enqueued to",
+        );
       }
       byteControllerEnqueue(c, info);
     }
@@ -1474,23 +1595,33 @@ export function installStreams(
     }
     respond(bytesWritten: Any): void {
       const r = brand(this, 'BYOB');
-      const n = enforceRange(bytesWritten, "Failed to execute 'respond' on 'ReadableStreamBYOBRequest'");
+      const n = enforceRange(
+        bytesWritten,
+        "Failed to execute 'respond' on 'ReadableStreamBYOBRequest'",
+      );
       if (r.controller === undefined) {
         throw typeError('This BYOB request has been invalidated');
       }
       if (isDetached(viewInfo(r.view).buffer)) {
-        throw typeError('The BYOB request\'s buffer has been detached and so cannot be used as a response');
+        throw typeError(
+          "The BYOB request's buffer has been detached and so cannot be used as a response",
+        );
       }
       byteControllerRespond(r.controller, n);
     }
     respondWithNewView(view: Any): void {
       const r = brand(this, 'BYOB');
-      const info = viewArgument(view, "Failed to execute 'respondWithNewView' on 'ReadableStreamBYOBRequest'");
+      const info = viewArgument(
+        view,
+        "Failed to execute 'respondWithNewView' on 'ReadableStreamBYOBRequest'",
+      );
       if (r.controller === undefined) {
         throw typeError('This BYOB request has been invalidated');
       }
       if (isDetached(info.buffer)) {
-        throw typeError("The given view's buffer has been detached and so cannot be used as a response");
+        throw typeError(
+          "The given view's buffer has been detached and so cannot be used as a response",
+        );
       }
       byteControllerRespondWithNewView(r.controller, info);
     }
@@ -1520,7 +1651,9 @@ export function installStreams(
     if (rawType !== undefined) {
       type = `${rawType}`;
       if (type !== 'bytes') {
-        throw typeError(`${context}: The provided value '${type}' is not a valid enum value of type ReadableStreamType.`);
+        throw typeError(
+          `${context}: The provided value '${type}' is not a valid enum value of type ReadableStreamType.`,
+        );
       }
     }
     return { autoAllocateChunkSize, cancel, pull, start, type };
@@ -1562,9 +1695,19 @@ export function installStreams(
       ? (reason: Any) => promiseCall(d.cancel, source, [reason])
       : () => resolvedWith();
     if (d.autoAllocateChunkSize === 0) {
-      throw typeError("Failed to construct 'ReadableStream': autoAllocateChunkSize must be greater than 0");
+      throw typeError(
+        "Failed to construct 'ReadableStream': autoAllocateChunkSize must be greater than 0",
+      );
     }
-    setUpByteController(rs, obj, start, pull, cancel, hwm, d.autoAllocateChunkSize);
+    setUpByteController(
+      rs,
+      obj,
+      start,
+      pull,
+      cancel,
+      hwm,
+      d.autoAllocateChunkSize,
+    );
   };
 
   const createReadableStream = (
@@ -1876,7 +2019,8 @@ export function installStreams(
   const getMethod = (o: Any, key: Any): Any => {
     const f = o[key];
     if (f === undefined || f === null) return undefined;
-    if (typeof f !== 'function') throw typeError(`${String(key)} is not a function`);
+    if (typeof f !== 'function')
+      throw typeError(`${String(key)} is not a function`);
     return f;
   };
   /** GetIterator(obj, async), a sync iterator made async as
@@ -1886,13 +2030,16 @@ export function installStreams(
     if (method === undefined) {
       const syncMethod = getMethod(o, Symbol.iterator);
       if (syncMethod === undefined) {
-        throw typeError("Failed to execute 'from' on 'ReadableStream': The provided value is not an async iterable.");
+        throw typeError(
+          "Failed to execute 'from' on 'ReadableStream': The provided value is not an async iterable.",
+        );
       }
       const sync = apply(syncMethod, o, []);
       if (!isObject(sync)) throw typeError('The iterator is not an object');
       const syncNext = sync.next;
       const settle = (r: Any): Any => {
-        if (!isObject(r)) throw typeError('The iterator result is not an object');
+        if (!isObject(r))
+          throw typeError('The iterator result is not an object');
         const done = !!r.done;
         return react(resolvedWith(r.value), (value: Any) => ({ value, done }));
       };
@@ -1924,7 +2071,9 @@ export function installStreams(
   };
   const readableStreamFromIterable = (iterable: Any): Any => {
     if (!isObject(iterable)) {
-      throw typeError("Failed to execute 'from' on 'ReadableStream': The provided value is not an async iterable.");
+      throw typeError(
+        "Failed to execute 'from' on 'ReadableStream': The provided value is not an async iterable.",
+      );
     }
     const record = asyncIteratorOf(iterable);
     let rs: Any;
@@ -1937,7 +2086,9 @@ export function installStreams(
       }
       return react(resolvedWith(result), (r: Any) => {
         if (!isObject(r)) {
-          throw typeError('The promise returned by the iterator.next() method must fulfill with an object');
+          throw typeError(
+            'The promise returned by the iterator.next() method must fulfill with an object',
+          );
         }
         if (r.done) defaultControllerClose(rs.controller);
         else defaultControllerEnqueue(rs.controller, r.value);
@@ -1960,7 +2111,9 @@ export function installStreams(
       }
       return react(resolvedWith(result), (r: Any) => {
         if (!isObject(r)) {
-          throw typeError('The promise returned by the iterator.return() method must fulfill with an object');
+          throw typeError(
+            'The promise returned by the iterator.return() method must fulfill with an object',
+          );
         }
       });
     };
@@ -2016,11 +2169,15 @@ export function installStreams(
         ? react(s.ongoing, nextSteps, nextSteps)
         : nextSteps();
       s.ongoing = ongoing;
-      upon(ongoing, () => {
-        if (s.ongoing === ongoing) s.ongoing = null;
-      }, () => {
-        if (s.ongoing === ongoing) s.ongoing = null;
-      });
+      upon(
+        ongoing,
+        () => {
+          if (s.ongoing === ongoing) s.ongoing = null;
+        },
+        () => {
+          if (s.ongoing === ongoing) s.ongoing = null;
+        },
+      );
       return ongoing;
     },
     return(this: Any, value: Any): Promise<Any> {
@@ -2045,11 +2202,15 @@ export function installStreams(
       const done = react(after, () => iterResult(value, true));
       // a next() or a return() after this one waits for it
       s.ongoing = done;
-      upon(done, () => {
-        if (s.ongoing === done) s.ongoing = null;
-      }, () => {
-        if (s.ongoing === done) s.ongoing = null;
-      });
+      upon(
+        done,
+        () => {
+          if (s.ongoing === done) s.ongoing = null;
+        },
+        () => {
+          if (s.ongoing === done) s.ongoing = null;
+        },
+      );
       return done;
     },
   };
@@ -2088,7 +2249,9 @@ export function installStreams(
       (!(signal instanceof AbortSignalCtor()) ||
         !apply(hasOwn, signal, ['aborted']))
     ) {
-      throw typeError("Failed to read the 'signal' property from 'StreamPipeOptions': Failed to convert value to 'AbortSignal'.");
+      throw typeError(
+        "Failed to read the 'signal' property from 'StreamPipeOptions': Failed to convert value to 'AbortSignal'.",
+      );
     }
     return { preventAbort, preventCancel, preventClose, signal };
   };
@@ -2267,7 +2430,9 @@ export function installStreams(
       } else shutdown();
     });
     if (closeQueuedOrInFlight(dest) || dest.state === 'closed') {
-      const destClosed = typeError('the destination writable stream closed before all data could be piped to it');
+      const destClosed = typeError(
+        'the destination writable stream closed before all data could be piped to it',
+      );
       if (!preventCancel) {
         shutdownWithAction(
           () => readableStreamCancel(source, destClosed),
@@ -2307,7 +2472,9 @@ export function installStreams(
         return;
       }
       if (underlyingSource !== undefined && !isObject(underlyingSource)) {
-        throw typeError("Failed to construct 'ReadableStream': The provided value is not of type 'object'.");
+        throw typeError(
+          "Failed to construct 'ReadableStream': The provided value is not of type 'object'.",
+        );
       }
       const st = strategyOf(strategy);
       const source = underlyingSource === undefined ? null : underlyingSource;
@@ -2315,7 +2482,9 @@ export function installStreams(
       const rs = initReadableStream(this);
       if (d.type === 'bytes') {
         if (st.size !== undefined) {
-          throw rangeError("Failed to construct 'ReadableStream': The strategy for a byte stream cannot have a size function");
+          throw rangeError(
+            "Failed to construct 'ReadableStream': The strategy for a byte stream cannot have a size function",
+          );
         }
         const hwm = extractHighWaterMark(st, 0);
         setUpByteFromSource(rs, source, d, hwm);
@@ -2335,7 +2504,11 @@ export function installStreams(
       const rs = slotOf(this);
       if (!rs || rs.tag !== 'RS') return rejectedWith(illegal());
       if (isLocked(rs)) {
-        return rejectedWith(typeError("Failed to execute 'cancel' on 'ReadableStream': Cannot cancel a locked stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'cancel' on 'ReadableStream': Cannot cancel a locked stream",
+          ),
+        );
       }
       return readableStreamCancel(rs, reason);
     }
@@ -2346,31 +2519,43 @@ export function installStreams(
       if (raw === undefined) return acquireDefaultReader(rs).obj;
       const mode = `${raw}`;
       if (mode !== 'byob') {
-        throw typeError(`Failed to execute 'getReader' on 'ReadableStream': Failed to read the 'mode' property from 'ReadableStreamGetReaderOptions': The provided value '${mode}' is not a valid enum value of type ReadableStreamReaderMode.`);
+        throw typeError(
+          `Failed to execute 'getReader' on 'ReadableStream': Failed to read the 'mode' property from 'ReadableStreamGetReaderOptions': The provided value '${mode}' is not a valid enum value of type ReadableStreamReaderMode.`,
+        );
       }
       return acquireBYOBReader(rs).obj;
     }
     pipeThrough(transform: Any, options: Any = undefined): Any {
       const rs = brand(this, 'RS');
       if (!isObject(transform)) {
-        throw typeError("Failed to execute 'pipeThrough' on 'ReadableStream': parameter 1 is not of type 'ReadableWritablePair'.");
+        throw typeError(
+          "Failed to execute 'pipeThrough' on 'ReadableStream': parameter 1 is not of type 'ReadableWritablePair'.",
+        );
       }
       const readable = transform.readable;
       const rr = slotOf(readable);
       if (!rr || rr.tag !== 'RS') {
-        throw typeError("Failed to execute 'pipeThrough' on 'ReadableStream': Failed to read the 'readable' property from 'ReadableWritablePair': Failed to convert value to 'ReadableStream'.");
+        throw typeError(
+          "Failed to execute 'pipeThrough' on 'ReadableStream': Failed to read the 'readable' property from 'ReadableWritablePair': Failed to convert value to 'ReadableStream'.",
+        );
       }
       const writable = transform.writable;
       const ws = slotOf(writable);
       if (!ws || ws.tag !== 'WS') {
-        throw typeError("Failed to execute 'pipeThrough' on 'ReadableStream': Failed to read the 'writable' property from 'ReadableWritablePair': Failed to convert value to 'WritableStream'.");
+        throw typeError(
+          "Failed to execute 'pipeThrough' on 'ReadableStream': Failed to read the 'writable' property from 'ReadableWritablePair': Failed to convert value to 'WritableStream'.",
+        );
       }
       const o = pipeOptions(options);
       if (isLocked(rs)) {
-        throw typeError("Failed to execute 'pipeThrough' on 'ReadableStream': Cannot pipe a locked stream");
+        throw typeError(
+          "Failed to execute 'pipeThrough' on 'ReadableStream': Cannot pipe a locked stream",
+        );
       }
       if (isWritableLocked(ws)) {
-        throw typeError("Failed to execute 'pipeThrough' on 'ReadableStream': Cannot pipe to a locked stream");
+        throw typeError(
+          "Failed to execute 'pipeThrough' on 'ReadableStream': Cannot pipe to a locked stream",
+        );
       }
       const promise = readableStreamPipeTo(
         rs,
@@ -2388,7 +2573,11 @@ export function installStreams(
       if (!rs || rs.tag !== 'RS') return rejectedWith(illegal());
       const ws = slotOf(destination);
       if (!ws || ws.tag !== 'WS') {
-        return rejectedWith(typeError("Failed to execute 'pipeTo' on 'ReadableStream': parameter 1 is not of type 'WritableStream'."));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'pipeTo' on 'ReadableStream': parameter 1 is not of type 'WritableStream'.",
+          ),
+        );
       }
       let o: Any;
       try {
@@ -2397,10 +2586,18 @@ export function installStreams(
         return rejectedWith(e);
       }
       if (isLocked(rs)) {
-        return rejectedWith(typeError("Failed to execute 'pipeTo' on 'ReadableStream': Cannot pipe a locked stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'pipeTo' on 'ReadableStream': Cannot pipe a locked stream",
+          ),
+        );
       }
       if (isWritableLocked(ws)) {
-        return rejectedWith(typeError("Failed to execute 'pipeTo' on 'ReadableStream': Cannot pipe to a locked stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'pipeTo' on 'ReadableStream': Cannot pipe to a locked stream",
+          ),
+        );
       }
       return readableStreamPipeTo(
         rs,
@@ -2481,7 +2678,11 @@ export function installStreams(
   const writableStreamClose = (ws: Any): Promise<Any> => {
     const state = ws.state;
     if (state === 'closed' || state === 'errored') {
-      return rejectedWith(typeError(`The stream (in ${state} state) is not in the writable state and cannot be closed`));
+      return rejectedWith(
+        typeError(
+          `The stream (in ${state} state) is not in the writable state and cannot be closed`,
+        ),
+      );
     }
     const promise = deferred();
     ws.closeRequest = promise;
@@ -2613,7 +2814,9 @@ export function installStreams(
 
   const setUpWriter = (obj: Any, ws: Any): Any => {
     if (isWritableLocked(ws)) {
-      throw typeError("Failed to construct 'WritableStreamDefaultWriter': Cannot create writer when WritableStream is locked");
+      throw typeError(
+        "Failed to construct 'WritableStreamDefaultWriter': Cannot create writer when WritableStream is locked",
+      );
     }
     const writer: Any = {
       tag: 'WSDW',
@@ -2664,7 +2867,9 @@ export function installStreams(
   };
   const writerRelease = (writer: Any): void => {
     const ws = writer.stream;
-    const released = typeError("Writer was released and can no longer be used to monitor the stream's closedness");
+    const released = typeError(
+      "Writer was released and can no longer be used to monitor the stream's closedness",
+    );
     writerEnsureReadyPromiseRejected(writer, released);
     writerEnsureClosedPromiseRejected(writer, released);
     ws.writer = undefined;
@@ -2675,12 +2880,16 @@ export function installStreams(
     const controller = ws.controller;
     const chunkSize = writableControllerGetChunkSize(controller, chunk);
     if (ws !== writer.stream) {
-      return rejectedWith(typeError('The writer was released while the chunk was being sized'));
+      return rejectedWith(
+        typeError('The writer was released while the chunk was being sized'),
+      );
     }
     const state = ws.state;
     if (state === 'errored') return rejectedWith(ws.storedError);
     if (closeQueuedOrInFlight(ws) || state === 'closed') {
-      return rejectedWith(typeError('The stream is closing or closed and cannot be written to'));
+      return rejectedWith(
+        typeError('The stream is closing or closed and cannot be written to'),
+      );
     }
     if (state === 'erroring') return rejectedWith(ws.storedError);
     const promise = writableStreamAddWriteRequest(ws);
@@ -2699,7 +2908,9 @@ export function installStreams(
     constructor(stream: Any) {
       const ws = slotOf(stream);
       if (!ws || ws.tag !== 'WS') {
-        throw typeError("Failed to construct 'WritableStreamDefaultWriter': parameter 1 is not of type 'WritableStream'.");
+        throw typeError(
+          "Failed to construct 'WritableStreamDefaultWriter': parameter 1 is not of type 'WritableStream'.",
+        );
       }
       setUpWriter(this, ws);
     }
@@ -2711,7 +2922,9 @@ export function installStreams(
     get desiredSize(): number | null {
       const w = brand(this, 'WSDW');
       if (w.stream === undefined) {
-        throw typeError('This writable stream writer has been released and cannot be used to get the desired size');
+        throw typeError(
+          'This writable stream writer has been released and cannot be used to get the desired size',
+        );
       }
       return writerDesiredSize(w);
     }
@@ -2724,7 +2937,11 @@ export function installStreams(
       const w = slotOf(this);
       if (!w || w.tag !== 'WSDW') return rejectedWith(illegal());
       if (w.stream === undefined) {
-        return rejectedWith(typeError('This writable stream writer has been released and cannot be used to abort'));
+        return rejectedWith(
+          typeError(
+            'This writable stream writer has been released and cannot be used to abort',
+          ),
+        );
       }
       return writableStreamAbort(w.stream, reason);
     }
@@ -2733,10 +2950,16 @@ export function installStreams(
       if (!w || w.tag !== 'WSDW') return rejectedWith(illegal());
       const ws = w.stream;
       if (ws === undefined) {
-        return rejectedWith(typeError('This writable stream writer has been released and cannot be used to close'));
+        return rejectedWith(
+          typeError(
+            'This writable stream writer has been released and cannot be used to close',
+          ),
+        );
       }
       if (closeQueuedOrInFlight(ws)) {
-        return rejectedWith(typeError('Cannot close an already-closing stream'));
+        return rejectedWith(
+          typeError('Cannot close an already-closing stream'),
+        );
       }
       return writableStreamClose(ws);
     }
@@ -2749,7 +2972,11 @@ export function installStreams(
       const w = slotOf(this);
       if (!w || w.tag !== 'WSDW') return rejectedWith(illegal());
       if (w.stream === undefined) {
-        return rejectedWith(typeError('This writable stream writer has been released and cannot be used to write'));
+        return rejectedWith(
+          typeError(
+            'This writable stream writer has been released and cannot be used to write',
+          ),
+        );
       }
       return writerWrite(w, chunk);
     }
@@ -2800,7 +3027,10 @@ export function installStreams(
     }
     const ws = c.stream;
     if (!closeQueuedOrInFlight(ws) && ws.state === 'writable') {
-      writableStreamUpdateBackpressure(ws, writableControllerGetBackpressure(c));
+      writableStreamUpdateBackpressure(
+        ws,
+        writableControllerGetBackpressure(c),
+      );
     }
     writableControllerAdvanceQueueIfNeeded(c);
   };
@@ -2933,19 +3163,25 @@ export function installStreams(
         return;
       }
       if (underlyingSink !== undefined && !isObject(underlyingSink)) {
-        throw typeError("Failed to construct 'WritableStream': The provided value is not of type 'object'.");
+        throw typeError(
+          "Failed to construct 'WritableStream': The provided value is not of type 'object'.",
+        );
       }
       const st = strategyOf(strategy);
       const sink = underlyingSink === undefined ? null : underlyingSink;
       const d = sinkDictionary(sink);
       if (d.type !== undefined) {
-        throw rangeError("Failed to construct 'WritableStream': Invalid type is specified");
+        throw rangeError(
+          "Failed to construct 'WritableStream': Invalid type is specified",
+        );
       }
       const ws = initWritableStream(this);
       const size = extractSizeAlgorithm(st);
       const hwm = extractHighWaterMark(st, 1);
       const obj = made(WritableStreamDefaultController);
-      const start = d.start ? () => apply(d.start, sink, [obj]) : () => undefined;
+      const start = d.start
+        ? () => apply(d.start, sink, [obj])
+        : () => undefined;
       const write = d.write
         ? (chunk: Any) => promiseCall(d.write, sink, [chunk, obj])
         : () => resolvedWith();
@@ -2964,7 +3200,11 @@ export function installStreams(
       const ws = slotOf(this);
       if (!ws || ws.tag !== 'WS') return rejectedWith(illegal());
       if (isWritableLocked(ws)) {
-        return rejectedWith(typeError("Failed to execute 'abort' on 'WritableStream': Cannot abort a locked stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'abort' on 'WritableStream': Cannot abort a locked stream",
+          ),
+        );
       }
       return writableStreamAbort(ws, reason);
     }
@@ -2972,10 +3212,18 @@ export function installStreams(
       const ws = slotOf(this);
       if (!ws || ws.tag !== 'WS') return rejectedWith(illegal());
       if (isWritableLocked(ws)) {
-        return rejectedWith(typeError("Failed to execute 'close' on 'WritableStream': Cannot close a locked stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'close' on 'WritableStream': Cannot close a locked stream",
+          ),
+        );
       }
       if (closeQueuedOrInFlight(ws)) {
-        return rejectedWith(typeError("Failed to execute 'close' on 'WritableStream': Cannot close an already-closing stream"));
+        return rejectedWith(
+          typeError(
+            "Failed to execute 'close' on 'WritableStream': Cannot close an already-closing stream",
+          ),
+        );
       }
       return writableStreamClose(ws);
     }
@@ -3189,7 +3437,9 @@ export function installStreams(
       readableStrategy: Any = undefined,
     ) {
       if (transformer !== undefined && !isObject(transformer)) {
-        throw typeError("Failed to construct 'TransformStream': The provided value is not of type 'object'.");
+        throw typeError(
+          "Failed to construct 'TransformStream': The provided value is not of type 'object'.",
+        );
       }
       const ws = strategyOf(writableStrategy);
       const rst = strategyOf(readableStrategy);
@@ -3285,7 +3535,9 @@ export function installStreams(
     const d = dictionary(init, 'QueuingStrategyInit');
     const raw = d ? d.highWaterMark : undefined;
     if (raw === undefined) {
-      throw typeError(`Failed to construct '${name}': Failed to read the 'highWaterMark' property from 'QueuingStrategyInit': Required member is undefined.`);
+      throw typeError(
+        `Failed to construct '${name}': Failed to read the 'highWaterMark' property from 'QueuingStrategyInit': Required member is undefined.`,
+      );
     }
     return +raw;
   };
@@ -3317,7 +3569,10 @@ export function installStreams(
   }
   class CountQueuingStrategy {
     constructor(init: Any) {
-      own(this, { tag: 'CQS', hwm: strategyInit(init, 'CountQueuingStrategy') });
+      own(this, {
+        tag: 'CQS',
+        hwm: strategyInit(init, 'CountQueuingStrategy'),
+      });
     }
     get highWaterMark(): number {
       return brand(this, 'CQS').hwm;

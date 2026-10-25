@@ -154,7 +154,9 @@ export function installWebTransport(
     }
     const t = Math.trunc(x);
     if (t < 0 || t > max) {
-      throw typeError(`${context}: Value is outside the '${max === 65535 ? 'unsigned short' : 'unsigned long'}' value range.`);
+      throw typeError(
+        `${context}: Value is outside the '${max === 65535 ? 'unsigned short' : 'unsigned long'}' value range.`,
+      );
     }
     return t === 0 ? 0 : t;
   };
@@ -184,17 +186,22 @@ export function installWebTransport(
   };
   const sequence = (v: Any, context: string): Any[] => {
     if (!isObject(v)) {
-      throw typeError(`${context}: The provided value cannot be converted to a sequence.`);
+      throw typeError(
+        `${context}: The provided value cannot be converted to a sequence.`,
+      );
     }
     const method = v[Symbol.iterator];
     if (typeof method !== 'function') {
-      throw typeError(`${context}: The object must have a callable @@iterator property.`);
+      throw typeError(
+        `${context}: The object must have a callable @@iterator property.`,
+      );
     }
     const out: Any[] = [];
     const it = apply(method, v, []);
     for (;;) {
       const r = it.next();
-      if (!isObject(r)) throw typeError(`${context}: The iterator result is not an object.`);
+      if (!isObject(r))
+        throw typeError(`${context}: The iterator result is not an object.`);
       if (r.done) break;
       out[out.length] = r.value;
     }
@@ -209,7 +216,9 @@ export function installWebTransport(
       } catch {
         return null; // over a shared buffer
       }
-      return new U8(apply(abSlice, v.buffer, [v.byteOffset, v.byteOffset + v.byteLength]));
+      return new U8(
+        apply(abSlice, v.buffer, [v.byteOffset, v.byteOffset + v.byteLength]),
+      );
     }
     try {
       apply(abByteLength, v, []);
@@ -260,7 +269,9 @@ export function installWebTransport(
         if (rawSource !== undefined) {
           source = `${rawSource}`;
           if (source !== 'stream' && source !== 'session') {
-            throw typeError(`Failed to construct 'WebTransportError': The provided value '${source}' is not a valid enum value of type WebTransportErrorSource.`);
+            throw typeError(
+              `Failed to construct 'WebTransportError': The provided value '${source}' is not a valid enum value of type WebTransportErrorSource.`,
+            );
           }
         }
         const rawCode = d.streamErrorCode;
@@ -403,9 +414,16 @@ export function installWebTransport(
       (chunk: Any) => {
         const bytes = bufferBytes(chunk);
         if (bytes === null) {
-          return rejectedWith(typeError("Failed to execute 'write' on 'WebTransportSendStream': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'."));
+          return rejectedWith(
+            typeError(
+              "Failed to execute 'write' on 'WebTransportSendStream': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+            ),
+          );
         }
-        if (!rec.send) return rejectedWith(rec.sendError ?? sessionError('The stream is closed.'));
+        if (!rec.send)
+          return rejectedWith(
+            rec.sendError ?? sessionError('The stream is closed.'),
+          );
         if (!bytes.byteLength) return resolvedWith();
         const req = ++requestSeq;
         const d = deferred();
@@ -415,7 +433,10 @@ export function installWebTransport(
         return d.promise;
       },
       () => {
-        if (!rec.send) return rejectedWith(rec.sendError ?? sessionError('The stream is closed.'));
+        if (!rec.send)
+          return rejectedWith(
+            rec.sendError ?? sessionError('The stream is closed.'),
+          );
         const req = ++requestSeq;
         const d = deferred();
         writing.set(req, d);
@@ -544,7 +565,12 @@ export function installWebTransport(
   }
 
   /** A stream of the session's, by the number the host gave it. */
-  const streamRecord = (t: Any, sid: number, send: boolean, receive: boolean) => {
+  const streamRecord = (
+    t: Any,
+    sid: number,
+    send: boolean,
+    receive: boolean,
+  ) => {
     const rec: Any = {
       sid,
       t,
@@ -606,10 +632,15 @@ export function installWebTransport(
     if (group === null || group === undefined) return null;
     const g = slotOf(group);
     if (!g || g.tag !== 'WTSG') {
-      throw typeError("The provided value is not of type 'WebTransportSendGroup'.");
+      throw typeError(
+        "The provided value is not of type 'WebTransportSendGroup'.",
+      );
     }
     if (g.t !== t) {
-      throw domError('The send group is of another WebTransport.', 'InvalidStateError');
+      throw domError(
+        'The send group is of another WebTransport.',
+        'InvalidStateError',
+      );
     }
     return g;
   };
@@ -623,7 +654,9 @@ export function installWebTransport(
       if (g !== undefined && g !== null) {
         const r = slotOf(g);
         if (!r || r.tag !== 'WTSG') {
-          throw typeError("Failed to read the 'sendGroup' property: The provided value is not of type 'WebTransportSendGroup'.");
+          throw typeError(
+            "Failed to read the 'sendGroup' property: The provided value is not of type 'WebTransportSendGroup'.",
+          );
         }
         sendGroup = r;
       }
@@ -631,7 +664,10 @@ export function installWebTransport(
       if (withWait) waitUntilAvailable = !!d.waitUntilAvailable;
     }
     if (sendGroup && sendGroup.t !== t) {
-      throw domError('The send group is of another WebTransport.', 'InvalidStateError');
+      throw domError(
+        'The send group is of another WebTransport.',
+        'InvalidStateError',
+      );
     }
     return { sendGroup, sendOrder, waitUntilAvailable };
   };
@@ -652,33 +688,35 @@ export function installWebTransport(
   };
   /** The connection's figures as the page has them: what is known, and
    *  the session's datagrams' own. */
-  const connectionStats = (t: Any) => (s: Any): Any => {
-    const out: Any = {};
-    for (const key of [
-      'bytesSent',
-      'bytesSentOverhead',
-      'bytesAcknowledged',
-      'packetsSent',
-      'bytesLost',
-      'packetsLost',
-      'bytesReceived',
-      'packetsReceived',
-      'smoothedRtt',
-      'rttVariation',
-      'minRtt',
-    ]) {
-      if (typeof s?.[key] === 'number') out[key] = s[key];
-    }
-    out.datagrams = {
-      droppedIncoming: t.dg.droppedIncoming,
-      expiredIncoming: t.dg.expiredIncoming,
-      expiredOutgoing: t.dg.expiredOutgoing,
+  const connectionStats =
+    (t: Any) =>
+    (s: Any): Any => {
+      const out: Any = {};
+      for (const key of [
+        'bytesSent',
+        'bytesSentOverhead',
+        'bytesAcknowledged',
+        'packetsSent',
+        'bytesLost',
+        'packetsLost',
+        'bytesReceived',
+        'packetsReceived',
+        'smoothedRtt',
+        'rttVariation',
+        'minRtt',
+      ]) {
+        if (typeof s?.[key] === 'number') out[key] = s[key];
+      }
+      out.datagrams = {
+        droppedIncoming: t.dg.droppedIncoming,
+        expiredIncoming: t.dg.expiredIncoming,
+        expiredOutgoing: t.dg.expiredOutgoing,
+      };
+      out.estimatedSendRate =
+        typeof s?.estimatedSendRate === 'number' ? s.estimatedSendRate : null;
+      out.atSendCapacity = s?.atSendCapacity === true;
+      return out;
     };
-    out.estimatedSendRate =
-      typeof s?.estimatedSendRate === 'number' ? s.estimatedSendRate : null;
-    out.atSendCapacity = s?.atSendCapacity === true;
-    return out;
-  };
 
   // --- datagrams --------------------------------------------------------------
 
@@ -882,10 +920,16 @@ export function installWebTransport(
       (chunk: Any) => {
         const bytes = bufferBytes(chunk);
         if (bytes === null) {
-          return rejectedWith(typeError("Failed to execute 'write' on 'WebTransportDatagramsWritable': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'."));
+          return rejectedWith(
+            typeError(
+              "Failed to execute 'write' on 'WebTransportDatagramsWritable': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+            ),
+          );
         }
         if (t.state === 'closed' || t.state === 'failed') {
-          return rejectedWith(domError('The session is closed.', 'InvalidStateError'));
+          return rejectedWith(
+            domError('The session is closed.', 'InvalidStateError'),
+          );
         }
         const d = deferred();
         dg.outgoing.push({ bytes, at: now(), d, writable: r });
@@ -929,7 +973,9 @@ export function installWebTransport(
           base64OfBytes(item.bytes),
           JSON.stringify({
             sendOrder: item.writable.sendOrder,
-            sendGroup: item.writable.sendGroup ? item.writable.sendGroup.number : null,
+            sendGroup: item.writable.sendGroup
+              ? item.writable.sendGroup.number
+              : null,
           }),
         );
       }
@@ -969,14 +1015,18 @@ export function installWebTransport(
     if (d.congestionControl !== undefined) {
       const c = `${d.congestionControl}`;
       if (!CONGESTION.includes(c)) {
-        throw typeError(`${context}: The provided value '${c}' is not a valid enum value of type WebTransportCongestionControl.`);
+        throw typeError(
+          `${context}: The provided value '${c}' is not a valid enum value of type WebTransportCongestionControl.`,
+        );
       }
       o.congestionControl = c;
     }
     if (d.datagramsReadableType !== undefined) {
       const type = `${d.datagramsReadableType}`;
       if (type !== 'bytes') {
-        throw typeError(`${context}: The provided value '${type}' is not a valid enum value of type ReadableStreamType.`);
+        throw typeError(
+          `${context}: The provided value '${type}' is not a valid enum value of type ReadableStreamType.`,
+        );
       }
       o.datagramsReadableType = type;
     }
@@ -992,24 +1042,31 @@ export function installWebTransport(
     }
     o.requireUnreliable = !!d.requireUnreliable;
     if (d.serverCertificateHashes !== undefined) {
-      o.serverCertificateHashes = sequence(d.serverCertificateHashes, context).map(
-        (h) => {
-          const hd = dictionary(h, 'WebTransportHash');
-          const algorithm = hd ? hd.algorithm : undefined;
-          if (algorithm === undefined) {
-            throw typeError(`${context}: Failed to read the 'algorithm' property from 'WebTransportHash': Required member is undefined.`);
-          }
-          const value = hd.value;
-          if (value === undefined) {
-            throw typeError(`${context}: Failed to read the 'value' property from 'WebTransportHash': Required member is undefined.`);
-          }
-          const bytes = bufferBytes(value);
-          if (bytes === null) {
-            throw typeError(`${context}: Failed to read the 'value' property from 'WebTransportHash': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.`);
-          }
-          return { algorithm: `${algorithm}`, value: base64OfBytes(bytes) };
-        },
-      );
+      o.serverCertificateHashes = sequence(
+        d.serverCertificateHashes,
+        context,
+      ).map((h) => {
+        const hd = dictionary(h, 'WebTransportHash');
+        const algorithm = hd ? hd.algorithm : undefined;
+        if (algorithm === undefined) {
+          throw typeError(
+            `${context}: Failed to read the 'algorithm' property from 'WebTransportHash': Required member is undefined.`,
+          );
+        }
+        const value = hd.value;
+        if (value === undefined) {
+          throw typeError(
+            `${context}: Failed to read the 'value' property from 'WebTransportHash': Required member is undefined.`,
+          );
+        }
+        const bytes = bufferBytes(value);
+        if (bytes === null) {
+          throw typeError(
+            `${context}: Failed to read the 'value' property from 'WebTransportHash': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.`,
+          );
+        }
+        return { algorithm: `${algorithm}`, value: base64OfBytes(bytes) };
+      });
     }
     return o;
   };
@@ -1115,21 +1172,36 @@ export function installWebTransport(
       try {
         parsed = new URLClass(href);
       } catch {
-        throw domError(`${context}: The URL '${href}' is invalid.`, 'SyntaxError');
+        throw domError(
+          `${context}: The URL '${href}' is invalid.`,
+          'SyntaxError',
+        );
       }
       if (parsed.protocol !== 'https:') {
-        throw domError(`${context}: The URL's scheme must be 'https'. '${parsed.protocol.slice(0, -1)}' is not allowed.`, 'SyntaxError');
+        throw domError(
+          `${context}: The URL's scheme must be 'https'. '${parsed.protocol.slice(0, -1)}' is not allowed.`,
+          'SyntaxError',
+        );
       }
       if (parsed.href.includes('#')) {
-        throw domError(`${context}: The URL contains a fragment identifier ('#${parsed.hash.slice(1)}'). Fragment identifiers are not allowed in WebTransport URLs.`, 'SyntaxError');
+        throw domError(
+          `${context}: The URL contains a fragment identifier ('#${parsed.hash.slice(1)}'). Fragment identifiers are not allowed in WebTransport URLs.`,
+          'SyntaxError',
+        );
       }
       if (o.allowPooling && o.serverCertificateHashes.length) {
-        throw domError(`${context}: serverCertificateHashes is not supported with allowPooling.`, 'NotSupportedError');
+        throw domError(
+          `${context}: serverCertificateHashes is not supported with allowPooling.`,
+          'NotSupportedError',
+        );
       }
       const seen = new Set<string>();
       for (const p of o.protocols) {
         if (!validProtocol(p) || seen.has(p)) {
-          throw domError(`${context}: Invalid protocol name '${p}'.`, 'SyntaxError');
+          throw domError(
+            `${context}: Invalid protocol name '${p}'.`,
+            'SyntaxError',
+          );
         }
         seen.add(p);
       }
@@ -1179,7 +1251,9 @@ export function installWebTransport(
       const t = slotOf(this);
       if (!t || t.tag !== 'WT') return rejectedWith(illegal());
       if (t.state === 'failed') {
-        return rejectedWith(domError('The session failed.', 'InvalidStateError'));
+        return rejectedWith(
+          domError('The session failed.', 'InvalidStateError'),
+        );
       }
       const req = ++requestSeq;
       const d = deferred();
@@ -1197,7 +1271,12 @@ export function installWebTransport(
       void label;
       void context;
       void outputLength;
-      return rejectedWith(domError('Exporting keying material is not supported.', 'NotSupportedError'));
+      return rejectedWith(
+        domError(
+          'Exporting keying material is not supported.',
+          'NotSupportedError',
+        ),
+      );
     }
     get ready(): Promise<Any> {
       const t = slotOf(this);
@@ -1218,7 +1297,11 @@ export function installWebTransport(
       t.anticipatedUni =
         v === null || v === undefined
           ? null
-          : enforceRange(v, 65535, "Failed to set the 'anticipatedConcurrentIncomingUnidirectionalStreams' property on 'WebTransport'");
+          : enforceRange(
+              v,
+              65535,
+              "Failed to set the 'anticipatedConcurrentIncomingUnidirectionalStreams' property on 'WebTransport'",
+            );
     }
     get anticipatedConcurrentIncomingBidirectionalStreams(): number | null {
       return brand(this, 'WT').anticipatedBidi;
@@ -1228,7 +1311,11 @@ export function installWebTransport(
       t.anticipatedBidi =
         v === null || v === undefined
           ? null
-          : enforceRange(v, 65535, "Failed to set the 'anticipatedConcurrentIncomingBidirectionalStreams' property on 'WebTransport'");
+          : enforceRange(
+              v,
+              65535,
+              "Failed to set the 'anticipatedConcurrentIncomingBidirectionalStreams' property on 'WebTransport'",
+            );
     }
     get responseHeaders(): Any {
       return brand(this, 'WT').responseHeaders;
@@ -1249,12 +1336,17 @@ export function installWebTransport(
     close(closeInfo: Any = undefined): void {
       const t = brand(this, 'WT');
       const d = dictionary(closeInfo, 'WebTransportCloseInfo');
-      const closeCode = d && d.closeCode !== undefined ? unsignedLong(d.closeCode) : 0;
+      const closeCode =
+        d && d.closeCode !== undefined ? unsignedLong(d.closeCode) : 0;
       const reason = d && d.reason !== undefined ? usv(d.reason) : '';
       if (t.state === 'closed' || t.state === 'failed') return;
       if (t.state === 'connecting') {
         call('wtClose', t.id, 0, '');
-        cleanup(t, sessionError('The session was closed before it was established.'), null);
+        cleanup(
+          t,
+          sessionError('The session was closed before it was established.'),
+          null,
+        );
         return;
       }
       call('wtClose', t.id, closeCode, truncatedReason(reason));
@@ -1285,12 +1377,21 @@ export function installWebTransport(
       }
       const obj = objectCreate(WebTransportSendGroup.prototype);
       const number = call('wtGroup', t.id);
-      own(obj, { tag: 'WTSG', obj, t, number: typeof number === 'number' ? number : 0 });
+      own(obj, {
+        tag: 'WTSG',
+        obj,
+        t,
+        number: typeof number === 'number' ? number : 0,
+      });
       return obj;
     }
   }
 
-  const createStream = (self: Any, options: Any, bidi: boolean): Promise<Any> => {
+  const createStream = (
+    self: Any,
+    options: Any,
+    bidi: boolean,
+  ): Promise<Any> => {
     const t = slotOf(self);
     if (!t || t.tag !== 'WT') return rejectedWith(illegal());
     let o: Any;
@@ -1300,7 +1401,9 @@ export function installWebTransport(
       return rejectedWith(e);
     }
     if (t.state === 'closed' || t.state === 'failed') {
-      return rejectedWith(domError('The session is closed.', 'InvalidStateError'));
+      return rejectedWith(
+        domError('The session is closed.', 'InvalidStateError'),
+      );
     }
     const req = ++requestSeq;
     const d = deferred();
@@ -1386,7 +1489,12 @@ export function installWebTransport(
     if (!c) return false;
     creating.delete(req);
     if (sid === null) {
-      c.d.reject(domError(`The stream could not be opened: ${error}.`, 'InvalidStateError'));
+      c.d.reject(
+        domError(
+          `The stream could not be opened: ${error}.`,
+          'InvalidStateError',
+        ),
+      );
       return true;
     }
     c.d.resolve(

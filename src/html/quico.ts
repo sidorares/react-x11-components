@@ -111,9 +111,7 @@ export function loadQuico(): Promise<QuicoModule | null> {
   if (!loading) {
     const specifier = QUICO_MODULE;
     loading = (import(/* @vite-ignore */ specifier) as Promise<QuicoModule>)
-      .then((m) =>
-        typeof m?.WebTransport === 'function' ? m : null,
-      )
+      .then((m) => (typeof m?.WebTransport === 'function' ? m : null))
       .catch(() => null);
   }
   return loading;
@@ -296,14 +294,17 @@ async function runtimeRoots(): Promise<string[] | undefined> {
  * The seam over quico (`HtmlNetwork.webTransport`): each session a
  * connection of its own, as a page's is in a browser that pools none.
  */
-export function quicoWebTransport(options: QuicoOptions = {}): HtmlWebTransport {
+export function quicoWebTransport(
+  options: QuicoOptions = {},
+): HtmlWebTransport {
   let roots: Promise<string[] | undefined> | null = null;
   return {
     connect(request, events) {
       return quicoSession(
         request,
         events,
-        () => (roots ??= options.ca ? Promise.resolve(options.ca) : runtimeRoots()),
+        () =>
+          (roots ??= options.ca ? Promise.resolve(options.ca) : runtimeRoots()),
       );
     },
   };
@@ -442,7 +443,8 @@ function quicoSession(
           : 'default',
     });
     told = true;
-    for (const [s, bidirectional] of early.splice(0)) incoming(s, bidirectional);
+    for (const [s, bidirectional] of early.splice(0))
+      incoming(s, bidirectional);
     if (ended) {
       ended();
       return;

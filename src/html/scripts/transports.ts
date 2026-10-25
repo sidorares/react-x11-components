@@ -216,17 +216,25 @@ export class PageTransports {
       ? (raw.headers as unknown[])
           .filter(
             (h): h is [string, string] =>
-              Array.isArray(h) && h.length === 2 && !FORBIDDEN.test(String(h[0])),
+              Array.isArray(h) &&
+              h.length === 2 &&
+              !FORBIDDEN.test(String(h[0])),
           )
-          .map(([k, v]) => [String(k).toLowerCase(), String(v)] as [string, string])
+          .map(
+            ([k, v]) =>
+              [String(k).toLowerCase(), String(v)] as [string, string],
+          )
       : [];
     const hashes = Array.isArray(raw.serverCertificateHashes)
-      ? (raw.serverCertificateHashes as { algorithm: unknown; value: unknown }[]).map(
-          (h) => ({
-            algorithm: String(h.algorithm),
-            value: bytesOf(String(h.value)),
-          }),
-        )
+      ? (
+          raw.serverCertificateHashes as {
+            algorithm: unknown;
+            value: unknown;
+          }[]
+        ).map((h) => ({
+          algorithm: String(h.algorithm),
+          value: bytesOf(String(h.value)),
+        }))
       : [];
     const congestion = String(raw.congestionControl);
     const anticipated = (v: unknown): number | null =>

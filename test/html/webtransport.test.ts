@@ -37,7 +37,8 @@ async function page(
       baseUrl: url,
       scripts: {
         ...(webTransport ? { webTransport } : {}),
-        log: (level: string, text: string) => void logs.push(`${level}: ${text}`),
+        log: (level: string, text: string) =>
+          void logs.push(`${level}: ${text}`),
       },
     }),
     FONTS ? { width: 200, height: 100, fonts: FONTS } : { backend: 'mock' },
@@ -58,7 +59,8 @@ async function page(
 }
 
 /** What a page's helpers are: `log(...)` to the console, joined by `|`. */
-const LOG = 'function log() { console.log([].slice.call(arguments).join("|")); }';
+const LOG =
+  'function log() { console.log([].slice.call(arguments).join("|")); }';
 
 test('with no network, a session fails as a browser’s does, and what the page is handed is its own', async () => {
   const p = await page(
@@ -77,7 +79,10 @@ test('with no network, a session fails as a browser’s does, and what the page 
     'WebTransportError|true|true|session||undefinedundefined',
   );
   assert.equal(await p.until('closed|'), 'true|pending');
-  assert.equal(await p.until('stream|'), 'InvalidStateError|undefinedundefined');
+  assert.equal(
+    await p.until('stream|'),
+    'InvalidStateError|undefinedundefined',
+  );
   assert.equal(await p.until('stats|'), 'InvalidStateError');
   assert.ok(NO_WEBTRANSPORT, 'the default seam is exported');
 });

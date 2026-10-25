@@ -222,7 +222,11 @@ export class FakeServer {
       maxDatagramSize: () => this.maxDatagram,
       createSendGroup: () => ++groups,
       groupStats: () =>
-        Promise.resolve({ bytesWritten: 0, bytesSent: 0, bytesAcknowledged: 0 }),
+        Promise.resolve({
+          bytesWritten: 0,
+          bytesSent: 0,
+          bytesAcknowledged: 0,
+        }),
       stats: () =>
         Promise.resolve({
           bytesSent: 100,

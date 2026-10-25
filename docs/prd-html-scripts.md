@@ -1049,6 +1049,70 @@ the Interop 2026 focus areas through `<Html scripts>`
   whose source is the page's own document, its fragment aside, loads
   nothing, as a browser refuses a frame nested in itself.
 
+## Streams and WebTransport
+
+**A page's streams are the standard's algorithms, in the page's realm**
+(`streams.ts`, source text as `dom.ts` is). The first ones were enough for
+Next.js's flight data and a fetch piped through a decoder: a queue that
+counted chunks, a writer never held back, no reader that brought its own
+buffer. WebTransport is written against all of it — a datagram writer's
+`ready` that waits while `outgoingMaxBufferedDatagrams` are queued, a
+receive stream read into the page's own buffer, a send stream errored by
+the peer's STOP_SENDING — so the streams were written again, abstract
+operation by abstract operation. Their slots are in a `WeakMap` by the
+public object, so a page reads and tampers with none of them and an
+interface's members brand-check `this`; the promise and array methods they
+call are taken before any page code runs, so a page that replaces
+`Promise.prototype.then` reaches into no pipe. WPT's `streams/` tests pass
+but the tentative `owning` type's: one change against the reference
+implementation is that `pipeTo` writes a chunk a microtask after it is
+read, which `general-addition.any.js` holds it to, and waits for that
+write when it shuts down.
+
+**WebTransport is the facade's, and its network is a seam.** The facade
+(`webtransport.ts`, source text) has the W3C API whole over those streams;
+the host's half (`transports.ts`) is the `wt…` ops and the `__wt…` entries,
+over `HtmlScripts.webTransport`, an `HtmlWebTransport` (`../transport.ts`).
+A session and a stream are numbers, bytes are base64, an entry's input is
+JSON, as everywhere on the bridge. A stream's bytes are pulled: the
+receive stream's `pull` reads what the host has (`wtRead`, answered at
+once from the seam's buffer), and waits for `__wtReadable` where there is
+none, so a page that reads nothing leaves the bytes in the seam, which is
+what gives the peer room to send more. A send stream's write settles when
+the seam says the stream will take more. An abort reaches the sink
+through its controller's signal, at once, so the write or close in flight
+rejects with the reason, as the spec's pending operation does.
+
+**The seam's default opens nothing** (`NO_WEBTRANSPORT`): `ready` rejects a
+task later, as a browser's with no network does. `HtmlNetwork.webTransport`
+opens real sessions over quico, an optional peer, loaded the first time a
+page asks (`quico.ts`). The choice:
+
+| Candidate                        | What it is                                                                      | Why not, or why                                                                                                                                                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node:quic`                      | Node's QUIC over ngtcp2 and nghttp3                                             | Experimental, behind a flag, and in no release build: Node 24.22's `process.versions.ngtcp2` is empty and `node:quic` is no module. No WebTransport layer at all; Bun has none.                                                       |
+| `@fails-components/webtransport` | A native addon over Google's libquiche, its binary downloaded as it installs    | A server checked by certificate hashes unless an experimental CA check is on, no `getStats()`, no `reliability`; a native build where no prebuilt binary fits. Bun's N-API is a second question.                                      |
+| quico 0.7                        | QUIC, TLS 1.3 (lemon-tls), HTTP/3, QPACK and WebTransport, all of it JavaScript | **Chosen.** The browser's API whole — send groups and orders, datagrams, stats, protocols, CA or hash verification — on `node:dgram` and `node:crypto`, the same on Node and Bun; checked against WPT's aioquic server on both. 3 MB. |
+
+quico takes no request headers on its CONNECT, and a browser's names its
+`Origin` (a server may refuse one that does not: WPT's answers 403), so
+`quico.ts` adds the page's origin and headers where quico sends it
+(`_sendConnect`, through `_h3.sendHeaders`) — the one reach into quico's
+insides, made only where both are there to wrap. Three of quico's
+behaviours are not a browser's, and are adapted or left: a session the
+server ends with no capsule resolves nothing in quico, so the adapter
+reads quico's closing of the session's incoming streams for it; a
+connection lost under a session resolves quico's `closed` with no code, so
+the adapter tells it as a failure where no capsule came; a server's 2xx
+other than 200 is refused, which the adapter cannot change.
+
+**What becomes of a session is told, never asked.** The seam answers a
+session at once and tells `ready`, `failed`, `closed`, `draining`, a
+datagram and an incoming stream through the events it was handed, and a
+stream its `readable`, `end`, `reset` and `stopSending`. That shape is
+what a proxy across a worker's thread can carry, and what a fake server in
+a test can drive (`test/fake-transport.ts`).
+
 ## What core would be asked
 
 1. **Options for a pane's process.** `<Frame>` forks its child with the

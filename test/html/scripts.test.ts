@@ -598,6 +598,8 @@ for (const global of ['own', 'object'] as const) {
         // host's realm on Node 21 to 23, where no engine is made
         "var made = import('fs'); r.push(made.constructor.constructor(reach)());" +
         'made.catch(function (e) { r.push(e.constructor.constructor(reach)()) });' +
+        // and what a WebTransport the host refuses is rejected with
+        "new WebTransport('https://wt.test/').ready.catch(function (e) { r.push(e.constructor.constructor(reach)(), e.name) });" +
         'var shared = 1;',
       'a',
       0,
@@ -610,7 +612,10 @@ for (const global of ['own', 'object'] as const) {
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefined,undefined,string,null,undefinedundefinedundefined,' +
-        'undefinedundefinedundefined number',
+        // the refused session's rejection is settled inside the entry that
+        // tells it, ahead of the import's, which the host settled from
+        // outside
+        'undefinedundefinedundefined,WebTransportError,undefinedundefinedundefined number',
     ]);
     engine.dispose();
   });
@@ -2403,6 +2408,42 @@ test('streams read, pipe, tee and transform, and a response’s body is one', as
   );
   const text = await settled(doc, 'out', (t) => t !== '');
   assert.equal(text, 'ab|123|123|€!|no|héllo|true|function|TypeError');
+});
+
+test('a byte stream is read into the reader’s own buffer, a writer is held back while the queue is full, and the interfaces are the standard’s', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'var bytes = new ReadableStream({ type: "bytes", pull: function (c) {' +
+      '  var req = c.byobRequest; if (!req) { c.enqueue(new Uint8Array([9])); return; }' +
+      '  var v = req.view; for (var i = 0; i < v.byteLength; i++) v[i] = i + 1; req.respond(v.byteLength); } });' +
+      'var byob = bytes.getReader({ mode: "byob" }); var buffer = new ArrayBuffer(4);' +
+      'var sink = []; var release;' +
+      'var slow = new WritableStream({ write: function (chunk) { sink.push(chunk); return new Promise(function (ok) { release = ok; }); } },' +
+      '  new CountQueuingStrategy({ highWaterMark: 2 }));' +
+      'var w = slow.getWriter();' +
+      'byob.read(new Uint8Array(buffer)).then(function (x) {' +
+      '  r.push(Array.from(x.value).join(","), buffer.byteLength, x.value.buffer.byteLength);' +
+      '  w.write("a"); r.push(w.desiredSize); w.write("b"); r.push(w.desiredSize); w.write("c"); r.push(w.desiredSize);' +
+      '  var ready = false; w.ready.then(function () { ready = true; });' +
+      '  return Promise.resolve().then(function () { r.push(ready); release(); return new Promise(function (ok) { setTimeout(ok, 0); }); })' +
+      '    .then(function () { r.push(sink.join(""), w.desiredSize); });' +
+      '}).then(function () {' +
+      '  r.push(Object.getPrototypeOf(ReadableStreamBYOBReader.prototype) === Object.prototype,' +
+      '    typeof ReadableByteStreamController, Object.getOwnPropertyDescriptor(ReadableStream.prototype, "locked").enumerable);' +
+      '  try { ReadableStream.prototype.getReader.call({}); } catch (e) { r.push(e.name); }' +
+      '  try { new ReadableStreamDefaultController(); } catch (e) { r.push(e.name); }' +
+      '  out.textContent = r.join("|");' +
+      '});' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    // the reader's buffer is transferred to the result, and the one it
+    // gave is detached
+    '1,2,3,4|0|4|1|0|-1|false|ab|0|true|function|true|TypeError|TypeError',
+  );
 });
 
 test('a response made of a stream reads it to its end, as three.js’s loaders make one to count a download', async () => {

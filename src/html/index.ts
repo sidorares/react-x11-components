@@ -135,6 +135,19 @@ export type {
   HtmlNavigationType,
   HtmlSessionEntry,
 } from './scripts/session.js';
+export { NO_WEBTRANSPORT } from './transport.js';
+export type {
+  HtmlWebTransport,
+  WebTransportConnectRequest,
+  WebTransportPriority,
+  WebTransportReady,
+  WebTransportSessionEvents,
+  WebTransportSessionLike,
+  WebTransportStats,
+  WebTransportStreamEvents,
+  WebTransportStreamLike,
+  WebTransportStreamStats,
+} from './transport.js';
 export { linkTarget, navigableFor } from './scripts/target.js';
 export type { Navigable } from './scripts/target.js';
 export {
