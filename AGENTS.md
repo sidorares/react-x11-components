@@ -4156,6 +4156,20 @@ anchor acceptable). A tree with no anchors keeps the order the boxes were
 found in. **Anything new that queues positioned boxes during that loop
 keeps the queue in this order**, or an anchor is read before its layout.
 
+**An anchor name is of the tree its rule was written in** (CSS Shadow 1,
+3.5, tree-scoped names). The cascade notes, beside `anchor-name`,
+`position-anchor`, `anchor-scope`, the anchor functions of the insets and
+the sizes, and `position-try-fallbacks`, the shadow root of the tree whose
+rule set each, null for the document's (`noteTree`, `TREE_SCOPED`). A
+name then matches only a reference of the same tree, as Chrome matches
+them (`anchorBoxFor`, `refTree`). A scope reaches only its own tree's
+names, from the anchor's side and from the box's (`scopedAway`), and a
+`@position-try` is looked for in the reference's tree and then in each
+tree around it (`_positionTry`, by `TreeRules.positionTries`). Two cards'
+shadow trees each named their own `--a`, and a target in the second found
+the first card's. **Anything new that names an anchor, or refers to one,
+notes its tree with `noteTree`**: without one, it is the document's.
+
 **An anchored box in a vertical writing mode is placed in its frame's
 axes, and what it is placed by is read in the page's** (CSS Anchor
 Positioning 1, 3.1–4.1). `framedStyle` turns what a box's anchor functions

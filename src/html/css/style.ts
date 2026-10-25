@@ -910,6 +910,19 @@ export interface ComputedStyle {
   positionAnchorText: string;
   /** `anchor-scope`: `none`, `all`, or the names it scopes, joined. */
   anchorScope: string;
+  /**
+   * The trees the anchor names are scoped to (CSS Shadow 1, 3.5, tree-scoped
+   * names; CSS Anchor Positioning 1, 2.1): the shadow root of the tree
+   * whose rule declared `anchor-name`, `position-anchor`, `anchor-scope`,
+   * the `anchor()`s and `anchor-size()`s of the insets and sizes, and
+   * `position-try-fallbacks` — null for the document's. A name matches a
+   * reference written in the same tree (`Cascade._noteTree`).
+   */
+  anchorNamesTree: object | null;
+  positionAnchorTree: object | null;
+  anchorScopeTree: object | null;
+  anchorFunctionsTree: object | null;
+  positionTryTree: object | null;
   /** `position-try-order`. */
   positionTryOrder: string;
   /** `position-visibility` (CSS Anchor Positioning 1, 5.4): when the box
@@ -1753,6 +1766,11 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     positionAnchor: null,
     positionAnchorText: 'normal',
     anchorScope: 'none',
+    anchorNamesTree: null,
+    positionAnchorTree: null,
+    anchorScopeTree: null,
+    anchorFunctionsTree: null,
+    positionTryTree: null,
     positionTryOrder: 'normal',
     positionVisibility: 1,
     anchorInsets: null,
