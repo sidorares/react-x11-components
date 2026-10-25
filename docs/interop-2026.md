@@ -161,20 +161,21 @@ length in the least and greatest sizes, the insets and the margins as well
 as in the sizes, an `anchor()` of the other axis is its fallback, a tactic
 flips the self-alignment, and an anchor in the top layer is no anchor of a
 box below it ([#1018]). What is left, the heaviest first: anchored boxes
-inside a multi-column's columns (a dozen tests); the cascade of a
+inside a multi-column's columns (a dozen tests); the root scroller
+scrolling across, which the `anchor-scroll-position-try-*` tests in a
+vertical or right-to-left root and `anchor-scroll-nested.html` need; a
+chain through scrollers nested in scrollers
+(`anchor-scroll-chained-002.html` and `004`); the cascade of a
 `@position-try` rule's declarations, which an `!important` one, an
 animation and a transition outrank, and its layers
-(`position-try-cascade*.html`); the root scroller scrolling across, which
-the `anchor-scroll-position-try-*` tests in a vertical or right-to-left
-root and `anchor-scroll-nested.html` need; a chain through scrollers
-nested in scrollers (`anchor-scroll-chained-002.html` and `004`); a
-horizontal box inside a vertical flow, which is no frame of its own; a
-popover's implicit anchor, `anchors-valid`, an `anchor()` inside another's
-fallback, and the scrollable containing block of a box with a default
-anchor; a scroll offset remembered for each anchor reference, where each
-layout takes an anchor where it is scrolled to then; `safe` and `unsafe`,
-read as the default overflow alignment; and a computed value simplified
-around an `anchor()`, where only a specified one is.
+(`position-try-cascade*.html`); a horizontal box inside a vertical flow,
+which is no frame of its own; a popover's implicit anchor,
+`anchors-valid`, an `anchor()` inside another's fallback, and the
+scrollable containing block of a box with a default anchor; a scroll
+offset remembered for each anchor reference, where each layout takes an
+anchor where it is scrolled to then; `safe` and `unsafe`, read as the
+default overflow alignment; and a computed value simplified around an
+`anchor()`, where only a specified one is.
 
 **attr (88.1%).** Attr-tainting keeps an attribute's value out of a URL,
 `background-image` is serialized in full, and `attr()` reads an attribute
