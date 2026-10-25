@@ -25,9 +25,25 @@ Every area weighs the same, whatever its number of tests — the 5 of
 git clone --depth 1 https://github.com/web-platform-tests/wpt-metadata.git
 git clone --depth 1 --filter=blob:none --sparse \
   https://github.com/web-platform-tests/wpt.git
-# in wpt: ./wpt serve, with server_host 127.0.0.1 and check_subdomains off
+# in wpt: ./wpt serve --webtransport-h3, with server_host 127.0.0.1 and
+# check_subdomains off in its config.json
 npx tsx scripts/conformance/interop.ts wpt wpt-metadata --jobs 5
 ```
+
+`--webtransport-h3` starts WPT's WebTransport server
+(`tools/webtransport/h3`, over aioquic, on the `webtransport-h3` port), which
+`webtransport/`'s tests open their sessions to; it needs `aioquic`, which
+`./wpt serve` installs into its own virtualenv (`_venv3`), from
+`tools/webtransport/requirements.txt`, or `_venv3/bin/pip install -r
+tools/webtransport/requirements.txt` does. The runner opens a page's
+sessions over `HtmlNetwork.webTransport`, so quico — a devDependency here —
+has to be installed. Where another server holds WPT's default ports, set
+`ports` in `config.json` (`"http": [8100, "auto"], "https": [8543, 8544],
+"h2": [9100], "webtransport-h3": [11100]`, say) and hand the runner the
+three it opens documents on as `WPT_HTTP_PORT`, `WPT_HTTPS_PORT` and
+`WPT_H2_PORT`; the tests read the rest from the server's own substitutions.
+Without `systemd-run` — a Mac — the children run without a memory cap, and
+the runner says so.
 
 Each test is loaded from WPT's own server, as the example browser loads a
 page — `HtmlNetwork` for the document and what it asks for, the page's
@@ -70,7 +86,7 @@ jobs.
 | 10    | `getHTML()`, registries fixed where an element is made, the runner's `act()` one at a time                              | 75.2%     |
 | 11    | CSS transitions and animations: their objects, their events, and what a page does to them                               | **75.5%** |
 
-By focus area, from the first run to the eleventh. Three areas have been
+By focus area, from the first run to the eleventh. Four areas have been
 measured again since, each by the PR that moved it, and their "now" is that
 PR's run, which the last column names; the total above is the eleventh
 run's.
@@ -95,7 +111,7 @@ run's.
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                 |
 | webcompat                        | 9     | 22.2% | 77.7% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| webtransport                     | 58    | 0.0%  | 0.0%  | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| webtransport                     | 58    | 0.0%  | 46.0% | WebTransport over quico and the page's streams to the standard ([#1019]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 The second run's jump is the runner's as much as the engine's: WPT's
@@ -361,12 +377,25 @@ its animation frames: a frame in the page's realm scrolls nothing —
 `scroll` and the CSS animation and transition events are still told by
 timers of their own.
 
-**webrtc (0.2%) and webtransport (0.0%).** Out of scope:
-`RTCPeerConnection` and `WebTransport` are a network stack of their own,
-and a document renderer embedded in an application has no business opening
-peer connections or QUIC sessions behind its host's back. Were they
-wanted, they would go through a seam the host answers, as a page's `fetch`
-does, and there is none yet.
+**webrtc (0.2%).** Out of scope: `RTCPeerConnection` is a network stack of
+its own, and a document renderer embedded in an application has no
+business opening peer connections behind its host's back. Were it wanted,
+it would go through a seam the host answers, as a page's `fetch` and
+`WebTransport` do.
+
+**webtransport (46.0%).** A page has the W3C API whole, over its own
+WHATWG streams, now the standard's algorithms (WPT's `streams/` passes but
+for the tentative `owning` type), and its sessions go through a seam the
+host answers, `scripts.webTransport`, whose default opens nothing.
+`HtmlNetwork` answers it over quico, an optional peer: QUIC, HTTP/3 and
+WebTransport in JavaScript ([#1019]). In [#1019]'s run, made against WPT's
+aioquic server on a Mac, the window's tests pass but three subtests: the 204
+a server establishes a session with, which quico refuses as other than
+200; a `Content-Security-Policy` `connect-src` (`csp-fail`), which nothing
+here consults; and `back-forward-cache-with-closed-webtransport-connection`,
+which needs a back-forward cache. Every worker variant — dedicated, shared
+and service, three of every four tests — fails, as its thread has no seam
+yet and a session there fails as with no network.
 
 **zoom (93.9%).** The two reftests the eleventh run failed — frames nested
 under `zoom` (`iframe-zoom-nested.html`) and `zoom` on an inline SVG
@@ -437,3 +466,4 @@ Across areas, three things recurred, and each now has its first slice:
 [react-x11#1006]: https://github.com/sidorares/react-x11/pull/1006
 [react-x11#1010]: https://github.com/sidorares/react-x11/pull/1010
 [ntk#549]: https://github.com/sidorares/ntk/pull/549
+[#1019]: https://github.com/sidorares/react-x11-components/pull/1019
