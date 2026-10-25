@@ -1592,6 +1592,56 @@ test("a box is placed against where its anchor's relative offset moved it", asyn
   assert.deepStrictEqual(at('area'), [110, 200]);
 });
 
+test('an anchor name, a position option name and anchor-scope are of the tree their rule was written in', async () => {
+  // CSS Anchor Positioning 1, 2.1 and 2.4, CSS Shadow 1, 3.5: two shadow
+  // trees' `--a` are two names; a shadow tree's reference does not find
+  // the page's name on its host; a `@position-try` is looked for in the
+  // tree whose rule named it and the trees around it; and an
+  // `anchor-scope` set through `::part()` scopes the page's names in the
+  // part, slotted ones included
+  const tree = (n: number) =>
+    `<div class="host" id="h${n}"><template shadowrootmode="open"><style>` +
+    'div{width:100px;height:100px}.a{anchor-name:--a}' +
+    '.t{position:fixed;left:anchor(--a left);top:anchor(--a bottom)}' +
+    `</style><div class="a"></div><div class="t" id="t${n}"></div>` +
+    '</template></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.host{width:100px;height:100px}#h2{margin-left:200px}' +
+      '@position-try --doc{left:100px}' +
+      '.abs{position:absolute;width:10px;height:10px;left:999999px}' +
+      '#doc-own{position-try-fallbacks:--own}' +
+      '#scoped::part(scope){anchor-scope:--s}' +
+      '#s{anchor-name:--s;width:10px;height:10px}' +
+      '#under{position:absolute;top:anchor(--s bottom, 1px);width:5px;height:5px}' +
+      '</style>' +
+      tree(1) +
+      tree(2) +
+      '<div id="named" style="anchor-name:--h"><template shadowrootmode="open">' +
+      '<style>div{position:absolute;left:anchor(--h left, 37px)}</style>' +
+      '<div id="in"></div></template></div>' +
+      '<div id="tries"><template shadowrootmode="open"><style>' +
+      '@position-try --own{left:200px}' +
+      '.abs{position:absolute;width:10px;height:10px;left:999999px}' +
+      '#own{position-try-fallbacks:--own}#doc{position-try-fallbacks:--doc}' +
+      '</style><div class="abs" id="own"></div><div class="abs" id="doc"></div>' +
+      '</template></div><div class="abs" id="doc-own"></div>' +
+      '<div id="s"></div><div id="scoped" style="position:relative">' +
+      '<template shadowrootmode="open"><div part="scope"><slot></slot></div>' +
+      '</template><div id="under"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('t1'), [0, 100]);
+  assert.deepStrictEqual(at('t2'), [200, 200]);
+  assert.strictEqual(boxOf(el, 'in').x, 37, 'the fallback');
+  assert.strictEqual(boxOf(el, 'own').x, 200);
+  assert.strictEqual(boxOf(el, 'doc').x, 100, 'from the tree around it');
+  assert.strictEqual(boxOf(el, 'doc-own').x, 999999, "not a shadow tree's");
+  const under = boxOf(el, 'under');
+  const scoped = boxOf(el, 'scoped');
+  assert.strictEqual(under.y - scoped.y, 1, 'scoped away: the fallback');
+});
+
 test('anchor-scope keeps an anchor name to the boxes inside the element that scopes it', async () => {
   // CSS Anchor Positioning 1, 2.4: the nearest element around the anchor,
   // itself included, that scopes its name, by the name or by `all`, has

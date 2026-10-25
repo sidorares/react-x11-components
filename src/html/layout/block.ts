@@ -5387,7 +5387,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const root = ctx.anchorRoot ?? null;
   const axes = anchorAxesOf(box, containing);
   // what scrolls its default anchor and not it, and how far it has now
-  const anchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  const anchor = anchorBoxFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
   const context =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
@@ -5530,8 +5535,18 @@ function anchoredStyle(
     startsLow(axes, false, axes.own),
     startsLow(axes, true, axes.own),
   ];
-  const anchor = anchorFor(box, style.positionAnchor, ctx);
-  const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
+  const anchor = anchorFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
+  const defaultAnchor = anchorBoxFor(
+    box,
+    style.positionAnchor,
+    ctx,
+    style.positionAnchorTree,
+  );
   // the edges a scroll of the default anchor moves with it
   let moving = 0;
   // the cells of its `position-area` (3.1.1): between lines at the
@@ -5572,9 +5587,10 @@ function anchoredStyle(
       let scrolled = false;
       const values = anchorCalls(inset).map((ref) => {
         const name = ref.name ?? style.positionAnchor;
-        const of = anchorFor(box, name, ctx);
+        const tree = refTree(style, ref.name);
+        const of = anchorFor(box, name, ctx, tree);
         if (!of) return null;
-        const at = anchorBoxFor(box, name, ctx);
+        const at = anchorBoxFor(box, name, ctx, tree);
         if (at && defaultAnchor && sameScrollContext(at, defaultAnchor)) {
           scrolled = true;
         }
@@ -5601,7 +5617,12 @@ function anchoredStyle(
       const size = sizes[prop];
       if (!size) continue;
       const values = anchorCalls(size).map((ref) => {
-        const of = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
+        const of = anchorFor(
+          box,
+          ref.name ?? style.positionAnchor,
+          ctx,
+          refTree(style, ref.name),
+        );
         if (!of) return null;
         return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
       });
@@ -5669,8 +5690,9 @@ function anchorFor(
   box: Box,
   name: string | null,
   ctx: LayoutContext,
+  tree: object | null,
 ): CbRect | null {
-  const anchor = anchorBoxFor(box, name, ctx);
+  const anchor = anchorBoxFor(box, name, ctx, tree);
   if (!anchor) return null;
   const rect =
     anchor.kind === 'inline'
@@ -5844,6 +5866,9 @@ function anchorBoxFor(
   box: Box,
   name: string | null,
   ctx: LayoutContext,
+  /** The tree the reference was written in (`ComputedStyle.anchorNamesTree`
+   *  and its kin): a name of another tree is not the one it means. */
+  tree: object | null,
 ): Box | null {
   if (name === null || !ctx.anchorRoot) return null;
   if (ctx.anchors === undefined) {
@@ -5893,6 +5918,9 @@ function anchorBoxFor(
       }
     }
     if (inside) continue;
+    // a tree-scoped name, matched strictly (CSS Shadow 1, 3.5): a shadow
+    // tree's `--a` is not the page's
+    if (anchor.style.anchorNamesTree !== tree) continue;
     if (scopedAway(anchor, box, name)) continue;
     if (!acceptableAnchor(anchor, box, ctx.anchorOrder!)) continue;
     return anchor;
@@ -5900,25 +5928,45 @@ function anchorBoxFor(
   return null;
 }
 
+/** The tree an anchor reference of a style was written in: its
+ *  `position-anchor`'s where it names no anchor, and its anchor
+ *  functions' where it does. */
+function refTree(style: ComputedStyle, name: string | null): object | null {
+  return name === null ? style.positionAnchorTree : style.anchorFunctionsTree;
+}
+
 /**
  * Whether `anchor-scope` keeps an anchor's name from a box (CSS Anchor
  * Positioning 1, 2.4): the nearest element around the anchor, itself
  * included, that scopes the name — by naming it, or by `all` — has the box
- * outside it. An element's own box is the one asked, and not the boxes
- * inside it that carry its style.
+ * outside it; or an element around the box that scopes it has the anchor
+ * outside it, since a scope limits what is in it to the anchors in it as
+ * well. A scope reaches only the names of its own tree, as a strictly
+ * matched tree-scoped name does (CSS Shadow 1, 3.5): `anchor-scope` set
+ * through `::part()` scopes the page's names inside the part, and one a
+ * shadow tree sets on its host none of the page's. An element's own box is
+ * the one asked, and not the boxes inside it that carry its style.
  */
 function scopedAway(anchor: Box, box: Box, name: string): boolean {
-  for (let at: Box | null = anchor; at; at = at.parent) {
+  const tree = anchor.style.anchorNamesTree;
+  const scopes = (at: Box): boolean => {
     const scope = at.style.anchorScope;
-    if (scope === 'none') continue;
+    if (scope === 'none' || at.style.anchorScopeTree !== tree) return false;
     const own =
       at.pseudo === null
         ? !!at.el && at.parent?.el !== at.el
         : at.pseudo === 'before' || at.pseudo === 'after';
-    if (!own) continue;
-    if (scope !== 'all' && !scope.split(', ').includes(name)) continue;
-    for (let b: Box | null = box; b; b = b.parent) if (b === at) return false;
-    return true;
+    return own && (scope === 'all' || scope.split(', ').includes(name));
+  };
+  const holds = (at: Box, b: Box): boolean => {
+    for (let c: Box | null = b; c; c = c.parent) if (c === at) return true;
+    return false;
+  };
+  for (let at: Box | null = anchor; at; at = at.parent) {
+    if (scopes(at)) return !holds(at, box);
+  }
+  for (let at = box.parent; at; at = at.parent) {
+    if (scopes(at) && !holds(at, anchor)) return true;
   }
   return false;
 }
