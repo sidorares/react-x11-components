@@ -1755,6 +1755,7 @@ class Builder {
     }
     const flow = flowOf(style, box);
     const around = this._ws;
+    const aroundAt = this._length;
     const aroundWord = this._lettered;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
@@ -1780,7 +1781,7 @@ class Builder {
       }
     }
     if (flow !== 'inline') this._endLine();
-    this._ws = after(flow, this._ws, around);
+    this._ws = after(flow, this._ws, around, this._length !== aroundAt);
     this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
@@ -2049,6 +2050,7 @@ class Builder {
       style.display === 'flex' || style.display === 'inline-flex';
     const flow = flowOf(style, box);
     const around = this._ws;
+    const aroundAt = this._length;
     const aroundWord = this._lettered;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
@@ -2114,7 +2116,7 @@ class Builder {
     this._depth -= depth;
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
-    this._ws = after(flow, this._ws, around);
+    this._ws = after(flow, this._ws, around, this._length !== aroundAt);
     this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
@@ -2437,6 +2439,7 @@ class Builder {
     this._scopes.close();
     const flow = flowOf(style, box);
     const around = this._ws;
+    const aroundAt = this._length;
     const aroundWord = this._lettered;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
@@ -2454,7 +2457,7 @@ class Builder {
     }
     this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
-    this._ws = after(flow, this._ws, around);
+    this._ws = after(flow, this._ws, around, this._length !== aroundAt);
     this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
@@ -2942,6 +2945,7 @@ class Builder {
    * text box it empties goes with it.
    */
   private _endLine(): void {
+    if (this._ws === 'held') this._ws = 'start';
     if (this._ws !== 'space') return;
     this._ws = 'start';
     const box = this._textBoxes[this._textBoxes.length - 1];
@@ -3382,8 +3386,10 @@ function letteredAfterFlow(
 
 /** Where the inline content being built stands, for white space: at the
  *  start of a line, just after a space that may collapse, or after anything
- *  else. */
-type Collapse = 'start' | 'space' | 'content';
+ *  else. `held` is a space that still collapses the one after it, with a
+ *  float's or a positioned box's text pushed after it: it is no longer the
+ *  last chunk, so the line's end cannot take it back (`_endLine`). */
+type Collapse = 'start' | 'space' | 'held' | 'content';
 
 /**
  * A text's first letter, with the punctuation before and after it that CSS
@@ -3497,6 +3503,7 @@ function after(
   flow: 'inline' | 'atomic' | 'block' | 'out',
   inside: Collapse,
   before: Collapse,
+  pushed = false,
 ): Collapse {
   switch (flow) {
     case 'inline':
@@ -3504,7 +3511,11 @@ function after(
     case 'atomic':
       return 'content';
     case 'out':
-      return before;
+      // a box out of the flow is no part of the line's white space, but
+      // the text it pushed is after the space: taken back at the line's
+      // end, the character off the last chunk was the box's own — a
+      // preserved space a float's `white-space: pre` text ends on
+      return before === 'space' && pushed ? 'held' : before;
     default:
       return 'start';
   }
