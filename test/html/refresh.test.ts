@@ -515,6 +515,32 @@ metric(
   },
 );
 
+metric(
+  'a link broken around a block takes a colour a script sets it on every piece of it, restyled where it is',
+  async () => {
+    // A link around a `<div>` is the pieces of it before and after the
+    // block (`breakInlines`), each run of them in an anonymous block of its
+    // own; the restyle in place looked in the first piece's block alone,
+    // and the text after the block kept its old colour
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee}</style><p>x</p>' +
+        '<a id="a" href="#a">before<div>block</div>after</a>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    el.touchDocument([setAttr(byId(el, 'a'), 'style', 'color: #ff0000')]);
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.strictEqual(
+      bytesApart(drawn, await rebuilt(result, el)),
+      0,
+      'a piece kept its colour',
+    );
+  },
+);
+
 metric('a stylesheet added styles every element again', async () => {
   const { result, node } = await render(
     '<style>body{margin:0}</style><p id="a">a</p><p id="b">b</p>',

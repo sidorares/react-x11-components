@@ -7147,12 +7147,17 @@ export class HtmlViewNode extends Node {
     const blocks = new Set<Box>();
     for (const el of changed) {
       let box: Box | null = first.get(el) ?? null;
+      const broken = box?.kind === 'inline' && box.cut !== 0;
       while (
         box?.parent &&
         (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break')
       ) {
         box = box.parent;
       }
+      // the pieces of one broken around a block are its container's, each
+      // run of them in an anonymous block of its own: a link around a
+      // `<div>` kept its old colour after the block, where a script set it
+      if (broken && box?.parent && !box.el && !box.pseudo) box = box.parent;
       if (box) blocks.add(box);
     }
     const out: Box[] = [];
