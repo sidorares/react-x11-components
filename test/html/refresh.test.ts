@@ -585,6 +585,17 @@ function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {
   return node._changeScope(changes)?.own ?? null;
 }
 
+/** Whether a refresh told of `changes` makes the cascade again before its
+ *  build (`ChangeScope.sheets`): a change to a sheet of the document's. */
+function sheetsOf(el: HtmlViewNode, changes: HtmlChange[]): boolean {
+  const node = el as unknown as {
+    _source: { touch(): void };
+    _changeScope(c: HtmlChange[]): { sheets?: boolean } | null;
+  };
+  node._source.touch();
+  return node._changeScope(changes)?.sheets === true;
+}
+
 /** An attribute set, or taken away for `null`, with its record. */
 function setAttr(
   target: Element,
@@ -668,12 +679,14 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
   assert.ok(!own.has(byId(el, 'first')), 'what is before it is restyled');
   el.touchDocument([loaded]);
   assert.notStrictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
-  // an icon's href, a <style>'s type, a <meta>'s data: the element itself
-  // at most, since a `:link` reads an `href`
+  // an icon's href, a <style>'s type, a <meta>'s data, and the content of
+  // a <meta> no pragma reads: the element itself at most, since a `:link`
+  // reads an `href`
   const quiet = [
     setAttr(byId(el, 'icon'), 'href', 'b.svg'),
     setAttr(byId(el, 'st'), 'type', 'text/css'),
     setAttr(byId(el, 'm'), 'data-x', '1'),
+    setAttr(byId(el, 'm'), 'content', 'z'),
   ];
   for (const change of quiet) {
     const scoped = scopeOf(el, [change]);
@@ -709,16 +722,37 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
   arrive({ kind: 'stylesheet', text: '#q { color: #0000ff }' });
   await act();
   assert.strictEqual(el.computedStyle(q)?.color, 'rgb(0, 0, 255)');
+  // a <style> put in makes the cascade again before the build, which
+  // styles what its rules can style
   const style = added(
     createElement('style', {}, [createText('#q{color:#00aa00}')]),
   );
-  assert.strictEqual(scopeOf(el, [style]), null, 'a sheet restyled only some');
+  assert.ok(sheetsOf(el, [style]), 'a sheet was no change to the cascade');
   el.touchDocument([style]);
   await act();
-  const meta = added(createElement('meta', { name: 'color-scheme' }));
-  assert.strictEqual(scopeOf(el, [meta]), null, 'a <meta> restyled only some');
-  el.touchDocument([meta]);
+  assert.strictEqual(el.computedStyle(q)?.color, 'rgb(0, 170, 0)');
+  // a <meta> the cascade reads, and one a page's scripts put in for its
+  // social cards, which is an element like any
+  const card = added(
+    createElement('meta', { property: 'og:title', content: 'q' }),
+    createElement('meta', { name: 'referrer', content: 'origin' }),
+  );
+  assert.ok(scopeOf(el, [card]), 'a card’s <meta> restyled everything');
+  el.touchDocument([card]);
   await act();
+  for (const attribs of <Record<string, string>[]>[
+    { name: 'color-scheme', content: 'dark' },
+    { 'http-equiv': 'Content-Language', content: 'fr' },
+  ]) {
+    const meta = added(createElement('meta', attribs));
+    assert.strictEqual(
+      scopeOf(el, [meta]),
+      null,
+      'a <meta> restyled only some',
+    );
+    el.touchDocument([meta]);
+    await act();
+  }
   // a shadow tree's sheets are its own, bound to it by how they read
   const root = shadowRootOf(byId(el, 'host'))!;
   const inTree = createElement('style', {}, [createText('b{color:#00aa00}')]);
@@ -736,15 +770,28 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
     (n) => (n as Element).name === 'b',
   ) as Element;
   assert.strictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
-  // a sheet that goes, by its media, its href or its rel, and a pragma —
-  // each asked with the last refresh of everything laid out, before which
-  // a scope is not asked
+  // a sheet that goes, by its media, its href or its rel — the cascade
+  // made again, and every element styled again, since what it took away
+  // styled what it did (`addedRules`) — and a pragma, each asked with the
+  // last change laid out, before which a scope is not asked
   for (const make of [
     () => setAttr(byId(el, 's1'), 'media', 'print'),
     () => setAttr(byId(el, 's2'), 'href', 'none.css'),
     () => setAttr(byId(el, 's3'), 'rel', 'icon'),
     () => setAttr(byId(el, 'st'), 'media', 'print'),
-    () => setAttr(byId(el, 'm'), 'content', 'z'),
+  ]) {
+    const change = make();
+    assert.ok(
+      sheetsOf(el, [change]),
+      `${change.type === 'attributes' && change.attributeName} was no change to the cascade`,
+    );
+    el.touchDocument([change]);
+    await act();
+  }
+  assert.notStrictEqual(el.computedStyle(q)?.['font-style'], 'italic');
+  for (const make of [
+    () => setAttr(byId(el, 'm'), 'name', 'color-scheme'),
+    () => setAttr(byId(el, 'm'), 'name', 'x'),
   ]) {
     const change = make();
     assert.strictEqual(
@@ -756,7 +803,6 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
     await act();
     assert.ok(scopeOf(el, []), 'the refresh of everything is still due');
   }
-  assert.notStrictEqual(el.computedStyle(q)?.['font-style'], 'italic');
 });
 
 test("a child put in reaches the later siblings of its new siblings, and its holder's own only where a rule asks what the holder holds before a sibling combinator", async () => {
@@ -1421,6 +1467,230 @@ function changeOne(
     { type: 'attributes', target, attributeName: 'style', oldValue: was },
   ];
 }
+
+/**
+ * A sheet change a CSS-in-JS library, a lazy chunk or a late `<link>` makes,
+ * done, and its records: a `<style>` put in, rules written into one, its
+ * text extended or replaced, one taken out, and one bringing a `@keyframes`
+ * — the last three of which make every element styled again
+ * (`addedRules`).
+ */
+function sheetChange(
+  next: () => number,
+  body: Element,
+  sheets: Element[],
+): HtmlChange[] {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const rules = () => rulesFor(next, true).split('\n').slice(0, 4).join('\n');
+  const kind = sheets.length ? Math.floor(next() * 8) : 0;
+  if (kind === 6 || kind === 7) {
+    const text = pick(sheets).children.find((n) => n.type === 'text') as
+      { data: string } | undefined;
+    if (kind === 6 && text) {
+      // rules written between a sheet's, as styled-components writes each
+      // component's group
+      const lines = text.data.split('\n');
+      const at = Math.floor(next() * (lines.length + 1));
+      lines.splice(at, 0, rules());
+      text.data = lines.join('\n');
+      return [{ type: 'characterData', target: text as never }];
+    }
+    // a sheet that names a layer, which only the last may do, after which
+    // no sheet can name one first
+    const name = pick(['', 'a', 'b']);
+    const layered = createElement('style', {}, [
+      createText(
+        next() < 0.3
+          ? `@layer b, a;\n${rules()}`
+          : `@layer ${name} {\n${rules()}\n}`,
+      ),
+    ]);
+    const kids = body.children.filter((n) => (n as Element).attribs);
+    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), layered);
+    else appendChild(body, layered);
+    sheets.push(layered);
+    return [
+      {
+        type: 'childList',
+        target: layered.parent as unknown as Element,
+        addedNodes: [layered],
+        removedNodes: [],
+      },
+    ];
+  }
+  if (kind === 0) {
+    const style = createElement('style', {}, [createText(rules())]);
+    const kids = body.children.filter((n) => (n as Element).attribs);
+    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), style);
+    else appendChild(body, style);
+    sheets.push(style);
+    return [
+      {
+        type: 'childList',
+        target: style.parent as unknown as Element,
+        addedNodes: [style],
+        removedNodes: [],
+      },
+    ];
+  }
+  const style = pick(sheets);
+  if (kind === 1) {
+    const text = createText(`\n${rules()}`);
+    appendChild(style, text);
+    return [
+      {
+        type: 'childList',
+        target: style,
+        addedNodes: [text],
+        removedNodes: [],
+      },
+    ];
+  }
+  const text = style.children.find((n) => n.type === 'text') as
+    { data: string } | undefined;
+  if (kind === 2 && text) {
+    text.data += `\n${rules()}`;
+    return [{ type: 'characterData', target: text as never }];
+  }
+  if (kind === 3 && text) {
+    text.data = rules();
+    return [{ type: 'characterData', target: text as never }];
+  }
+  if (kind === 4) {
+    const parent = style.parent as unknown as Element;
+    removeNode(style as unknown as ChildNode);
+    sheets.splice(sheets.indexOf(style), 1);
+    return [
+      {
+        type: 'childList',
+        target: parent,
+        addedNodes: [],
+        removedNodes: [style],
+      },
+    ];
+  }
+  const keyed = createElement('style', {}, [
+    createText(`@keyframes k { to { color: #ff0000 } }\n${rules()}`),
+  ]);
+  appendChild(body, keyed);
+  sheets.push(keyed);
+  return [
+    { type: 'childList', target: body, addedNodes: [keyed], removedNodes: [] },
+  ];
+}
+
+test('sheets put in, written to, extended, replaced and taken out come to the styles of a refresh of everything, and an added rule restyles what it can style', async () => {
+  let added = 0;
+  let whole = 0;
+  for (let seed = 1; seed <= 32; seed += 1) {
+    const next = random(seed * 7919);
+    const css = rulesFor(next, true);
+    // a document whose markup writes its `<html>`, and one the cascade
+    // supplies one for, which a rule for the root reaches otherwise
+    const markup = markupFor(next, false, false);
+    const full = seed % 2 === 0;
+    const source = full
+      ? `<!doctype html><html><head><style>body{margin:0}\n${css}</style></head><body>${markup}</body></html>`
+      : `<style>body{margin:0}\n${css}</style><body>${markup}</body>`;
+    const { result, node } = await render(source, 320);
+    const el = view(node);
+    await act();
+    const bodyEl = elementsIn(el.document as unknown as Element).find(
+      (e) => e.name === 'body',
+    )!;
+    const sheets: Element[] = [];
+    const internals = el as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    const sheetsAdded = internals._sheetsAdded;
+    for (let step = 0; step < 10; step += 1) {
+      const changes =
+        next() < 0.6
+          ? sheetChange(next, bodyEl, sheets)
+          : changeOne(next, bodyEl, false);
+      let answer: unknown;
+      internals._sheetsAdded = function (this: unknown, ...a: unknown[]) {
+        answer = sheetsAdded.apply(this, a);
+        return answer;
+      };
+      el.touchDocument(changes);
+      await act();
+      delete internals._sheetsAdded;
+      if (answer instanceof Set) added += 1;
+      else if (answer === null) whole += 1;
+      const scoped = stylesOf(el, bodyEl);
+      el.touchDocument();
+      await act();
+      const styled = stylesOf(el, bodyEl);
+      const at = scoped.findIndex((s, i) => s !== styled[i]);
+      assert.ok(
+        at < 0 && scoped.length === styled.length,
+        `seed ${seed}, step ${step}: ${String(scoped[at]).slice(0, 300)}\n` +
+          `styled whole: ${String(styled[at]).slice(0, 300)}\n` +
+          `sheets\n${sheets.map((st) => DomUtils.textContent(st)).join('\n---\n')}`,
+      );
+    }
+    result.unmount();
+  }
+  // the added rules restyled what they could style often enough to say so,
+  // and the changes they could not vouch for styled everything again
+  assert.ok(added > 20, `${added} sheet changes restyled what they reach`);
+  assert.ok(whole > 5, `${whole} sheet changes restyled everything`);
+});
+
+test('a sheet that names a layer first before others named it restyles everything, since the layers rank otherwise', async () => {
+  // `b` ranks before `a`, where the document first names them, so `a`'s
+  // blue wins; a sheet put in ahead of them that names `a` first, and the
+  // first sheet written to name it, rank `a` before `b`, and `b`'s red
+  // wins on an element none of their own rules matches
+  for (const how of ['before', 'written'] as const) {
+    const { node } = await render(
+      '<!doctype html><html><head>' +
+        '<style id="s1">@layer b { .x { color: #ff0000 } }</style>' +
+        '<style id="s2">@layer a { .x { color: #0000ff } }</style>' +
+        '</head><body><p id="p" class="x">x</p><p id="q">q</p></body></html>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const p = findById(el.document, 'p')!;
+    assert.strictEqual(el.computedStyle(p)?.color, 'rgb(0, 0, 255)');
+    const s1 = findById(el.document, 's1')!;
+    let change: HtmlChange;
+    if (how === 'before') {
+      const sheet = createElement('style', {}, [
+        createText('@layer a { #q { color: #00aa00 } }'),
+      ]);
+      DomUtils.prepend(s1 as unknown as ChildNode, sheet);
+      change = {
+        type: 'childList',
+        target: s1.parent as unknown as Element,
+        addedNodes: [sheet],
+        removedNodes: [],
+      };
+    } else {
+      const text = createText('\n@layer a { #q { color: #00aa00 } }');
+      DomUtils.prepend(s1.children[0] as unknown as ChildNode, text);
+      change = {
+        type: 'childList',
+        target: s1,
+        addedNodes: [text],
+        removedNodes: [],
+      };
+    }
+    el.touchDocument([change]);
+    await act();
+    assert.strictEqual(
+      el.computedStyle(findById(el.document, 'q')!)?.color,
+      'rgb(0, 170, 0)',
+      how,
+    );
+    assert.strictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)', how);
+    await cleanup();
+  }
+});
 
 test('a refresh told what changed comes to the styles of a refresh of everything', async () => {
   const ways = await refreshesAgree(40, false);

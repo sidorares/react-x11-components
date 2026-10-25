@@ -502,6 +502,15 @@ class RuleIndex {
    *  asks the element it is in (CSS Conditional 5, 3.1). */
   constructor(readonly self = false) {}
 
+  /** Every rule filed here, bucket by bucket. */
+  *all(): IterableIterator<IndexedRule> {
+    for (const map of [this.byId, this.byClass, this.byTag, this.byAttr]) {
+      for (const bucket of map.values()) yield* bucket;
+    }
+    yield* this.rootRules;
+    yield* this.universal;
+  }
+
   /** A rule of another index, filed here under its key as it is. */
   adopt(indexed: IndexedRule): void {
     this.size += 1;
@@ -4062,6 +4071,64 @@ export class Cascade {
       // and the tree it hosts, whose rules are asked of its elements alone
       // (`_matchInto`): MDN's pages are custom elements with trees of their
       // own, and every breakpoint a drag crossed styled the page again
+      const shadow = this._scoped ? shadowRootOf(el) : null;
+      if (shadow) for (const child of shadow.children) stack.push(child);
+    }
+    return reached;
+  }
+
+  /**
+   * The elements the rules `added` can style, for a cascade made again
+   * where all the sheets did is add them (`HtmlViewNode._sheetsAdded`):
+   * each one an added rule's selector matches, whatever media it is under,
+   * or whose pseudo-element it does — the rest are styled as they were, by
+   * the rules they were. Found as `crossed` finds what a breakpoint turns
+   * rules on and off for, from this cascade's indexes, where each rule is
+   * known by its declarations, which a pseudo-element's rule keeps. Null
+   * where one is in none of them: a rule at a shadow tree's edge, a
+   * highlight's, a view transition's.
+   */
+  addedReach(
+    added: readonly StyleRule[],
+    root: { children?: readonly unknown[] },
+    /** Whether the markup writes no `<html>`, and a style the cascade makes
+     *  stands for the root's: one no element's rules are asked for, which
+     *  a rule that may match the root changes (`impliedHtml`). */
+    impliedRoot = false,
+  ): Set<Element> | null {
+    const reached = new Set<Element>();
+    if (!added.length) return reached;
+    if (impliedRoot) {
+      for (const rule of added) {
+        const key = rightmostKey(rule.selector);
+        if (
+          key.kind === 'root' ||
+          key.kind === 'any' ||
+          (key.kind === 'tag' && key.name === 'html')
+        ) {
+          return null;
+        }
+      }
+    }
+    const declarations = new Set(added.map((rule) => rule.declarations));
+    const turned = new RuleIndex();
+    for (const index of [this._index, ...Object.values(this._pseudo)]) {
+      for (const indexed of index.all()) {
+        if (declarations.has(indexed.rule.declarations)) turned.adopt(indexed);
+      }
+    }
+    if (turned.size < added.length) return null;
+    const stack: unknown[] = [...(root.children ?? [])];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!isElement(node as never)) continue;
+      const el = node as Element;
+      if (turned.reaches(el)) {
+        const matched: number[] = [];
+        this._matchInto(turned, el, null, matched, undefined, false, true);
+        if (matched.length) reached.add(el);
+      }
+      for (const child of el.children) stack.push(child);
       const shadow = this._scoped ? shadowRootOf(el) : null;
       if (shadow) for (const child of shadow.children) stack.push(child);
     }
