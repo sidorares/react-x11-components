@@ -11,6 +11,7 @@ import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
+import { TransportProxy } from './transport-relay.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -138,6 +139,10 @@ const fetchThrough = (
 const log = (level: string, text: string): void =>
   tell({ kind: 'log', level, text });
 
+/** The worker's WebTransport sessions, opened by the page process over the
+ *  page's own seam (`transport-relay.ts`). */
+const transports = new TransportProxy((m) => tell(m));
+
 const seams: HostSeams = {
   handle: NO_VIEW,
   viewport: () => ({
@@ -157,6 +162,7 @@ const seams: HostSeams = {
   log,
   title() {},
   fetch: fetchThrough,
+  webTransport: transports,
   userAgent,
   language,
 };
@@ -229,6 +235,8 @@ port.on('message', (m: ToWorker) => {
     const body = bodies.get(m.id);
     bodies.delete(m.id);
     body?.end(m.error);
+  } else if (m.kind === 'wt') {
+    transports.heard(m);
   }
 });
 
