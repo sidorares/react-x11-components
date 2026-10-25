@@ -26,9 +26,9 @@
 // a layer is asked for, it answers with nothing while the chunk arrives, and
 // asks for a frame once it has.
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { useApp, useTheme } from 'react-x11';
+import { useApp, useScreens, useTheme } from 'react-x11';
 
-import { DEFAULT_CAMERA, MapController } from './controller.js';
+import { DEFAULT_CAMERA, MapController, fastestRefresh } from './controller.js';
 import type { MapPointerInput } from './controller.js';
 import { glRendererModule, loadGlRenderer } from './renderer.js';
 import type { MapHandle, MapProps } from './types.js';
@@ -138,6 +138,13 @@ export class GlMapLayer {
   setTheme(theme: unknown): void {
     this._theme = theme;
     this._texture?.setTheme(theme);
+  }
+
+  /** The display's refresh rate, which a wheel's glide steps at — as
+   *  `<Map>` hands its controller the fastest screen's (`useGlMapLayer`
+   *  does). Null leaves it at a 60Hz frame. */
+  setFrameRate(hz: number | null): void {
+    this._controller.setFrameRate(hz);
   }
 
   /** A commit landed: a frame for what it changed that the map shows. */
@@ -288,6 +295,7 @@ export function useGlMapLayer(props: GlMapLayerProps): GlMapLayer {
   const [layer] = useState(() => new GlMapLayer(props, { app, theme }));
   layer.setProps(props);
   layer.setTheme(theme);
+  layer.setFrameRate(fastestRefresh(useScreens().screens));
   useEffect(() => layer.committed());
   // A layout effect, so the GL half goes in the commit that takes the
   // component away — as `<Map>`'s own GL pane lets go of its buffers.

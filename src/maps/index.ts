@@ -25,7 +25,7 @@ import { createStyles, flattenStyle } from 'react-x11/style';
 // addition. Type-only, so it is erased.
 import type {} from 'react-x11/jsx-runtime';
 
-import { DEFAULT_CAMERA, MapController } from './controller.js';
+import { DEFAULT_CAMERA, MapController, fastestRefresh } from './controller.js';
 import { ELEMENT, MapViewNode, SELF_DAMAGED_PROPS } from './node.js';
 import {
   chooseRenderer,
@@ -191,18 +191,6 @@ interface PaneProps {
   map: MapProps;
   controller: MapController;
   onFailure: (error: Error) => void;
-}
-
-/** The highest refresh rate any screen reports, or null where none does. */
-function fastestRefresh(
-  screens: readonly { readonly refreshRate: number | null }[],
-): number | null {
-  let hz: number | null = null;
-  for (const screen of screens) {
-    const rate = screen.refreshRate;
-    if (rate !== null && (hz === null || rate > hz)) hz = rate;
-  }
-  return hz;
 }
 
 /**
