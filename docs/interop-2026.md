@@ -87,12 +87,26 @@ jobs.
 | 8     | scroll and view timelines over Web Animations' model, anchor scroll and grammars, user scroll snapping, `:playing`      | 64.2%     |
 | 9     | the view transition's pseudo-element tree, `CSSAnimation`s, media loading, service workers, style ranges, fullscreen    | 74.5%     |
 | 10    | `getHTML()`, registries fixed where an element is made, the runner's `act()` one at a time                              | 75.2%     |
-| 11    | CSS transitions and animations: their objects, their events, and what a page does to them                               | **75.5%** |
+| 11    | CSS transitions and animations: their objects, their events, and what a page does to them                               | 75.5%     |
+| 12    | anchor positioning (#1013–#1018), WebTransport and streams (#1019–#1021), and the interop round (#971–#994), on a Mac   | **83.7%** |
+
+The twelfth run was made on macOS, where the runs before it were made on
+Linux, and two areas read lower for the machine rather than the engine.
+**fetch** reads 82.6% (it was 73.9% on the same Mac before #1019): the four
+`request-upload.h2.*` tests are answered by WPT's HTTP/2 server with frames
+the page's HTTP/1.1 client cannot read ("Response does not match the
+HTTP/1.1 protocol"), which on Linux they were not. **dialogs-and-popovers**
+reads 83.6%: `dialog-closedby.html` and `dialog-closedby-corner-cases.html`
+drive Escape and outside clicks through `test_driver` and take some nine of
+their ten seconds when they pass, so under five jobs they time out. Run
+alone, they passed every time on commits before #988 and both passed and
+timed out on it and after, in the same nine seconds when they passed; why
+is not settled. Every other area is the same as or higher than its last
+figure below.
 
 By focus area, from the first run to the eleventh. Four areas have been
 measured again since, each by the PR that moved it, and their "now" is that
-PR's run, which the last column names; the total above is the eleventh
-run's.
+PR's run, which the last column names.
 
 | focus area                       | tests | first | now   | what moved it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | -------------------------------- | ----- | ----- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
