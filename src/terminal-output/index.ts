@@ -68,8 +68,15 @@ registerRichText();
  * next. Blocks start at multiples of this in the capture's own numbering,
  * `truncated` counted in, so `maxLines` dropping lines off the top changes
  * only the first block.
+ *
+ * 64 rather than 256: a live tail lays out the block it lands in whole, on
+ * average half a block, and CoreText sets a line in some 60 µs — so at 256
+ * an append of forty lines on macOS was 14 ms a frame, and is 9. A frame
+ * that repaints part of a block draws all of it, so a scroll got cheaper
+ * too; the more blocks there are cost a mount some 4 % (`<Code>`'s
+ * `CODE_BLOCK_LINES`, which made the same move).
  */
-const BLOCK_LINES = 256;
+const BLOCK_LINES = 64;
 
 /** One block's lines, and the elements they were drawn as. */
 interface Block {

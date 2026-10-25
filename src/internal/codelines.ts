@@ -18,8 +18,15 @@ import type { RichTextProps, TextRun } from '../richtext/index.js';
 
 const h = React.createElement;
 
-/** Lines a block of code holds. */
-export const CODE_BLOCK_LINES = 256;
+/**
+ * Lines a block of code holds. A change at the end lays out the last block
+ * whole, so a stream pays for half a block a token on average: at 256, a
+ * line streamed into 3,000 was 8.5 ms a frame on macOS, where CoreText sets
+ * a line in some 60 µs, and it is 6.5 at 64. A frame that repaints part of
+ * a block draws all of it, so a scroll's frames went from 4 ms to 3, and a
+ * resize's 95th percentile from 8 ms to 5; a mount is the same.
+ */
+export const CODE_BLOCK_LINES = 64;
 
 /**
  * Runs split into blocks of `lines` whole lines: the text cut at every

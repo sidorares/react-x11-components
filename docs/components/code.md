@@ -46,12 +46,15 @@ with no numbers pasted down the left margin.
 
 ## A long source is drawn in blocks
 
-The source is a column of blocks of 256 lines, each a `<richtext>` of its
+The source is a column of blocks of 64 lines, each a `<richtext>` of its
 own and kept while its text and styles are what they were. So a change lays
 out, and repaints, the blocks it touches rather than the whole source. One
 element for all of it was laid out and repainted whole for every line a
 stream appended, 0.4 s an append at 5,000 lines, where it is about 0.1 s
-now; most of what is left is tokenizing the source again. The gutter is
+now; most of what is left is tokenizing the source again. The blocks were
+256 lines once, and a line streamed onto the end of a long source laid out
+half a block on average: on macOS, where CoreText sets a line in some
+60 µs, that was 8.5 ms a frame, and it is 6.5 at 64. The gutter is
 blocked the same way, beside the code. A selection runs across the blocks
 and copies as one text.
 

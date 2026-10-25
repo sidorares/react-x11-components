@@ -12,12 +12,16 @@
 //               scroll  wheeled down through them
 //   COMP code     <Code>, 3,000 lines of TypeScript with line numbers
 //        ACTION mount, scroll  as for formula
+//               stream  its lines handed over one every 30 ms, from one
 //   COMP mermaid  <Mermaid>, compiled by ondine (an optional peer)
 //        ACTION mount   30 diagrams of five kinds in a scroll pane
 //               scroll  wheeled down through them
 //               stream  a 120-node flowchart appended a line every 30 ms,
 //                       `partial` while it comes, as a model writes one
 //        BIG=1  that flowchart, whole, in place of the 30 diagrams
+//   COMP termout  <TerminalOutput>, a coloured build log
+//        ACTION mount, scroll  5,000 lines, line numbers on
+//               stream  forty lines appended every 50 ms from 1,000
 //   ACTION resize  any of them: the window narrowed 8 px a frame for 40
 //                  frames and widened back, each step's frame waited for —
 //                  `lat` is from the render to that frame's end. Mermaid's
@@ -146,10 +150,25 @@ if (COMP === 'term') {
       ``,
     );
   }
+  // `stream`: those lines handed over one every 30 ms, as a model writes a
+  // fence, from the first
+  const Stream = () => {
+    const [count, setCount] = React.useState(
+      ACTION === 'stream' ? 1 : lines.length,
+    );
+    React.useEffect(() => {
+      (globalThis as any).__codeStream = () => setCount((c) => c + 1);
+    }, []);
+    return h(Code, {
+      source: lines.slice(0, count).join('\n'),
+      lang: 'ts',
+      lineNumbers: true,
+    });
+  };
   scene = h(
     'box',
     { style: { flexGrow: 1, overflow: 'scroll', padding: 12 } },
-    h(Code, { source: lines.join('\n'), lang: 'ts', lineNumbers: true }),
+    h(Stream),
   );
 } else if (COMP === 'mermaid') {
   const { Mermaid } = await import(`${ROOT}/src/mermaid/index.js`);
@@ -253,6 +272,34 @@ if (COMP === 'term') {
       ),
     );
   }
+} else if (COMP === 'termout') {
+  const { TerminalOutput } = await import(
+    `${ROOT}/src/terminal-output/index.js`
+  );
+  // a CI job's log: 5,000 lines, or for `stream` its tail growing forty
+  // lines every 50 ms from 1,000 — chunks pushed into an array, the
+  // incremental path the docs page recommends for a live tail
+  const chunk = (from: number) => {
+    let s = '';
+    for (let i = from; i < from + 40; i++) s += termLine(i);
+    return s;
+  };
+  const start = ACTION === 'stream' ? 25 : 125;
+  const Log = () => {
+    const [chunks, setChunks] = React.useState(() =>
+      Array.from({ length: start }, (_, i) => chunk(i * 40)),
+    );
+    React.useEffect(() => {
+      (globalThis as any).__logStream = () =>
+        setChunks((prev) => [...prev, chunk(prev.length * 40)]);
+    }, []);
+    return h(TerminalOutput, { data: chunks, lineNumbers: true });
+  };
+  scene = h(
+    'box',
+    { style: { flexGrow: 1, overflow: 'scroll', padding: 12 } },
+    h(Log),
+  );
 } else {
   console.log('RESULT ' + JSON.stringify({ failed: `no COMP ${COMP}` }));
   process.exit(0);
@@ -456,6 +503,20 @@ if (COMP === 'term' && ACTION === 'flood') {
     narrowest = Math.min(narrowest, windowNode.abs.width / s);
     steps++;
   }
+} else if (COMP === 'code' && ACTION === 'stream') {
+  const next = (globalThis as any).__codeStream;
+  if (!next) {
+    console.log('RESULT ' + JSON.stringify({ failed: 'no stream' }));
+    process.exit(0);
+  }
+  await every(30, () => next());
+} else if (COMP === 'termout' && ACTION === 'stream') {
+  const next = (globalThis as any).__logStream;
+  if (!next) {
+    console.log('RESULT ' + JSON.stringify({ failed: 'no stream' }));
+    process.exit(0);
+  }
+  await every(50, () => next());
 } else if (COMP === 'mermaid' && ACTION === 'stream') {
   const next = (globalThis as any).__mermaidStream;
   if (!next) {
