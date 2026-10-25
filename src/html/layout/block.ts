@@ -27,20 +27,25 @@ import {
   anchorMathValue,
   areaAlignment,
   areaLines,
+  areaTracks,
   isAnchorMath,
   mapAnchorCalls,
-  physicalCols,
+  startOf,
 } from '../css/anchor.js';
 import type {
   AnchorInset,
   AnchorSide,
+  AnchorSizeKind,
+  AnchorSizeRef,
   InsetSide,
   PositionArea,
   TryTactic,
+  WritingAxes,
 } from '../css/anchor.js';
 import type {
   BorderStyle,
   ComputedStyle,
+  WritingMode,
   ContentSize,
   GridLine,
   SizeOf,
@@ -158,7 +163,20 @@ import type { TextRun } from '../../richtext/index.js';
 import { forgetMaxContent, layoutFlex } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
-import { FRAMES, framed, reflectFrame, reflects, turnsUp } from './writing.js';
+import {
+  FRAMES,
+  FRAME_ROOTS,
+  framed,
+  frameOf,
+  frameRectOf,
+  frameSideOf,
+  pageRectOf,
+  pageSideOf,
+  reflectFrame,
+  reflects,
+  turnsUp,
+} from './writing.js';
+import type { PhysicalSide } from './writing.js';
 import {
   clipsFor,
   computePaintBounds,
@@ -5348,6 +5366,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
   const options = style.positionTryFallbacks ?? [];
   const root = ctx.anchorRoot ?? null;
+  const axes = anchorAxesOf(box, containing);
   // what scrolls its default anchor and not it, and how far it has now
   const anchor = anchorBoxFor(box, style.positionAnchor, ctx);
   const context =
@@ -5369,18 +5388,21 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const place = (index: number): Placement | null => {
     const option = index < 0 ? null : options[index];
     let tried = style;
-    if (option) {
-      if (option.name !== null) {
-        const named = style.positionTryStyles?.[index];
-        // an option naming no rule there is is none
-        if (!named) return null;
-        tried = named;
-      }
-      tried = triedWith(tried, option.tactics, option.area);
+    if (option?.name != null) {
+      const named = style.positionTryStyles?.[index];
+      // an option naming no rule there is is none
+      if (!named) return null;
+      tried = named;
     }
+    tried = triedWith(
+      tried,
+      option?.tactics ?? NO_TACTICS,
+      option?.area ?? null,
+      axes,
+    );
     ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
-      const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx);
+      const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       box.style = resolved;
       return positionedIn(box, containing, ctx, anchoring);
     } finally {
@@ -5475,11 +5497,20 @@ function anchoredStyle(
   style: ComputedStyle,
   cb: CbRect,
   ctx: LayoutContext,
+  axes: AnchorAxes,
 ): { resolved: ComputedStyle; anchoring: Anchoring | null } {
   let resolved = style;
   const own = (): ComputedStyle =>
     resolved === style ? (resolved = { ...style }) : resolved;
-  const rtl = style.direction === 'rtl';
+  // which end of each of its axes the logical sides start at
+  const startLow = [
+    startsLow(axes, false, axes.cb),
+    startsLow(axes, true, axes.cb),
+  ];
+  const selfLow = [
+    startsLow(axes, false, axes.own),
+    startsLow(axes, true, axes.own),
+  ];
   const anchor = anchorFor(box, style.positionAnchor, ctx);
   const defaultAnchor = anchorBoxFor(box, style.positionAnchor, ctx);
   // the edges a scroll of the default anchor moves with it
@@ -5490,10 +5521,10 @@ function anchoredStyle(
   let area: CbRect | null = null;
   let alongX: number | null = null;
   let alongY: number | null = null;
+  // its tracks those of its layout (`triedWith`)
   const positionArea = style.positionArea;
   if (positionArea && anchor) {
-    const cols = physicalCols(positionArea, rtl);
-    const rows = positionArea.rows;
+    const { cols, rows } = positionArea;
     const xs = areaLines(cb.x, cb.width, anchor.x, anchor.width);
     const ys = areaLines(cb.y, cb.height, anchor.y, anchor.height);
     area = {
@@ -5535,7 +5566,8 @@ function anchoredStyle(
           across ? of.width : of.height,
           across ? against.x : against.y,
           across ? against.width : against.height,
-          rtl,
+          startLow[across ? 0 : 1],
+          selfLow[across ? 0 : 1],
         );
       });
       if (isAnchorMath(inset)) {
@@ -5551,7 +5583,8 @@ function anchoredStyle(
       if (!size) continue;
       const values = anchorCalls(size).map((ref) => {
         const of = anchorFor(box, ref.name ?? style.positionAnchor, ctx);
-        return of ? (ref.size === 'width' ? of.width : of.height) : null;
+        if (!of) return null;
+        return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
       });
       if (isAnchorMath(size)) {
         // a length like any other, which `box-sizing` says the box of
@@ -5635,8 +5668,122 @@ function anchorFor(
   const shift = ctx.anchorShift;
   const back =
     shift && sameScrollContext(anchor, shift.anchor) ? shift : NO_SHIFT;
-  return { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+  const at = { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+  return framed.any ? inFrameOf(at, anchor, box) : at;
 }
+
+/**
+ * A rectangle laid out where `from` is, in the axes `box` is laid out in:
+ * the page's, through the turn of the frame of a vertical writing mode
+ * `from` is in, and into the frame `box` is in (`layout/writing.ts`). Two
+ * boxes in one frame are in its axes both.
+ */
+function inFrameOf(rect: CbRect, from: Box, box: Box): CbRect {
+  const theirs = frameOf(from);
+  const ours = frameOf(box);
+  if (theirs === ours) return rect;
+  const page = theirs
+    ? pageRectOf(theirs, rect, FRAME_ROOTS.get(theirs)!.style.writingMode)
+    : rect;
+  return ours
+    ? frameRectOf(ours, page, FRAME_ROOTS.get(ours)!.style.writingMode)
+    : page;
+}
+
+/**
+ * The axes an anchored box is laid out in, as the page has them: the frame
+ * of a vertical writing mode it is in, turned (`layout/writing.ts`), or the
+ * page's own; and the writing modes the logical keywords it is placed by
+ * read — its containing block's (CSS Anchor Positioning 1, 3.2), and its
+ * own for the `self-` ones.
+ */
+interface AnchorAxes {
+  frame: Box | null;
+  /** The frame's writing mode, which says which way it is turned. */
+  mode: WritingMode;
+  cb: WritingAxes;
+  own: WritingAxes;
+}
+
+function anchorAxesOf(box: Box, containing: Box): AnchorAxes {
+  const frame = framed.any ? frameOf(box) : null;
+  return {
+    frame,
+    mode: frame ? FRAME_ROOTS.get(frame)!.style.writingMode : 'horizontal-tb',
+    cb: {
+      mode: containing.style.writingMode,
+      rtl: containing.style.direction === 'rtl',
+    },
+    own: {
+      mode: box.style.writingMode,
+      rtl: box.style.direction === 'rtl',
+    },
+  };
+}
+
+/** The side of a box's layout a side of the page is. */
+function laidSide(axes: AnchorAxes, side: PhysicalSide): PhysicalSide {
+  return axes.frame ? frameSideOf(side, axes.mode) : side;
+}
+
+/** The page's axis one of a box's layout's is — down where `down`. */
+function pageAxisOf(axes: AnchorAxes, down: boolean): 'x' | 'y' {
+  return down !== !!axes.frame ? 'y' : 'x';
+}
+
+/** Whether a writing mode starts an axis of a box's layout — down where
+ *  `down` — at its top or its left, which its logical keywords read from. */
+function startsLow(
+  axes: AnchorAxes,
+  down: boolean,
+  writing: WritingAxes,
+): boolean {
+  const pageAxis = pageAxisOf(axes, down);
+  const side = laidSide(axes, startOf(pageAxis, writing.mode, writing.rtl));
+  return side === 'top' || side === 'left';
+}
+
+/** Whether a writing mode's block axis is down a box's layout. */
+function blockDown(axes: AnchorAxes, writing: WritingAxes): boolean {
+  const pageBlock = writing.mode === 'horizontal-tb' ? 'y' : 'x';
+  return pageAxisOf(axes, true) === pageBlock;
+}
+
+/** The size of a box's layout an `anchor-size()` reads: a physical one as
+ *  it is, the frame having turned it (`framedStyle`), and a logical one
+ *  along the axis its writing mode has it on. */
+function laidDimension(
+  axes: AnchorAxes,
+  size: AnchorSizeKind,
+): 'width' | 'height' {
+  if (size === 'width' || size === 'height') return size;
+  const writing = size.startsWith('self-') ? axes.own : axes.cb;
+  const block = blockDown(axes, writing);
+  const down = size.endsWith('block') ? block : !block;
+  return down ? 'height' : 'width';
+}
+
+/** A `position-area` as the tracks of a box's layout (`areaTracks`), the
+ *  frame's of a vertical writing mode turned from the page's. */
+function laidArea(area: PositionArea, axes: AnchorAxes): PositionArea {
+  const { cols, rows } = areaTracks(area, axes.cb, axes.own);
+  if (!axes.frame) return { cols, rows, logicalCols: false, text: area.text };
+  // each of the frame's axes is one of the page's, from the side the
+  // frame's start of it is drawn at
+  const from = (side: PhysicalSide): [number, number] => {
+    const page = pageSideOf(side, axes.mode);
+    const t = page === 'left' || page === 'right' ? cols : rows;
+    return page === 'left' || page === 'top' ? t : [2 - t[1], 2 - t[0]];
+  };
+  return {
+    cols: from('left'),
+    rows: from('top'),
+    logicalCols: false,
+    text: area.text,
+  };
+}
+
+const NO_TACTICS: readonly TryTactic[] = [];
 
 const NO_SHIFT = { x: 0, y: 0 };
 
@@ -5815,13 +5962,31 @@ function triedWith(
   style: ComputedStyle,
   tactics: readonly TryTactic[],
   area: PositionArea | null,
+  axes: AnchorAxes,
 ): ComputedStyle {
-  if (!tactics.length && !area) return style;
+  const placed = area ?? style.positionArea;
+  if (!tactics.length && !placed) return style;
   const out: ComputedStyle = { ...style };
-  if (area) out.positionArea = area;
+  // the area as the tracks of the box's layout, which a tactic flips
+  if (placed) out.positionArea = laidArea(placed, axes);
+  // the axes of the containing block's writing mode, and the page's, as
+  // the box's layout has them (4.1)
+  const block = blockDown(axes, axes.cb);
+  const x = pageAxisOf(axes, true) === 'x';
   for (const tactic of tactics) {
-    if (tactic === 'flip-start') flipStart(out);
-    else flipAxis(out, tactic === 'flip-block' || tactic === 'flip-y');
+    if (tactic === 'flip-start') flipStart(out, axes);
+    else {
+      flipAxis(
+        out,
+        tactic === 'flip-block'
+          ? block
+          : tactic === 'flip-inline'
+            ? !block
+            : tactic === 'flip-x'
+              ? x
+              : !x,
+      );
+    }
   }
   return out;
 }
@@ -5884,23 +6049,41 @@ function flipAxis(style: ComputedStyle, down: boolean): void {
   }
 }
 
-function flipStart(style: ComputedStyle): void {
-  [style.top, style.left] = [style.left, style.top];
-  [style.bottom, style.right] = [style.right, style.bottom];
-  [style.marginTop, style.marginLeft] = [style.marginLeft, style.marginTop];
-  [style.marginBottom, style.marginRight] = [
-    style.marginRight,
-    style.marginBottom,
-  ];
+/**
+ * `flip-start` (CSS Anchor Positioning 1, 4.1): the box mirrored about the
+ * diagonal from the start corner of its containing block's writing mode —
+ * each side swapped with the side the diagonal takes it to, in the axes the
+ * box is laid out in, and its sizes, its `anchor-size()`s' axes, its
+ * area's tracks and its self-alignment with them.
+ */
+function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
+  // the start sides of the two axes, which the diagonal swaps, and their
+  // ends with them
+  const blockStart = startSide(axes, blockDown(axes, axes.cb));
+  const inlineStart = startSide(axes, !blockDown(axes, axes.cb));
+  const swap: Record<PhysicalSide, PhysicalSide> = {
+    [blockStart]: inlineStart,
+    [inlineStart]: blockStart,
+    [OPPOSITE[blockStart]]: OPPOSITE[inlineStart],
+    [OPPOSITE[inlineStart]]: OPPOSITE[blockStart],
+  } as Record<PhysicalSide, PhysicalSide>;
+  const from = { ...style };
+  for (const side of SIDES) {
+    const to = swap[side];
+    style[to] = from[side];
+    style[MARGIN_OF[to]] = from[MARGIN_OF[side]];
+  }
   [style.width, style.height] = [style.height, style.width];
   [style.minWidth, style.minHeight] = [style.minHeight, style.minWidth];
   [style.maxWidth, style.maxHeight] = [style.maxHeight, style.maxWidth];
-  const swap: Record<string, AnchorSide> = {
-    top: 'left',
-    left: 'top',
-    bottom: 'right',
-    right: 'bottom',
-  };
+  [style.justifySelf, style.alignSelf] = [
+    alignSelfAs(style.alignSelf),
+    justifySelfAs(style.justifySelf),
+  ];
+  [style.justifyAnchorCenter, style.alignAnchorCenter] = [
+    style.alignAnchorCenter,
+    style.justifyAnchorCenter,
+  ];
   const insets = style.anchorInsets;
   if (insets) {
     const out: Partial<Record<InsetSide, AnchorInset>> = {};
@@ -5908,10 +6091,9 @@ function flipStart(style: ComputedStyle): void {
       InsetSide,
       AnchorInset,
     ][]) {
-      const to = swap[side] as InsetSide;
-      out[to] = mapAnchorCalls(inset, (ref) =>
-        typeof ref.side === 'string' && swap[ref.side]
-          ? { ...ref, side: swap[ref.side] }
+      out[swap[side]] = mapAnchorCalls(inset, (ref) =>
+        typeof ref.side === 'string' && ref.side in swap
+          ? { ...ref, side: swap[ref.side as PhysicalSide] }
           : ref,
       );
     }
@@ -5919,19 +6101,79 @@ function flipStart(style: ComputedStyle): void {
   }
   const sizes = style.anchorSizes;
   if (sizes) {
+    const across = (ref: AnchorSizeRef): AnchorSizeRef => ({
+      ...ref,
+      size: OTHER_SIZE[ref.size],
+    });
     style.anchorSizes = {
-      ...(sizes.width ? { height: sizes.width } : null),
-      ...(sizes.height ? { width: sizes.height } : null),
+      ...(sizes.width ? { height: mapAnchorCalls(sizes.width, across) } : null),
+      ...(sizes.height
+        ? { width: mapAnchorCalls(sizes.height, across) }
+        : null),
     };
   }
   const area = style.positionArea;
   if (area) {
+    // a track's index runs from the top or the left: the tracks down go
+    // across from the side the top goes to, and the other way round
+    const moved = (
+      tracks: readonly [number, number],
+      side: PhysicalSide,
+    ): [number, number] =>
+      side === 'top' || side === 'left'
+        ? [tracks[0], tracks[1]]
+        : [2 - tracks[1], 2 - tracks[0]];
     style.positionArea = {
-      cols: area.rows,
-      rows: area.cols,
+      cols: moved(area.rows, swap.top),
+      rows: moved(area.cols, swap.left),
       logicalCols: false,
     };
   }
+}
+
+/** The side of a box's layout a writing mode starts one of its axes at. */
+function startSide(axes: AnchorAxes, down: boolean): PhysicalSide {
+  const low = startsLow(axes, down, axes.cb);
+  return down ? (low ? 'top' : 'bottom') : low ? 'left' : 'right';
+}
+
+const SIDES: readonly PhysicalSide[] = ['top', 'right', 'bottom', 'left'];
+
+const OPPOSITE: Record<PhysicalSide, PhysicalSide> = {
+  top: 'bottom',
+  bottom: 'top',
+  left: 'right',
+  right: 'left',
+};
+
+const MARGIN_OF = {
+  top: 'marginTop',
+  right: 'marginRight',
+  bottom: 'marginBottom',
+  left: 'marginLeft',
+} as const;
+
+const OTHER_SIZE: Record<AnchorSizeKind, AnchorSizeKind> = {
+  width: 'height',
+  height: 'width',
+  inline: 'block',
+  block: 'inline',
+  'self-inline': 'self-block',
+  'self-block': 'self-inline',
+};
+
+/** An `align-self` as a `justify-self` (`flip-start`): the two take the
+ *  same positions, and `baseline` only down. */
+function alignSelfAs(
+  value: ComputedStyle['alignSelf'],
+): ComputedStyle['justifySelf'] {
+  return value === 'baseline' ? 'normal' : value;
+}
+
+function justifySelfAs(
+  value: ComputedStyle['justifySelf'],
+): ComputedStyle['alignSelf'] {
+  return value;
 }
 
 /**
@@ -6617,9 +6859,22 @@ function paddingRectOf(
   containing: Box,
   viewportWidth: number,
   viewportHeight: number,
+  /** Whether the tree may hold a frame, which a layout knows already. */
+  turned = framed.any,
 ): CbRect {
   if (!containing.parent) {
     return { x: 0, y: 0, width: viewportWidth, height: viewportHeight };
+  }
+  // a frame's, which its turn makes the containing block of what it
+  // holds, is its root's padding box as the frame lays it out: the frame
+  // itself is only as tall as what is in it, which the page has as wide
+  const root = turned ? FRAME_ROOTS.get(containing) : undefined;
+  if (root) {
+    return frameRectOf(
+      containing,
+      paddingRectOf(root, viewportWidth, viewportHeight, false),
+      root.style.writingMode,
+    );
   }
   return {
     x: containing.x + containing.borderLeft,
@@ -7582,7 +7837,7 @@ export function resolvedInsets(
   }
   const containing = containingBlockFor(box);
   if (!containing || containing.kind === 'inline') return null;
-  const cb = paddingRectOf(containing, viewportWidth, viewportHeight);
+  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
   // where layout placed them, before a scroll moved either: a scroll
   // moves a box back by its offset, which is added back
   const [bx, by] = scrolledBy(box);

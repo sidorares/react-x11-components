@@ -4135,6 +4135,30 @@ anchor is still one of `FIXED_BOXES`, which the pane's blit would hold in
 place: it is told where the box was drawn and where it is drawn now
 (`_anchoredRects`).
 
+**An anchored box in a vertical writing mode is placed in its frame's
+axes, and what it is placed by is read in the page's** (CSS Anchor
+Positioning 1, 3.1–4.1). `framedStyle` turns what a box's anchor functions
+name physically — an `anchor()` inset's side and the anchor's side it
+reads, an `anchor-size()`'s axis, and the `@position-try` rules' styles —
+as it turns the box's own sides (`turnAnchoring`); what is logical stays
+so, and the layout reads it against the containing block's writing mode,
+or the box's own for `self-`, through `AnchorAxes` (`startsLow`,
+`blockDown`, `laidDimension`, `laidArea`): `start` across a `vertical-lr`
+flow is the frame's bottom, since the frame is laid out as `vertical-rl`'s
+is. Three things are load-bearing. **An anchor's rectangle reaches the box
+through `inFrameOf`**, which turns it out of the anchor's frame and into
+the box's: a rectangle read off a box in another frame is in other axes.
+**A `position-area` is made the layout's tracks before the tactics run**
+(`triedWith`, `areaTracks`), and a tactic flips the layout's axes, so
+`flip-block` mirrors across the page in a vertical flow and `flip-start`
+swaps about the containing block's start corner. And **a frame is the
+containing block of what it holds at its root's padding box**
+(`paddingRectOf`): the frame is only as tall as its content, which the
+page has as wide, and `left: 30px` in a `vertical-rl` box came out at its
+right. An offset read off a box in a frame is turned onto the page as well
+(`onPage`, in `_laidOutAt`). A horizontal box inside a vertical flow is no
+frame of its own yet, and is laid out turned with the flow.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

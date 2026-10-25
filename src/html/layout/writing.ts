@@ -29,6 +29,8 @@ import type { Box, LineBox, TextLayoutLike } from './boxes.js';
 import type { BoxShadow, ComputedStyle, WritingMode } from '../css/style.js';
 import { copyStyle } from '../css/style.js';
 import type { TransformFunction } from '../css/transform.js';
+import { mapAnchorCalls } from '../css/anchor.js';
+import type { AnchorInset, AnchorSizeRef, InsetSide } from '../css/anchor.js';
 import type { TextRun } from '../../richtext/index.js';
 
 /** Each orthogonal flow root's frame, by the root. */
@@ -192,8 +194,61 @@ export function framedStyle(
   if (style.textShadow) {
     out.textShadow = style.textShadow.map((s) => turned(s, up));
   }
+  turnAnchoring(style, out, mode);
   return out;
 }
+
+/**
+ * What places a box against its anchor, in the frame's axes: each
+ * `anchor()` inset at the frame's side drawn where the page's is, reading
+ * the anchor's side drawn where it reads, and each `anchor-size()` the
+ * frame's size the page's is — the logical sides and sizes as they are,
+ * which the layout reads against the writing modes there — and the
+ * `@position-try` rules' styles turned as the box's is.
+ */
+function turnAnchoring(
+  style: ComputedStyle,
+  out: ComputedStyle,
+  mode: WritingMode,
+): void {
+  const insets = style.anchorInsets;
+  if (insets) {
+    const turnedInsets: Partial<Record<InsetSide, AnchorInset>> = {};
+    for (const [side, inset] of Object.entries(insets) as [
+      InsetSide,
+      AnchorInset,
+    ][]) {
+      turnedInsets[frameSideOf(side, mode)] = mapAnchorCalls(inset, (ref) =>
+        typeof ref.side === 'string' && PHYSICAL.has(ref.side)
+          ? { ...ref, side: frameSideOf(ref.side as PhysicalSide, mode) }
+          : ref,
+      );
+    }
+    out.anchorInsets = turnedInsets;
+  }
+  const sizes = style.anchorSizes;
+  if (sizes) {
+    const across = (ref: AnchorSizeRef): AnchorSizeRef =>
+      ref.size === 'width'
+        ? { ...ref, size: 'height' }
+        : ref.size === 'height'
+          ? { ...ref, size: 'width' }
+          : ref;
+    out.anchorSizes = {
+      ...(sizes.height
+        ? { width: mapAnchorCalls(sizes.height, across) }
+        : null),
+      ...(sizes.width ? { height: mapAnchorCalls(sizes.width, across) } : null),
+    };
+  }
+  if (style.positionTryStyles) {
+    out.positionTryStyles = style.positionTryStyles.map(
+      (tried) => tried && framedStyle(tried, mode),
+    );
+  }
+}
+
+const PHYSICAL = new Set<string>(['top', 'right', 'bottom', 'left']);
 
 /** A shadow's offset in the frame's axes: the one the turn takes to the
  *  offset written. */
@@ -401,6 +456,100 @@ export function frameOf(box: Box): Box | null {
     if (FRAME_ROOTS.has(at)) return at;
   }
   return null;
+}
+
+export type PhysicalSide = 'top' | 'right' | 'bottom' | 'left';
+
+const LOWER: readonly PhysicalSide[] = ['top', 'right', 'bottom', 'left'];
+
+/** The side of a frame of `mode` that a side of the page is laid out at:
+ *  the page's right is the frame's top, in the modes turned clockwise. */
+export function frameSideOf(
+  side: PhysicalSide,
+  mode: WritingMode,
+): PhysicalSide {
+  const sides = turnsUp(mode) ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES;
+  return LOWER[sides.indexOf(capital(side))];
+}
+
+/** The side of the page a side of a frame of `mode` is drawn at. */
+export function pageSideOf(
+  side: PhysicalSide,
+  mode: WritingMode,
+): PhysicalSide {
+  const sides = turnsUp(mode) ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES;
+  return sides[LOWER.indexOf(side)].toLowerCase() as PhysicalSide;
+}
+
+function capital(side: PhysicalSide): Side {
+  return (side[0].toUpperCase() + side.slice(1)) as Side;
+}
+
+export interface FrameRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A rectangle laid out in a frame of `mode` as the page has it, through
+ *  the turn about the frame's corner (`makeFrame`). */
+export function pageRectOf(
+  frame: Box,
+  rect: FrameRect,
+  mode: WritingMode,
+): FrameRect {
+  const ox = frame.x;
+  const oy = frame.y;
+  // across the frame is down the page; down the frame is across it, to the
+  // left where the frame is turned clockwise
+  return turnsUp(mode)
+    ? {
+        x: ox + (rect.y - oy),
+        y: oy - (rect.x + rect.width - ox),
+        width: rect.height,
+        height: rect.width,
+      }
+    : {
+        x: ox - (rect.y + rect.height - oy),
+        y: oy + (rect.x - ox),
+        width: rect.height,
+        height: rect.width,
+      };
+}
+
+/** A rectangle laid out where `box` is as the page has it: through the
+ *  turn of each frame around the box, the nearest first. */
+export function onPage(box: Box, rect: FrameRect): FrameRect {
+  let out = rect;
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    out = pageRectOf(frame, out, FRAME_ROOTS.get(frame)!.style.writingMode);
+  }
+  return out;
+}
+
+/** A rectangle of the page as a frame of `mode` lays it out: the turn
+ *  `pageRectOf` draws the frame through, undone. */
+export function frameRectOf(
+  frame: Box,
+  rect: FrameRect,
+  mode: WritingMode,
+): FrameRect {
+  const ox = frame.x;
+  const oy = frame.y;
+  return turnsUp(mode)
+    ? {
+        x: ox + (oy - (rect.y + rect.height)),
+        y: oy + (rect.x - ox),
+        width: rect.height,
+        height: rect.width,
+      }
+    : {
+        x: ox + (rect.y - oy),
+        y: oy + (ox - (rect.x + rect.width)),
+        width: rect.height,
+        height: rect.width,
+      };
 }
 
 /** The four values of a framed box's sides, the frame's top first, as the

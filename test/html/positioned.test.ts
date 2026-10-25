@@ -7,10 +7,11 @@ import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
 import {
+  areaTracks,
   parsePositionArea,
   parseTryFallbacks,
-  physicalCols,
 } from '../../src/html/css/anchor.js';
+import type { WritingAxes } from '../../src/html/css/anchor.js';
 import {
   anchoredHolds,
   parseContainerPrelude,
@@ -2151,25 +2152,151 @@ test('a @position-try rule is an option of its own', async () => {
   assert.deepStrictEqual([tip.x, tip.y], [100, 40]);
 });
 
+/** Where each of a document's elements is drawn, in CSS pixels, by id. */
+function drawnAt(node: Parameters<typeof view>[0]) {
+  const el = view(node);
+  return (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return [r.x, r.y, r.width, r.height];
+  };
+}
+
+test("a box anchored in a vertical writing mode is placed in the page's axes, its logical sides its containing block's", async () => {
+  // CSS Anchor Positioning 1, 3.2: an inset's physical side is the page's,
+  // `start` and `end` the containing block's writing mode's and `self-start`
+  // its own's; `anchor-size(inline)` the containing block's inline size.
+  // The boxes are laid out in the frame the vertical flow turns
+  // (`layout/writing.ts`), and placed where the page has them.
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:600px;height:400px}' +
+      '#a,#b{width:100px;height:50px}' +
+      '#a{anchor-name:--a;margin:100px 200px 0 0}' +
+      '#b{anchor-name:--b;margin:100px 0 0 200px}' +
+      '.t{position:absolute;width:10px;height:10px}' +
+      '#plain{left:30px;top:40px}' +
+      '#phys{left:anchor(--a right);top:anchor(--a bottom)}' +
+      '#logical{left:anchor(--a start);top:anchor(--a end)}' +
+      '#self{writing-mode:horizontal-tb;left:anchor(--a self-start)}' +
+      '#sized{width:anchor-size(--a inline);top:0;left:0}' +
+      '#lr{left:anchor(--b start);top:anchor(--b start)}' +
+      '</style>' +
+      '<div class="cb" style="writing-mode:vertical-rl"><div id="a"></div>' +
+      '<div class="t" id="plain"></div><div class="t" id="phys"></div>' +
+      '<div class="t" id="logical"></div><div class="t" id="self"></div>' +
+      '<div class="t" id="sized"></div></div>' +
+      '<div class="cb" style="writing-mode:vertical-lr;direction:rtl">' +
+      '<div id="b"></div><div class="t" id="lr"></div></div>',
+  );
+  const at = drawnAt(node);
+  // the anchor 200px in from the right, where `vertical-rl` starts
+  assert.deepStrictEqual(at('a'), [300, 100, 100, 50]);
+  assert.deepStrictEqual(at('plain'), [30, 40, 10, 10]);
+  assert.deepStrictEqual(at('phys'), [400, 150, 10, 10]);
+  // across the block axis starts at the right, down the inline at the top
+  assert.deepStrictEqual(at('logical'), [400, 150, 10, 10]);
+  // its own writing mode is horizontal, and starts across at the left
+  assert.deepStrictEqual(at('self').slice(0, 1), [300]);
+  // its containing block's inline axis is down the page
+  assert.deepStrictEqual(at('sized'), [0, 0, 50, 10]);
+  // `vertical-lr` starts across at the left, and a right-to-left one down
+  // at the bottom
+  assert.deepStrictEqual(at('b'), [200, 750, 100, 50]);
+  assert.deepStrictEqual(at('lr'), [200, 800, 10, 10]);
+});
+
+test("a position-area and the tactics read the containing block's writing mode, in the page's axes", async () => {
+  // 3.1.1 and 4.1: `block-start` is the right in `vertical-rl`, and
+  // `inline-end` the bottom; `flip-block` mirrors the box across, which is
+  // its block axis
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:400px;height:300px;' +
+      'writing-mode:vertical-rl}' +
+      '#a{anchor-name:--a;width:100px;height:100px;margin:100px 280px 0 0}' +
+      '#area{position:absolute;position-anchor:--a;' +
+      'position-area:block-start inline-end;width:10px;height:10px}' +
+      '#flip{position:absolute;position-anchor:--a;right:anchor(left);' +
+      'top:anchor(top);width:50px;height:10px;' +
+      'position-try-fallbacks:flip-block}' +
+      '</style>' +
+      '<div class="cb"><div id="a"></div><div id="area"></div>' +
+      '<div id="flip"></div></div>',
+  );
+  const at = drawnAt(node);
+  assert.deepStrictEqual(at('a'), [20, 100, 100, 100]);
+  // after the anchor across and down, towards it
+  assert.deepStrictEqual(at('area'), [120, 200, 10, 10]);
+  // left of the anchor it would be 30px past the containing block's edge:
+  // mirrored to its right
+  assert.deepStrictEqual(at('flip'), [120, 100, 50, 10]);
+});
+
+test("an element laid out in a vertical writing mode's frame is offset as the page has it", async () => {
+  // CSSOM View 7: the offset attributes are in the page's axes, which the
+  // frame's turn is no transform of the page's (`onPage`)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="cb" style="position:relative;writing-mode:vertical-rl;' +
+      'width:300px;height:200px"><div id="a" style="width:30px;height:40px;' +
+      'margin:5px 10px"></div></div>',
+  );
+  const el = view(node);
+  const a = el.offsetRect(findById(el.document, 'a')!)!;
+  assert.deepStrictEqual([a.x, a.y, a.width, a.height], [260, 5, 30, 40]);
+});
+
 test('position-area, position-try-fallbacks and anchored() are read', () => {
-  assert.deepStrictEqual(parsePositionArea('top'), {
-    cols: [0, 2],
-    rows: [0, 0],
-    logicalCols: false,
-    text: 'top',
-  });
-  // either order, and a logical keyword across reads right to left; its
-  // text the canonical one
-  assert.deepStrictEqual(parsePositionArea('bottom span-right'), {
-    cols: [1, 2],
+  const ltr = { mode: 'horizontal-tb', rtl: false } as const;
+  const tracks = (
+    value: string,
+    cb: WritingAxes = ltr,
+    own: WritingAxes = ltr,
+  ) => {
+    const area = parsePositionArea(value)!;
+    return [area.text, areaTracks(area, cb, own)];
+  };
+  assert.deepStrictEqual(tracks('top'), [
+    'top',
+    { cols: [0, 2], rows: [0, 0] },
+  ]);
+  // either order, its text the canonical one
+  assert.deepStrictEqual(tracks('bottom span-right'), [
+    'span-right bottom',
+    { cols: [1, 2], rows: [2, 2] },
+  ]);
+  // a logical keyword read against the containing block's writing mode,
+  // and a `self-` one against the box's own: the inline axis down the page
+  // where its lines are vertical, and the block axis from the right
+  const rtl = { mode: 'horizontal-tb', rtl: true } as const;
+  const vrl = { mode: 'vertical-rl', rtl: false } as const;
+  const vlrRtl = { mode: 'vertical-lr', rtl: true } as const;
+  assert.deepStrictEqual(tracks('block-end inline-start')[1], {
+    cols: [0, 0],
     rows: [2, 2],
-    logicalCols: false,
-    text: 'span-right bottom',
   });
-  const start = parsePositionArea('block-end inline-start')!;
-  assert.deepStrictEqual(start.rows, [2, 2]);
-  assert.deepStrictEqual(physicalCols(start, false), [0, 0]);
-  assert.deepStrictEqual(physicalCols(start, true), [2, 2]);
+  assert.deepStrictEqual(tracks('block-end inline-start', rtl)[1], {
+    cols: [2, 2],
+    rows: [2, 2],
+  });
+  assert.deepStrictEqual(tracks('block-end inline-start', vrl)[1], {
+    cols: [0, 0],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('start start', vlrRtl)[1], {
+    cols: [0, 0],
+    rows: [2, 2],
+  });
+  assert.deepStrictEqual(tracks('x-start y-start', vrl)[1], {
+    cols: [2, 2],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('self-start self-start', vrl, ltr)[1], {
+    cols: [0, 0],
+    rows: [0, 0],
+  });
+  assert.deepStrictEqual(tracks('self-x-start self-y-start', ltr, vrl)[1], {
+    cols: [2, 2],
+    rows: [0, 0],
+  });
   assert.strictEqual(parsePositionArea('none'), null);
   assert.strictEqual(parsePositionArea('top bottom'), undefined);
   assert.strictEqual(parsePositionArea('left nowhere'), undefined);

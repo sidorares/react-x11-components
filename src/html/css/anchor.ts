@@ -12,6 +12,7 @@
 
 import { AUTO, parseLength, splitCommas, splitValue } from './values.js';
 import type { Len, UnitContext } from './values.js';
+import type { WritingMode } from './style.js';
 
 /** Which edge of the anchor, or how far across it, an `anchor()` reads:
  *  a physical side, a logical one or `center`, `inside` and `outside` —
@@ -54,11 +55,17 @@ export interface AnchorRef {
   fallback: Len | null;
 }
 
+/** Which of the anchor's sizes an `anchor-size()` reads: a physical one,
+ *  or a logical one, which the layout reads against the containing block's
+ *  writing mode, or the box's own for the `self-` ones. */
+export type AnchorSizeKind =
+  'width' | 'height' | 'inline' | 'block' | 'self-inline' | 'self-block';
+
 /** An `anchor-size()` a size is: of the named anchor or the default, the
- *  anchor's width or height, and the fallback. */
+ *  anchor's size it reads, and the fallback. */
 export interface AnchorSizeRef {
   name: string | null;
-  size: 'width' | 'height';
+  size: AnchorSizeKind;
   fallback: Len | null;
 }
 
@@ -112,6 +119,15 @@ export function parseAnchor(value: string, ctx: UnitContext): AnchorRef | null {
   return { name, side, fallback };
 }
 
+const SIZE_KINDS = new Set<string>([
+  'width',
+  'height',
+  'inline',
+  'block',
+  'self-inline',
+  'self-block',
+]);
+
 /** `anchor-size( <anchor-name>? && <anchor-size>?, <length-percentage>? )`
  *  for a width or a height: the anchor's size along the property's own
  *  axis where it names none. Null for anything else. */
@@ -123,17 +139,13 @@ export function parseAnchorSize(
   const args = callOf(value, 'anchor-size');
   if (!args || args.length > 2) return null;
   let name: string | null = null;
-  let size: 'width' | 'height' | null = null;
+  let size: AnchorSizeKind | null = null;
   for (const part of args[0] ? splitValue(args[0]) : []) {
     const lower = part.toLowerCase();
     if (part.startsWith('--') && name === null) name = part;
-    else if (size === null && (lower === 'width' || lower === 'inline')) {
-      size = 'width';
-    } else if (size === null && (lower === 'height' || lower === 'block')) {
-      size = 'height';
-    } else if (size === null && lower === 'self-inline') size = 'width';
-    else if (size === null && lower === 'self-block') size = 'height';
-    else return null;
+    else if (size === null && SIZE_KINDS.has(lower)) {
+      size = lower as AnchorSizeKind;
+    } else return null;
   }
   let fallback: Len | null = null;
   if (args[1] !== undefined) {
@@ -298,7 +310,9 @@ export function anchorMathValue<R>(
  * containing block it takes, across (`cols`) and down (`rows`), each a
  * first and a last track — 0 before the anchor, 1 the anchor's, 2 after —
  * and whether the tracks across are logical, which a right-to-left box
- * reads from its right.
+ * reads from its right: what it is in a horizontal writing mode. `parts`
+ * are its keywords as written, which the layout reads against the writing
+ * modes that are there (`areaTracks`).
  */
 export interface PositionArea {
   cols: readonly [number, number];
@@ -307,12 +321,38 @@ export interface PositionArea {
   /** Its keywords in canonical order (`positionAreaText`), which is its
    *  computed value. */
   text?: string;
+  parts?: readonly AreaPart[];
+}
+
+/**
+ * One keyword of a `position-area`, by the axis it names: a physical one
+ * (`left`, `span-top`), the page's axis started where a writing mode starts
+ * it (`x-start`, `y-end`), a logical one (`block-start`), `start` and `end`
+ * with no axis — the block axis where they come first, the inline where
+ * second — or `center` and `span-all`, which are either. Its tracks run
+ * from the axis's start for the logical ones, and from the left or the top
+ * for the physical ones; `self` reads the box's own writing mode where the
+ * others read its containing block's.
+ */
+export interface AreaPart {
+  axis:
+    | 'left-right'
+    | 'top-bottom'
+    | 'x'
+    | 'y'
+    | 'block'
+    | 'inline'
+    | 'either'
+    | 'any';
+  self: boolean;
+  tracks: readonly [number, number];
 }
 
 type Track = {
   axis: 'x' | 'y' | 'any';
   tracks: [number, number];
   logical: boolean;
+  part: AreaPart;
 };
 
 /** The tracks a `position-area` keyword takes, and the axis it is of. */
@@ -327,35 +367,51 @@ function trackOf(word: string): Track | null {
           : w === 'span-end'
             ? [1, 2]
             : null;
+  const physical = (axis: 'x' | 'y', tracks: [number, number]): Track => ({
+    axis,
+    tracks,
+    logical: false,
+    part: {
+      axis: axis === 'x' ? 'left-right' : 'top-bottom',
+      self: false,
+      tracks,
+    },
+  });
   switch (word) {
     case 'left':
-      return { axis: 'x', tracks: [0, 0], logical: false };
+      return physical('x', [0, 0]);
     case 'right':
-      return { axis: 'x', tracks: [2, 2], logical: false };
+      return physical('x', [2, 2]);
     case 'span-left':
-      return { axis: 'x', tracks: [0, 1], logical: false };
+      return physical('x', [0, 1]);
     case 'span-right':
-      return { axis: 'x', tracks: [1, 2], logical: false };
+      return physical('x', [1, 2]);
     case 'top':
-      return { axis: 'y', tracks: [0, 0], logical: false };
+      return physical('y', [0, 0]);
     case 'bottom':
-      return { axis: 'y', tracks: [2, 2], logical: false };
+      return physical('y', [2, 2]);
     case 'span-top':
-      return { axis: 'y', tracks: [0, 1], logical: false };
+      return physical('y', [0, 1]);
     case 'span-bottom':
-      return { axis: 'y', tracks: [1, 2], logical: false };
+      return physical('y', [1, 2]);
     case 'center':
-      return { axis: 'any', tracks: [1, 1], logical: false };
-    case 'span-all':
-      return { axis: 'any', tracks: [0, 2], logical: false };
+    case 'span-all': {
+      const tracks: [number, number] = word === 'center' ? [1, 1] : [0, 2];
+      return {
+        axis: 'any',
+        tracks,
+        logical: false,
+        part: { axis: 'any', self: false, tracks },
+      };
+    }
   }
   // the logical ones: `block-…` and `y-…` down, `inline-…` and `x-…`
-  // across, `self-` as the box's own, which here is the containing block's
+  // across, in a horizontal writing mode, and `self-` read as the box's own
   const m =
-    /^(span-)?(?:self-)?(block|inline|x|y)-(start|end)$/.exec(word) ??
-    /^(span-)?(?:self-)?(start|end)$/.exec(word);
+    /^(span-)?(self-)?(block|inline|x|y)-(start|end)$/.exec(word) ??
+    /^(span-)?(self-)?(start|end)$/.exec(word);
   if (!m) return null;
-  const [, span, axisOrEdge, edge] = m;
+  const [, span, self, axisOrEdge, edge] = m;
   const across = axisOrEdge === 'inline' || axisOrEdge === 'x';
   const down = axisOrEdge === 'block' || axisOrEdge === 'y';
   const tracks = range(`${span ?? ''}${edge ?? axisOrEdge}`);
@@ -364,6 +420,11 @@ function trackOf(word: string): Track | null {
     axis: across ? 'x' : down ? 'y' : 'any',
     tracks,
     logical: across || (!across && !down),
+    part: {
+      axis: edge ? (axisOrEdge as 'block' | 'inline' | 'x' | 'y') : 'either',
+      self: !!self,
+      tracks,
+    },
   };
 }
 
@@ -399,10 +460,117 @@ export function parsePositionArea(
     y = a;
     x = b;
   }
-  const all: Track = { axis: 'any', tracks: [0, 2], logical: false };
+  const all: Track = {
+    axis: 'any',
+    tracks: [0, 2],
+    logical: false,
+    part: { axis: 'any', self: false, tracks: [0, 2] },
+  };
   x ??= all;
   y ??= all;
-  return { cols: x.tracks, rows: y.tracks, logicalCols: x.logical, text };
+  return {
+    cols: x.tracks,
+    rows: y.tracks,
+    logicalCols: x.logical,
+    text,
+    parts: (read as Track[]).map((t) => t.part),
+  };
+}
+
+/** A writing mode and whether its direction is right to left. */
+export interface WritingAxes {
+  mode: WritingMode;
+  rtl: boolean;
+}
+
+/**
+ * A `position-area`'s tracks on the page, across and down, for a box whose
+ * containing block is written as `cb` and which is written as `own` (CSS
+ * Anchor Positioning 1, 3.1.1): each keyword on the page axis it names
+ * there, its tracks from that axis's start; one keyword alone all of the
+ * other axis — or both axes, where it names neither.
+ */
+export function areaTracks(
+  area: PositionArea,
+  cb: WritingAxes,
+  own: WritingAxes,
+): { cols: [number, number]; rows: [number, number] } {
+  const parts = area.parts;
+  if (!parts) {
+    // one the layout made, of the tracks already
+    const [a, b] = area.cols;
+    const cols: [number, number] =
+      area.logicalCols && cb.rtl ? [2 - b, 2 - a] : [a, b];
+    return { cols, rows: [area.rows[0], area.rows[1]] };
+  }
+  const modeOf = (p: AreaPart) => (p.self ? own : cb);
+  const blockAxis = (m: WritingMode): 'x' | 'y' =>
+    m === 'horizontal-tb' ? 'y' : 'x';
+  const axisOf = (p: AreaPart): 'x' | 'y' | null => {
+    switch (p.axis) {
+      case 'left-right':
+      case 'x':
+        return 'x';
+      case 'top-bottom':
+      case 'y':
+        return 'y';
+      case 'block':
+        return blockAxis(modeOf(p).mode);
+      case 'inline':
+        return blockAxis(modeOf(p).mode) === 'x' ? 'y' : 'x';
+      default:
+        return null;
+    }
+  };
+  // a keyword's tracks on a page axis, from its left or its top
+  const onPage = (p: AreaPart, axis: 'x' | 'y'): [number, number] => {
+    const [s, e] = p.tracks;
+    if (p.axis === 'left-right' || p.axis === 'top-bottom' || p.axis === 'any')
+      return [s, e];
+    const { mode, rtl } = modeOf(p);
+    const start = startOf(axis, mode, rtl);
+    return start === 'right' || start === 'bottom' ? [2 - e, 2 - s] : [s, e];
+  };
+  const out: { x?: [number, number]; y?: [number, number] } = {};
+  const [a, b] = parts;
+  let ax = axisOf(a);
+  if (!b) {
+    if (ax) out[ax] = onPage(a, ax);
+    else {
+      out.x = onPage(a, 'x');
+      out.y = onPage(a, 'y');
+    }
+  } else {
+    let bx = axisOf(b);
+    if (!ax && !bx) {
+      // two of either axis: the block axis first
+      ax = blockAxis(modeOf(a).mode);
+      bx = ax === 'x' ? 'y' : 'x';
+    } else if (!ax) ax = bx === 'x' ? 'y' : 'x';
+    else if (!bx) bx = ax === 'x' ? 'y' : 'x';
+    out[ax] = onPage(a, ax);
+    out[bx!] = onPage(b, bx!);
+  }
+  return { cols: out.x ?? [0, 2], rows: out.y ?? [0, 2] };
+}
+
+/** The side of the page a writing mode starts a page axis at, in a
+ *  direction (CSS Writing Modes 4, 6): its block start across where its
+ *  lines are vertical — the right in `vertical-rl` and `sideways-rl` —
+ *  and its inline start down, the bottom in `sideways-lr`; the other way
+ *  round in `horizontal-tb`. */
+export function startOf(
+  axis: 'x' | 'y',
+  mode: WritingMode,
+  rtl: boolean,
+): 'top' | 'right' | 'bottom' | 'left' {
+  if (mode === 'horizontal-tb') {
+    return axis === 'y' ? 'top' : rtl ? 'right' : 'left';
+  }
+  if (axis === 'x') {
+    return mode === 'vertical-rl' || mode === 'sideways-rl' ? 'right' : 'left';
+  }
+  return (mode === 'sideways-lr') !== rtl ? 'bottom' : 'top';
 }
 
 const AREA_GROUPS: [string, readonly string[]][] = [
@@ -533,16 +701,6 @@ export function positionAreaText(value: string): string | null {
   return FIRST_AXIS.has(ga!) ? `${a} ${b}` : `${b} ${a}`;
 }
 
-/** A `position-area`'s tracks across as the physical ones, for a box
- *  whose direction is right to left where `rtl`. */
-export function physicalCols(
-  area: PositionArea,
-  rtl: boolean,
-): [number, number] {
-  const [a, b] = area.cols;
-  return area.logicalCols && rtl ? [2 - b, 2 - a] : [a, b];
-}
-
 /** How far along its free room a box is aligned in its `position-area` on
  *  an axis whose tracks are `[a, b]`, as `normal` has it (CSS Anchor
  *  Positioning 1, 3.1.4): towards the anchor — at the end of the tracks
@@ -581,7 +739,9 @@ export function areaLines(
  * for `cbSize`: the distance from the containing block's edge on the
  * inset's side to the anchor's edge the function reads. `inside` is the
  * inset's own side and `outside` the other; `start` and `end` the
- * containing block's, read right to left where `rtl` across.
+ * containing block's writing mode's, which starts the axis at its top or
+ * left where `startLow`, and `self-start` and `self-end` the box's own,
+ * where `selfStartLow`; a percentage is from the start (3.2.1).
  */
 export function anchorInset(
   inset: InsetSide,
@@ -590,13 +750,13 @@ export function anchorInset(
   anchorSize: number,
   cbStart: number,
   cbSize: number,
-  rtl: boolean,
+  startLow: boolean,
+  selfStartLow: boolean = startLow,
 ): number {
-  const across = inset === 'left' || inset === 'right';
   const atStart = inset === 'top' || inset === 'left';
   // the fraction from the anchor's top or left
   let f: number;
-  if (typeof side === 'number') f = across && rtl ? 1 - side : side;
+  if (typeof side === 'number') f = startLow ? side : 1 - side;
   else {
     switch (side) {
       case 'top':
@@ -617,11 +777,16 @@ export function anchorInset(
         f = atStart ? 1 : 0;
         break;
       case 'start':
+        f = startLow ? 0 : 1;
+        break;
+      case 'end':
+        f = startLow ? 1 : 0;
+        break;
       case 'self-start':
-        f = across && rtl ? 1 : 0;
+        f = selfStartLow ? 0 : 1;
         break;
       default:
-        f = across && rtl ? 0 : 1;
+        f = selfStartLow ? 1 : 0;
     }
   }
   const at = anchorStart + f * anchorSize;

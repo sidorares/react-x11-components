@@ -234,7 +234,7 @@ import {
   translationOf,
   VIEWPORT_STICKY,
 } from './layout/block.js';
-import { frameModeOf, pageSides } from './layout/writing.js';
+import { frameModeOf, onPage, pageSides } from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -5732,8 +5732,14 @@ export class HtmlViewNode extends Node {
       dx -= tx;
       dy -= ty;
     }
-    if (!dx && !dy) return fragments;
-    const move = (r: Rect): Rect => ({ ...r, x: r.x + dx, y: r.y + dy });
+    // and laid out in the frame of a vertical writing mode, where the turn
+    // has it on the page, which is no transform the page wrote
+    const turned = tree.vertical;
+    if (!dx && !dy && !turned) return fragments;
+    const move = (r: Rect): Rect => {
+      const at = { ...r, x: r.x + dx, y: r.y + dy };
+      return turned ? onPage(box, at) : at;
+    };
     return { first: move(fragments.first), all: move(fragments.all) };
   }
 
