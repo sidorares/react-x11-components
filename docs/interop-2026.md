@@ -325,10 +325,34 @@ restoring a document's scroll when it is shown again; a back-forward
 cache, so `persisted` is always false; `navigator.sendBeacon`, which still
 answers false; a page in a background tab, which stays `visible`; and a
 `beforeunload` for an `iframe.src` its parent assigns, told late, as the
-frame goes. The runner hands its documents no `session` and no
-`navigate`, so a run does not yet go through the history across documents
-that [#980] keeps. At the eleventh run most of what was left timed out
-waiting for a cross-document navigation.
+frame goes.
+
+The runner hands each test a session now, and loads what the test's
+document navigates to — `location`, `navigation.navigate()`, `reload()`,
+`history` past its own entries — into the place it was shown, the next
+document of that history. That moved nothing, and measuring it showed why.
+The area run at `afe6d61`, on a Mac against WPT's server with four jobs,
+passed 279 of 518 subtests for 57.0% before the change, and 279 of 518 for
+57.0% after it, the same as the twelfth run: three of the 439 tests
+changed shape, below, and none changed score. No test in the label leaves its own
+window, since that would end its harness, and the cross-document
+navigations that time
+out are a **frame's**: `i.contentWindow.location.reload()`,
+`i.contentWindow.navigation.back()` to a document the frame showed before,
+and `navigation.entries()` read in the frame after it loaded another
+document (28 tests fail on `expected 2 but got 1` alone). The engine keeps
+a frame's history per document, so each document a frame loads starts a
+history of its own. The 122 tests in the label that load an `<iframe>` and
+do not pass hold back 27.4 of the area's 43 missing points; a frame's own
+`HtmlSessionHistory`, kept by the frame across the documents it shows and
+joined to its tab's, is where the area's score is. What the wiring did
+reach is three tests whose top-level navigation the engine should have
+stopped and now loads, so they end as harness timeouts where a subtest
+timed out before: `window.stop()` in a `navigate` handler aborts nothing
+(`signal-abort-window-stop-in-onnavigate.html`), `location.reload()` fires
+no `navigate` for a handler to intercept
+(`navigate-destination-getState-reload.html`), and `navigate()` to a
+`file:` URL from an `http:` page is not refused (`navigate-file-url.html`).
 
 **scoped-custom-element-registries (87.0%).** `initialize()` upgrades
 what its registry defines wherever the element is ([#933]), `upgrade()`
@@ -462,10 +486,11 @@ Across areas, three things recurred, and each now has its first slice:
 2. **Navigation between documents in one renderer.** A tab's documents are
    one session history that the host hands each of them, and a document
    hears how it was shown and where it goes, `pageswap` and `pagereveal`
-   among it ([#973], [#980]). Left: the capture a cross-document view
-   transition starts from, a frame's history inside its tab's, the
-   `navigate` event in another window, and the example browser and the
-   runner on a session.
+   among it ([#973], [#980]). The example browser and the runner hand
+   theirs one, and the browser's toolbar follows it. Left: the capture a
+   cross-document view transition starts from, a frame's history inside
+   its tab's — which is most of what the navigation area has left — and
+   the `navigate` event in another window.
 3. **A frame's own viewport.** A frame's window answers `matchMedia`,
    `visualViewport` and its animation frames for its own box, and every
    window hears its `resize` and its media queries' `change` in HTML's

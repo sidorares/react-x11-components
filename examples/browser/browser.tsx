@@ -78,7 +78,13 @@ import {
 import { displayUrl, urlFromInput } from './address.js';
 import type { TabIcon } from './favicon.js';
 import Page from './page.js';
-import type { LinkTarget, PageProps } from './page.js';
+import type {
+  History,
+  HistoryEntry,
+  LinkTarget,
+  LoadHow,
+  PageProps,
+} from './page.js';
 import type { PostData } from '../../src/html/index.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
@@ -143,39 +149,62 @@ const PANE_ENV: Record<string, string | undefined> = (() => {
 
 // --- the model ---------------------------------------------------------------
 
-/** One step of a tab's history. */
-interface Entry {
-  id: number;
-  /** The document it shows, by the id of the navigation that loaded it —
-   *  the page keeps it under that id. A link to a `#fragment` of the same
-   *  document is a step of its own that shows the same one: nothing is
-   *  loaded, the page is not built again, and it only scrolls. */
-  doc: number;
-  url: string;
-  /** The form data its document answered, where a POST loaded it: a
-   *  reload sends it again. */
-  post: PostData | null;
+/**
+ * One entry of a tab's history. The history is the page's process's — one
+ * `HtmlSessionHistory` a tab, which a page's own `pushState` and fragments
+ * write to as well as every document shown — and the page tells the browser
+ * of it as it changes (`PageProps.onHistory`), so the address bar follows a
+ * single-page app from route to route, and Back goes back one of them. This
+ * is that history, mirrored: an entry's document, by the id of the
+ * navigation that loaded it, is what its title, icon and POST are kept by.
+ */
+type Entry = HistoryEntry;
+
+/** What the browser keeps of a document a navigation loaded. */
+interface DocInfo {
   title: string | null;
   icon: TabIcon | null;
+  /** The form data it answered, where a POST loaded it: a reload sends it
+   *  again. */
+  post: PostData | null;
 }
 
 interface Navigation {
   seq: number;
   url: string;
-  /** This step again rather than a new one: a reload. */
-  replace: boolean;
+  /** How its document comes into the history (`LoadHow`), and for a step
+   *  to a document the page has let go, the entry's key. */
+  how: LoadHow;
+  key: string;
   /** Past the cache: a reload with Shift. */
   fresh: boolean;
   /** A form's POST, or null for a GET. */
   post: PostData | null;
 }
 
+/** A step the page is asked to take in the history: Back or Forward, or a
+ *  fragment of the document shown, typed. */
+interface Step {
+  seq: number;
+  delta: number;
+  url: string;
+}
+
 interface Tab {
   id: string;
+  /** The history as the page last told it, and as it told it (JSON), which
+   *  a page process that is new to the tab starts from. */
   entries: Entry[];
   index: number;
+  history: string;
+  /** What is kept of each document an entry is of, by its id. */
+  docs: ReadonlyMap<number, DocInfo>;
+  /** The document that arrived last, kept until the history has it. */
+  last: number;
   /** The navigation in progress, until its document has all arrived. */
   loading: Navigation | null;
+  /** The last step the page was asked to take. */
+  step: Step | null;
   zoom: number;
   /** Put the caret in the address bar when the tab first shows. */
   focusAddress: boolean;
@@ -195,14 +224,13 @@ type Action =
       type: 'commit';
       id: string;
       seq: number;
-      url: string;
       title: string | null;
       posted: boolean;
     }
   | { type: 'finish'; id: string; seq: number }
   | { type: 'stop'; id: string }
-  | { type: 'go'; id: string; delta: number }
-  | { type: 'fragment'; id: string; entry: Entry }
+  | { type: 'history'; id: string; history: string }
+  | { type: 'step'; id: string; step: Step }
   | {
       type: 'meta';
       id: string;
@@ -218,22 +246,49 @@ const nextId = (): number => ++counter;
 
 function navigation(
   url: string,
-  replace = false,
+  how: LoadHow = 'push',
   fresh = false,
   post: PostData | null = null,
+  key = '',
 ): Navigation {
-  return { seq: nextId(), url, replace, fresh, post };
+  return { seq: nextId(), url, how, key, fresh, post };
 }
 
-function newTab(url: string, focusAddress = false): Tab {
+function emptyTab(id: string, nav: Navigation, focusAddress: boolean): Tab {
   return {
-    id: `tab-${nextId()}`,
+    id,
     entries: [],
     index: -1,
-    loading: navigation(url),
+    history: '',
+    docs: new Map(),
+    last: 0,
+    loading: nav,
+    step: null,
     zoom: 1,
     focusAddress,
   };
+}
+
+function newTab(url: string, focusAddress = false): Tab {
+  return emptyTab(`tab-${nextId()}`, navigation(url), focusAddress);
+}
+
+/** What is kept of the document an entry is of. */
+function infoOf(tab: Tab, entry: Entry | undefined): DocInfo | undefined {
+  return entry && tab.docs.get(entry.doc);
+}
+
+/** The entry shown, loaded again: a reload, sending the POST that loaded
+ *  it again where one did. */
+function reloadOf(tab: Tab, fresh = false): Navigation | null {
+  const entry = tab.entries[tab.index];
+  if (!entry) return null;
+  return navigation(
+    entry.url,
+    'reload',
+    fresh,
+    infoOf(tab, entry)?.post ?? null,
+  );
 }
 
 function update(state: State, id: string, change: (tab: Tab) => Tab): State {
@@ -246,14 +301,11 @@ function update(state: State, id: string, change: (tab: Tab) => Tab): State {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'open': {
-      const tab: Tab = {
-        id: action.id,
-        entries: [],
-        index: -1,
-        loading: action.nav,
-        zoom: 1,
-        focusAddress: !action.background && action.nav.url === HOME,
-      };
+      const tab = emptyTab(
+        action.id,
+        action.nav,
+        !action.background && action.nav.url === HOME,
+      );
       const at = state.tabs.findIndex((t) => t.id === state.active);
       const tabs = [...state.tabs];
       tabs.splice(action.background ? at + 1 : tabs.length, 0, tab);
@@ -282,26 +334,26 @@ function reducer(state: State, action: Action): State {
         loading: action.nav,
       }));
     case 'commit':
+      // a document arrived, which the history will say where it is in
       return update(state, action.id, (tab) => {
         const nav = tab.loading;
         if (nav?.seq !== action.seq) return tab;
-        const entry: Entry = {
-          id: nav.seq,
-          doc: nav.seq,
-          url: action.url,
-          post: action.posted ? nav.post : null,
+        const docs = new Map(tab.docs).set(nav.seq, {
           title: action.title,
           icon: null,
-        };
-        // a reload is this step again, in place: the steps after it stay
-        if (nav.replace && tab.index >= 0) {
-          return {
-            ...tab,
-            entries: tab.entries.map((e, i) => (i === tab.index ? entry : e)),
-          };
-        }
-        const entries = [...tab.entries.slice(0, tab.index + 1), entry];
-        return { ...tab, entries, index: entries.length - 1 };
+          post: action.posted ? nav.post : null,
+        });
+        return { ...tab, docs, last: nav.seq };
+      });
+    case 'history':
+      return update(state, action.id, (tab) => {
+        const { entries, index } = JSON.parse(action.history) as History;
+        // what is kept of documents no entry is of any more is let go
+        const kept = new Set(entries.map((e) => e.doc));
+        kept.add(tab.last);
+        if (tab.loading) kept.add(tab.loading.seq);
+        const docs = new Map([...tab.docs].filter(([doc]) => kept.has(doc)));
+        return { ...tab, entries, index, history: action.history, docs };
       });
     case 'finish':
       return update(state, action.id, (tab) =>
@@ -309,30 +361,29 @@ function reducer(state: State, action: Action): State {
       );
     case 'stop':
       return update(state, action.id, (tab) => ({ ...tab, loading: null }));
-    case 'go':
+    case 'step':
+      // Back or Forward stops what is loading, and goes from where the
+      // history is
       return update(state, action.id, (tab) => {
-        const index = tab.index + action.delta;
+        const index = tab.index + action.step.delta;
         if (index < 0 || index >= tab.entries.length) return tab;
-        return { ...tab, index, loading: null };
-      });
-    case 'fragment':
-      return update(state, action.id, (tab) => {
-        const entries = [...tab.entries.slice(0, tab.index + 1), action.entry];
-        return { ...tab, entries, index: entries.length - 1 };
+        return {
+          ...tab,
+          step: action.step,
+          loading: action.step.delta ? null : tab.loading,
+        };
       });
     case 'meta':
-      return update(state, action.id, (tab) => ({
-        ...tab,
-        entries: tab.entries.map((e) =>
-          e.doc === action.doc
-            ? {
-                ...e,
-                title: action.title !== undefined ? action.title : e.title,
-                icon: action.icon !== undefined ? action.icon : e.icon,
-              }
-            : e,
-        ),
-      }));
+      return update(state, action.id, (tab) => {
+        const was = tab.docs.get(action.doc);
+        if (!was) return tab;
+        const docs = new Map(tab.docs).set(action.doc, {
+          ...was,
+          title: action.title !== undefined ? action.title : was.title,
+          icon: action.icon !== undefined ? action.icon : was.icon,
+        });
+        return { ...tab, docs };
+      });
     case 'zoom':
       return update(state, action.id, (tab) => ({ ...tab, zoom: action.zoom }));
     case 'focused':
@@ -353,33 +404,39 @@ function zoomStep(zoom: number, direction: 1 | -1): number {
 
 const withoutHash = (url: string): string => url.split('#')[0];
 
-/** Go to `url` in `tab`: a new step, and a `#fragment` of the document the
- *  tab shows is one that loads nothing — the page only scrolls. A POST
- *  always loads. */
+/** Go to a typed `url` in `tab`: a new entry, and a `#fragment` of the
+ *  document the tab shows one the page takes without loading anything. */
 function navigateIn(
   tab: Tab,
   url: string,
   dispatch: (action: Action) => void,
-  post: PostData | null = null,
 ): void {
   const entry = tab.entries[tab.index];
   if (
     entry &&
-    !post &&
     url.includes('#') &&
     withoutHash(url) === withoutHash(entry.url)
   ) {
     dispatch({
-      type: 'fragment',
+      type: 'step',
       id: tab.id,
-      entry: { ...entry, id: nextId(), url },
+      step: { seq: nextId(), delta: 0, url },
     });
     return;
   }
+  dispatch({ type: 'navigate', id: tab.id, nav: navigation(url) });
+}
+
+/** Back or Forward, in `tab`'s history. */
+function stepIn(
+  tab: Tab,
+  delta: number,
+  dispatch: (action: Action) => void,
+): void {
   dispatch({
-    type: 'navigate',
+    type: 'step',
     id: tab.id,
-    nav: navigation(url, false, false, post),
+    step: { seq: nextId(), delta, url: '' },
   });
 }
 
@@ -534,11 +591,12 @@ function TabLabel({
   onClose: () => void;
 }): ReactElement {
   const entry = tab.entries[tab.index];
+  const info = infoOf(tab, entry);
   const [hover, setHover] = useState(false);
   const title =
     tab.loading && !entry
       ? 'Loading…'
-      : (entry?.title ?? (entry ? fileName(entry.url) : 'New Tab'));
+      : (info?.title ?? (entry ? fileName(entry.url) : 'New Tab'));
   return (
     <box
       style={{ flexDirection: 'row', alignItems: 'center', gap: 8, width: 188 }}
@@ -547,7 +605,7 @@ function TabLabel({
         if (ev.button === 2) onClose();
       }}
     >
-      <TabGlyph icon={entry?.icon ?? null} loading={!!tab.loading} />
+      <TabGlyph icon={info?.icon ?? null} loading={!!tab.loading} />
       <text
         style={{
           flexGrow: 1,
@@ -611,8 +669,10 @@ function Toolbar({
   const entry = tab.entries[tab.index] ?? null;
   const input = useRef<TextInputNode | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
-  // a document that arrived replaces what was being typed
-  useEffect(() => setDraft(null), [entry?.id]);
+  // a document that arrived replaces what was being typed — but not a page
+  // moving to another of its routes, which would take the words from under
+  // someone's fingers
+  useEffect(() => setDraft(null), [entry?.doc]);
 
   useEffect(() => {
     register(tab.id, input.current);
@@ -655,7 +715,7 @@ function Toolbar({
         size="small"
         aria-label="Back"
         disabled={tab.index <= 0}
-        onPress={() => dispatch({ type: 'go', id: tab.id, delta: -1 })}
+        onPress={() => stepIn(tab, -1, dispatch)}
       >
         <Icon name="chevronLeft" size={10} />
       </Button>
@@ -664,7 +724,7 @@ function Toolbar({
         size="small"
         aria-label="Forward"
         disabled={tab.index >= tab.entries.length - 1}
-        onPress={() => dispatch({ type: 'go', id: tab.id, delta: 1 })}
+        onPress={() => stepIn(tab, 1, dispatch)}
       >
         <Icon name="chevronRight" size={10} />
       </Button>
@@ -672,16 +732,11 @@ function Toolbar({
         variant="ghost"
         size="small"
         aria-label={busy ? 'Stop' : 'Reload'}
-        onPress={() =>
-          busy
-            ? dispatch({ type: 'stop', id: tab.id })
-            : entry &&
-              dispatch({
-                type: 'navigate',
-                id: tab.id,
-                nav: navigation(entry.url, true, false, entry.post),
-              })
-        }
+        onPress={() => {
+          if (busy) return dispatch({ type: 'stop', id: tab.id });
+          const nav = reloadOf(tab);
+          if (nav) dispatch({ type: 'navigate', id: tab.id, nav });
+        }}
       >
         {busy ? <Icon name="close" size={9} /> : <ReloadGlyph />}
       </Button>
@@ -786,13 +841,16 @@ function TabPage({
   onCommand,
 }: TabPageProps): ReactElement {
   const id = tab.id;
-  const entry = tab.entries[tab.index] ?? null;
   const latest = useRef(tab);
   latest.current = tab;
 
   const onCommit = useCallback(
-    (seq: number, url: string, title: string | null, posted: boolean) =>
-      dispatch({ type: 'commit', id, seq, url, title, posted }),
+    (seq: number, _url: string, title: string | null, posted: boolean) =>
+      dispatch({ type: 'commit', id, seq, title, posted }),
+    [id, dispatch],
+  );
+  const onHistory = useCallback(
+    (history: string) => dispatch({ type: 'history', id, history }),
     [id, dispatch],
   );
   const onFinish = useCallback(
@@ -807,44 +865,52 @@ function TabPage({
     ) => dispatch({ type: 'meta', id, doc, title, icon }),
     [id, dispatch],
   );
+  // what the page goes to — a link, a form, `location` — is its own
+  // navigation, which the history takes as the page planned it
   const onLink = useCallback(
     (url: string, target: LinkTarget, post: PostData | null) => {
-      if (target === 'here') navigateIn(latest.current, url, dispatch, post);
-      else open(url, target === 'background', post);
-    },
-    [dispatch, open],
-  );
-  const onLost = useCallback(
-    (entryId: number) => {
-      // loaded again as the same step, where it still is the one showing
-      const now = latest.current;
-      const shown = now.entries[now.index];
-      if (shown?.id !== entryId || now.loading) return;
+      if (target !== 'here') return open(url, target === 'background', post);
       dispatch({
         type: 'navigate',
         id,
-        nav: navigation(shown.url, true, false, shown.post),
+        nav: navigation(url, 'page', false, post),
+      });
+    },
+    [id, dispatch, open],
+  );
+  // and an entry whose document the page no longer has, loaded again with
+  // the POST that loaded it where one did
+  const onLoad = useCallback(
+    (url: string, how: LoadHow, key: string, doc: number) => {
+      const post = latest.current.docs.get(doc)?.post ?? null;
+      dispatch({
+        type: 'navigate',
+        id,
+        nav: navigation(url, how, false, post, key),
       });
     },
     [id, dispatch],
   );
 
   const props: PageProps = {
-    entryId: entry?.id ?? 0,
-    doc: entry?.doc ?? 0,
-    url: entry?.url ?? '',
     loadSeq: tab.loading?.seq ?? 0,
     loadUrl: tab.loading?.url ?? '',
+    loadHow: tab.loading?.how ?? 'push',
+    loadKey: tab.loading?.key ?? '',
     loadFresh: tab.loading?.fresh ?? false,
     loadPost: tab.loading?.post ?? null,
+    stepSeq: tab.step?.seq ?? 0,
+    stepDelta: tab.step?.delta ?? 0,
+    stepUrl: tab.step?.url ?? '',
+    history: tab.history,
     zoom: tab.zoom,
     scripts,
-    docs: [...new Set(tab.entries.map((e) => e.doc))].join(','),
     onCommit,
     onFinish,
+    onHistory,
     onMeta,
     onLink,
-    onLost,
+    onLoad,
     onCommand,
   };
 
@@ -1069,7 +1135,7 @@ export function Browser({
       dispatch({
         type: 'open',
         id: `tab-${nextId()}`,
-        nav: navigation(url, false, false, post),
+        nav: navigation(url, 'push', false, post),
         background,
       });
     },
@@ -1082,13 +1148,8 @@ export function Browser({
   // usually a different page. Browsers ask before they do; this one sends
   // what the person sent a moment ago, to the site they sent it to.
   const reload = (fresh: boolean) => {
-    if (entry) {
-      dispatch({
-        type: 'navigate',
-        id: active.id,
-        nav: navigation(entry.url, true, fresh, entry.post),
-      });
-    }
+    const nav = reloadOf(active, fresh);
+    if (nav) dispatch({ type: 'navigate', id: active.id, nav });
   };
   const cycle = (by: number) => {
     const at = state.tabs.findIndex((t) => t.id === active.id);
@@ -1117,9 +1178,9 @@ export function Browser({
       case 'reloadFresh':
         return reload(true);
       case 'back':
-        return dispatch({ type: 'go', id: active.id, delta: -1 });
+        return stepIn(active, -1, dispatch);
       case 'forward':
-        return dispatch({ type: 'go', id: active.id, delta: 1 });
+        return stepIn(active, 1, dispatch);
       case 'nextTab':
         return cycle(1);
       case 'previousTab':
@@ -1163,7 +1224,8 @@ export function Browser({
     [],
   );
 
-  const title = entry?.title ?? (entry ? fileName(entry.url) : 'New Tab');
+  const title =
+    infoOf(active, entry)?.title ?? (entry ? fileName(entry.url) : 'New Tab');
 
   return (
     <window
@@ -1236,16 +1298,12 @@ export function Browser({
                   register={register}
                   scripts={scriptsFor(tab.entries[tab.index]?.url ?? '')}
                   onScripts={(on) => {
-                    const shown = tab.entries[tab.index];
-                    if (!shown) return;
-                    setSites((all) => new Map(all).set(siteOf(shown.url), on));
+                    const nav = reloadOf(tab);
+                    if (!nav) return;
+                    setSites((all) => new Map(all).set(siteOf(nav.url), on));
                     // a document's scripts are run or not as it is made: the
                     // switch takes on the page loaded again
-                    dispatch({
-                      type: 'navigate',
-                      id: tab.id,
-                      nav: navigation(shown.url, true, false, shown.post),
-                    });
+                    dispatch({ type: 'navigate', id: tab.id, nav });
                   }}
                   onAddressFocus={chrome.setTyping}
                 />
