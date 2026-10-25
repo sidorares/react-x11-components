@@ -861,9 +861,11 @@ its `sendOrder` and `sendGroup`, the four age and buffer limits;
 incoming streams, each a `WebTransportSendStream` or a
 `WebTransportReceiveStream` with `getStats()`, a send stream's
 `getWriter()` a `WebTransportWriter`; and `WebTransportError` — in a
-secure context, as Web IDL's `[SecureContext]` has it. A worker has the
-interfaces too, and its sessions fail as with no network: its thread has
-no seam yet. What carries a session is
+secure context, as Web IDL's `[SecureContext]` has it, in the window and
+in its dedicated, shared and service workers. A worker's sessions go
+through the page's seam too: its thread has no seam of its own, so what it
+asks crosses to the page process as messages, as its `fetch` does, and
+what becomes of each session and stream comes back the same way. What carries a session is
 `scripts.webTransport`, an `HtmlWebTransport`: handed what the page asked
 to open — the URL, the page's origin, its protocols, its headers, its
 certificate hashes — and the events to tell what becomes of the session,

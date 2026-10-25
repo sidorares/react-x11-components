@@ -28,6 +28,9 @@ import type {
   PageWorkersLike,
   WorkerInit,
 } from './host.js';
+import type { HtmlWebTransport } from '../transport.js';
+import { TransportRelay } from './transport-relay.js';
+import type { TransportAsk, TransportTell } from './transport-relay.js';
 
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
@@ -39,6 +42,9 @@ const { MessageChannel, Worker: Thread } =
 /** What a page's workers are given by the page they are the workers of. */
 export interface PageWorkersSeams {
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
+  /** What a worker's WebTransport sessions are carried over: the page's
+   *  own seam, read as each session opens. */
+  readonly webTransport?: HtmlWebTransport;
   log(level: string, text: string): void;
   userAgent: string;
   language: string;
@@ -77,7 +83,8 @@ export type FromWorker =
   | { kind: 'fetch'; id: number; request: FetchRequest }
   | { kind: 'abort'; id: number }
   | { kind: 'log'; level: string; text: string }
-  | { kind: 'close' };
+  | { kind: 'close' }
+  | TransportAsk;
 
 /** What this side tells the thread. */
 export type ToWorker =
@@ -90,7 +97,8 @@ export type ToWorker =
       error?: string;
     }
   | { kind: 'chunk'; id: number; bytes: Uint8Array }
-  | { kind: 'fetchEnd'; id: number; error: string | null };
+  | { kind: 'fetchEnd'; id: number; error: string | null }
+  | TransportTell;
 
 /** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
  *  run from the source, as the suite runs it — the TypeScript beside it. */
@@ -133,6 +141,8 @@ interface Running {
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;
+  /** Its WebTransport sessions, made the first time it opens one. */
+  transports: TransportRelay | null;
 }
 
 /** How many workers one page may have running at once. A page that spawns
@@ -188,6 +198,7 @@ export class PageWorkers implements PageWorkersLike {
       url: init.url,
       sync: port1,
       fetches: new Map(),
+      transports: null,
     };
     this._running.set(id, running);
     thread.on('message', (m: FromWorker) => this._heard(id, running, m));
@@ -196,6 +207,7 @@ export class PageWorkers implements PageWorkersLike {
     });
     thread.on('exit', () => {
       this._running.delete(id);
+      running.transports?.dispose();
       port1.close();
     });
     const word = new Int32Array(flag);
@@ -219,6 +231,7 @@ export class PageWorkers implements PageWorkersLike {
     if (!running) return;
     this._running.delete(id);
     for (const controller of running.fetches.values()) controller.abort();
+    running.transports?.dispose();
     void running.thread.terminate();
   }
 
@@ -288,6 +301,18 @@ export class PageWorkers implements PageWorkersLike {
       case 'abort':
         running.fetches.get(m.id)?.abort();
         running.fetches.delete(m.id);
+        return;
+      case 'wt':
+        // a WebTransport session's, over the page's own seam
+        running.transports ??= new TransportRelay(
+          () => this._seams.webTransport,
+          (tell) => {
+            if (this._running.get(id) === running) {
+              running.thread.postMessage(tell);
+            }
+          },
+        );
+        running.transports.heard(m);
         return;
       case 'fetch': {
         const controller = new AbortController();

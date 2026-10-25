@@ -394,3 +394,78 @@ test('a page served over plain http from elsewhere has no WebTransport, as Web I
   );
   assert.equal(await p.until('has|'), 'undefined|undefined');
 });
+
+test('a worker’s sessions are carried across its thread over the page’s seam: datagrams, streams both ways, the server’s, stats, close', async () => {
+  let server: FakeServer | null = null;
+  const transport = new FakeTransport((s) => {
+    s.echoDatagrams = true;
+    s.echoStreams = true;
+    s.accept('w');
+    server = s;
+    // a stream of the server's, as WPT's echo handler opens one with the
+    // session
+    setTimeout(() => {
+      const st = s.open(false);
+      st.send(new TextEncoder().encode('from the server'));
+      st.end();
+    }, 10);
+  });
+  const worker =
+    'function log() { postMessage([].slice.call(arguments).join("|")); }' +
+    'var wt = new WebTransport("https://wt.test/worker?x");' +
+    'wt.ready.then(async function () {' +
+    '  log("ready", wt.protocol, wt.datagrams.maxDatagramSize, typeof WorkerGlobalScope);' +
+    '  var w = wt.datagrams.createWritable().getWriter(); await w.write(new Uint8Array([1, 2]));' +
+    '  var got = await wt.datagrams.readable.getReader().read(); log("datagram", Array.from(got.value).join(","));' +
+    '  var bidi = await wt.createBidirectionalStream({ sendOrder: 5 });' +
+    '  var bw = bidi.writable.getWriter(); await bw.write(new TextEncoder().encode("echo me")); await bw.close();' +
+    '  var r = bidi.readable.getReader({ mode: "byob" }); var text = ""; var d = new TextDecoder();' +
+    '  for (;;) { var x = await r.read(new Uint8Array(3)); if (x.done) break; text += d.decode(x.value, { stream: true }); }' +
+    '  log("echo", text);' +
+    '  var incoming = (await wt.incomingUnidirectionalStreams.getReader().read()).value;' +
+    '  var t = ""; for await (var c of incoming) t += new TextDecoder().decode(c); log("incoming", t);' +
+    '  var stats = await wt.getStats(); log("stats", stats.smoothedRtt, typeof stats.datagrams);' +
+    '  var g = wt.createSendGroup(); await wt.createUnidirectionalStream({ sendGroup: g });' +
+    '  wt.close({ closeCode: 9, reason: "bye" }); log("closed", JSON.stringify(await wt.closed));' +
+    '}).catch(function (e) { log("failed", e.name, e.message); });';
+  const p = await page(
+    LOG +
+      `var source = ${JSON.stringify(worker)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));' +
+      'w.onmessage = function (e) { log("worker", e.data); };',
+    transport,
+  );
+  assert.equal(await p.until('worker|ready|'), 'w|1200|function');
+  assert.equal(await p.until('worker|datagram|'), '1,2');
+  assert.equal(await p.until('worker|echo|'), 'echo me');
+  assert.equal(await p.until('worker|incoming|'), 'from the server');
+  assert.equal(await p.until('worker|stats|'), '1.5|object');
+  assert.equal(
+    await p.until('worker|closed|'),
+    '{"closeCode":9,"reason":"bye"}',
+  );
+  const s = server as unknown as FakeServer;
+  // the worker's origin, which its blob URL has from the page
+  assert.equal(s.request.origin, 'https://example.test');
+  assert.equal(s.request.url, 'https://wt.test/worker?x');
+  assert.equal(s.streams[0].priority.sendOrder, 5);
+  // the worker's send group, mapped to the session's own number
+  assert.equal(s.streams[1].priority.sendGroup, 1);
+  assert.deepEqual(s.closedWith, { closeCode: 9, reason: 'bye' });
+});
+
+test('a worker’s session fails as one with no network where the page has none, and its errors are its own', async () => {
+  const worker =
+    'new WebTransport("https://wt.test/").ready.catch(function (e) {' +
+    '  postMessage(["refused", e.name, e.source, e instanceof WebTransportError, e.constructor.constructor("return typeof process")()].join("|")); });';
+  const p = await page(
+    LOG +
+      `var source = ${JSON.stringify(worker)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));' +
+      'w.onmessage = function (e) { log("worker", e.data); };',
+  );
+  assert.equal(
+    await p.until('worker|refused|'),
+    'WebTransportError|session|true|undefined',
+  );
+});

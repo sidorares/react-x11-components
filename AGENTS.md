@@ -2624,7 +2624,11 @@ closes a way out a DOM binding opens by accident:
   method that blocked on the network could not be proxied. What a page is
   handed — every rejection, every `WebTransportError`, every stats object
   — is made in its realm, and the escape test reads what a refused
-  session's `ready` rejects with.
+  session's `ready` rejects with. A worker's sessions are the page's seam's
+  too, carried across its thread as plain data (`TransportProxy` in the
+  thread, `TransportRelay` in the page process, `transport-relay.ts`):
+  **anything new on the seam is added to both and to the `wt` messages**,
+  or a worker's realm has a member that never answers.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

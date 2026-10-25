@@ -1110,8 +1110,24 @@ other than 200 is refused, which the adapter cannot change.
 session at once and tells `ready`, `failed`, `closed`, `draining`, a
 datagram and an incoming stream through the events it was handed, and a
 stream its `readable`, `end`, `reset` and `stopSending`. That shape is
-what a proxy across a worker's thread can carry, and what a fake server in
-a test can drive (`test/fake-transport.ts`).
+what a proxy across a worker's thread carries, and what a fake server in a
+test drives (`test/fake-transport.ts`).
+
+**A worker's sessions are the page's, carried across its thread**
+(`transport-relay.ts`). The seam is an object of the host's — functions, a
+QUIC stack — which no thread is handed, and the network policy is the page
+process's, as it is for a worker's `fetch`. So the worker's host is handed
+a `TransportProxy`, which answers as a seam does and posts what it is
+asked, tagged `{ kind: 'wt' }`, over the thread's channel to a
+`TransportRelay` for that worker in the page process, which drives the
+page's own seam and posts back what becomes of each session and stream.
+The seam's few answers that are not events are made on the worker's side
+from what it has: `maxDatagramSize()` the last size the page process told,
+`sendDatagram()` sent where it fits, a send group's number made there and
+mapped to the seam's on the other side. A stream's bytes are pulled across
+too: the worker asks for more (`want`) as its realm reads, and the relay
+reads the real stream only then, so a worker that reads nothing holds the
+peer back as a page does. A worker that ends closes its sessions.
 
 ## What core would be asked
 

@@ -212,6 +212,9 @@ export class ScriptRunner {
         ? null
         : new PageWorkers({
             fetch: (request, signal) => this._options.fetch(request, signal),
+            get webTransport() {
+              return _options.webTransport;
+            },
             log: (level, text) => this._options.log(level, text),
             get userAgent() {
               return _options.userAgent;
