@@ -116,6 +116,8 @@ import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import { PageTransports } from './transports.js';
+import { parseCsp } from '../csp.js';
+import type { CspPolicy } from '../csp.js';
 import type { HtmlWebTransport } from '../transport.js';
 import * as ntk from 'react-x11/ntk';
 import type {
@@ -4221,6 +4223,12 @@ export class DomHost {
       addedNodes: added,
       removedNodes: removed,
     });
+    // a policy a `<meta>` brings is the document's once the element is in
+    // its head, and stays when it goes (HTML, the `http-equiv` "Content
+    // security policy" state)
+    if (added.length && parent instanceof Element && parent.name === 'head') {
+      for (const node of added) this._noteCsp(node);
+    }
     // a modal dialog taken out of the document is no longer modal, nor in
     // the top layer (HTML 4.11.4, the dialog's removing steps)
     if (removed.length) {
@@ -5375,12 +5383,44 @@ export class DomHost {
       this._transportsMade = new PageTransports({
         connector: () => this._seams.webTransport,
         origin: () => this._origin(),
+        policies: () => this._cspPolicies(),
+        log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
       });
     }
     return this._transportsMade;
+  }
+
+  /** The document's Content Security Policies, by their text, in the
+   *  order they were met: a policy stays once a `<meta>` brought it, as a
+   *  browser keeps it after the element goes (HTML, the `http-equiv`
+   *  "Content security policy" state). */
+  private _csp = new Map<string, CspPolicy>();
+  /** The policy a `<meta http-equiv="Content-Security-Policy">` brings,
+   *  kept. */
+  private _noteCsp(node: AnyNode): void {
+    if (
+      node instanceof Element &&
+      node.name === 'meta' &&
+      (node.attribs['http-equiv'] ?? '').trim().toLowerCase() ===
+        'content-security-policy'
+    ) {
+      const text = node.attribs.content ?? '';
+      if (!this._csp.has(text)) this._csp.set(text, parseCsp(text));
+    }
+  }
+  /** The document's policies: those a script's `<meta>`s brought as they
+   *  were put in its head, and those the parser's are in it now. */
+  private _cspPolicies(): CspPolicy[] {
+    const head = DomUtils.findOne(
+      (e) => e.name === 'head',
+      this.document.children,
+      true,
+    );
+    for (const child of head?.children ?? []) this._noteCsp(child);
+    return [...this._csp.values()];
   }
 
   private _storage(

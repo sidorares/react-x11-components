@@ -32,7 +32,7 @@ async function page(
   const logs: string[] = [];
   await renderX11(
     h(Html, {
-      source: `<p id="out"></p><script>${script}</script>`,
+      source: `<!doctype html><html><head></head><body><p id="out"></p><script>${script}</script></body></html>`,
       partial: false,
       baseUrl: url,
       scripts: {
@@ -384,6 +384,26 @@ test('stats come from the connection, with the datagrams’ own beside them, and
   assert.equal(await p.until('not a group|'), 'TypeError');
   assert.equal(transport.servers[0].streams[0].priority.sendGroup, 1);
   assert.equal(transport.servers[0].streams[0].priority.sendOrder, 2);
+});
+
+test('a session is held to the document’s Content Security Policy, a <meta>’s, which stays once it is met', async () => {
+  const transport = echoing();
+  const p = await page(
+    LOG +
+      'function meta(policy) { var m = document.createElement("meta"); m.httpEquiv = "Content-Security-Policy"; m.content = policy; document.head.appendChild(m); return m; }' +
+      'var allowed = meta("connect-src https://wt.test:4433");' +
+      'new WebTransport("https://wt.test:4433/").ready.then(function () { log("allowed"); });' +
+      'new WebTransport("https://other.test/").ready.catch(function (e) { log("other", e.name, e.source); });' +
+      'meta("connect-src \'none\'"); document.head.lastChild.remove();' +
+      'new WebTransport("https://wt.test:4433/").ready.catch(function (e) { log("none", e.name, e.source, e.streamErrorCode); });',
+    transport,
+  );
+  await p.until('allowed');
+  assert.equal(await p.until('other|'), 'WebTransportError|session');
+  // the second policy was met before it was taken out, and still holds
+  assert.equal(await p.until('none|'), 'WebTransportError|session|');
+  assert.equal(transport.servers.length, 1);
+  assert.ok(p.logs.some((l) => l.includes('Content Security Policy')));
 });
 
 test('a page served over plain http from elsewhere has no WebTransport, as Web IDL’s [SecureContext] has it', async () => {

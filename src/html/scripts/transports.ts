@@ -8,6 +8,8 @@
 // JSON. A page's object never reaches the seam, and nothing of the seam's
 // reaches the page — its errors arrive as messages, which the facade makes
 // its own `WebTransportError`s of.
+import { connectAllowed } from '../csp.js';
+import type { CspPolicy } from '../csp.js';
 import { badPort } from '../transport.js';
 import type {
   HtmlWebTransport,
@@ -64,6 +66,11 @@ export interface TransportSeams {
   connector(): HtmlWebTransport | undefined;
   /** The page's origin, which a session's CONNECT names. */
   origin(): string;
+  /** The document's Content Security Policies, which a session is held
+   *  to (`connect-src`). Absent, none. */
+  policies?(): CspPolicy[];
+  /** The page's console, which a refused session is told on. */
+  log?(level: string, text: string): void;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
 }
@@ -205,6 +212,17 @@ export class PageTransports {
     // a port no browser connects to is refused before anything is sent
     if (badPort(url)) {
       setTimeout(() => fail(`${url} is not allowed: its port is blocked.`), 0);
+      return;
+    }
+    // a connection the document's policy does not allow is refused before
+    // anything is sent (WebTransport, "initialize WebTransport over HTTP",
+    // and CSP's `connect-src`)
+    if (
+      !connectAllowed(this._seams.policies?.() ?? [], url, this._seams.origin())
+    ) {
+      const message = `Refused to connect to '${url}' because it violates the document's Content Security Policy directive "connect-src".`;
+      this._seams.log?.('error', message);
+      setTimeout(() => fail(message), 0);
       return;
     }
     const connector = this._seams.connector();
