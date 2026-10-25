@@ -1673,6 +1673,82 @@ test('position-visibility hides a box whose anchor a scroll cuts away, or that o
   assert.strictEqual(hidden('seen'), false, 'and back');
 });
 
+test('a box anchored to an anchored box a scroll moves moves with it, and one anchored to a sticky box with where it sticks', async () => {
+  // CSS Anchor Positioning 1, 3.3: a default anchor's remembered scroll
+  // offset takes in what moves it with a scroll — a default scroll shift
+  // of its own, where it is anchored itself (a chain), and `position:
+  // sticky` — and a box anchored to it moves with it
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:100px}' +
+      '#s{overflow:scroll}#a{anchor-name:--a1;height:20px}' +
+      '#one{position:absolute;position-anchor:--a1;left:anchor(left);' +
+      'top:anchor(bottom);anchor-name:--a2}' +
+      '#two{position:absolute;position-anchor:--a2;left:anchor(left);' +
+      'top:anchor(bottom)}' +
+      '#k{overflow:scroll;position:absolute;left:200px;top:0}' +
+      '#stuck{anchor-name:--s;position:sticky;top:0;height:20px}' +
+      '#under{position:absolute;position-anchor:--s;left:anchor(left);' +
+      'top:anchor(bottom);height:10px}' +
+      '</style><div id="s"><div style="height:230px"></div><div id="a"></div>' +
+      '<div style="height:230px"></div></div>' +
+      '<div id="one"></div><div id="two"></div>' +
+      '<div id="k"><div style="height:50px"></div><div id="stuck"></div>' +
+      '<div style="height:300px"></div></div><div id="under"></div>',
+  );
+  const el = view(node);
+  const top = (id: string) => boxOf(el, id).y;
+  assert.deepStrictEqual([top('one'), top('two')], [250, 350]);
+  el.scrollElementTo(findById(el.document, 's')!, { y: 200 });
+  assert.deepStrictEqual([top('one'), top('two')], [50, 150], 'the chain');
+  assert.strictEqual(top('under'), 70);
+  // scrolled past where it sticks: held at the scroller's top, and the
+  // box below it with it
+  el.scrollElementTo(findById(el.document, 'k')!, { y: 200 });
+  assert.deepStrictEqual([top('stuck'), top('under')], [0, 20]);
+});
+
+test('position-visibility hides a box whose anchor is not seen: hidden by visibility, or in a box it hides', async () => {
+  // 5.4: `anchors-visible` asks whether the default anchor is visible, so
+  // a box anchored inside one `position-visibility` hid goes with it, and
+  // `visibility` hiding the anchor hides it, and showing it shows it
+  const { node } = await render(
+    '<style>body{margin:0}#s{overflow:hidden scroll;width:300px;height:100px}' +
+      '#a1{anchor-name:--a1;width:100px;height:100px}.space{height:100px}' +
+      '.t{position:absolute;top:0;left:0;position-area:bottom;width:100px;' +
+      'height:50px}#chained{position-anchor:--a1}' +
+      '#a2{anchor-name:--a2;height:50px}#target{position-anchor:--a2}' +
+      '#hid{visibility:hidden}#h{anchor-name:--h;height:20px}' +
+      '#shy{position:absolute;position-anchor:--h;position-area:bottom;' +
+      'width:20px;height:20px}' +
+      '</style><div id="s"><div id="a1"></div><div class="space"></div>' +
+      '<div class="t" id="chained"><div id="a2"></div></div>' +
+      '<div class="t" id="target"></div></div>' +
+      '<div id="hid"><div id="h"></div></div><div id="shy"></div>',
+  );
+  const el = view(node);
+  const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+  assert.deepStrictEqual([hidden('chained'), hidden('target')], [false, false]);
+  el.scrollElementTo(findById(el.document, 's')!, { y: 100 });
+  assert.deepStrictEqual(
+    [hidden('chained'), hidden('target')],
+    [true, true],
+    'its anchor in a box hidden with its own anchor',
+  );
+  assert.strictEqual(hidden('shy'), true, 'visibility: hidden');
+  // and shown by a restyle that shows its anchor
+  const hid = findById(el.document, 'hid') as unknown as {
+    attribs: Record<string, string>;
+  };
+  hid.attribs.style = 'visibility:visible';
+  await act(() =>
+    el.touchDocument([
+      { type: 'attributes', target: hid as never, attributeName: 'style' },
+    ]),
+  );
+  await act();
+  assert.strictEqual(hidden('shy'), false, 'shown');
+});
+
 test('a box anchored to something a scroller scrolls tries its position options again where a scroll leaves it overflowing, and keeps the one it has while it fits', async () => {
   // WPT anchor-scroll-position-try-001: the box keeps the option it was
   // last placed by while that fits, shifted by the scroll (CSS Anchor

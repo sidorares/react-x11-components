@@ -4133,7 +4133,17 @@ places such a box afresh** (`forgetPaneShift`), so what the pane moved it
 by is forgotten with it. And a box fixed to the viewport that follows its
 anchor is still one of `FIXED_BOXES`, which the pane's blit would hold in
 place: it is told where the box was drawn and where it is drawn now
-(`_anchoredRects`).
+(`_anchoredRects`). **What follows an anchor follows it as a chain**: a box
+anchored to an anchored box a scroll moves — or to something in one —
+moves with it, on the axes both follow on (`followersOf`, under
+`anchoredAcross`), and a box anchored to a sticky box, or to something in
+it, moves as far as its stickiness moves it, at a layout and at a scroll
+(`anchoredWith`, from `followSticky`). Anything new that moves an anchor
+without a layout moves its followers through one of the two. And
+`anchors-visible` hides a box whose anchor is not seen at all — hidden by
+`visibility`, or in a box `position-visibility` hid, its own anchor gone —
+which a restyle in place can change without a layout, so it asks again
+where the tree has anchors (`_revisit`).
 
 **An anchored box in a vertical writing mode is placed in its frame's
 axes, and what it is placed by is read in the page's** (CSS Anchor
