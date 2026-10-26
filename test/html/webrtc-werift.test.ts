@@ -384,3 +384,23 @@ test('a remote description with bare LF line endings is read, and one that moves
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a remote offer’s m-section of a kind nothing reads is rejected with port 0, as its own kind', async () => {
+  const logs = await run(`
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    a.addTransceiver('video');
+    var offer = await a.createOffer();
+    await b.setRemoteDescription({ type: 'offer', sdp: offer.sdp.replace('m=audio ', 'm=unicorns ') });
+    var answer = await b.createAnswer();
+    await b.setLocalDescription(answer);
+    var lines = answer.sdp.split('\\r\\n').filter(function (l) { return l.indexOf('m=') === 0; });
+    log('answered', lines.length, /^m=unicorns 0 /.test(lines[0]), /^m=video [1-9]/.test(lines[1]));
+    log('remote kept', /m=unicorns /.test(b.remoteDescription.sdp), b.getTransceivers().map(function (t) { return t.receiver.track.kind; }).join(','));
+    a.close(); b.close();
+    log('done');
+  `);
+  for (const line of ['answered|2|true|true', 'remote kept|true|video']) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
