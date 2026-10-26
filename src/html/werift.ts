@@ -30,6 +30,18 @@ import {
   offeredCapabilities,
 } from './rtc-codecs.js';
 import { rtcError } from './rtc.js';
+import {
+  WeriftTransports,
+  weriftChannel,
+  weriftStats,
+} from './werift-transports.js';
+import type {
+  WCandidate,
+  WChannel,
+  WDtls,
+  WEvent,
+  WSctp,
+} from './werift-transports.js';
 import type {
   HtmlWebRTC,
   RTCCandidateLike,
@@ -38,7 +50,6 @@ import type {
   RTCConnectRequest,
   RTCConnectionEvents,
   RTCConnectionLike,
-  RTCDataChannelEvents,
   RTCDataChannelInitLike,
   RTCDataChannelLike,
   RTCDescriptionsLike,
@@ -50,19 +61,9 @@ import type {
   RTCTransceiverInit,
   RTCTransceiverLike,
   RTCTransceiverState,
-  RTCTransportStateLike,
 } from './rtc.js';
 
-declare const queueMicrotask: (fn: () => void) => void;
-declare const Buffer: {
-  from(bytes: Uint8Array): Uint8Array;
-};
-
 // --- werift's shape, the slice read here ------------------------------------
-
-interface WEvent<A extends unknown[]> {
-  subscribe(fn: (...args: A) => void): unknown;
-}
 
 interface WCodec {
   payloadType?: number;
@@ -75,33 +76,6 @@ interface WCodec {
 interface WExtension {
   id: number;
   uri: string;
-}
-
-interface WCandidate {
-  candidate: string;
-  sdpMid?: string | null;
-  sdpMLineIndex?: number | null;
-  usernameFragment?: string | null;
-}
-
-interface WIce {
-  readonly state: string;
-  readonly role: string;
-  readonly gatheringState: string;
-  readonly onStateChange: WEvent<[string]>;
-  getSelectedCandidatePair(): { local: WCandidate; remote: WCandidate } | null;
-  getLocalParameters(): { usernameFragment: string; password: string };
-  getRemoteParameters(): { usernameFragment: string; password: string } | null;
-}
-
-interface WDtls {
-  readonly state: string;
-  readonly iceTransport: WIce;
-  readonly onStateChange: WEvent<[string]>;
-}
-
-interface WSctp {
-  readonly dtlsTransport?: WDtls;
 }
 
 interface WSender {
@@ -126,22 +100,6 @@ interface WTransceiver {
   setDirection(direction: string): void;
   setCodecPreferences(codecs: WCodec[]): void;
   stop(): void;
-}
-
-interface WChannel {
-  readonly id?: number | null;
-  readonly readyState: string;
-  readonly label: string;
-  readonly ordered: boolean;
-  readonly maxRetransmits: number | null;
-  readonly maxPacketLifeTime: number | null;
-  readonly protocol: string;
-  readonly negotiated: boolean;
-  readonly stateChanged: WEvent<[string]>;
-  readonly onMessage: WEvent<[string | Uint8Array]>;
-  readonly error: WEvent<[Error]>;
-  send(data: string | Uint8Array): void;
-  close(): void;
 }
 
 interface WDescription {
@@ -368,18 +326,6 @@ function codecOf(c: WCodec): RTCCodecParametersLike {
   };
 }
 
-function candidateOf(c: WCandidate): RTCCandidateLike {
-  return {
-    // a selected pair's candidates are written without their name
-    candidate: c.candidate.startsWith('candidate:')
-      ? c.candidate
-      : `candidate:${c.candidate}`,
-    sdpMid: c.sdpMid ?? null,
-    sdpMLineIndex: c.sdpMLineIndex ?? null,
-    usernameFragment: c.usernameFragment ?? null,
-  };
-}
-
 // --- a connection -----------------------------------------------------------
 
 /** One of a connection's transceivers. */
@@ -438,64 +384,6 @@ class WeriftTransceiver implements RTCTransceiverLike {
   }
 }
 
-/** One of a connection's data channels. */
-class WeriftChannel implements RTCDataChannelLike {
-  private _events: RTCDataChannelEvents | null = null;
-  private _told = 'connecting';
-  private _idTold = false;
-
-  constructor(private readonly _ch: WChannel) {
-    _ch.stateChanged.subscribe((state) => this._state(state));
-    _ch.onMessage.subscribe((data) => {
-      this._events?.message(
-        typeof data === 'string' ? data : new Uint8Array(data),
-      );
-    });
-    _ch.error.subscribe((error) =>
-      this._events?.error({
-        errorDetail: 'data-channel-failure',
-        sctpCauseCode: null,
-        message: String(error?.message ?? error),
-      }),
-    );
-  }
-
-  private _state(state: string): void {
-    const events = this._events;
-    if (!events) return;
-    if (!this._idTold && typeof this._ch.id === 'number') {
-      this._idTold = true;
-      events.id(this._ch.id);
-    }
-    if (state === this._told) return;
-    // a channel told closed has been through closing, as the page's has
-    if (state === 'closed' && this._told === 'open') events.closing();
-    this._told = state;
-    if (state === 'open') events.open();
-    else if (state === 'closing') events.closing();
-    else if (state === 'closed') events.closed();
-  }
-
-  listen(events: RTCDataChannelEvents): void {
-    this._events = events;
-    this._state(this._ch.readyState);
-  }
-  send(data: string | Uint8Array): void {
-    const bytes = typeof data === 'string' ? data : Buffer.from(data);
-    this._ch.send(bytes);
-    const size =
-      typeof data === 'string'
-        ? new TextEncoder().encode(data).byteLength
-        : data.byteLength;
-    queueMicrotask(() => this._events?.sent(size));
-  }
-  close(): void {
-    this._ch.close();
-  }
-}
-
-declare const TextEncoder: new () => { encode(text: string): Uint8Array };
-
 /** The configuration werift is handed for a page's: its certificates
  *  those `generateCertificate` made, by their numbers. */
 function configOf(
@@ -551,127 +439,32 @@ class WeriftConnection implements RTCConnectionLike {
   private readonly _pc: WPeer;
   private readonly _codecs: WCodec[];
   private readonly _wrapped = new Map<WTransceiver, WeriftTransceiver>();
-  private readonly _transports = new Map<WDtls, number>();
-  private readonly _told = new Map<number, string>();
+  private readonly _net: WeriftTransports;
   private _closed = false;
 
   constructor(
     private readonly _w: WeriftModule,
     request: RTCConnectRequest,
-    private readonly _events: RTCConnectionEvents,
+    events: RTCConnectionEvents,
     certificates: Map<number, WCertificate>,
   ) {
     const config = configOf(request, _w, certificates);
     this._pc = new _w.RTCPeerConnection(config);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
-    const pc = this._pc;
-    pc.onIceCandidate.subscribe((c) => {
-      if (this._closed) return;
-      this._watchTransports();
-      // a transport is gathering before its first candidate is told, and
-      // complete only after its last
-      this._tellTransports();
-      if (!c) return;
-      const transport = this._transportOfMid(c.sdpMid ?? null);
-      if (transport !== null) this._events.candidate(transport, candidateOf(c));
-    });
-    pc.onDataChannel.subscribe((ch) => {
-      if (this._closed) return;
-      this._events.dataChannel(new WeriftChannel(ch), {
-        label: ch.label,
-        ordered: ch.ordered,
-        maxPacketLifeTime: ch.maxPacketLifeTime ?? null,
-        maxRetransmits: ch.maxRetransmits ?? null,
-        protocol: ch.protocol,
-        negotiated: ch.negotiated,
-        id: typeof ch.id === 'number' ? ch.id : 0,
-        priority: 'low',
-      });
-    });
-    const changed = () => {
-      if (this._closed) return;
-      this._watchTransports();
-      this._tellTransports();
-    };
-    pc.iceGatheringStateChange.subscribe(changed);
-    pc.iceConnectionStateChange.subscribe(changed);
-    pc.connectionStateChange.subscribe(changed);
+    this._net = new WeriftTransports(this._pc, events, () => this._closed);
   }
 
-  /** Each transport is numbered as it is first seen, and watched. */
   private _watchTransports(): void {
-    for (const dtls of this._pc.dtlsTransports) {
-      if (this._transports.has(dtls)) continue;
-      this._transports.set(dtls, this._transports.size + 1);
-      const changed = () => {
-        if (!this._closed) this._tellTransports();
-      };
-      dtls.onStateChange.subscribe(changed);
-      dtls.iceTransport.onStateChange.subscribe(changed);
-    }
+    this._net.watch();
   }
 
   private _transportId(dtls: WDtls | undefined): number | null {
-    if (!dtls) return null;
-    this._watchTransports();
-    return this._transports.get(dtls) ?? null;
+    return this._net.idOf(dtls);
   }
 
-  private _transportOfMid(mid: string | null): number | null {
-    const t = this._pc.getTransceivers().find((x) => x.mid === mid);
-    const dtls =
-      t?.dtlsTransport ??
-      this._pc.sctpTransport?.dtlsTransport ??
-      this._pc.dtlsTransports[0];
-    return this._transportId(dtls);
-  }
-
-  private _snapshot(dtls: WDtls): RTCTransportStateLike {
-    const ice = dtls.iceTransport;
-    const pair = ice.getSelectedCandidatePair();
-    let local = null;
-    let remote = null;
-    try {
-      local = ice.getLocalParameters();
-      remote = ice.getRemoteParameters();
-    } catch {}
-    return {
-      // werift's controlled side is completed as soon as a pair is
-      // nominated, where WebRTC 1.0's completed waits for the remote's end
-      // of candidates as well, which werift never tells: connected
-      iceState: (ice.state === 'completed'
-        ? 'connected'
-        : ice.state) as RTCTransportStateLike['iceState'],
-      gatheringState:
-        ice.gatheringState as RTCTransportStateLike['gatheringState'],
-      role: ice.role as RTCTransportStateLike['role'],
-      dtlsState: dtls.state as RTCTransportStateLike['dtlsState'],
-      remoteCertificates: [],
-      selectedPair: pair
-        ? { local: candidateOf(pair.local), remote: candidateOf(pair.remote) }
-        : null,
-      localParameters: local
-        ? { usernameFragment: local.usernameFragment, password: local.password }
-        : null,
-      remoteParameters: remote
-        ? {
-            usernameFragment: remote.usernameFragment,
-            password: remote.password,
-          }
-        : null,
-    };
-  }
-
-  /** Tells each transport whose state changed since it was last told. */
   private _tellTransports(): void {
-    for (const [dtls, id] of this._transports) {
-      const state = this._snapshot(dtls);
-      const key = JSON.stringify(state);
-      if (this._told.get(id) === key) continue;
-      this._told.set(id, key);
-      this._events.transport(id, state);
-    }
+    this._net.tell();
   }
 
   private _wrap(t: WTransceiver): WeriftTransceiver {
@@ -875,28 +668,11 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   createDataChannel(init: RTCDataChannelInitLike): RTCDataChannelLike {
-    const ch = this._pc.createDataChannel(init.label, {
-      ordered: init.ordered,
-      protocol: init.protocol,
-      negotiated: init.negotiated,
-      ...(init.maxPacketLifeTime !== null
-        ? { maxPacketLifeTime: init.maxPacketLifeTime }
-        : {}),
-      ...(init.maxRetransmits !== null
-        ? { maxRetransmits: init.maxRetransmits }
-        : {}),
-      ...(init.id !== null ? { id: init.id } : {}),
-    });
-    return new WeriftChannel(ch);
+    return weriftChannel(this._pc, init);
   }
 
-  async stats(): Promise<RTCStatsLike[]> {
-    const report = await this._pc.getStats();
-    const out: RTCStatsLike[] = [];
-    for (const s of report.values()) {
-      out.push(JSON.parse(JSON.stringify(s)) as RTCStatsLike);
-    }
-    return out;
+  stats(): Promise<RTCStatsLike[]> {
+    return weriftStats(this._pc);
   }
 
   close(): void {
