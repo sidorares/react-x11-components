@@ -30,11 +30,7 @@ import {
   offeredCapabilities,
 } from './rtc-codecs.js';
 import { rtcError } from './rtc.js';
-import {
-  WeriftTransports,
-  weriftChannel,
-  weriftStats,
-} from './werift-transports.js';
+import { WeriftTransports } from './werift-transports.js';
 import type {
   WCandidate,
   WChannel,
@@ -668,11 +664,11 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   createDataChannel(init: RTCDataChannelInitLike): RTCDataChannelLike {
-    return weriftChannel(this._pc, init);
+    return this._net.channel(init);
   }
 
   stats(): Promise<RTCStatsLike[]> {
-    return weriftStats(this._pc);
+    return this._net.stats();
   }
 
   close(): void {
