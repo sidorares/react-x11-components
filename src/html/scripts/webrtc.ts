@@ -548,6 +548,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     /** The streams its `msid` lines name. */
     streams: string[];
     ufrag: string | null;
+    /** The rids its `a=simulcast` receives, the first of each choice and
+     *  none paused left out, or null where it has none. */
+    simulcastRecv: string[] | null;
   }
 
   const sectionsOf = (sdp: string | null): SdpSection[] => {
@@ -567,6 +570,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           direction: session,
           streams: [],
           ufrag: sessionUfrag,
+          simulcastRecv: null,
         };
         out.push(current);
         continue;
@@ -588,7 +592,18 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         if (current) current.ufrag = value;
         else sessionUfrag = value;
       } else if (current && name === 'mid') current.mid = value;
-      else if (current && name === 'msid') {
+      else if (current && name === 'simulcast') {
+        // `a=simulcast:send 1;2 recv 3,4;~5` (RFC 8853): a direction and
+        // its streams, in pairs, a stream's choices after commas
+        const tokens = value.trim().split(/\s+/);
+        for (let i = 0; i + 1 < tokens.length; i += 2) {
+          if (tokens[i] !== 'recv') continue;
+          current.simulcastRecv = tokens[i + 1]
+            .split(';')
+            .map((alt) => alt.split(',')[0].replace(/^~/, ''))
+            .filter((rid) => rid !== '');
+        }
+      } else if (current && name === 'msid') {
         const stream = value.split(' ')[0];
         if (stream && stream !== '-' && !current.streams.includes(stream)) {
           current.streams.push(stream);
@@ -2019,7 +2034,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     state: Any,
     remote: boolean,
     type: string,
+    sdp = '',
   ): { added: Any[]; removed: [Any, Any][] } => {
+    const answered =
+      remote && (type === 'answer' || type === 'pranswer')
+        ? sectionsOf(sdp)
+        : null;
     const added: Any[] = [];
     const removed: [Any, Any][] = [];
     const seen = new Set<number>();
@@ -2075,6 +2095,23 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         for (const e of sender.encodings) {
           if (e.codec && !sendable.some((c: Any) => sameCodec(c, e.codec))) {
             delete e.codec;
+          }
+        }
+        // a remote answer narrows the encodings a sender sends to the rids
+        // its `a=simulcast` receives, in the sender's order, and one with
+        // none to the first, its rid gone (WebRTC 1.0, 4.4.1.6)
+        const section = answered?.find((m) => m.mid === st.mid);
+        if (section && sender.encodings.length > 1) {
+          const rids = section.simulcastRecv;
+          if (rids === null) {
+            const [first] = sender.encodings;
+            delete first.rid;
+            sender.encodings = [first];
+          } else {
+            const kept = sender.encodings.filter((e: Any) =>
+              rids.includes(e.rid),
+            );
+            if (kept.length) sender.encodings = kept;
           }
         }
       }
@@ -2254,7 +2291,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           s.canTrickle = /^a=ice-options:.*\btrickle\b/m.test(sdp);
         }
         if (!remote && type === 'offer' && s.iceRestart) s.iceRestart = false;
-        const { added, removed } = applyState(s, state, remote, type);
+        const { added, removed } = applyState(s, state, remote, type, sdp);
         const changed = s.signaling !== next;
         s.signaling = next;
         if (changed) simple(s.self, 'signalingstatechange');
