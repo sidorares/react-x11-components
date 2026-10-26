@@ -117,6 +117,7 @@ import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import { PageSources } from './media-sources.js';
 import { PagePeers } from './peers.js';
+import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
@@ -215,6 +216,8 @@ export interface PageWorkersLike {
   start(init: WorkerInit): number;
   post(id: number, data: string): void;
   end(id: number): void;
+  /** Tells a worker's thread of a data channel the page handed it. */
+  rtc?(id: number, message: ChannelRelay): void;
 }
 
 /** What a realm that is a worker's reaches its page by
@@ -225,6 +228,8 @@ export interface WorkerScope {
   /** A script's source, fetched before this returns, or null. */
   importScript(url: string): string | null;
   error(message: string, filename: string, line: number, column: number): void;
+  /** Asks the page process of a data channel the page handed over. */
+  rtc?(message: ChannelRelay): void;
 }
 
 /** A frame a browser that draws frames mounts a view for (`frames`). */
@@ -5419,9 +5424,21 @@ export class DomHost {
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
+        toWorker: (worker, message) => this.workers?.rtc?.(worker, message),
+        toPage: (message) => this.workerScope?.rtc?.(message),
       });
     }
     return this._peersMade;
+  }
+
+  /** A worker asked of a data channel this page handed it. */
+  rtcFromWorker(worker: number, message: ChannelRelay): void {
+    this._peers().fromWorker(worker, message);
+  }
+
+  /** In a worker: what became of a data channel the page handed it. */
+  rtcHeard(message: ChannelRelay): void {
+    this._peers().heard(message);
   }
 
   /** The page's media sources, made the first time it asks for one. */

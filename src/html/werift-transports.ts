@@ -77,7 +77,14 @@ export interface WAssociation {
   readonly maxChannels?: number;
 }
 
-export interface WSctp {
+/** What an empty message is queued on: werift's own send queue, a private
+ *  of its `RTCSctpTransport`'s (see `sendEmpty`). */
+interface WQueue {
+  dataChannelQueue?: [WChannel, number, Uint8Array][];
+  dataChannelFlush?(): Promise<void>;
+}
+
+export interface WSctp extends WQueue {
   readonly dtlsTransport?: WDtls;
   readonly sctp?: WAssociation;
   /** The remote's `a=max-message-size`, 0 for none. */
@@ -97,6 +104,7 @@ export interface WChannel {
   readonly bufferedAmount: number;
   bufferedAmountLowThreshold: number;
   readonly bufferedAmountLow: WEvent<[]>;
+  addBufferedAmount(amount: number): void;
   readonly stateChanged: WEvent<[string]>;
   readonly onMessage: WEvent<[string | Uint8Array]>;
   readonly error: WEvent<[Error]>;
@@ -146,6 +154,8 @@ class WeriftChannel implements RTCDataChannelLike {
     private readonly _ch: WChannel,
     /** What is told before it is told open: its association's state. */
     private readonly _beforeOpen: () => void,
+    /** The SCTP transport it is sent over. */
+    private readonly _sctp: () => WSctp | undefined,
   ) {
     _ch.stateChanged.subscribe((state) => this._state(state));
     _ch.onMessage.subscribe((data) => {
@@ -193,6 +203,10 @@ class WeriftChannel implements RTCDataChannelLike {
     this._state(this._ch.readyState);
   }
   send(data: string | Uint8Array): void {
+    if (data.length === 0) {
+      this._sendEmpty(typeof data === 'string');
+      return;
+    }
     const bytes = typeof data === 'string' ? data : Buffer.from(data);
     this._ch.send(bytes);
     const size =
@@ -201,6 +215,26 @@ class WeriftChannel implements RTCDataChannelLike {
         : data.byteLength;
     queueMicrotask(() => this._events?.sent(size));
   }
+  /**
+   * An empty message, which werift sends as nothing: it cuts a message into
+   * as many chunks as it has bytes' worth, none for none, where RFC 8831
+   * (6.6) sends one byte under its own payload protocol — 56 for an empty
+   * string, 57 for empty bytes — which werift reads, and turns back into
+   * an empty message. So the adapter puts that byte on werift's own send
+   * queue, behind what was sent before it, and flushes it as werift's send
+   * does. It is the one place the adapter reaches into werift: a werift
+   * without the queue sends nothing, as it would have.
+   */
+  private _sendEmpty(text: boolean): void {
+    const sctp = this._sctp();
+    const queue = sctp?.dataChannelQueue;
+    if (!sctp || !Array.isArray(queue) || !sctp.dataChannelFlush) return;
+    // werift takes what it flushed off the channel's bufferedAmount
+    this._ch.addBufferedAmount(1);
+    queue.push([this._ch, text ? 56 : 57, new Uint8Array([0])]);
+    void sctp.dataChannelFlush();
+  }
+
   /**
    * Closes it once what was sent has gone. werift resets the stream as it
    * is closed, with what it has queued still unsent, and its far side
@@ -277,16 +311,19 @@ export class WeriftTransports {
     });
     pc.onDataChannel.subscribe((ch) => {
       if (this._closed()) return;
-      this._events.dataChannel(new WeriftChannel(ch, this._sctpUp), {
-        label: ch.label,
-        ordered: ch.ordered,
-        maxPacketLifeTime: ch.maxPacketLifeTime ?? null,
-        maxRetransmits: ch.maxRetransmits ?? null,
-        protocol: ch.protocol,
-        negotiated: ch.negotiated,
-        id: typeof ch.id === 'number' ? ch.id : 0,
-        priority: 'low',
-      });
+      this._events.dataChannel(
+        new WeriftChannel(ch, this._sctpUp, this._sctp),
+        {
+          label: ch.label,
+          ordered: ch.ordered,
+          maxPacketLifeTime: ch.maxPacketLifeTime ?? null,
+          maxRetransmits: ch.maxRetransmits ?? null,
+          protocol: ch.protocol,
+          negotiated: ch.negotiated,
+          id: typeof ch.id === 'number' ? ch.id : 0,
+          priority: 'low',
+        },
+      );
     });
     const changed = () => {
       if (this._closed()) return;
@@ -301,7 +338,7 @@ export class WeriftTransports {
   /** A data channel the page made. */
   channel(init: RTCDataChannelInitLike): RTCDataChannelLike {
     const ch = this._pc.createDataChannel(init.label, channelOptions(init));
-    return new WeriftChannel(ch, this._sctpUp);
+    return new WeriftChannel(ch, this._sctpUp, this._sctp);
   }
 
   /** Each transport is numbered as it is first seen, and watched, and so
@@ -349,6 +386,8 @@ export class WeriftTransports {
    * tells the SCTP transport connected before it announces a channel open
    * (6.1.1, "update the data max channels").
    */
+  private readonly _sctp = (): WSctp | undefined => this._pc.sctpTransport;
+
   private readonly _sctpUp = (): void => {
     this._watchAssociation();
     if (this._association?.associationState === ESTABLISHED) {
