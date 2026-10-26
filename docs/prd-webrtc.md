@@ -14,10 +14,15 @@ Status: design, 2026-10-26. Workstream 0 is built: the two seams
 `set_permission`. Workstream 1's foundation round is built (#1030): the
 page's `RTCPeerConnection` over werift (`src/html/werift.ts`), with the
 first slices of workstreams 2 and 3 beside it, and the area went from
-0.2% to 57.0%. Workstream 1's next rounds are under way: a canvas's
-`captureStream()` (57.6%), a sender's and a receiver's parameters taken
-from answers alone, and transceivers stopped and rolled back as WebRTC 1.0
-has them. Media does not flow yet. The spikes it quotes ran on Node
+0.2% to 57.0%. Workstream 1's tier-A rounds followed, beside workstream
+3's: a canvas's `captureStream()` (#1031), parameters taken from answers
+alone (#1034), transceivers stopped and rolled back as WebRTC 1.0 has
+them (#1036, #1039), simulcast narrowed by an answer (#1040), Web Audio
+(#1041), remote descriptions read as a browser reads them (#1042), and a
+rejected m-section's transceiver; with workstream 3's, the area came to
+77.6%. What tier A has left waits for H.264, for media to flow, for DTMF
+werift can send, or asserts `transceiver.stopped`, which WebRTC 1.0 no
+longer has. Media does not flow yet. The spikes it quotes ran on Node
 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
 in the repository.
 
@@ -201,7 +206,7 @@ on one side, or left for werift:
 | Brings up no transport for a transceiver stopping, so one stopped while its offer was still to be applied answers checks and never connects                                                                                           | The transport stays until a negotiation takes the transceiver out                                                        | The adapter makes it `inactive` and holds werift's `stop()` until the next offer or answer                                  |
 | `addIceCandidate` before a remote description is kept for later                                                                                                                                                                       | `InvalidStateError`                                                                                                      | The facade checks first                                                                                                     |
 | `bundlePolicy: 'balanced'` is kept as `max-compat`                                                                                                                                                                                    | Kept as given                                                                                                            | The facade keeps the page's configuration                                                                                   |
-| A remote offer's rejected m-section (port 0) makes no transceiver                                                                                                                                                                     | A stopped one, which `getTransceivers()` lists                                                                           | Left; worth filing upstream                                                                                                 |
+| A remote offer's rejected m-section (port 0) makes no transceiver                                                                                                                                                                     | A stopped one, which `getTransceivers()` lists                                                                           | The adapter lists a stand-in for it, which the facade stops at once, until the answer takes it out; worth filing upstream   |
 | One header extension URI has another id in each bundled m-section, whatever ids it is configured with                                                                                                                                 | One id per URI                                                                                                           | Left; worth filing upstream                                                                                                 |
 | An answer to an offer of `a=setup:active` is `active` too                                                                                                                                                                             | `passive`                                                                                                                | Left; worth filing upstream (a rewrite would desynchronise its DTLS role)                                                   |
 | A subsequent offer lists only the codecs negotiated before                                                                                                                                                                            | Every codec it can                                                                                                       | Left; worth filing upstream                                                                                                 |

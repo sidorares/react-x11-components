@@ -201,6 +201,10 @@ function turned(direction: RTCDirectionLike): RTCDirectionLike {
 
 /** One m-section of a description, as far as is read here. */
 interface Section {
+  /** The m-line's media kind. */
+  kind: string;
+  /** Rejected: port 0. */
+  rejected: boolean;
   direction: RTCDirectionLike;
   /** The streams its `msid` lines name. */
   streams: string[];
@@ -211,10 +215,14 @@ interface Section {
 function sectionsOf(sdp: string): Map<string, Section> {
   const out = new Map<string, Section>();
   let session: RTCDirectionLike = 'sendrecv';
-  let current: (Section & { mid: string | null; port: number }) | null = null;
+  let current:
+    (Omit<Section, 'rejected'> & { mid: string | null; port: number }) | null =
+    null;
   const close = () => {
     if (current?.mid != null) {
       out.set(current.mid, {
+        kind: current.kind,
+        rejected: current.port === 0,
         direction: current.port === 0 ? 'inactive' : current.direction,
         streams: current.streams,
         maxMessageSize: current.maxMessageSize,
@@ -227,6 +235,7 @@ function sectionsOf(sdp: string): Map<string, Section> {
       close();
       current = {
         mid: null,
+        kind: line.slice(2).split(' ')[0],
         port: Number(line.split(' ')[1]),
         direction: session,
         streams: [],
@@ -605,6 +614,35 @@ class WeriftConnection implements RTCConnectionLike {
     return w;
   }
 
+  /** The stand-ins for the remote offer's rejected m-sections, by mid. */
+  private readonly _rejected = new Map<string, RTCTransceiverLike>();
+  private _rejectedOf(
+    mid: string,
+    kind: 'audio' | 'video',
+  ): RTCTransceiverState {
+    let t = this._rejected.get(mid);
+    if (!t || t.kind !== kind) {
+      t = standIn(kind);
+      this._rejected.set(mid, t);
+    }
+    const none: RTCRtpParametersLike = {
+      codecs: [],
+      headerExtensions: [],
+      rtcp: { cname: this._pc.cname, reducedSize: false },
+    };
+    return {
+      transceiver: t,
+      mid,
+      direction: 'stopped',
+      currentDirection: null,
+      remoteDirection: 'inactive',
+      stopped: false,
+      sender: { transport: null, parameters: none },
+      receiver: { transport: null, parameters: none, streams: [] },
+      headerExtensions: [],
+    };
+  }
+
   /** The session as the descriptions applied left it. */
   private _state(): RTCSessionState {
     const remote = sectionsOf(this._pc.remoteDescription?.sdp ?? '');
@@ -658,6 +696,26 @@ class WeriftConnection implements RTCConnectionLike {
             : [],
         };
       });
+    // a remote offer's rejected m-section werift made nothing of: a
+    // transceiver of its own, stopped at once, as WebRTC 1.0 has it
+    // (4.4.1.6), until the answer takes it out
+    if (this._pc.signalingState === 'have-remote-offer') {
+      for (const [mid, section] of remote) {
+        if (!section.rejected) continue;
+        if (section.kind !== 'audio' && section.kind !== 'video') continue;
+        if (this._pc.getTransceivers().some((t) => t.mid === mid)) continue;
+        // an unknown kind's stand-in is no transceiver of its own
+        if (this._unknown.has(mid)) continue;
+        // in the m-sections' order, as the offer made them one by one
+        const order = [...remote.keys()];
+        const at = transceivers.findIndex(
+          (t) => t.mid !== null && order.indexOf(t.mid) > order.indexOf(mid),
+        );
+        const standing = this._rejectedOf(mid, section.kind);
+        if (at < 0) transceivers.push(standing);
+        else transceivers.splice(at, 0, standing);
+      }
+    }
     const sctp = this._pc.sctpTransport;
     let maxMessageSize = 65536;
     for (const s of remote.values()) {
@@ -862,26 +920,32 @@ class WeriftConnection implements RTCConnectionLike {
   }
 }
 
+/** A transceiver nothing carries: it takes what the page sets, and its
+ *  receiver receives nothing. */
+function standIn(kind: 'audio' | 'video'): RTCTransceiverLike {
+  return {
+    kind,
+    received: idleSource(kind),
+    setTrack() {},
+    setDirection() {},
+    setStreams() {},
+    setCodecPreferences() {},
+    setHeaderExtensionsToNegotiate() {},
+    setParameters: () => Promise.resolve(),
+    stop() {},
+    sources: () => [],
+    setJitterBufferTarget() {},
+    sendTone: () => false,
+    stats: () => Promise.resolve([]),
+  };
+}
+
 /** A connection werift is not there to carry: every operation that needs
  *  it rejects. */
 function unavailable(why: string): RTCConnectionLike {
   const no = () => Promise.reject(rtcError('NotSupportedError', why));
   return {
-    addTransceiver: (init) => ({
-      kind: init.kind,
-      received: idleSource(init.kind),
-      setTrack() {},
-      setDirection() {},
-      setStreams() {},
-      setCodecPreferences() {},
-      setHeaderExtensionsToNegotiate() {},
-      setParameters: () => Promise.resolve(),
-      stop() {},
-      sources: () => [],
-      setJitterBufferTarget() {},
-      sendTone: () => false,
-      stats: () => Promise.resolve([]),
-    }),
+    addTransceiver: (init) => standIn(init.kind),
     createOffer: no,
     createAnswer: no,
     setLocalDescription: no,

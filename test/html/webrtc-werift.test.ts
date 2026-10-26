@@ -509,3 +509,27 @@ test('a remote offer’s m-section of a kind nothing reads is rejected with port
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a remote offer’s rejected m-section is a transceiver stopped at once, which fires no track and goes with the answer', async () => {
+  const logs = await run(`
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    a.addTransceiver('video');
+    var offer = await a.createOffer();
+    var tracks = 0;
+    b.ontrack = function () { tracks++; };
+    await b.setRemoteDescription({ type: 'offer', sdp: offer.sdp.replace(/m=audio \\d+/, 'm=audio 0') });
+    var list = b.getTransceivers();
+    log('offered', list.length, list.map(function (t) { return t.receiver.track.kind + ':' + t.direction + ':' + t.currentDirection; }).join(','), tracks);
+    await b.setLocalDescription();
+    log('answered', b.getTransceivers().length, list[0].mid === null, list[0].currentDirection, b.getTransceivers()[0] === list[1]);
+    a.close(); b.close();
+    log('done');
+  `);
+  for (const line of [
+    'offered|2|audio:stopped:stopped,video:recvonly:null|1',
+    'answered|1|true|stopped|true',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

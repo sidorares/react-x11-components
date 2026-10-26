@@ -1694,7 +1694,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       s.transceivers = s.transceivers.filter((x: Any) => {
         const t = apply(wmGet, slots, [x]);
         t.fromRemoteOffer = false;
-        return !t.stopped;
+        if (!t.stopped) return true;
+        // whether or not the stack still listed it
+        t.mid = null;
+        t.transport = null;
+        return false;
       });
     }
     if (state.sctp) {
