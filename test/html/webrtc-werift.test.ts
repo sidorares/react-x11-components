@@ -190,6 +190,62 @@ test('data channels: a close delivers what was queued, a negotiated channel open
   }
 });
 
+test('transports: ICE goes new, checking, connected on both sides, the SCTP transport is told, and the stats name it all', async () => {
+  const logs = await run(`
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+    async function until(what, f) {
+      for (var end = Date.now() + 10000; !f(); await wait(10)) {
+        if (Date.now() > end) throw new Error('never ' + what);
+      }
+    }
+    async function transportStats(pc) {
+      var found = null;
+      (await pc.getStats()).forEach(function (s) { if (s.type === 'transport') found = s; });
+      return found;
+    }
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var ice1 = [pc1.iceConnectionState], ice2 = [pc2.iceConnectionState];
+    pc1.oniceconnectionstatechange = function () { ice1.push(pc1.iceConnectionState); };
+    pc2.oniceconnectionstatechange = function () { ice2.push(pc2.iceConnectionState); };
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    pc1.createDataChannel('x');
+    await pc1.setLocalDescription();
+    var early = await transportStats(pc1);
+    log('early', early.iceState, early.iceRole, early.dtlsState, early.dtlsRole, early.selectedCandidatePairChanges);
+    var sctp = [];
+    pc1.sctp.onstatechange = function () { sctp.push(pc1.sctp.state + ':' + (pc1.sctp.maxChannels > 0)); };
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    await until('connected', function () { return pc1.sctp.state === 'connected' && pc2.sctp && pc2.sctp.state === 'connected'; });
+    log('sctp', sctp.join(','), pc1.sctp.maxChannels === pc2.sctp.maxChannels);
+    await until('ice', function () { return ice1[ice1.length - 1] === 'connected' && ice2[ice2.length - 1] === 'connected'; });
+    log('ice', ice1.join(','), ice2.join(','));
+    var up = await transportStats(pc1);
+    log('up', up.iceState, up.iceRole, up.dtlsState, up.dtlsRole === 'client' || up.dtlsRole === 'server', up.tlsVersion, /^SRTP_/.test(up.srtpCipher), up.selectedCandidatePairChanges);
+    var closed = new Promise(function (r) { pc2.sctp.onstatechange = function () { if (pc2.sctp.state === 'closed') r(); }; });
+    pc1.close();
+    await closed;
+    log('closed', pc2.sctp.state);
+    pc2.close();
+    log('done');
+  `);
+  assert.ok(
+    !logs.some((l) => l.startsWith('failed')),
+    `a step failed: ${logs.join('\n')}`,
+  );
+  for (const line of [
+    'early|new|controlling|new|unknown|0',
+    'sctp|connected:true|true',
+    'ice|new,checking,connected|new,checking,connected',
+    'up|connected|controlling|connected|true|FEFD|true|1',
+    'closed|closed',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('what werift cannot read is an RTCError of sdp-syntax-error, as a browser has it', async () => {
   const logs = await run(`
     var pc = new RTCPeerConnection();
