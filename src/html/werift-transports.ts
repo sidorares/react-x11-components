@@ -53,6 +53,8 @@ export interface WDtls {
   readonly state: string;
   readonly iceTransport: WIce;
   readonly onStateChange: WEvent<[string]>;
+  /** Its DTLS session, once there is one: the peer's certificate, DER. */
+  readonly dtls?: { readonly remoteCertificate?: Uint8Array };
 }
 
 /** A transport's SCTP association: werift makes one for each DTLS
@@ -389,7 +391,9 @@ export class WeriftTransports {
         ice.gatheringState as RTCTransportStateLike['gatheringState'],
       role: ice.role as RTCTransportStateLike['role'],
       dtlsState: dtls.state as RTCTransportStateLike['dtlsState'],
-      remoteCertificates: [],
+      remoteCertificates: dtls.dtls?.remoteCertificate
+        ? [new Uint8Array(dtls.dtls.remoteCertificate)]
+        : [],
       selectedPair: pair
         ? { local: candidateOf(pair.local), remote: candidateOf(pair.remote) }
         : null,
