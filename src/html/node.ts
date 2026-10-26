@@ -9549,7 +9549,8 @@ export class HtmlViewNode extends Node {
       if (
         this._stale === Stale.Nothing &&
         this._tree &&
-        this._laidOutWidth >= 0
+        this._laidOutWidth >= 0 &&
+        laidOutApart(scope.own, this._tree)
       ) {
         this._rebuildFrame(scope.own, true);
         return;
@@ -15376,6 +15377,28 @@ const FILTER_WILL = WILL_STACK | WILL_HOLD_FIXED;
  *  from everything around it. */
 function outOfFlow(style: ComputedStyle): boolean {
   return style.position === 'absolute' || style.position === 'fixed';
+}
+
+/**
+ * Whether every element a change restyles is positioned out of the flow,
+ * or inside one that is, as the tree has them: the only change a frame's
+ * build repaints apart (`_changedOutOfFlow`). Anything else it builds and
+ * lays out whole and repaints whole, where a build of what the change
+ * reached keeps every other box and what its layouts learnt
+ * (`_subtreeBuild`). Wikipedia's contents mark the section in view as the
+ * article scrolls, and each mark was the whole article built and laid out
+ * again: 45 ms, several times a second.
+ */
+function laidOutApart(own: ReadonlySet<Element>, tree: BoxTree): boolean {
+  outer: for (const el of own) {
+    for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
+      const style = tree.styles.get(at)?.style;
+      if (!style) return false;
+      if (outOfFlow(style)) continue outer;
+    }
+    return false;
+  }
+  return true;
 }
 
 /** Whether a box is laid out where it was and as large: one that has a

@@ -164,9 +164,47 @@ function find(
     for (let i = 0; i < content.length; i += 1) {
       if (!sameRun(candidate.content[i], content[i])) continue outer;
     }
+    if (!sameGroups(candidate.content, content)) continue;
     return candidate;
   }
   return undefined;
+}
+
+/**
+ * Whether two paragraphs' runs fall into the same `nowrap` groups. A group
+ * is the element its runs share (`holdNoWrap`), a `Box` a build makes anew,
+ * and nothing reads it but to ask whether two runs share one — ntk where it
+ * breaks a line, `pretty.ts` where it scores the breaks — so runs whose
+ * groups answer one to one are the same runs. Told apart by the box, every
+ * paragraph with a `nowrap` element in it was laid out again after every
+ * build: Wikipedia's reference marks, 530 layouts of an article a pass.
+ */
+function sameGroups(
+  a: readonly DocumentRun[],
+  b: readonly DocumentRun[],
+): boolean {
+  let i = 0;
+  while (i < a.length && a[i].nowrap === b[i].nowrap) i += 1;
+  if (i === a.length) return true;
+  const there = new Map<unknown, unknown>();
+  const back = new Map<unknown, unknown>();
+  for (i = 0; i < a.length; i += 1) {
+    const x = a[i].nowrap;
+    const y = b[i].nowrap;
+    if (!x || !y) {
+      if (x || y) return false;
+      continue;
+    }
+    const seen = there.get(x);
+    if (seen === undefined) {
+      if (back.has(y)) return false;
+      there.set(x, y);
+      back.set(y, x);
+    } else if (seen !== y) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -211,7 +249,8 @@ void everyField;
  * walking each run's own fields, or the list's, was most of what finding
  * its layout cost. A field `DocumentRun` does not name is not the engine's
  * to read, nor the document's below the cache (`axes.ts`), and two runs
- * that differ only there are the same.
+ * that differ only there are the same. `nowrap` is compared across the
+ * paragraph instead (`sameGroups`).
  */
 function sameRun(a: DocumentRun, b: DocumentRun): boolean {
   return (
@@ -233,7 +272,6 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.strikeThickness === b.strikeThickness &&
     a.href === b.href &&
     a.features === b.features &&
-    a.nowrap === b.nowrap &&
     a.shapeApart === b.shapeApart &&
     a.kernAcross === b.kernAcross &&
     a.stretch === b.stretch
