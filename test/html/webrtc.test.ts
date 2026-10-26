@@ -37,32 +37,49 @@ const REQUEST = {
   certificates: [],
 };
 
+/**
+ * A wait the test holds the process open for, failing after five seconds.
+ * A fake source's timer keeps no process alive, by design, so while a test
+ * waits for its frames nothing else would: Node 20's and 22's runner then
+ * ends the file with the test's promise still pending.
+ */
+function held<T>(what: string, wait: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} never came`)), 5000);
+  });
+  return Promise.race([wait, limit]).finally(() => clearTimeout(timer));
+}
+
 /** The next `count` frames a video source gives, copied, and the source
  *  stopped after them. */
 function videoFrames(
   source: MediaSourceLike,
   count: number,
 ): Promise<MediaVideoFrame[]> {
-  return new Promise((resolve) => {
-    const frames: MediaVideoFrame[] = [];
-    source.listen({
-      video(frame) {
-        if (frames.length === count) return;
-        frames.push({
-          ...frame,
-          planes: frame.planes.map((p) =>
-            p.slice(),
-          ) as MediaVideoFrame['planes'],
-        });
-        if (frames.length === count) {
-          source.stop();
-          resolve(frames);
-        }
-      },
-      muted() {},
-      ended() {},
-    });
-  });
+  return held(
+    `${count} frames`,
+    new Promise((resolve) => {
+      const frames: MediaVideoFrame[] = [];
+      source.listen({
+        video(frame) {
+          if (frames.length === count) return;
+          frames.push({
+            ...frame,
+            planes: frame.planes.map((p) =>
+              p.slice(),
+            ) as MediaVideoFrame['planes'],
+          });
+          if (frames.length === count) {
+            source.stop();
+            resolve(frames);
+          }
+        },
+        muted() {},
+        ended() {},
+      });
+    }),
+  );
 }
 
 /** The next `count` chunks an audio source gives. */
@@ -70,21 +87,24 @@ function audioChunks(
   source: MediaSourceLike,
   count: number,
 ): Promise<MediaAudioData[]> {
-  return new Promise((resolve) => {
-    const chunks: MediaAudioData[] = [];
-    source.listen({
-      audio(data) {
-        if (chunks.length === count) return;
-        chunks.push(data);
-        if (chunks.length === count) {
-          source.stop();
-          resolve(chunks);
-        }
-      },
-      muted() {},
-      ended() {},
-    });
-  });
+  return held(
+    `${count} chunks`,
+    new Promise((resolve) => {
+      const chunks: MediaAudioData[] = [];
+      source.listen({
+        audio(data) {
+          if (chunks.length === count) return;
+          chunks.push(data);
+          if (chunks.length === count) {
+            source.stop();
+            resolve(chunks);
+          }
+        },
+        muted() {},
+        ended() {},
+      });
+    }),
+  );
 }
 
 /** The frame number the pattern writes along a frame's bottom row. */
