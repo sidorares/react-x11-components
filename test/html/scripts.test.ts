@@ -6517,9 +6517,11 @@ test('a frame’s window is one for the frame wherever it goes: its location sen
       // what Contentsquare and Sentry take from a frame: the page's own, unwrapped
       'r.push(new w.RegExp("a+", "g").test("aa"), w.JSON.stringify([1]), w.fetch === kept, typeof w.mine,' +
       '  Object.getOwnPropertyDescriptor(w.Node.prototype, "nodeType").get.call(document.body));' +
-      'var heard = []; w.addEventListener("message", function (e) { heard.push(e.data + ":" + (e.source === window)); });' +
+      // the test goes on once the message is heard, in a task of its own
+      // after it: a timer raced the message on a slow runner
+      'var heard = []; w.addEventListener("message", function (e) { heard.push(e.data + ":" + (e.source === window)); setTimeout(onHeard, 0); }, { once: true });' +
       'w.postMessage("hi", "*");' +
-      'setTimeout(function () { r.push(heard.join()); step(f, sent); w.location.replace("a.html"); }, 10);' +
+      'function onHeard() { r.push(heard.join()); step(f, sent); w.location.replace("a.html"); }' +
       'function sent() {' +
       '  r.push(f.getAttribute("src"), f.contentWindow === w, w.location.pathname, w.document.title);' +
       '  step(f, function () {' +
