@@ -94,6 +94,11 @@ parts.
   model), the escapes a DOM binding opens and how each is closed, the
   seams `<Html>` would grow while still running nothing, and what core
   would be asked for.
+- [WebRTC in `<Html scripts>`](prd-webrtc.md) — design: what Interop
+  2026's 91 WebRTC tests need, in three tiers; werift's peer connection
+  and libav.js's VP8, VP9 and Opus as optional peers behind a seam that
+  connects nothing by default, with the spikes' timings; why native
+  libwebrtc is not the plan; and the work split into five loops.
 - [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,
