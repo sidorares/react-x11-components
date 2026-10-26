@@ -118,6 +118,8 @@ import { MEDIA_ENOUGH, MediaReader } from './media.js';
 import { PageTransports } from './transports.js';
 import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
+import type { HtmlMediaDevices } from '../media-devices.js';
+import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import * as ntk from 'react-x11/ntk';
 import type {
@@ -492,6 +494,12 @@ export interface HostSeams {
   /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
    *  `webTransport`). Absent, every session fails, as with no network. */
   webTransport?: HtmlWebTransport;
+  /** What a page's `RTCPeerConnection`s are carried over (`HtmlScripts`'
+   *  `webRTC`). Absent, no stack: an operation that needs one rejects. */
+  webRTC?: HtmlWebRTC;
+  /** The page's cameras, microphones and screens (`HtmlScripts`'
+   *  `mediaDevices`). Absent, there are none. */
+  mediaDevices?: HtmlMediaDevices;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;

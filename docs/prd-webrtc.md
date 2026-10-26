@@ -8,9 +8,12 @@ What it would take for a page's scripts to open WebRTC connections in
 - how the work fits the engine's rules;
 - the order to build it in.
 
-Status: design, 2026-10-26. Nothing is built. The spikes it quotes ran on
-Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are
-not in the repository.
+Status: design, 2026-10-26, and workstream 0 built: the two seams
+(`src/html/rtc.ts`, `src/html/media-devices.ts`), the fake devices
+(`src/html/fake-media.ts`), and the WPT runner's devices and
+`set_permission`. Nothing a page can reach is built yet. The spikes it
+quotes ran on Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch
+scripts and are not in the repository.
 
 ## The answer, short
 
@@ -252,11 +255,12 @@ it.
 
 ### The seam
 
-`HtmlScripts.webRTC` is an `HtmlWebRTC` (`src/html/rtc.ts`). A connection
-and its objects are numbers, as WebTransport's are. The facade asks for
-operations (`rtcCreateOffer`, `rtcSetLocal`, `rtcAddTransceiver`,
-`rtcSend`, …) and the seam tells it what becomes of them, through `__rtc…`
-entries:
+`HtmlScripts.webRTC` is an `HtmlWebRTC` (`src/html/rtc.ts`), and
+`HtmlScripts.mediaDevices` an `HtmlMediaDevices`
+(`src/html/media-devices.ts`). Across the bridge, a connection and its
+objects are numbers, as WebTransport's are. The facade asks for operations
+(`rtcCreateOffer`, `rtcSetLocal`, `rtcAddTransceiver`, `rtcSend`, …) and
+the host tells it what becomes of them, through `__rtc…` entries:
 
 - an offer made;
 - a candidate gathered;
@@ -264,12 +268,61 @@ entries:
 - a channel opened;
 - a message, a track, an error.
 
+Behind the host, the seam names an object for what the host calls methods
+on: a connection, a transceiver, a data channel, a media source. It names
+a number for what is only told of: a transport, a certificate. That is
+WebTransport's split too, whose seam has stream objects and send groups by
+number.
+
+These are the decisions the interface made, which workstreams 1 to 4
+stand on:
+
+- **An operation is answered with state.** `setLocalDescription` and
+  `setRemoteDescription` answer every transceiver as the description left
+  it (`RTCTransceiverState`):
+  - its mid, direction and current direction;
+  - the direction the remote's m-section has;
+  - whether it is stopped;
+  - its sender's and receiver's negotiated parameters and transports;
+  - the streams the remote's `msid` names.
+
+  They also answer the SCTP transport. The facade compares that with its
+  mirror and tells the page's events in WebRTC 1.0's order.
+
+- **A transport's state is told whole** (`RTCTransportStateLike`): its
+  ICE and DTLS states, role, selected pair, parameters and the remote's
+  certificates, as one object whenever any of it changes.
+- **What WebRTC 1.0 works out from state the realm has is the realm's**:
+  - the connection's `iceConnectionState`, `connectionState` and
+    `iceGatheringState`, from its transports';
+  - whether negotiation is needed;
+  - a `track` event;
+  - `bufferedAmount`, from what was sent and what the seam says left;
+  - each DTMF tone's timing, the seam sending one tone at a time.
+- **The descriptions are read from the stack** (`descriptions()`), since
+  a local description holds the candidates gathered since it was set.
+- **`getCapabilities` is answered at once**, from what the stack is
+  configured with. It is synchronous, so the adapter's codec table lives
+  in a light module, and werift loads with the first connection.
+- **A track is a source** (`MediaSourceLike`), whoever makes its frames:
+  a device, a screen or a receiver. A clone is another track of the same
+  source, which the host counts. Video is I420, which core's `VideoFrames`
+  and libvpx take as they are. Audio is 10 ms of planar floats, Web
+  Audio's and WebCodecs' `f32-planar`, and a peer connection's frame.
+- **A device's id is the seam's, and the page sees a digest of it** with
+  its origin. Its label is hidden until the kind is allowed; both are the
+  realm's rules to keep.
+- **What a seam rejects with is named** (`rtcError`, `mediaError`): a
+  `DOMException`'s name, or `RTCError` with its detail, which the realm
+  makes into its own error.
+
 **Its default connects nothing** (`NO_WEBRTC`):
 
-- the constructor works;
+- the constructor works, and transceivers and data channels are made;
 - an operation that needs the engine rejects with a `NotSupportedError`
   that names the missing seam;
-- no candidate is gathered and no socket is opened.
+- no candidate is gathered and no socket is opened;
+- `getCapabilities` answers null.
 
 `HtmlNetwork.webRTC` supplies a seam over werift (`src/html/werift.ts`),
 loaded the first time a page constructs a connection.
@@ -295,8 +348,9 @@ where it is werift's to fix, as quico's three behaviours were
 
 - **Sources.** `getUserMedia` goes through `HtmlScripts.mediaDevices`,
   whose default has no device: `NotFoundError`, as on a machine with none.
-  The WPT runner's seam gives fake devices: a test pattern and a tone, as
-  wptrunner runs Chrome with fake media devices. A real camera or
+  The WPT runner's seam gives fake devices (`fakeMediaDevices`): a test
+  pattern and a tone, as wptrunner runs Chrome with fake media devices,
+  and its `test_driver.set_permission` sets what they answer. A real camera or
   microphone is the host's to supply, and the host's permission to ask.
   `canvas.captureStream` comes in tier C, from the page realm's canvas
   pixels.

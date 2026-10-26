@@ -188,6 +188,12 @@ export function useScripts(
     get webTransport() {
       return latest.current.webTransport;
     },
+    get webRTC() {
+      return latest.current.webRTC;
+    },
+    get mediaDevices() {
+      return latest.current.mediaDevices;
+    },
     get drawsFrames() {
       return latest.current.drawsFrames;
     },

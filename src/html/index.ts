@@ -149,6 +149,57 @@ export type {
   WebTransportStreamLike,
   WebTransportStreamStats,
 } from './transport.js';
+export { NO_WEBRTC, rtcError } from './rtc.js';
+export type {
+  HtmlWebRTC,
+  RTCCandidateLike,
+  RTCCapabilitiesLike,
+  RTCCertificateLike,
+  RTCCodecLike,
+  RTCCodecParametersLike,
+  RTCConnectRequest,
+  RTCConnectionEvents,
+  RTCConnectionLike,
+  RTCDataChannelEvents,
+  RTCDataChannelInitLike,
+  RTCDataChannelLike,
+  RTCDescriptionsLike,
+  RTCDirectionLike,
+  RTCEncodingLike,
+  RTCErrorDetailLike,
+  RTCErrorName,
+  RTCHeaderExtensionChoice,
+  RTCHeaderExtensionLike,
+  RTCIceServerLike,
+  RTCKeygenLike,
+  RTCPriorityLike,
+  RTCRtpParametersLike,
+  RTCRtpSourceLike,
+  RTCSessionState,
+  RTCStatsLike,
+  RTCTransceiverInit,
+  RTCTransceiverLike,
+  RTCTransceiverState,
+  RTCTransportStateLike,
+} from './rtc.js';
+export { NO_MEDIA_DEVICES, idleSource, mediaError } from './media-devices.js';
+export type {
+  HtmlMediaDevices,
+  MediaAudioData,
+  MediaDeviceCapabilities,
+  MediaDeviceDescription,
+  MediaDeviceKind,
+  MediaErrorName,
+  MediaPermission,
+  MediaPermissionRequest,
+  MediaRange,
+  MediaSettings,
+  MediaSourceEvents,
+  MediaSourceLike,
+  MediaVideoFrame,
+} from './media-devices.js';
+export { fakeMediaDevices } from './fake-media.js';
+export type { FakeMediaDevices, FakeMediaOptions } from './fake-media.js';
 export { linkTarget, navigableFor } from './scripts/target.js';
 export type { Navigable } from './scripts/target.js';
 export {
