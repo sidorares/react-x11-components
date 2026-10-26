@@ -488,3 +488,35 @@ test('a sender’s and a receiver’s parameters are what an answer negotiated, 
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a remote answer narrows a sender’s encodings to the rids its a=simulcast receives, and one with none to the first', async () => {
+  const logs = await run(`
+    function rids(sender) {
+      return sender.getParameters().encodings.map(function (e) { return e.rid + ':' + e.scaleResolutionDownBy; }).join(',');
+    }
+    async function answered(simulcast) {
+      var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+      var t = a.addTransceiver('video', { sendEncodings: [{ rid: 'foo' }, { rid: 'bar' }] });
+      await a.setLocalDescription();
+      await b.setRemoteDescription(a.localDescription);
+      await b.setLocalDescription();
+      var sdp = b.localDescription.sdp.replace(/(a=mid:[^\\r\\n]*\\r\\n)/, '$1' + (simulcast ? simulcast + '\\r\\n' : ''));
+      await a.setRemoteDescription({ type: 'answer', sdp: sdp });
+      var out = rids(t.sender);
+      a.close(); b.close();
+      return out;
+    }
+    log('offered', rids(new RTCPeerConnection().addTransceiver('video', { sendEncodings: [{ rid: 'foo' }, { rid: 'bar' }] }).sender));
+    log('to foo', await answered('a=simulcast:recv foo'));
+    log('to bar', await answered('a=simulcast:recv ~baz;bar,foo'));
+    log('to none', await answered(''));
+  `);
+  for (const line of [
+    'offered|foo:2,bar:1',
+    'to foo|foo:2',
+    'to bar|bar:1',
+    'to none|undefined:2',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
