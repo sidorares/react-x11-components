@@ -446,6 +446,70 @@ test('a transceiver stopped while its offer is still to be applied keeps its tra
   }
 });
 
+test('a remote description with bare LF line endings is read, and one that moves a header extension’s id is refused', async () => {
+  const logs = await run(`
+    var pc = new RTCPeerConnection();
+    var sdp = 'v=0\\no=- 0 3 IN IP4 127.0.0.1\\ns=-\\nt=0 0\\n' +
+      'a=fingerprint:sha-256 A7:24:72:CA:6E:02:55:39:BA:66:DF:6E:CC:4C:D8:B0:1A:BF:1A:56:65:7D:F4:03:AD:7E:77:43:2A:29:EC:93\\n' +
+      'a=ice-ufrag:6HHHdzzeIhkE0CKj\\na=ice-pwd:XYDGVpfvklQIEnZ6YnyLsAew\\na=group:BUNDLE audio video\\r\\n' +
+      'm=audio 9 RTP/SAVPF 111\\nc=IN IP4 0.0.0.0\\na=rtcp-mux\\na=sendonly\\na=mid:audio\\na=rtpmap:111 opus/48000/2\\na=setup:actpass\\n' +
+      'a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid\\r\\n' +
+      'm=video 9 RTP/SAVPF 112\\nc=IN IP4 0.0.0.0\\na=rtcp-mux\\na=sendonly\\na=mid:video\\na=rtpmap:112 VP8/90000\\na=setup:actpass\\n' +
+      'a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid\\r\\n';
+    await pc.setRemoteDescription({ type: 'offer', sdp: sdp });
+    var answer = await pc.createAnswer();
+    log('mixed endings', pc.getTransceivers().map(function (t) { return t.mid; }).join(','), (answer.sdp.match(/a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid/g) || []).length);
+    pc.close();
+
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    for (var round = 0; round < 2; round++) {
+      await a.setLocalDescription();
+      await b.setRemoteDescription(a.localDescription);
+      var reply = await b.createAnswer();
+      if (round === 0) {
+        await b.setLocalDescription(reply);
+        await a.setRemoteDescription(b.localDescription);
+      }
+    }
+    var swapped = reply.sdp.replace('urn:ietf:params:rtp-hdrext:ssrc-audio-level', 'xyzzy')
+      .replace('urn:ietf:params:rtp-hdrext:sdes:mid', 'urn:ietf:params:rtp-hdrext:ssrc-audio-level')
+      .replace('xyzzy', 'urn:ietf:params:rtp-hdrext:sdes:mid');
+    try { await a.setRemoteDescription({ type: 'answer', sdp: swapped }); log('reassigned', 'taken'); }
+    catch (e) { log('reassigned', e.name, e instanceof DOMException); }
+    log('still', a.signalingState);
+    a.close(); b.close();
+    log('done');
+  `);
+  for (const line of [
+    'mixed endings|audio,video|2',
+    'reassigned|InvalidAccessError|true',
+    'still|have-local-offer',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('a remote offer’s m-section of a kind nothing reads is rejected with port 0, as its own kind', async () => {
+  const logs = await run(`
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    a.addTransceiver('video');
+    var offer = await a.createOffer();
+    await b.setRemoteDescription({ type: 'offer', sdp: offer.sdp.replace('m=audio ', 'm=unicorns ') });
+    var answer = await b.createAnswer();
+    await b.setLocalDescription(answer);
+    var lines = answer.sdp.split('\\r\\n').filter(function (l) { return l.indexOf('m=') === 0; });
+    log('answered', lines.length, /^m=unicorns 0 /.test(lines[0]), /^m=video [1-9]/.test(lines[1]));
+    log('remote kept', /m=unicorns /.test(b.remoteDescription.sdp), b.getTransceivers().map(function (t) { return t.receiver.track.kind; }).join(','));
+    a.close(); b.close();
+    log('done');
+  `);
+  for (const line of ['answered|2|true|true', 'remote kept|true|video']) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('a remote offer’s rejected m-section is a transceiver stopped at once, which fires no track and goes with the answer', async () => {
   const logs = await run(`
     var a = new RTCPeerConnection(), b = new RTCPeerConnection();
