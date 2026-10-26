@@ -16601,14 +16601,41 @@ export function installDom(
     }
   };
 
+  /** `datachannel.ts`'s internals, once the WebRTC block below has made
+   *  them: what a message to a worker carries a data channel by. */
+  let dataChannelsOf: Any = null;
+
+  /**
+   * The data channels a `postMessage` to a worker transfers (WebRTC 1.0,
+   * 6.2, "transfer steps"): each still transferable, and none twice, or a
+   * `DataCloneError` before anything is posted.
+   */
+  const channelsTransferred = (transfer: Any): Set<Any> => {
+    const moved = new Set<Any>();
+    const list = Array.isArray(transfer) ? transfer : transfer?.transfer;
+    if (!Array.isArray(list) || !dataChannelsOf) return moved;
+    for (const item of list) {
+      if (!dataChannelsOf.isChannel(item)) continue;
+      if (moved.has(item) || !dataChannelsOf.transferable(item)) {
+        throw new DOMException(
+          'The RTCDataChannel could not be transferred.',
+          'DataCloneError',
+        );
+      }
+      moved.add(item);
+    }
+    return moved;
+  };
+
   /**
    * A value as text, for a message to a worker, which runs in a thread of
    * its own that only a string reaches: structured clone's types, kept
    * apart by a tag, and an object met twice met as the first (HTML 2.7.3,
    * "StructuredSerialize"). `deserializeClone` makes it again in this
-   * realm.
+   * realm. A data channel in `moved` crosses as the host's number for it
+   * and its state.
    */
-  const serializeClone = (value: Any): string => {
+  const serializeClone = (value: Any, moved?: Set<Any>): string => {
     const seen = new Map<Any, number>();
     const bytesOf = (b: Uint8Array): string => base64OfBytes(b);
     const walk = (v: Any): Any => {
@@ -16633,6 +16660,10 @@ export function installDom(
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
         return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
+      }
+      if (moved?.has(v)) {
+        const { host, state } = dataChannelsOf.transferData(v);
+        return { i: index, t: 'C', h: host, a: state };
       }
       if (v instanceof EventTarget || v instanceof Event) {
         throw new DOMException(
@@ -16713,6 +16744,11 @@ export function installDom(
       switch (v.t) {
         case 'L':
           out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          break;
+        case 'C':
+          // a data channel the page handed over: this realm's own, for the
+          // host's same number
+          out = dataChannelsOf ? dataChannelsOf.adopt(v.h, v.a) : null;
           break;
         case 'D':
           out = new Date(v.v);
@@ -17032,9 +17068,15 @@ export function installDom(
       workers.set(this._id, this);
     }
     postMessage(message: Any, transfer?: Any): void {
-      const data = serializeClone(message);
+      const moved = channelsTransferred(transfer);
+      const data = serializeClone(message, moved);
       giveUp(transfer);
       if (!this._id) return;
+      // the host tells the worker of each channel before the message that
+      // hands it over arrives
+      for (const channel of moved) {
+        dataChannelsOf.transferOut(channel, this._id);
+      }
       call('workerPost', this._id, data);
     }
     terminate(): void {
@@ -24349,7 +24391,9 @@ export function installDom(
         new rtc.RTCErrorEvent('error', {
           error: new rtc.RTCError(detail, message),
         }),
+      later: (fn: () => void) => setTimer(fn, 0, [], false),
     });
+    dataChannelsOf = channels;
     rtc = webrtc({
       call: call as Any,
       entry: later,
