@@ -8,9 +8,9 @@
 // so it closes over nothing, and `installDom` calls it with what it reaches
 // the host by.
 //
-// A track is a number for a host source: a device's, or a peer connection
-// receiver's (`webrtc.ts` makes those through `internals`). Its frames stay
-// host-side. What the page holds — the tracks, the streams, the device
+// A track is a number for a host source: a device's, a canvas's
+// (`captureStream()`), or a peer connection receiver's (`webrtc.ts` makes
+// those through `internals`). Its frames stay host-side. What the page holds — the tracks, the streams, the device
 // lists, every rejection — is made here, of the page's own classes.
 //
 // This is the first slice of docs/prd-webrtc.md's workstream 2: enough for
@@ -58,6 +58,18 @@ export interface MediaStreamsInternals {
   end(track: unknown, told: boolean): void;
   /** A fresh id, as a track's and a stream's are made. */
   uuid(): string;
+  /**
+   * `canvas.captureStream(frameRequestRate)`, its rate already checked: a
+   * stream of one `CanvasCaptureMediaStreamTrack` over a host source of
+   * the canvas's pixels, the canvas the element numbered `element`.
+   */
+  captureCanvas(
+    canvas: unknown,
+    element: number,
+    rate: number | null,
+    width: number,
+    height: number,
+  ): unknown;
 }
 
 export function installMediaStreams(deps: MediaStreamsDeps): {
@@ -171,6 +183,8 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     settings: Any;
     capabilities: Any;
     constraints: Any;
+    /** The canvas a `captureStream()` track captures, or null. */
+    canvas: Any;
   }
 
   const HINTS: Record<string, string[]> = {
@@ -215,8 +229,16 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     clone(): Any {
       const s: TrackSlot = slotOf(this, (x) => x.track);
       if (s.state === 'live') call('mdClone', s.source);
-      const copy = makeTrack(s.kind, s.source, s.label, s.muted);
+      // a canvas's track clones as one, of the same canvas
+      const copy = makeTrack(
+        s.kind,
+        s.source,
+        s.label,
+        s.muted,
+        s.canvas ? CanvasCaptureMediaStreamTrack : MediaStreamTrack,
+      );
       const c: TrackSlot = apply(wmGet, slots, [copy]);
+      c.canvas = s.canvas;
       c.enabled = s.enabled;
       c.state = s.state;
       c.contentHint = s.contentHint;
@@ -256,13 +278,27 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     handler(MediaStreamTrack.prototype, name);
   }
 
+  /** A canvas's track (Media Capture from DOM Elements, 3.2): the canvas,
+   *  and a frame asked for. */
+  class CanvasCaptureMediaStreamTrack extends MediaStreamTrack {
+    get canvas(): Any {
+      const s = slotOf(this, (x) => x.track && x.canvas);
+      return s.canvas;
+    }
+    requestFrame(): void {
+      const s: TrackSlot = slotOf(this, (x) => x.track && x.canvas);
+      if (s.state === 'live') call('mdRequestFrame', s.source);
+    }
+  }
+
   const makeTrack = (
     kind: 'audio' | 'video',
     source: number,
     label: string,
     muted: boolean,
+    Kind: Any = MediaStreamTrack,
   ): Any => {
-    const track = new MediaStreamTrack(TOKEN);
+    const track = new Kind(TOKEN);
     const s: TrackSlot = {
       track: true,
       kind,
@@ -276,6 +312,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       settings: {},
       capabilities: {},
       constraints: {},
+      canvas: null,
     };
     apply(wmSet, slots, [track, s]);
     let set = bySource.get(source);
@@ -601,6 +638,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
   const interfaces: Record<string, unknown> = {
     MediaStream,
     MediaStreamTrack,
+    CanvasCaptureMediaStreamTrack,
     MediaStreamTrackEvent,
     OverconstrainedError,
   };
@@ -612,6 +650,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
   idl({
     MediaStream,
     MediaStreamTrack,
+    CanvasCaptureMediaStreamTrack,
     MediaStreamTrackEvent,
     OverconstrainedError,
     MediaDevices,
@@ -660,6 +699,36 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         if (told) fire(track, new Event('ended'));
       },
       uuid,
+      captureCanvas: (
+        canvas: Any,
+        element: number,
+        rate: number | null,
+        width: number,
+        height: number,
+      ) => {
+        const source = call(
+          'mdCanvas',
+          element,
+          rate === null ? '' : String(rate),
+        );
+        const stream = new MediaStream(TOKEN);
+        if (typeof source !== 'number') return stream;
+        const track = makeTrack(
+          'video',
+          source,
+          '',
+          false,
+          CanvasCaptureMediaStreamTrack,
+        );
+        const s: TrackSlot = apply(wmGet, slots, [track]);
+        s.canvas = canvas;
+        s.settings =
+          rate === null
+            ? { width, height, resizeMode: 'none' }
+            : { width, height, frameRate: rate, resizeMode: 'none' };
+        apply(wmGet, slots, [stream]).tracks.push(track);
+        return stream;
+      },
     },
   };
 }

@@ -1,8 +1,8 @@
 // A page's media sources on the host's side: the devices its
-// `getUserMedia` opens over `HtmlScripts.mediaDevices`, and a peer
-// connection receiver's (`peers.ts` registers those), each a number the
-// page's tracks are over (`mediastream.ts`, the `md…` ops and `__md…`
-// entries).
+// `getUserMedia` opens over `HtmlScripts.mediaDevices`, a canvas a
+// `captureStream()` captures, and a peer connection receiver's (`peers.ts`
+// registers those), each a number the page's tracks are over
+// (`mediastream.ts`, the `md…` ops and `__md…` entries).
 //
 // Only primitives cross: a source is a number, what an entry is handed is
 // JSON, and an error is its name and its message, which the page's realm
@@ -17,8 +17,10 @@ import type {
   MediaDeviceCapabilities,
   MediaDeviceDescription,
   MediaSettings,
+  MediaSourceEvents,
   MediaSourceLike,
 } from '../media-devices.js';
+import type { CanvasPixels } from './host.js';
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -30,6 +32,23 @@ export interface SourceSeams {
   origin(): string;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
+  /** The canvas an element's number names, as a `captureStream()` reads
+   *  it, or null where it names none. */
+  canvas?(element: number): CanvasFeed | null;
+}
+
+/** A canvas's pixels as the host has them, and when they change. */
+export interface CanvasFeed {
+  /** Its pixels, or null before a script drew any. */
+  pixels(): CanvasPixels | null;
+  /** Tells `changed` at each change, until the function it answers is
+   *  called. */
+  watch(changed: () => void): () => void;
+}
+
+/** A canvas's source, which a `requestFrame()` asks a frame of. */
+export interface CanvasSource extends MediaSourceLike {
+  requestFrame(): void;
 }
 
 interface Held {
@@ -181,6 +200,18 @@ export class PageSources {
           this._ids.delete(held.source);
           held.source.stop();
         }
+        return null;
+      }
+      case 'mdCanvas': {
+        const feed = this._seams.canvas?.(Number(a)) ?? null;
+        if (!feed) return null;
+        const rate = typeof b === 'string' && b !== '' ? Number(b) : null;
+        return this.register(canvasSource(feed, rate));
+      }
+      case 'mdRequestFrame': {
+        const source = this._held.get(Number(a))?.source as
+          Partial<CanvasSource> | undefined;
+        source?.requestFrame?.();
         return null;
       }
       case 'mdDevices':
@@ -338,6 +369,149 @@ export class PageSources {
       fail(error);
     }
   }
+}
+
+declare const setTimeout: (fn: () => void, ms: number) => unknown;
+declare const clearTimeout: (handle: unknown) => void;
+
+/**
+ * A canvas's frames (Media Capture from DOM Elements, 3.1): one each time
+ * its pixels change where no rate was given, at most `rate` a second where
+ * one was, and only at `requestFrame()` where it is 0. A frame is made only
+ * where something reads frames, from the host's copy of the canvas's
+ * pixels, converted to I420.
+ */
+export function canvasSource(
+  feed: CanvasFeed,
+  rate: number | null,
+): CanvasSource {
+  let events: MediaSourceEvents | null = null;
+  let unwatch: (() => void) | null = null;
+  let stopped = false;
+  let last = -Infinity;
+  let waiting: unknown = null;
+  let asked = false;
+  const start = Date.now();
+
+  const emit = () => {
+    const pixels = feed.pixels();
+    if (!events?.video || !pixels || stopped) return;
+    last = Date.now();
+    events.video({
+      ...i420Of(pixels),
+      timestamp: (last - start) * 1000,
+    });
+  };
+  const changed = () => {
+    if (stopped) return;
+    if (rate === null) emit();
+    else if (rate === 0) {
+      if (asked) {
+        asked = false;
+        emit();
+      }
+    } else if (waiting === null) {
+      const due = last + 1000 / rate - Date.now();
+      if (due <= 0) emit();
+      else {
+        waiting = setTimeout(() => {
+          waiting = null;
+          emit();
+        }, due);
+        (waiting as { unref?(): void }).unref?.();
+      }
+    }
+  };
+
+  return {
+    kind: 'video',
+    label: '',
+    listen(next) {
+      events = next;
+      if (stopped) return;
+      next.muted(false);
+      unwatch = feed.watch(changed);
+      if (events.video) emit();
+    },
+    settings() {
+      const pixels = feed.pixels();
+      const size = pixels ? { width: pixels.width, height: pixels.height } : {};
+      return rate === null ? size : { ...size, frameRate: rate };
+    },
+    capabilities: () => ({}),
+    reconfigure: () => Promise.resolve(false),
+    requestFrame() {
+      if (stopped) return;
+      if (rate === 0) asked = true;
+      emit();
+    },
+    stop() {
+      stopped = true;
+      unwatch?.();
+      unwatch = null;
+      if (waiting !== null) clearTimeout(waiting);
+      waiting = null;
+    },
+  };
+}
+
+/**
+ * Straight RGBA as I420, BT.601 at video range, as a browser's canvas
+ * capture converts it: each chroma sample the mean of the two-by-two
+ * pixels it covers, an odd size's last row and column rounded up.
+ */
+export function i420Of(pixels: CanvasPixels): {
+  width: number;
+  height: number;
+  planes: [Uint8Array, Uint8Array, Uint8Array];
+  strides: [number, number, number];
+} {
+  const { width, height, data } = pixels;
+  const cw = (width + 1) >> 1;
+  const ch = (height + 1) >> 1;
+  const y = new Uint8Array(width * height);
+  const cb = new Uint8Array(cw * ch);
+  const cr = new Uint8Array(cw * ch);
+  for (let row = 0; row < height; row++) {
+    for (let x = 0; x < width; x++) {
+      const i = (row * width + x) * 4;
+      y[row * width + x] =
+        (16 +
+          (65.738 * data[i] + 129.057 * data[i + 1] + 25.064 * data[i + 2]) /
+            256 +
+          0.5) |
+        0;
+    }
+  }
+  for (let row = 0; row < ch; row++) {
+    for (let x = 0; x < cw; x++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let n = 0;
+      for (let dy = 0; dy < 2; dy++) {
+        const py = row * 2 + dy;
+        if (py >= height) continue;
+        for (let dx = 0; dx < 2; dx++) {
+          const px = x * 2 + dx;
+          if (px >= width) continue;
+          const i = (py * width + px) * 4;
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          n++;
+        }
+      }
+      r /= n;
+      g /= n;
+      b /= n;
+      cb[row * cw + x] =
+        (128 + (-37.945 * r - 74.494 * g + 112.439 * b) / 256 + 0.5) | 0;
+      cr[row * cw + x] =
+        (128 + (112.439 * r - 94.154 * g - 18.285 * b) / 256 + 0.5) | 0;
+    }
+  }
+  return { width, height, planes: [y, cb, cr], strides: [width, cw, cw] };
 }
 
 function asConstraint(c: unknown): Constraint {

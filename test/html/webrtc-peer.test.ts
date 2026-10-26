@@ -409,3 +409,49 @@ test('mediaDevices is a secure context’s only, and a worker has no RTCPeerConn
     logs.join('\n'),
   );
 });
+
+test('a canvas’s captureStream is a stream of one canvas track, on an insecure page too, and a peer sends it', async () => {
+  const logs = await run(
+    `
+    var canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 48;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'red'; ctx.fillRect(0, 0, 64, 48);
+    var stream = canvas.captureStream();
+    var track = stream.getVideoTracks()[0];
+    log('stream', stream instanceof MediaStream, stream.getTracks().length, track instanceof CanvasCaptureMediaStreamTrack, track instanceof MediaStreamTrack);
+    log('track', track.kind, track.readyState, track.muted, track.canvas === canvas, track.label);
+    var s = track.getSettings();
+    log('settings', s.width, s.height, 'frameRate' in s);
+    log('rated', canvas.captureStream(10).getVideoTracks()[0].getSettings().frameRate);
+    var copy = track.clone();
+    log('clone', copy instanceof CanvasCaptureMediaStreamTrack, copy.canvas === canvas, copy.id !== track.id);
+    track.requestFrame();
+    function refused(rate) { try { canvas.captureStream(rate); return 'made'; } catch (e) { return e.name; } }
+    log('refused', refused(-1), refused(NaN), refused(Infinity), refused(0));
+    try { CanvasCaptureMediaStreamTrack.prototype.requestFrame.call({}); } catch (e) { log('illegal', e.name); }
+    var pc = new RTCPeerConnection();
+    pc.addTrack(track, stream);
+    await pc.setLocalDescription();
+    log('sent', /m=video/.test(pc.localDescription.sdp), pc.localDescription.sdp.indexOf('a=msid:' + stream.id) >= 0);
+    track.stop(); copy.stop();
+    log('stopped', track.readyState, copy.readyState);
+    pc.close();
+  `,
+    { webRTC: new FakeWebRTC() },
+    'http://page.test/',
+  );
+  for (const line of [
+    'stream|true|1|true|true',
+    'track|video|live|false|true|',
+    'settings|64|48|false',
+    'rated|10',
+    'clone|true|true|true',
+    'refused|NotSupportedError|TypeError|TypeError|made',
+    'illegal|TypeError',
+    'sent|true|true',
+    'stopped|ended|ended',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

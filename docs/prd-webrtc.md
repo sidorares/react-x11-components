@@ -14,7 +14,8 @@ Status: design, 2026-10-26. Workstream 0 is built: the two seams
 `set_permission`. Workstream 1's foundation round is built (#1030): the
 page's `RTCPeerConnection` over werift (`src/html/werift.ts`), with the
 first slices of workstreams 2 and 3 beside it, and the area went from
-0.2% to 57.0%. Media does not flow yet. The spikes it quotes ran on Node
+0.2% to 57.0%. Workstream 1's next rounds are under way: a canvas's
+`captureStream()` (57.6%). Media does not flow yet. The spikes it quotes ran on Node
 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
 in the repository.
 
