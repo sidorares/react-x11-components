@@ -1088,6 +1088,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       negotiatedExtensions: [],
       /** Ever sent: an m-section negotiated it to send. */
       sent: false,
+      /** Made by a remote offer not yet answered, which a rollback of it
+       *  takes away. */
+      fromRemoteOffer: false,
+      /** Given a track by `addTrack`, which a rollback leaves it for. */
+      addTracked: false,
     };
     apply(wmSet, slots, [t, s]);
     apply(wmSet, slots, [
@@ -1123,9 +1128,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       s.stopping = true;
       s.direction = 'stopped';
       const r = apply(wmGet, slots, [s.receiver]);
-      // the receiver's track ends, and says so but where the connection
-      // closed, which tells nothing (WebRTC 1.0, 4.4.1.1 and 5.4)
-      media.end(r.track, !closing);
+      // the receiver's track ends, and says so in a task of its own, but
+      // where the connection closed, which ends it at once and tells
+      // nothing (WebRTC 1.0, 4.4.1.1 and 5.4)
+      if (closing) media.end(r.track, false);
+      else setTimer(() => media.end(r.track, true), 0);
     }
     if (final) {
       s.stopped = true;
@@ -1511,6 +1518,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     const removed: [Any, Any][] = [];
     const seen = new Set<number>();
     for (const st of state.transceivers ?? []) {
+      if (s.discarded.has(st.id)) continue;
       seen.add(st.id);
       let tx = s.transceivers.find(
         (x: Any) => apply(wmGet, slots, [x]).id === st.id,
@@ -1526,10 +1534,22 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           [],
           encodingsOf([], st.kind),
         );
+        // what a rollback of this remote offer takes away again
+        if (remote && type === 'offer') {
+          apply(wmGet, slots, [tx]).fromRemoteOffer = true;
+        }
       }
       const t = apply(wmGet, slots, [tx]);
+      if (t.stopped) {
+        // a stopped transceiver keeps its mid until an answer takes its
+        // m-section away, and nothing else of it is negotiated (WebRTC
+        // 1.0, 4.4.1.6)
+        if (type === 'answer') t.mid = null;
+        continue;
+      }
       t.mid = st.mid;
-      if (!t.stopping) {
+      // one stopping goes on being negotiated until it is stopped
+      if (!t.stopped) {
         t.currentDirection = st.currentDirection;
       }
       if (sends(st.currentDirection)) t.sent = true;
@@ -1600,8 +1620,10 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       t.receiving = receiving;
     }
     if (type === 'rollback') {
-      // a transceiver the rolled-back offer made is gone with it, and a mid
-      // only it gave is taken back (WebRTC 1.0, 4.4.1.6)
+      // a transceiver the rolled-back offer made is gone with it, stopped,
+      // unless `addTrack` gave it a track since — `replaceTrack` and a
+      // direction do not keep it — and a mid only it gave is taken back
+      // (WebRTC 1.0, 4.4.1.6)
       const d = descriptionsOf(s);
       const kept = new Set(
         [...sectionsOf(d.currentLocal), ...sectionsOf(d.currentRemote)].map(
@@ -1611,13 +1633,32 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       s.transceivers = s.transceivers.filter((x: Any) => {
         const t = apply(wmGet, slots, [x]);
         if (t.mid !== null && !kept.has(t.mid)) t.mid = null;
-        return seen.has(t.id);
+        // and a transceiver with no m-section has no transport
+        if (t.mid === null) t.transport = null;
+        const made = remote && t.fromRemoteOffer && !t.addTracked;
+        if (seen.has(t.id) && !made) {
+          if (remote) t.fromRemoteOffer = false;
+          return true;
+        }
+        stopTransceiver(t, true);
+        t.mid = null;
+        t.transport = null;
+        if (seen.has(t.id)) {
+          // the stack kept it: it is stopped there, and the page never
+          // sees it again
+          call('rtcStopTransceiver', t.id);
+          s.discarded.add(t.id);
+        }
+        return false;
       });
     } else if (type === 'answer') {
-      // and a stopped one goes once an answer is applied
-      s.transceivers = s.transceivers.filter(
-        (x: Any) => !apply(wmGet, slots, [x]).stopped,
-      );
+      // and a stopped one goes once an answer is applied, and none a
+      // remote offer made is a rollback's to take away any more
+      s.transceivers = s.transceivers.filter((x: Any) => {
+        const t = apply(wmGet, slots, [x]);
+        t.fromRemoteOffer = false;
+        return !t.stopped;
+      });
     }
     if (state.sctp) {
       s.sctpTransport = state.sctp.transport;
@@ -1816,6 +1857,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         streams: new Map(),
         described: new Map(),
         everSetLocal: false,
+        /** The transceivers a remote rollback took away while the stack
+         *  kept them, by their numbers: the page never sees them again. */
+        discarded: new Set<number>(),
       };
       apply(wmSet, slots, [this, s]);
       connections.set(id, s);
@@ -2404,6 +2448,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           apply(wmGet, slots, [t.sender]).track === null,
       );
       if (reused) {
+        // a rollback of the remote offer that made it keeps it now
+        reused.addTracked = true;
         const sender = apply(wmGet, slots, [reused.sender]);
         sender.track = track;
         sender.streams = ids;
