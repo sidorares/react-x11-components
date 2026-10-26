@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.55.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.55.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.55.2` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.55.2` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -818,6 +818,17 @@ it up. **The floor is a running one and moves often** — every move since
   `showPicker()` drops it and `:open` matches. Both are read at run time,
   so an older core still mounts the fields. `withFieldSelection` in
   `test/html/harness.ts`, which stood in for #1006, went with the move.
+- `^2.55.2` — a variable face's font at its axis values made once and kept
+  per handle on a Mac (react-x11#1015). `<Html>` hands every run in a
+  variable web font the point on its axes (`layout/axes.ts`), and the Cocoa
+  backend made a new CTFont for each span of each layout, which CoreText
+  shapes with none of its caches warm: bun.com's blog, in Archivo and
+  Martian Mono, held its page process for seconds after its first paint
+  setting text, and is scrollable as it paints now. What the fonts
+  themselves cost the page process — a WOFF2 rebuilt, opened and
+  registered — is some 20 ms of the load. 2.55.1 under it gives each child
+  of a `<glarea>` a pane of its own on Cocoa (react-x11#1011), which took
+  `<Flow>`'s GL minimap from a quarter of a core to none.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
