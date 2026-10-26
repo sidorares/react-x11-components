@@ -84,7 +84,7 @@ export interface WebTransportSessionEvents {
   /**
    * It could not be established, or it was lost — the connection closed
    * under it, its certificate was refused, the server answered other than
-   * 200. No close information: the page's promises reject. Told once, and
+   * 2xx. No close information: the page's promises reject. Told once, and
    * nothing after it.
    */
   failed(message: string): void;

@@ -888,9 +888,8 @@ against the runtime's own roots and `NODE_EXTRA_CA_CERTS`, the ones its
 `fetch` trusts, or the `ca` handed to `new HtmlNetwork({ webTransport: { ca
 } })`, or pinned by the page's `serverCertificateHashes` (a certificate good
 for 14 days at most, as the spec has it); `webTransport: false` opens none.
-Each session is a connection of its own. Where quico differs from a browser
-it shows: a server's 2xx other than 200 is refused, and
-`exportKeyingMaterial()` rejects with `NotSupportedError`.
+Each session is a connection of its own. `exportKeyingMaterial()` rejects
+with `NotSupportedError`: the seam carries no keying material yet.
 
 **A session is held to the document's Content Security Policy**: its
 `connect-src`, or its `default-src` where it names none (CSP 3), in every

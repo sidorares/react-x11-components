@@ -4,7 +4,8 @@
 // `webtransport.test.ts` holds of the page's API over a fake server, this
 // holds of the adapter: the CONNECT names the page's origin, streams and
 // datagrams go both ways, and each way a server ends a session reaches the
-// page as a browser has it.
+// page as a browser has it: a capsule, the CONNECT stream ended with none,
+// and the CONNECT stream reset, a session lost.
 //
 // Skipped where the run cannot make a certificate (no `openssl`) or quico,
 // the optional peer, is not installed.
@@ -90,6 +91,7 @@ interface Res {
   end(): void;
   sendDatagram(data: Uint8Array): boolean;
   closeSession(code: number, reason: string): void;
+  destroy(): void;
 }
 
 /** A free UDP port on the loopback, for the server to take. */
@@ -103,7 +105,7 @@ function freePort(): Promise<number> {
   });
 }
 
-test('a page’s session over quico names its origin, echoes, and is closed by the server with and without a capsule', async () => {
+test('a page’s session over quico names its origin and headers, echoes, and is closed or lost as the server ends it', async () => {
   const seen: Record<string, string>[] = [];
   const server = quico!.createServer(certs!, (req, res) => {
     if (req.headers[':protocol'] !== 'webtransport') {
@@ -120,6 +122,10 @@ test('a page’s session over quico names its origin, echoes, and is closed by t
     }
     if (path === '/fin') {
       setTimeout(() => res.end(), 50);
+      return;
+    }
+    if (path === '/lose') {
+      setTimeout(() => res.destroy(), 50);
       return;
     }
     req.on('stream', ((s: Duplex) => {
@@ -139,7 +145,7 @@ test('a page’s session over quico names its origin, echoes, and is closed by t
         source:
           '<script>' +
           'function log() { console.log([].slice.call(arguments).join("|")); }' +
-          `var wt = new WebTransport("${base}/echo");` +
+          `var wt = new WebTransport("${base}/echo", { headers: { "x-page": "yes" } });` +
           'wt.ready.then(async function () {' +
           '  var bidi = await wt.createBidirectionalStream();' +
           '  var w = bidi.writable.getWriter(); await w.write(new TextEncoder().encode("ping")); await w.close();' +
@@ -152,6 +158,8 @@ test('a page’s session over quico names its origin, echoes, and is closed by t
           '  wt.close({ closeCode: 3, reason: "done" }); log("closed", JSON.stringify(await wt.closed));' +
           `  var a = new WebTransport("${base}/close"); log("capsule", JSON.stringify(await a.closed));` +
           `  var b = new WebTransport("${base}/fin"); log("fin", JSON.stringify(await b.closed));` +
+          `  var c = new WebTransport("${base}/lose");` +
+          '  await c.closed.then(function () { log("lost", "resolved"); }, function (e) { log("lost", e.name, e.source); });' +
           '}).catch(function (e) { log("failed", e.name, e.message); });' +
           '</script>',
         partial: false,
@@ -164,7 +172,7 @@ test('a page’s session over quico names its origin, echoes, and is closed by t
       FONTS ? { width: 100, height: 50, fonts: FONTS } : { backend: 'mock' },
     );
     const end = Date.now() + 15000;
-    while (!logs.some((l) => /^(fin|failed)\|/.test(l)) && Date.now() < end) {
+    while (!logs.some((l) => /^(lost|failed)\|/.test(l)) && Date.now() < end) {
       await act(() => new Promise((r) => setTimeout(r, 20)));
     }
     assert.deepEqual(
@@ -176,10 +184,12 @@ test('a page’s session over quico names its origin, echoes, and is closed by t
         'closed|{"closeCode":3,"reason":"done"}',
         'capsule|{"closeCode":7,"reason":"bye"}',
         'fin|{"closeCode":0,"reason":""}',
+        'lost|WebTransportError|session',
       ],
       logs.join('\n'),
     );
     assert.equal(seen[0].origin, 'https://page.test');
+    assert.equal(seen[0]['x-page'], 'yes');
     assert.equal(seen[0][':path'], '/echo');
   } finally {
     server.close();

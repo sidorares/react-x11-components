@@ -22,14 +22,15 @@
 // so an app without it type-checks. Not installed, `connect` answers a
 // session that fails, as one with no network does.
 //
-// **One reach into quico's insides**, and why. A browser's CONNECT names
-// the page's `Origin` (WebTransport over HTTP/3, 3.3), and a server may
-// refuse one that names none — WPT's does, with a 403 — and the page's own
-// `headers` option goes on it too. quico's client takes no request headers,
-// so `PageSession` adds them where it sends its CONNECT (`_sendConnect`,
-// through `_h3.sendHeaders`), only where both are there to wrap; a quico
-// without them sends its CONNECT as it would, with no `Origin`. The rest is
-// its public API.
+// Nothing here reaches into quico's insides. A browser's CONNECT names the
+// page's `Origin` (WebTransport over HTTP/3, 3.3), and a server may refuse
+// one that names none — WPT's does, with a 403 — so the page's origin and
+// its `headers` option go to quico's `origin` and `headers`, which it puts
+// on the CONNECT; and quico's `closed` settles as the browser's does, for a
+// session the server ends with no capsule and one whose connection is lost.
+// Both are 0.8.0's (colocohen/quico#8, #10): before it, this wrapped
+// quico's `_sendConnect` and read the session's end off its incoming
+// streams, and the peer range starts there.
 import type {
   HtmlWebTransport,
   WebTransportConnectRequest,
@@ -41,8 +42,6 @@ import type {
   WebTransportStreamLike,
   WebTransportStreamStats,
 } from './transport.js';
-
-declare const queueMicrotask: (fn: () => void) => void;
 
 // --- quico's shape, the slice read here ------------------------------------
 
@@ -69,14 +68,13 @@ interface QuicoSendGroup {
 
 interface QuicoSession {
   readonly ready: Promise<void>;
+  /** Resolved with the code and reason the session was closed with — the
+   *  server's capsule, `0` and `''` for its CONNECT stream ended with none,
+   *  or the page's own — and rejected where the session was lost. */
   readonly closed: Promise<{ closeCode: number; reason: string }>;
   readonly protocol: string;
   readonly reliability: string;
   readonly congestionControl: string;
-  readonly closeInfo?: { closeCode: number; reason: string };
-  readonly incomingBidirectionalStreams: {
-    getReader(): { read(): Promise<{ done: boolean }> };
-  };
   on(event: string, listener: (...args: never[]) => void): unknown;
   close(info?: { closeCode?: number; reason?: string }): void;
   createBidirectionalStream(options?: object): Promise<QuicoStream>;
@@ -116,52 +114,6 @@ export function loadQuico(): Promise<QuicoModule | null> {
   }
   return loading;
 }
-
-/** The headers a session's CONNECT carries beside quico's own. */
-const EXTRA = Symbol('headers');
-
-/** quico's client, with the page's `Origin` and headers on its CONNECT. */
-function pageSessionClass(base: QuicoSessionClass): QuicoSessionClass {
-  const proto = base.prototype as Record<string, unknown>;
-  if (typeof proto._sendConnect !== 'function') return base;
-  class PageSession extends (base as new (
-    url: string,
-    options: Record<string, unknown>,
-  ) => object) {
-    _sendConnect(): void {
-      const self = this as unknown as {
-        [EXTRA]?: Record<string, string>;
-        _h3?: {
-          sendHeaders?: (
-            id: number,
-            headers: Record<string, string>,
-            fin: boolean,
-          ) => void;
-        };
-      };
-      const h3 = self._h3;
-      const send = h3?.sendHeaders;
-      const extra = self[EXTRA];
-      const connect = (proto._sendConnect as () => void).bind(this);
-      if (!h3 || typeof send !== 'function' || !extra) {
-        connect();
-        return;
-      }
-      // after quico's own, the pseudo-headers first among them, as HTTP/3
-      // has a field section
-      h3.sendHeaders = (id, headers, fin) =>
-        send.call(h3, id, { ...headers, ...extra }, fin);
-      try {
-        connect();
-      } finally {
-        h3.sendHeaders = send;
-      }
-    }
-  }
-  return PageSession as unknown as QuicoSessionClass;
-}
-
-let PageSession: QuicoSessionClass | null = null;
 
 /** Numbers as the page's statistics take them: what is not known is left
  *  out. */
@@ -318,7 +270,6 @@ function quicoSession(
   let wt: QuicoSession | null = null;
   let over = false;
   let closedByPage = false;
-  let closeSeen = false;
   // the server's streams that came before its 200 was told, which follow it
   let told = false;
   const early: [QuicoStream, boolean][] = [];
@@ -340,13 +291,6 @@ function quicoSession(
     over = true;
     events.failed(message);
   };
-  // what the session came to before the page heard it was established,
-  // told once it has
-  let ended: (() => void) | null = null;
-  // the server's end of the CONNECT stream, from quico's closing of the
-  // session's incoming streams: read from as the session is made, since
-  // the end can come in the packet that brings the 200
-  let finished: Promise<boolean> = Promise.resolve(false);
   const ready = (async (): Promise<QuicoSession | null> => {
     const quico = await loadQuico();
     if (!quico) {
@@ -356,13 +300,14 @@ function quicoSession(
       return null;
     }
     if (closedByPage) return null;
-    PageSession ??= pageSessionClass(quico.WebTransport);
     const hashes = request.serverCertificateHashes;
     const ca = hashes.length ? undefined : await roots();
     if (closedByPage) return null;
     let session: QuicoSession;
     try {
-      session = new PageSession(request.url, {
+      session = new quico.WebTransport(request.url, {
+        origin: request.origin,
+        headers: request.headers,
         protocols: request.protocols,
         congestionControl: request.congestionControl,
         requireUnreliable: request.requireUnreliable,
@@ -380,18 +325,7 @@ function quicoSession(
       fail(String((error as Error)?.message ?? error));
       return null;
     }
-    (session as unknown as Record<symbol, unknown>)[EXTRA] = {
-      origin: request.origin,
-      ...Object.fromEntries(request.headers),
-    };
     wt = session;
-    finished = session.incomingBidirectionalStreams
-      .getReader()
-      .read()
-      .then(
-        (r) => r.done,
-        () => true,
-      );
     session.on('error', () => {});
     session.on('datagram', ((data: Uint8Array) => {
       if (over) return;
@@ -402,22 +336,6 @@ function quicoSession(
       incoming(s, false)) as never);
     session.on('draining', () => {
       if (!over) events.draining();
-    });
-    session.on('close', () => {
-      closeSeen = true;
-      if (over || closedByPage) return;
-      // closed with a capsule (the server's CLOSE_WEBTRANSPORT_SESSION), or
-      // lost with the connection under it
-      const info = session.closeInfo;
-      const end = (): void => {
-        if (over) return;
-        over = true;
-        if (info) {
-          events.closed(info.closeCode >>> 0, String(info.reason ?? ''));
-        } else events.failed('The WebTransport connection was closed.');
-      };
-      if (told) end();
-      else ended = end;
     });
     return session;
   })();
@@ -445,28 +363,22 @@ function quicoSession(
     told = true;
     for (const [s, bidirectional] of early.splice(0))
       incoming(s, bidirectional);
-    if (ended) {
-      ended();
-      return;
-    }
-    // The server ending the CONNECT stream with no capsule is a clean
-    // close with code 0 (WebTransport over HTTP/3, 5): quico closes the
-    // session's incoming streams for it, and tells nothing else.
-    const done = await finished;
-    queueMicrotask(() => {
-      if (!done || over || closedByPage || closeSeen) return;
-      over = true;
-      events.closed(0, '');
-      try {
-        session.close();
-      } catch {}
-    });
+    // read only now, so a session the server ends in the packet that
+    // establishes it is heard as established first; a page that closed it
+    // has heard its own close
+    session.closed.then(
+      (info) => {
+        if (over) return;
+        over = true;
+        events.closed(info.closeCode >>> 0, String(info.reason ?? ''));
+      },
+      (error) => fail(String((error as Error)?.message ?? error)),
+    );
   });
   return {
     async createStream(bidirectional, options) {
       const session = await ready;
       if (!session) throw new Error('The session was never established.');
-      await session.ready;
       const o = {
         sendOrder: options.sendOrder,
         ...(options.sendGroup !== null
