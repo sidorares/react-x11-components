@@ -211,6 +211,8 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
     pc1.createDataChannel('x');
     await pc1.setLocalDescription();
+    // werift has gathered its host candidates, and the page has heard of none
+    log('described', /a=candidate:/.test(pc1.localDescription.sdp));
     var early = await transportStats(pc1);
     log('early', early.iceState, early.iceRole, early.dtlsState, early.dtlsRole, early.selectedCandidatePairChanges);
     var sctp = [];
@@ -222,6 +224,9 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     log('sctp', sctp.join(','), pc1.sctp.maxChannels === pc2.sctp.maxChannels);
     await until('ice', function () { return ice1[ice1.length - 1] === 'connected' && ice2[ice2.length - 1] === 'connected'; });
     log('ice', ice1.join(','), ice2.join(','));
+    var heard = /a=candidate:/.test(pc1.localDescription.sdp);
+    var certs = pc1.sctp.transport.getRemoteCertificates();
+    log('certificates', heard, certs.length, certs[0] instanceof ArrayBuffer, new Uint8Array(certs[0])[0]);
     var up = await transportStats(pc1);
     log('up', up.iceState, up.iceRole, up.dtlsState, up.dtlsRole === 'client' || up.dtlsRole === 'server', up.tlsVersion, /^SRTP_/.test(up.srtpCipher), up.selectedCandidatePairChanges);
     var closed = new Promise(function (r) { pc2.sctp.onstatechange = function () { if (pc2.sctp.state === 'closed') r(); }; });
@@ -238,7 +243,9 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
   for (const line of [
     'early|new|controlling|new|unknown|0',
     'sctp|connected:true|true',
+    'described|false',
     'ice|new,checking,connected|new,checking,connected',
+    'certificates|true|1|true|48',
     'up|connected|controlling|connected|true|FEFD|true|1',
     'closed|closed',
   ]) {

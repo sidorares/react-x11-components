@@ -377,6 +377,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     RTCStatsReport,
     statsOf,
     updateStates,
+    surfacedOnly,
   } = transports;
 
   // --- SDP, read as far as the specification's checks need -----------------------
@@ -1430,14 +1431,19 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
 
   const descriptionsOf = (s: Any): Any => {
     const text = call('rtcDescriptions', s.id);
-    return typeof text === 'string'
-      ? parse(text)
-      : {
-          currentLocal: null,
-          pendingLocal: null,
-          currentRemote: null,
-          pendingRemote: null,
-        };
+    const d =
+      typeof text === 'string'
+        ? parse(text)
+        : {
+            currentLocal: null,
+            pendingLocal: null,
+            currentRemote: null,
+            pendingRemote: null,
+          };
+    // the candidates in them are those the page has heard of
+    d.currentLocal = surfacedOnly(s, d.currentLocal);
+    d.pendingLocal = surfacedOnly(s, d.pendingLocal);
+    return d;
   };
 
   /** A description the connection answers with: the same object while its
