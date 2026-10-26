@@ -299,6 +299,92 @@ function refusedMedia(sdp: string): string | null {
   return null;
 }
 
+/** Each m-section's header extensions, by its mid: id to URI. */
+function extmapsOf(sdp: string): Map<string, Map<number, string>> {
+  const out = new Map<string, Map<number, string>>();
+  for (const section of sdp.split(/\r?\n(?=m=)/).slice(1)) {
+    const mid = /^a=mid:(\S+)/m.exec(section)?.[1];
+    if (!mid) continue;
+    const ids = new Map<number, string>();
+    for (const m of section.matchAll(/^a=extmap:(\d+)(?:\/\S+)?\s+(\S+)/gm)) {
+      ids.set(Number(m[1]), m[2]);
+    }
+    out.set(mid, ids);
+  }
+  return out;
+}
+
+/**
+ * Why a remote description gives a header extension negotiated before
+ * another id, or an id another extension: what RFC 8285 forbids within a
+ * session (JSEP 5.8 and 5.9), and a browser refuses as an
+ * `InvalidAccessError`. Werift takes it.
+ */
+function reassignedExtension(sdp: string, before: string): string | null {
+  const now = extmapsOf(sdp);
+  for (const [mid, was] of extmapsOf(before)) {
+    const ids = now.get(mid);
+    if (!ids) continue;
+    for (const [id, uri] of ids) {
+      const old = was.get(id);
+      if (old !== undefined && old !== uri) {
+        return `Header extension id ${id} was ${old}, and may not become ${uri}.`;
+      }
+      for (const [oldId, oldUri] of was) {
+        if (oldUri === uri && oldId !== id) {
+          return `${uri} was id ${oldId}, and may not become ${id}.`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** The media kinds werift reads; another's m-section is rejected. */
+const KNOWN_KINDS = new Set(['audio', 'video', 'application']);
+/** What an unknown kind's m-section is handed to werift as: an audio one
+ *  rejected, port 0, which werift answers rejected and makes nothing of. */
+const STAND_IN = 'm=audio 0 UDP/TLS/RTP/SAVPF 0';
+
+/**
+ * A description with each m-section of a kind werift does not read
+ * (JSEP 5.3.1: rejected with port 0 in the answer) in the stand-in's
+ * place, and the m-lines it took the place of, by mid.
+ */
+function standInUnknown(sdp: string): {
+  sdp: string;
+  lines: Map<string, string>;
+} {
+  const lines = new Map<string, string>();
+  const parts = sdp.split(/(?=\r\nm=)/);
+  for (let i = 1; i < parts.length; i++) {
+    const mline = /^\r\n(m=(\S+)[^\r\n]*)/.exec(parts[i]);
+    if (!mline || KNOWN_KINDS.has(mline[2])) continue;
+    const mid = /\r\na=mid:(\S+)/.exec(parts[i])?.[1];
+    if (!mid) continue;
+    lines.set(mid, mline[1]);
+    parts[i] = '\r\n' + STAND_IN + parts[i].slice(2 + mline[1].length);
+  }
+  return { sdp: parts.join(''), lines };
+}
+
+/** A description with each stand-in for a kind werift does not read put
+ *  back as its own kind, rejected: port 0. */
+function restoreUnknown(sdp: string, lines: Map<string, string>): string {
+  if (!lines.size) return sdp;
+  const parts = sdp.split(/(?=\r\nm=)/);
+  for (let i = 1; i < parts.length; i++) {
+    const mid = /\r\na=mid:(\S+)/.exec(parts[i])?.[1];
+    const line = mid ? lines.get(mid) : undefined;
+    const mline = /^\r\n(m=[^\r\n]*)/.exec(parts[i]);
+    if (!line || !mline) continue;
+    const [head, , proto, ...formats] = line.split(' ');
+    const rejected = [head, '0', proto, ...formats].join(' ');
+    parts[i] = '\r\n' + rejected + parts[i].slice(2 + mline[1].length);
+  }
+  return parts.join('');
+}
+
 /** What werift threw, as the error the page's realm makes its own. */
 function asRtcError(error: unknown): Error {
   const name = String((error as Error)?.name ?? '');
@@ -477,6 +563,9 @@ class WeriftConnection implements RTCConnectionLike {
     negotiating: () => this._offered || this._pc.signalingState !== 'stable',
   };
   private readonly _net: WeriftTransports;
+  /** The m-lines of the remote offer's m-sections of kinds werift does
+   *  not read, by mid: rejected in the answer as their own kinds. */
+  private _unknown = new Map<string, string>();
   /** What the last answer negotiated each transceiver to, read from the
    *  answer itself: werift sets none for one stopping, or `inactive`. */
   private readonly _negotiated = new WeakMap<WTransceiver, RTCDirectionLike>();
@@ -602,12 +691,29 @@ class WeriftConnection implements RTCConnectionLike {
         );
       }
       if (side === 'remote') {
-        const refused = refusedMedia(sdp);
+        const refused =
+          refusedMedia(sdp) ??
+          reassignedExtension(
+            sdp,
+            this._pc.currentRemoteDescription?.sdp ?? '',
+          );
         if (refused) throw rtcError('InvalidAccessError', refused);
       }
     }
     try {
-      const description = type === 'rollback' ? { type } : { type, sdp };
+      // a line may end in a bare LF, as a browser's parser takes it, and
+      // werift's splits on CRLF alone: a description that mixes the two —
+      // WPT writes its own so — ran its lines together
+      let text = sdp.replace(/\r?\n/g, '\r\n');
+      if (type !== 'rollback') {
+        // a kind werift does not read throws in its parser: it is handed a
+        // rejected audio m-section in that one's place, and the answer
+        // puts the kind back (`restoreUnknown`)
+        const stood = standInUnknown(text);
+        text = stood.sdp;
+        if (side === 'remote' && type === 'offer') this._unknown = stood.lines;
+      }
+      const description = type === 'rollback' ? { type } : { type, sdp: text };
       if (side === 'local') await this._pc.setLocalDescription(description);
       else await this._pc.setRemoteDescription(description);
     } catch (error) {
@@ -679,7 +785,7 @@ class WeriftConnection implements RTCConnectionLike {
   async createAnswer(): Promise<string> {
     for (const w of this._wrapped.values()) w.flushStop();
     try {
-      return (await this._pc.createAnswer()).sdp;
+      return restoreUnknown((await this._pc.createAnswer()).sdp, this._unknown);
     } catch (error) {
       throw asRtcError(error);
     }
@@ -731,11 +837,13 @@ class WeriftConnection implements RTCConnectionLike {
 
   descriptions(): RTCDescriptionsLike {
     const pc = this._pc;
+    const as = (d: WDescription | null | undefined): string | null =>
+      d ? restoreUnknown(d.sdp, this._unknown) : null;
     return {
-      currentLocal: pc.currentLocalDescription?.sdp ?? null,
-      pendingLocal: pc.pendingLocalDescription?.sdp ?? null,
-      currentRemote: pc.currentRemoteDescription?.sdp ?? null,
-      pendingRemote: pc.pendingRemoteDescription?.sdp ?? null,
+      currentLocal: as(pc.currentLocalDescription),
+      pendingLocal: as(pc.pendingLocalDescription),
+      currentRemote: as(pc.currentRemoteDescription),
+      pendingRemote: as(pc.pendingRemoteDescription),
     };
   }
 
