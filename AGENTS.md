@@ -2764,6 +2764,18 @@ closes a way out a DOM binding opens by accident:
   worker can ask of a channel is a `ChannelRelay` op**, done in
   `PagePeers.fromWorker`, or the worker's channel has a member that does
   nothing.
+- **Web Audio is the whole API, and silent** (`webaudio.ts`). A page that
+  finds `AudioContext` uses all of it, so every node Web Audio 1 has a
+  factory for is there with its parameters, automation and errors, where
+  a partial context would send a page that worked without one down a
+  path that throws. Nothing is heard and nothing is processed but what a
+  `MediaStreamAudioDestinationNode`'s track renders, and that is the host's
+  synth (`media-sources.ts`), told the oscillators and constant sources
+  that reach the destination through gains (`feeding`). **Anything new a
+  destination should render joins `feeding` and the synth's voices**, or
+  its track is silent with nothing failing. A node is kept by what it is
+  connected to (`inputs`), never by its context, since a page makes one a
+  note.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
