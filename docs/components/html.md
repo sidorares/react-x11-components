@@ -938,8 +938,17 @@ as WPT's tests make them, and to another peer the host can reach.
   is allowed the kind. **With none**, a page lists no device, as on a
   machine with none. A secure context's only, as `[SecureContext]` has it.
 - **A track is a source** (`MediaSourceLike`), whoever makes its frames:
-  a device, a screen, or a peer connection's receiver. Video is I420 and
-  audio 10 ms of planar floats, and the frames stay host-side.
+  a device, a screen, a canvas, or a peer connection's receiver. Video is
+  I420 and audio 10 ms of planar floats, and the frames stay host-side.
+- **A canvas is a source on any page** (`captureStream(frameRequestRate)`,
+  Media Capture from DOM Elements): a stream of one
+  `CanvasCaptureMediaStreamTrack`, its frames the host's copy of the
+  canvas's pixels made I420 at BT.601's video range — one each time the
+  canvas changes, at most `frameRequestRate` a second where it is given,
+  and only at `requestFrame()` where it is 0. It is what WPT's WebRTC
+  tests make their video from on a page with no `getUserMedia`. A canvas
+  here draws only other canvases, never an image of another origin, so
+  none is tainted and none is refused with a `SecurityError`.
 
 `HtmlNetwork.webRTC` is a real one, over
 [werift](https://github.com/shinyoshiaki/werift-webrtc): ICE with STUN and

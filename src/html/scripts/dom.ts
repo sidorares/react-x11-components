@@ -9803,6 +9803,10 @@ export function installDom(
     });
   }
 
+  /** A canvas's `captureStream()`, once the media facade is in
+   *  (`mediastream.ts`'s `captureCanvas`). */
+  let canvasCapture: Any = null;
+
   class HTMLCanvasElement extends HTMLElement {
     get width(): number {
       return canvasSize(this, 'width', 300);
@@ -9833,6 +9837,29 @@ export function installDom(
           ? new CanvasRenderingContext2D(this)
           : WEBGL.context(this, kind, options);
       return state.context;
+    }
+    /** A stream of what the canvas draws (Media Capture from DOM Elements,
+     *  3.1): a frame each time it changes, at most `frameRequestRate` a
+     *  second where it is given, and only at `requestFrame()` where it is
+     *  0. Its pixels are the host's copy of the canvas's. */
+    captureStream(frameRequestRate?: Any): Any {
+      let rate: number | null = null;
+      if (frameRequestRate !== undefined) {
+        rate = +frameRequestRate;
+        // a page may have replaced `isFinite`
+        if (rate !== rate || rate === 1 / 0 || rate === -1 / 0) {
+          throw new TypeError(
+            "Failed to execute 'captureStream' on 'HTMLCanvasElement': The provided double value is non-finite.",
+          );
+        }
+        if (rate < 0) {
+          throw new DOMException(
+            "Failed to execute 'captureStream' on 'HTMLCanvasElement': Given frame rate is not supported.",
+            'NotSupportedError',
+          );
+        }
+      }
+      return canvasCapture(this, idOf(this), rate, this.width, this.height);
     }
     toDataURL(): string {
       return 'data:,';
@@ -24304,6 +24331,7 @@ export function installDom(
       fire: trusted,
       secure,
     });
+    canvasCapture = media.internals.captureCanvas;
     let rtc: Any = null;
     const channels = dataChannels({
       call: call as Any,
