@@ -14,10 +14,15 @@ Status: design, 2026-10-26. Workstream 0 is built: the two seams
 `set_permission`. Workstream 1's foundation round is built (#1030): the
 page's `RTCPeerConnection` over werift (`src/html/werift.ts`), with the
 first slices of workstreams 2 and 3 beside it, and the area went from
-0.2% to 57.0%. Workstream 1's next rounds are under way: a canvas's
-`captureStream()` (57.6%), a sender's and a receiver's parameters taken
-from answers alone, and transceivers stopped and rolled back as WebRTC 1.0
-has them. Media does not flow yet. The spikes it quotes ran on Node
+0.2% to 57.0%. Workstream 1's tier-A rounds followed, beside workstream
+3's: a canvas's `captureStream()` (#1031), parameters taken from answers
+alone (#1034), transceivers stopped and rolled back as WebRTC 1.0 has
+them (#1036, #1039), simulcast narrowed by an answer (#1040), Web Audio
+(#1041), remote descriptions read as a browser reads them (#1042), and a
+rejected m-section's transceiver; with workstream 3's, the area came to
+77.6%. What tier A has left waits for H.264, for media to flow, for DTMF
+werift can send, or asserts `transceiver.stopped`, which WebRTC 1.0 no
+longer has. Media does not flow yet. The spikes it quotes ran on Node
 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
 in the repository.
 
