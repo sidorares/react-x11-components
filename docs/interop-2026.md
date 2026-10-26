@@ -104,7 +104,7 @@ timed out on it and after, in the same nine seconds when they passed; why
 is not settled. Every other area is the same as or higher than its last
 figure below.
 
-By focus area, from the first run to the eleventh. Five areas have been
+By focus area, from the first run to the eleventh. Six areas have been
 measured again since, each by the PR that moved it, and their "now" is that
 PR's run, which the last column names.
 
@@ -127,7 +127,7 @@ PR's run, which the last column names.
 | shape                            | 24    | 41.6% | 95.8% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860), `CSSAnimation`s and `CSSTransition`s (#906, #928)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| webrtc                           | 91    | 0.2%  | 0.2%  | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| webrtc                           | 91    | 0.2%  | 57.0% | `RTCPeerConnection` over werift, its transceivers, transports and data channels, `MediaStream` and fake devices ([#1030])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | webtransport                     | 58    | 0.0%  | 97.8% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), and its sessions held to the document's `connect-src` ([#1021]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
@@ -442,11 +442,19 @@ its animation frames: a frame in the page's realm scrolls nothing —
 `scroll` and the CSS animation and transition events are still told by
 timers of their own.
 
-**webrtc (0.2%).** Out of scope: `RTCPeerConnection` is a network stack of
-its own, and a document renderer embedded in an application has no
-business opening peer connections behind its host's back. Were it wanted,
-it would go through a seam the host answers, as a page's `fetch` and
-`WebTransport` do.
+**webrtc (57.0%).** A page's `RTCPeerConnection` goes through a seam the
+host answers, as its `fetch` and `WebTransport` do: `HtmlNetwork.webRTC`
+over werift, an optional peer (docs/prd-webrtc.md). The page's realm has
+WebRTC 1.0's semantics — the operations chain, the signalling state, the
+descriptions and candidates, the aggregate states, the transceivers and
+their parameters, the ICE and DTLS transports — and two of a test's peers
+connect to each other. Measured on a Mac by [#1030], the round that built
+it. What is left is mostly media, which does not flow yet: tests that
+make tracks with `AudioContext` or `canvas.captureStream()`, which the
+engine lacks and whose `getUserMedia` fallback a test served over `http:`
+cannot reach; DTMF, RTP and its stats; H.264, which nothing here encodes;
+and the cases werift answers otherwise than a browser, which the PRD
+lists.
 
 **webtransport (97.8%).** A page has the W3C API whole, over its own
 WHATWG streams, now the standard's algorithms (WPT's `streams/` passes but
@@ -538,3 +546,4 @@ Across areas, three things recurred, and each now has its first slice:
 [#1019]: https://github.com/sidorares/react-x11-components/pull/1019
 [#1020]: https://github.com/sidorares/react-x11-components/pull/1020
 [#1021]: https://github.com/sidorares/react-x11-components/pull/1021
+[#1030]: https://github.com/sidorares/react-x11-components/pull/1030

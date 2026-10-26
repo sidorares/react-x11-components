@@ -46,8 +46,11 @@ import type {
   VmModule,
   VmScript,
 } from './platform.js';
+import { installDataChannels } from './datachannel.js';
+import { installMediaStreams } from './mediastream.js';
 import { installRaster } from './raster.js';
 import { installStreams } from './streams.js';
+import { installWebRTC } from './webrtc.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebGL } from './webgl.js';
 import type { Bridge, Primitive } from './dom.js';
@@ -244,11 +247,14 @@ const INSTALL = `(function () {
   const raster = (${installRaster.toString()});
   const streams = (${installStreams.toString()});
   const transport = (${installWebTransport.toString()});
+  const media = (${installMediaStreams.toString()});
+  const channels = (${installDataChannels.toString()});
+  const webrtc = (${installWebRTC.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, named);
+  install(bridge, webgl, raster, streams, transport, media, channels, webrtc, named);
 })()`;
 
 /**

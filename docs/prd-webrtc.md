@@ -8,12 +8,15 @@ What it would take for a page's scripts to open WebRTC connections in
 - how the work fits the engine's rules;
 - the order to build it in.
 
-Status: design, 2026-10-26, and workstream 0 built: the two seams
+Status: design, 2026-10-26. Workstream 0 is built: the two seams
 (`src/html/rtc.ts`, `src/html/media-devices.ts`), the fake devices
 (`src/html/fake-media.ts`), and the WPT runner's devices and
-`set_permission`. Nothing a page can reach is built yet. The spikes it
-quotes ran on Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch
-scripts and are not in the repository.
+`set_permission`. Workstream 1's foundation round is built (#1030): the
+page's `RTCPeerConnection` over werift (`src/html/werift.ts`), with the
+first slices of workstreams 2 and 3 beside it, and the area went from
+0.2% to 57.0%. Media does not flow yet. The spikes it quotes ran on Node
+24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
+in the repository.
 
 ## The answer, short
 
@@ -167,6 +170,36 @@ In a scratch install, werift and its dependencies came to 29 MB, about
 11 MB of it `mediabunny`, and libav.js's `webm-vp9` to 19 MB. That is
 nearly 50 MB, which an application that shows no WebRTC page must never
 pay, and why both are optional peers.
+
+### Where werift differs, case by case
+
+Workstream 1's first round ran werift 0.25.2 against what WPT's tier-A
+tests check, and the whole area through it. Each difference is corrected
+on one side, or left for werift:
+
+| werift                                                                                                                                       | a browser                                                 | who corrects it                                                             |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Offers no header extensions, and only Opus, PCMU and VP8                                                                                     | Several of each, at its own ids                           | The adapter: `src/html/rtc-codecs.ts`, which `getCapabilities` answers from |
+| Applies text that is not SDP as an empty description                                                                                         | `RTCError` of `sdp-syntax-error`, with the line           | The adapter (`syntaxErrorLine`); worth filing upstream                      |
+| Applies a remote m-section with no `a=rtcp-mux`, or a payload type from 64 to 95                                                             | `InvalidAccessError`                                      | The adapter (`refusedMedia`); worth filing upstream                         |
+| `sender.getParameters()` answers only `encodings`                                                                                            | Codecs, header extensions and RTCP too                    | The adapter, from the transceiver's negotiated codecs and extensions        |
+| Throws for an `iceCandidatePoolSize` above 0                                                                                                 | A hint it may act on                                      | The adapter asks for no pool                                                |
+| Its controlled side's transport is `completed` once a pair is nominated                                                                      | `connected`, until the remote's candidates have ended too | The adapter reports `connected`                                             |
+| A selected pair's candidates are written without `candidate:`                                                                                | The attribute line                                        | The adapter adds it                                                         |
+| A stopped transceiver keeps its direction, its mid, and its place in `getTransceivers()` once answered                                       | `stopped`, then no mid, then gone                         | The facade                                                                  |
+| A rolled-back description's mids stay                                                                                                        | Taken back                                                | The facade, from the current descriptions                                   |
+| `addIceCandidate` before a remote description is kept for later                                                                              | `InvalidStateError`                                       | The facade checks first                                                     |
+| `bundlePolicy: 'balanced'` is kept as `max-compat`                                                                                           | Kept as given                                             | The facade keeps the page's configuration                                   |
+| A remote offer's rejected m-section (port 0) makes no transceiver                                                                            | A stopped one, which `getTransceivers()` lists            | Left; worth filing upstream                                                 |
+| One header extension URI has another id in each bundled m-section, whatever ids it is configured with                                        | One id per URI                                            | Left; worth filing upstream                                                 |
+| An answer to an offer of `a=setup:active` is `active` too                                                                                    | `passive`                                                 | Left; worth filing upstream (a rewrite would desynchronise its DTLS role)   |
+| A subsequent offer lists only the codecs negotiated before                                                                                   | Every codec it can                                        | Left; worth filing upstream                                                 |
+| No `getSynchronizationSources`, no `RTCDtlsTransport.getRemoteCertificates`, no `generateCertificate` (it has `createSelfSignedCertificate`) | All three                                                 | The adapter, in workstreams 3 and 4                                         |
+| Its own `iceConnectionState` can go `completed` before `checking`                                                                            | Never                                                     | The facade works its own out from the transports                            |
+
+werift's polyfill (`werift/polyfill`) saves the facade nothing: it is a
+W3C-shaped `RTCPeerConnection` over werift's own, which the page's realm
+cannot hold, so the facade is written against the seam instead.
 
 ## Candidates
 
@@ -432,15 +465,9 @@ PRs. This is five to ten times as much work. Most of it is in 1 and 4.
   - Until it is settled, H.264 is negotiated in SDP only where that is
     honest (receive-only nowhere, since nothing decodes it), and its tests
     are left.
-- **werift's semantics, case by case.** Where its offer/answer state
-  differs from JSEP in what tier A checks, the adapter corrects it or the
-  facade does. Each correction is a candidate for an upstream issue, and
-  the first round of workstream 1 should list them before writing any.
-  werift also ships a W3C-shaped polyfill (`werift/polyfill`:
-  `installPolyfill`, `createPolyfillRTCPeerConnection`, and "registers"
-  that feed `getUserMedia` from a file or a callback). Whether it saves any
-  of the facade's work is to check, though the facade has to live in the
-  page realm as source text whatever werift's polyfill does.
+- **werift's semantics, case by case.** Listed in "Where werift differs,
+  case by case" above, with which side corrects each. The ones left for
+  werift are upstream issues to file.
 - **mDNS host candidates.** werift resolves `.local` names and publishes
   none. Answering queries for a host candidate's name, as Chrome does, is
   a responder on `multicast-dns`, in the adapter or as a werift change

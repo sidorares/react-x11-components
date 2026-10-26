@@ -304,7 +304,8 @@ test('the script engine is a lazy chunk, not part of <Html>', async () => {
       'globalThis.__keep = Html;\n',
   );
   const eager = staticClosure(chunks);
-  for (const marker of ['DONT_CONTEXTIFY', '__becomeWorker']) {
+  // the WebRTC facade and its host half are the engine's too
+  for (const marker of ['DONT_CONTEXTIFY', '__becomeWorker', '__rtcSettled']) {
     const holder = eager.find((chunk) => chunk.text.includes(marker));
     assert.ok(
       !holder,
@@ -315,6 +316,26 @@ test('the script engine is a lazy chunk, not part of <Html>', async () => {
   assert.ok(
     chunks.some((chunk) => chunk.text.includes('__becomeWorker')),
     'and the engine should still be reachable, in a chunk of its own',
+  );
+});
+
+test('the werift adapter is a lazy chunk, not part of HtmlNetwork', async () => {
+  const chunks = await bundleChunks(
+    "import { HtmlNetwork } from './dist/html/index.js';\n" +
+      'globalThis.__keep = new HtmlNetwork().webRTC;\n',
+  );
+  const marker = 'werift is not installed';
+  const holder = staticClosure(chunks).find((chunk) =>
+    chunk.text.includes(marker),
+  );
+  assert.ok(
+    !holder,
+    `HtmlNetwork should load werift's adapter only with a page's first ` +
+      `connection (it is in ${holder?.path.split('/').pop()})`,
+  );
+  assert.ok(
+    chunks.some((chunk) => chunk.text.includes(marker)),
+    'and the adapter should still be reachable, in a chunk of its own',
   );
 });
 

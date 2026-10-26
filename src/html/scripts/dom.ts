@@ -33,6 +33,9 @@
 import type { installRaster, PathData } from './raster.js';
 import type { installStreams } from './streams.js';
 import type { installWebTransport } from './webtransport.js';
+import type { installDataChannels } from './datachannel.js';
+import type { installMediaStreams } from './mediastream.js';
+import type { installWebRTC } from './webrtc.js';
 import type { installWebGL } from './webgl.js';
 
 // The page context's own built-ins this reaches by name, for the type
@@ -61,6 +64,9 @@ export function installDom(
   raster: typeof installRaster,
   streams: typeof installStreams,
   transport: typeof installWebTransport,
+  mediaStreams: typeof installMediaStreams,
+  dataChannels: typeof installDataChannels,
+  webrtc: typeof installWebRTC,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -16878,6 +16884,30 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // WebRTC's and Media Capture's interfaces but the data channel's
+    // (`webrtc.ts`, `mediastream.ts`), which a worker can be handed
+    'RTCPeerConnection',
+    'RTCSessionDescription',
+    'RTCIceCandidate',
+    'RTCPeerConnectionIceEvent',
+    'RTCPeerConnectionIceErrorEvent',
+    'RTCTrackEvent',
+    'RTCRtpTransceiver',
+    'RTCRtpSender',
+    'RTCRtpReceiver',
+    'RTCIceTransport',
+    'RTCDtlsTransport',
+    'RTCCertificate',
+    'RTCStatsReport',
+    'RTCSctpTransport',
+    'RTCDataChannelEvent',
+    'MediaStream',
+    'MediaStreamTrack',
+    'MediaStreamTrackEvent',
+    'MediaDevices',
+    'MediaDeviceInfo',
+    'InputDeviceInfo',
+    'OverconstrainedError',
     'window',
     'document',
     'parent',
@@ -24239,6 +24269,81 @@ export function installDom(
       for (const name of Object.getOwnPropertyNames(interfaces)) {
         define(name, interfaces[name]);
       }
+    }
+  }
+
+  // --- WebRTC and media capture -------------------------------------------------
+  //
+  // WebRTC 1.0 (`webrtc.ts`, `datachannel.ts`) and Media Capture and Streams
+  // (`mediastream.ts`), their connections and sources the host's (`peers.ts`
+  // and `media-sources.ts`: the `rtc…` and `md…` ops and their entries). A
+  // window's: a worker's global loses them (`WINDOW_ONLY`). Only a secure
+  // context has `navigator.mediaDevices`, as `[SecureContext]` has it.
+  {
+    const trusted = (target: Any, event: Any): void => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    };
+    const later = (name: string, fn: () => Primitive) => {
+      transportEntries.push([name, fn]);
+    };
+    const secure =
+      str(location.protocol) === 'https:' ||
+      /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(
+        str(location.hostname),
+      );
+    const media = mediaStreams({
+      call: call as Any,
+      entry: later,
+      input: () => input(),
+      DOMException,
+      EventTarget,
+      Event,
+      fire: trusted,
+      secure,
+    });
+    let rtc: Any = null;
+    const channels = dataChannels({
+      call: call as Any,
+      entry: later,
+      input: () => input(),
+      DOMException,
+      EventTarget,
+      Event,
+      MessageEvent,
+      Blob,
+      fire: trusted,
+      bytesOfBase64,
+      base64OfBytes,
+      errorEvent: (detail: Any, message: string) =>
+        new rtc.RTCErrorEvent('error', {
+          error: new rtc.RTCError(detail, message),
+        }),
+    });
+    rtc = webrtc({
+      call: call as Any,
+      entry: later,
+      input: () => input(),
+      DOMException,
+      EventTarget,
+      Event,
+      fire: trusted,
+      setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      URL,
+      bytesOfBase64,
+      media: media.internals,
+      channels,
+    });
+    for (const name of Object.getOwnPropertyNames(media.interfaces)) {
+      define(name, media.interfaces[name]);
+    }
+    for (const name of Object.getOwnPropertyNames(rtc)) define(name, rtc[name]);
+    if (media.mediaDevices) {
+      Object.defineProperty(navigator, 'mediaDevices', {
+        get: () => media.mediaDevices,
+        enumerable: true,
+        configurable: true,
+      });
     }
   }
 

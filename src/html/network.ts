@@ -36,6 +36,9 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { NO_WEBRTC, deferredConnection } from './rtc.js';
+import type { HtmlWebRTC } from './rtc.js';
+import { offeredCapabilities } from './rtc-codecs.js';
 import { NO_WEBTRANSPORT, deferredSession } from './transport.js';
 import type { HtmlWebTransport } from './transport.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
@@ -138,6 +141,12 @@ export interface HtmlNetworkOptions {
    * network.
    */
   webTransport?: { ca?: string[] } | false;
+  /**
+   * How a page's peer connections are made (`webRTC`): over `werift`, an
+   * optional peer — ICE, DTLS, SCTP and SRTP in TypeScript — loaded the
+   * first time a page makes one. False: none is made, as with no network.
+   */
+  webRTC?: false;
 }
 
 /**
@@ -266,6 +275,8 @@ export class HtmlNetwork {
   private readonly _log: (...parts: unknown[]) => void;
   private readonly _webTransport: { ca?: string[] } | false;
   private _sessions: HtmlWebTransport | null = null;
+  private readonly _webRTC: boolean;
+  private _peers: HtmlWebRTC | null = null;
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
@@ -277,6 +288,34 @@ export class HtmlNetwork {
       options.connectTimeout === undefined ? 2500 : options.connectTimeout;
     this._log = options.log ?? (() => {});
     this._webTransport = options.webTransport ?? {};
+    this._webRTC = options.webRTC !== false;
+  }
+
+  /**
+   * A page's peer connections (`<Html scripts={{ webRTC }}>`), through
+   * `werift` where it is installed — loaded the first time a page makes a
+   * connection — and with every operation refused where it is not. What a
+   * connection may offer is answered at once, from the codecs it will be
+   * configured with, before werift is loaded.
+   */
+  get webRTC(): HtmlWebRTC {
+    if (this._peers) return this._peers;
+    if (!this._webRTC) return (this._peers = NO_WEBRTC);
+    let made: Promise<HtmlWebRTC> | null = null;
+    const log = this._log;
+    // the adapter is a chunk of its own, reached once a page asks
+    const adapter = (): Promise<HtmlWebRTC> =>
+      (made ??= import('./werift.js').then((m) => m.weriftWebRTC()));
+    this._peers = {
+      connect(request, events) {
+        log('webrtc', request.origin);
+        return deferredConnection(adapter(), request, events);
+      },
+      generateCertificate: (keygen, expires) =>
+        adapter().then((s) => s.generateCertificate(keygen, expires)),
+      capabilities: (kind) => offeredCapabilities(kind),
+    };
+    return this._peers;
   }
 
   /**
@@ -1488,6 +1527,7 @@ export interface HtmlNetworkSeams {
     signal: AbortSignalLike,
   ) => Promise<FetchResponse>;
   webTransport: HtmlWebTransport;
+  webRTC: HtmlWebRTC;
 }
 
 /**
@@ -1520,6 +1560,7 @@ export function useHtmlNetwork(
       }),
       fetch: net.fetcher(address),
       webTransport: net.webTransport,
+      webRTC: net.webRTC,
     }),
     [net, address, plays, controller],
   );

@@ -835,8 +835,8 @@ since this component navigates nowhere by itself:
 | `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
 | `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
-| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s will be carried over (`HtmlWebRTC`). Nothing in the page reads it yet. See below.                                                         |
-| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` will list and open (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                      |
+| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
+| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
@@ -906,9 +906,16 @@ its own, a proxy, a test's server — and `test/fake-transport.ts` is one
 that opens no connection at all. `HtmlWebTransport`, the request, the
 session, the stream and their events are exported for it.
 
-**WebRTC's seams come before its API** (docs/prd-webrtc.md). The page has
-no `RTCPeerConnection`, `MediaStream` or `navigator.mediaDevices` yet, and
-what they will stand on is here first:
+**A page's WebRTC is the host's to carry** (WebRTC 1.0,
+docs/prd-webrtc.md). The page has `RTCPeerConnection` with its
+offer/answer state and its operations chain, `RTCSessionDescription`,
+`RTCIceCandidate`, the transceivers, senders and receivers with their
+parameters, the ICE and DTLS transports with their states, data channels
+as far as their states and messages, `RTCError`, and `MediaStream`,
+`MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
+gives it. Media does not flow yet: a receiver's track is muted, and a
+sender sends nothing. Two of the page's connections connect to each other,
+as WPT's tests make them, and to another peer the host can reach.
 
 - **`scripts.webRTC`, an `HtmlWebRTC`**, makes a connection the page's
   realm drives. The realm keeps WebRTC 1.0's semantics: the operations
@@ -924,13 +931,29 @@ what they will stand on is here first:
   channels, and every operation that needs a stack rejects with a
   `NotSupportedError` naming the seam; nothing is gathered or sent.
 - **`scripts.mediaDevices`, an `HtmlMediaDevices`**, is the devices and
-  their frames. The realm will pick a device and the settings a page's
-  constraints come to, keep a device's id apart for each origin, and ask
-  `request` before it opens one. **With none**, a page lists no device,
-  as on a machine with none.
+  their frames. A page's `getUserMedia` picks a device and the settings
+  its constraints come to — a number, or an `exact`, `ideal`, `min` or
+  `max` of one, so far — and asks `request` before it opens one; the page
+  sees a device's id digested with its origin, and its label only once it
+  is allowed the kind. **With none**, a page lists no device, as on a
+  machine with none. A secure context's only, as `[SecureContext]` has it.
 - **A track is a source** (`MediaSourceLike`), whoever makes its frames:
   a device, a screen, or a peer connection's receiver. Video is I420 and
   audio 10 ms of planar floats, and the frames stay host-side.
+
+`HtmlNetwork.webRTC` is a real one, over
+[werift](https://github.com/shinyoshiaki/werift-webrtc): ICE with STUN and
+TURN, DTLS, SCTP and SRTP in TypeScript, on the runtime's own `node:dgram`
+and `node:crypto`, so the same on Node 22 and later and on Bun. It is an
+**optional peer**, not installed for anyone — an app that wants a page's
+connections installs it (`npm install werift`) — and loaded the first time
+a page makes one; without it, a connection is made and its operations are
+refused. What a connection offers — Opus, G.711 and DTMF; VP8 and VP9;
+the header extensions a browser offers — is answered by `getCapabilities`
+before werift is loaded. Where werift differs from a browser it shows:
+docs/prd-webrtc.md lists each difference and which side corrects it. A
+page's host candidates name the machine's addresses, as no mDNS name
+stands in for them yet. `webRTC: false` makes none.
 
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
 down them and its frame's number along the bottom, a microphone that plays

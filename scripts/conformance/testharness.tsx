@@ -364,6 +364,8 @@ function Page(props: {
     },
     // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
     webTransport: network.webTransport,
+    // two peers in one page, over werift
+    webRTC: network.webRTC,
     mediaDevices: page.media,
     fetch: (request, signal) => {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
