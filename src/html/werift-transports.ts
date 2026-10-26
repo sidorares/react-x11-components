@@ -66,6 +66,10 @@ export interface WChannel {
   readonly maxPacketLifeTime: number | null;
   readonly protocol: string;
   readonly negotiated: boolean;
+  /** What was sent and has not been handed to SCTP yet. */
+  readonly bufferedAmount: number;
+  bufferedAmountLowThreshold: number;
+  readonly bufferedAmountLow: WEvent<[]>;
   readonly stateChanged: WEvent<[string]>;
   readonly onMessage: WEvent<[string | Uint8Array]>;
   readonly error: WEvent<[Error]>;
@@ -106,6 +110,8 @@ class WeriftChannel implements RTCDataChannelLike {
   private _events: RTCDataChannelEvents | null = null;
   private _told = 'connecting';
   private _idTold = false;
+  /** The page closed it. */
+  private _closing = false;
 
   constructor(private readonly _ch: WChannel) {
     _ch.stateChanged.subscribe((state) => this._state(state));
@@ -131,8 +137,16 @@ class WeriftChannel implements RTCDataChannelLike {
       events.id(this._ch.id);
     }
     if (state === this._told) return;
-    // a channel told closed has been through closing, as the page's has
-    if (state === 'closed' && this._told === 'open') events.closing();
+    // a channel that was open and closed with no closing was closed by its
+    // association going, not by either side's close: an error, then the
+    // end (WebRTC 1.0, 6.2, "the transport closed with an error")
+    if (state === 'closed' && this._told === 'open' && !this._closing) {
+      events.error({
+        errorDetail: 'sctp-failure',
+        sctpCauseCode: null,
+        message: 'The SCTP association closed.',
+      });
+    }
     this._told = state;
     if (state === 'open') events.open();
     else if (state === 'closing') events.closing();
@@ -152,8 +166,24 @@ class WeriftChannel implements RTCDataChannelLike {
         : data.byteLength;
     queueMicrotask(() => this._events?.sent(size));
   }
+  /**
+   * Closes it once what was sent has gone. werift resets the stream as it
+   * is closed, with what it has queued still unsent, and its far side
+   * drops whatever arrives after a reset — it does none of RFC 6525's
+   * deferred reset processing (5.2.2) — so a channel closed at once lost
+   * every message it had not sent yet.
+   */
   close(): void {
-    this._ch.close();
+    if (this._closing) return;
+    this._closing = true;
+    if (!(this._ch.bufferedAmount > 0)) {
+      this._ch.close();
+      return;
+    }
+    this._ch.bufferedAmountLowThreshold = 0;
+    this._ch.bufferedAmountLow.subscribe(() => {
+      if (this._ch.readyState === 'open') this._ch.close();
+    });
   }
 }
 

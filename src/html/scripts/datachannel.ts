@@ -160,6 +160,9 @@ export function installDataChannels(
     return t;
   };
 
+  /** The bytes a channel's sends may have waiting: Chrome's 16 MiB. */
+  const SEND_BUFFER = 16 * 1024 * 1024;
+
   /** Each connection's channels and SCTP transport, by its slot. */
   const byConnection = new WM();
   const stateOf = (pc: Any): Any => {
@@ -283,6 +286,14 @@ export function installDataChannels(
           'The message is larger than the transport’s maxMessageSize.',
         );
       }
+      // what may wait to be sent, as Chrome has it: past it, a message
+      // cannot be queued (WebRTC 1.0, 6.2, send())
+      if (s.bufferedAmount + size! > SEND_BUFFER) {
+        throw domError(
+          'The data channel’s send buffer is full.',
+          'OperationError',
+        );
+      }
       s.bufferedAmount += size!;
       call('rtcSend', s.host, binary, payload!);
     }
@@ -387,7 +398,10 @@ export function installDataChannels(
         break;
       }
       case 'closing':
-        if (s.readyState === 'closed') break;
+        // only a closing the peer started is announced: the page's own
+        // `close()` made the channel closing already (WebRTC 1.0, 6.2,
+        // "announce closing")
+        if (s.readyState === 'closed' || s.readyState === 'closing') break;
         s.readyState = 'closing';
         simple(self, 'closing');
         break;
