@@ -37,6 +37,10 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { HTML_USER_AGENT } from '../network.js';
+import { NO_MEDIA_DEVICES } from '../media-devices.js';
+import type { HtmlMediaDevices } from '../media-devices.js';
+import { NO_WEBRTC } from '../rtc.js';
+import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { CssEventInfo } from '../node.js';
@@ -167,6 +171,24 @@ export interface HtmlScripts {
    * one, over the optional peer `quico` where it is installed.
    */
   webTransport?: HtmlWebTransport;
+  /**
+   * What a page's `RTCPeerConnection`s are carried over: an offer and an
+   * answer made, a description applied, candidates, transports, data
+   * channels and the media a receiver receives (`HtmlWebRTC`). Default:
+   * none, and every operation that needs a stack rejects. The page's
+   * `RTCPeerConnection` is not built yet, so nothing reads it until it is
+   * (docs/prd-webrtc.md).
+   */
+  webRTC?: HtmlWebRTC;
+  /**
+   * The cameras, microphones and screens a page's `navigator.mediaDevices`
+   * lists and opens (`HtmlMediaDevices`). Default: none, as on a machine
+   * with no camera and no microphone. `fakeMediaDevices()` is a camera, a
+   * microphone and a screen that draw a test pattern and play a tone.
+   * Nothing in the page reads it until its `MediaStream` is built
+   * (docs/prd-webrtc.md).
+   */
+  mediaDevices?: HtmlMediaDevices;
   /**
    * Whether a page may register service workers (`navigator.serviceWorker`,
    * Service Workers 1), each a worker thread with its lifecycle and its
@@ -353,6 +375,8 @@ export function useScriptedHtml(
     workers: config.workers ?? true,
     serviceWorkers: config.serviceWorkers ?? false,
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
+    webRTC: config.webRTC ?? NO_WEBRTC,
+    mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,
     drawsFrames: frames,
   };
   const url = props.baseUrl ?? 'about:blank';

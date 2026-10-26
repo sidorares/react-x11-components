@@ -22,6 +22,11 @@
 // - **`test_driver`** is answered by this host: the vendor script it loads
 //   sends each command to a path the page's `fetch` reaches the host
 //   through, and the host injects the input into the in-process X server.
+//   `set_permission` for a camera, a microphone or a display sets what the
+//   test's fake devices answer.
+// - **Media devices are fake**, as wptrunner runs a browser with fake
+//   devices: a camera drawing a test pattern, a microphone playing a tone
+//   and a screen, all allowed (`fakeMediaDevices`), a fresh set a test.
 // - **A test's own navigations** — `location`, `navigation.navigate()`,
 //   `history` past its document's entries, `reload()` — load into the place
 //   the test was shown, each document the next of one session history a
@@ -52,9 +57,11 @@ import {
   Html,
   HtmlNetwork,
   HtmlSessionHistory,
+  fakeMediaDevices,
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
+  FakeMediaDevices,
   HtmlHandle,
   HtmlProps,
   HtmlScripts,
@@ -202,6 +209,9 @@ const DRIVER = `(function () {
     });
     return post('actions', { actions: out });
   };
+  internal.set_permission = function (params) {
+    return post('permission', { name: params.descriptor && params.descriptor.name, state: params.state }).then(function () {});
+  };
   internal.delete_all_cookies = function () { return Promise.resolve(); };
   internal.minimize_window = function () { return Promise.resolve({}); };
   internal.set_window_rect = function () { return Promise.resolve(); };
@@ -263,6 +273,8 @@ interface Current {
   done: { status: string; message: string | null; tests: Subtest[] } | null;
   errors: string[];
   loaded: boolean;
+  /** Its devices, which `set_permission` changes. */
+  media: FakeMediaDevices;
 }
 
 let current: Current | null = null;
@@ -352,6 +364,7 @@ function Page(props: {
     },
     // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
     webTransport: network.webTransport,
+    mediaDevices: page.media,
     fetch: (request, signal) => {
       const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
       if (path.startsWith('/__testdriver__/')) {
@@ -491,7 +504,33 @@ async function pump(ms: number): Promise<void> {
 
 /** Inject a WebDriver action sequence: each tick runs every source's
  *  action at that index, as WebDriver's dispatch does. */
+/** The devices a permission name sets what is answered for. */
+const MEDIA_PERMISSIONS: Record<string, 'camera' | 'microphone' | 'display'> = {
+  camera: 'camera',
+  microphone: 'microphone',
+  'display-capture': 'display',
+};
+
 async function driver(what: string, body: string | null): Promise<string> {
+  if (what === 'permission') {
+    const { name, state } = JSON.parse(body ?? '{}') as {
+      name?: string;
+      state?: string;
+    };
+    const kind = MEDIA_PERMISSIONS[name ?? ''];
+    if (
+      !kind ||
+      !current ||
+      (state !== 'granted' && state !== 'denied' && state !== 'prompt')
+    ) {
+      // what test_driver says where its vendor script has none
+      throw new Error(
+        'set_permission() is not implemented by testdriver-vendor.js',
+      );
+    }
+    current.media.setPermission(kind, state);
+    return '{}';
+  }
   // the first page of a run starts its scripts while the window it is in
   // is still being made, before `show` has its harness
   for (let i = 0; !harness && i < 200; i++) await wait(10);
@@ -677,6 +716,7 @@ async function render(
     done: null,
     errors: [],
     loaded: false,
+    media: fakeMediaDevices(),
   };
   current = page;
   let doc;
@@ -815,6 +855,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     done: null,
     errors: [],
     loaded: false,
+    media: fakeMediaDevices(),
   };
   current = page;
   let doc;

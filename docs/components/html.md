@@ -835,6 +835,8 @@ since this component navigates nowhere by itself:
 | `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
 | `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
+| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s will be carried over (`HtmlWebRTC`). Nothing in the page reads it yet. See below.                                                         |
+| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` will list and open (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                      |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
@@ -903,6 +905,40 @@ A host with a network of its own answers the seam itself — a QUIC stack of
 its own, a proxy, a test's server — and `test/fake-transport.ts` is one
 that opens no connection at all. `HtmlWebTransport`, the request, the
 session, the stream and their events are exported for it.
+
+**WebRTC's seams come before its API** (docs/prd-webrtc.md). The page has
+no `RTCPeerConnection`, `MediaStream` or `navigator.mediaDevices` yet, and
+what they will stand on is here first:
+
+- **`scripts.webRTC`, an `HtmlWebRTC`**, makes a connection the page's
+  realm drives. The realm keeps WebRTC 1.0's semantics: the operations
+  chain, the signalling state, every check and exception, the order
+  events are told in, and the states it works out from what it has (a
+  connection's ICE and connection states from its transports', whether
+  negotiation is needed, a `track` event, `bufferedAmount`, a DTMF tone's
+  timing). The seam answers what no page could compute: an offer or an
+  answer, a description applied (each transceiver as the description left
+  it), candidates, each transport's state told whole, a data channel's
+  messages, and the media a receiver receives. **With none**, a
+  connection still takes its configuration, its transceivers and its data
+  channels, and every operation that needs a stack rejects with a
+  `NotSupportedError` naming the seam; nothing is gathered or sent.
+- **`scripts.mediaDevices`, an `HtmlMediaDevices`**, is the devices and
+  their frames. The realm will pick a device and the settings a page's
+  constraints come to, keep a device's id apart for each origin, and ask
+  `request` before it opens one. **With none**, a page lists no device,
+  as on a machine with none.
+- **A track is a source** (`MediaSourceLike`), whoever makes its frames:
+  a device, a screen, or a peer connection's receiver. Video is I420 and
+  audio 10 ms of planar floats, and the frames stay host-side.
+
+`fakeMediaDevices()` is a camera that draws colour bars with a band moving
+down them and its frame's number along the bottom, a microphone that plays
+a 440 Hz tone, a speaker to list and a 1280×720 screen, every one allowed
+until `setPermission` says otherwise — what WPT's runner hands each test,
+as wptrunner runs a browser with fake devices, and what an application can
+hand a page to show a call working with no camera. A source makes frames
+only while something listens, and its timer keeps no process alive.
 
 **A service worker is a worker that is installed, and nothing more**
 (Service Workers 1), where `serviceWorkers` is on and the page is a secure
