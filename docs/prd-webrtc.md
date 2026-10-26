@@ -8,12 +8,15 @@ What it would take for a page's scripts to open WebRTC connections in
 - how the work fits the engine's rules;
 - the order to build it in.
 
-Status: design, 2026-10-26, and workstream 0 built: the two seams
+Status: design, 2026-10-26. Workstream 0 is built: the two seams
 (`src/html/rtc.ts`, `src/html/media-devices.ts`), the fake devices
 (`src/html/fake-media.ts`), and the WPT runner's devices and
-`set_permission`. Nothing a page can reach is built yet. The spikes it
-quotes ran on Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch
-scripts and are not in the repository.
+`set_permission`. Workstream 1's foundation round is built (#1030): the
+page's `RTCPeerConnection` over werift (`src/html/werift.ts`), with the
+first slices of workstreams 2 and 3 beside it, and the area went from
+0.2% to 57.0%. Media does not flow yet. The spikes it quotes ran on Node
+24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
+in the repository.
 
 ## The answer, short
 
