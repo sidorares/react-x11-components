@@ -911,7 +911,12 @@ docs/prd-webrtc.md). The page has `RTCPeerConnection` with its
 offer/answer state and its operations chain, `RTCSessionDescription`,
 `RTCIceCandidate`, the transceivers, senders and receivers with their
 parameters, the ICE and DTLS transports with their states, data channels
-as far as their states and messages, `RTCError`, and `MediaStream`,
+— their states and messages, strings, `ArrayBuffer`s and `Blob`s, sent up
+to 16 MiB ahead, as Chrome queues them, and past that refused with an
+`OperationError`; a close that sends what was queued before it, and a
+lost peer an `sctp-failure` — the SCTP transport with its state and
+`maxChannels`, a connection's transport stats, `RTCError`, and
+`MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
 gives it. Media does not flow yet: a receiver's track is muted, and a
 sender sends nothing. Two of the page's connections connect to each other,

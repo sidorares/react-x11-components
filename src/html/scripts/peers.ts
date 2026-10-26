@@ -32,6 +32,7 @@ import type { PageSources } from './media-sources.js';
 import type { BufferClass } from './platform.js';
 
 declare const Buffer: BufferClass;
+declare const queueMicrotask: (fn: () => void) => void;
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -521,8 +522,13 @@ export class PagePeers {
     return this._channel(peer, channel);
   }
 
-  /** A channel's number, made as it is first seen, and listened to —
-   *  after `announce`, where the page has to be told of it first. */
+  /**
+   * A channel's number, made as it is first seen, and listened to: after
+   * `announce`, where the page has to be told of it first, and once the op
+   * that made it has answered, where the page made it. A negotiated channel
+   * made once SCTP is up is open as it is made, and the page knows the
+   * channel by its number only from the op's answer.
+   */
   private _channel(
     peer: Peer,
     channel: RTCDataChannelLike,
@@ -530,7 +536,18 @@ export class PagePeers {
   ): number {
     const id = ++this._seq;
     this._channels.set(id, { id, peer, channel });
-    announce?.(id);
+    if (announce) {
+      announce(id);
+      this._listen(peer, id, channel);
+    } else {
+      queueMicrotask(() => {
+        if (!peer.closed) this._listen(peer, id, channel);
+      });
+    }
+    return id;
+  }
+
+  private _listen(peer: Peer, id: number, channel: RTCDataChannelLike): void {
     const tell = (kind: string, value?: unknown) =>
       this._event(peer, '__rtcChannel', [id, kind, value ?? null]);
     channel.listen({
@@ -548,7 +565,6 @@ export class PagePeers {
       },
       error: (error) => tell('error', error),
     });
-    return id;
   }
 }
 
