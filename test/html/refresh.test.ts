@@ -1220,6 +1220,9 @@ function rulesFor(
     () => `display: ${pick(['none', 'block', 'inline-block', 'flex'])}`,
     () => `padding-left: ${Math.floor(next() * 20)}px`,
     () => 'border-top: 2px solid',
+    // out of the flow, which a frame's build repaints apart
+    // (`_rebuildFrame`), where it is all a change restyles
+    () => 'position: absolute',
   ];
   const rules: string[] = [];
   const count = 6 + Math.floor(next() * 8);

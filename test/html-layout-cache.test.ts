@@ -268,3 +268,70 @@ test('two passes without it, and a layout is gone', () => {
   );
   assert.strictEqual(engine.made, 2);
 });
+
+test('runs grouped alike by new nowrap groups find the layout', () => {
+  // a build makes each `nowrap` element's box anew: the groups are new
+  // objects, and the runs fall into them as they did
+  const engine = countingEngine();
+  const cache = new TextLayoutCache(engine);
+  const paragraph = (sup: object, cite: object): TextRun[] => [
+    run('A claim'),
+    run('[', { nowrap: sup }),
+    run('1', { nowrap: sup }),
+    run(']', { nowrap: sup }),
+    run(' and a ', {}),
+    run('cited name', { nowrap: cite }),
+  ];
+  cache.begin();
+  const first = cache.fonts.layout(paragraph({}, {}), base(), options());
+  cache.begin();
+  assert.strictEqual(
+    cache.fonts.layout(paragraph({}, {}), base(), options()),
+    first,
+  );
+  assert.strictEqual(engine.made, 1);
+});
+
+test('runs grouped otherwise by nowrap are a different layout', () => {
+  const engine = countingEngine();
+  const cache = new TextLayoutCache(engine);
+  const a = {};
+  const b = {};
+  cache.begin();
+  const apart = cache.fonts.layout(
+    [run('one', { nowrap: a }), run('two', { nowrap: b })],
+    base(),
+    options(),
+  );
+  const shared = {};
+  const together = cache.fonts.layout(
+    [run('one', { nowrap: shared }), run('two', { nowrap: shared })],
+    base(),
+    options(),
+  );
+  const none = cache.fonts.layout(
+    [run('one', { nowrap: a }), run('two')],
+    base(),
+    options(),
+  );
+  assert.strictEqual(new Set([apart, together, none]).size, 3);
+  assert.strictEqual(engine.made, 3);
+  // two groups are two groups, whichever objects they are
+  assert.strictEqual(
+    cache.fonts.layout(
+      [run('one', { nowrap: shared }), run('two', { nowrap: a })],
+      base(),
+      options(),
+    ),
+    apart,
+  );
+  // and a group the first run is in is the second's, not another's
+  assert.notStrictEqual(
+    cache.fonts.layout(
+      [run('one', { nowrap: b }), run('two', { nowrap: b })],
+      base(),
+      options(),
+    ),
+    apart,
+  );
+});
