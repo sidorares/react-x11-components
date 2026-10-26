@@ -48,6 +48,7 @@ import type {
 } from './platform.js';
 import { installDataChannels } from './datachannel.js';
 import { installMediaStreams } from './mediastream.js';
+import { installWebAudio } from './webaudio.js';
 import { installRaster } from './raster.js';
 import { installStreams } from './streams.js';
 import { installWebRTC } from './webrtc.js';
@@ -252,11 +253,12 @@ const INSTALL = `(function () {
   const channels = (${installDataChannels.toString()});
   const webrtc = (${installWebRTC.toString()});
   const rtcTransports = (${installRtcTransports.toString()});
+  const webaudio = (${installWebAudio.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, media, channels, webrtc, rtcTransports, named);
+  install(bridge, webgl, raster, streams, transport, media, channels, webrtc, rtcTransports, webaudio, named);
 })()`;
 
 /**
