@@ -653,19 +653,45 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // lattices drew in 2D there, a node dragged at 20 fps where GL drags it
   // at 75. A scan per render of the nodes, a few microseconds at 2,000.
   const { nodeTypes } = rest;
+  // The types that mount a body, and — of those — the ones that mount it
+  // under GL too: a type with a `glBody` draws that instead there, and its
+  // `render` is its 2D renderer's.
   const bodyTypes = useMemo(() => {
     if (!nodeTypes) return null;
-    const names = Object.keys(nodeTypes).filter(
-      (name) => nodeTypes[name]?.render != null,
-    );
-    return names.length > 0 ? new Set(names) : null;
+    const all = new Set<string>();
+    const underGl = new Set<string>();
+    for (const name of Object.keys(nodeTypes)) {
+      const type = nodeTypes[name];
+      if (type?.render == null) continue;
+      all.add(name);
+      if (type.glBody == null) underGl.add(name);
+    }
+    return all.size > 0 ? { all, underGl } : null;
   }, [nodeTypes]);
-  const mounts = useMemo(
-    () =>
-      bodyTypes != null &&
-      currentNodes.some((node) => bodyTypes.has(node.type ?? 'default')),
-    [bodyTypes, currentNodes],
-  );
+  const [mounts2d, mountsUnderGl] = useMemo(() => {
+    if (!bodyTypes) return [false, false];
+    let all = false;
+    let underGl = false;
+    for (const node of currentNodes) {
+      const name = node.type ?? 'default';
+      if (bodyTypes.all.has(name)) all = true;
+      if (bodyTypes.underGl.has(name)) underGl = true;
+      if (underGl) break;
+    }
+    return [all, underGl];
+  }, [bodyTypes, currentNodes]);
+  // Whether the GL renderer is drawing the graph, or on its way: the module
+  // loading counts, so that a type with a `glBody` does not mount its 2D
+  // fallback for the few frames that takes. On XQuartz the bodies a GL
+  // surface would hold cannot be seen (`glOverlay`, below), and a graph
+  // with any draws in 2D — but a GL body is drawn in the surface itself, so
+  // a graph whose only bodies are those keeps GL there.
+  const wantGl = renderer === 'gl';
+  const [glFailed, setGlFailed] = useState(false);
+  const overlaySupported = useSupports('glOverlay');
+  const glIntended =
+    wantGl && !glFailed && !(mountsUnderGl && !overlaySupported);
+  const mounts = glIntended ? mountsUnderGl : mounts2d;
   const [bodies, setBodies] = useState<readonly NodeBodyRect[]>([]);
   // Where the graph's origin sits in the pane. The bodies are laid out in
   // one box placed here, so a pan — which moves this and nothing else — is
@@ -795,6 +821,8 @@ export function Flow<N = FlowNodeData, E = unknown>(
       const node = byId.get(body.id);
       const type = node && nodeTypes?.[node.type ?? 'default'];
       if (!node || !type?.render) continue;
+      // drawn by the surface, not mounted (`glBody`)
+      if (glIntended && type.glBody) continue;
       const { card } = body;
       // on the grid, like the layer (`snap` above)
       const left = snap(card.x - CARD_INK);
@@ -838,6 +866,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
     nodeFill,
     deviceScale,
     cardPaint,
+    glIntended,
   ]);
   const overlays = cards?.map((props) =>
     React.createElement(FlowBodyCard, { key: props.body.id, ...props }),
@@ -1024,7 +1053,6 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // render — sidorares/react-x11#653), and there a graph with nodes whose
   // types mount bodies draws with the 2D renderer: for as long as it has
   // one, not per zoom, so the surface does not come and go as bodies mount.
-  const overlaySupported = useSupports('glOverlay');
   const cardsDirect: ReactElement[] = [];
   if (cards && !composited) {
     const offsetX = snap(origin.x) + extent.x;
@@ -1049,9 +1077,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // the import is dynamic. Until it arrives, and for good once it has failed,
   // the pane draws itself: `renderer` reaches the element only while a
   // surface is there to draw, so there is never a frame with neither.
-  const wantGl = renderer === 'gl';
   const [gl, setGl] = useState<GlModule | null>(glModule);
-  const [glFailed, setGlFailed] = useState(false);
   const latestError = useRef(onError);
   latestError.current = onError;
   const failGl = useMemo(
@@ -1078,8 +1104,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
       live = false;
     };
   }, [wantGl, gl, glFailed]);
-  const drawsGl =
-    wantGl && gl != null && !glFailed && !(mounts && !overlaySupported);
+  const drawsGl = glIntended && gl != null;
   drawsGlRef.current = drawsGl;
   const surface = drawsGl
     ? React.createElement(gl.FlowGlSurface, {
@@ -1123,6 +1148,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
       onNodeBodies: mounts ? handleBodies : undefined,
       onPanels: mounts ? setPanels : undefined,
       renderer: drawsGl ? 'gl' : undefined,
+      glBodies: glIntended,
       // the element reports the 2D renderer's frames, the surface the GL
       // one's — one callback either way
       onFrame,
@@ -1212,6 +1238,11 @@ export type {
   FlowEdge,
   FlowBodyBudget,
   FlowFrameStats,
+  FlowGlBody,
+  FlowGlBodyFrame,
+  FlowGlBodyHost,
+  FlowGlBodyPointer,
+  FlowGlTexture,
   FlowInstance,
   FlowNode,
   FlowNodeData,
@@ -1229,6 +1260,7 @@ export type {
   NodeAppearance,
   NodeBodyRect,
   NodeChange,
+  NodeGlBodyContext,
   NodeMouseHandler,
   NodePaintContext,
   NodeRenderContext,

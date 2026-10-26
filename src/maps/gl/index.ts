@@ -21,3 +21,9 @@ if (!registeredElements().includes(GL_PANE)) {
 
 export { GlMapPane } from './view.js';
 export type { GlMapPaneProps } from './view.js';
+export { GlMapTexture } from './texture.js';
+export type {
+  MapTexture,
+  MapTextureFrame,
+  MapTextureOptions,
+} from './texture.js';
