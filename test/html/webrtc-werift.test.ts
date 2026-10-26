@@ -347,3 +347,38 @@ test('a transceiver stopped by a remote offer, or taken away by its rollback, is
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a transceiver stopped while its offer is still to be applied keeps its transport, which connects', async () => {
+  const logs = await run(`
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = function (e) { if (e.candidate) b.addIceCandidate(e.candidate); };
+    b.onicecandidate = function (e) { if (e.candidate) a.addIceCandidate(e.candidate); };
+    a.addTransceiver('audio');
+    b.addTransceiver('audio');
+    var offer = await a.createOffer();
+    var stopped = a.getTransceivers()[0];
+    stopped.stop();
+    await b.setRemoteDescription(offer);
+    await a.setLocalDescription(offer);
+    var answer = await b.createAnswer();
+    await a.setRemoteDescription(answer);
+    await b.setLocalDescription(answer);
+    for (var i = 0; i < 200 && !(/connected|completed/.test(a.iceConnectionState) && /connected|completed/.test(b.iceConnectionState)); i++) {
+      await new Promise(function (r) { setTimeout(r, 20); });
+    }
+    log('connected', a.iceConnectionState, b.iceConnectionState, stopped.direction, stopped.currentDirection);
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription();
+    await a.setRemoteDescription(b.localDescription);
+    log('renegotiated', a.getTransceivers().length, b.getTransceivers().length);
+    a.close(); b.close();
+    log('done');
+  `);
+  for (const line of [
+    'connected|connected|connected|stopped|sendrecv',
+    'renegotiated|0|0',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
