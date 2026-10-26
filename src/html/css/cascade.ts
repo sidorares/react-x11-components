@@ -2432,7 +2432,15 @@ const PSEUDO_INHERITED = new Set([
 
 /** A selector's keys and where each is tested, as `MutationRules.note`
  *  takes them: at `bits`, or in a `:has()`'s argument, through `anchor`. */
-type NoteChange = (key: string, bits: number, anchor: HasAnchor | null) => void;
+type NoteChange = (
+  key: string,
+  bits: number,
+  anchor: HasAnchor | null,
+  /** For a key tested above its rule's subject, what of that subject no
+   *  change to the tree can change (`stableCompound`): the elements below
+   *  the one changed that the rule can style. Absent, or '', for any. */
+  subject?: string | null,
+) => void;
 
 /**
  * The keys a complex selector tests, each with where (`CHANGES_*`): `at`
@@ -2440,7 +2448,9 @@ type NoteChange = (key: string, bits: number, anchor: HasAnchor | null) => void;
  * is a `:has()`'s argument, which reaches only the elements whose answer
  * to that `:has()` changed whatever compound tests it. `outer` is what the
  * subject's element matches besides, where the selector is an entry of an
- * `:is()` or a `:not()` in a compound (`stableCompound` of it).
+ * `:is()` or a `:not()` in a compound (`stableCompound` of it). `subject`
+ * is the subject compound's stable part, handed to the keys tested above
+ * it, for a rule's own selector; none for one inside a function.
  */
 function scanChanges(
   selector: string,
@@ -2448,6 +2458,7 @@ function scanChanges(
   has: HasAnchor | null,
   note: NoteChange,
   outer = '',
+  subject: string | null = null,
 ): void {
   const parts = compoundsOf(selector);
   for (let i = 0; i < parts.length; i += 1) {
@@ -2465,6 +2476,7 @@ function scanChanges(
       has,
       note,
       i === parts.length - 1 ? outer : '',
+      i === parts.length - 1 ? null : subject,
     );
   }
 }
@@ -2478,6 +2490,7 @@ function scanCompoundChanges(
   has: HasAnchor | null,
   note: NoteChange,
   outer = '',
+  subject: string | null = null,
 ): void {
   let i = 0;
   while (i < text.length) {
@@ -2486,12 +2499,12 @@ function scanCompoundChanges(
       i = escapeEnd(text, i);
     } else if (c === '.' || c === '#') {
       const name = readIdent(text, i + 1);
-      note(`${c === '.' ? 'c' : 'i'}:${name.value}`, bits, has);
+      note(`${c === '.' ? 'c' : 'i'}:${name.value}`, bits, has, subject);
       i = Math.max(name.end, i + 1);
     } else if (c === '[') {
       const close = bracketEnd(text, i);
       const name = attributeNameOf(text.slice(i + 1, close));
-      note(`v:${name}\u0000${text.slice(i, close + 1)}`, bits, has);
+      note(`v:${name}\u0000${text.slice(i, close + 1)}`, bits, has, subject);
       i = close + 1;
     } else if (c === ':' && text[i + 1] === ':') {
       // a pseudo-element left in a compound — `::slotted()`, `::part()` —
@@ -2525,7 +2538,12 @@ function scanCompoundChanges(
       // and everything in it (`HtmlViewNode._scopeOf`).
       const inherited = has === null && PSEUDO_INHERITED.has(name);
       for (const key of reads) {
-        note(key, inherited ? bits | CHANGES_BELOW : bits, has);
+        note(
+          key,
+          inherited ? bits | CHANGES_BELOW : bits,
+          has,
+          inherited ? null : subject,
+        );
       }
       i += m ? m[0].length : 1;
     } else {
@@ -2662,6 +2680,10 @@ const ATTR_FUNCTION = /\battr\(\s*([^\s,)]+)/gi;
  */
 class MutationRules {
   private _bits = new Map<string, number>();
+  /** What each key tested above a rule's subject can restyle below the
+   *  element it changes: the subjects' stable compounds, or null for all
+   *  that is there (`below`). */
+  private _below = new Map<string, Set<string> | null>();
   private _pseudo = new Map<string, 0 | 1 | 2>();
   private _anchors = new Map<string, Set<HasAnchor>>();
   /** Each attribute's selectors (`v:` keys), by the attribute's name. */
@@ -2742,7 +2764,7 @@ class MutationRules {
     declarations: readonly Declaration[],
     wider: number,
   ): void {
-    const note: NoteChange = (key, narrow, anchor) => {
+    const note: NoteChange = (key, narrow, anchor, subject) => {
       if (key === '+') {
         this.siblings = true;
         return;
@@ -2774,6 +2796,18 @@ class MutationRules {
         }
       }
       if (bits) this._bits.set(key, (this._bits.get(key) ?? 0) | bits);
+      // below the element it changes, a key tested above a subject reaches
+      // what the subject can match; a rule at a tree's edge, or one whose
+      // subject says nothing stable, reaches everything there
+      if (bits & CHANGES_BELOW) {
+        const kept = this._below.get(key);
+        if (kept !== null) {
+          if (!subject || subject === '*' || wider || anchor) {
+            this._below.set(key, null);
+          } else if (kept) kept.add(subject);
+          else this._below.set(key, new Set([subject]));
+        }
+      }
       if (isClass) {
         this.anyClass |= bits;
         if (pseudo > this.anyClassPseudo) this.anyClassPseudo = pseudo;
@@ -2783,7 +2817,10 @@ class MutationRules {
       }
       if (pseudo > (this._pseudo.get(key) ?? 0)) this._pseudo.set(key, pseudo);
     };
-    scanChanges(selector, CHANGES_SELF, null, note);
+    const parts = compoundsOf(selector);
+    const subject =
+      parts.length > 1 ? stableCompound(parts[parts.length - 1].text) : null;
+    scanChanges(selector, CHANGES_SELF, null, note, '', subject);
     for (const declaration of declarations) {
       if (!declaration.value.includes('attr(')) continue;
       for (const m of declaration.value.matchAll(ATTR_FUNCTION)) {
@@ -2810,6 +2847,12 @@ class MutationRules {
   /** Where a key is tested, as `CHANGES_*` bits; 0 for nowhere. */
   bits(key: string): number {
     return this._bits.get(key) ?? 0;
+  }
+
+  /** The subjects a key's reach below the element it changes can
+   *  restyle, as stable compounds; null for everything there. */
+  below(key: string): ReadonlySet<string> | null {
+    return this._below.get(key) ?? null;
   }
 
   /** The anchors of the `:has()`s whose argument tests a key. */
@@ -2910,6 +2953,10 @@ export interface AttributeReach {
   bits: number;
   pseudo: 0 | 1 | 2;
   anchors: ChangeAnchors | null;
+  /** What a reach below the element can restyle there, as one matcher of
+   *  the subjects of the rules that test the change; null for everything
+   *  there. */
+  below: ((el: Element) => boolean) | null;
 }
 
 /** What a change to what an element holds reaches, from the element
@@ -3871,8 +3918,17 @@ export class Cascade {
     let bits = 0;
     let pseudo: 0 | 1 | 2 = 0;
     const found: ReadonlySet<HasAnchor>[] = [];
+    // what the reach below the element can restyle: the subjects of every
+    // rule that tests the change there, or everything
+    let below: Set<string> | null = new Set();
     const add = (key: string): void => {
-      bits |= rules.bits(key);
+      const own = rules.bits(key);
+      if (own & CHANGES_BELOW && below) {
+        const subjects = rules.below(key);
+        if (!subjects) below = null;
+        else for (const s of subjects) below.add(s);
+      }
+      bits |= own;
       const p = rules.pseudo(key);
       if (p > pseudo) pseudo = p;
       const anchors = rules.anchors(key);
@@ -3892,6 +3948,7 @@ export class Cascade {
     }
     if (name === 'class') {
       if (was === undefined) {
+        below = null;
         bits |= rules.anyClass;
         if (rules.anyClassPseudo > pseudo) pseudo = rules.anyClassPseudo;
         found.push(rules.anyClassAnchors);
@@ -3903,6 +3960,7 @@ export class Cascade {
       }
     } else if (name === 'id') {
       if (was === undefined) {
+        below = null;
         bits |= rules.anyId;
         if (rules.anyIdPseudo > pseudo) pseudo = rules.anyIdPseudo;
         found.push(rules.anyIdAnchors);
@@ -3912,7 +3970,14 @@ export class Cascade {
       }
     }
     if (bits & CHANGES_ANYWHERE) return null;
-    return { bits, pseudo, anchors: this._changeAnchors(found) };
+    // `add` may have set it null, which the compiler does not see
+    const narrowed = below as Set<string> | null;
+    return {
+      bits,
+      pseudo,
+      anchors: this._changeAnchors(found),
+      below: narrowed && narrowed.size ? this._subjectsMatcher(narrowed) : null,
+    };
   }
 
   /**
@@ -4053,6 +4118,22 @@ export class Cascade {
       every,
       anchors: this._changeAnchors([rules.everyAnchor]),
     };
+  }
+
+  private _subjects = new Map<string, ((el: Element) => boolean) | null>();
+
+  /** One matcher for a set of stable compounds (`AttributeReach.below`),
+   *  kept for the cascade's life; null where css-select refuses it. */
+  private _subjectsMatcher(
+    subjects: ReadonlySet<string>,
+  ): ((el: Element) => boolean) | null {
+    const key = [...subjects].sort().join(', ');
+    let match = this._subjects.get(key);
+    if (match === undefined) {
+      match = this._compile(key);
+      this._subjects.set(key, match);
+    }
+    return match;
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses

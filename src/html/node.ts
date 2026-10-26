@@ -8994,7 +8994,18 @@ export class HtmlViewNode extends Node {
       if (!quiet) scope.boxes = true;
       if (reach.pseudo > scope.pseudo) scope.pseudo = reach.pseudo;
       const crossing = cascade.changesCrossTrees;
-      spreadChange(el, bits, false, scope.own, crossing);
+      // below the element, what the rules testing the change can style
+      // (`AttributeReach.below`): what reads the attribute besides the
+      // cascade reads it of everything in the element
+      spreadChange(
+        el,
+        bits,
+        false,
+        scope.own,
+        crossing,
+        undefined,
+        quiet ? reach.below : null,
+      );
       return !anchors || spreadAnchors(el, false, anchors, scope, crossing);
     }
     // What an element holds: its children, or a text's data. A comment is
@@ -14444,6 +14455,23 @@ function forgetStyles(el: Element, styles: Map<Element, unknown>): void {
   }
 }
 
+/** What is in `el` that `subjects` matches, into `into`: the elements in
+ *  its tree, since no rule but one at a tree's edge, which reaches all
+ *  that is in the element (`MutationRules.below`), styles across one. */
+function addSubjects(
+  el: Element,
+  into: Set<Element>,
+  subjects: (el: Element) => boolean,
+): void {
+  const stack: Element[] = [];
+  for (const child of el.children) if (isElement(child)) stack.push(child);
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (subjects(at)) into.add(at);
+    for (const child of at.children) if (isElement(child)) stack.push(child);
+  }
+}
+
 /** An element and everything in it into `into`. */
 function addSubtree(el: Element, into: Set<Element>, crossing = false): void {
   if (crossing) {
@@ -14526,6 +14554,9 @@ function spreadChange(
    *  as later siblings of what came or went (`TreeReach.kidsLater`), apart
    *  from its own later siblings (`CHANGES_LATER`). */
   kidsLater = holder && (bits & CHANGES_LATER) !== 0,
+  /** What of what is in `el` a change reaches there can restyle
+   *  (`AttributeReach.below`); null for all of it. */
+  below: ((el: Element) => boolean) | null = null,
 ): void {
   if (bits & CHANGES_SELF) {
     own.add(el);
@@ -14533,7 +14564,10 @@ function spreadChange(
       for (const child of el.children) if (isElement(child)) own.add(child);
     }
   }
-  if (bits & CHANGES_BELOW) addSubtree(el, own, crossing);
+  if (bits & CHANGES_BELOW) {
+    if (below) addSubjects(el, own, below);
+    else addSubtree(el, own, crossing);
+  }
   if (holder && kidsLater && !(bits & CHANGES_BELOW)) {
     for (const child of el.children) {
       if (isElement(child)) addSubtree(child, own, crossing);

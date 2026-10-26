@@ -1926,7 +1926,26 @@ load, and each restyled the whole `<body>`. A holder nothing draws still
 reaches its later siblings, which are not under it. **An attribute selector is a key of its own** (`v:`), asked of the
 value its attribute had and has by css-select itself (`Cascade._flips`),
 which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
-class on github.com/features. **A sheet's element is a change to the
+class on github.com/features. **A key tested above its rule's subject
+reaches, below the element it changes, only what the subject names**
+(`MutationRules.below`, `AttributeReach.below`, `addSubjects`): the stable
+part of the subject compound of each rule that tests it there
+(`stableCompound`), matched below the element, as hover's
+`PointerCompounds.below` is. bun.com's blog sets `data-scrolled` on
+`<html>` at the first notch of the wheel, which one rule reads for its
+header, and `reveal-ready` for elements it has none of, and each restyled
+all 7,000 of its elements: 213 ms at the first notch. The reach stays whole
+wherever the selectors do not say all a change styles: a rule at a tree's
+edge, a key inside a function's argument, what an inherited pseudo-class
+reads (`PSEUDO_INHERITED`), a `:has()`'s anchors, a subject with nothing
+stable in it (`*`, pseudo-classes alone), a class or an id whose old value
+is not known, and an attribute anything but the cascade reads. So
+**anything new that notes a key below its element notes it with its
+subject, or with none for the whole of what is there**, and the walk below
+stays in the element's tree, since only a rule at an edge styles across
+one and those reach everything. Tailwind's preflight brings `:host, html`,
+an edge rule, to every page it styles, which makes every change cross
+trees (`changesCrossTrees`): that must not turn the narrowing off. **A sheet's element is a change to the
 cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
