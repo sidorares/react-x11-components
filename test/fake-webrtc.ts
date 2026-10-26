@@ -261,15 +261,19 @@ export class FakeConnection implements RTCConnectionLike {
         stopped: t.stopped,
         sender: {
           transport: t.mid !== null ? 1 : null,
+          // what a stack answers once a description gave the transceiver
+          // an m-section, an offer's too: the page's realm takes it from
+          // an answer only
           parameters: {
             codecs:
-              t.currentDirection !== null
+              t.mid !== null
                 ? [
                     {
                       payloadType: 111,
                       mimeType: 'audio/opus',
                       clockRate: 48000,
                       channels: 2,
+                      sdpFmtpLine: 'minptime=10;useinbandfec=1',
                     },
                   ]
                 : [],
