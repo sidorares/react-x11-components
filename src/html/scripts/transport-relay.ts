@@ -14,7 +14,10 @@
 // The seam's few answers that are not events are answered on the worker's
 // side from what it has: `maxDatagramSize()` from the last size the page
 // process told, `sendDatagram()` as sent where it fits it, and a send
-// group's number made here and mapped there. A stream's bytes are pulled
+// group's number made here and mapped there. What settles later — a
+// stream made, stats, keying material — is asked by a request number and
+// answered by it, a rejection by its name, which is what the worker's host
+// makes the page's error of. A stream's bytes are pulled
 // across as they are on the page's side: the worker asks for more
 // (`want`) as the page realm reads, and the page process reads the real
 // stream only then, so a worker that reads nothing holds the peer back too.
@@ -29,7 +32,7 @@ import type {
   WebTransportStreamLike,
   WebTransportStreamStats,
 } from '../transport.js';
-import { NO_WEBTRANSPORT } from '../transport.js';
+import { NO_WEBTRANSPORT, exportFrom } from '../transport.js';
 import type { SetTimeout } from './platform.js';
 
 declare const setTimeout: SetTimeout;
@@ -53,6 +56,15 @@ export type TransportAsk =
   | { kind: 'wt'; op: 'group'; s: number; g: number }
   | { kind: 'wt'; op: 'groupStats'; s: number; g: number; req: number }
   | { kind: 'wt'; op: 'stats'; s: number; req: number }
+  | {
+      kind: 'wt';
+      op: 'export';
+      s: number;
+      req: number;
+      label: Uint8Array;
+      context: Uint8Array;
+      length: number;
+    }
   | {
       kind: 'wt';
       op: 'create';
@@ -90,7 +102,15 @@ export type TransportTell =
   | { kind: 'wt'; ev: 'reset'; st: number; code: number | null }
   | { kind: 'wt'; ev: 'stopSending'; st: number; code: number | null }
   | { kind: 'wt'; ev: 'written'; req: number; error: string | null }
-  | { kind: 'wt'; ev: 'stats'; req: number; stats: unknown };
+  | { kind: 'wt'; ev: 'stats'; req: number; stats: unknown }
+  | {
+      kind: 'wt';
+      ev: 'exported';
+      req: number;
+      bytes: Uint8Array | null;
+      /** The rejection's name and message, where it rejected. */
+      error: { name: string; message: string } | null;
+    };
 
 // --- the worker's side ------------------------------------------------------
 
@@ -276,6 +296,25 @@ export class TransportProxy implements HtmlWebTransport {
         this.request((req) => ({ kind: 'wt', op: 'stats', s, req })).then(
           (m) => (m.ev === 'stats' ? (m.stats as WebTransportStats) : {}),
         ),
+      exportKeyingMaterial: (label, context, length) =>
+        this.request((req) => ({
+          kind: 'wt',
+          op: 'export',
+          s,
+          req,
+          label,
+          context,
+          length,
+        })).then((m) => {
+          if (m.ev === 'exported' && m.bytes) return m.bytes;
+          const error = new Error(
+            m.ev === 'exported' && m.error
+              ? m.error.message
+              : 'The session is gone.',
+          );
+          if (m.ev === 'exported' && m.error) error.name = m.error.name;
+          throw error;
+        }),
       close: (code, reason) => {
         this._post({ kind: 'wt', op: 'close', s, code, reason });
         this._sessions.delete(s);
@@ -492,6 +531,14 @@ export class TransportRelay {
         this._tell({ kind: 'wt', ev: 'created', req: m.req, st: null });
       } else if (m.op === 'stats' || m.op === 'groupStats') {
         this._tell({ kind: 'wt', ev: 'stats', req: m.req, stats: {} });
+      } else if (m.op === 'export') {
+        this._tell({
+          kind: 'wt',
+          ev: 'exported',
+          req: m.req,
+          bytes: null,
+          error: { name: 'InvalidStateError', message: 'The session is gone.' },
+        });
       }
       return;
     }
@@ -526,6 +573,25 @@ export class TransportRelay {
         s.session.stats().then(
           (stats) => this._tell({ kind: 'wt', ev: 'stats', req, stats }),
           () => this._tell({ kind: 'wt', ev: 'stats', req, stats: {} }),
+        );
+        return;
+      }
+      case 'export': {
+        const req = m.req;
+        exportFrom(s.session, m.label, m.context, m.length).then(
+          (bytes) =>
+            this._tell({ kind: 'wt', ev: 'exported', req, bytes, error: null }),
+          (error: unknown) =>
+            this._tell({
+              kind: 'wt',
+              ev: 'exported',
+              req,
+              bytes: null,
+              error: {
+                name: String((error as Error)?.name ?? 'Error'),
+                message: String((error as Error)?.message ?? error),
+              },
+            }),
         );
         return;
       }

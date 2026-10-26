@@ -30,7 +30,9 @@
 // session the server ends with no capsule and one whose connection is lost.
 // Both are 0.8.0's (colocohen/quico#8, #10): before it, this wrapped
 // quico's `_sendConnect` and read the session's end off its incoming
-// streams, and the peer range starts there.
+// streams, and the peer range starts there. So are the response's headers
+// and the session's keying material, which the seam carries as they are
+// (`responseHeaders`, `exportKeyingMaterial`).
 import type {
   HtmlWebTransport,
   WebTransportConnectRequest,
@@ -75,6 +77,9 @@ interface QuicoSession {
   readonly protocol: string;
   readonly reliability: string;
   readonly congestionControl: string;
+  /** The server's answer to the CONNECT, a `Headers` with neither the
+   *  pseudo-headers nor `wt-protocol` — null until the session is up. */
+  readonly responseHeaders?: Iterable<[string, string]> | null;
   on(event: string, listener: (...args: never[]) => void): unknown;
   close(info?: { closeCode?: number; reason?: string }): void;
   createBidirectionalStream(options?: object): Promise<QuicoStream>;
@@ -83,6 +88,11 @@ interface QuicoSession {
   maxDatagramSize(): number;
   createSendGroup(): QuicoSendGroup;
   getStats(): Promise<Record<string, unknown>>;
+  exportKeyingMaterial?(
+    label: Uint8Array,
+    context: Uint8Array,
+    outputLength: number,
+  ): Promise<Uint8Array>;
 }
 
 type QuicoSessionClass = new (
@@ -148,6 +158,20 @@ const STREAM_STATS = [
   'bytesReceived',
   'bytesRead',
 ] as const;
+
+/** A response's headers as the seam's pairs: one a field, a cookie's
+ *  each its own, as `Headers` iterates them. */
+function pairsOf(
+  headers: Iterable<[string, string]> | null | undefined,
+): [string, string][] {
+  const out: [string, string][] = [];
+  try {
+    for (const [name, value] of headers ?? []) {
+      out.push([String(name), String(value)]);
+    }
+  } catch {}
+  return out;
+}
 
 /** A quico stream as the seam's stream. */
 function streamOf(
@@ -359,6 +383,7 @@ function quicoSession(
         session.congestionControl === 'low-latency'
           ? session.congestionControl
           : 'default',
+      responseHeaders: pairsOf(session.responseHeaders),
     });
     told = true;
     for (const [s, bidirectional] of early.splice(0))
@@ -433,6 +458,19 @@ function quicoSession(
             : null,
         atSendCapacity: raw.atSendCapacity === true,
       };
+    },
+    async exportKeyingMaterial(label, context, length) {
+      const session = await ready;
+      if (!session || closedByPage) {
+        throw new Error('The session was never established.');
+      }
+      if (typeof session.exportKeyingMaterial !== 'function') {
+        const error = new Error('This quico cannot export keying material.');
+        error.name = 'NotSupportedError';
+        throw error;
+      }
+      const bytes = await session.exportKeyingMaterial(label, context, length);
+      return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     },
     close(closeCode, reason) {
       if (closedByPage) return;

@@ -100,6 +100,7 @@ test('the constructor refuses what is no WebTransport URL, and protocols a heade
       'tryIt("https://wt.test/", { congestionControl: "fast" });' +
       'tryIt("https://wt.test/", { anticipatedConcurrentIncomingBidirectionalStreams: 70000 });' +
       'tryIt("https://wt.test/", { allowPooling: true, serverCertificateHashes: [{ algorithm: "sha-256", value: new Uint8Array(32) }] });' +
+      'tryIt("https://wt.test/", { headers: { "Wt-AVAILABLE-protocols": "a" } });' +
       'log("done", out.join(","), WebTransport.length, typeof WebTransport.supportsReliableOnly);',
   );
   assert.equal(
@@ -107,7 +108,7 @@ test('the constructor refuses what is no WebTransport URL, and protocols a heade
     [
       'SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError',
       'SyntaxError,SyntaxError,SyntaxError,SyntaxError,ok,TypeError,TypeError',
-      'NotSupportedError|1|boolean',
+      'NotSupportedError,TypeError|1|boolean',
     ].join(','),
   );
 });
@@ -386,6 +387,136 @@ test('stats come from the connection, with the datagrams’ own beside them, and
   assert.equal(transport.servers[0].streams[0].priority.sendOrder, 2);
 });
 
+test('responseHeaders is null until the session is established, then the server’s answer, immutable, without its cookies or wt-protocol', async () => {
+  const transport = new FakeTransport((server) =>
+    server.accept('b', [
+      [':status', '200'],
+      ['X-Test-Header', 'hello'],
+      ['set-cookie', 'probe=1'],
+      ['Set-Cookie2', 'probe=2'],
+      ['wt-protocol', '"b"'],
+      ['x-dup', 'one'],
+      ['x-dup', 'two'],
+      ['bad name', 'dropped'],
+    ]),
+  );
+  const p = await page(
+    LOG +
+      'var wt = new WebTransport("https://wt.test/", { protocols: ["a", "b"] });' +
+      'log("before", String(wt.responseHeaders));' +
+      'function threw(fn) { try { fn(); return "none"; } catch (e) { return e.name; } }' +
+      'wt.ready.then(function () { var h = wt.responseHeaders;' +
+      '  log("ready", wt.protocol, h instanceof Headers, h === wt.responseHeaders, JSON.stringify(Array.from(h)));' +
+      '  log("changes", threw(function () { h.set("x-test-header", "x"); }), threw(function () { h.append("x-new", "y"); }), threw(function () { h.delete("x-test-header"); }), h.get("x-test-header"), h.has("x-new"));' +
+      '  log("realm", h.constructor.constructor("return typeof process")());' +
+      '});',
+    transport,
+  );
+  assert.equal(await p.until('before|'), 'null');
+  assert.equal(
+    await p.until('ready|'),
+    'b|true|true|[["x-dup","one, two"],["x-test-header","hello"]]',
+  );
+  assert.equal(
+    await p.until('changes|'),
+    'TypeError|TypeError|TypeError|hello|false',
+  );
+  assert.equal(await p.until('realm|'), 'undefined');
+});
+
+test('exportKeyingMaterial checks its arguments as Web IDL and the spec have it, waits for a session being established, and is the session’s own', async () => {
+  const transport = new FakeTransport((server) => {
+    if (!server.request.url.endsWith('/never')) server.accept();
+  });
+  const p = await page(
+    LOG +
+      'var enc = new TextEncoder(); var L = enc.encode("label"), C = enc.encode("context");' +
+      'function hex(b) { return Array.from(b, function (x) { return (x + 256).toString(16).slice(1); }).join(""); }' +
+      'function why(p) { return p.then(function (b) { return "resolved " + b.byteLength; }, function (e) { return e.name; }); }' +
+      'var wt = new WebTransport("https://wt.test/");' +
+      // while connecting
+      'var early = wt.exportKeyingMaterial(L, C, 32);' +
+      'Promise.all([why(wt.exportKeyingMaterial()), why(wt.exportKeyingMaterial(L)), why(wt.exportKeyingMaterial(L, C)),' +
+      '  why(wt.exportKeyingMaterial("label", C, 32)), why(wt.exportKeyingMaterial(L, {}, 32)),' +
+      '  why(wt.exportKeyingMaterial(new Uint8Array(256), C, 32)), why(wt.exportKeyingMaterial(L, new Uint8Array(256), 32)),' +
+      '  why(wt.exportKeyingMaterial(L, C, 0)), why(wt.exportKeyingMaterial(L, C, 4097)), why(wt.exportKeyingMaterial(L, C, -1)),' +
+      '  why(wt.exportKeyingMaterial(new Uint8Array(255), new Uint8Array(255), 4096)), why(wt.exportKeyingMaterial(new ArrayBuffer(0), new DataView(new ArrayBuffer(0)), 1))' +
+      ']).then(function (r) { log("arguments", r.join(",")); });' +
+      'early.then(async function (b) {' +
+      '  log("early", wt.responseHeaders !== null, b instanceof Uint8Array, b.byteLength, b.constructor.constructor("return typeof process")());' +
+      '  var big = new Uint8Array(L.byteLength + 4); big.set(L, 2);' +
+      '  var offset = await wt.exportKeyingMaterial(new Uint8Array(big.buffer, 2, L.byteLength), C.buffer, 32);' +
+      '  var again = await wt.exportKeyingMaterial(L, C, 32);' +
+      '  var other = await wt.exportKeyingMaterial(enc.encode("other"), C, 32);' +
+      '  log("material", hex(b), hex(offset) === hex(b), hex(again) === hex(b), hex(other) !== hex(b), again !== b);' +
+      '  wt.close(); await wt.closed;' +
+      '  log("closed", await why(wt.exportKeyingMaterial(L, C, 32)));' +
+      '});' +
+      // one waiting for a session the page then closes
+      'var never = new WebTransport("https://wt.test/never");' +
+      'var waiting = why(never.exportKeyingMaterial(L, C, 8)); never.close();' +
+      'waiting.then(function (r) { log("abandoned", r); });',
+    transport,
+  );
+  assert.equal(
+    await p.until('arguments|'),
+    [
+      'TypeError,TypeError,TypeError,TypeError,TypeError',
+      'RangeError,RangeError,RangeError,RangeError,RangeError',
+      'resolved 4096,resolved 1',
+    ].join(','),
+  );
+  assert.equal(await p.until('early|'), 'true|true|32|undefined');
+  const server = transport.servers[0];
+  const label = new TextEncoder().encode('label');
+  const context = new TextEncoder().encode('context');
+  const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
+  assert.equal(
+    await p.until('material|'),
+    `${hex(server.keyingMaterial(label, context, 32))}|true|true|true|true`,
+  );
+  assert.equal(await p.until('closed|'), 'InvalidStateError');
+  assert.equal(await p.until('abandoned|'), 'InvalidStateError');
+  // the view's own bytes reached the seam, and nothing the page refused did
+  assert.deepEqual(
+    server.exports.map((e) => [Buffer.from(e.label).toString(), e.length]),
+    [
+      ['label', 32],
+      ['\u0000'.repeat(255), 4096],
+      ['', 1],
+      ['label', 32],
+      ['label', 32],
+      ['other', 32],
+    ],
+  );
+});
+
+test('a network that cannot export keying material is a NotSupportedError, in a page and in its worker', async () => {
+  const fake = new FakeTransport((server) => server.accept());
+  const transport: HtmlWebTransport = {
+    connect(request, events) {
+      const { exportKeyingMaterial: _, ...session } = fake.connect(
+        request,
+        events,
+      );
+      return session;
+    },
+  };
+  const worker =
+    'new WebTransport("https://wt.test/").exportKeyingMaterial(new Uint8Array(1), new Uint8Array(1), 8).catch(function (e) {' +
+    '  postMessage(["worker", e.name, e instanceof DOMException].join("|")); });';
+  const p = await page(
+    LOG +
+      'new WebTransport("https://wt.test/").exportKeyingMaterial(new Uint8Array(1), new Uint8Array(1), 8).catch(function (e) { log("page", e.name, e instanceof DOMException); });' +
+      `var source = ${JSON.stringify(worker)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));' +
+      'w.onmessage = function (e) { log(e.data); };',
+    transport,
+  );
+  assert.equal(await p.until('page|'), 'NotSupportedError|true');
+  assert.equal(await p.until('worker|'), 'NotSupportedError|true');
+});
+
 test('a session is held to the document’s Content Security Policy, a <meta>’s, which stays once it is met', async () => {
   const transport = echoing();
   const p = await page(
@@ -420,7 +551,10 @@ test('a worker’s sessions are carried across its thread over the page’s seam
   const transport = new FakeTransport((s) => {
     s.echoDatagrams = true;
     s.echoStreams = true;
-    s.accept('w');
+    s.accept('w', [
+      ['x-from', 'server'],
+      ['set-cookie', 'no'],
+    ]);
     server = s;
     // a stream of the server's, as WPT's echo handler opens one with the
     // session
@@ -435,6 +569,9 @@ test('a worker’s sessions are carried across its thread over the page’s seam
     'var wt = new WebTransport("https://wt.test/worker?x");' +
     'wt.ready.then(async function () {' +
     '  log("ready", wt.protocol, wt.datagrams.maxDatagramSize, typeof WorkerGlobalScope);' +
+    '  log("headers", JSON.stringify(Array.from(wt.responseHeaders)), wt.responseHeaders instanceof Headers);' +
+    '  var k = await wt.exportKeyingMaterial(new TextEncoder().encode("w"), new Uint8Array(0), 16);' +
+    '  log("keying", Array.from(k, function (x) { return (x + 256).toString(16).slice(1); }).join(""), k instanceof Uint8Array);' +
     '  var w = wt.datagrams.createWritable().getWriter(); await w.write(new Uint8Array([1, 2]));' +
     '  var got = await wt.datagrams.readable.getReader().read(); log("datagram", Array.from(got.value).join(","));' +
     '  var bidi = await wt.createBidirectionalStream({ sendOrder: 5 });' +
@@ -456,6 +593,12 @@ test('a worker’s sessions are carried across its thread over the page’s seam
     transport,
   );
   assert.equal(await p.until('worker|ready|'), 'w|1200|function');
+  assert.equal(await p.until('worker|headers|'), '[["x-from","server"]]|true');
+  const keyed = server as unknown as FakeServer;
+  assert.equal(
+    await p.until('worker|keying|'),
+    `${Buffer.from(keyed.keyingMaterial(new TextEncoder().encode('w'), new Uint8Array(0), 16)).toString('hex')}|true`,
+  );
   assert.equal(await p.until('worker|datagram|'), '1,2');
   assert.equal(await p.until('worker|echo|'), 'echo me');
   assert.equal(await p.until('worker|incoming|'), 'from the server');

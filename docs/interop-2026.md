@@ -475,9 +475,11 @@ passes but the one subtest of
 `back-forward-cache-with-closed-webtransport-connection`, which needs a
 back-forward cache; the 204 a server establishes a session with, which
 quico 0.7 refused, passes in each of `connect`'s four variants. Beyond
-the label, the largest gaps in WPT's `webtransport/` are
-`exportKeyingMaterial()` and `responseHeaders`, which quico 0.8.0 has and
-the seam does not carry yet.
+the label, `exportKeyingMaterial()` and `responseHeaders`, which quico
+0.8.0 added, are carried by the seam ([#1048]), and the protocols header a
+page may not set throws as the spec has it: `export-keying-material`,
+`headers` and `response-headers` went from 52 of their 152 subtests to all
+of them, in the window and in each kind of worker.
 
 **zoom (93.9%).** The two reftests the eleventh run failed — frames nested
 under `zoom` (`iframe-zoom-nested.html`) and `zoom` on an inline SVG
@@ -556,3 +558,4 @@ Across areas, three things recurred, and each now has its first slice:
 [#1021]: https://github.com/sidorares/react-x11-components/pull/1021
 [#1030]: https://github.com/sidorares/react-x11-components/pull/1030
 [#1046]: https://github.com/sidorares/react-x11-components/pull/1046
+[#1048]: https://github.com/sidorares/react-x11-components/pull/1048

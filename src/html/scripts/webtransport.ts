@@ -23,6 +23,9 @@ export interface WebTransportDeps {
   input(): unknown;
   DOMException: unknown;
   Headers: unknown;
+  /** A `Headers` of the page's whose guard is `immutable`, its list the
+   *  pairs as they are: a response's, which no page changes. */
+  immutableHeaders(pairs: [string, string][]): unknown;
   URL: unknown;
   setTimer(fn: () => void, ms: number): unknown;
   streams: StreamsInternals;
@@ -44,6 +47,7 @@ export function installWebTransport(
   const input: Any = D.input;
   const DOMException: Any = D.DOMException;
   const Headers: Any = D.Headers;
+  const immutableHeaders: Any = D.immutableHeaders;
   const URLClass: Any = D.URL;
   const setTimer: Any = D.setTimer;
   const S: Any = D.streams;
@@ -317,6 +321,8 @@ export function installWebTransport(
   const writing = new Map<number, Deferred>();
   /** Stats asked for, by request: settled by `__wtStats`. */
   const statsAsked = new Map<number, Any>();
+  /** Keying material asked for, by request: settled by `__wtExported`. */
+  const exporting = new Map<number, Any>();
 
   /** A stream's sides, each over when it ends: once both are, the host
    *  forgets it. */
@@ -1117,6 +1123,11 @@ export function installWebTransport(
       creating.delete(req);
       c.d.reject(domError('The session is closed.', 'InvalidStateError'));
     }
+    for (const [req, x] of exporting) {
+      if (x.t !== t) continue;
+      exporting.delete(req);
+      x.d.reject(domError('The session is closed.', 'InvalidStateError'));
+    }
     if (t.ready.state === 0) {
       t.ready.reject(error);
       markHandled(t.ready.promise);
@@ -1205,6 +1216,15 @@ export function installWebTransport(
         }
         seen.add(p);
       }
+      // the protocols the page offers are the browser's to send, in their
+      // own header (WebTransport, "initialize WebTransport over HTTP")
+      for (const [name] of o.headers) {
+        if (name === 'wt-available-protocols') {
+          throw typeError(
+            `${context}: The header 'WT-Available-Protocols' is set by the user agent from 'protocols'.`,
+          );
+        }
+      }
       const id = ++sessionSeq;
       const t: Any = {
         tag: 'WT',
@@ -1266,17 +1286,75 @@ export function installWebTransport(
       context: Any,
       outputLength: Any,
     ): Promise<Any> {
+      const where =
+        "Failed to execute 'exportKeyingMaterial' on 'WebTransport'";
       const t = slotOf(this);
       if (!t || t.tag !== 'WT') return rejectedWith(illegal());
-      void label;
-      void context;
-      void outputLength;
-      return rejectedWith(
-        domError(
-          'Exporting keying material is not supported.',
-          'NotSupportedError',
-        ),
+      if (arguments.length < 3) {
+        return rejectedWith(
+          typeError(
+            `${where}: 3 arguments required, but only ${arguments.length} present.`,
+          ),
+        );
+      }
+      const labelBytes = bufferBytes(label);
+      if (!labelBytes) {
+        return rejectedWith(
+          typeError(
+            `${where}: parameter 1 is not of type '(ArrayBuffer or ArrayBufferView)'.`,
+          ),
+        );
+      }
+      const contextBytes = bufferBytes(context);
+      if (!contextBytes) {
+        return rejectedWith(
+          typeError(
+            `${where}: parameter 2 is not of type '(ArrayBuffer or ArrayBufferView)'.`,
+          ),
+        );
+      }
+      let length: number;
+      try {
+        length = unsignedLong(outputLength);
+      } catch (e) {
+        return rejectedWith(e);
+      }
+      if (labelBytes.byteLength > 255) {
+        return rejectedWith(
+          rangeError(`${where}: The label is longer than 255 bytes.`),
+        );
+      }
+      if (contextBytes.byteLength > 255) {
+        return rejectedWith(
+          rangeError(`${where}: The context is longer than 255 bytes.`),
+        );
+      }
+      if (length === 0 || length > 4096) {
+        return rejectedWith(
+          rangeError(
+            `${where}: The output length must be from 1 to 4096 bytes, not ${length}.`,
+          ),
+        );
+      }
+      if (t.state === 'closed' || t.state === 'failed') {
+        return rejectedWith(
+          domError('The session is closed.', 'InvalidStateError'),
+        );
+      }
+      const req = ++requestSeq;
+      const d = deferred();
+      exporting.set(req, { d, t });
+      call(
+        'wtExport',
+        t.id,
+        req,
+        JSON.stringify({
+          label: base64OfBytes(labelBytes),
+          context: base64OfBytes(contextBytes),
+          length,
+        }),
       );
+      return d.promise;
     }
     get ready(): Promise<Any> {
       const t = slotOf(this);
@@ -1432,9 +1510,10 @@ export function installWebTransport(
     t.protocol = `${info.protocol ?? ''}`;
     t.reliability = info.reliability;
     t.congestionControl = info.congestionControl;
-    if (Array.isArray(info.responseHeaders)) {
-      t.responseHeaders = new Headers(info.responseHeaders);
-    }
+    // the host left out what a page does not read (`transports.ts`)
+    t.responseHeaders = immutableHeaders(
+      Array.isArray(info.responseHeaders) ? info.responseHeaders : [],
+    );
     t.ready.resolve(undefined);
     if (t.dg.outgoing.length) flushSoon(t);
     return true;
@@ -1575,6 +1654,23 @@ export function installWebTransport(
     if (error) {
       asked.d.reject(domError('The session failed.', 'InvalidStateError'));
     } else asked.d.resolve(asked.shape(stats ?? {}));
+    return true;
+  });
+  entry('__wtExported', () => {
+    const [req, base64, error] = input();
+    const asked = exporting.get(req);
+    if (!asked) return false;
+    exporting.delete(req);
+    if (error || typeof base64 !== 'string') {
+      asked.d.reject(
+        error === 'NotSupportedError'
+          ? domError(
+              'This network cannot export keying material.',
+              'NotSupportedError',
+            )
+          : domError('The session is closed.', 'InvalidStateError'),
+      );
+    } else asked.d.resolve(bytesOfBase64(base64));
     return true;
   });
 

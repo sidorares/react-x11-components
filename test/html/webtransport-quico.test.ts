@@ -5,7 +5,9 @@
 // holds of the adapter: the CONNECT names the page's origin, streams and
 // datagrams go both ways, and each way a server ends a session reaches the
 // page as a browser has it: a capsule, the CONNECT stream ended with none,
-// and the CONNECT stream reset, a session lost.
+// and the CONNECT stream reset, a session lost. The server's answer to the
+// CONNECT reaches the page without its cookies or its `wt-protocol`, and
+// the page's keying material is the bytes the server exports.
 //
 // Skipped where the run cannot make a certificate (no `openssl`) or quico,
 // the optional peer, is not installed.
@@ -87,7 +89,13 @@ interface Req {
   on(event: string, fn: (...a: never[]) => void): void;
 }
 interface Res {
-  writeHead(status: number): void;
+  writeHead(status: number, headers?: Record<string, string>): void;
+  setWebTransportProtocol(name: string): void;
+  exportKeyingMaterial(
+    label: Uint8Array,
+    context: Uint8Array,
+    length: number,
+  ): Promise<Uint8Array>;
   end(): void;
   sendDatagram(data: Uint8Array): boolean;
   closeSession(code: number, reason: string): void;
@@ -191,6 +199,79 @@ test('a page’s session over quico names its origin and headers, echoes, and is
     assert.equal(seen[0].origin, 'https://page.test');
     assert.equal(seen[0]['x-page'], 'yes');
     assert.equal(seen[0][':path'], '/echo');
+  } finally {
+    server.close();
+  }
+});
+
+test('a page’s session over quico has the server’s response headers, less what a page does not read, and the keying material the server exports', async () => {
+  // the server's own keying material for the label and the context, asked
+  // as it answers, since a session the page closed exports none
+  let exported: Promise<Uint8Array> | null = null;
+  const server = quico!.createServer(certs!, (req, res) => {
+    if (req.headers[':protocol'] !== 'webtransport') {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.setWebTransportProtocol('b');
+    res.writeHead(200, { 'x-test-header': 'hello', 'set-cookie': 'probe=1' });
+    exported = res.exportKeyingMaterial(
+      new TextEncoder().encode('label'),
+      new TextEncoder().encode('context'),
+      32,
+    );
+  });
+  const port = await freePort();
+  await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
+  try {
+    const network = new HtmlNetwork({ webTransport: { ca: [certs!.cert] } });
+    const logs: string[] = [];
+    await renderX11(
+      h(Html, {
+        source:
+          '<script>' +
+          'function log() { console.log([].slice.call(arguments).join("|")); }' +
+          'function hex(b) { return Array.from(b, function (x) { return (x + 256).toString(16).slice(1); }).join(""); }' +
+          'var enc = new TextEncoder();' +
+          `var wt = new WebTransport("https://localhost:${port}/keys", { protocols: ["a", "b"] });` +
+          'log("before", String(wt.responseHeaders));' +
+          // asked while the session is being established
+          'var early = wt.exportKeyingMaterial(enc.encode("label"), enc.encode("context"), 32);' +
+          'wt.ready.then(async function () {' +
+          '  var h = wt.responseHeaders;' +
+          '  log("headers", wt.protocol, h.get("x-test-header"), h.has("set-cookie"), h.has("wt-protocol"), h instanceof Headers);' +
+          '  try { h.set("x-test-header", "x"); log("set", "none"); } catch (e) { log("set", e.name); }' +
+          '  log("keying", hex(await early), hex(await wt.exportKeyingMaterial(enc.encode("other"), new Uint8Array(0), 4096)).length);' +
+          '  wt.close(); await wt.closed;' +
+          '  await wt.exportKeyingMaterial(enc.encode("label"), enc.encode("context"), 32).then(function () { log("after", "resolved"); }, function (e) { log("after", e.name); });' +
+          '}).catch(function (e) { log("failed", e.name, e.message); });' +
+          '</script>',
+        partial: false,
+        baseUrl: 'https://page.test/',
+        scripts: {
+          webTransport: network.webTransport,
+          log: (_level: string, text: string) => void logs.push(text),
+        },
+      }),
+      FONTS ? { width: 100, height: 50, fonts: FONTS } : { backend: 'mock' },
+    );
+    const end = Date.now() + 15000;
+    while (!logs.some((l) => /^(after|failed)\|/.test(l)) && Date.now() < end) {
+      await act(() => new Promise((r) => setTimeout(r, 20)));
+    }
+    const material = await (exported as unknown as Promise<Uint8Array>);
+    assert.deepEqual(
+      logs.filter((l) => !l.startsWith('[')),
+      [
+        'before|null',
+        'headers|b|hello|false|false|true',
+        'set|TypeError',
+        `keying|${Buffer.from(material).toString('hex')}|8192`,
+        'after|InvalidStateError',
+      ],
+      logs.join('\n'),
+    );
   } finally {
     server.close();
   }

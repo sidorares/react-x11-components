@@ -10,6 +10,8 @@
 //
 // Not a `.test.ts` file, so `tsx --test` does not run it, but `tsconfig.json`
 // does typecheck it.
+import { createHmac, randomBytes } from 'node:crypto';
+
 import type {
   HtmlWebTransport,
   WebTransportConnectRequest,
@@ -140,8 +142,18 @@ export class FakeServer {
   echoDatagrams = false;
   /** Whether a stream's bytes are sent back on it, its FIN with them. */
   echoStreams = false;
+  /** What the page asked to export, in order, as the seam was handed it. */
+  readonly exports: {
+    label: Uint8Array;
+    context: Uint8Array;
+    length: number;
+  }[] = [];
+  /** The session's own secret, which its keying material comes from. */
+  readonly secret = randomBytes(32);
   private _ready = false;
   private _over = false;
+  /** What waits for the session to be established, or not to be. */
+  private _waiting: ((up: boolean) => void)[] = [];
 
   constructor(
     readonly request: WebTransportConnectRequest,
@@ -150,8 +162,9 @@ export class FakeServer {
 
   // --- what the server does --------------------------------------------------
 
-  /** Establishes the session, a task later, choosing `protocol`. */
-  accept(protocol = ''): void {
+  /** Establishes the session, a task later, choosing `protocol`, and
+   *  answering the CONNECT with `responseHeaders`. */
+  accept(protocol = '', responseHeaders?: [string, string][]): void {
     setTimeout(() => {
       if (this._over) return;
       this._ready = true;
@@ -159,7 +172,9 @@ export class FakeServer {
         protocol,
         reliability: 'supports-unreliable',
         congestionControl: this.request.congestionControl,
+        ...(responseHeaders ? { responseHeaders } : {}),
       });
+      this._wake(true);
     }, 0);
   }
   /** Refuses it, or loses it after. */
@@ -168,6 +183,7 @@ export class FakeServer {
       if (this._over) return;
       this._over = true;
       this._events.failed(message);
+      this._wake(false);
     }, 0);
   }
   /** Closes it with a code and a reason. */
@@ -175,6 +191,36 @@ export class FakeServer {
     if (this._over) return;
     this._over = true;
     this._events.closed(closeCode, reason);
+    this._wake(false);
+  }
+  private _wake(up: boolean): void {
+    for (const go of this._waiting.splice(0)) go(up);
+  }
+  /** Once the session is established, or will never be: whether it is. */
+  private _up(): Promise<boolean> {
+    if (this._over) return Promise.resolve(false);
+    if (this._ready) return Promise.resolve(true);
+    return new Promise((resolve) => this._waiting.push(resolve));
+  }
+  /**
+   * The session's keying material for a label and a context, as its TLS
+   * exporter would have it: a function of the session's secret and of
+   * both, so the same arguments answer the same bytes and anything else
+   * other ones (HMAC-SHA-256 in counter mode, not the TLS exporter's).
+   */
+  keyingMaterial(label: Uint8Array, context: Uint8Array, length: number) {
+    const out = new Uint8Array(length);
+    for (let at = 0, n = 1; at < length; n += 1) {
+      const block = createHmac('sha256', this.secret)
+        .update(Uint8Array.of(n, label.byteLength))
+        .update(label)
+        .update(Uint8Array.of(context.byteLength))
+        .update(context)
+        .digest();
+      out.set(block.subarray(0, length - at), at);
+      at += block.byteLength;
+    }
+    return out;
   }
   /** Asks it to be wound down. */
   drain(): void {
@@ -239,9 +285,15 @@ export class FakeServer {
           estimatedSendRate: null,
           atSendCapacity: false,
         }),
+      exportKeyingMaterial: async (label, context, length) => {
+        this.exports.push({ label, context, length });
+        if (!(await this._up())) throw new Error('not connected');
+        return this.keyingMaterial(label, context, length);
+      },
       close: (closeCode, reason) => {
         this._over = true;
         this.closedWith = { closeCode, reason };
+        this._wake(false);
       },
     };
   }
