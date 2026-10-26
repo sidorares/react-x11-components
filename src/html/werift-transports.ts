@@ -67,6 +67,16 @@ export interface WAssociation {
   readonly maxChannels?: number;
 }
 
+/** A transport's SCTP association: werift makes one for each DTLS
+ *  transport it runs data channels over. */
+export interface WAssociation {
+  readonly stateChanged: { connected: WEvent<[]>; closed: WEvent<[]> };
+  /** 4 is ESTABLISHED. */
+  readonly associationState: number;
+  /** The streams it can carry each way, once it is up. */
+  readonly maxChannels?: number;
+}
+
 export interface WSctp {
   readonly dtlsTransport?: WDtls;
   readonly sctp?: WAssociation;

@@ -455,3 +455,33 @@ test('a canvas’s captureStream is a stream of one canvas track, on an insecure
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a sender’s and a receiver’s parameters are what an answer negotiated, and an encoding’s codec it left out goes', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    var opus = RTCRtpSender.getCapabilities('audio').codecs.filter(function (c) { return c.mimeType === 'audio/opus'; })[0];
+    var t = a.addTransceiver('audio', { sendEncodings: [{ codec: opus }] });
+    function counts(p) { return p.codecs.length + '/' + p.headerExtensions.length; }
+    log('made', counts(t.sender.getParameters()), counts(t.receiver.getParameters()), t.sender.getParameters().encodings[0].codec.mimeType);
+    await a.setLocalDescription();
+    log('offered', counts(t.sender.getParameters()));
+    await b.setRemoteDescription(a.localDescription);
+    var u = b.getTransceivers()[0];
+    log('remote offer', counts(u.sender.getParameters()), counts(u.receiver.getParameters()));
+    await b.setLocalDescription();
+    log('answered', u.sender.getParameters().codecs.length > 0);
+    await a.setRemoteDescription(b.localDescription);
+    log('negotiated', t.sender.getParameters().codecs.length > 0, t.sender.getParameters().encodings[0].codec.mimeType);
+    a.close(); b.close();
+  `);
+  for (const line of [
+    'made|0/0|0/0|audio/opus',
+    'offered|0/0',
+    'remote offer|0/0|0/0',
+    'answered|true',
+    'negotiated|true|audio/opus',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

@@ -1535,10 +1535,23 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       if (sends(st.currentDirection)) t.sent = true;
       t.transport =
         st.sender?.transport ?? st.receiver?.transport ?? t.transport;
-      apply(wmGet, slots, [t.sender]).parameters =
-        st.sender?.parameters ?? null;
-      apply(wmGet, slots, [t.receiver]).parameters =
-        st.receiver?.parameters ?? null;
+      if (type === 'answer' || type === 'pranswer') {
+        // what a sender sends and a receiver receives is what an answer
+        // negotiated, and nothing before one: [[SendCodecs]] and
+        // [[ReceiveCodecs]] are set as an answer is applied (WebRTC 1.0,
+        // 4.4.1.6), and an encoding's codec the answer left out goes with
+        // it (5.2)
+        const sender = apply(wmGet, slots, [t.sender]);
+        sender.parameters = st.sender?.parameters ?? null;
+        apply(wmGet, slots, [t.receiver]).parameters =
+          st.receiver?.parameters ?? null;
+        const sendable: Any[] = sender.parameters?.codecs ?? [];
+        for (const e of sender.encodings) {
+          if (e.codec && !sendable.some((c: Any) => sameCodec(c, e.codec))) {
+            delete e.codec;
+          }
+        }
+      }
       t.negotiatedExtensions = st.headerExtensions ?? [];
       if (st.stopped) {
         // stopped, its m-section is no longer its
