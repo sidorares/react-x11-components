@@ -20,7 +20,11 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from '../../src/html/index.js';
-import { ChangeAnchors } from '../../src/html/css/cascade.js';
+import {
+  CHANGES_BELOW,
+  Cascade,
+  ChangeAnchors,
+} from '../../src/html/css/cascade.js';
 import { Html } from '../../src/index.js';
 import {
   FONTS,
@@ -977,6 +981,65 @@ test('a class that an attribute selector answers alike for before and after rest
   );
 });
 
+test('a change at the root that a rule tests above its subject restyles what its subject names, not the document', async () => {
+  // bun.com's blog sets `data-scrolled` on <html> as it is first scrolled,
+  // which one rule reads for its header, and `reveal-ready`, which one reads
+  // for elements the page has none of: each restyled all of its 7,000
+  // elements, the first a 213 ms hold at the first notch of the wheel.
+  // Tailwind's preflight has `:host, html`, a rule at a shadow tree's edge,
+  // and that must not make every change reach everything below it again.
+  const paragraphs = Array.from(
+    { length: 300 },
+    (_, i) => `<p>Paragraph ${i}</p>`,
+  ).join('');
+  const { node } = await render(
+    '<html><head><style>:host, html { line-height: 1.5 } body { margin: 0 }' +
+      ' html[data-scrolled] .site-header { border-bottom: 1px solid #ff0000 }' +
+      ' .reveal-ready [data-reveal]:not(.revealed) { opacity: 0 }</style></head><body>' +
+      `<header class="site-header" id="h"><a id="a">Bun</a></header>${paragraphs}</body></html>`,
+    300,
+  );
+  const el = view(node);
+  await act();
+  const html = el.document.children.find(
+    (n) => (n as Element).name === 'html',
+  ) as Element;
+  const header = byId(el, 'h');
+  const body = html.children.find(
+    (n) => (n as Element).name === 'body',
+  ) as Element;
+
+  const scrolled = [setAttr(html, 'data-scrolled', '')];
+  const own = scopeOf(el, scrolled);
+  assert.ok(own, 'the attribute was a refresh of everything');
+  // by identity: a failing comparison would format the elements, which are
+  // cyclic
+  assert.ok(own.size === 1 && own.has(header), `${own.size} elements restyled`);
+  const computed = await stylesComputed(el, () => el.touchDocument(scrolled));
+  assert.ok(computed > 0 && computed < 5, `${computed} styles worked out`);
+  assert.strictEqual(
+    el.computedStyle(header)?.['border-bottom-color'],
+    'rgb(255, 0, 0)',
+  );
+
+  const ready = [setClass(html, 'reveal-ready hydrated')];
+  const none = scopeOf(el, ready);
+  assert.ok(none, 'the class was a refresh of everything');
+  assert.strictEqual(none.size, 0, `${none.size} elements restyled`);
+  el.touchDocument(ready);
+
+  // what a refresh of everything comes to, style by style
+  const told = stylesOf(el, body);
+  el.touchDocument();
+  const whole = stylesOf(el, body);
+  const at = told.findIndex((style, i) => style !== whole[i]);
+  assert.ok(
+    at < 0 && told.length === whole.length,
+    `told what changed\n${(told[at] ?? '').slice(0, 300)}\n` +
+      `styled whole\n${(whole[at] ?? '').slice(0, 300)}`,
+  );
+});
+
 test('a :has() is restyled from its element, found by its compound: an earlier sibling, an id, a :not() around it', async () => {
   const { node } = await render(
     '<style>body{margin:0} .a:has(+ .b) > i{color:#ff0000}' +
@@ -1181,6 +1244,67 @@ function rulesFor(
   }
   if (next() < 0.5) {
     rules.push(`.${c()}::before { content: "*"; color: ${pick(INKS)} }`);
+  }
+  return rules.join('\n');
+}
+
+/**
+ * Rules that test what an element is above their subject, the subject of
+ * every kind a reach below the element can be narrowed to — a class, a
+ * type, an attribute, a `:not()`, an `:is()` of compounds, a structural
+ * pseudo-class beside them, a `::before` — and of the kinds it cannot: `*`,
+ * pseudo-classes alone, an `:is()` of complex selectors. Tailwind's
+ * `:host, html` is always there, a rule at a shadow tree's edge.
+ */
+function belowRulesFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  const t = () => pick(TAGS);
+  const above: (() => string)[] = [
+    () => `.${c()}`,
+    () => '[data-x]',
+    () => '[data-x=y]',
+    () => `#e${Math.floor(next() * 6)}`,
+    () => `${t()}.${c()}`,
+    () => `.${c()}:not(.${c()})`,
+  ];
+  const subjects: (() => string)[] = [
+    () => `.${c()}`,
+    () => t(),
+    () => `${t()}.${c()}`,
+    () => '[data-x]',
+    () => '[data-x=z]',
+    () => `.${c()}:not(.${c()})`,
+    () => `:is(.${c()}, ${t()})`,
+    () => `.${c()}:first-child`,
+    () => `${t()}:last-child`,
+    () => '*',
+    () => `:not(.${c()})`,
+    () => ':first-child',
+    () => `:is(.${c()} .${c()})`,
+  ];
+  const combinator = () => (next() < 0.6 ? ' ' : ' > ');
+  const declarations: (() => string)[] = [
+    () => `color: ${pick(INKS)}`,
+    () => `background-color: ${pick(INKS)}`,
+    () => 'font-weight: bold',
+    () => `display: ${pick(['none', 'block', 'inline-block'])}`,
+    () => `padding-left: ${Math.floor(next() * 20)}px`,
+    () => 'border-top: 2px solid',
+  ];
+  const rules = [':host, html { line-height: 1.4 }'];
+  const count = 6 + Math.floor(next() * 8);
+  for (let i = 0; i < count; i += 1) {
+    let selector = pick(above)() + combinator();
+    if (next() < 0.3) selector += pick(above)() + combinator();
+    selector += pick(subjects)();
+    rules.push(`${selector} { ${pick(declarations)()} }`);
+  }
+  if (next() < 0.5) {
+    rules.push(
+      `.${c()} .${c()}::before { content: "*"; color: ${pick(INKS)} }`,
+    );
   }
   return rules.join('\n');
 }
@@ -1728,6 +1852,38 @@ test('a refresh told what changed comes to the styles of a refresh of everything
   }
 });
 
+test('a refresh whose reach below what changed is narrowed to its rules’ subjects comes to the styles of a refresh of everything', async () => {
+  // how many changes reached below their element only what the subjects
+  // of the rules testing them name
+  const change = Cascade.prototype.attributeChange;
+  let narrowed = 0;
+  Cascade.prototype.attributeChange = function (
+    this: Cascade,
+    ...a: Parameters<Cascade['attributeChange']>
+  ) {
+    const reach = change.apply(this, a);
+    if (reach?.below && reach.bits & CHANGES_BELOW) narrowed += 1;
+    return reach;
+  };
+  try {
+    const ways = await refreshesAgree(
+      40,
+      false,
+      false,
+      undefined,
+      3000,
+      belowRulesFor,
+    );
+    const scoped = ways.inPlace + ways.frame + ways.build;
+    assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
+    // and with shadow trees, and rules across their edges, beside them
+    await refreshesAgree(12, true, true, undefined, 4000, belowRulesFor);
+    assert.ok(narrowed > 40, `${narrowed} changes narrowed`);
+  } finally {
+    Cascade.prototype.attributeChange = change;
+  }
+});
+
 test('in a document with shadow trees whose rules stay inside them, a refresh told what changed comes to the same styles', async () => {
   const ways = await refreshesAgree(30, true);
   const scoped = ways.inPlace + ways.frame + ways.build;
@@ -1835,6 +1991,8 @@ async function refreshesAgree(
   edges = false,
   anchoredShare?: number,
   firstSeed = 1,
+  /** The document's rules, where not `rulesFor`'s. */
+  sheet?: (next: () => number) => string,
 ): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
   const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
   for (let seed = firstSeed; seed < firstSeed + seeds; seed += 1) {
@@ -1843,12 +2001,14 @@ async function refreshesAgree(
     // which would make it a refresh of everything and test none of them,
     // and every other one nothing outside a `:has()` that reaches all of
     // a holder's children (`HOLDER_WIDE`)
-    let css = rulesFor(
-      next,
-      anchoredShare === undefined,
-      anchoredShare,
-      anchoredShare === undefined || seed % 3 === 0,
-    );
+    let css = sheet
+      ? sheet(next)
+      : rulesFor(
+          next,
+          anchoredShare === undefined,
+          anchoredShare,
+          anchoredShare === undefined || seed % 3 === 0,
+        );
     if (edges) css += `\n${edgeRulesFor(next, true)}`;
     const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows, edges)}</body>`;
     // real fonts where the machine has them: the mock backend lays out no
