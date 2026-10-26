@@ -120,6 +120,76 @@ test('two peers in one page offer, answer, trickle their candidates and connect'
   assert.equal(line('done'), 'done|closed|closed');
 });
 
+test('data channels: a close delivers what was queued, a negotiated channel opens late, and a lost peer is an sctp-failure', async () => {
+  const logs = await run(`
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+    async function until(what, f) {
+      for (var end = Date.now() + 10000; !f(); await wait(10)) {
+        if (Date.now() > end) throw new Error('never ' + what);
+      }
+    }
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    function announced() {
+      return new Promise(function (r) { pc2.ondatachannel = function (e) { r(e.channel); }; });
+    }
+    var dc1 = pc1.createDataChannel('x');
+    var remote = announced();
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    var dc2 = await remote;
+    await until('open', function () { return dc1.readyState === 'open' && dc2.readyState === 'open'; });
+
+    // 4 MiB sent and closed at once: all of it arrives before the close
+    var received = 0, events1 = [], events2 = [];
+    dc2.binaryType = 'arraybuffer';
+    dc2.onmessage = function (e) { received += e.data.byteLength; };
+    ['closing', 'close', 'error'].forEach(function (type) {
+      dc1.addEventListener(type, function () { events1.push(type); });
+      dc2.addEventListener(type, function () { events2.push(type); });
+    });
+    var chunk = new Uint8Array(64 * 1024);
+    for (var i = 0; i < 64; i++) dc1.send(chunk);
+    dc1.close();
+    await until('closed', function () { return dc1.readyState === 'closed' && dc2.readyState === 'closed'; });
+    log('delivered', received, events1.join(','), events2.join(','));
+
+    // negotiated once the association is up: open, and carrying messages
+    var n1 = pc1.createDataChannel('n', { negotiated: true, id: 10 });
+    var n2 = pc2.createDataChannel('n', { negotiated: true, id: 10 });
+    await until('negotiated open', function () { return n1.readyState === 'open' && n2.readyState === 'open'; });
+    var echoed = new Promise(function (r) { n2.onmessage = function (e) { r(e.data); }; });
+    n1.send('hello');
+    log('negotiated', await echoed);
+
+    // the peer goes: an sctp-failure, then the close
+    var ended = [];
+    n2.onerror = function (e) {
+      ended.push('error:' + (e.error instanceof RTCError) + ':' + e.error.errorDetail + ':' + e.error.sctpCauseCode);
+    };
+    n2.onclose = function () { ended.push('close'); };
+    pc1.close();
+    await until('peer gone', function () { return n2.readyState === 'closed'; });
+    log('ended', ended.join(','));
+    pc2.close();
+    log('done');
+  `);
+  assert.ok(
+    !logs.some((l) => l.startsWith('failed')),
+    `a step failed: ${logs.join('\n')}`,
+  );
+  for (const line of [
+    `delivered|${4 * 1024 * 1024}|close|closing,close`,
+    'negotiated|hello',
+    'ended|error:true:sctp-failure:null,close',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('what werift cannot read is an RTCError of sdp-syntax-error, as a browser has it', async () => {
   const logs = await run(`
     var pc = new RTCPeerConnection();

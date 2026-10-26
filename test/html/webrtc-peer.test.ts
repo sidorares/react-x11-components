@@ -332,6 +332,40 @@ test('a track from the fake devices is sent: addTrack, and the stream it names i
   }
 });
 
+test('a channel queues 16 MiB at most, and the page’s own close announces no closing', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var pc = new RTCPeerConnection();
+    var dc = pc.createDataChannel('x', { negotiated: true, id: 3 });
+    log('made', dc.readyState, dc.id);
+    await until(function () { return dc.readyState === 'open'; });
+    var events = [];
+    ['closing', 'close', 'error'].forEach(function (type) {
+      dc.addEventListener(type, function () { events.push(type); });
+    });
+    var chunk = new Uint8Array(64 * 1024), sent = 0, refused = null;
+    try {
+      while (sent < 20 * 1024 * 1024) { dc.send(chunk); sent += chunk.length; }
+    } catch (e) {
+      refused = e.name + ' ' + (e instanceof DOMException);
+    }
+    log('sent', sent / 1024 / 1024, refused, dc.bufferedAmount / 1024 / 1024);
+    dc.close();
+    log('closing', dc.readyState);
+    await until(function () { return dc.readyState === 'closed'; });
+    log('closed', events.join(','));
+    pc.close();
+  `);
+  for (const line of [
+    'made|connecting|3',
+    'sent|16|OperationError true|16',
+    'closing|closing',
+    'closed|close',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('with no stack, a connection is made and what needs one is the page’s own NotSupportedError', async () => {
   const logs = await run(
     `

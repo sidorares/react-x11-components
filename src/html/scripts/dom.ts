@@ -36,6 +36,7 @@ import type { installWebTransport } from './webtransport.js';
 import type { installDataChannels } from './datachannel.js';
 import type { installMediaStreams } from './mediastream.js';
 import type { installWebRTC } from './webrtc.js';
+import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 
 // The page context's own built-ins this reaches by name, for the type
@@ -67,6 +68,7 @@ export function installDom(
   mediaStreams: typeof installMediaStreams,
   dataChannels: typeof installDataChannels,
   webrtc: typeof installWebRTC,
+  rtcTransports: typeof installRtcTransports,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -24361,6 +24363,7 @@ export function installDom(
       bytesOfBase64,
       media: media.internals,
       channels,
+      transports: rtcTransports,
     });
     for (const name of Object.getOwnPropertyNames(media.interfaces)) {
       define(name, media.interfaces[name]);
