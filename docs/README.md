@@ -99,6 +99,11 @@ parts.
   and libav.js's VP8, VP9 and Opus as optional peers behind a seam that
   connects nothing by default, with the spikes' timings; why native
   libwebrtc is not the plan; and the work split into five loops.
+- [Plugins for the example browser](prd-browser-plugins.md) —
+  investigation: why Chrome extensions do not run unchanged here, layer by
+  layer, and the three parts of them that could. Then a plugin system in
+  two halves for network and in-document blocking, automation, MCP and
+  base styles, the six seams `<Html>` would grow for it, and the phases.
 - [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,
