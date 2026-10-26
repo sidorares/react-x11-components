@@ -25,7 +25,9 @@ Every area weighs the same, whatever its number of tests — the 5 of
 git clone --depth 1 https://github.com/web-platform-tests/wpt-metadata.git
 git clone --depth 1 --filter=blob:none --sparse \
   https://github.com/web-platform-tests/wpt.git
-# in wpt: ./wpt serve --webtransport-h3, with server_host 127.0.0.1 and
+# in wpt: git sparse-checkout set with the areas' directories, and docs
+# and interfaces, which ./wpt and idlharness.js read; then
+# ./wpt serve --webtransport-h3, with server_host 127.0.0.1 and
 # check_subdomains off in its config.json
 npx tsx scripts/conformance/interop.ts wpt wpt-metadata --jobs 5
 ```
@@ -128,7 +130,7 @@ PR's run, which the last column names.
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | webrtc                           | 91    | 0.2%  | 57.0% | `RTCPeerConnection` over werift, its transceivers, transports and data channels, `MediaStream` and fake devices ([#1030])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| webtransport                     | 58    | 0.0%  | 97.8% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), and its sessions held to the document's `connect-src` ([#1021]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| webtransport                     | 58    | 0.0%  | 98.2% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), its sessions held to the document's `connect-src` ([#1021]), and quico 0.8.0, which retired the adapter's workarounds ([#1046]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                              |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 The second run's jump is the runner's as much as the engine's: WPT's
@@ -456,7 +458,7 @@ cannot reach; DTMF, RTP and its stats; H.264, which nothing here encodes;
 and the cases werift answers otherwise than a browser, which the PRD
 lists.
 
-**webtransport (97.8%).** A page has the W3C API whole, over its own
+**webtransport (98.2%).** A page has the W3C API whole, over its own
 WHATWG streams, now the standard's algorithms (WPT's `streams/` passes but
 for the tentative `owning` type), and its sessions go through a seam the
 host answers, `scripts.webTransport`, whose default opens nothing.
@@ -464,12 +466,18 @@ host answers, `scripts.webTransport`, whose default opens nothing.
 WebTransport in JavaScript ([#1019]). A worker's sessions — dedicated,
 shared and service — are carried across its thread to the page's seam
 ([#1020]), and a session is held to the document's `connect-src`
-([#1021]). In [#1021]'s run, made against WPT's aioquic server on a Mac,
-everything passes but five subtests: the 204 a server establishes a
-session with, in each of `connect`'s four variants, which quico's client
-refuses as other than 200 and which wants an upstream change; and
+([#1021]). quico 0.8.0 fixed the three issues the adapter had filed,
+colocohen/quico#8, #9 and #10, and the adapter uses its public API alone
+([#1046]): the page's `Origin` and headers go on the CONNECT through
+quico's own options, and quico's `closed` says how a session ended. In
+[#1046]'s run, made against WPT's aioquic server on a Mac, everything
+passes but the one subtest of
 `back-forward-cache-with-closed-webtransport-connection`, which needs a
-back-forward cache.
+back-forward cache; the 204 a server establishes a session with, which
+quico 0.7 refused, passes in each of `connect`'s four variants. Beyond
+the label, the largest gaps in WPT's `webtransport/` are
+`exportKeyingMaterial()` and `responseHeaders`, which quico 0.8.0 has and
+the seam does not carry yet.
 
 **zoom (93.9%).** The two reftests the eleventh run failed — frames nested
 under `zoom` (`iframe-zoom-nested.html`) and `zoom` on an inline SVG
@@ -547,3 +555,4 @@ Across areas, three things recurred, and each now has its first slice:
 [#1020]: https://github.com/sidorares/react-x11-components/pull/1020
 [#1021]: https://github.com/sidorares/react-x11-components/pull/1021
 [#1030]: https://github.com/sidorares/react-x11-components/pull/1030
+[#1046]: https://github.com/sidorares/react-x11-components/pull/1046

@@ -1092,19 +1092,19 @@ page asks (`quico.ts`). The choice:
 | -------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `node:quic`                      | Node's QUIC over ngtcp2 and nghttp3                                             | Experimental, behind a flag, and in no release build: Node 24.22's `process.versions.ngtcp2` is empty and `node:quic` is no module. No WebTransport layer at all; Bun has none.                                                       |
 | `@fails-components/webtransport` | A native addon over Google's libquiche, its binary downloaded as it installs    | A server checked by certificate hashes unless an experimental CA check is on, no `getStats()`, no `reliability`; a native build where no prebuilt binary fits. Bun's N-API is a second question.                                      |
-| quico 0.7                        | QUIC, TLS 1.3 (lemon-tls), HTTP/3, QPACK and WebTransport, all of it JavaScript | **Chosen.** The browser's API whole — send groups and orders, datagrams, stats, protocols, CA or hash verification — on `node:dgram` and `node:crypto`, the same on Node and Bun; checked against WPT's aioquic server on both. 3 MB. |
+| quico 0.8                        | QUIC, TLS 1.3 (lemon-tls), HTTP/3, QPACK and WebTransport, all of it JavaScript | **Chosen.** The browser's API whole — send groups and orders, datagrams, stats, protocols, CA or hash verification — on `node:dgram` and `node:crypto`, the same on Node and Bun; checked against WPT's aioquic server on both. 3 MB. |
 
-quico takes no request headers on its CONNECT, and a browser's names its
-`Origin` (a server may refuse one that does not: WPT's answers 403), so
-`quico.ts` adds the page's origin and headers where quico sends it
-(`_sendConnect`, through `_h3.sendHeaders`) — the one reach into quico's
-insides, made only where both are there to wrap. Three of quico's
-behaviours are not a browser's, and are adapted or left: a session the
-server ends with no capsule resolves nothing in quico, so the adapter
-reads quico's closing of the session's incoming streams for it; a
-connection lost under a session resolves quico's `closed` with no code, so
-the adapter tells it as a failure where no capsule came; a server's 2xx
-other than 200 is refused, which the adapter cannot change.
+A browser's CONNECT names the page's `Origin` (a server may refuse one that
+does not: WPT's answers 403), so `quico.ts` hands quico the page's origin
+and headers as its `origin` and `headers` options, and reads quico's
+`closed` for how a session ended: resolved with the server's code and
+reason, with `0` and `''` where the server ended the CONNECT stream with no
+capsule, and rejected where the session was lost. All of it is quico's
+public API. quico 0.7 had no request headers, refused a 2xx other than 200,
+settled nothing for a CONNECT stream ended with no capsule and resolved
+`closed` with code 0 for a lost connection; the adapter wrapped
+`_sendConnect` and read the session's end off its incoming streams, and
+filed each upstream (colocohen/quico#8, #9, #10), which 0.8.0 fixed.
 
 **What becomes of a session is told, never asked.** The seam answers a
 session at once and tells `ready`, `failed`, `closed`, `draining`, a
