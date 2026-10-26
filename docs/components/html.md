@@ -855,7 +855,8 @@ tentative `owning` type's.
 **A page's WebTransport is the host's to carry** (W3C WebTransport). The
 page has the whole API — `WebTransport` with `ready`, `closed`, `draining`,
 `close({ closeCode, reason })`, `protocol`, `reliability`,
-`congestionControl`, `getStats()` and `createSendGroup()`; its
+`congestionControl`, `responseHeaders`, `getStats()`,
+`exportKeyingMaterial()` and `createSendGroup()`; its
 `datagrams`, readable as chunks or into a reader's own buffer
 (`datagramsReadableType: 'bytes'`), each `createWritable()` a writer with
 its `sendOrder` and `sendGroup`, the four age and buffer limits;
@@ -888,8 +889,26 @@ against the runtime's own roots and `NODE_EXTRA_CA_CERTS`, the ones its
 `fetch` trusts, or the `ca` handed to `new HtmlNetwork({ webTransport: { ca
 } })`, or pinned by the page's `serverCertificateHashes` (a certificate good
 for 14 days at most, as the spec has it); `webTransport: false` opens none.
-Each session is a connection of its own. `exportKeyingMaterial()` rejects
-with `NotSupportedError`: the seam carries no keying material yet.
+Each session is a connection of its own.
+
+`responseHeaders` is null until `ready`, then the server's answer to the
+CONNECT as an immutable `Headers`, whose `set`, `append` and `delete`
+throw: without `wt-protocol`, which is negotiation and whose outcome is
+`protocol`, and without `Set-Cookie` and `Set-Cookie2`, Fetch's forbidden
+response header names. The host takes those out (`transports.ts`), so a
+cookie never reaches the page's realm. The seam hands the headers over as
+they came, in its `ready` information.
+
+`exportKeyingMaterial(label, context, length)` is the session's own TLS
+exporter, as WebTransport over HTTP/3 defines it: the label and the context
+are `BufferSource`s of at most 255 bytes, the length 1 to 4096, all three
+required and checked by Web IDL's and the spec's rules in the page's realm
+before anything crosses. It may be called while the session is being
+established, and waits for it; it rejects with an `InvalidStateError` once
+the session is closed or failed, and so does a call still waiting when it
+ends. The seam's session has an optional `exportKeyingMaterial`, which
+quico answers. A seam without one, written before it, makes a page's call
+reject with `NotSupportedError`.
 
 **A session is held to the document's Content Security Policy**: its
 `connect-src`, or its `default-src` where it names none (CSP 3), in every

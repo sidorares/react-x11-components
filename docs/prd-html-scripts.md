@@ -1106,6 +1106,20 @@ settled nothing for a CONNECT stream ended with no capsule and resolved
 `_sendConnect` and read the session's end off its incoming streams, and
 filed each upstream (colocohen/quico#8, #9, #10), which 0.8.0 fixed.
 
+quico 0.8.0 also answers the response's headers and the session's keying
+material, and the seam carries both. The headers ride on `ready` as pairs,
+as they came. The host takes out `Set-Cookie`, `Set-Cookie2` and
+`wt-protocol` before the page's entry is told, as it takes a page's
+forbidden request headers off the CONNECT, so a cookie never reaches the
+page's realm. The facade makes the rest an immutable `Headers` of the
+page's. `exportKeyingMaterial` is a seam method that returns a promise,
+as `stats` is. It is optional, so a seam written before it still
+type-checks, and the page hears `NotSupportedError` from one without it.
+The facade checks the arguments as Web IDL and the spec do and hands over
+bytes alone (`wtExport`, `__wtExported`, base64 both ways). A worker asks
+it by request number, as it asks for stats. A rejection crosses by its
+name, so a worker's page hears the same error a window's does.
+
 **What becomes of a session is told, never asked.** The seam answers a
 session at once and tells `ready`, `failed`, `closed`, `draining`, a
 datagram and an incoming stream through the events it was handed, and a

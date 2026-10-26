@@ -46,7 +46,9 @@ export interface WebTransportReady {
   protocol: string;
   reliability: 'reliable-only' | 'supports-unreliable';
   congestionControl: 'default' | 'throughput' | 'low-latency';
-  /** The response's headers, as they came. */
+  /** The response's headers, as they came, a pair a field — `Set-Cookie`
+   *  and `wt-protocol` among them, which the host takes out before the
+   *  page sees the rest (`responseHeaders`). Absent, none. */
   responseHeaders?: [string, string][];
 }
 
@@ -162,6 +164,21 @@ export interface WebTransportSessionLike {
   groupStats(group: number): Promise<WebTransportStreamStats>;
   /** The connection's figures. */
   stats(): Promise<WebTransportStats>;
+  /**
+   * Keying material of the session's own, `length` bytes from its TLS
+   * exporter for a label and a context of at most 255 bytes each, the
+   * length 1 to 4096 — all three checked by the page's realm before they
+   * get here (WebTransport over HTTP/3, "Exporting Keying Material").
+   * Waits for the session where it is still being established; rejects
+   * where it is gone. Optional, as a seam written before it has none: a
+   * page's call then rejects with a `NotSupportedError`, and so does one
+   * whose rejection is named so.
+   */
+  exportKeyingMaterial?(
+    label: Uint8Array,
+    context: Uint8Array,
+    length: number,
+  ): Promise<Uint8Array>;
   /** Closes the session with a code and a reason of at most 1024 bytes:
    *  `closed` is not told of it, since the page closed it. */
   close(closeCode: number, reason: string): void;
@@ -188,8 +205,26 @@ const REFUSED: WebTransportSessionLike = {
   createSendGroup: () => 0,
   groupStats: () => Promise.resolve({}),
   stats: () => Promise.resolve({}),
+  exportKeyingMaterial: () =>
+    Promise.reject(new Error('This session was never established.')),
   close() {},
 };
+
+/** A seam's session's keying material, or a rejection named
+ *  `NotSupportedError` where the seam has no way to export it. */
+export function exportFrom(
+  session: WebTransportSessionLike,
+  label: Uint8Array,
+  context: Uint8Array,
+  length: number,
+): Promise<Uint8Array> {
+  if (typeof session.exportKeyingMaterial !== 'function') {
+    const error = new Error('This network cannot export keying material.');
+    error.name = 'NotSupportedError';
+    return Promise.reject(error);
+  }
+  return session.exportKeyingMaterial(label, context, length);
+}
 
 /**
  * The default `webTransport`: no network, so every session fails, as one
@@ -247,6 +282,8 @@ export function deferredSession(
     },
     groupStats: (group) => ready.then((s) => s.groupStats(group)),
     stats: () => ready.then((s) => s.stats()),
+    exportKeyingMaterial: (label, context, length) =>
+      ready.then((s) => exportFrom(s, label, context, length)),
     close(closeCode, reason) {
       if (session) session.close(closeCode, reason);
       else closed = [closeCode, reason];

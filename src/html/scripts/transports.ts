@@ -10,7 +10,7 @@
 // its own `WebTransportError`s of.
 import { connectAllowed } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
-import { badPort } from '../transport.js';
+import { badPort, exportFrom } from '../transport.js';
 import type {
   HtmlWebTransport,
   WebTransportPriority,
@@ -39,6 +39,31 @@ function bytesOf(base64: string): Uint8Array {
  *  browser's own, as for a fetch (Fetch 2.2.2). */
 const FORBIDDEN =
   /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|user-agent|via|wt-available-protocols)$|^(proxy-|sec-|:)/i;
+
+/** A response header the page does not read: a cookie (Fetch 2.2.6,
+ *  "forbidden response-header name"), which is the user agent's, and
+ *  `wt-protocol`, which is negotiation, its outcome `protocol` (W3C
+ *  WebTransport, "process a WebTransport fetch response"). A pseudo-header
+ *  is no field. */
+const UNREAD = /^(set-cookie2?|wt-protocol)$|^:/i;
+
+/** The response's headers as the page has them: lower-cased, what it may
+ *  not read left out, and a field no `Headers` holds left out with it. */
+function responseHeadersOf(pairs: unknown): [string, string][] {
+  if (!Array.isArray(pairs)) return [];
+  const out: [string, string][] = [];
+  for (const pair of pairs as unknown[]) {
+    if (!Array.isArray(pair) || pair.length !== 2) continue;
+    const name = String(pair[0]).toLowerCase();
+    const value = String(pair[1]).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
+    if (UNREAD.test(name) || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(name)) {
+      continue;
+    }
+    if (/[\0\r\n]/.test(value)) continue;
+    out.push([name, value]);
+  }
+  return out;
+}
 
 interface Session {
   id: number;
@@ -116,6 +141,9 @@ export class PageTransports {
         return null;
       case 'wtStats':
         this._stats(Number(a), Number(b));
+        return null;
+      case 'wtExport':
+        this._export(Number(a), Number(b), text(c));
         return null;
       case 'wtCreate':
         this._create(Number(a), Number(b), text(c));
@@ -295,9 +323,7 @@ export class PageTransports {
                     ? 'reliable-only'
                     : 'supports-unreliable',
                 congestionControl: String(info.congestionControl ?? 'default'),
-                responseHeaders: Array.isArray(info.responseHeaders)
-                  ? info.responseHeaders.map(([k, v]) => [String(k), String(v)])
-                  : null,
+                responseHeaders: responseHeadersOf(info.responseHeaders),
               },
             ]);
           },
@@ -503,6 +529,46 @@ export class PageTransports {
         return;
       }
       answer(s.stats ?? {}, null);
+    });
+  }
+
+  /** Keying material, once the session is established, as base64 to
+   *  `__wtExported`; a failure the name of the page's error. */
+  private _export(sessionId: number, request: number, json: string): void {
+    const s = this._sessions.get(sessionId);
+    const answer = (base64: string | null, error: string | null): void =>
+      this._tell('__wtExported', [request, base64, error]);
+    if (!s) {
+      answer(null, 'InvalidStateError');
+      return;
+    }
+    let raw: Record<string, unknown> = {};
+    try {
+      raw = JSON.parse(json) as Record<string, unknown>;
+    } catch {}
+    const label = bytesOf(String(raw.label ?? ''));
+    const context = bytesOf(String(raw.context ?? ''));
+    const length = Number(raw.length) >>> 0;
+    void this._settled(s).then(() => {
+      if (s.state !== 'connected' || !s.session) {
+        answer(null, 'InvalidStateError');
+        return;
+      }
+      exportFrom(s.session, label, context, length).then(
+        (bytes) => {
+          if (s.state !== 'connected') answer(null, 'InvalidStateError');
+          else answer(base64Of(bytes), null);
+        },
+        // a session that could not export, gone or ending, is the page's
+        // InvalidStateError; a seam that has no exporter says so
+        (error: unknown) =>
+          answer(
+            null,
+            (error as Error)?.name === 'NotSupportedError'
+              ? 'NotSupportedError'
+              : 'InvalidStateError',
+          ),
+      );
     });
   }
 

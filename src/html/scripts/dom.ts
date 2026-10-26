@@ -24355,6 +24355,8 @@ export function installDom(
       input: () => input(),
       DOMException,
       Headers,
+      immutableHeaders: (pairs: [string, string][]) =>
+        guardedHeaders(pairs, 'immutable'),
       URL,
       setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
       streams: streamInternals,
