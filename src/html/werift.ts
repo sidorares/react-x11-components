@@ -342,6 +342,47 @@ function refusedMedia(sdp: string): string | null {
   return null;
 }
 
+/** Each m-section's header extensions, by its mid: id to URI. */
+function extmapsOf(sdp: string): Map<string, Map<number, string>> {
+  const out = new Map<string, Map<number, string>>();
+  for (const section of sdp.split(/\r?\n(?=m=)/).slice(1)) {
+    const mid = /^a=mid:(\S+)/m.exec(section)?.[1];
+    if (!mid) continue;
+    const ids = new Map<number, string>();
+    for (const m of section.matchAll(/^a=extmap:(\d+)(?:\/\S+)?\s+(\S+)/gm)) {
+      ids.set(Number(m[1]), m[2]);
+    }
+    out.set(mid, ids);
+  }
+  return out;
+}
+
+/**
+ * Why a remote description gives a header extension negotiated before
+ * another id, or an id another extension: what RFC 8285 forbids within a
+ * session (JSEP 5.8 and 5.9), and a browser refuses as an
+ * `InvalidAccessError`. Werift takes it.
+ */
+function reassignedExtension(sdp: string, before: string): string | null {
+  const now = extmapsOf(sdp);
+  for (const [mid, was] of extmapsOf(before)) {
+    const ids = now.get(mid);
+    if (!ids) continue;
+    for (const [id, uri] of ids) {
+      const old = was.get(id);
+      if (old !== undefined && old !== uri) {
+        return `Header extension id ${id} was ${old}, and may not become ${uri}.`;
+      }
+      for (const [oldId, oldUri] of was) {
+        if (oldUri === uri && oldId !== id) {
+          return `${uri} was id ${oldId}, and may not become ${id}.`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /** What werift threw, as the error the page's realm makes its own. */
 function asRtcError(error: unknown): Error {
   const name = String((error as Error)?.name ?? '');
@@ -781,12 +822,23 @@ class WeriftConnection implements RTCConnectionLike {
         );
       }
       if (side === 'remote') {
-        const refused = refusedMedia(sdp);
+        const refused =
+          refusedMedia(sdp) ??
+          reassignedExtension(
+            sdp,
+            this._pc.currentRemoteDescription?.sdp ?? '',
+          );
         if (refused) throw rtcError('InvalidAccessError', refused);
       }
     }
     try {
-      const description = type === 'rollback' ? { type } : { type, sdp };
+      // a line may end in a bare LF, as a browser's parser takes it, and
+      // werift's splits on CRLF alone: a description that mixes the two —
+      // WPT writes its own so — ran its lines together
+      const description =
+        type === 'rollback'
+          ? { type }
+          : { type, sdp: sdp.replace(/\r?\n/g, '\r\n') };
       if (side === 'local') await this._pc.setLocalDescription(description);
       else await this._pc.setRemoteDescription(description);
     } catch (error) {
