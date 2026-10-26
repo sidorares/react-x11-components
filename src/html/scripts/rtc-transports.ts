@@ -438,6 +438,45 @@ export function installRtcTransports(
     apply(wmGet, slots, [t.dtls]).state = state;
   };
 
+  /** A candidate attribute's fields up to its type, which say which
+   *  candidate it is whatever follows them. */
+  const candidateKey = (text: string): string =>
+    text.trim().split(/\s+/).slice(0, 8).join(' ');
+
+  /**
+   * A local description as the page has it. A stack may gather candidates
+   * as a description is set — werift gathers its host candidates inside
+   * `setLocalDescription` — but a candidate is added to the description as
+   * it is surfaced, with its `icecandidate` (WebRTC 1.0, 4.4.1.6,
+   * "surface the candidate"), and a page that hands its description on
+   * before it has heard of them hands on none. So it holds the candidates
+   * the page has heard of, and their end once the page has heard that.
+   */
+  const surfacedOnly = (s: Any, sdp: string | null): string | null => {
+    if (typeof sdp !== 'string') return sdp;
+    if (
+      sdp.indexOf('a=candidate:') < 0 &&
+      sdp.indexOf('a=end-of-candidates') < 0
+    ) {
+      return sdp;
+    }
+    const heard = new Set<string>();
+    for (const t of s.transports.values()) {
+      for (const c of apply(wmGet, slots, [t.ice]).local) {
+        heard.add(candidateKey(slotOf(c, 'iceCandidate').candidate));
+      }
+    }
+    return sdp
+      .replace(
+        /^a=candidate:([^\r\n]*)(\r?\n)?/gm,
+        (whole: string, rest: string) =>
+          heard.has(candidateKey('candidate:' + rest)) ? whole : '',
+      )
+      .replace(/^a=end-of-candidates(\r?\n)?/gm, (whole: string) =>
+        s.gathering === 'complete' ? whole : '',
+      );
+  };
+
   const candidateFrom = (c: Any): Any =>
     new RTCIceCandidate({
       candidate: c.candidate,
@@ -679,5 +718,6 @@ export function installRtcTransports(
     RTCStatsReport,
     statsOf,
     updateStates,
+    surfacedOnly,
   };
 }

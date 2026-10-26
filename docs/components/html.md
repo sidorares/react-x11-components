@@ -913,8 +913,11 @@ offer/answer state and its operations chain, `RTCSessionDescription`,
 parameters, the ICE and DTLS transports with their states, data channels
 — their states and messages, strings, `ArrayBuffer`s and `Blob`s, sent up
 to 16 MiB ahead, as Chrome queues them, and past that refused with an
-`OperationError`; a close that sends what was queued before it, and a
-lost peer an `sctp-failure` — the SCTP transport with its state and
+`OperationError`; an empty message; a close that sends what was queued
+before it, and a lost peer an `sctp-failure`; handed to a dedicated
+worker in the task that made it (`postMessage(…, [channel])`), after
+which it is the worker's and a `DataCloneError` elsewhere — the SCTP
+transport with its state and
 `maxChannels`, a connection's transport stats, `RTCError`, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
@@ -943,8 +946,9 @@ as WPT's tests make them, and to another peer the host can reach.
   is allowed the kind. **With none**, a page lists no device, as on a
   machine with none. A secure context's only, as `[SecureContext]` has it.
 - **A track is a source** (`MediaSourceLike`), whoever makes its frames:
-  a device, a screen, a canvas, or a peer connection's receiver. Video is
-  I420 and audio 10 ms of planar floats, and the frames stay host-side.
+  a device, a screen, a canvas, a Web Audio stream destination, or a peer
+  connection's receiver. Video is I420 and audio 10 ms of planar floats,
+  and the frames stay host-side.
 - **A canvas is a source on any page** (`captureStream(frameRequestRate)`,
   Media Capture from DOM Elements): a stream of one
   `CanvasCaptureMediaStreamTrack`, its frames the host's copy of the
@@ -954,6 +958,19 @@ as WPT's tests make them, and to another peer the host can reach.
   tests make their video from on a page with no `getUserMedia`. A canvas
   here draws only other canvases, never an image of another origin, so
   none is tainted and none is refused with a `SecurityError`.
+- **Web Audio is the whole API, and silent** (`src/html/scripts/webaudio.ts`):
+  an `AudioContext` and every node Web Audio 1 has a factory for, their
+  `AudioParam`s with their automation, connections and their errors, a
+  scheduled source's `start`, `stop` and `ended`, an `AudioBuffer`, a
+  `PeriodicWave`, a biquad's and an IIR filter's frequency response, and
+  `MediaStreamAudioDestinationNode`, whose track is a host source that
+  renders the oscillators and constant sources reaching it through gains.
+  Nothing else on a path is rendered, an analyser hears silence,
+  `decodeAudioData` rejects with the `EncodingError` a browser gives what
+  it cannot decode, and nothing is heard, since core has no audio output.
+  A page that feature-detects `AudioContext` gets an API that never throws
+  where a browser's would not, and silence where a browser with no
+  speakers has silence; WPT's WebRTC tests make their audio from one.
 
 `HtmlNetwork.webRTC` is a real one, over
 [werift](https://github.com/shinyoshiaki/werift-webrtc): ICE with STUN and

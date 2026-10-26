@@ -12,7 +12,11 @@ import {
   fakeMediaDevices,
   idleSource,
 } from '../../src/html/index.js';
-import { canvasSource, i420Of } from '../../src/html/scripts/media-sources.js';
+import {
+  canvasSource,
+  i420Of,
+  synthSource,
+} from '../../src/html/scripts/media-sources.js';
 import type {
   MediaAudioData,
   MediaSourceLike,
@@ -445,4 +449,44 @@ test('a canvas’s source gives a frame each time it changes, or only when asked
   await held('the next frame', new Promise((r) => setTimeout(r, 30)));
   assert.equal(timed.length, 2, 'and the change held back comes once it may');
   rated.stop();
+});
+
+test('a stream destination’s synth renders its voices in 10 ms chunks while its context runs, and nothing before', async () => {
+  const synth = synthSource(48000);
+  const chunks: Float32Array[] = [];
+  synth.listen({
+    audio: (d) => void chunks.push(d.channels[0].slice()),
+    muted() {},
+    ended() {},
+  });
+  synth.graph({ running: false, time: 0, voices: [] });
+  await held('a quiet while', new Promise((r) => setTimeout(r, 30)));
+  assert.equal(chunks.length, 0, 'a suspended context renders nothing');
+  synth.graph({
+    running: true,
+    time: 0,
+    voices: [
+      {
+        kind: 'oscillator',
+        type: 'sine',
+        frequency: 1000,
+        detune: 0,
+        real: null,
+        imag: null,
+        gain: 0.5,
+        start: 0,
+        stop: null,
+      },
+      { kind: 'constant', offset: 0.25, gain: 1, start: 0, stop: null },
+    ],
+  });
+  await held('chunks', new Promise((r) => setTimeout(r, 40)));
+  synth.stop();
+  assert.ok(chunks.length >= 2, `${chunks.length} chunks`);
+  const first = chunks[0];
+  assert.equal(first.length, 480);
+  // a 1 kHz sine at half scale over a quarter, at 48 samples a period
+  assert.ok(Math.abs(first[0] - 0.25) < 1e-6);
+  assert.ok(Math.abs(first[12] - 0.75) < 1e-4, String(first[12]));
+  assert.ok(Math.abs(first[36] + 0.25) < 1e-4, String(first[36]));
 });
