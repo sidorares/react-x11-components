@@ -130,13 +130,23 @@ class FakeChannel implements RTCDataChannelLike {
   constructor(readonly init: RTCDataChannelInitLike) {}
   listen(events: RTCDataChannelEvents): void {
     this.events = events;
+    // a negotiated channel is open as soon as it is made, as one made once
+    // the association is up is; a channel the fake would announce is not
+    if (this.init.negotiated) {
+      if (this.init.id !== null) events.id(this.init.id);
+      events.open();
+    }
   }
   send(data: string | Uint8Array): void {
     this.sent.push(data);
   }
   close(): void {
-    this.events?.closing();
-    this.events?.closed();
+    // as a stack does, after the page's call: the stream is reset, and
+    // its close told once it has been
+    queueMicrotask(() => {
+      this.events?.closing();
+      this.events?.closed();
+    });
   }
 }
 
