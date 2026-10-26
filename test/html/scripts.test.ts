@@ -9278,6 +9278,34 @@ test('an IntersectionObserver hands entries of the interface a page asks for, so
   assert.equal(text, 'true|true|true|t|true|1');
 });
 
+test('an IntersectionObserver reports what it was asked to observe in one callback, once', async () => {
+  // Wikipedia's contents observe every heading and mark the one closest
+  // above the top from all their entries; a callback a heading marked each
+  // section in turn, and laid the article out for each
+  const doc = await hosted(
+    '<p id="out"></p><div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div><script>' +
+      'var calls = [];' +
+      'function out() { document.getElementById("out").textContent = calls.join("|"); }' +
+      'var el = function (id) { return document.getElementById(id); };' +
+      'var io = new IntersectionObserver(function (entries, observer) {' +
+      '  calls.push(entries.map(function (e) { return e.target.id; }).join(","));' +
+      '  observer.disconnect();' +
+      '  if (calls.length === 1) {' +
+      // observed again once disconnected: reported again, in a callback of its own
+      '    observer.observe(el("a")); observer.observe(el("b"));' +
+      '  }' +
+      '  out();' +
+      '});' +
+      // a target observed twice is one entry, and one unobserved is none
+      'io.observe(el("a")); io.observe(el("b")); io.observe(el("a")); io.observe(el("c")); io.observe(el("d"));' +
+      'io.unobserve(el("d"));' +
+      '</script>',
+  );
+  await settled(doc, 'out', (t) => t.split('|').length >= 2);
+  await settle(60);
+  assert.equal(doc.text('out'), 'a,b,c|a,b');
+});
+
 /** A page whose frames run in realms of their own, as `<Html scripts>`
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays

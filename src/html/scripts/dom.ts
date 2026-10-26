@@ -19710,37 +19710,79 @@ export function installDom(
       enumerable: true,
     });
   }
+  /**
+   * Each target is reported once, in one callback with every other target
+   * observed since the last (Intersection Observer, 3.2.8), and a target
+   * observed again, or no longer, is not reported again. A callback a
+   * target picked one entry out of every target with was called once a
+   * target: Wikipedia's contents observe every heading as the article
+   * scrolls and mark the one closest above the top, and with each heading
+   * its own callback they marked every section in turn, a layout each,
+   * five times a second.
+   */
   class IntersectionObserver {
     _fn: Any;
+    /** What it observes, and of that what it has yet to report, each in
+     *  the order observed. */
+    _targets = new Set<Any>();
+    _queued = new Set<Any>();
+    /** The timer that reports what is queued, or 0 for none. */
+    _due = 0;
     constructor(fn: Any) {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'IntersectionObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
       this._fn = fn;
     }
     observe(el: Any): void {
-      setTimer(
-        () =>
-          this._fn(
-            [
-              new IntersectionObserverEntry({
-                target: el,
-                isIntersecting: true,
-                intersectionRatio: 1,
-                boundingClientRect: el.getBoundingClientRect(),
-                intersectionRect: el.getBoundingClientRect(),
-                rootBounds: null,
-                time: now(),
-              }),
-            ],
-            this,
-          ),
-        0,
-        [],
-        false,
-      );
+      if (this._targets.has(el)) return;
+      this._targets.add(el);
+      this._queued.add(el);
+      if (!this._due) this._due = setTimer(() => this._notify(), 0, [], false);
     }
-    unobserve(): void {}
-    disconnect(): void {}
+    unobserve(el: Any): void {
+      this._targets.delete(el);
+      this._queued.delete(el);
+    }
+    disconnect(): void {
+      this._targets.clear();
+      this._queued.clear();
+    }
     takeRecords(): Any[] {
-      return [];
+      const entries: Any[] = [];
+      for (const el of this._queued) {
+        const rect = el.getBoundingClientRect();
+        entries.push(
+          new IntersectionObserverEntry({
+            target: el,
+            isIntersecting: true,
+            intersectionRatio: 1,
+            boundingClientRect: rect,
+            intersectionRect: new DOMRect(
+              rect.x,
+              rect.y,
+              rect.width,
+              rect.height,
+            ),
+            rootBounds: null,
+            time: now(),
+          }),
+        );
+      }
+      this._queued.clear();
+      return entries;
+    }
+    _notify(): void {
+      this._due = 0;
+      const entries = this.takeRecords();
+      if (!entries.length) return;
+      try {
+        this._fn.call(this, entries, this);
+      } catch (e) {
+        report(e);
+      }
     }
   }
   /** An element's border box and its content box, in CSS pixels, or null
