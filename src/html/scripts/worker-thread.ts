@@ -182,6 +182,7 @@ host.workerScope = {
   importScript,
   error: (message, filename, line, column) =>
     tell({ kind: 'error', message, filename, line, column }),
+  rtc: (message) => tell(message),
 };
 const engine = new ScriptEngine(host.bridge, {
   timeout: WORKER_TIMEOUT_MS,
@@ -237,6 +238,8 @@ port.on('message', (m: ToWorker) => {
     body?.end(m.error);
   } else if (m.kind === 'wt') {
     transports.heard(m);
+  } else if (m.kind === 'rtc') {
+    host.rtcHeard(m);
   }
 });
 

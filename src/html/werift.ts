@@ -187,6 +187,15 @@ export function loadWerift(): Promise<WeriftModule | null> {
 
 const DIRECTIONS = new Set(['sendrecv', 'sendonly', 'recvonly', 'inactive']);
 
+/** A direction as the other side has it. */
+function turned(direction: RTCDirectionLike): RTCDirectionLike {
+  return direction === 'sendonly'
+    ? 'recvonly'
+    : direction === 'recvonly'
+      ? 'sendonly'
+      : direction;
+}
+
 /** One m-section of a description, as far as is read here. */
 interface Section {
   direction: RTCDirectionLike;
@@ -436,6 +445,9 @@ class WeriftConnection implements RTCConnectionLike {
   private readonly _codecs: WCodec[];
   private readonly _wrapped = new Map<WTransceiver, WeriftTransceiver>();
   private readonly _net: WeriftTransports;
+  /** What the last answer negotiated each transceiver to, read from the
+   *  answer itself: werift sets none for one stopping, or `inactive`. */
+  private readonly _negotiated = new WeakMap<WTransceiver, RTCDirectionLike>();
   private _closed = false;
 
   constructor(
@@ -503,7 +515,11 @@ class WeriftConnection implements RTCConnectionLike {
           t.pendingRejection
             ? 'stopped'
             : t.direction) as RTCDirectionLike,
-          currentDirection: (t.currentDirection ??
+          // what the last answer as handed says, which is WebRTC 1.0's
+          // definition, before werift's own: it has a transceiver stopping
+          // since inactive, or none
+          currentDirection: (this._negotiated.get(t) ??
+            (t.currentDirection as RTCDirectionLike | null) ??
             null) as RTCDirectionLike | null,
           remoteDirection: section ? section.direction : null,
           stopped: t.stopped,
@@ -567,7 +583,29 @@ class WeriftConnection implements RTCConnectionLike {
     }
     this._watchTransports();
     this._tellTransports();
+    if (type === 'answer' || type === 'pranswer')
+      this._noteNegotiated(side, sdp);
     return this._state();
+  }
+
+  /**
+   * What an answer just applied negotiated each transceiver to, from this
+   * side: the local answer's direction, or the remote answer's turned
+   * round. A transceiver stopping goes on being negotiated until one takes
+   * it out (WebRTC 1.0, 4.4.1.6), which werift does not do.
+   */
+  private _noteNegotiated(side: 'local' | 'remote', sdp: string): void {
+    // the answer as it was handed: werift writes its own local description
+    // again from what it has, a transceiver stopped since already inactive
+    const sections = sectionsOf(sdp);
+    for (const t of this._pc.getTransceivers()) {
+      const section = t.mid !== null ? sections.get(t.mid) : undefined;
+      if (!section) continue;
+      this._negotiated.set(
+        t,
+        side === 'local' ? section.direction : turned(section.direction),
+      );
+    }
   }
 
   addTransceiver(init: RTCTransceiverInit): RTCTransceiverLike {

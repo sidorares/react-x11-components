@@ -211,6 +211,8 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
     pc1.createDataChannel('x');
     await pc1.setLocalDescription();
+    // werift has gathered its host candidates, and the page has heard of none
+    log('described', /a=candidate:/.test(pc1.localDescription.sdp));
     var early = await transportStats(pc1);
     log('early', early.iceState, early.iceRole, early.dtlsState, early.dtlsRole, early.selectedCandidatePairChanges);
     var sctp = [];
@@ -222,6 +224,9 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     log('sctp', sctp.join(','), pc1.sctp.maxChannels === pc2.sctp.maxChannels);
     await until('ice', function () { return ice1[ice1.length - 1] === 'connected' && ice2[ice2.length - 1] === 'connected'; });
     log('ice', ice1.join(','), ice2.join(','));
+    var heard = /a=candidate:/.test(pc1.localDescription.sdp);
+    var certs = pc1.sctp.transport.getRemoteCertificates();
+    log('certificates', heard, certs.length, certs[0] instanceof ArrayBuffer, new Uint8Array(certs[0])[0]);
     var up = await transportStats(pc1);
     log('up', up.iceState, up.iceRole, up.dtlsState, up.dtlsRole === 'client' || up.dtlsRole === 'server', up.tlsVersion, /^SRTP_/.test(up.srtpCipher), up.selectedCandidatePairChanges);
     var closed = new Promise(function (r) { pc2.sctp.onstatechange = function () { if (pc2.sctp.state === 'closed') r(); }; });
@@ -238,9 +243,74 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
   for (const line of [
     'early|new|controlling|new|unknown|0',
     'sctp|connected:true|true',
+    'described|false',
     'ice|new,checking,connected|new,checking,connected',
+    'certificates|true|1|true|48',
     'up|connected|controlling|connected|true|FEFD|true|1',
     'closed|closed',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('a data channel handed to a worker is the worker’s, and an empty message arrives as one', async () => {
+  const logs = await run(`
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+    async function until(what, f) {
+      for (var end = Date.now() + 10000; !f(); await wait(10)) {
+        if (Date.now() > end) throw new Error('never ' + what);
+      }
+    }
+    var source = [
+      'onmessage = function (e) {',
+      '  if (!e.data.channel) return;',
+      '  var c = e.data.channel;',
+      '  postMessage("adopted:" + (c instanceof RTCDataChannel) + ":" + c.label + ":" + c.readyState);',
+      '  c.onopen = function () { postMessage("opened"); };',
+      '  c.onmessage = function (m) { postMessage("got:" + JSON.stringify(m.data)); c.send("echo:" + m.data); };',
+      '};',
+    ].join('\\n');
+    var worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+    var heard = [];
+    worker.onmessage = function (e) { heard.push(e.data); };
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    var dc = pc1.createDataChannel('moved');
+    worker.postMessage({ channel: dc }, [dc]);
+    log('moved', dc.readyState);
+    var remote = new Promise(function (r) { pc2.ondatachannel = function (e) { r(e.channel); }; });
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    var dc2 = await remote;
+    await until('open', function () { return dc2.readyState === 'open' && heard.indexOf('opened') >= 0; });
+    var echoed = new Promise(function (r) { dc2.onmessage = function (e) { r(e.data); }; });
+    dc2.send('hi');
+    log('echoed', await echoed);
+    echoed = new Promise(function (r) { dc2.onmessage = function (e) { r(e.data); }; });
+    dc2.send('');
+    log('empty', JSON.stringify(await echoed));
+    log('worker', heard.join(','));
+    var late = pc1.createDataChannel('late');
+    await wait(0);
+    try { worker.postMessage({ channel: late }, [late]); log('late', 'transferred'); }
+    catch (e) { log('late', e.name, e instanceof DOMException, e.constructor.constructor === Function); }
+    worker.terminate();
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  assert.ok(
+    !logs.some((l) => l.startsWith('failed')),
+    `a step failed: ${logs.join('\n')}`,
+  );
+  for (const line of [
+    'moved|closed',
+    'echoed|echo:hi',
+    'empty|"echo:"',
+    'worker|adopted:true:moved:connecting,opened,got:"hi",got:""',
+    'late|DataCloneError|true|true',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
@@ -278,4 +348,65 @@ test('a certificate generateCertificate makes is the one a connection offers', a
   `);
   assert.ok(logs.includes('certificate|true|true|sha-256'), logs.join('\n'));
   assert.ok(logs.includes('offered|true'), logs.join('\n'));
+});
+
+test('a transceiver stopped by a remote offer, or taken away by its rollback, is stopped as WebRTC 1.0 has it', async () => {
+  const logs = await run(`
+    async function negotiate(a, b) {
+      await a.setLocalDescription();
+      await b.setRemoteDescription(a.localDescription);
+      await b.setLocalDescription();
+      await a.setRemoteDescription(b.localDescription);
+    }
+    function state(t) { return [t.mid === null ? 'null' : 'mid', t.direction, t.currentDirection].join(' '); }
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    var ta = a.addTransceiver('audio');
+    await negotiate(a, b);
+    var tb = b.getTransceivers()[0];
+    ta.stop();
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    log('remotely stopped', b.getTransceivers().length, state(tb), tb.receiver.track.readyState);
+    await b.setLocalDescription();
+    log('answered', b.getTransceivers().length, state(tb));
+    await new Promise(function (r) { setTimeout(r, 0); });
+    log('ended', tb.receiver.track.readyState);
+
+    var c = new RTCPeerConnection(), d = new RTCPeerConnection();
+    c.addTransceiver('video');
+    var offer = await c.createOffer();
+    await d.setRemoteDescription(offer);
+    var made = d.getTransceivers()[0];
+    var canvas = document.createElement('canvas');
+    await made.sender.replaceTrack(canvas.captureStream().getVideoTracks()[0]);
+    await d.setRemoteDescription({ type: 'rollback' });
+    log('rolled back', d.getTransceivers().length, state(made));
+    await d.setRemoteDescription(offer);
+    var again = d.getTransceivers()[d.getTransceivers().length - 1];
+    d.addTrack(canvas.captureStream().getVideoTracks()[0]);
+    await d.setRemoteDescription({ type: 'rollback' });
+    log('kept by addTrack', d.getTransceivers().length, d.getTransceivers()[0] === again, state(again), again.receiver.transport);
+
+    var e = new RTCPeerConnection(), f = new RTCPeerConnection();
+    e.addTransceiver('audio');
+    await e.setLocalDescription();
+    await f.setRemoteDescription(e.localDescription);
+    var answer = await f.createAnswer();
+    var tf = f.getTransceivers()[0];
+    tf.stop();
+    await f.setLocalDescription(answer);
+    log('stopped after the answer was made', state(tf));
+    [a, b, c, d, e, f].forEach(function (pc) { pc.close(); });
+    log('done');
+  `);
+  for (const line of [
+    'remotely stopped|1|mid stopped stopped|live',
+    'answered|0|null stopped stopped',
+    'ended|ended',
+    'rolled back|0|null stopped stopped',
+    'kept by addTrack|1|true|null sendrecv |',
+    'stopped after the answer was made|mid stopped recvonly',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
 });

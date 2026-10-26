@@ -969,7 +969,11 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream.
+file upstream. **The adapter reaches into werift once**: an empty message,
+which werift sends as nothing, is put on its `RTCSctpTransport`'s own send
+queue as RFC 8831's one byte under payload protocol 56 or 57
+(`WeriftChannel._sendEmpty`), and a werift without the queue sends nothing,
+as before. Ask werift for an empty send before reaching in anywhere else.
 
 ## Running someone else's program
 
@@ -2752,7 +2756,14 @@ closes a way out a DOM binding opens by accident:
   `installWebRTC` with its own helpers and slots, since a sender's
   `transport` is one of its objects, where the other two are `installDom`'s;
   on the host, `werift-transports.ts` is the adapter's half of the same
-  line.
+  line. **A data channel handed to a worker stays the page process's**: the
+  channel is the seam's, so a worker's realm makes one of its own for the
+  host's number (`adopt`), what it asks crosses the thread as a
+  `ChannelRelay` that `PagePeers` does, and what becomes of the channel goes
+  back the same way, held until the worker has made its own. **Anything new a
+  worker can ask of a channel is a `ChannelRelay` op**, done in
+  `PagePeers.fromWorker`, or the worker's channel has a member that does
+  nothing.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
