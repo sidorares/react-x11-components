@@ -12,6 +12,7 @@ import {
   fakeMediaDevices,
   idleSource,
 } from '../../src/html/index.js';
+import { canvasSource, i420Of } from '../../src/html/scripts/media-sources.js';
 import type {
   MediaAudioData,
   MediaSourceLike,
@@ -350,4 +351,98 @@ test('fake display: a 1280×720 screen, or none', async () => {
   assert.equal(frame.width, 1280);
   assert.equal(frame.height, 720);
   assert.equal(fakeMediaDevices({ display: false }).display, undefined);
+});
+
+test('a canvas’s pixels are I420 at BT.601 video range, the chroma of an odd size rounded up', () => {
+  const data = new Uint8ClampedArray(3 * 2 * 4);
+  const paint = (i: number, rgb: number[]) => data.set([...rgb, 255], i * 4);
+  // red, white, black / red, white, black
+  for (const row of [0, 1]) {
+    paint(row * 3, [255, 0, 0]);
+    paint(row * 3 + 1, [255, 255, 255]);
+    paint(row * 3 + 2, [0, 0, 0]);
+  }
+  const frame = i420Of({ width: 3, height: 2, data, version: 1 });
+  assert.deepEqual(frame.strides, [3, 2, 2]);
+  assert.deepEqual([...frame.planes[0]], [81, 235, 16, 81, 235, 16]);
+  // the first chroma sample is red and white's mean, the second black's
+  assert.deepEqual([...frame.planes[1]], [109, 128]);
+  assert.deepEqual([...frame.planes[2]], [184, 128]);
+});
+
+/** A canvas the host has, which a test draws on. */
+function canvasFeed(width: number, height: number) {
+  let pixels: {
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+    version: number;
+  } | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    pixels: () => pixels,
+    watch(changed: () => void) {
+      listeners.add(changed);
+      return () => listeners.delete(changed);
+    },
+    draw(value: number) {
+      pixels = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4).fill(value),
+        version: (pixels?.version ?? 0) + 1,
+      };
+      for (const l of [...listeners]) l();
+    },
+    listening: () => listeners.size,
+  };
+}
+
+test('a canvas’s source gives a frame each time it changes, or only when asked at a rate of 0', async () => {
+  const feed = canvasFeed(4, 2);
+  const every = canvasSource(feed, null);
+  const frames: number[] = [];
+  every.listen({
+    video: (f) => frames.push(f.planes[0][0]),
+    muted() {},
+    ended() {},
+  });
+  assert.deepEqual(frames, [], 'nothing is drawn yet');
+  feed.draw(0);
+  feed.draw(255);
+  assert.deepEqual(frames, [16, 235]);
+  assert.deepEqual(every.settings(), { width: 4, height: 2 });
+  every.stop();
+  feed.draw(0);
+  assert.deepEqual(frames, [16, 235], 'stopped, it gives none');
+  assert.equal(feed.listening(), 0);
+
+  const asked = canvasSource(feed, 0);
+  const got: number[] = [];
+  asked.listen({
+    video: (f) => got.push(f.planes[0][0]),
+    muted() {},
+    ended() {},
+  });
+  assert.deepEqual(got, [16], 'a frame of what is there as it is first read');
+  feed.draw(255);
+  assert.deepEqual(got, [16], 'a change gives none at a rate of 0');
+  asked.requestFrame();
+  assert.deepEqual(got, [16, 235]);
+  assert.equal(asked.settings().frameRate, 0);
+  asked.stop();
+
+  const rated = canvasSource(feed, 100);
+  const timed: number[] = [];
+  rated.listen({
+    video: (f) => timed.push(f.timestamp),
+    muted() {},
+    ended() {},
+  });
+  feed.draw(0);
+  feed.draw(255);
+  assert.equal(timed.length, 1, 'at most one frame each 10 ms');
+  await held('the next frame', new Promise((r) => setTimeout(r, 30)));
+  assert.equal(timed.length, 2, 'and the change held back comes once it may');
+  rated.stop();
 });

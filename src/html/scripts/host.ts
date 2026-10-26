@@ -5434,6 +5434,17 @@ export class DomHost {
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
+        canvas: (id) => {
+          const node = this._nodes.get(id);
+          if (!(node instanceof Element) || node.name !== 'canvas') return null;
+          return {
+            pixels: () => this.canvas(node),
+            watch: (changed) =>
+              this.onCanvas((canvas) => {
+                if (canvas === node) changed();
+              }),
+          };
+        },
       });
     }
     return this._sourcesMade;
