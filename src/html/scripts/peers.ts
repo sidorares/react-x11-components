@@ -11,6 +11,13 @@
 // its name, its message and an `RTCError`'s detail, which the facade makes
 // into its own.
 //
+// **A data channel handed to a worker stays the page process's.** The
+// channel is the seam's, and a worker's thread has no seam of its own, so
+// what the worker's realm asks of it crosses the thread as a
+// `ChannelRelay` and this side does it; what becomes of the channel goes
+// back the same way, held until the worker has made its own of it
+// (`adopt`), as WebTransport's sessions do (`transport-relay.ts`).
+//
 // **What a connection tells waits for the description being applied.**
 // A stack may gather a candidate or move a transport while
 // `setLocalDescription` is still under way, and WebRTC 1.0 tells the page
@@ -45,6 +52,15 @@ function bytesOf(base64: string): Uint8Array {
   return new Uint8Array(Buffer.from(base64, 'base64'));
 }
 
+/** What crosses a worker's thread for a data channel the page handed it,
+ *  by the page process's number for it: the worker's asks, and what
+ *  becomes of the channel. */
+export type ChannelRelay =
+  | { kind: 'rtc'; op: 'adopt'; ch: number }
+  | { kind: 'rtc'; op: 'send'; ch: number; binary: boolean; data: string }
+  | { kind: 'rtc'; op: 'close'; ch: number }
+  | { kind: 'rtc'; op: 'event'; ch: number; k: string; v: unknown };
+
 /** What the page's connections are carried over, and how it is told. */
 export interface PeerSeams {
   /** The seam, read as each connection is made. */
@@ -55,6 +71,18 @@ export interface PeerSeams {
   sources(): PageSources;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
+  /** A page's: tells a worker's thread of a channel handed to it. */
+  toWorker?(worker: number, message: ChannelRelay): void;
+  /** A worker's: asks the page process of a channel it was handed. */
+  toPage?(message: ChannelRelay): void;
+}
+
+/** A channel handed to a worker, and what it told before the worker had
+ *  made its own. */
+interface Moved {
+  worker: number;
+  adopted: boolean;
+  held: ChannelRelay[];
 }
 
 interface Peer {
@@ -100,6 +128,8 @@ export class PagePeers {
   private readonly _transceivers = new Map<number, Transceiver>();
   private readonly _ids = new Map<RTCTransceiverLike, number>();
   private readonly _channels = new Map<number, Channel>();
+  /** The page's channels handed to a worker, by number. */
+  private readonly _moved = new Map<number, Moved>();
   private _seq = 0;
   private _disposed = false;
 
@@ -303,9 +333,84 @@ export class PagePeers {
       case 'rtcCloseChannel':
         this._channels.get(Number(a))?.channel.close();
         return null;
+      case 'rtcTransfer': {
+        // a page's channel handed to a worker: what becomes of it is the
+        // worker's to hear from now on
+        const id = Number(a);
+        if (this._channels.has(id)) {
+          this._moved.set(id, { worker: Number(b), adopted: false, held: [] });
+        }
+        return null;
+      }
+      case 'rtcAdopt':
+        this._adopt(Number(a));
+        return null;
       default:
         return null;
     }
+  }
+
+  /**
+   * A worker's realm made its own of a channel the page handed it: on the
+   * worker's side, its ops go to the page process, and the page process is
+   * told to send on what it held.
+   */
+  private _adopt(id: number): void {
+    const toPage = this._seams.toPage;
+    if (!toPage || this._channels.has(id)) return;
+    const peer = {
+      id: 0,
+      applying: 0,
+      held: [],
+      closed: false,
+    } as unknown as Peer;
+    this._channels.set(id, {
+      id,
+      peer,
+      channel: {
+        listen() {},
+        send: (data) =>
+          toPage(
+            typeof data === 'string'
+              ? { kind: 'rtc', op: 'send', ch: id, binary: false, data }
+              : {
+                  kind: 'rtc',
+                  op: 'send',
+                  ch: id,
+                  binary: true,
+                  data: base64Of(data),
+                },
+          ),
+        close: () => toPage({ kind: 'rtc', op: 'close', ch: id }),
+      },
+    });
+    toPage({ kind: 'rtc', op: 'adopt', ch: id });
+  }
+
+  /** What a worker asked of a channel the page handed it. */
+  fromWorker(worker: number, m: ChannelRelay): void {
+    const moved = this._moved.get(m.ch);
+    if (!moved || moved.worker !== worker) return;
+    if (m.op === 'adopt') {
+      moved.adopted = true;
+      for (const held of moved.held.splice(0)) {
+        this._seams.toWorker?.(worker, held);
+        if (held.op === 'event' && held.k === 'closed') {
+          this._moved.delete(m.ch);
+        }
+      }
+    } else if (m.op === 'send') {
+      this._channels
+        .get(m.ch)
+        ?.channel.send(m.binary ? bytesOf(m.data) : m.data);
+    } else if (m.op === 'close') {
+      this._channels.get(m.ch)?.channel.close();
+    }
+  }
+
+  /** What became of a channel this worker was handed: told to its realm. */
+  heard(m: ChannelRelay): void {
+    if (m.op === 'event') this._tell('__rtcChannel', [m.ch, m.k, m.v]);
   }
 
   /** The realm goes: every connection it had is closed. */
@@ -548,8 +653,25 @@ export class PagePeers {
   }
 
   private _listen(peer: Peer, id: number, channel: RTCDataChannelLike): void {
-    const tell = (kind: string, value?: unknown) =>
-      this._event(peer, '__rtcChannel', [id, kind, value ?? null]);
+    const tell = (kind: string, value?: unknown) => {
+      const moved = this._moved.get(id);
+      if (!moved) {
+        this._event(peer, '__rtcChannel', [id, kind, value ?? null]);
+        return;
+      }
+      // a channel handed to a worker: told there, once it has made its own
+      const m: ChannelRelay = {
+        kind: 'rtc',
+        op: 'event',
+        ch: id,
+        k: kind,
+        v: value ?? null,
+      };
+      if (moved.adopted) {
+        this._seams.toWorker?.(moved.worker, m);
+        if (kind === 'closed') this._moved.delete(id);
+      } else moved.held.push(m);
+    };
     channel.listen({
       id: (n) => tell('id', n),
       open: () => tell('open'),

@@ -913,8 +913,11 @@ offer/answer state and its operations chain, `RTCSessionDescription`,
 parameters, the ICE and DTLS transports with their states, data channels
 — their states and messages, strings, `ArrayBuffer`s and `Blob`s, sent up
 to 16 MiB ahead, as Chrome queues them, and past that refused with an
-`OperationError`; a close that sends what was queued before it, and a
-lost peer an `sctp-failure` — the SCTP transport with its state and
+`OperationError`; an empty message; a close that sends what was queued
+before it, and a lost peer an `sctp-failure`; handed to a dedicated
+worker in the task that made it (`postMessage(…, [channel])`), after
+which it is the worker's and a `DataCloneError` elsewhere — the SCTP
+transport with its state and
 `maxChannels`, a connection's transport stats, `RTCError`, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host

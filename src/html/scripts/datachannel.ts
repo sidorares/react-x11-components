@@ -9,10 +9,10 @@
 // so it closes over nothing.
 //
 // A channel is a number for the host's, and its messages cross as text or
-// base64. This is the channel as far as docs/prd-webrtc.md's workstream 1
-// needed it: made and checked, its states, its messages and
-// `bufferedAmount`. The rest — a message as a `Blob`, the SCTP transport's
-// own state, a channel handed to a worker — is workstream 3's.
+// base64. A channel can be handed to a dedicated worker in the task that
+// made it (`transferOut`, `adopt`): the worker's realm makes one of its own
+// for the same number, and the host carries its ops and its events across
+// the worker's thread (`peers.ts`, `ChannelRelay`).
 
 /** What `installDom` hands this. */
 export interface DataChannelsDeps {
@@ -31,6 +31,8 @@ export interface DataChannelsDeps {
   /** An `RTCErrorEvent` named `error`, for a channel that failed: made by
    *  `webrtc.ts`, which is installed after this. */
   errorEvent(detail: unknown, message: string): unknown;
+  /** Runs `fn` in a task of its own, after this one. */
+  later(fn: () => void): void;
 }
 
 /** What `webrtc.ts` reaches data channels through. A connection is its
@@ -49,6 +51,18 @@ export interface DataChannelsInternals {
   sctpOf(connection: unknown): unknown;
   /** The connection closed: every channel is closed, with no events. */
   closeAll(connection: unknown): void;
+  /** Whether a value is one of this realm's channels. */
+  isChannel(value: unknown): boolean;
+  /** Whether a channel may still be transferred: only in the task that
+   *  made it, and not once it has sent. */
+  transferable(channel: unknown): boolean;
+  /** A channel as it crosses to a worker: its number and its state. */
+  transferData(channel: unknown): { host: number; state: unknown };
+  /** Hands a channel to a worker: the host tells the worker of it from now
+   *  on, and this one is closed, with no events. */
+  transferOut(channel: unknown, worker: number): void;
+  /** A channel a page handed this realm, a worker's. */
+  adopt(host: number, state: unknown): unknown;
 }
 
 export function installDataChannels(
@@ -278,9 +292,7 @@ export function installDataChannels(
           size = bytes.byteLength;
         }
       }
-      const max = stateOf(s.pc).sctp
-        ? apply(wmGet, slots, [stateOf(s.pc).sctp]).maxMessageSize
-        : 65536;
+      const max = maxMessageOf(s);
       if (size! > max) {
         throw typeError(
           'The message is larger than the transport’s maxMessageSize.',
@@ -295,6 +307,7 @@ export function installDataChannels(
         );
       }
       s.bufferedAmount += size!;
+      s.transferable = false;
       call('rtcSend', s.host, binary, payload!);
     }
     close(): void {
@@ -331,6 +344,12 @@ export function installDataChannels(
     }
   }
 
+  /** The largest message a channel's transport takes. */
+  const maxMessageOf = (s: Any): number =>
+    stateOf(s.pc).sctp
+      ? apply(wmGet, slots, [stateOf(s.pc).sctp]).maxMessageSize
+      : (s.maxMessage ?? 65536);
+
   const make = (pc: Any, host: number, init: Any, readyState: string): Any => {
     const channel = new RTCDataChannel(TOKEN);
     const s = {
@@ -351,10 +370,17 @@ export function installDataChannels(
       threshold: 0,
       binaryType: 'arraybuffer',
       opened: false,
+      // a channel may be handed to a worker until the task that made it
+      // ends (WebRTC 1.0, 6.2, [[IsTransferable]])
+      transferable: true,
+      maxMessage: null as number | null,
     };
     apply(wmSet, slots, [channel, s]);
     channels.set(host, s);
     stateOf(pc).channels.add(s);
+    D.later(() => {
+      s.transferable = false;
+    });
     return channel;
   };
 
@@ -564,6 +590,78 @@ export function installDataChannels(
     },
     sctpOf(pc: Any) {
       return stateOf(pc).sctp;
+    },
+    isChannel(value: Any) {
+      const s =
+        value && typeof value === 'object'
+          ? apply(wmGet, slots, [value])
+          : null;
+      return !!s?.channel;
+    },
+    transferable(channel: Any) {
+      const s = slotOf(channel, 'channel');
+      return s.transferable && s.readyState !== 'closed';
+    },
+    transferData(channel: Any) {
+      const s = slotOf(channel, 'channel');
+      return {
+        host: s.host,
+        state: {
+          label: s.label,
+          ordered: s.ordered,
+          maxPacketLifeTime: s.maxPacketLifeTime,
+          maxRetransmits: s.maxRetransmits,
+          protocol: s.protocol,
+          negotiated: s.negotiated,
+          id: s.id,
+          priority: s.priority,
+          readyState: s.readyState,
+          bufferedAmount: s.bufferedAmount,
+          threshold: s.threshold,
+          binaryType: s.binaryType,
+          opened: s.opened,
+          maxMessage: maxMessageOf(s),
+        },
+      };
+    },
+    transferOut(channel: Any, worker: number) {
+      const s = slotOf(channel, 'channel');
+      // the host tells the worker of it from here on; this one is closed
+      // and hears nothing more (WebRTC 1.0, 6.2, "transfer steps")
+      s.transferable = false;
+      call('rtcTransfer', s.host, worker);
+      channels.delete(s.host);
+      s.readyState = 'closed';
+    },
+    adopt(host: number, state: Any) {
+      // a worker has no connection: what a channel reads of one is its own
+      const pc = { closed: false, id: -1, self: null };
+      const channel = make(
+        pc,
+        host,
+        {
+          label: String(state?.label ?? ''),
+          ordered: state?.ordered !== false,
+          maxPacketLifeTime: state?.maxPacketLifeTime ?? null,
+          maxRetransmits: state?.maxRetransmits ?? null,
+          protocol: String(state?.protocol ?? ''),
+          negotiated: !!state?.negotiated,
+          id: typeof state?.id === 'number' ? state.id : null,
+          priority: PRIORITIES.includes(state?.priority)
+            ? state.priority
+            : 'low',
+        },
+        String(state?.readyState ?? 'connecting'),
+      );
+      const s = slotOf(channel, 'channel');
+      s.bufferedAmount = Number(state?.bufferedAmount) || 0;
+      s.threshold = Number(state?.threshold) || 0;
+      s.binaryType = state?.binaryType === 'blob' ? 'blob' : 'arraybuffer';
+      s.opened = !!state?.opened;
+      s.maxMessage =
+        typeof state?.maxMessage === 'number' ? state.maxMessage : null;
+      call('rtcAdopt', host);
+      return channel;
     },
     closeAll(pc: Any) {
       const st = stateOf(pc);

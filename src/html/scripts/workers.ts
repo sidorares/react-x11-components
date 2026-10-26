@@ -31,6 +31,7 @@ import type {
 import type { HtmlWebTransport } from '../transport.js';
 import { TransportRelay } from './transport-relay.js';
 import type { TransportAsk, TransportTell } from './transport-relay.js';
+import type { ChannelRelay } from './peers.js';
 
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
@@ -50,6 +51,8 @@ export interface PageWorkersSeams {
   language: string;
   /** A worker posted a message, for the page's `Worker`. */
   message(id: number, data: string): void;
+  /** A worker asked of a data channel the page handed it. */
+  rtc?(id: number, message: ChannelRelay): void;
   /** A worker's script threw what nothing there caught. */
   error(
     id: number,
@@ -84,7 +87,8 @@ export type FromWorker =
   | { kind: 'abort'; id: number }
   | { kind: 'log'; level: string; text: string }
   | { kind: 'close' }
-  | TransportAsk;
+  | TransportAsk
+  | ChannelRelay;
 
 /** What this side tells the thread. */
 export type ToWorker =
@@ -98,7 +102,8 @@ export type ToWorker =
     }
   | { kind: 'chunk'; id: number; bytes: Uint8Array }
   | { kind: 'fetchEnd'; id: number; error: string | null }
-  | TransportTell;
+  | TransportTell
+  | ChannelRelay;
 
 /** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
  *  run from the source, as the suite runs it — the TypeScript beside it. */
@@ -226,6 +231,10 @@ export class PageWorkers implements PageWorkersLike {
     this._running.get(id)?.thread.postMessage(message);
   }
 
+  rtc(id: number, message: ChannelRelay): void {
+    this._running.get(id)?.thread.postMessage(message);
+  }
+
   end(id: number): void {
     const running = this._running.get(id);
     if (!running) return;
@@ -301,6 +310,10 @@ export class PageWorkers implements PageWorkersLike {
       case 'abort':
         running.fetches.get(m.id)?.abort();
         running.fetches.delete(m.id);
+        return;
+      case 'rtc':
+        // a data channel's the page handed it, which is the page's
+        this._seams.rtc?.(id, m);
         return;
       case 'wt':
         // a WebTransport session's, over the page's own seam
