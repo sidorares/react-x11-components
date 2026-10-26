@@ -37,7 +37,7 @@
 // scripts.
 
 import { idleSource } from './media-devices.js';
-import type { MediaSourceLike } from './media-devices.js';
+import type { MediaSourceEvents, MediaSourceLike } from './media-devices.js';
 
 /** A direction, as a transceiver and an m-section have one. */
 export type RTCDirectionLike =
@@ -546,3 +546,211 @@ export const NO_WEBRTC: HtmlWebRTC = {
   generateCertificate: () => unsupported('generateCertificate()'),
   capabilities: () => null,
 };
+
+/** A source whose frames come from another, once there is one: what a
+ *  receiver's track listens to before the stack that receives is loaded. */
+function forwardingSource(kind: 'audio' | 'video'): MediaSourceLike & {
+  attach(source: MediaSourceLike): void;
+} {
+  let real: MediaSourceLike | null = null;
+  let listener: MediaSourceEvents | null = null;
+  let stopped = false;
+  return {
+    kind,
+    label: '',
+    listen(events) {
+      listener = events;
+      if (real) real.listen(events);
+      else events.muted(true);
+    },
+    settings: () => (real ? real.settings() : {}),
+    capabilities: () => (real ? real.capabilities() : {}),
+    reconfigure: (settings) =>
+      real ? real.reconfigure(settings) : Promise.resolve(false),
+    stop() {
+      stopped = true;
+      real?.stop();
+    },
+    attach(source) {
+      real = source;
+      if (stopped) source.stop();
+      else if (listener) source.listen(listener);
+    },
+  };
+}
+
+/** A transceiver of a connection not made yet: what is asked of it is
+ *  done, in order, once there is one. */
+class DeferredTransceiver implements RTCTransceiverLike {
+  readonly received: MediaSourceLike & { attach(s: MediaSourceLike): void };
+  real: RTCTransceiverLike | null = null;
+  private _queue: ((t: RTCTransceiverLike) => void)[] = [];
+
+  constructor(readonly kind: 'audio' | 'video') {
+    this.received = forwardingSource(kind);
+  }
+
+  attach(real: RTCTransceiverLike): void {
+    this.real = real;
+    this.received.attach(real.received);
+    for (const run of this._queue.splice(0)) run(real);
+  }
+
+  private _do(run: (t: RTCTransceiverLike) => void): void {
+    if (this.real) run(this.real);
+    else this._queue.push(run);
+  }
+
+  setTrack(source: MediaSourceLike | null, trackId: string | null): void {
+    this._do((t) => t.setTrack(source, trackId));
+  }
+  setDirection(direction: Exclude<RTCDirectionLike, 'stopped'>): void {
+    this._do((t) => t.setDirection(direction));
+  }
+  setStreams(ids: string[]): void {
+    this._do((t) => t.setStreams(ids));
+  }
+  setCodecPreferences(codecs: RTCCodecLike[]): void {
+    this._do((t) => t.setCodecPreferences(codecs));
+  }
+  setHeaderExtensionsToNegotiate(extensions: RTCHeaderExtensionChoice[]): void {
+    this._do((t) => t.setHeaderExtensionsToNegotiate(extensions));
+  }
+  setParameters(parameters: {
+    encodings: RTCEncodingLike[];
+    degradationPreference?: string;
+  }): Promise<void> {
+    return new Promise((resolve, reject) =>
+      this._do((t) => t.setParameters(parameters).then(resolve, reject)),
+    );
+  }
+  stop(): void {
+    this._do((t) => t.stop());
+  }
+  sources(): RTCRtpSourceLike[] {
+    return this.real ? this.real.sources() : [];
+  }
+  setJitterBufferTarget(ms: number | null): void {
+    this._do((t) => t.setJitterBufferTarget(ms));
+  }
+  sendTone(tone: string, duration: number): boolean {
+    return this.real ? this.real.sendTone(tone, duration) : false;
+  }
+  stats(side: 'sender' | 'receiver'): Promise<RTCStatsLike[]> {
+    return new Promise((resolve, reject) =>
+      this._do((t) => t.stats(side).then(resolve, reject)),
+    );
+  }
+}
+
+/** A data channel of a connection not made yet. */
+class DeferredChannel implements RTCDataChannelLike {
+  private _real: RTCDataChannelLike | null = null;
+  private _queue: ((c: RTCDataChannelLike) => void)[] = [];
+
+  attach(real: RTCDataChannelLike): void {
+    this._real = real;
+    for (const run of this._queue.splice(0)) run(real);
+  }
+  private _do(run: (c: RTCDataChannelLike) => void): void {
+    if (this._real) run(this._real);
+    else this._queue.push(run);
+  }
+  listen(events: RTCDataChannelEvents): void {
+    this._do((c) => c.listen(events));
+  }
+  send(data: string | Uint8Array): void {
+    this._do((c) => c.send(data));
+  }
+  close(): void {
+    this._do((c) => c.close());
+  }
+}
+
+/**
+ * A connection over a seam not had yet — one loaded the first time a page
+ * makes a connection — answered at once and carried over it once it is.
+ * What the page asks of it meanwhile is done in the order it asked; an
+ * operation waits for the seam. Its transceivers are its own objects, and so
+ * are those the seam's answers name: one a remote offer made is wrapped as
+ * it is first named.
+ */
+export function deferredConnection(
+  seam: Promise<HtmlWebRTC>,
+  request: RTCConnectRequest,
+  events: RTCConnectionEvents,
+): RTCConnectionLike {
+  let real: RTCConnectionLike | null = null;
+  let failure: Error | null = null;
+  let closed = false;
+  const queue: ((c: RTCConnectionLike) => void)[] = [];
+  const wrappers = new Map<RTCTransceiverLike, DeferredTransceiver>();
+  const wrap = (t: RTCTransceiverLike): DeferredTransceiver => {
+    let w = wrappers.get(t);
+    if (!w) {
+      w = new DeferredTransceiver(t.kind);
+      w.attach(t);
+      wrappers.set(t, w);
+    }
+    return w;
+  };
+  const ready = seam.then(
+    (s) => {
+      real = s.connect(request, events);
+      for (const run of queue.splice(0)) run(real);
+      if (closed) real.close();
+      return real;
+    },
+    (error: unknown) => {
+      failure = rtcError(
+        'OperationError',
+        String((error as Error)?.message ?? error),
+      );
+      return null;
+    },
+  );
+  const after = <T>(run: (c: RTCConnectionLike) => Promise<T>): Promise<T> =>
+    ready.then((c) => (c ? run(c) : Promise.reject(failure)));
+  const mapped = (state: RTCSessionState): RTCSessionState => ({
+    ...state,
+    transceivers: state.transceivers.map((t) => ({
+      ...t,
+      transceiver: wrap(t.transceiver),
+    })),
+  });
+  const now = (run: (c: RTCConnectionLike) => void): void => {
+    if (real) run(real);
+    else queue.push(run);
+  };
+  return {
+    addTransceiver(init) {
+      const w = new DeferredTransceiver(init.kind);
+      now((c) => {
+        const t = c.addTransceiver(init);
+        wrappers.set(t, w);
+        w.attach(t);
+      });
+      return w;
+    },
+    createOffer: (options) => after((c) => c.createOffer(options)),
+    createAnswer: () => after((c) => c.createAnswer()),
+    setLocalDescription: (type, sdp) =>
+      after((c) => c.setLocalDescription(type, sdp)).then(mapped),
+    setRemoteDescription: (type, sdp) =>
+      after((c) => c.setRemoteDescription(type, sdp)).then(mapped),
+    addIceCandidate: (candidate) => after((c) => c.addIceCandidate(candidate)),
+    restartIce: () => now((c) => c.restartIce()),
+    setConfiguration: (next) => now((c) => c.setConfiguration(next)),
+    descriptions: () => (real ? real.descriptions() : NO_DESCRIPTIONS),
+    createDataChannel(init) {
+      const w = new DeferredChannel();
+      now((c) => w.attach(c.createDataChannel(init)));
+      return w;
+    },
+    stats: () => after((c) => c.stats()),
+    close() {
+      closed = true;
+      real?.close();
+    },
+  };
+}

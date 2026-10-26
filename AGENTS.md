@@ -959,6 +959,18 @@ connection rejects `closed`, both of which `quico.ts` maps itself). **When
 a quico release fixes one, delete the adapter's half of it and move the
 peer range**, as "Vendored from core" has it for a copy.
 
+`src/html/werift.ts` is the same shape for a page's peer connections:
+`werift`, ICE, DTLS, SCTP and SRTP in TypeScript, is an **optional peer**
+and a devDependency, as quico is — some 29 megabytes installed — loaded
+the first time a page makes a connection, its types written out. It runs
+on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
+20, and `webrtc-peer.test.ts` holds the page's API over a fake stack
+(`test/fake-webrtc.ts`) on every runtime. What a connection offers is
+`src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
+werift is loaded. Where werift differs from a browser the adapter
+corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
+file upstream.
+
 ## Running someone else's program
 
 `src/embed/`, `src/terminal/` and `src/media-player/` are the first things
@@ -2715,6 +2727,27 @@ closes a way out a DOM binding opens by accident:
   goes into the head (`_noteCsp`, from `_childList`) and kept after it
   goes: **anything new that opens a connection from a page asks
   `connectAllowed` first**, which is where `fetch` would join it.
+- **A page's WebRTC is the realm's semantics over the seam's protocol**
+  (`webrtc.ts`, `datachannel.ts` and `mediastream.ts` in the page;
+  `peers.ts` and `media-sources.ts` on the host; `HtmlScripts.webRTC` and
+  `mediaDevices`; docs/prd-webrtc.md). **What WebRTC 1.0 works out from
+  state the realm has is worked out in the realm**: the connection's ICE,
+  connection and gathering states from its transports', whether
+  negotiation is needed, a description's `track` events, what a rollback
+  takes back. A stack answers a description with state
+  (`RTCSessionState`) and tells a transport's state whole, so the realm
+  never forwards one of its events. **What a connection tells while one of
+  its descriptions is applied waits for that operation's answer**
+  (`PagePeers._event`): a stack gathers while `setLocalDescription` is
+  under way, and the page hears its candidates after the promise, so
+  anything new a connection tells goes through `_event`. **Where werift
+  says what a browser would not, one side corrects it and the PRD's table
+  says which** ("Where werift differs, case by case"): the protocol in the
+  adapter (`werift.ts`), the API in the facade. A werift release that
+  fixes one retires the correction, as quico's do. The ops are `rtc…` and
+  `md…`, which no other op starts with. Data channels are `datachannel.ts`
+  and tracks are `mediastream.ts`, each source text of its own, so that
+  workstreams 2 and 3 build there and not in the connection.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

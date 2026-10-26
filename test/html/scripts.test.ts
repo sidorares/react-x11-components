@@ -599,6 +599,8 @@ for (const global of ['own', 'object'] as const) {
         'made.catch(function (e) { r.push(e.constructor.constructor(reach)()) });' +
         // and what a WebTransport the host refuses is rejected with
         "new WebTransport('https://wt.test/').ready.catch(function (e) { r.push(e.constructor.constructor(reach)(), e.name) });" +
+        // and what an offer no WebRTC stack makes is rejected with
+        'new RTCPeerConnection().createOffer().catch(function (e) { r.push(e.constructor.constructor(reach)(), e.name) });' +
         'var shared = 1;',
       'a',
       0,
@@ -611,9 +613,11 @@ for (const global of ['own', 'object'] as const) {
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefined,undefined,string,null,undefinedundefinedundefined,' +
-        // the refused session's rejection is settled inside the entry that
-        // tells it, ahead of the import's, which the host settled from
-        // outside
+        // the refused offer's and the refused session's rejections are
+        // settled inside the entries that tell them, the offer's first, as
+        // its host settles it at once, ahead of the import's, which the host
+        // settled from outside
+        'undefinedundefinedundefined,NotSupportedError,' +
         'undefinedundefinedundefined,WebTransportError,undefinedundefinedundefined number',
     ]);
     engine.dispose();

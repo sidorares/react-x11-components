@@ -115,6 +115,8 @@ import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import { PageSources } from './media-sources.js';
+import { PagePeers } from './peers.js';
 import { PageTransports } from './transports.js';
 import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
@@ -1749,6 +1751,10 @@ export class DomHost {
     this._disposed = true;
     this._transportsMade?.dispose();
     this._transportsMade = null;
+    this._peersMade?.dispose();
+    this._peersMade = null;
+    this._sourcesMade?.dispose();
+    this._sourcesMade = null;
     if (this._s.drawn.get(this.document) === this._seams.handle) {
       this._s.drawn.delete(this.document);
     }
@@ -1989,6 +1995,18 @@ export class DomHost {
     // a WebTransport session's or stream's (`transports.ts`)
     if (op.charCodeAt(0) === 119 && op.charCodeAt(1) === 116) {
       return this._transports().op(op, a, b, c);
+    }
+    // a peer connection's (`peers.ts`)
+    if (
+      op.charCodeAt(0) === 114 &&
+      op.charCodeAt(1) === 116 &&
+      op.charCodeAt(2) === 99
+    ) {
+      return this._peers().op(op, a, b, c, d);
+    }
+    // a media source's (`media-sources.ts`)
+    if (op.charCodeAt(0) === 109 && op.charCodeAt(1) === 100) {
+      return this._sources().op(op, a, b);
     }
     switch (op) {
       // --- the tree
@@ -5388,6 +5406,37 @@ export class DomHost {
     } catch {
       return 'null';
     }
+  }
+
+  /** The page's peer connections, made the first time it makes one. */
+  private _peersMade: PagePeers | null = null;
+  private _peers(): PagePeers {
+    if (!this._peersMade) {
+      this._peersMade = new PagePeers({
+        webRTC: () => this._seams.webRTC,
+        origin: () => this._origin(),
+        sources: () => this._sources(),
+        tell: (name, input) => {
+          if (!this._disposed) this.entries?.call(name, input);
+        },
+      });
+    }
+    return this._peersMade;
+  }
+
+  /** The page's media sources, made the first time it asks for one. */
+  private _sourcesMade: PageSources | null = null;
+  private _sources(): PageSources {
+    if (!this._sourcesMade) {
+      this._sourcesMade = new PageSources({
+        devices: () => this._seams.mediaDevices,
+        origin: () => this._origin(),
+        tell: (name, input) => {
+          if (!this._disposed) this.entries?.call(name, input);
+        },
+      });
+    }
+    return this._sourcesMade;
   }
 
   /** The page's WebTransport sessions, made the first time it opens one. */
