@@ -1,8 +1,9 @@
 // A page's media sources on the host's side: the devices its
 // `getUserMedia` opens over `HtmlScripts.mediaDevices`, a canvas a
-// `captureStream()` captures, and a peer connection receiver's (`peers.ts`
-// registers those), each a number the page's tracks are over
-// (`mediastream.ts`, the `md…` ops and `__md…` entries).
+// `captureStream()` captures, a Web Audio stream destination's synth
+// (`webaudio.ts`), and a peer connection receiver's (`peers.ts` registers
+// those), each a number the page's tracks are over (`mediastream.ts`, the
+// `md…` ops and `__md…` entries).
 //
 // Only primitives cross: a source is a number, what an entry is handed is
 // JSON, and an error is its name and its message, which the page's realm
@@ -208,6 +209,20 @@ export class PageSources {
         const rate = typeof b === 'string' && b !== '' ? Number(b) : null;
         return this.register(canvasSource(feed, rate));
       }
+      case 'mdSynth':
+        return this.register(synthSource(Number(a) || 48000));
+      case 'mdSynthGraph': {
+        const source = this._held.get(Number(a))?.source as
+          Partial<SynthSource> | undefined;
+        if (typeof b === 'string') {
+          try {
+            source?.graph?.(JSON.parse(b) as SynthGraph);
+          } catch {
+            // what the page's realm told is its own to get right
+          }
+        }
+        return null;
+      }
       case 'mdRequestFrame': {
         const source = this._held.get(Number(a))?.source as
           Partial<CanvasSource> | undefined;
@@ -373,6 +388,8 @@ export class PageSources {
 
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const clearTimeout: (handle: unknown) => void;
+declare const setInterval: (fn: () => void, ms: number) => unknown;
+declare const clearInterval: (handle: unknown) => void;
 
 /**
  * A canvas's frames (Media Capture from DOM Elements, 3.1): one each time
@@ -451,6 +468,157 @@ export function canvasSource(
       unwatch = null;
       if (waiting !== null) clearTimeout(waiting);
       waiting = null;
+    },
+  };
+}
+
+/** One of what a Web Audio stream destination renders (`webaudio.ts`'s
+ *  `render`): an oscillator or a constant source, through the gains of its
+ *  path, from its start to its stop in the context's seconds. */
+export type SynthVoice =
+  | {
+      kind: 'oscillator';
+      type: 'sine' | 'square' | 'sawtooth' | 'triangle' | 'custom';
+      frequency: number;
+      detune: number;
+      real: number[] | null;
+      imag: number[] | null;
+      gain: number;
+      start: number;
+      stop: number | null;
+    }
+  | {
+      kind: 'constant';
+      offset: number;
+      gain: number;
+      start: number;
+      stop: number | null;
+    };
+
+/** What a destination renders, as the page's realm told it: whether its
+ *  context runs, the context's time when it was told, and the voices. */
+export interface SynthGraph {
+  running: boolean;
+  time: number;
+  voices: SynthVoice[];
+}
+
+export interface SynthSource extends MediaSourceLike {
+  graph(graph: SynthGraph): void;
+}
+
+/**
+ * A Web Audio stream destination's track: the voices its graph reaches,
+ * summed, in 10 ms chunks of one channel at the context's rate, a chunk
+ * for each 10 ms of the context's clock while it runs. A custom wave is
+ * its harmonics, normalized to a peak of 1 as Web Audio normalizes one.
+ */
+export function synthSource(sampleRate: number): SynthSource {
+  let events: MediaSourceEvents | null = null;
+  let timer: unknown = null;
+  let stopped = false;
+  let graph: SynthGraph = { running: false, time: 0, voices: [] };
+  let told = Date.now();
+  let made = 0;
+  const frames = Math.round(sampleRate / 100);
+
+  /** The context's time at a host time, while it runs. */
+  const contextTime = (at: number) =>
+    graph.time + (graph.running ? (at - told) / 1000 : 0);
+
+  const sample = (voice: SynthVoice, t: number): number => {
+    if (t < voice.start || (voice.stop !== null && t >= voice.stop)) return 0;
+    if (voice.kind === 'constant') return voice.offset * voice.gain;
+    const f = voice.frequency * Math.pow(2, voice.detune / 1200);
+    const phase = (f * (t - voice.start)) % 1;
+    let v: number;
+    switch (voice.type) {
+      case 'square':
+        v = phase < 0.5 ? 1 : -1;
+        break;
+      case 'sawtooth':
+        v = 2 * (phase < 0.5 ? phase : phase - 1);
+        break;
+      case 'triangle':
+        v =
+          phase < 0.25
+            ? 4 * phase
+            : phase < 0.75
+              ? 2 - 4 * phase
+              : 4 * phase - 4;
+        break;
+      case 'custom': {
+        const real = voice.real ?? [];
+        const imag = voice.imag ?? [];
+        let sum = 0;
+        let peak = 0;
+        for (let k = 1; k < Math.max(real.length, imag.length); k++) {
+          const a = real[k] ?? 0;
+          const b = imag[k] ?? 0;
+          sum +=
+            a * Math.cos(2 * Math.PI * k * phase) +
+            b * Math.sin(2 * Math.PI * k * phase);
+          peak += Math.abs(a) + Math.abs(b);
+        }
+        v = peak ? sum / peak : 0;
+        break;
+      }
+      default:
+        v = Math.sin(2 * Math.PI * phase);
+    }
+    return v * voice.gain;
+  };
+
+  const chunk = () => {
+    if (!events?.audio || stopped || !graph.running) return;
+    const due = Math.floor((contextTime(Date.now()) * sampleRate) / frames);
+    for (; made < due; made++) {
+      const data = new Float32Array(frames);
+      for (let i = 0; i < frames; i++) {
+        const t = (made * frames + i) / sampleRate;
+        let v = 0;
+        for (const voice of graph.voices) v += sample(voice, t);
+        data[i] = Math.max(-1, Math.min(1, v));
+      }
+      events.audio({
+        sampleRate,
+        channels: [data],
+        frames,
+        timestamp: (made * frames * 1e6) / sampleRate,
+      });
+    }
+  };
+  const run = () => {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+    if (stopped || !events?.audio || !graph.running) return;
+    timer = setInterval(chunk, 10);
+    (timer as { unref?(): void }).unref?.();
+  };
+
+  return {
+    kind: 'audio',
+    label: 'MediaStreamAudioDestinationNode',
+    listen(next) {
+      events = next;
+      if (stopped) return;
+      next.muted(false);
+      // a chunk for each 10 ms from the context's time now, not from its
+      // start
+      made = Math.floor((contextTime(Date.now()) * sampleRate) / frames);
+      run();
+    },
+    graph(next) {
+      graph = next;
+      told = Date.now();
+      run();
+    },
+    settings: () => ({ sampleRate, channelCount: 1, sampleSize: 32 }),
+    capabilities: () => ({}),
+    reconfigure: () => Promise.resolve(false),
+    stop() {
+      stopped = true;
+      run();
     },
   };
 }

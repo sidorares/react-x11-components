@@ -35,6 +35,7 @@ import type { installStreams } from './streams.js';
 import type { installWebTransport } from './webtransport.js';
 import type { installDataChannels } from './datachannel.js';
 import type { installMediaStreams } from './mediastream.js';
+import type { installWebAudio } from './webaudio.js';
 import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
@@ -69,6 +70,7 @@ export function installDom(
   dataChannels: typeof installDataChannels,
   webrtc: typeof installWebRTC,
   rtcTransports: typeof installRtcTransports,
+  webaudio: typeof installWebAudio,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -16937,6 +16939,36 @@ export function installDom(
     'MediaDeviceInfo',
     'InputDeviceInfo',
     'OverconstrainedError',
+    'CanvasCaptureMediaStreamTrack',
+    // Web Audio's (`webaudio.ts`), a window's alone
+    'BaseAudioContext',
+    'AudioContext',
+    'AudioNode',
+    'AudioParam',
+    'AudioScheduledSourceNode',
+    'OscillatorNode',
+    'ConstantSourceNode',
+    'AudioBufferSourceNode',
+    'GainNode',
+    'DelayNode',
+    'BiquadFilterNode',
+    'IIRFilterNode',
+    'WaveShaperNode',
+    'DynamicsCompressorNode',
+    'StereoPannerNode',
+    'PannerNode',
+    'ChannelMergerNode',
+    'ChannelSplitterNode',
+    'ConvolverNode',
+    'AnalyserNode',
+    'ScriptProcessorNode',
+    'AudioDestinationNode',
+    'MediaStreamAudioDestinationNode',
+    'MediaStreamAudioSourceNode',
+    'MediaElementAudioSourceNode',
+    'AudioBuffer',
+    'PeriodicWave',
+    'AudioListener',
     'window',
     'document',
     'parent',
@@ -24332,6 +24364,22 @@ export function installDom(
       secure,
     });
     canvasCapture = media.internals.captureCanvas;
+    const audio = webaudio({
+      call: call as Any,
+      DOMException,
+      EventTarget,
+      Event,
+      fire: trusted,
+      setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      now,
+      MediaStream: media.interfaces.MediaStream,
+      track: media.internals.track,
+      isStream: media.internals.isStream,
+      isTrack: media.internals.isTrack,
+    });
+    for (const name of Object.getOwnPropertyNames(audio)) {
+      define(name, audio[name]);
+    }
     let rtc: Any = null;
     const channels = dataChannels({
       call: call as Any,

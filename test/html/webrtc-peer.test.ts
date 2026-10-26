@@ -485,3 +485,58 @@ test('a sender’s and a receiver’s parameters are what an answer negotiated, 
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('an AudioContext’s oscillator into a stream destination is an audio track, on an insecure page too, which a peer sends', async () => {
+  const logs = await run(
+    `
+    var ctx = new AudioContext();
+    log('context', ctx.state, ctx.sampleRate, ctx.destination instanceof AudioDestinationNode, ctx.destination.maxChannelCount, ctx.baseLatency > 0);
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    var dst = osc.connect(gain).connect(ctx.createMediaStreamDestination());
+    osc.start();
+    var track = dst.stream.getAudioTracks()[0];
+    log('track', dst instanceof MediaStreamAudioDestinationNode, track.kind, track.readyState, track.muted, dst.stream instanceof MediaStream);
+    log('params', osc.frequency.value, osc.frequency.defaultValue, osc.type, gain.gain.value, osc.frequency.setValueAtTime(220, 0) === osc.frequency);
+    function refused(f) { try { f(); return 'made'; } catch (e) { return e.name; } }
+    log('refused', refused(function () { osc.start(); }), refused(function () { osc.type = 'custom'; }), refused(function () { osc.connect(dst, 1); }),
+      refused(function () { new AudioContext({ sampleRate: 1 }); }), refused(function () { new AudioNode(); }), refused(function () { gain.gain.exponentialRampToValueAtTime(0, 1); }));
+    await new Promise(function (r) { ctx.onstatechange = r; });
+    log('running', ctx.state);
+    var t0 = ctx.currentTime;
+    await new Promise(function (r) { setTimeout(r, 50); });
+    log('clock', ctx.currentTime > t0, (ctx.currentTime * ctx.sampleRate) % 128);
+    var ended = new Promise(function (r) { osc.onended = r; });
+    osc.stop(ctx.currentTime + 0.02);
+    await ended;
+    log('ended', true);
+    try { await ctx.decodeAudioData(new ArrayBuffer(8)); } catch (e) { log('decode', e.name, e instanceof DOMException); }
+    var buffer = ctx.createBuffer(2, 4800, 48000);
+    log('buffer', buffer.duration, buffer.numberOfChannels, buffer.getChannelData(1).length);
+    var pc = new RTCPeerConnection();
+    pc.addTrack(track, dst.stream);
+    await pc.setLocalDescription();
+    log('sent', /m=audio/.test(pc.localDescription.sdp));
+    await ctx.close();
+    log('closed', ctx.state);
+    pc.close();
+  `,
+    { webRTC: new FakeWebRTC() },
+    'http://page.test/',
+  );
+  for (const line of [
+    'context|suspended|48000|true|2|true',
+    'track|true|audio|live|false|true',
+    'params|440|440|sine|1|true',
+    'refused|InvalidStateError|InvalidStateError|IndexSizeError|NotSupportedError|TypeError|RangeError',
+    'running|running',
+    'clock|true|0',
+    'ended|true',
+    'decode|EncodingError|true',
+    'buffer|0.1|2|4800',
+    'sent|true',
+    'closed|closed',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
