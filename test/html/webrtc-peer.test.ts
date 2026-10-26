@@ -282,13 +282,16 @@ test('a remote description’s tracks fire track with their streams, and a stopp
     t.stop();
     log('stopping', t.direction, t.currentDirection, pc1.getTransceivers().length);
     await negotiate(pc1, pc2);
-    log('stopped', t.currentDirection, pc1.getTransceivers().length, pc2.getTransceivers().length, remote.receiver.track.readyState);
+    // the remote track ends in a task of its own
+    var then = remote.receiver.track.readyState;
+    await wait(0);
+    log('stopped', t.currentDirection, pc1.getTransceivers().length, pc2.getTransceivers().length, then, remote.receiver.track.readyState);
     pc1.close(); pc2.close();
   `);
   for (const line of [
     'tracks|video true true live true true',
     'stopping|stopped|sendonly|1',
-    'stopped|stopped|0|0|ended',
+    'stopped|stopped|0|0|live|ended',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }

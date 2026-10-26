@@ -349,3 +349,64 @@ test('a certificate generateCertificate makes is the one a connection offers', a
   assert.ok(logs.includes('certificate|true|true|sha-256'), logs.join('\n'));
   assert.ok(logs.includes('offered|true'), logs.join('\n'));
 });
+
+test('a transceiver stopped by a remote offer, or taken away by its rollback, is stopped as WebRTC 1.0 has it', async () => {
+  const logs = await run(`
+    async function negotiate(a, b) {
+      await a.setLocalDescription();
+      await b.setRemoteDescription(a.localDescription);
+      await b.setLocalDescription();
+      await a.setRemoteDescription(b.localDescription);
+    }
+    function state(t) { return [t.mid === null ? 'null' : 'mid', t.direction, t.currentDirection].join(' '); }
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    var ta = a.addTransceiver('audio');
+    await negotiate(a, b);
+    var tb = b.getTransceivers()[0];
+    ta.stop();
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    log('remotely stopped', b.getTransceivers().length, state(tb), tb.receiver.track.readyState);
+    await b.setLocalDescription();
+    log('answered', b.getTransceivers().length, state(tb));
+    await new Promise(function (r) { setTimeout(r, 0); });
+    log('ended', tb.receiver.track.readyState);
+
+    var c = new RTCPeerConnection(), d = new RTCPeerConnection();
+    c.addTransceiver('video');
+    var offer = await c.createOffer();
+    await d.setRemoteDescription(offer);
+    var made = d.getTransceivers()[0];
+    var canvas = document.createElement('canvas');
+    await made.sender.replaceTrack(canvas.captureStream().getVideoTracks()[0]);
+    await d.setRemoteDescription({ type: 'rollback' });
+    log('rolled back', d.getTransceivers().length, state(made));
+    await d.setRemoteDescription(offer);
+    var again = d.getTransceivers()[d.getTransceivers().length - 1];
+    d.addTrack(canvas.captureStream().getVideoTracks()[0]);
+    await d.setRemoteDescription({ type: 'rollback' });
+    log('kept by addTrack', d.getTransceivers().length, d.getTransceivers()[0] === again, state(again), again.receiver.transport);
+
+    var e = new RTCPeerConnection(), f = new RTCPeerConnection();
+    e.addTransceiver('audio');
+    await e.setLocalDescription();
+    await f.setRemoteDescription(e.localDescription);
+    var answer = await f.createAnswer();
+    var tf = f.getTransceivers()[0];
+    tf.stop();
+    await f.setLocalDescription(answer);
+    log('stopped after the answer was made', state(tf));
+    [a, b, c, d, e, f].forEach(function (pc) { pc.close(); });
+    log('done');
+  `);
+  for (const line of [
+    'remotely stopped|1|mid stopped stopped|live',
+    'answered|0|null stopped stopped',
+    'ended|ended',
+    'rolled back|0|null stopped stopped',
+    'kept by addTrack|1|true|null sendrecv |',
+    'stopped after the answer was made|mid stopped recvonly',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
