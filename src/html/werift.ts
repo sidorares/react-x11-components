@@ -89,6 +89,8 @@ interface WTransceiver {
   /** Its m-section rejected by the remote, or to be in this negotiation. */
   readonly rejected?: boolean;
   readonly pendingRejection?: boolean;
+  /** Whether a description applied gave it an m-section. */
+  readonly associated?: boolean;
   readonly codecs: WCodec[];
   readonly headerExtensions: WExtension[];
   readonly sender: WSender;
@@ -352,6 +354,8 @@ class WeriftTransceiver implements RTCTransceiverLike {
     readonly t: WTransceiver,
     private readonly _w: WeriftModule,
     private readonly _codecs: WCodec[],
+    /** Whether a negotiation is under way. */
+    private readonly _session: { negotiating(): boolean },
   ) {
     this.kind = t.kind;
     this.received = idleSource(t.kind);
@@ -384,7 +388,27 @@ class WeriftTransceiver implements RTCTransceiverLike {
   setParameters(): Promise<void> {
     return Promise.resolve();
   }
+  /**
+   * `stop()`: werift's, but not while a negotiation is under way — an
+   * offer made and not yet applied, or a description waiting for its
+   * answer. werift brings up no transport for a transceiver stopping, so
+   * one stopped mid-negotiation had its transport answer checks and never
+   * connect, where a browser keeps it until a negotiation takes the
+   * transceiver out. Meanwhile it sends and receives nothing (`inactive`),
+   * and werift is told of the stop as the next offer or answer is made
+   * (`flushStop`).
+   */
   stop(): void {
+    if (this._session.negotiating()) {
+      this._stopWaiting = true;
+      this.t.setDirection('inactive');
+    } else this.t.stop();
+  }
+  private _stopWaiting = false;
+  /** A stop that waited, made as an offer or an answer is made. */
+  flushStop(): void {
+    if (!this._stopWaiting) return;
+    this._stopWaiting = false;
     this.t.stop();
   }
   sources() {
@@ -454,6 +478,13 @@ class WeriftConnection implements RTCConnectionLike {
   private readonly _pc: WPeer;
   private readonly _codecs: WCodec[];
   private readonly _wrapped = new Map<WTransceiver, WeriftTransceiver>();
+  /** Whether an offer was made since a description was last applied. */
+  private _offered = false;
+  /** Whether a negotiation is under way, which a transceiver's stop asks
+   *  (`WeriftTransceiver.stop`). */
+  private readonly _session = {
+    negotiating: () => this._offered || this._pc.signalingState !== 'stable',
+  };
   private readonly _net: WeriftTransports;
   /** What the last answer negotiated each transceiver to, read from the
    *  answer itself: werift sets none for one stopping, or `inactive`. */
@@ -488,7 +519,7 @@ class WeriftConnection implements RTCConnectionLike {
   private _wrap(t: WTransceiver): WeriftTransceiver {
     let w = this._wrapped.get(t);
     if (!w) {
-      w = new WeriftTransceiver(t, this._w, this._codecs);
+      w = new WeriftTransceiver(t, this._w, this._codecs, this._session);
       this._wrapped.set(t, w);
     }
     return w;
@@ -642,6 +673,7 @@ class WeriftConnection implements RTCConnectionLike {
     this._tellTransports();
     if (type === 'answer' || type === 'pranswer')
       this._noteNegotiated(side, sdp);
+    this._offered = false;
     return this._state();
   }
 
@@ -688,15 +720,20 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   async createOffer(options: { iceRestart: boolean }): Promise<string> {
+    for (const w of this._wrapped.values()) w.flushStop();
     try {
-      return (await this._pc.createOffer({ iceRestart: options.iceRestart }))
-        .sdp;
+      const offer = (
+        await this._pc.createOffer({ iceRestart: options.iceRestart })
+      ).sdp;
+      this._offered = true;
+      return offer;
     } catch (error) {
       throw asRtcError(error);
     }
   }
 
   async createAnswer(): Promise<string> {
+    for (const w of this._wrapped.values()) w.flushStop();
     try {
       return (await this._pc.createAnswer()).sdp;
     } catch (error) {
