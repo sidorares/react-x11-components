@@ -945,19 +945,19 @@ for the loopback test. It is pure JavaScript on `node:dgram` and
 Bun as it does on Node, and needs no build) and over `node:quic` (in no
 release build of Node 24); `docs/prd-html-scripts.md` has the comparison.
 Absent, a session fails as one with no network does, and nothing throws at
-import. **`quico.ts` reaches into quico once**, to add the page's `Origin`
-and headers to the CONNECT (`_sendConnect`, `_h3.sendHeaders`), which quico
-has no option for and a browser always sends; it wraps them only where both
-are there, so a quico without them sends its CONNECT as it would. Ask quico
-for a request-headers option before reaching in anywhere else. Three
-upstream issues track what the adapter does for quico today:
-colocohen/quico#8 (an `origin`/`headers` option, which retires the reach),
-#9 (any 2xx answer to the CONNECT establishes the session, where only 200
-does — the four "status code 204" subtests left in `webtransport/`) and #10
-(a CONNECT stream ended with no capsule closes cleanly, and a lost
-connection rejects `closed`, both of which `quico.ts` maps itself). **When
-a quico release fixes one, delete the adapter's half of it and move the
-peer range**, as "Vendored from core" has it for a copy.
+import. **`quico.ts` uses quico's public API alone, and that is a rule.**
+It had reached in once and mapped two of quico's behaviours, and filed
+each upstream: colocohen/quico#8 (no way to put the page's `Origin` and
+headers on the CONNECT, so it wrapped `_sendConnect`), #9 (only a 200
+established a session, which left WPT's four "status code 204" subtests)
+and #10 (a CONNECT stream ended with no capsule settled nothing, and a lost
+connection resolved `closed` with code 0, both read off quico's insides
+here). quico 0.8.0 fixed all three, and the adapter passes `origin` and
+`headers` and reads `closed` as it settles, with the peer range starting
+at 0.8. **Where quico next differs from a browser, file it, map it in
+`quico.ts` with the issue named beside the mapping, and delete the mapping
+and move the peer range when a release fixes it**, as "Vendored from core"
+has it for a copy.
 
 `src/html/werift.ts` is the same shape for a page's peer connections:
 `werift`, ICE, DTLS, SCTP and SRTP in TypeScript, is an **optional peer**
@@ -2767,11 +2767,11 @@ closes a way out a DOM binding opens by accident:
   says what a browser would not, one side corrects it and the PRD's table
   says which** ("Where werift differs, case by case"): the protocol in the
   adapter (`werift.ts`), the API in the facade. A werift release that
-  fixes one retires the correction, as quico's do. The ops are `rtc…` and
-  `md…`, which no other op starts with. Data channels are `datachannel.ts`,
-  candidates, transports and stats `rtc-transports.ts`, and tracks
-  `mediastream.ts`, each source text of its own, so that workstreams 2 and 3
-  build there and not in the connection. `rtc-transports.ts` is installed by
+  fixes one retires the correction, as quico 0.8.0 retired quico's. The
+  ops are `rtc…` and `md…`, which no other op starts with. Data channels
+  are `datachannel.ts`, candidates, transports and stats
+  `rtc-transports.ts`, and tracks `mediastream.ts`, each source text of its
+  own, so that workstreams 2 and 3 build there and not in the connection. `rtc-transports.ts` is installed by
   `installWebRTC` with its own helpers and slots, since a sender's
   `transport` is one of its objects, where the other two are `installDom`'s;
   on the host, `werift-transports.ts` is the adapter's half of the same
