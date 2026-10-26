@@ -2745,9 +2745,14 @@ closes a way out a DOM binding opens by accident:
   says which** ("Where werift differs, case by case"): the protocol in the
   adapter (`werift.ts`), the API in the facade. A werift release that
   fixes one retires the correction, as quico's do. The ops are `rtc…` and
-  `md…`, which no other op starts with. Data channels are `datachannel.ts`
-  and tracks are `mediastream.ts`, each source text of its own, so that
-  workstreams 2 and 3 build there and not in the connection.
+  `md…`, which no other op starts with. Data channels are `datachannel.ts`,
+  candidates, transports and stats `rtc-transports.ts`, and tracks
+  `mediastream.ts`, each source text of its own, so that workstreams 2 and 3
+  build there and not in the connection. `rtc-transports.ts` is installed by
+  `installWebRTC` with its own helpers and slots, since a sender's
+  `transport` is one of its objects, where the other two are `installDom`'s;
+  on the host, `werift-transports.ts` is the adapter's half of the same
+  line.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
