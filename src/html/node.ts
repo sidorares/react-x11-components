@@ -9092,10 +9092,38 @@ export class HtmlViewNode extends Node {
     // out. Its coming in is a change to the document, and says so.
     if (!inDocument(change.target, this._source.document)) return true;
     // What is inside a drawing has no box and no style of its own: the
-    // drawing is drawn again. A `:has()` around it may ask it something.
+    // drawing is drawn again. A `:has()` around it may ask it something,
+    // and what that restyles is found as for a change anywhere — the
+    // anchors the change reaches, from the drawing up: what is inside it is
+    // drawn again with it. joshwcomeau.com animates an inline drawing a
+    // path at a time, and with one `:has()` anywhere in its sheets each
+    // frame restyled all 6,000 elements of the page, which held its frames'
+    // downloads back seconds.
     const drawing = drawingAround(change.target);
     if (drawing) {
-      if (cascade.asksWhatElementsHold) return false;
+      if (cascade.asksWhatElementsHold) {
+        const reach =
+          change.type === 'attributes'
+            ? cascade.attributeChange(
+                change.attributeName.toLowerCase(),
+                change.oldValue,
+                attr(change.target, change.attributeName.toLowerCase()) ?? null,
+              )
+            : cascade.treeChange(change.type === 'characterData');
+        if (!reach) return false;
+        if (
+          reach.anchors &&
+          !spreadAnchors(
+            drawing,
+            false,
+            reach.anchors,
+            scope,
+            cascade.changesCrossTrees,
+          )
+        ) {
+          return false;
+        }
+      }
       // but what its `<foreignObject>`s hold is styled from its elements
       // down, and laid out at each object's size: a change in a drawing
       // with any builds the boxes

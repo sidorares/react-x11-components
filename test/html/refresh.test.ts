@@ -603,6 +603,57 @@ metric(
   },
 );
 
+test('a change inside a drawing restyles what a :has() asking it can answer otherwise, and with none asking, nothing', async () => {
+  // joshwcomeau.com animates a sparkle a path at a time, and with one
+  // `:has()` anywhere in its sheets every frame restyled the whole page
+  const { node } = await render(
+    '<style>body{margin:0} .other:has(.x){color:#0000ff}' +
+      ' .card:has(circle[fill="#00ff00"]){color:#00ff00}' +
+      ' .card:has(rect){font-weight:bold}</style>' +
+      '<div class="other" id="other"><span class="x"></span></div>' +
+      '<div class="card" id="card"><svg width="60" height="40"><g id="g">' +
+      '<circle id="c" cx="10" cy="20" r="8" fill="#ff0000"/></g></svg></div>' +
+      '<p id="p">p</p>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const card = byId(el, 'card');
+  const circle = byId(el, 'c');
+  // what no `:has()` tests: the drawing is drawn again, and nothing styled
+  const moved = setAttr(circle, 'cx', '30');
+  const none = scopeOf(el, [moved]);
+  assert.ok(none, 'a refresh of everything');
+  assert.equal(none.size, 0, `${none.size} restyled`);
+  // what one tests: the element it can answer otherwise for, and no other
+  const filled = setAttr(circle, 'fill', '#00ff00');
+  const own = scopeOf(el, [filled]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(own.has(card), 'the card is not restyled');
+  assert.ok(!own.has(byId(el, 'other')), 'nor the rest left alone');
+  assert.ok(!own.has(byId(el, 'p')));
+  el.touchDocument([filled]);
+  await act();
+  assert.equal(el.computedStyle(card)?.color, 'rgb(0, 255, 0)');
+  // and what comes into it, which every `:has()` may ask about
+  const g = byId(el, 'g');
+  const rect = createElement('rect', { width: '4', height: '4' });
+  appendChild(g, rect);
+  const added: HtmlChange = {
+    type: 'childList',
+    target: g,
+    addedNodes: [rect],
+    removedNodes: [],
+  };
+  const grown = scopeOf(el, [added]);
+  assert.ok(grown, 'a refresh of everything');
+  assert.ok(grown.has(card), 'the card is not restyled');
+  assert.ok(!grown.has(byId(el, 'p')));
+  el.touchDocument([added]);
+  await act();
+  assert.equal(el.computedStyle(card)?.['font-weight'], '700');
+});
+
 /** What a refresh told of `changes` would restyle by itself, or null where
  *  it would restyle everything. */
 function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {
