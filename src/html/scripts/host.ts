@@ -124,6 +124,7 @@ import { PageSources } from './media-sources.js';
 import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
+import { PageSockets } from './sockets.js';
 import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
@@ -132,6 +133,7 @@ import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
+import type { HtmlWebSocket } from '../socket.js';
 import * as ntk from 'react-x11/ntk';
 import type {
   AbortControllerClass,
@@ -230,6 +232,8 @@ export interface PageWorkersLike {
   end(id: number): void;
   /** Tells a worker's thread of a data channel the page handed it. */
   rtc?(id: number, message: ChannelRelay): void;
+  /** Whether a worker has a connection open (`DomHost.connected`). */
+  readonly connected?: boolean;
 }
 
 /** What a realm that is a worker's reaches its page by
@@ -524,6 +528,9 @@ export interface HostSeams {
   /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
    *  `webTransport`). Absent, every session fails, as with no network. */
   webTransport?: HtmlWebTransport;
+  /** What a page's `WebSocket`s are carried over (`HtmlScripts`'
+   *  `webSocket`). Absent, every socket fails, as with no network. */
+  webSocket?: HtmlWebSocket;
   /** What a page's `RTCPeerConnection`s are carried over (`HtmlScripts`'
    *  `webRTC`). Absent, no stack: an operation that needs one rejects. */
   webRTC?: HtmlWebRTC;
@@ -1802,10 +1809,15 @@ export class DomHost {
     this._leaving = true;
   }
 
-  /** Whether the document has a WebTransport session or a peer connection
-   *  open (`ScriptRunner.salvageable`). */
+  /** Whether the document has a WebTransport session, a WebSocket or a
+   *  peer connection open (`ScriptRunner.salvageable`). */
   get connected(): boolean {
-    return !!this._transportsMade?.open || !!this._peersMade?.open;
+    return (
+      !!this._transportsMade?.open ||
+      !!this._socketsMade?.open ||
+      !!this._peersMade?.open ||
+      !!this.workers?.connected
+    );
   }
 
   dispose(): void {
@@ -1814,6 +1826,8 @@ export class DomHost {
     this._unwatchStorage = null;
     this._transportsMade?.dispose();
     this._transportsMade = null;
+    this._socketsMade?.dispose();
+    this._socketsMade = null;
     this._peersMade?.dispose();
     this._peersMade = null;
     this._sourcesMade?.dispose();
@@ -2058,6 +2072,10 @@ export class DomHost {
     // a WebTransport session's or stream's (`transports.ts`)
     if (op.charCodeAt(0) === 119 && op.charCodeAt(1) === 116) {
       return this._transports().op(op, a, b, c);
+    }
+    // a WebSocket's (`sockets.ts`)
+    if (op.charCodeAt(0) === 119 && op.charCodeAt(1) === 115) {
+      return this._sockets().op(op, a, b, c, d);
     }
     // a peer connection's (`peers.ts`)
     if (
@@ -5619,6 +5637,23 @@ export class DomHost {
       });
     }
     return this._transportsMade;
+  }
+
+  /** The page's WebSockets, made the first time it opens one. */
+  private _socketsMade: PageSockets | null = null;
+  private _sockets(): PageSockets {
+    if (!this._socketsMade) {
+      this._socketsMade = new PageSockets({
+        connector: () => this._seams.webSocket,
+        origin: () => this._origin(),
+        policies: () => this._cspPolicies(),
+        log: (level, text) => this._seams.log(level, text),
+        tell: (name, input) => {
+          if (!this._disposed) this.entries?.call(name, input);
+        },
+      });
+    }
+    return this._socketsMade;
   }
 
   /** The document's Content Security Policies, by their text, in the

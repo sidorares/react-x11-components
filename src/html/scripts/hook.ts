@@ -192,6 +192,9 @@ export function useScripts(
     get webTransport() {
       return latest.current.webTransport;
     },
+    get webSocket() {
+      return latest.current.webSocket;
+    },
     get webRTC() {
       return latest.current.webRTC;
     },

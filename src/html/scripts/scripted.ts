@@ -43,6 +43,8 @@ import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
 import type { HtmlWebTransport } from '../transport.js';
+import { NO_WEBSOCKET } from '../socket.js';
+import type { HtmlWebSocket } from '../socket.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
@@ -174,6 +176,16 @@ export interface HtmlScripts {
    * one, over the optional peer `quico` where it is installed.
    */
   webTransport?: HtmlWebTransport;
+  /**
+   * What a page's `WebSocket`s are carried over: a connection's opening
+   * handshake, its messages and how it closed (`HtmlWebSocket`). Default:
+   * none, and every socket fails, as one a browser with no network opens.
+   * `useHtmlNetwork(url)` hands one, over the runtime's own `WebSocket`
+   * (Node 22 and later, and Bun). A socket is held to the document's
+   * `connect-src`, and a secure page's `ws:` one is refused, before this
+   * is asked.
+   */
+  webSocket?: HtmlWebSocket;
   /**
    * What a page's `RTCPeerConnection`s are carried over: an offer and an
    * answer made, a description applied, candidates, transports, data
@@ -397,6 +409,7 @@ export function useScriptedHtml(
     workers: config.workers ?? true,
     serviceWorkers: config.serviceWorkers ?? false,
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
+    webSocket: config.webSocket ?? NO_WEBSOCKET,
     webRTC: config.webRTC ?? NO_WEBRTC,
     mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,
     cookies: config.cookies,

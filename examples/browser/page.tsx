@@ -1193,6 +1193,11 @@ export default function Page(props: PageProps): ReactElement {
       storage: profile?.storage,
       // a page's WebTransport sessions, over quico where it is installed
       webTransport: network.webTransport,
+      // and its WebSockets, over the runtime's own, with the tab's cookies
+      webSocket: {
+        connect: (request, events) =>
+          network.webSockets(withoutHash(view.url)).connect(request, events),
+      },
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
       onTimeout: () =>

@@ -152,6 +152,14 @@ export type {
   WebTransportStreamLike,
   WebTransportStreamStats,
 } from './transport.js';
+export { NO_WEBSOCKET } from './socket.js';
+export type {
+  HtmlWebSocket,
+  WebSocketConnectRequest,
+  WebSocketConnectionLike,
+  WebSocketEvents,
+  WebSocketOpened,
+} from './socket.js';
 export { NO_WEBRTC, rtcError } from './rtc.js';
 export type {
   HtmlWebRTC,

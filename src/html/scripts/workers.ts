@@ -31,6 +31,9 @@ import type {
 import type { HtmlWebTransport } from '../transport.js';
 import { TransportRelay } from './transport-relay.js';
 import type { TransportAsk, TransportTell } from './transport-relay.js';
+import { SocketRelay } from './socket-relay.js';
+import type { SocketAsk, SocketTell } from './socket-relay.js';
+import type { HtmlWebSocket } from '../socket.js';
 import type { ChannelRelay } from './peers.js';
 
 declare const URL: UrlClass;
@@ -46,6 +49,9 @@ export interface PageWorkersSeams {
   /** What a worker's WebTransport sessions are carried over: the page's
    *  own seam, read as each session opens. */
   readonly webTransport?: HtmlWebTransport;
+  /** What a worker's WebSockets are carried over: the page's own seam,
+   *  read as each connection opens. */
+  readonly webSocket?: HtmlWebSocket;
   log(level: string, text: string): void;
   userAgent: string;
   language: string;
@@ -88,6 +94,7 @@ export type FromWorker =
   | { kind: 'log'; level: string; text: string }
   | { kind: 'close' }
   | TransportAsk
+  | SocketAsk
   | ChannelRelay;
 
 /** What this side tells the thread. */
@@ -103,6 +110,7 @@ export type ToWorker =
   | { kind: 'chunk'; id: number; bytes: Uint8Array }
   | { kind: 'fetchEnd'; id: number; error: string | null }
   | TransportTell
+  | SocketTell
   | ChannelRelay;
 
 /** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
@@ -148,6 +156,8 @@ interface Running {
   fetches: Map<number, AbortController>;
   /** Its WebTransport sessions, made the first time it opens one. */
   transports: TransportRelay | null;
+  /** Its WebSockets, made the first time it opens one. */
+  sockets: SocketRelay | null;
 }
 
 /** How many workers one page may have running at once. A page that spawns
@@ -204,6 +214,7 @@ export class PageWorkers implements PageWorkersLike {
       sync: port1,
       fetches: new Map(),
       transports: null,
+      sockets: null,
     };
     this._running.set(id, running);
     thread.on('message', (m: FromWorker) => this._heard(id, running, m));
@@ -213,6 +224,7 @@ export class PageWorkers implements PageWorkersLike {
     thread.on('exit', () => {
       this._running.delete(id);
       running.transports?.dispose();
+      running.sockets?.dispose();
       port1.close();
     });
     const word = new Int32Array(flag);
@@ -241,12 +253,22 @@ export class PageWorkers implements PageWorkersLike {
     this._running.delete(id);
     for (const controller of running.fetches.values()) controller.abort();
     running.transports?.dispose();
+    running.sockets?.dispose();
     void running.thread.terminate();
   }
 
   dispose(): void {
     this._disposed = true;
     for (const id of [...this._running.keys()]) this.end(id);
+  }
+
+  /** Whether a worker has a WebSocket open, which keeps the page out of
+   *  the back-forward cache as one of its own would. */
+  get connected(): boolean {
+    for (const running of this._running.values()) {
+      if (running.sockets?.open) return true;
+    }
+    return false;
   }
 
   /** A script's source, through the page's network: null where there is
@@ -326,6 +348,18 @@ export class PageWorkers implements PageWorkersLike {
           },
         );
         running.transports.heard(m);
+        return;
+      case 'ws':
+        // a WebSocket's, over the page's own seam
+        running.sockets ??= new SocketRelay(
+          () => this._seams.webSocket,
+          (tell) => {
+            if (this._running.get(id) === running) {
+              running.thread.postMessage(tell);
+            }
+          },
+        );
+        running.sockets.heard(m);
         return;
       case 'fetch': {
         const controller = new AbortController();

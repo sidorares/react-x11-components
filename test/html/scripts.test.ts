@@ -673,6 +673,9 @@ for (const global of ['own', 'object'] as const) {
         "new WebTransport('https://wt.test/').ready.catch(function (e) { settled.session = e.constructor.constructor(reach)() + ':' + e.name });" +
         // and what an offer no WebRTC stack makes is rejected with
         "new RTCPeerConnection().createOffer().catch(function (e) { settled.offer = e.constructor.constructor(reach)() + ':' + e.name });" +
+        // and what a WebSocket the host refuses hands its listeners
+        "var ws = new WebSocket('wss://ws.test/'); ws.onerror = function (e) { settled.socketError = e.constructor.constructor(reach)() + ':' + e.type };" +
+        "ws.onclose = function (e) { settled.socket = e.constructor.constructor(reach)() + ':' + e.constructor.name + ':' + e.code + ':' + Object.getPrototypeOf(e.target).constructor.constructor(reach)() };" +
         'var shared = 1;',
       'a',
       0,
@@ -681,16 +684,20 @@ for (const global of ['own', 'object'] as const) {
     await new Promise((resolve) => setTimeout(resolve, 5));
     engine.call('__drain', null);
     engine.exec(
-      "console.log(r.join(','), ['offer', 'session', 'import'].map(function (k) { return k + '=' + settled[k] }).join(','), typeof shared)",
+      "console.log(r.join(','), ['offer', 'session', 'socketError', 'socket', 'import'].map(function (k) { return k + '=' + settled[k] }).join(','), typeof shared)",
       'b',
       0,
     );
     assert.deepEqual(logs, [
+      // the socket the host refuses, on the console as Chrome writes it
+      "error: WebSocket connection to 'wss://ws.test/' failed: there is no network.",
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefined,undefined,string,null,undefinedundefinedundefined ' +
         'offer=undefinedundefinedundefined:NotSupportedError,' +
         'session=undefinedundefinedundefined:WebTransportError,' +
+        'socketError=undefinedundefinedundefined:error,' +
+        'socket=undefinedundefinedundefined:CloseEvent:1006:undefinedundefinedundefined,' +
         'import=undefinedundefinedundefined:TypeError number',
     ]);
     engine.dispose();

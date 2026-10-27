@@ -47,6 +47,13 @@ import type { HtmlWebRTC } from './rtc.js';
 import { offeredCapabilities } from './rtc-codecs.js';
 import { NO_WEBTRANSPORT, deferredSession } from './transport.js';
 import type { HtmlWebTransport } from './transport.js';
+import { NO_WEBSOCKET, REFUSED_SOCKET } from './socket.js';
+import type {
+  HtmlWebSocket,
+  WebSocketConnectRequest,
+  WebSocketConnectionLike,
+  WebSocketEvents,
+} from './socket.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { nodeModule } from './scripts/platform.js';
 import type {
@@ -160,6 +167,12 @@ export interface HtmlNetworkOptions {
    * first time a page makes one. False: none is made, as with no network.
    */
   webRTC?: false;
+  /**
+   * How a page's WebSockets are opened (`webSockets(page)`): over the
+   * runtime's own `WebSocket`, Node's from 22 and Bun's. False: none is
+   * opened, as with no network.
+   */
+  webSocket?: false;
   /**
    * The cookie jar every request is sent and answered through, and a
    * page's `document.cookie` reads (`cookies`). Default none: no request
@@ -317,6 +330,7 @@ export class HtmlNetwork {
   private _sessions: HtmlWebTransport | null = null;
   private readonly _webRTC: boolean;
   private _peers: HtmlWebRTC | null = null;
+  private readonly _webSocket: boolean;
   private readonly _cookies: CookieJar | null;
 
   constructor(options: HtmlNetworkOptions = {}) {
@@ -330,6 +344,7 @@ export class HtmlNetwork {
     this._log = options.log ?? (() => {});
     this._webTransport = options.webTransport ?? {};
     this._webRTC = options.webRTC !== false;
+    this._webSocket = options.webSocket !== false;
     this._cookies = options.cookies ?? null;
   }
 
@@ -391,6 +406,34 @@ export class HtmlNetwork {
       },
     };
     return this._sessions;
+  }
+
+  /**
+   * A page's WebSockets (`<Html scripts={{ webSocket }}>`), for the document
+   * at `page`, over the runtime's own `WebSocket` — Node's from 22, Bun's.
+   * Each opening handshake carries the `Origin` of the document or worker
+   * that opened it, this network's `User-Agent` and language, and the jar's
+   * cookies for the URL, its credentials included and its site for cookies
+   * `page`'s (Fetch, "establish a WebSocket connection"). Where the runtime
+   * says what the handshake was answered with — Node's, from 24, through
+   * undici's `undici:websocket:open` channel — its `Set-Cookie` is stored;
+   * Bun says nothing of it. A runtime with no `WebSocket`, Node 20, fails
+   * every socket, as with no network.
+   */
+  webSockets(page: string): HtmlWebSocket {
+    if (!this._webSocket) return NO_WEBSOCKET;
+    const site = page.split('#')[0];
+    return {
+      connect: (request, events) => {
+        this._log('websocket', request.url);
+        return runtimeSocket(request, events, {
+          userAgent: this._userAgent,
+          language: this._language,
+          cookies: this._cookies,
+          site,
+        });
+      },
+    };
   }
 
   /** The User-Agent this network's requests carry. It can be set, so a host
@@ -1138,10 +1181,202 @@ function transient(error: unknown): boolean {
 /** A response's `Set-Cookie` fields, each apart. */
 function setCookies(headers: ResponseLike['headers']): string[] {
   if (headers.getSetCookie) return headers.getSetCookie();
-  const joined = headers.get('set-cookie');
-  // joined with commas, which an `Expires` date has one of: a comma
-  // followed by what starts a cookie's name and its `=` starts another
+  return splitSetCookie(headers.get('set-cookie'));
+}
+
+/** `Set-Cookie` fields joined with commas, apart: an `Expires` date has a
+ *  comma of its own, so a comma followed by what starts a cookie's name
+ *  and its `=` is what starts another. */
+function splitSetCookie(joined: string | null | undefined): string[] {
   return joined ? joined.split(/,(?=\s*[^;,=\s]+=)/) : [];
+}
+
+// --- WebSockets --------------------------------------------------------------
+
+/** The slice of the runtime's `WebSocket` read here: the WHATWG API, and
+ *  the `{ protocols, headers }` its constructor takes in Node's undici and
+ *  in Bun, which a browser's does not. */
+interface RuntimeWebSocket {
+  binaryType: string;
+  readonly protocol: string;
+  readonly extensions: string;
+  readonly bufferedAmount: number;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event: { message?: unknown; error?: unknown }) => void) | null;
+  onclose:
+    | ((event: { code: number; reason: string; wasClean: boolean }) => void)
+    | null;
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+}
+type RuntimeWebSocketClass = new (
+  url: string,
+  init: { protocols: string[]; headers: Record<string, string> },
+) => RuntimeWebSocket;
+
+/** What undici said each socket's opening handshake was answered with
+ *  (`undici:websocket:open`, from Node 24), by the socket. */
+let handshakes: WeakMap<object, Record<string, unknown>> | null = null;
+let watchingHandshakes: Promise<void> | null = null;
+function watchHandshakes(): Promise<void> {
+  return (watchingHandshakes ??= nodeModule<{
+    subscribe?(name: string, fn: (message: unknown) => void): void;
+  }>('diagnostics_channel').then(
+    (channels) => {
+      const kept = (handshakes = new WeakMap());
+      channels.subscribe?.('undici:websocket:open', (message) => {
+        const m = message as {
+          websocket?: object;
+          handshakeResponse?: { headers?: Record<string, unknown> };
+        };
+        const headers = m?.handshakeResponse?.headers;
+        if (m?.websocket && headers) kept.set(m.websocket, headers);
+      });
+    },
+    () => {},
+  ));
+}
+
+/** A connection over the runtime's `WebSocket`, its events told in the
+ *  order they came. */
+function runtimeSocket(
+  request: WebSocketConnectRequest,
+  events: WebSocketEvents,
+  options: {
+    userAgent: string;
+    language: string;
+    cookies: CookieJar | null;
+    site: string;
+  },
+): WebSocketConnectionLike {
+  const Native = (globalThis as { WebSocket?: RuntimeWebSocketClass })
+    .WebSocket;
+  if (typeof Native !== 'function') {
+    setTimeout(
+      () =>
+        events.failed(
+          `${request.url} was not opened: this runtime has no WebSocket.`,
+        ),
+      0,
+    );
+    return REFUSED_SOCKET;
+  }
+  const jar = options.cookies;
+  const context = {
+    http: true,
+    sameSite: jar ? jar.sameSite(request.url, options.site) : false,
+    method: 'GET',
+  };
+  const headers: Record<string, string> = {
+    origin: request.origin,
+    'user-agent': options.userAgent,
+    'accept-language': options.language,
+  };
+  const cookie = jar?.header(request.url, context);
+  if (cookie) headers.cookie = cookie;
+
+  let ws: RuntimeWebSocket | null = null;
+  /** Abandoned before the runtime's socket was made. */
+  let abandoned = false;
+  let done = false;
+  let errored: string | null = null;
+  /** What came after `open` and before it was told, which waits for it. */
+  let held: (() => void)[] | null = null;
+  const inOrder = (fn: () => void): void => {
+    if (done) return;
+    if (held) held.push(fn);
+    else fn();
+  };
+  const make = (): void => {
+    if (abandoned) return;
+    let socket: RuntimeWebSocket;
+    try {
+      socket = new Native(request.url, {
+        protocols: request.protocols,
+        headers,
+      });
+    } catch (error) {
+      done = true;
+      events.failed(String((error as Error)?.message ?? error));
+      return;
+    }
+    ws = socket;
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => {
+      // undici publishes the handshake's answer just after `open`
+      held = [];
+      void Promise.resolve().then(() => {
+        const answered = handshakes?.get(socket)?.['set-cookie'];
+        if (jar && answered) {
+          const fields = Array.isArray(answered)
+            ? answered.map(String)
+            : splitSetCookie(String(answered));
+          jar.store(request.url, fields, context);
+        }
+        const waiting = held ?? [];
+        held = null;
+        if (done) return;
+        events.open({
+          protocol: String(socket.protocol ?? ''),
+          extensions: String(socket.extensions ?? ''),
+        });
+        for (const fn of waiting) fn();
+      });
+    };
+    socket.onmessage = (event) =>
+      inOrder(() => {
+        const data = event.data;
+        if (typeof data === 'string') events.message(data);
+        else if (data instanceof ArrayBuffer) {
+          events.message(new Uint8Array(data));
+        } else if (ArrayBuffer.isView(data)) {
+          events.message(
+            new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+          );
+        }
+      });
+    socket.onerror = (event) => {
+      const message = event?.message ?? (event?.error as Error)?.message;
+      errored = message ? String(message) : 'the connection failed.';
+    };
+    socket.onclose = (event) =>
+      inOrder(() => {
+        done = true;
+        if (errored !== null) events.failed(errored);
+        else {
+          events.closed(
+            Number(event?.code ?? 1006),
+            String(event?.reason ?? ''),
+            event?.wasClean === true,
+          );
+        }
+      });
+  };
+  // the handshake's answer is watched for where there is a jar to keep its
+  // cookies in, before the first socket is made
+  if (jar) void watchHandshakes().then(make);
+  else make();
+  return {
+    send(data) {
+      ws?.send(data);
+    },
+    bufferedAmount: () => ws?.bufferedAmount ?? 0,
+    close(code, reason) {
+      if (!ws) {
+        abandoned = true;
+        return;
+      }
+      try {
+        if (code === null) ws.close();
+        else ws.close(code, reason);
+      } catch {
+        // a code the API does not take, 1001 as a document goes: the
+        // closing handshake with no status
+        ws.close();
+      }
+    },
+  };
 }
 
 /** A response as the network answers it after following its redirects:
@@ -1779,7 +2014,7 @@ export function defaultHtmlNetwork(): HtmlNetwork {
 }
 
 /** What `useHtmlNetwork` hands a component: `<Html onResource>`, and
- *  `<Html scripts={{ fetch, webTransport }}>`. */
+ *  `<Html scripts={{ fetch, webTransport, webSocket }}>`. */
 export interface HtmlNetworkSeams {
   onResource: (
     request: ResourceRequest,
@@ -1789,6 +2024,7 @@ export interface HtmlNetworkSeams {
     signal: AbortSignalLike,
   ) => Promise<FetchResponse>;
   webTransport: HtmlWebTransport;
+  webSocket: HtmlWebSocket;
   webRTC: HtmlWebRTC;
   /** The network's cookie jar, for `<Html scripts={{ cookies }}>`, where it
    *  has one. */
@@ -1826,6 +2062,7 @@ export function useHtmlNetwork(
       }),
       fetch: net.fetcher(address),
       webTransport: net.webTransport,
+      webSocket: net.webSockets(address),
       webRTC: net.webRTC,
       ...(net.cookies ? { cookies: net.cookies } : {}),
     }),
