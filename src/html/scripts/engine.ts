@@ -464,6 +464,17 @@ const CONTEXT_OPTIONS: VmCreateContextOptions = {
   codeGeneration: { strings: true, wasm: true },
 };
 
+/**
+ * How a script the page's code runs in is run: with its exceptions as they
+ * were thrown. Node's `displayErrors`, on by default, writes the file, the
+ * line of source and a caret into the `stack` of an error a script throws
+ * out of `runInContext` — the page's own object, which its `onerror` is
+ * then handed. A minified bundle's line is the whole bundle, and an error
+ * logger that reports the stack in a URL refused it: Yandex Mail's said
+ * its counter was 52,793 characters long against the 40,000 it allows.
+ */
+const UNDECORATED = { displayErrors: false } as const;
+
 /** Whether a context's global keeps a script's `var`s: Bun 1.4's
  *  `DONT_CONTEXTIFY` context loses them, where Node's keeps them. */
 let dontContextifyKeepsVars: boolean | null = null;
@@ -941,6 +952,7 @@ export class ScriptEngine {
         // what it completes with is the page's, and never read
         compiled.runInContext(this._context, {
           timeout: this._options.timeout,
+          ...UNDECORATED,
         });
         ran = true;
       } catch (error) {
@@ -986,7 +998,7 @@ export class ScriptEngine {
       return 'threw';
     }
     try {
-      compiled.runInContext(this._context);
+      compiled.runInContext(this._context, UNDECORATED);
       return 'ran';
     } catch (error) {
       // the page's own exception, handed back unread
@@ -1017,6 +1029,7 @@ export class ScriptEngine {
     try {
       const out = this._entry(name).runInContext(this._context, {
         timeout: this._options.timeout,
+        ...UNDECORATED,
       });
       // Only a primitive comes back. An entry answers one by design; a
       // function or object is a page value the host has no business

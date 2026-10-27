@@ -92,7 +92,10 @@ export function isBun(): boolean {
 export type VmContext = object;
 
 export interface VmScript {
-  runInContext(context: VmContext, options?: { timeout?: number }): unknown;
+  runInContext(
+    context: VmContext,
+    options?: { timeout?: number; displayErrors?: boolean },
+  ): unknown;
 }
 
 export interface VmCreateContextOptions {

@@ -212,6 +212,11 @@ function FrameDocument({
         ? outer.navigate(to, 'tab')
         : host.navigateFrame(frame, to, null),
     reload: () => host.navigateFrame(frame, url, null),
+    // what the frame asks for is the frame's, its `Origin` and `Referer`:
+    // made as the page's, a CORS answer to the page's origin was held to
+    // the frame's, and refused
+    fetch: (request, signal) =>
+      outer.fetch({ ...request, client: request.client ?? url }, signal),
     // the page's session is the page's: a frame's history is its own
     session: null,
     title: () => {},
