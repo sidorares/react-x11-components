@@ -3500,6 +3500,28 @@ what it was. **The bits are what makes an animated element one of its
 context's layers on every frame**, which the sprites' paint-order test
 below stands on.
 
+**A new animation starts at the paint that first shows it, and one that
+runs out waits at its end for the page to hear of it.** The document's
+timeline holds a CSS animation it has not drawn yet at its start
+(`Running.pending`, `startsAtPaint`) and starts it at the next paint
+(`startPending`), as a browser holds one until the frame that renders it
+(Web Animations 1, 4.4.2): Radix reads a menu's `getComputedStyle` as it
+mounts it, the paint came 240 ms after, and a fade of 100 ms was over
+before the menu was drawn. It is paced as one that plays, so frames keep
+coming while it waits, and one no paint shows for `PAINT_WAIT_MS` starts
+at a frame. And where a page listens (`holdsEnds`), a run that ends is
+drawn at its end, as though it filled forwards, until its `animationend`
+is told (`releaseEnds`, in `_oweCssEvents`, just before the telling): a
+browser tells it before the frame that draws the element as the animation
+leaves it, and Radix keeps a menu that faded out at its end from the
+listener, so told a frame late the menu was drawn whole between its fade
+and its unmounting. Two things are load-bearing. **A run on the
+document's clock is made in `sample`**, or it starts as its style is
+worked out. And **no page code runs from a frame**: `_frame` is also
+called from core's `spritesLifted`, inside the presenter's pass, which is
+why an end is held until the events' own tick rather than told before the
+frame.
+
 **A transition runs on the same timeline, from the style the document
 draws.** `AnimationTimeline.transition` is asked of every style the cascade
 computes, after its animations (`Cascade._computeStyle`), and keeps an

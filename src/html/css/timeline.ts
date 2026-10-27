@@ -102,6 +102,9 @@ export interface Running {
   /** Where its time is on a scroll's timeline, which `start` and `hold`,
    *  the clock's, are not (`ScrollRun`). */
   scroll?: ScrollRun;
+  /** Whether it is new and waits, held at its start, for the paint that
+   *  first shows it (`AnimationTimeline.startsAtPaint`). */
+  pending?: boolean;
 }
 
 /**
@@ -232,6 +235,33 @@ export class AnimationTimeline {
   /** Told as an event is owed, so the element that tells them knows to
    *  (`HtmlViewNode._oweCssEvents`). A fork has none. */
   onCssEvent: (() => void) | null = null;
+  /**
+   * Whether a CSS animation the clock runs starts at the paint that first
+   * shows it rather than as its style is first computed: held at its start
+   * until then (`pending`), and running from that paint's time on
+   * (`startPending`), as a browser holds a new animation until the frame
+   * that renders it (Web Animations 1, 4.4.2, the ready time). A style is
+   * computed well before the paint where a page asks for one or a build
+   * is long — Radix reads a menu's `getComputedStyle` as it mounts it — and
+   * a fade of 100ms was over before the menu was first drawn.
+   */
+  startsAtPaint = false;
+  /** When the longest waiting of them was made, Infinity where none waits:
+   *  one a paint does not show for long starts anyway (`startPending`). */
+  pendingSince = Infinity;
+  /**
+   * Whether an animation's end waits for the page to hear of it: one that
+   * runs out with its `animationend` not told yet is drawn as it ends, as
+   * though it filled forwards, until it is (`releaseEnds`). A browser tells
+   * the event before the frame that draws the element as the animation
+   * leaves it, and a page that keeps the end — Radix sets
+   * `animation-fill-mode: forwards` on a menu fading out as it unmounts it
+   * — keeps it from that frame on. Told after, the menu was drawn whole
+   * between its fade and its unmounting.
+   */
+  holdsEnds = false;
+  /** The runs whose end waits to be told, with whose they are. */
+  private _endsHeld = new Map<Running, { el: object; pseudo: string }>();
   /** Each element's animations a script made, or a pseudo-element's, as
    *  the cascade last sampled them (`noteScripts`): when they next change.
    *  The animations themselves are `ScriptAnimations`', the page's to make
@@ -330,7 +360,11 @@ export class AnimationTimeline {
         continue;
       }
       let run = was.find((r) => r !== null && r.name === name && !taken.has(r));
-      if (!run) run = { name, start: now, hold: null };
+      let fresh = false;
+      if (!run) {
+        run = { name, start: now, hold: null };
+        fresh = true;
+      }
       taken.add(run);
       running.push(run);
       if (run.pageCancelled) continue;
@@ -442,6 +476,12 @@ export class AnimationTimeline {
       }
       const timing = timingAt(animations, i);
       clocked = true;
+      // new, it waits at its start for the paint that first shows it
+      if (fresh && this.startsAtPaint) {
+        run.hold = 0;
+        run.pending = true;
+        this.pendingSince = Math.min(this.pendingSince, now);
+      }
       // one that waits for a trigger is held at its start until one does
       // something to it, and plays as its triggers have it after that
       const heard = triggers[i % triggers.length];
@@ -473,9 +513,11 @@ export class AnimationTimeline {
         playStates[i % playStates.length] === 'paused' ||
         !!run.pagePaused ||
         (!!trig && trig.state !== 'playing');
+      // paused, it holds where it is whatever paints; it waits for none
+      if (paused) run.pending = false;
       if (paused && run.hold === null) {
         run.hold = rate * (now - run.start);
-      } else if (!paused && run.hold !== null) {
+      } else if (!paused && run.hold !== null && !run.pending) {
         run.start = now - rate * run.hold;
         run.hold = null;
       }
@@ -492,8 +534,13 @@ export class AnimationTimeline {
       if (!rule) continue;
       if (!inherits) inherits = animatesInherited(rule);
       const time = run.hold ?? rate * (now - run.start);
-      const at = progressAt(timing, time);
-      this._animationAt(el, pseudo, run, timing, time);
+      // waiting for its paint it has not started, and owes nothing yet
+      if (!run.pending) this._animationAt(el, pseudo, run, timing, time);
+      // run out, and its end not told yet: drawn as it ends
+      const at = progressAt(
+        this._endsHeld.has(run) ? filledForwards(timing) : timing,
+        time,
+      );
       const { progress, phase } = at;
       // played backwards, it changes the other way, and goes on until its
       // start
@@ -507,10 +554,13 @@ export class AnimationTimeline {
       if (!held) {
         if (phase === 'active') active = true;
         else if (phase === 'before') {
-          // backwards through its delay, it finishes at its start
+          // backwards through its delay, it finishes at its start; and
+          // waiting for its paint, its delay is counted from now
           timed = Math.min(
             timed,
-            rate > 0 ? run.start + timing.delay : run.start,
+            rate > 0
+              ? (run.pending ? now : run.start) + timing.delay
+              : run.start,
           );
         }
       }
@@ -1434,9 +1484,14 @@ export class AnimationTimeline {
     const to = PHASE_RANK[phase];
     if (to > from) {
       if (from < 1) owe('animationstart', begin, origin + beforeActive);
-      if (to === 2) owe('animationend', finish, origin + activeAfter);
+      if (to === 2) {
+        owe('animationend', finish, origin + activeAfter);
+        if (this.holdsEnds && !scrolled)
+          this._endsHeld.set(run, { el, pseudo });
+      }
     } else if (to < from) {
       // taken back
+      this._endsHeld.delete(run);
       if (from === 2) owe('animationstart', finish, this.now);
       if (to === 0) owe('animationend', begin, this.now);
     } else if (phase === 'active' && was && was.iteration !== iteration) {
@@ -1453,6 +1508,7 @@ export class AnimationTimeline {
    *  had come to, where it had started and not ended (CSS Animations 2,
    *  4.2). */
   private _animationCancelled(el: object, pseudo: string, run: Running): void {
+    this._endsHeld.delete(run);
     const was = this._runPhases.get(run);
     if (!was || was.phase === 'after') return;
     this._runPhases.delete(run);
@@ -1469,6 +1525,42 @@ export class AnimationTimeline {
       elapsed: Math.max(0, Math.min(time - was.delay, was.active)) * was.scale,
     });
     this.onCssEvent?.();
+  }
+
+  /**
+   * The paint that first shows the animations made since the last has
+   * happened, at `now`: each that waits for it (`startsAtPaint`) starts
+   * then, from where it is held, which is its start unless a page sought
+   * it. Whether any did.
+   */
+  startPending(now: number): boolean {
+    let any = false;
+    for (const targets of this._targets.values()) {
+      for (const target of targets.values()) {
+        for (const run of target.running) {
+          if (!run?.pending) continue;
+          run.start = now - (run.hold ?? 0);
+          run.hold = null;
+          run.pending = false;
+          any = true;
+        }
+      }
+    }
+    this.pendingSince = Infinity;
+    return any;
+  }
+
+  /** The `animationend`s of the ends held for them (`holdsEnds`) are being
+   *  told: each animation leaves its element as it would have at its end,
+   *  from the next frame, which restyles it. Whether any was held. */
+  releaseEnds(): boolean {
+    if (!this._endsHeld.size) return false;
+    for (const { el, pseudo } of this._endsHeld.values()) {
+      const target = this._targets.get(el)?.get(pseudo);
+      if (target) target.next = 0;
+    }
+    this._endsHeld.clear();
+    return true;
   }
 
   /** The transition events owed since this was last asked, in order. */
@@ -1910,4 +2002,11 @@ function proportional(timing: ReturnType<typeof timingAt>, span = 100) {
   }
   const k = span / total;
   return { ...timing, delay: delay * k, duration: duration * k };
+}
+
+/** A timing as it is drawn while its end waits to be told (`holdsEnds`):
+ *  filling forwards, whatever it fills. */
+function filledForwards(timing: Timing): Timing {
+  if (timing.fill === 'forwards' || timing.fill === 'both') return timing;
+  return { ...timing, fill: timing.fill === 'backwards' ? 'both' : 'forwards' };
 }
