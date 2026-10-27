@@ -3134,10 +3134,11 @@ export function installDom(
   // animations on a scroll-driven timeline brought up to date — their
   // times, their auto-aligned start times, their pending tasks, their
   // finished state — then the animation frame callbacks of each document,
-  // in tree order, at one time. A frame comes every 16 ms while a callback
-  // waits or a scroll-driven animation is under way, and every 100 ms once
-  // none of those has moved for half a second; and where the host says a
-  // viewport moved (`__rendering`).
+  // in tree order, at one time, and after them the intersection observers'
+  // steps (`updateIntersections`). A frame comes every 16 ms while a
+  // callback waits or a scroll-driven animation is under way, and every 100
+  // ms once none of those has moved for half a second; and where the host
+  // says a viewport moved, or what an observer measures (`__rendering`).
 
   const frameCallbacks = new Map<number, Any>();
   let frameSeq = 0;
@@ -3253,6 +3254,7 @@ export function installDom(
                 report(error);
               }
             }
+            updateIntersections(time);
             runAfterFrame();
             nextFrame();
           },
@@ -3264,6 +3266,7 @@ export function installDom(
       return;
     }
     frameTimer = 0;
+    updateIntersections(time);
     runAfterFrame();
     nextFrame();
   };
@@ -5443,6 +5446,7 @@ export function installDom(
    *  the scroll. */
   const GEOMETRY = geometry({ DOMException });
   const DOMRect: Any = GEOMETRY.classes.DOMRect;
+  const DOMRectReadOnly: Any = GEOMETRY.classes.DOMRectReadOnly;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -21893,11 +21897,11 @@ export function installDom(
     return out;
   };
 
-  /** Observers a page makes at its start. `IntersectionObserver` reports
-   *  what it observes once, as in view — what a lazy loader waits for —
-   *  and `ResizeObserver` each size its targets come to. `MutationObserver`
-   *  is below. */
-  /** What an `IntersectionObserver` hands its callback. A page tells the
+  /** Observers a page makes at its start: `IntersectionObserver`, and
+   *  `ResizeObserver` each size its targets come to. `MutationObserver` is
+   *  below. */
+  /** What an `IntersectionObserver` hands its callback (Intersection
+   *  Observer, 2.3), or a page makes of a dictionary. A page tells the
    *  native interface from none by this one: Next.js installs the W3C
    *  polyfill where it is missing, and the polyfill measures every target
    *  again at every mutation of the document, a whole layout a time —
@@ -21905,7 +21909,23 @@ export function installDom(
   class IntersectionObserverEntry {
     _init: Any;
     constructor(init: Any) {
-      this._init = init;
+      if (!init || typeof init !== 'object') {
+        throw new TypeError(
+          "Failed to construct 'IntersectionObserverEntry': 1 argument required, but only 0 present.",
+        );
+      }
+      const rect = (r: Any) =>
+        r instanceof DOMRectReadOnly ? r : DOMRectReadOnly.fromRect(r);
+      this._init = {
+        time: Number(init.time) || 0,
+        rootBounds: init.rootBounds == null ? null : rect(init.rootBounds),
+        boundingClientRect: rect(init.boundingClientRect),
+        intersectionRect: rect(init.intersectionRect),
+        isIntersecting: !!init.isIntersecting,
+        isVisible: !!init.isVisible,
+        intersectionRatio: Number(init.intersectionRatio) || 0,
+        target: init.target,
+      };
     }
   }
   // on the prototype, as the native interface's are: a polyfill asks
@@ -21917,6 +21937,7 @@ export function installDom(
     'boundingClientRect',
     'intersectionRect',
     'isIntersecting',
+    'isVisible',
     'intersectionRatio',
   ]) {
     Object.defineProperty(IntersectionObserverEntry.prototype, name, {
@@ -21927,81 +21948,307 @@ export function installDom(
       enumerable: true,
     });
   }
+
+  /** The observers observing something, in the order each began to, which
+   *  each frame measures (`updateIntersections`). */
+  const intersecting = new Set<Any>();
+  /** The observers with entries for the task that hands them over, in the
+   *  order they were queued (Intersection Observer, 3.2.5). */
+  const intersectionsOwed = new Set<Any>();
+  /** Whether the host was asked what the observers measure, which it asks
+   *  again after each paint until a frame with none tells it to stop. */
+  let intersectionsAsked = false;
+
+  /** A root or a scroll margin (Intersection Observer, 3.2.1, "parse a
+   *  margin"): one to four lengths, as `margin` takes them, each pixels or
+   *  a percentage, as Chrome takes them — top, right, bottom and left, as
+   *  they serialize. */
+  const parseMargin = (given: Any, what: string): string[] => {
+    const tokens = str(given).trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) tokens.push('0px');
+    const lengths = tokens.map((t) => {
+      const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)$/i.exec(t);
+      if (!m || tokens.length > 4) {
+        throw new DOMException(
+          `Failed to construct 'IntersectionObserver': ${what} must be specified in pixels or percent.`,
+          'SyntaxError',
+        );
+      }
+      return `${Number(m[1]) + 0}${m[2] === '%' ? '%' : 'px'}`;
+    });
+    const [t, r = t, b = t, l = r] = lengths;
+    return [t, r, b, l];
+  };
+  /** A margin's length on a side of a rectangle that long. */
+  const marginOn = (length: string, of: number): number =>
+    length.endsWith('%') ? (parseFloat(length) / 100) * of : parseFloat(length);
+
   /**
-   * Each target is reported once, in one callback with every other target
-   * observed since the last (Intersection Observer, 3.2.8), and a target
-   * observed again, or no longer, is not reported again. A callback a
-   * target picked one entry out of every target with was called once a
-   * target: Wikipedia's contents observe every heading as the article
-   * scrolls and mark the one closest above the top, and with each heading
-   * its own callback they marked every section in turn, a layout each,
-   * five times a second.
+   * An observer of where its targets are in its root (Intersection Observer
+   * 2.2): the viewport, a document's or an element's that holds them. Each
+   * frame measures them (`updateIntersections`), and a target is reported
+   * where how much of it shows crossed one of the thresholds since it was
+   * last, or it came into the root or left it — first as it is observed —
+   * every target of an observer in one callback, a task after the frame
+   * (3.2.8). A sticky header's script asks for `rootMargin: "-1px 0px 0px
+   * 0px"` and a threshold of 1 to hear that it is stuck: it reported every
+   * target once, whole, and the header's glass never came.
    */
   class IntersectionObserver {
     _fn: Any;
-    /** What it observes, and of that what it has yet to report, each in
-     *  the order observed. */
-    _targets = new Set<Any>();
-    _queued = new Set<Any>();
-    /** The timer that reports what is queued, or 0 for none. */
-    _due = 0;
-    constructor(fn: Any) {
+    _root: Any;
+    _rootMargin: string[];
+    _scrollMargin: string[];
+    _thresholds: readonly number[];
+    _delay: number;
+    _trackVisibility: boolean;
+    /** What it observes, in the order observed, and of each the threshold
+     *  it was last past and whether it was in the root — -1 and false
+     *  before it is first measured (3.1, the registration's
+     *  `previousThresholdIndex` and `previousIsIntersecting`). */
+    _targets = new Map<Any, { index: number; intersecting: boolean }>();
+    /** What it has yet to hand its callback. */
+    _queued: Any[] = [];
+    constructor(fn: Any, options: Any = {}) {
       if (typeof fn !== 'function') {
         throw new TypeError(
           "Failed to construct 'IntersectionObserver': parameter 1 is not of type 'Function'.",
         );
       }
       this._fn = fn;
+      const o = options ?? {};
+      const root = o.root ?? null;
+      if (
+        root !== null &&
+        !(root instanceof Element || root instanceof Document)
+      ) {
+        throw new TypeError(
+          "Failed to construct 'IntersectionObserver': Failed to read the 'root' property from 'IntersectionObserverInit': The provided value is not of type '(Document or Element)'.",
+        );
+      }
+      this._root = root;
+      this._rootMargin = parseMargin(o.rootMargin ?? '0px', 'rootMargin');
+      this._scrollMargin = parseMargin(o.scrollMargin ?? '0px', 'scrollMargin');
+      const given = o.threshold ?? 0;
+      const list =
+        typeof given === 'object' &&
+        typeof given[Symbol.iterator] === 'function'
+          ? [...given]
+          : [given];
+      const thresholds = list.map((t: Any) => {
+        const v = Number(t);
+        if (!Number.isFinite(v)) {
+          throw new TypeError(
+            "Failed to construct 'IntersectionObserver': The provided double value is non-finite.",
+          );
+        }
+        if (v < 0 || v > 1) {
+          throw new RangeError(
+            "Failed to construct 'IntersectionObserver': Threshold values must be numbers between 0 and 1",
+          );
+        }
+        return v;
+      });
+      thresholds.sort((a: number, b: number) => a - b);
+      this._thresholds = Object.freeze(thresholds.length ? thresholds : [0]);
+      this._delay = Math.max(0, Number(o.delay) || 0);
+      this._trackVisibility = !!o.trackVisibility;
+      if (this._trackVisibility && this._delay < 100) {
+        throw new DOMException(
+          "Failed to construct 'IntersectionObserver': To enable the 'trackVisibility' option, you must also use a 'delay' option with a value of at least 100.",
+          'NotSupportedError',
+        );
+      }
     }
-    observe(el: Any): void {
-      if (this._targets.has(el)) return;
-      this._targets.add(el);
-      this._queued.add(el);
-      if (!this._due) this._due = setTimer(() => this._notify(), 0, [], false);
+    get root(): Any {
+      return this._root;
     }
-    unobserve(el: Any): void {
-      this._targets.delete(el);
-      this._queued.delete(el);
+    get rootMargin(): string {
+      return this._rootMargin.join(' ');
+    }
+    get scrollMargin(): string {
+      return this._scrollMargin.join(' ');
+    }
+    get thresholds(): readonly number[] {
+      return this._thresholds;
+    }
+    get delay(): number {
+      return this._delay;
+    }
+    get trackVisibility(): boolean {
+      return this._trackVisibility;
+    }
+    observe(target: Any): void {
+      if (!(target instanceof Element)) {
+        throw new TypeError(
+          "Failed to execute 'observe' on 'IntersectionObserver': parameter 1 is not of type 'Element'.",
+        );
+      }
+      if (this._targets.has(target)) return;
+      this._targets.set(target, { index: -1, intersecting: false });
+      intersecting.add(this);
+      wantFrame();
+    }
+    unobserve(target: Any): void {
+      if (!(target instanceof Element)) {
+        throw new TypeError(
+          "Failed to execute 'unobserve' on 'IntersectionObserver': parameter 1 is not of type 'Element'.",
+        );
+      }
+      this._targets.delete(target);
+      if (!this._targets.size) intersecting.delete(this);
     }
     disconnect(): void {
       this._targets.clear();
-      this._queued.clear();
+      intersecting.delete(this);
     }
     takeRecords(): Any[] {
-      const entries: Any[] = [];
-      for (const el of this._queued) {
-        const rect = el.getBoundingClientRect();
-        entries.push(
-          new IntersectionObserverEntry({
-            target: el,
-            isIntersecting: true,
-            intersectionRatio: 1,
-            boundingClientRect: rect,
-            intersectionRect: new DOMRect(
-              rect.x,
-              rect.y,
-              rect.width,
-              rect.height,
-            ),
-            rootBounds: null,
-            time: now(),
-          }),
-        );
-      }
-      this._queued.clear();
+      const entries = this._queued;
+      this._queued = [];
       return entries;
     }
-    _notify(): void {
-      this._due = 0;
-      const entries = this.takeRecords();
-      if (!entries.length) return;
-      try {
-        this._fn.call(this, entries, this);
-      } catch (e) {
-        report(e);
+    /**
+     * Its targets as the host measured them (`intersections`), and each
+     * one reported where it crossed a threshold or the root's edge (3.2.8,
+     * "run the update intersection observations steps"). `line` is the
+     * root's rectangle, '' for the viewport's, then each target's: its
+     * bounding box and the part the boxes around it leave to be seen, in
+     * the document's coordinates, or '' for no box in the root.
+     */
+    _measure(line: string, v: Any, time: number): void {
+      const parts = line.split(';');
+      const rootLine = parts[0] ?? '';
+      // the root intersection rectangle in the viewport's coordinates,
+      // grown by the margin, for the viewport or a document as its root
+      let rx = 0;
+      let ry = 0;
+      let rw = v.width;
+      let rh = v.height;
+      if (this._root instanceof Element) {
+        const r = rootLine ? rootLine.split(',').map(Number) : [0, 0, 0, 0];
+        rx = r[0] - v.scrollX;
+        ry = r[1] - v.scrollY;
+        rw = r[2];
+        rh = r[3];
+      }
+      const [mt, mr, mb, ml] = this._rootMargin;
+      const top = marginOn(mt, rh);
+      const left = marginOn(ml, rw);
+      rx -= left;
+      ry -= top;
+      rw += left + marginOn(mr, rw);
+      rh += top + marginOn(mb, rh);
+      const rootBounds = new DOMRectReadOnly(rx, ry, rw, rh);
+      let i = 1;
+      for (const [target, was] of this._targets) {
+        const n = (parts[i++] ?? '').split(',').filter(Boolean).map(Number);
+        let box = new DOMRectReadOnly();
+        let shown = new DOMRectReadOnly();
+        let isIntersecting = false;
+        let index = 0;
+        let ratio = 0;
+        if (n.length >= 4) {
+          box = new DOMRectReadOnly(
+            n[0] - v.scrollX,
+            n[1] - v.scrollY,
+            n[2],
+            n[3],
+          );
+          if (n.length >= 8) {
+            // what the boxes around it leave to be seen, in the root's
+            // rectangle, an edge that only meets it counting (3.2.8)
+            const x0 = Math.max(n[4] - v.scrollX, rx);
+            const y0 = Math.max(n[5] - v.scrollY, ry);
+            const x1 = Math.min(n[4] - v.scrollX + n[6], rx + rw);
+            const y1 = Math.min(n[5] - v.scrollY + n[7], ry + rh);
+            if (x0 <= x1 && y0 <= y1) {
+              isIntersecting = true;
+              shown = new DOMRectReadOnly(x0, y0, x1 - x0, y1 - y0);
+            }
+          }
+          const area = n[2] * n[3];
+          ratio =
+            area > 0
+              ? Math.min(1, (shown.width * shown.height) / area)
+              : isIntersecting
+                ? 1
+                : 0;
+          const thresholds = this._thresholds;
+          index = thresholds.findIndex((t) => t > ratio);
+          if (index < 0) index = thresholds.length;
+        }
+        if (index === was.index && isIntersecting === was.intersecting) {
+          continue;
+        }
+        was.index = index;
+        was.intersecting = isIntersecting;
+        this._queued.push(
+          new IntersectionObserverEntry({
+            time,
+            rootBounds,
+            boundingClientRect: box,
+            intersectionRect: shown,
+            isIntersecting,
+            // nothing here tells what covers a target, so one in its root
+            // is taken for seen (Intersection Observer 2, 3.2.8)
+            isVisible: this._trackVisibility && isIntersecting,
+            intersectionRatio: ratio,
+            target,
+          }),
+        );
+        intersectionsOwed.add(this);
       }
     }
   }
+  idlAttributes(IntersectionObserver);
+  /**
+   * The intersection observers' steps for the frame (HTML 8.1.7.3, "run the
+   * update intersection observations steps"): every observer's targets
+   * measured by the host at once, and the task that hands the observers
+   * their entries queued where any has one (Intersection Observer, 3.2.5).
+   * The host asks the same again after each paint and wakes a frame where
+   * the answer moved (`DomHost.renderingMoved`).
+   */
+  const updateIntersections = (time: number): void => {
+    if (!intersecting.size) {
+      if (intersectionsAsked) {
+        intersectionsAsked = false;
+        call('intersections', '');
+      }
+      return;
+    }
+    const observers = [...intersecting];
+    const query = JSON.stringify(
+      observers.map((o) => [
+        o._root instanceof Element ? o._root._id : 0,
+        o.scrollMargin,
+        [...o._targets.keys()].map((t: Any) => t._id),
+      ]),
+    );
+    intersectionsAsked = true;
+    const lines = String(call('intersections', query)).split('\n');
+    const v = viewport();
+    observers.forEach((o, i) => o._measure(lines[i] ?? '', v, time));
+    if (!intersectionsOwed.size) return;
+    setTimer(
+      () => {
+        const owed = [...intersectionsOwed];
+        intersectionsOwed.clear();
+        for (const observer of owed) {
+          const entries = observer.takeRecords();
+          if (!entries.length) continue;
+          try {
+            observer._fn.call(observer, entries, observer);
+          } catch (e) {
+            report(e);
+          }
+        }
+      },
+      0,
+      [],
+      false,
+    );
+  };
   /** An element's border box and its content box, in CSS pixels, or null
    *  where it has no box. */
   const boxSizesOf = (el: Any): number[] | null => {
@@ -28065,7 +28312,11 @@ export function installDom(
       scrollOwed = true;
       return true;
     }
-    return tellScroll();
+    const told = tellScroll();
+    // and where the scroll moved what the intersection observers observe,
+    // at the frame after it
+    if (intersecting.size) wantFrame();
+    return told;
   });
   // and its scroll over: `scrollend` at the document, which bubbles to the
   // window (CSSOM View 13.1)

@@ -7612,6 +7612,86 @@ export function clipAround(box: Box, scale = 1): Rect | null {
   };
 }
 
+/** A length of an `IntersectionObserver`'s margins: CSS pixels, or a
+ *  percentage of the rectangle it grows. */
+export interface MarginLength {
+  value: number;
+  percent: boolean;
+}
+
+/**
+ * What cuts a box short of an `IntersectionObserver`'s root (Intersection
+ * Observer, "compute the intersection"), each rectangle with the box whose
+ * own coordinates it is in, so a matrix around it can be taken into
+ * account: what `clipAround` cuts the box to — its `clip`, each box from
+ * its containing block up that clips its overflow or is cut to a `clip`,
+ * and every `clip-path` from the box up — as far as `root`, which is left
+ * out: its own clip is the observer's root rectangle, where it clips its
+ * overflow (`overflowClipRect`). A box that scrolls has its clip grown by
+ * `margin`, the observer's `scrollMargin`, top, right, bottom and left.
+ * Null where `root` is no box `box` is in by containing blocks, as a box
+ * fixed to the viewport is in none.
+ */
+export function intersectionClips(
+  box: Box,
+  root: Box | null,
+  scale: number,
+  margin: readonly MarginLength[] | null,
+): { rect: Rect; at: Box }[] | null {
+  const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
+  const clips: { rect: Rect; at: Box }[] = [];
+  const under = (
+    r: { x: number; y: number; w: number; h: number },
+    at: Box,
+    grow: boolean,
+  ): void => {
+    let { x, y, w, h } = r;
+    if (grow && margin) {
+      const len = (m: MarginLength, of: number) =>
+        m.percent ? (m.value / 100) * of : m.value * scale;
+      const [t, ri, b, l] = margin.map((m, i) => len(m, i % 2 ? r.w : r.h));
+      x -= l;
+      y -= t;
+      w += l + ri;
+      h += t + b;
+    }
+    clips.push({ rect: { x, y, width: w, height: h }, at });
+  };
+  if (box.outOfFlow && box.style.clip) under(clipOf(box, space), box, false);
+  const holder = (inner: Box): Box | null =>
+    inner.outOfFlow ? containingBlockOf(inner) : inner.parent;
+  let reached = !root;
+  for (let outer = holder(box); outer; outer = holder(outer)) {
+    if (outer === root) {
+      reached = true;
+      break;
+    }
+    if (outer.outOfFlow && outer.style.clip) {
+      under(clipOf(outer, space), outer, false);
+    }
+    if (clipsOverflow(outer)) {
+      under(clipEdge(outer, space).rect, outer, scrolls(outer.style));
+    }
+  }
+  if (!reached) return null;
+  // up to a box in the top layer, which nothing around it cuts
+  for (let at: Box | null = box; at && at !== root;) {
+    if (pathClips(at)) under(clipPathOf(at, space).rect, at, false);
+    at = at.topLayer ? null : at.parent;
+  }
+  return clips;
+}
+
+/** Where a box that clips its overflow cuts what it holds, as a rectangle
+ *  in the document's coordinates (`clipEdge`); null for one that does not.
+ *  An `IntersectionObserver`'s root rectangle, where its root is one. */
+export function overflowClipRect(box: Box, scale: number): Rect | null {
+  if (!clipsOverflow(box)) return null;
+  const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
+  const r = clipEdge(box, space).rect;
+  return { x: r.x, y: r.y, width: r.w, height: r.h };
+}
+
 /**
  * The radii of a box's padding edge — its border radii less the borders —
  * for a clip, or null where a rectangle clips the same: padding at least a

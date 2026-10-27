@@ -42,7 +42,9 @@ import type {
   CssAnimationInfo,
   CssTransitionInfo,
   CssEventInfo,
+  ElementIntersections,
 } from '../node.js';
+import type { MarginLength } from '../paint.js';
 import type { MediaEventKind } from '../media.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import {
@@ -431,6 +433,13 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** What an `IntersectionObserver` measures of its targets against its
+   *  root, the viewport for null (`HtmlViewNode.intersectionsOf`). */
+  intersectionsOf(
+    elements: readonly (Element | null)[],
+    root: Element | null,
+    margin: readonly MarginLength[] | null,
+  ): ElementIntersections | null;
   /** The DOM boundary point nearest a logical window point, as
    *  `caretPositionFromPoint` answers (`HtmlViewNode.textPointAt`). */
   textPointAt(x: number, y: number): { node: AnyNode; offset: number } | null;
@@ -1011,6 +1020,21 @@ function serializeDeclarations(
   return declarations
     .map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`)
     .join(' ');
+}
+
+/** An observer's margin as it serializes — four lengths, `px` or `%`,
+ *  which the facade checked — or null where it grows nothing. */
+function marginLengths(text: string): MarginLength[] | null {
+  const lengths = text
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => ({
+      value: parseFloat(part) || 0,
+      percent: part.endsWith('%'),
+    }));
+  return lengths.length === 4 && lengths.some((m) => m.value !== 0)
+    ? lengths
+    : null;
 }
 
 /** A node's shadow-including root (DOM 4.2.2): the root of its tree, and
@@ -1748,6 +1772,55 @@ export class DomHost {
       this.entries.call('__rendering', null);
       return;
     }
+    const seen = this._intersecting;
+    if (seen && this._intersections(seen.query) !== seen.answer) {
+      this._viewportsWoken = true;
+      this.entries.call('__rendering', null);
+    }
+  }
+
+  /**
+   * What the page's intersection observers asked at their last frame, and
+   * what it was answered: after each paint it is asked again
+   * (`renderingMoved`), and the facade woken for a frame where the answer
+   * moved — a layout that moved a target, a scroll inside the document, an
+   * image come in — as nothing else would wake it for one.
+   */
+  private _intersecting: { query: string; answer: string } | null = null;
+
+  /**
+   * Each observer's targets measured against its root (`intersectionsOf`):
+   * `query` is a JSON list, an observer an entry, of its root's id (0 for
+   * the viewport), its `scrollMargin` as it serializes and its targets'
+   * ids. An observer a line: its root's rectangle, or '' for the viewport,
+   * then each target's, `;` before each — its bounding box and the part
+   * of it shown, in CSS pixels in the document's coordinates, or the box
+   * alone where none of it is, or '' where it has no box or is not in the
+   * root.
+   */
+  private _intersections(query: string): string {
+    const handle = this._seams.handle;
+    const observers = JSON.parse(query) as [number, string, number[]][];
+    const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
+    return observers
+      .map(([rootId, margin, ids]) => {
+        // the viewport for 0; a root no longer here measures nothing
+        const root = rootId ? this._nodes.get(rootId) : null;
+        const elements = ids.map((id) => {
+          const el = this._nodes.get(id);
+          return el instanceof Element ? el : null;
+        });
+        const found =
+          root === null || root instanceof Element
+            ? handle.intersectionsOf?.(elements, root, marginLengths(margin))
+            : null;
+        if (!found) return ';'.repeat(ids.length);
+        const parts = found.targets.map((t) =>
+          !t ? '' : t.shown ? `${rect(t.rect)},${rect(t.shown)}` : rect(t.rect),
+        );
+        return [found.root ? rect(found.root) : '', ...parts].join(';');
+      })
+      .join('\n');
   }
 
   /** What a document's viewport is now, as `rendering` answers it: its
@@ -3552,6 +3625,20 @@ export class DomHost {
             this._element(b),
           ) !== false
         );
+      // what the page's `IntersectionObserver`s measure, all of them at
+      // once, at a frame (`_intersections`); '' for none, which stops the
+      // look after each paint
+      case 'intersections': {
+        this.flush();
+        const query = text(a);
+        if (!query) {
+          this._intersecting = null;
+          return '';
+        }
+        const answer = this._intersections(query);
+        this._intersecting = { query, answer };
+        return answer;
+      }
       // `offsetParent` and the offsets from it, in one walk up the boxes:
       // the parent's id, then x, y, width and height in CSS pixels, or ''
       // for an element with no box (`HtmlHandle.offsetRect`)
