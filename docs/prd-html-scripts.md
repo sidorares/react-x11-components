@@ -960,6 +960,22 @@ standards moved from what Acid3 expected):
   else a `SecurityError`. react.dev's Sandpack runs so: its bundler, in a
   frame of `sandpack-bundler-4bw.pages.dev`, compiles in its Babel worker
   and draws the example's preview.
+- **A port a message transfers moves to where the message is told**
+  (HTML 9.4.4), through a port's, a window's, a frame's, a worker's or a
+  service worker's `postMessage` and through `structuredClone`: the side
+  it lands on has a new port in its place, entangled with the old one's
+  partner and holding what was queued for the old one, which is given up.
+  In the same realm the new port is its partner's directly
+  (`cloneMoving`). Across a thread or another realm of the page it is a
+  **wire**: each side keeps an end for the port over there, and a message
+  along it crosses as a string tagged with the wire's name (`{ q, d }`)
+  over the thread's own channel, or to the other realm's `__wire`, so
+  nothing but a string crosses here either. A port in a message's value
+  that its list does not transfer, one given up already, one listed twice
+  and the port posted through are each a `DataCloneError`, before anything
+  is posted. Before it, every such `postMessage` threw, and Comlink's
+  proxies, workbox's replies and a sandbox frame's handshake failed with
+  it; chatgpt.com's page logged the throw over and over.
 
 **And what web-platform-tests' own tests take for granted**, found running
 the Interop 2026 focus areas through `<Html scripts>`
