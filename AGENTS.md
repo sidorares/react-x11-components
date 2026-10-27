@@ -2788,7 +2788,12 @@ closes a way out a DOM binding opens by accident:
   bugs: **the host's documents are one state, changed by updaters**, since
   `onChange` can fire before React has drawn the document the host just
   added; and **a document is unmounted only once the one taking its place
-  is in**, or it unloads before the session could keep it.
+  is in**, or it unloads before the session could keep it. The example
+  browser's `page.tsx` is the same `follow` with a third rule, for a host
+  whose navigations overlap: **a document on its way in that another
+  overtakes goes at once**, and so does the one a reload makes again, or
+  it comes into the session after the document that overtook it — which is
+  why the browser numbers a document only as it comes in, never ahead.
 - **A page's streams are the standard's, and none of their state is the
   page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
   operation of WHATWG Streams is there, over slots kept in a `WeakMap` by

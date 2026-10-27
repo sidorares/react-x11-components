@@ -593,14 +593,19 @@ for (const global of ['own', 'object'] as const) {
         'r.push(String(Error.prepareStackTrace), typeof __bridge, typeof globalThis.__in);' +
         "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
         "document.body.dispatchEvent(new Event('x'));" +
+        // what a refusal settles is read into a slot of its own, since the
+        // order the three settle in is the runtime's: the session's and the
+        // import's settle in one entry, and Node 26 runs the import's first
+        // where Node 24 runs the session's
+        'var settled = {};' +
         // and what it hands the page before it is refused: a promise of the
         // host's realm on Node 21 to 23, where no engine is made
         "var made = import('fs'); r.push(made.constructor.constructor(reach)());" +
-        'made.catch(function (e) { r.push(e.constructor.constructor(reach)()) });' +
+        "made.catch(function (e) { settled.import = e.constructor.constructor(reach)() + ':' + e.name });" +
         // and what a WebTransport the host refuses is rejected with
-        "new WebTransport('https://wt.test/').ready.catch(function (e) { r.push(e.constructor.constructor(reach)(), e.name) });" +
+        "new WebTransport('https://wt.test/').ready.catch(function (e) { settled.session = e.constructor.constructor(reach)() + ':' + e.name });" +
         // and what an offer no WebRTC stack makes is rejected with
-        'new RTCPeerConnection().createOffer().catch(function (e) { r.push(e.constructor.constructor(reach)(), e.name) });' +
+        "new RTCPeerConnection().createOffer().catch(function (e) { settled.offer = e.constructor.constructor(reach)() + ':' + e.name });" +
         'var shared = 1;',
       'a',
       0,
@@ -608,17 +613,18 @@ for (const global of ['own', 'object'] as const) {
     // what the host's refusal settles runs at the next entry
     await new Promise((resolve) => setTimeout(resolve, 5));
     engine.call('__drain', null);
-    engine.exec("console.log(r.join(','), typeof shared)", 'b', 0);
+    engine.exec(
+      "console.log(r.join(','), ['offer', 'session', 'import'].map(function (k) { return k + '=' + settled[k] }).join(','), typeof shared)",
+      'b',
+      0,
+    );
     assert.deepEqual(logs, [
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
-        'undefined,undefined,string,null,undefinedundefinedundefined,' +
-        // the refused offer's and the refused session's rejections are
-        // settled inside the entries that tell them, the offer's first, as
-        // its host settles it at once, ahead of the import's, which the host
-        // settled from outside
-        'undefinedundefinedundefined,NotSupportedError,' +
-        'undefinedundefinedundefined,WebTransportError,undefinedundefinedundefined number',
+        'undefined,undefined,string,null,undefinedundefinedundefined ' +
+        'offer=undefinedundefinedundefined:NotSupportedError,' +
+        'session=undefinedundefinedundefined:WebTransportError,' +
+        'import=undefinedundefinedundefined:TypeError number',
     ]);
     engine.dispose();
   });

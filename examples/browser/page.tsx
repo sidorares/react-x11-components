@@ -26,7 +26,11 @@
 // writes its own entries; one shown with JavaScript off is shown to it here
 // (`show`), and its fragments are kept here (`fragment`). Which document
 // is shown follows from it: a step to another document's entry shows the
-// document the tab still has, or asks the browser to load it again.
+// document again as it was left where the session kept it (its
+// back-forward cache), else the document's source the tab still has, or
+// asks the browser to load it again. Each document is an `<Html>` of its
+// own, and those the session keeps stay mounted, hidden, their requests
+// held until they are shown again.
 //
 // Its cookies and its storage are the profile's (`profile.ts`): this
 // process opens the database every tab's shares, sends and stores its
@@ -293,8 +297,14 @@ interface Doc {
   url: string;
 }
 
-/** The document shown, and how it is shown. */
-interface Shown {
+/** How many documents a tab keeps to show again as they were left, its
+ *  session's back-forward cache (`backForwardCache`): as many as Chrome
+ *  keeps on the desktop. */
+const BFCACHE = 6;
+
+/** A document the tab shows, or keeps to show again as it was left: each
+ *  an `<Html>` of its own. */
+interface View {
   /** Counts the documents shown, each an `<Html>` of its own. */
   n: number;
   /** Which, by the navigation that loaded it. */
@@ -306,6 +316,170 @@ interface Shown {
    *  entries or this process does. */
   scripted: boolean;
   zoom: number;
+  /** Its number in the tab's session (`HtmlSessionEntry.document`), once
+   *  it has come into it: as its scripts start, or as it is shown to the
+   *  session where none run (`show`). */
+  number?: number;
+  /** What it asks of the pane that scrolls it, once it has been laid out. */
+  overflow?: ViewportOverflow;
+}
+
+/** The documents the tab has an `<Html>` for, and which of them is shown. */
+interface Views {
+  views: readonly View[];
+  shown: number;
+}
+
+/**
+ * What the tab shows once its session changed — the WPT runner's `follow`
+ * (`scripts/conformance/testharness.tsx`): the document shown came into
+ * the session under a number of its own once its `<Html>` is in; a step
+ * to a document the session keeps shows that one again; and a document
+ * neither shown, current nor kept goes. One on its way in stays shown,
+ * and the one it will take the place of stays mounted until it is in, so
+ * that it is told where it goes — and kept, where it may be — as it goes.
+ */
+function follow(
+  state: Views,
+  session: HtmlSessionHistory,
+  mounted: ReadonlySet<number>,
+): Views {
+  const entry = session.current;
+  if (!entry) return state;
+  let views = state.views;
+  const arriving = (v: View) => !mounted.has(v.n) || v.number === undefined;
+  // the current entry's document, where no view has its number, is the
+  // one in last that has none
+  if (!views.some((v) => v.number === entry.document)) {
+    const fresh = [...views]
+      .reverse()
+      .find((v) => v.number === undefined && mounted.has(v.n));
+    if (fresh) {
+      views = views.map((v) =>
+        v === fresh ? { ...v, number: entry.document } : v,
+      );
+    }
+  }
+  const newest = (number: number | undefined) =>
+    [...views].reverse().find((v) => v.number === number && mounted.has(v.n))
+      ?.n;
+  const shownView = views.find((v) => v.n === state.shown);
+  const shown =
+    shownView && arriving(shownView)
+      ? state.shown
+      : (newest(entry.document) ?? state.shown);
+  const kept = new Set(session.kept);
+  views = views.filter(
+    (v) =>
+      v.n === shown ||
+      arriving(v) ||
+      ((v.number === entry.document || kept.has(v.number!)) &&
+        v.n === newest(v.number)),
+  );
+  const same =
+    views.length === state.views.length &&
+    views.every((v, i) => v === state.views[i]);
+  return same && shown === state.shown
+    ? state
+    : { views: same ? state.views : views, shown };
+}
+
+/**
+ * One document's requests. They go out while it is shown, and while the
+ * tab keeps it hidden in the back-forward cache nothing new does: what
+ * `<Html>` asks for waits to be shown again, and so does what the page's
+ * scripts ask for — its workers', since nothing of the page's own runs
+ * while it is kept. What `<Html>` had waiting for the network's pacing as
+ * it was kept is stopped, and asked for again once it is shown; what was
+ * on the wire already finishes into the network's cache, which every
+ * document shares, so it is not cut, and is handed over once the document
+ * is shown. The page's own requests from before it was kept, its
+ * `pagehide` beacon among them, finish too: what a page was promised
+ * cannot be asked for again on its behalf, and the answer waits for it in
+ * its frozen engine. `drop()` lets whatever waits go, as the document
+ * does.
+ */
+class DocumentRequests {
+  /** What `<Html>` asked for and has not had yet, waiting or on its way:
+   *  the status bubble's count, while the document is the one shown. */
+  pending = 0;
+  private held = false;
+  private gone = false;
+  private controller = new AbortController();
+  private waiting: (() => void)[] = [];
+  /** Told each time `pending` moves. */
+  private readonly counted: () => void;
+
+  constructor(counted: () => void) {
+    this.counted = counted;
+  }
+
+  /** Whether the tab keeps the document hidden. */
+  hold(held: boolean): void {
+    if (this.gone || held === this.held) return;
+    this.held = held;
+    if (held) this.controller.abort();
+    else {
+      this.controller = new AbortController();
+      this._wake();
+    }
+  }
+
+  /** The document goes: what waits is declined, and what is on its way
+   *  for `<Html>` is stopped. */
+  drop(): void {
+    if (this.gone) return;
+    this.gone = true;
+    this.controller.abort();
+    this._wake();
+  }
+
+  /** A resource `<Html>` asked for, loaded with `load`. */
+  async resource<T>(
+    load: (signal: AbortSignal) => Promise<T | null>,
+  ): Promise<T | null> {
+    this._count(1);
+    try {
+      for (;;) {
+        if (!(await this._shown())) return null;
+        const signal = this.controller.signal;
+        let got: T | null = null;
+        try {
+          got = await load(signal);
+        } catch (error) {
+          if (!signal.aborted) throw error;
+        }
+        // stopped as the document was kept: asked for again once shown
+        if (!signal.aborted || this.gone) return got;
+      }
+    } finally {
+      this._count(-1);
+    }
+  }
+
+  /** A request of the page's scripts', sent with `send` once the document
+   *  is shown. */
+  async page<T>(send: () => Promise<T>): Promise<T> {
+    if (!(await this._shown())) throw new Error('The document is gone.');
+    return send();
+  }
+
+  /** Once the document is shown, or gone: whether it is shown. */
+  private async _shown(): Promise<boolean> {
+    while (this.held && !this.gone) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    return !this.gone;
+  }
+
+  private _wake(): void {
+    for (const wake of this.waiting.splice(0)) wake();
+  }
+
+  private _count(by: number): void {
+    this.pending += by;
+    this.counted();
+  }
 }
 
 /** Where to scroll the document shown once it is drawn: where an entry was
@@ -338,15 +512,18 @@ function restored(json: string): {
     kept = null;
   }
   const entries = kept?.entries ?? [];
-  const session = new HtmlSessionHistory({
-    entries: entries.map((e) => ({
-      url: e.url,
-      key: e.key,
-      id: e.id,
-      document: e.doc || undefined,
-    })),
-    index: kept?.index,
-  });
+  const session = new HtmlSessionHistory(
+    {
+      entries: entries.map((e) => ({
+        url: e.url,
+        key: e.key,
+        id: e.id,
+        document: e.doc || undefined,
+      })),
+      index: kept?.index,
+    },
+    { backForwardCache: BFCACHE },
+  );
   const seqOf = new Map<number, number>();
   session.entries.forEach((e, i) => {
     if (entries[i].doc) seqOf.set(e.document, entries[i].doc);
@@ -389,9 +566,21 @@ export default function Page(props: PageProps): ReactElement {
   // documents is: from what the browser kept, where this process is new to
   // a tab whose last one ended.
   const [{ session, seqOf }] = useState(() => restored(props.history));
-  const [shown, setShown] = useState<Shown | null>(null);
+  // The documents the tab has an `<Html>` for: the one shown, those the
+  // session keeps to show again, and one on its way in with the one it
+  // takes the place of. One state, changed only by updaters: the session
+  // tells of a change a microtask on, which may be before React has drawn
+  // a document just added.
+  const [{ views, shown: shownN }, setViews] = useState<Views>({
+    views: [],
+    shown: 0,
+  });
+  const shown = views.find((v) => v.n === shownN) ?? null;
   const shownNow = useRef(shown);
   shownNow.current = shown;
+  // the documents whose `<Html>` is in: one that is may have come into the
+  // session, as its scripts start
+  const mounted = useRef(new Set<number>());
   const doc = shown?.seq ?? 0;
   const url = shown?.url ?? '';
   const page = docs.get(doc) ?? null;
@@ -402,21 +591,34 @@ export default function Page(props: PageProps): ReactElement {
   // the link a secondary press was on, which the context menu is about
   const [menuLink, setMenuLink] = useState<string | null>(null);
   const clipboard = useClipboard();
+  // what the document shown has asked for and not had
   const [pending, setPending] = useState(0);
+  /** Each document's requests, by its view, held while it is kept. */
+  const requests = useRef(new Map<number, DocumentRequests>());
+  const requestsOf = (n: number): DocumentRequests => {
+    let made = requests.current.get(n);
+    if (!made) {
+      const own = new DocumentRequests(() => {
+        if (shownNow.current?.n === n) setPending(own.pending);
+      });
+      made = own;
+      requests.current.set(n, made);
+    }
+    return made;
+  };
+  /** What the browser was told of each document's title and icon. */
+  const told = useRef(
+    new Map<number, { title: string | null; icon: boolean }>(),
+  );
   /** Where each entry of the history was scrolled to, by its id, for Back
    *  and Forward. */
   const scrolls = useRef(new Map<string, number>());
   const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
   const shows = useRef(0);
-  // What the document asks of the pane that scrolls it, by the document
-  // that asked: a new one says nothing until it has been laid out.
-  const [viewport, setViewport] = useState<{
-    doc: number;
-    overflow: ViewportOverflow;
-  } | null>(null);
-  // Only down: the document is as wide as the pane, which never scrolls
+  // What the document asks of the pane that scrolls it, once laid out —
+  // only down: the document is as wide as the pane, which never scrolls
   // across.
-  const hidden = viewport?.doc === doc && viewport.overflow.y === 'hidden';
+  const hidden = shown?.overflow?.y === 'hidden';
   // The latest callbacks, for the effects that outlive a render: across a
   // process they are stubs that may be new ones with every update.
   const live = useRef(props);
@@ -451,27 +653,44 @@ export default function Page(props: PageProps): ReactElement {
   const shownEntry = (): HtmlSessionEntry | null => {
     const current = session.current;
     const now = shownNow.current;
-    return current && now && seqOf.get(current.document) === now.seq
-      ? current
-      : null;
+    return current && now?.number === current.document ? current : null;
   };
+
+  /** What was on its way in and has not come into the session goes, as a
+   *  navigation another one overtook does — and so does the document
+   *  `again`, where a reload makes it again, which the session never keeps.
+   *  Left mounted, the first would come into the session after the one
+   *  that overtook it. */
+  const overtaken = (views: readonly View[], again?: number) =>
+    views.filter((v) => v.number !== undefined && v.number !== again);
 
   /** Show a document the tab has, in an `<Html>` of its own, at `at`:
    *  scrolled to where the entry `entry` was left, or its fragment, or the
-   *  top. */
-  const showDoc = (seq: number, doc: Doc, at: string, entry: string | null) => {
+   *  top. The one shown before stays mounted, hidden, until this one has
+   *  come into the session, which may keep it (`follow`). */
+  const showDoc = (
+    seq: number,
+    doc: Doc,
+    at: string,
+    entry: string | null,
+    again?: number,
+  ) => {
     const n = ++shows.current;
     // the browser's own pages run nothing, and a document whose scripts
     // turn out not to run here is shown to the history as one with none
     const runs = live.current.scripts && doc.baseUrl !== null;
     if (runs) void askEngine();
-    setShown({
+    const view: View = {
       n,
       seq,
       url: at,
       scripted: runs && engine !== false,
       zoom: live.current.zoom,
-    });
+    };
+    setViews(({ views }) => ({
+      views: [...overtaken(views, again), view],
+      shown: n,
+    }));
     setScrollTarget({ n, entry, fragment: at.includes('#') });
   };
 
@@ -479,28 +698,33 @@ export default function Page(props: PageProps): ReactElement {
    * What the history makes of the document a navigation loaded, before it
    * is shown: a new entry, the page's own plan, the current entry again, or
    * the entry a step went to. Answers the entry it is shown at where that is
-   * known — whose place it is scrolled to — and notes which document it is.
+   * known — whose place it is scrolled to — and notes which document it is;
+   * and for a reload, the number of the document it makes again.
    */
-  const plan = (how: LoadHow, key: string, seq: number): string | null => {
+  const plan = (
+    how: LoadHow,
+    key: string,
+    seq: number,
+  ): { entry: string | null; again?: number } => {
     const at =
       how === 'traverse'
         ? session.entries.findIndex((e) => e.key === key)
         : session.index;
     if (how === 'push' || (how === 'traverse' && at < 0)) {
       session.push();
-      return null;
+      return { entry: null };
     }
-    if (how === 'page') return null;
+    if (how === 'page') return { entry: null };
     if (how === 'traverse' && at !== session.index) {
       const to = session.go(at - session.index);
       if (to) seqOf.set(to.document, seq);
-      return to?.id ?? null;
+      return { entry: to?.id ?? null };
     }
     // the current entry again: the page's own reload planned itself
     if (how !== 'pageReload') session.reload();
     const current = session.current;
     if (current) seqOf.set(current.document, seq);
-    return current?.id ?? null;
+    return { entry: current?.id ?? null, again: current?.document };
   };
 
   // The navigation in progress, loaded; a new one, or none, aborts it. A
@@ -527,7 +751,8 @@ export default function Page(props: PageProps): ReactElement {
       {
         commit: (committed, first, title, posted) => {
           store(seq, first);
-          showDoc(seq, first, committed, plan(how, key, seq));
+          const { entry, again } = plan(how, key, seq);
+          showDoc(seq, first, committed, entry, again);
           live.current.onCommit(seq, committed, title, posted);
         },
         progress: (next) => store(seq, next),
@@ -547,17 +772,32 @@ export default function Page(props: PageProps): ReactElement {
   // A document shown with no scripts running in it is shown to the
   // history here, as its engine would as they start.
   useLayoutEffect(() => {
-    if (!shown || shown.scripted) return;
-    seqOf.set(session.show(shown.url).document, shown.seq);
+    if (!shown || shown.scripted || shown.number !== undefined) return;
+    const { n, seq } = shown;
+    const number = session.show(shown.url).document;
+    seqOf.set(number, seq);
+    setViews((state) => ({
+      ...state,
+      views: state.views.map((v) => (v.n === n ? { ...v, number } : v)),
+    }));
   }, [shown?.n, shown?.scripted]);
 
   // A new zoom is a new `<Html>`, and where the document's scripts run, a
   // new document at the entry shown — which its own navigations may have
-  // moved on from where it was shown: a reload, as the history has it.
+  // moved on from where it was shown: a reload, as the history has it. The
+  // documents kept to show again go: a node's scale is its life's, so one
+  // kept would come back at the zoom it was left at, and a step back loads
+  // it again at this one.
   useLayoutEffect(() => {
     if (!shown || shown.zoom === zoom) return;
     if (shown.scripted) session.reload();
-    setShown({ ...shown, zoom, url: shownEntry()?.url ?? shown.url });
+    const at = shownEntry()?.url ?? shown.url;
+    setViews((state) => ({
+      ...state,
+      views: state.views
+        .filter((v) => v.n === state.shown)
+        .map((v) => ({ ...v, zoom, url: at })),
+    }));
   }, [zoom]);
 
   // A document shown to run its scripts, in a process that turned out to
@@ -568,53 +808,95 @@ export default function Page(props: PageProps): ReactElement {
   }, [props.scripts]);
   useEffect(() => {
     if (engine === false && shown?.scripted) {
-      setShown({ ...shown, scripted: false });
+      setViews((state) => ({
+        ...state,
+        views: state.views.map((v) =>
+          v.n === state.shown ? { ...v, scripted: false } : v,
+        ),
+      }));
     }
   });
 
-  // The history as it changes: the browser hears of it — its address bar
-  // and its Back and Forward follow it — and the documents no entry is of
-  // any more are let go.
+  // The documents follow the history as it changes: the one shown comes
+  // into it, one the session keeps stays, hidden, and is shown again as a
+  // step reaches it, and the rest go (`follow`).
   const [, redraw] = useReducer((n: number) => n + 1, 0);
+  useEffect(
+    () =>
+      session.onChange(() => {
+        setViews((state) => follow(state, session, mounted.current));
+        redraw();
+      }),
+    [],
+  );
+
+  // A document shown again from the back-forward cache is scrolled to where
+  // its entry was left: the pane is the tab's, and was scrolled through the
+  // documents shown since. A document new to the tab was scrolled as it was
+  // shown (`showDoc`). Before `mounted` moves on, which tells the two apart.
+  const lastShown = useRef(0);
+  useLayoutEffect(() => {
+    if (shownN === lastShown.current) return;
+    lastShown.current = shownN;
+    if (shownN) setPending(requestsOf(shownN).pending);
+    const current = session.current;
+    if (!mounted.current.has(shownN) || !current) return;
+    setScrollTarget({
+      n: ++shows.current,
+      entry: current.id,
+      fragment: current.url.includes('#'),
+    });
+  }, [shownN]);
+
+  // What the views came to: which are mounted, which are kept and so hold
+  // their requests, and which went. The browser hears of the history —
+  // its address bar and its Back and Forward follow it — and the documents
+  // no entry or view is of any more are let go.
   const toldHistory = useRef('');
-  useEffect(() => {
-    const changed = () => {
-      // the document shown came into the history, under a number of its own
-      const current = session.current;
-      const now = shownNow.current;
-      if (current && now && !seqOf.has(current.document)) {
-        seqOf.set(current.document, now.seq);
-      }
-      const history: History = {
-        entries: session.entries.map((e) => ({
-          id: e.id,
-          key: e.key,
-          url: e.url,
-          doc: seqOf.get(e.document) ?? 0,
-        })),
-        index: session.index,
-      };
-      const json = JSON.stringify(history);
-      if (json !== toldHistory.current) {
-        toldHistory.current = json;
-        live.current.onHistory(json);
-      }
-      const kept = new Set(history.entries.map((e) => e.doc));
-      kept.add(shownNow.current?.seq ?? 0);
-      kept.add(live.current.loadSeq);
-      setDocs((all) => {
-        let out: Map<number, Doc> | null = null;
-        for (const id of all.keys()) {
-          if (kept.has(id)) continue;
-          out ??= new Map(all);
-          out.delete(id);
-        }
-        return out ?? all;
-      });
-      redraw();
+  useLayoutEffect(() => {
+    mounted.current = new Set(views.map((v) => v.n));
+    const kept = new Set(session.kept);
+    for (const v of views) {
+      if (v.number !== undefined) seqOf.set(v.number, v.seq);
+      requestsOf(v.n).hold(
+        v.n !== shownN && v.number !== undefined && kept.has(v.number),
+      );
+    }
+    for (const [n, made] of requests.current) {
+      if (mounted.current.has(n)) continue;
+      made.drop();
+      requests.current.delete(n);
+    }
+    const history: History = {
+      entries: session.entries.map((e) => ({
+        id: e.id,
+        key: e.key,
+        url: e.url,
+        doc: seqOf.get(e.document) ?? 0,
+      })),
+      index: session.index,
     };
-    return session.onChange(changed);
-  }, []);
+    const json = JSON.stringify(history);
+    if (json !== toldHistory.current) {
+      toldHistory.current = json;
+      live.current.onHistory(json);
+    }
+    const held = new Set(history.entries.map((e) => e.doc));
+    for (const v of views) held.add(v.seq);
+    held.add(live.current.loadSeq);
+    setDocs((all) => {
+      let out: Map<number, Doc> | null = null;
+      for (const id of all.keys()) {
+        if (held.has(id)) continue;
+        out ??= new Map(all);
+        out.delete(id);
+      }
+      return out ?? all;
+    });
+    for (const id of told.current.keys()) {
+      if (!held.has(id)) told.current.delete(id);
+    }
+  });
 
   /** Show the document of another document's entry: the one the tab still
    *  has, where the entry is at its address, or else loaded again. */
@@ -627,17 +909,29 @@ export default function Page(props: PageProps): ReactElement {
     if (held && withoutHash(held.url) === withoutHash(to.url)) {
       showDoc(seq, held, to.url, to.id);
     } else {
+      // what was on its way in would come into the session at the entry
+      // the step went to
+      setViews((state) => ({ ...state, views: overtaken(state.views) }));
       live.current.onLoad(to.url, 'traverse', to.key, seq);
     }
   };
 
   /** Go `delta` entries back or forward. Among the document's own entries
    *  it goes there itself — its engine as a task, and here, at once, where
-   *  it runs none; to another document's, that document is shown. */
+   *  it runs none; to a document the session keeps, that one is shown again
+   *  as it was left, once the session tells of it; to another document's,
+   *  that document is shown. */
   const goBy = (delta: number) => {
     const from = session.index;
+    const target = session.entries[from + delta];
+    const kept = !!target && session.kept.includes(target.document);
     const to = session.go(delta);
     if (to) return showEntry(to);
+    if (kept) {
+      // what was on its way in instead goes, as a step overtakes it
+      setViews((state) => ({ ...state, views: overtaken(state.views) }));
+      return;
+    }
     const current = shownEntry();
     if (!current || shownNow.current?.scripted || session.index === from) {
       return;
@@ -682,7 +976,7 @@ export default function Page(props: PageProps): ReactElement {
   const lost = useRef(false);
   useEffect(() => {
     const current = session.current;
-    if (shown || loadSeq || lost.current || !current) return;
+    if (views.length || loadSeq || lost.current || !current) return;
     lost.current = true;
     live.current.onLoad(
       current.url,
@@ -690,63 +984,47 @@ export default function Page(props: PageProps): ReactElement {
       current.key,
       seqOf.get(current.document) ?? 0,
     );
-  }, [shown, loadSeq]);
+  }, [views.length, loadSeq]);
 
-  // a document's resources are fetched while it is the one showing
-  const pageUrl = withoutHash(url);
-  const requests = useMemo(() => new AbortController(), [doc]);
-  useEffect(() => () => requests.abort(), [requests]);
-  const inFlight = useRef(0);
-  const onResource = useCallback(
-    (request: ResourceRequest) => {
+  /** What a document asks for, through its requests (`DocumentRequests`):
+   *  fetched while it is shown, and held while it is kept. */
+  const onResourceOf =
+    (view: View) =>
+    (request: ResourceRequest): Promise<ResourceResult | null> | null => {
+      const pageUrl = withoutHash(view.url);
       // a video is the player's to open, and nothing is fetched here
       if (request.kind === 'video') {
         const src = plays && videoSource(request.url, request.type, pageUrl);
-        return src ? { kind: 'video' as const, src } : null;
+        return src ? Promise.resolve({ kind: 'video' as const, src }) : null;
       }
       const kind = request.kind;
-      inFlight.current += 1;
-      setPending(inFlight.current);
-      return resource(request.url, kind, pageUrl, requests.signal).finally(
-        () => {
-          inFlight.current -= 1;
-          setPending(inFlight.current);
-        },
+      return requestsOf(view.n).resource((signal) =>
+        resource(request.url, kind, pageUrl, signal),
       );
-    },
-    [pageUrl, requests, plays],
-  );
+    };
 
-  // the title as the document states it, and its icon once its head is in
-  const told = useRef({ doc: 0, title: null as string | null, icon: 0 });
-  const onDocument = useCallback(
-    (document: Document) => {
-      if (!page) return;
-      const title = titleOf(document);
-      const headDone =
-        !page.partial ||
-        !!DomUtils.findOne((el) => el.name === 'body', document.children);
-      queueMicrotask(() => {
-        const was = told.current;
-        if (was.doc !== doc) {
-          was.doc = doc;
-          was.title = null;
-        }
-        if (title !== was.title) {
-          was.title = title;
-          live.current.onMeta(doc, title, undefined);
-        }
-        if (headDone && was.icon !== doc && schemeOf(url) !== 'about') {
-          was.icon = doc;
-          const id = doc;
-          void loadIcon(iconCandidates(document, url), url).then((icon) => {
-            if (icon) live.current.onMeta(id, undefined, icon);
-          });
-        }
-      });
-    },
-    [page, doc, url],
-  );
+  // the title as each document states it, and its icon once its head is in
+  const onDocumentOf = (view: View, page: Doc) => (document: Document) => {
+    const { seq: doc, url } = view;
+    const title = titleOf(document);
+    const headDone =
+      !page.partial ||
+      !!DomUtils.findOne((el) => el.name === 'body', document.children);
+    queueMicrotask(() => {
+      let was = told.current.get(doc);
+      if (!was) told.current.set(doc, (was = { title: null, icon: false }));
+      if (title !== was.title) {
+        was.title = title;
+        live.current.onMeta(doc, title, undefined);
+      }
+      if (headDone && !was.icon && schemeOf(url) !== 'about') {
+        was.icon = true;
+        void loadIcon(iconCandidates(document, url), url).then((icon) => {
+          if (icon) live.current.onMeta(doc, undefined, icon);
+        });
+      }
+    });
+  };
 
   // Scroll: to where the entry was left, or to its fragment, or the top —
   // as a document is shown, and as one with no scripts goes among its own
@@ -845,61 +1123,66 @@ export default function Page(props: PageProps): ReactElement {
     if (typeof to === 'string') live.current.onLink(action, to, post);
   };
 
-  // The page's scripts, where they run: the browser's seams, the latest of
-  // each, and the tab's history. Where the page is shown — the pane, its
+  // A document's scripts, where they run: the browser's seams, the latest
+  // of each, and the tab's history. Where the page is shown — the pane, its
   // scroll and the zoom — is `<Html>`'s to read, from the scroller around it
   // and the `scale` between; a script's source comes through `onResource`
-  // like any other resource.
-  const scripts: HtmlScripts | false = !!shown?.scripted && {
-    userAgent: USER_AGENT,
-    language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
-    // what the platform's player opens, where there is one: a stream's
-    // playlist among it, which a page with no `MediaSource` hands it
-    canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
-    session,
-    navigate: (to, how) => {
-      if (how === 'tab') return live.current.onLink(to, 'tab', null);
-      // a fragment the document went to itself, which its engine has
-      // written to the history already
-      if (to.includes('#') && session.current?.url === to) return;
-      live.current.onLink(to, 'here', null);
-    },
-    reload: () => {
-      const current = session.current;
-      if (!current) return;
-      live.current.onLoad(
-        current.url,
-        'pageReload',
-        current.key,
-        seqOf.get(current.document) ?? 0,
-      );
-    },
-    // `history.go` past the document's own entries, and `back()` to another
-    // document's: the history planned the step, which is taken here
-    go: (delta) => goBy(delta),
-    log: (level, text) => {
-      if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
-    },
-    title: (title) => live.current.onMeta(doc, title, undefined),
-    fetch: (request, signal) => network.fetcher(pageUrl)(request, signal),
-    // `document.cookie` is the jar the network sends with, and the storage
-    // the profile's, where there is one, shared with every tab
-    cookies,
-    storage: profile?.storage,
-    // a page's WebTransport sessions, over quico where it is installed
-    webTransport: network.webTransport,
-    // and its peer connections, over werift where it is installed
-    webRTC: network.webRTC,
-    onTimeout: () =>
-      setNotice('A script on this page ran too long, and was stopped.'),
-    // the browser's own chords stay the browser's, whatever a page's
-    // listener says: a page cancels a key, never the shortcut to close it
-    reserved: (event) =>
-      (event.type === 'keydown' || event.type === 'keyup') &&
-      ((cocoa ? event.metaKey : event.ctrlKey) ||
-        (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
-        /^F[56]$/.test(event.key ?? '')),
-  };
+  // like any other resource. A document the session keeps runs nothing,
+  // and what its workers ask of the network waits for it to be shown again.
+  const scriptsOf = (view: View): HtmlScripts | false =>
+    view.scripted && {
+      userAgent: USER_AGENT,
+      language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
+      // what the platform's player opens, where there is one: a stream's
+      // playlist among it, which a page with no `MediaSource` hands it
+      canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
+      session,
+      navigate: (to, how) => {
+        if (how === 'tab') return live.current.onLink(to, 'tab', null);
+        // a fragment the document went to itself, which its engine has
+        // written to the history already
+        if (to.includes('#') && session.current?.url === to) return;
+        live.current.onLink(to, 'here', null);
+      },
+      reload: () => {
+        const current = session.current;
+        if (!current) return;
+        live.current.onLoad(
+          current.url,
+          'pageReload',
+          current.key,
+          seqOf.get(current.document) ?? 0,
+        );
+      },
+      // `history.go` past the document's own entries, and `back()` to another
+      // document's: the history planned the step, which is taken here
+      go: (delta) => goBy(delta),
+      log: (level, text) => {
+        if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
+      },
+      title: (title) => live.current.onMeta(view.seq, title, undefined),
+      fetch: (request, signal) =>
+        requestsOf(view.n).page(() =>
+          network.fetcher(withoutHash(view.url))(request, signal),
+        ),
+      // `document.cookie` is the jar the network sends with, and the storage
+      // the profile's, where there is one, shared with every tab
+      cookies,
+      storage: profile?.storage,
+      // a page's WebTransport sessions, over quico where it is installed
+      webTransport: network.webTransport,
+      // and its peer connections, over werift where it is installed
+      webRTC: network.webRTC,
+      onTimeout: () =>
+        setNotice('A script on this page ran too long, and was stopped.'),
+      // the browser's own chords stay the browser's, whatever a page's
+      // listener says: a page cancels a key, never the shortcut to close it
+      reserved: (event) =>
+        (event.type === 'keydown' || event.type === 'keyup') &&
+        ((cocoa ? event.metaKey : event.ctrlKey) ||
+          (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
+          /^F[56]$/.test(event.key ?? '')),
+    };
 
   // A link's menu, where the press was on one, and nothing where it was
   // not: `<ContextMenu>` opens no menu for no items, and the document's own
@@ -932,7 +1215,7 @@ export default function Page(props: PageProps): ReactElement {
     return () => clearTimeout(timer);
   }, [notice]);
   // the link under the pointer was the last document's
-  useEffect(() => setHoverLink(null), [doc]);
+  useEffect(() => setHoverLink(null), [shownN]);
 
   const busy = !!loadSeq || !!page?.partial;
   const status =
@@ -1024,50 +1307,71 @@ export default function Page(props: PageProps): ReactElement {
             if (href) live.current.onLink(href, 'background', null);
           }}
         >
-          {page && shown ? (
-            // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's scale
-            // is constant for its life by core's contract, and `<Html>` keeps
-            // its device-pixel work on that promise, so a new zoom is a new
-            // page — built from the source it already has and resources the
-            // network layer kept.
-            //
-            // Both grow: a page shorter than the window is still as tall as
-            // it, as a browser's canvas is, so its background reaches the
-            // bottom at any size rather than stopping where the text does.
-            <box
-              scale={shown.zoom}
-              style={{ flexDirection: 'column', flexGrow: 1 }}
-            >
-              <Html
-                key={`${shown.n}@${shown.zoom}`}
-                ref={handle.ref}
-                // the web's `medium`: every page's `rem` is sixteen pixels in
-                // a browser, and a design system spaces a page in them, where
-                // the theme's own text size set it all an eighth too tight
-                fontSize={16}
-                // and a page that does not say which colour scheme it is
-                // drawn in is light, on white, as every browser draws it —
-                // the reader's own preference is still what its
-                // `prefers-color-scheme` rules are asked
-                defaultColorScheme="light"
-                source={page.source}
-                partial={page.partial}
-                charset={page.charset}
-                // where it is shown, and where it runs no scripts, at the
-                // fragment of the entry shown, which is `:target`
-                baseUrl={page.baseUrl && addressOf(shown, shownEntry())}
-                onResource={onResource}
-                onLink={onLink}
-                onSubmit={onSubmit}
-                scripts={scripts}
-                onDocument={onDocument}
-                onViewportOverflow={(next) =>
-                  setViewport({ doc, overflow: next })
+          {views.map((view) => {
+            const source = docs.get(view.seq);
+            if (!source) return null;
+            // one the session keeps is laid out, drawn and handed nothing
+            // while it is hidden, and the handle is the document shown's
+            const visible = view.n === shownN;
+            return (
+              // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's
+              // scale is constant for its life by core's contract, and
+              // `<Html>` keeps its device-pixel work on that promise, so a
+              // new zoom is a new page — built from the source it already
+              // has and resources the network layer kept.
+              //
+              // Both grow: a page shorter than the window is still as tall
+              // as it, as a browser's canvas is, so its background reaches
+              // the bottom at any size rather than stopping where the text
+              // does.
+              <box
+                key={`${view.n}@${view.zoom}`}
+                scale={view.zoom}
+                style={
+                  visible
+                    ? { flexDirection: 'column', flexGrow: 1 }
+                    : { display: 'none' }
                 }
-                style={{ flexGrow: 1 }}
-              />
-            </box>
-          ) : null}
+              >
+                <Html
+                  ref={visible ? handle.ref : undefined}
+                  // the web's `medium`: every page's `rem` is sixteen pixels
+                  // in a browser, and a design system spaces a page in them,
+                  // where the theme's own text size set it all an eighth too
+                  // tight
+                  fontSize={16}
+                  // and a page that does not say which colour scheme it is
+                  // drawn in is light, on white, as every browser draws it —
+                  // the reader's own preference is still what its
+                  // `prefers-color-scheme` rules are asked
+                  defaultColorScheme="light"
+                  source={source.source}
+                  partial={source.partial}
+                  charset={source.charset}
+                  // where it is shown, and where it runs no scripts, at the
+                  // fragment of the entry shown, which is `:target`
+                  baseUrl={
+                    source.baseUrl &&
+                    addressOf(view, visible ? shownEntry() : null)
+                  }
+                  onResource={onResourceOf(view)}
+                  onLink={onLink}
+                  onSubmit={onSubmit}
+                  scripts={scriptsOf(view)}
+                  onDocument={onDocumentOf(view, source)}
+                  onViewportOverflow={(overflow) =>
+                    setViews((state) => ({
+                      ...state,
+                      views: state.views.map((v) =>
+                        v.n === view.n ? { ...v, overflow } : v,
+                      ),
+                    }))
+                  }
+                  style={{ flexGrow: 1 }}
+                />
+              </box>
+            );
+          })}
         </box>
       </ContextMenu>
       {status ? (
@@ -1108,10 +1412,10 @@ const withoutHash = (url: string): string => url.split('#')[0];
 /** The address a document is shown at: where it was shown, and where it
  *  runs no scripts, at the fragment of its entry shown now — one whose
  *  scripts run keeps its own fragments. */
-function addressOf(shown: Shown, entry: HtmlSessionEntry | null): string {
-  if (shown.scripted || !entry) return shown.url;
+function addressOf(view: View, entry: HtmlSessionEntry | null): string {
+  if (view.scripted || !entry) return view.url;
   const at = entry.url.indexOf('#');
-  return withoutHash(shown.url) + (at < 0 ? '' : entry.url.slice(at));
+  return withoutHash(view.url) + (at < 0 ? '' : entry.url.slice(at));
 }
 
 // --- loading a document ------------------------------------------------------
