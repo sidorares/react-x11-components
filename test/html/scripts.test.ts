@@ -2223,6 +2223,90 @@ test('messages are tasks of their own, and a clone is a copy of what can be copi
   );
 });
 
+test('a port a message transfers moves to the side it is posted to, with what was queued for it', async () => {
+  // HTML 9.4.4: a transferred port is a new one, entangled with the old
+  // one's partner; one only in the message, or given up already, or the
+  // port posted through, is a DataCloneError before anything is posted
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'var c = new MessageChannel(), d = new MessageChannel(), moved = c.port2;' +
+      'try { d.port1.postMessage(c.port1); } catch (e) { r.push("value " + e.name); }' +
+      'try { d.port1.postMessage(1, [d.port1]); } catch (e) { r.push("self " + e.name); }' +
+      'try { d.port1.postMessage(1, [c.port1, c.port1]); } catch (e) { r.push("twice " + e.name); }' +
+      'c.port1.postMessage("early");' +
+      'd.port2.onmessage = function (e) {' +
+      '  var p = e.ports[0];' +
+      '  r.push(e.ports.length, p instanceof MessagePort, p !== moved, e.data.p === p);' +
+      '  p.onmessage = function (m) { r.push("got " + m.data); if (m.data === "late") windows(); };' +
+      '  c.port1.postMessage("late"); };' +
+      'd.port1.postMessage({ p: moved }, [moved]);' +
+      'try { d.port1.postMessage(1, [moved]); } catch (e) { r.push("detached " + e.name); }' +
+      'function windows() {' +
+      '  var e2 = new MessageChannel();' +
+      '  addEventListener("message", function (ev) {' +
+      '    r.push("window " + ev.ports.length);' +
+      '    ev.ports[0].onmessage = function (m) {' +
+      '      r.push("window got " + m.data);' +
+      '      var e3 = new MessageChannel();' +
+      '      var copy = structuredClone(e3.port2, { transfer: [e3.port2] });' +
+      '      r.push(copy !== e3.port2);' +
+      '      copy.onmessage = function (m2) { r.push("clone got " + m2.data); out.textContent = r.join("|"); };' +
+      '      e3.port1.postMessage("c"); };' +
+      '    e2.port1.postMessage("w"); });' +
+      '  postMessage("x", "*", [e2.port2]); }' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'value DataCloneError',
+      'self DataCloneError',
+      'twice DataCloneError',
+      'detached DataCloneError',
+      '1',
+      'true',
+      'true',
+      'true',
+      'got early',
+      'got late',
+      'window 1',
+      'window got w',
+      'true',
+      'clone got c',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a port crosses to a worker and back, and talks across the thread', async () => {
+  // what Comlink and workbox do: a channel's end handed to the worker, and
+  // the reply through it, rather than through the worker's own messages
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "onmessage = function (e) { var p = e.ports[0];" +' +
+      '  "p.onmessage = function (m) { p.postMessage(\'echo \' + m.data); };" +' +
+      '  "var mine = new MessageChannel();" +' +
+      '  "mine.port1.onmessage = function (m) { mine.port1.postMessage(\'back \' + m.data); };" +' +
+      '  "postMessage([e.ports.length, e.data.p === p].join(), [mine.port2]); };";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'var r = [], late = []; var out = document.getElementById("out");' +
+      'function seen(m) { late.push(m.data); if (late.length === 2) out.textContent = r.concat(late.sort()).join("|"); }' +
+      'var c = new MessageChannel(); c.port1.onmessage = seen;' +
+      'w.onmessage = function (e) {' +
+      '  r.push(e.data, e.ports.length);' +
+      '  var q = e.ports[0]; q.onmessage = seen;' +
+      '  q.postMessage("q"); c.port1.postMessage("p"); };' +
+      'w.postMessage({ p: c.port2 }, [c.port2]);' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    '1,true|1|back q|echo p',
+    doc.logs.join('\n'),
+  );
+});
+
 test('blobs, files, form data and the media a page reads at rest', async () => {
   const doc = await hosted(
     '<form id="f"><input name="a" value="1"><input type="checkbox" name="b" checked>' +
@@ -9529,6 +9613,46 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test("a port the page posts to another origin's frame is the frame's, and the two talk through it", async () => {
+  // a sandbox's handshake: the page hands the frame a channel's end, and
+  // they talk on the channel, each realm with ports of its own
+  const frame =
+    '<!DOCTYPE html><script>' +
+    'addEventListener("message", function (e) {' +
+    '  var p = e.ports[0];' +
+    '  p.onmessage = function (m) { p.postMessage("pong " + m.data + " " + m.ports.length); };' +
+    '  var mine = new MessageChannel();' +
+    '  mine.port1.onmessage = function (m) { mine.port1.postMessage("frame " + m.data); };' +
+    '  p.postMessage("hello " + e.ports.length + " " + (e.data.p === p) + " " + (p instanceof MessagePort), [mine.port2]);' +
+    '});' +
+    'parent.postMessage("ready", "*");' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f"); var r = [], late = [];' +
+      'function seen(m) { late.push(m.data); if (late.length === 2) document.getElementById("out").textContent = r.concat(late.sort()).join("|"); }' +
+      'var c = new MessageChannel();' +
+      'c.port1.onmessage = function (m) {' +
+      '  c.port1.onmessage = seen;' +
+      '  r.push(m.data, m.ports.length);' +
+      '  var q = m.ports[0]; q.onmessage = seen;' +
+      '  q.postMessage("q"); c.port1.postMessage("ping"); };' +
+      'addEventListener("message", function (e) {' +
+      '  if (e.data === "ready") f.contentWindow.postMessage({ p: c.port2 }, "*", [c.port2]); });' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(
+    page,
+    'hello 1 true true|1|frame q|pong ping 0',
+    logs.join('\n'),
+  );
 });
 
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {
