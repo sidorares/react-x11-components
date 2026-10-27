@@ -2955,6 +2955,39 @@ test("a column with no height keeps its items' flex-basis", async () => {
   assert.strictEqual(boxOf(el, 'b').height, 40, 'its content box, padded');
 });
 
+test("the flex shorthand's basis left out is 0%, its content's down a column of no height", async () => {
+  // CSS Flexbox 7.1.1 and every browser: `flex: 1` is `1 1 0%`, and a
+  // percentage of a height that is not definite is the content's (7.2.3).
+  // Read as `0`, a dialog's scrolling body — `flex: 1; min-height: 0` in a
+  // box of no height — came to nothing and the dialog was drawn empty.
+  // The heights are Chrome's, Firefox's and Safari's.
+  const two = '<div style="height:50px"></div><div style="height:50px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;padding:16px">' +
+      `<div id="a" style="flex:1;min-height:0">${two}</div></div>` +
+      // a basis written as `0` is a length, and does take it all
+      '<div style="display:flex;flex-direction:column;padding:16px">' +
+      `<div id="b" style="flex:1 1 0;min-height:0">${two}</div></div>` +
+      // down a column a stretch made definite, 0% is 0, and the two share
+      '<div style="display:flex;height:300px">' +
+      '<div style="display:flex;flex-direction:column">' +
+      '<div id="c" style="flex:1;min-height:0"><div style="height:100px"></div></div>' +
+      '<div id="d" style="flex:1;min-height:0"><div style="height:400px"></div></div>' +
+      '</div></div>' +
+      // and the grow left out is 1
+      '<div style="display:flex;width:200px;height:10px">' +
+      '<div id="e" style="flex:10px"></div><div style="flex:0 0 10px"></div></div>',
+  );
+  const el = view(node);
+  const height = (id: string) => boxOf(el, id).height;
+  assert.deepStrictEqual(
+    [height('a'), height('b'), height('c'), height('d')],
+    [100, 0, 150, 150],
+  );
+  assert.strictEqual(boxOf(el, 'e').width, 190, '`flex: 10px` grows');
+});
+
 test('an item across a column is no narrower than its content at its narrowest', async () => {
   // Where it is not stretched, an item is `fit-content` across a column
   // (CSS Flexbox 9.4, step 7): fitted to the column, and past it where its
