@@ -53,7 +53,7 @@ let pending = 0;
 let settled = Date.now();
 const onResource = (request: ResourceRequest) => {
   // no design plays a video, and a bench would not
-  if (request.kind === 'video') return null;
+  if (request.kind === 'video' || request.kind === 'audio') return null;
   const kind = request.kind;
   pending += 1;
   return network

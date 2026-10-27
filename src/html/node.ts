@@ -404,6 +404,8 @@ import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
 import type { AnimatedImage } from './animated.js';
 import type {
+  AudioSource,
+  PlayerKind,
   ResourceRequest,
   ResourceResult,
   VideoSource,
@@ -417,6 +419,7 @@ import {
   embeddedRectsOf,
   FIXED_OVER,
   mediaRectsOf,
+  sameSounds,
   videoCandidates,
   videoSignature,
 } from './media.js';
@@ -424,8 +427,11 @@ import type {
   Cover,
   EmbeddedRect,
   MediaAsked,
+  MediaEventHandler,
+  MediaEventKind,
   MediaRect,
   MediaState,
+  Sound,
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
@@ -489,6 +495,17 @@ export interface HtmlViewProps {
    * is asked for, and every video is its poster.
    */
   onMedia?: (rects: MediaRect[]) => void;
+  /**
+   * The players with no picture (`Sound`): each `<audio>` a page's script
+   * has played and not seen to its end, in the document or out of it, with
+   * what it plays and what was asked of it — reported as one is played,
+   * asked something, answered for or let go. Absent, no audio source is
+   * asked for, and the page plays on unheard.
+   */
+  onSounds?: (sounds: Sound[]) => void;
+  /** What a player with no picture said (`soundEvent`), for the page that
+   *  played it. */
+  onMediaEvent?: MediaEventHandler;
   /**
    * Where an `<iframe>`, a `<canvas>` or an `<embed>` is, for what a host
    * mounts over it (`renderEmbedded`), in the same space and at the same
@@ -1168,6 +1185,11 @@ export class HtmlViewNode extends Node {
    *  markup says as it is reported. By element, so a player mounted again
    *  is told it too. */
   private _mediaAsked = new WeakMap<Element, MediaAsked>();
+  /** The `<audio>` elements a page's script has played and that have not
+   *  reached their end since (`setMediaState`, `soundEvent`), in the order
+   *  each was first played; and what `onSounds` was last told. */
+  private _sounding = new Set<Element>();
+  private _sounds: Sound[] = [];
   /** The sources each video chose between, and what it chose them from
    *  (`_videoChoice`). */
   private _videoChoices = new WeakMap<
@@ -1209,6 +1231,7 @@ export class HtmlViewNode extends Node {
         // a player goes over one. A sheet declined that late changes no
         // style either, but the first rendering may be held for it.
         if (what === 'video') this._reportMedia();
+        else if (what === 'audio') this._publishSounds();
         // a sheet only a `<link rel=preload>` asked for: nothing reads it
         // yet, and its `load` is told as the request settles
         else if (what === 'stylesheet' && !layout) return;
@@ -4006,7 +4029,12 @@ export class HtmlViewNode extends Node {
     if (!tree || !this._props().onMedia) return;
     this._covers = new Map();
     this._mediaLaid = tree.media.length
-      ? mediaRectsOf(tree, this._scale, (el) => this._videoOf(el), this._covers)
+      ? mediaRectsOf(
+          tree,
+          this._scale,
+          (el) => this._sourceOf('video', el),
+          this._covers,
+        )
       : [];
     const mounted = new Set(this._mediaLaid.map((r) => r.element));
     if (!sameElements(mounted, this._mounted)) {
@@ -4151,16 +4179,22 @@ export class HtmlViewNode extends Node {
     }
   }
 
-  /** The source a `<video>` plays: the first of its sources the host
-   *  answered and no player has failed on, each asked for in turn. Null
-   *  while one ahead of it is still being answered, and where none is
-   *  left. */
-  private _videoOf(el: Element): { source: VideoSource; url: string } | null {
+  /** The source a `<video>` or an `<audio>` plays: the first of its
+   *  sources the host answered for that kind of player and no player has
+   *  failed on, each asked for in turn. Null while one ahead of it is
+   *  still being answered, and where none is left. */
+  private _sourceOf<K extends PlayerKind>(
+    kind: K,
+    el: Element,
+  ): {
+    source: K extends 'video' ? VideoSource : AudioSource;
+    url: string;
+  } | null {
     for (const { url, type } of this._videoChoice(el)) {
-      if (this._resources.video(url) === undefined) {
-        this._resources.requestVideo(url, type, el);
+      if (this._resources.media(kind, url) === undefined) {
+        this._resources.requestMedia(kind, url, type, el);
       }
-      const answer = this._resources.video(url);
+      const answer = this._resources.media(kind, url);
       if (answer === 'pending') return null;
       if (answer === undefined || answer === 'failed') continue;
       return { source: answer, url };
@@ -4201,6 +4235,66 @@ export class HtmlViewNode extends Node {
     if (this._mediaLaid.some((r) => r.element === element)) {
       this._publishMedia();
     }
+    // an `<audio>` is heard from the first time it is played, and not
+    // before: one a page makes for each blip asks for nothing until it
+    // sounds
+    if (tagOf(element) === 'audio' && this._props().onSounds) {
+      if (state.paused === false) this._sounding.add(element);
+      if (this._sounding.has(element)) this._publishSounds();
+    }
+  }
+
+  /**
+   * The players with no picture, to `onSounds` where they changed: each
+   * `<audio>` played and not ended, whose source the host has answered.
+   * One whose answer is on its way is left out until it arrives, and is
+   * reported then (`ResourceChange` `'audio'`).
+   */
+  private _publishSounds(): void {
+    const report = this._props().onSounds;
+    if (!report) return;
+    const sounds: Sound[] = [];
+    for (const element of this._sounding) {
+      const chosen = this._sourceOf('audio', element);
+      if (!chosen) continue;
+      const asked = this._mediaAsked.get(element);
+      sounds.push({
+        ...asked,
+        element,
+        source: chosen.source,
+        url: chosen.url,
+        key: this._resources.keyOf(chosen.url),
+        loop: attr(element, 'loop') !== undefined,
+        // the markup's, until a script says otherwise (`defaultMuted`)
+        muted: asked?.muted ?? attr(element, 'muted') !== undefined,
+      });
+    }
+    if (sameSounds(sounds, this._sounds)) return;
+    this._sounds = sounds;
+    report(sounds);
+  }
+
+  /**
+   * What the player of a sound said (`sounds.ts`), told to the page
+   * (`onMediaEvent`), whose clock follows it. Its end lets the player go:
+   * an `<audio>` played again after its end is played from its start, by a
+   * new one. A failure is the next source's turn, as a `<video>`'s is.
+   */
+  soundEvent(
+    element: Element,
+    url: string,
+    kind: MediaEventKind,
+    value = '',
+  ): void {
+    if (kind === 'error') this._resources.failMedia('audio', url);
+    if (kind === 'ended') this._sounding.delete(element);
+    this._props().onMediaEvent?.(
+      element,
+      this._resources.keyOf(url),
+      kind,
+      value,
+    );
+    if (kind === 'ended' || kind === 'error') this._publishSounds();
   }
 
   /**
@@ -4370,7 +4464,7 @@ export class HtmlViewNode extends Node {
    *  decoder for, a URL that did not answer, a display with no player: the
    *  next source's turn, and the poster where there is none. */
   mediaFailed(element: Element, url: string): void {
-    this._resources.failVideo(url);
+    this._resources.failMedia('video', url);
     if (this._videoSizes.delete(element))
       this._invalidate(Stale.Boxes, EMPTY_SET);
     else this._reportMedia();

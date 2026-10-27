@@ -38,6 +38,7 @@ import type {
 import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
+import type { MediaEventKind } from '../media.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
@@ -484,6 +485,18 @@ export class ScriptRunner {
     if (this._disposed) return;
     if (this._ready === 'loading') this._heldCss.push(...events);
     else this.host.cssEvents(events);
+  }
+
+  /** What a player with no picture said (`HtmlViewProps.onMediaEvent`),
+   *  for the page's media element, whose clock follows it. */
+  mediaEvent(
+    element: Element,
+    src: string,
+    kind: MediaEventKind,
+    value: string,
+  ): void {
+    if (this._disposed) return;
+    this.host.mediaEvent(element, src, kind, value);
   }
 
   /** Everything the document asked for is in: `load`, once the scripts the

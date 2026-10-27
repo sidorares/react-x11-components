@@ -314,6 +314,31 @@ test('a document left is kept, and a step back shows it again as it was, told pa
   assert.equal(logs.filter((l) => l.endsWith(' loaded')).length, 2);
 });
 
+test('what a kept document plays is paused, in its tree and out of it, and told so as it is shown again', async () => {
+  const doc = await tab(
+    {
+      'a.html': page(
+        'a',
+        'window.inTree = document.createElement("audio");' +
+          'document.documentElement.appendChild(inTree);' +
+          'window.outOfTree = new Audio();' +
+          'inTree.play(); outOfTree.play();' +
+          'addEventListener("pageshow", function (e) {' +
+          '  say("playing " + !inTree.paused + " " + !outOfTree.paused); });',
+      ),
+      'b.html': page('b'),
+    },
+    `${SITE}a.html`,
+    3,
+  );
+  await until(doc, 'a playing true true');
+  doc.run('location.href = "b.html";');
+  await until(doc, 'b pageshow false 1');
+  doc.run('history.back();');
+  await until(doc, 'a pageshow true 1');
+  await until(doc, 'a playing false false');
+});
+
 test('a kept document runs nothing: its timers wait, and an interval owed while it was kept runs once, after pageshow', async () => {
   const doc = await tab(
     {

@@ -310,6 +310,7 @@ function FrameDocument({
       ...({
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
+        _onMediaEvent: scripts.mediaEvent,
       } as object),
     }),
     holder ? h(FrameHolder, { context: holder }) : null,

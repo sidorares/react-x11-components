@@ -408,7 +408,8 @@ export async function capture(
     request: ResourceRequest,
   ): Promise<ResourceResult | null> => {
     // no design plays a video, and a bench would not
-    if (request.kind === 'video') return Promise.resolve(null);
+    if (request.kind === 'video' || request.kind === 'audio')
+      return Promise.resolve(null);
     const kind = request.kind;
     pending += 1;
     return network

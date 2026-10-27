@@ -39,7 +39,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
-| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                |
+| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` or `<audio>` playing — see [Video](#video) and [Audio](#audio). May return a promise. **Absent, nothing loads.**                                               |
 | `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
@@ -87,7 +87,7 @@ handle.refresh();
 | `offsetRect(element)`                                                                   | Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth` and `offsetHeight` measure it, laid out first — `{ parent, x, y, width, height }`: its offset parent, which is the nearest positioned, transformed or contained element around it, or a `<td>`, a `<th>` or a `<table>` around one that is not positioned, or the `<body>`; and its border box from that one's padding edge, in logical pixels, where layout put it before a transform or a scroll moved it. As Chrome has them where it parts from CSSOM View's words: see [Offsets](#offsets). Null for an element with no box.                                                                                                                                                                                                                                                            |
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `canvasChanged(element)`                                                                | A `<canvas>`'s picture (`canvasImage`) changed: repaint it where it is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `setMediaState(el, state)`                                                              | Tell a `<video>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; see [Video](#video).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `setMediaState(el, state)`                                                              | Tell a `<video>`'s or an `<audio>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; an `<audio>` is asked for the first time it is told it plays. See [Video](#video) and [Audio](#audio).                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `setScriptAnimation(el, id, effect, play)`                                              | Draw an animation a script made (`Element.animate()`): its effect, as the JSON the scripts' realm describes it — the pseudo-element, the frames at their computed offsets with their easings and values, and the timing — and where its time is, `1,<time>,<rate>` running from that time and `0,<time>,<rate>` held there, by an id that is its composite order. Either null takes it off the element. Sampled on the clock CSS's animations run on; see [Scripts](#scripts).                                                                                                                                                                                                                                                                                                                                                                                               |
 | `scriptAnimationValues(el, id, properties)`                                             | What `commitStyles()` writes: each of `properties` as the element's animations come to now, those made after `id` left out, as `getComputedStyle` serializes it — `prop\u0000value` pairs joined by `\u0001` — or null where the element is not rendered.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `scrollElementTo(element, { x?, y? }, relative?, target?)`                              | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`; `relative` for a `scrollBy()`, which a snap container snaps the way it went, and `target` for the element a scroll into view brings in, which it lines up. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -2076,8 +2076,71 @@ document fades it by fades the player.
 and pauses it, as one in a browser does, and the pointer over it is the
 arrow rather than the document's I-beam; a press on one without goes to the
 document, so a drag across it selects the text around it. A transport bar
-is an application's to draw, around the document. `<audio>` is not a
-video, and plays nothing.
+is an application's to draw, around the document. An `<audio>` is not a
+video: see [Audio](#audio).
+
+## Audio
+
+```jsx
+const plays = useSupports('mediaPlayback');
+<Html
+  source={page}
+  baseUrl={url}
+  scripts
+  onResource={(r) =>
+    r.kind === 'audio' || r.kind === 'video'
+      ? plays && allowed(r.url)
+        ? { kind: r.kind, src: r.url }
+        : null
+      : load(r)
+  }
+/>;
+```
+
+**An `<audio>` a page plays is core's `<audio>`** (react-x11's
+`docs/elements.md#audio`): the platform's player with no picture —
+AVFoundation on macOS, and a `<Frame>` pane's host for a pane. One is
+mounted for each audio element a page's script plays, in the document or
+made with `new Audio()` and never put in it, as a child of `<Html>` that
+takes no room. HTML's `<audio>` without `controls` is `display: none`, and
+there is no bar drawn for one with them.
+
+**Nothing is asked for until it is played.** An `<audio>` is asked for as
+`kind: 'audio'` the first time the handle's `setMediaState` is told it plays
+— which is what a page's `play()`, or its `autoplay` once loaded, comes to
+through [`scripts`](#scripts) — so a page that makes an element for each
+blip asks for each only as it sounds. Its sources are asked for as a
+video's are, its `src` or each `<source>` in turn, and the answer is
+`{ kind: 'audio', src }`, which the player opens itself, or `null`, which
+is the next source's turn and, with none left, nothing heard. Nothing else
+plays one yet: there is no sink for decoded samples, as `frames` is for a
+video, so where `useSupports('mediaPlayback')` is false — X11 and Wayland —
+a host declines it, and the page plays on unheard, as it did before.
+`HtmlNetwork.resources` and `useHtmlNetwork` answer it as they answer a
+video, and decline WebM and Ogg, which AVFoundation does not read.
+
+What a page's script asks — `pause()`, `muted`, `volume`, `playbackRate`, a
+seek — goes to the playing player as core's props, as a video's does. Two
+things are not as a video's:
+
+- **The page's clock is the player's.** A video's player says nothing back
+  to the page; an audio's says its length, how far it has got, its end and
+  its failure, and the page's media element follows it: `duration` is the
+  player's, `currentTime` is set to where it says it has got four times a
+  second and runs on between, and `ended` is fired when the player ends,
+  not when the page's clock reaches the length — a page that goes on to the
+  next file at `ended`, as a read-aloud does, would otherwise cut its last
+  word off. Where nothing loads the media for the page, the player's
+  metadata is what readies it. News of a source the element no longer
+  plays is a player's that is gone, and nobody hears it.
+- **Its end lets the player go.** An `<audio>` played again after its end
+  is played from its start, by a new player, as HTML plays an ended one;
+  and a page's thousand blips hold no thousand players. A failure is the
+  next source's turn.
+
+There is no autoplay policy yet: a page plays when it asks, as it did when
+nothing was heard, so a host that shows pages it does not trust should
+mute them itself until the user has used them.
 
 ## Embedded content
 

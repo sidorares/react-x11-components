@@ -1008,10 +1008,16 @@ export default function Page(props: PageProps): ReactElement {
     (view: View) =>
     (request: ResourceRequest): Promise<ResourceResult | null> | null => {
       const pageUrl = withoutHash(view.url);
-      // a video is the player's to open, and nothing is fetched here
-      if (request.kind === 'video') {
+      // a video, or an audio, is the player's to open, and nothing is
+      // fetched here
+      if (request.kind === 'video' || request.kind === 'audio') {
         const src = plays && videoSource(request.url, request.type, pageUrl);
-        return src ? Promise.resolve({ kind: 'video' as const, src }) : null;
+        if (!src) return null;
+        return Promise.resolve(
+          request.kind === 'audio'
+            ? { kind: 'audio' as const, src }
+            : { kind: 'video' as const, src },
+        );
       }
       const kind = request.kind;
       return requestsOf(view.n).resource((signal) =>
