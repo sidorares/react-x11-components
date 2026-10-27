@@ -56,6 +56,7 @@ import { installRtcTransports } from './rtc-transports.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
+import { installGeometry } from './geometry.js';
 import type { Bridge, Primitive } from './dom.js';
 
 declare const setTimeout: SetTimeout;
@@ -259,11 +260,12 @@ const INSTALL = `(function () {
   const webrtc = (${installWebRTC.toString()});
   const rtcTransports = (${installRtcTransports.toString()});
   const webaudio = (${installWebAudio.toString()});
+  const geometry = (${installGeometry.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, geometry, named);
 })()`;
 
 /**
