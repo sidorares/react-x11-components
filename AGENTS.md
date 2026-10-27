@@ -2094,7 +2094,14 @@ or a grid item (`keptItem`) the same way, by what its last layout in its
 container was laid out from (`Natural`, `ItemLaid`), under the rule a
 block is kept by (`mayKeepLaid`, `keepLaid`): joshwcomeau.com's article is
 a grid of a hundred paragraphs in flex boxes, and each sparkle beside one
-of them laid every one out again. Four rules hold it up. **State
+of them laid every one out again. A probe keeps a flex item's natural
+layout as well, a probe's or a layout's, where all of the item was laid
+out and it holds nothing out of the flow (`keepsNatural`), and an item
+keeps one a width (`NATURAL_WIDTHS`): a webmail page's hidden strip of
+2,496 senders was laid out again in every probe of the page, and its
+content pane at its widest and its width by turns. **Anything new that
+reads a natural layout's geometry asks that its `serial` is the box's**,
+since only the latest is the layout the box has. Four rules hold it up. **State
 the builder carries across siblings is a root's to bring to a known
 value, or a refusal**: a new one goes in the table in the design record.
 **Anything new a `BoxTree` lists in document order is spliced in

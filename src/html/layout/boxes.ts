@@ -1469,7 +1469,6 @@ export function buildSubtrees(
     tree.vertical ||
     tree.firstLine ||
     cascade.hasFirstLine ||
-    cascade.hasFirstLetter ||
     options.transition
   ) {
     return null;
@@ -1489,6 +1488,13 @@ export function buildSubtrees(
     const old = tailRoot(node, from, tree, document, firstBoxes);
     if (!old) return null;
     olds.push(old);
+  }
+  // a root a block around looks for a first letter in, or a tail of one
+  if (cascade.hasFirstLetter) {
+    for (const old of olds) {
+      const from = old.tail ? old.el : old.el && flatParentOf(old.el);
+      if (lookedForLetter(from, tree, cascade)) return null;
+    }
   }
   // in the document's order, which their text is in: two at one place are
   // in the order of their nodes, the one with no text first
@@ -5490,6 +5496,28 @@ function giveBack(search: LetterSearch): void {
 
 /** Whether a box of this display is a block container, which is what can
  *  have a first letter. */
+/**
+ * Whether a block at or around `from` looks for a first letter in what it
+ * holds (`Builder._firstLetter`): one a `::first-letter` rule matches. Only
+ * such a block hands the builder a search, and none is carried out past
+ * what it holds, so what a subtree build makes below none is what a whole
+ * build makes there. One rule of the kind anywhere in a webmail page's
+ * sheets — the first letter of the account name in its header — made every
+ * change to the page a build of all 12,894 of its elements.
+ */
+function lookedForLetter(
+  from: Element | null,
+  tree: BoxTree,
+  cascade: Cascade,
+): boolean {
+  for (let at = from; at; at = flatParentOf(at)) {
+    const style = tree.styles.get(at)?.style;
+    if (style && hasFirstLetter(style.display) && cascade.firstLetterRules(at))
+      return true;
+  }
+  return false;
+}
+
 function hasFirstLetter(display: ComputedStyle['display']): boolean {
   switch (display) {
     case 'block':

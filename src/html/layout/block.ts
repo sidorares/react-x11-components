@@ -874,10 +874,13 @@ export function mayKeepLaid(
     scale: number | undefined;
     fonts: FontsLike | null;
   },
+  /** Whether a probe may keep it: its caller has asked what a probe needs
+   *  of the layout it keeps (`keepsNatural`). */
+  probes = false,
 ): boolean {
   return (
     ctx.reusePass !== undefined &&
-    !ctx.probing &&
+    (probes || !ctx.probing) &&
     !Number.isNaN(was.pass) &&
     was.pass !== ctx.reusePass &&
     was.viewportWidth === ctx.viewportWidth &&

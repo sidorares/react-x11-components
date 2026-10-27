@@ -1274,8 +1274,17 @@ function applyItem(
       (box.kind === 'replaced' ||
         (containingWidth !== MIN_CONTENT_PROBE &&
           (style.flexShrink === 0 || weighed)));
-    const narrowest =
-      alongRow || percentHeightsIn(box)
+    // Along a row in no room, an item whose automatic minimum is its
+    // content at its narrowest is fitted to that at once: fitted to no
+    // room, it was laid out at no width for `autoMinimums` to hold it at
+    // that and lay it out again, every item of the row twice at every
+    // probe, where its narrowest is kept for good and its layout at that
+    // width from the last layout (`keptNatural`).
+    const narrowest = alongRow
+      ? containingWidth === MIN_CONTENT_PROBE && heldAtMinContent(box)
+        ? () => minContentOf(box, ctx, laid) - extra
+        : undefined
+      : percentHeightsIn(box)
         ? undefined
         : box.kind === 'replaced'
           ? () => (replacedMinimum(box, containingWidth) ?? extra) - extra
@@ -1612,11 +1621,18 @@ function layoutNaturally(
   } else {
     const at = ctx.positioned.length;
     layoutAt(box, ctx, width, containing, laid);
+    naturalLayouts += 1;
     // a replaced box is sized, not laid out, and has no layout to count
     if (box.kind !== 'replaced') {
-      NATURAL.set(box, {
+      noteNatural(box, {
         ctx,
-        pass: ctx.probing ? NaN : (ctx.reusePass ?? NaN),
+        pass: ctx.reusePass ?? NaN,
+        probe: ctx.probing === true,
+        whole:
+          ctx.probing === true ||
+          (ctx.until === undefined &&
+            ctx.keep === undefined &&
+            ctx.reach === undefined),
         viewportWidth: ctx.viewportWidth,
         viewportHeight: ctx.viewportHeight,
         scale: ctx.scale,
@@ -1683,8 +1699,8 @@ function keptNatural(
   width: number,
   containing: number,
 ): Natural | null {
-  const kept = NATURAL.get(box);
-  if (kept === undefined || kept.width !== width) return null;
+  const kept = naturalAt(box, width);
+  if (kept === undefined) return null;
   // An earlier layout's, kept as a block in a flow is (`mayKeepLaid`):
   // where the box has that layout still, and nothing in it has changed
   // since (`forgetSizes`, which drops this). A page's flex column of a
@@ -1693,7 +1709,7 @@ function keptNatural(
   const before = kept.ctx !== ctx;
   if (
     before &&
-    (kept.serial !== box.layoutSerial || !mayKeepLaid(box, ctx, kept))
+    (kept.serial !== box.layoutSerial || !keepsNatural(box, ctx, kept))
   ) {
     return null;
   }
@@ -1741,15 +1757,43 @@ function keptNatural(
   return kept;
 }
 
+/**
+ * Whether a layout may keep an item's natural layout that an earlier one
+ * made (`mayKeepLaid`). A probe may keep one a probe or a layout made,
+ * which lay the item out alike at a width, where all of the item was laid
+ * out — none of it left for a layout that stops to set aside, which a
+ * probe has to measure — and it holds no box out of the flow, which a
+ * kept box counts in the document's reach. A layout may keep only one a
+ * layout made: a probe keeps none of what a layout keeps by the boxes in
+ * the item (`FLOW_PLACE`, `LAID`). A probe that kept none laid all of an
+ * item out at each layout, whatever changed: a webmail page's hidden
+ * strip of 2,496 senders, in the `auto` column of a grid whose min-content
+ * its flex row asks, was laid out again inside each probe of it, some
+ * 700 ms of every layout on macOS.
+ */
+function keepsNatural(box: Box, ctx: LayoutContext, kept: Natural): boolean {
+  if (!ctx.probing) return !kept.probe && mayKeepLaid(box, ctx, kept);
+  return (
+    kept.whole &&
+    mayKeepLaid(box, ctx, kept, true) &&
+    !ctx.blockers!.holders.has(box)
+  );
+}
+
 /** A layout of an item at its content's own height (`layoutNaturally`): in
  *  which pass, which of the box's layouts it was, and what it was made
  *  from. */
 interface Natural {
   ctx: LayoutContext;
-  /** What a later layout keeps it by (`mayKeepLaid`): the layout's
-   *  `reusePass`, NaN where it keeps none or was a probe, and the viewport,
-   *  scale and fonts it was laid out at. */
+  /** What a later layout keeps it by (`keepsNatural`): the layout's
+   *  `reusePass`, NaN where it keeps none, and the viewport, scale and
+   *  fonts it was laid out at. */
   pass: number;
+  /** Whether a probe made it, which only a probe keeps. */
+  probe: boolean;
+  /** Whether it is all of the item, which is what a probe keeps: one a
+   *  layout that stops made may leave some of it set aside. */
+  whole: boolean;
   viewportWidth: number;
   viewportHeight: number;
   scale: number | undefined;
@@ -1776,7 +1820,47 @@ interface Natural {
   content: number;
 }
 
-const NATURAL = new WeakMap<Box, Natural>();
+/** By box, the natural layouts made of it, one a width, the latest last:
+ *  no more than `NATURAL_WIDTHS` of them. Only the latest is the layout
+ *  the box has; another answers a height its width came to (`measureBox`),
+ *  where the pass made it. A flex row of items measured at their widest
+ *  and then laid out at their width, and laid out at each again for each
+ *  of the layouts around it, laid each item out again at every one: a
+ *  webmail page's content pane, whose widest is a strip of 2,496 hidden
+ *  senders, at 545,008 device pixels and its own 1,476 by turns, a dozen
+ *  times a layout. */
+const NATURAL = new WeakMap<Box, Natural[]>();
+const NATURAL_WIDTHS = 4;
+
+/** How many natural layouts were made (`layoutNaturally`), for a test to
+ *  count what a layout lays out again. */
+let naturalLayouts = 0;
+export function naturalLayoutsMade(): number {
+  return naturalLayouts;
+}
+
+/** The natural layout made of a box at a width, where one was. */
+function naturalAt(box: Box, width: number): Natural | undefined {
+  const made = NATURAL.get(box);
+  if (made === undefined) return undefined;
+  for (let i = made.length - 1; i >= 0; i -= 1) {
+    if (made[i].width === width) return made[i];
+  }
+  return undefined;
+}
+
+/** Note the natural layout a box has now, in place of one at its width. */
+function noteNatural(box: Box, natural: Natural): void {
+  const made = NATURAL.get(box);
+  if (made === undefined) {
+    NATURAL.set(box, [natural]);
+    return;
+  }
+  const at = made.findIndex((one) => one.width === natural.width);
+  if (at >= 0) made.splice(at, 1);
+  made.push(natural);
+  if (made.length > NATURAL_WIDTHS) made.shift();
+}
 
 /** Note what was read from the layout an item has, where that is the one
  *  its content's own height makes of it at `width`. */
@@ -1837,6 +1921,29 @@ function readsPercentBase(box: Box): boolean {
     style.heightKeyword !== null ||
     style.minHeightKeyword !== null ||
     style.maxHeightKeyword !== null
+  );
+}
+
+/**
+ * Whether an item along a row is held at its content at its narrowest
+ * wherever it is narrower (`autoMinimums`): one whose automatic minimum is
+ * that and nothing else — a box its content sizes, with no width, least
+ * width, greatest width or ratio of its own that weighs in, and no
+ * overflow that lets it be smaller (CSS Flexbox 4.5).
+ */
+function heldAtMinContent(box: Box): boolean {
+  const kind = box.kind;
+  if (kind === 'replaced' || kind === 'table' || kind === 'text') return false;
+  if (kind === 'break') return false;
+  const style = box.style;
+  return (
+    style.width === AUTO &&
+    !style.widthKeyword &&
+    style.minWidth === AUTO &&
+    !style.minWidthKeyword &&
+    style.maxWidth === 'none' &&
+    !scrolls(style) &&
+    !boxRatio(box)
   );
 }
 

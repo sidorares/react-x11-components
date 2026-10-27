@@ -1,9 +1,12 @@
 // <Html> — flex layout.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup, waitFor } from 'react-x11/test';
+import { act, cleanup, waitFor } from 'react-x11/test';
 import { Yoga } from 'react-x11/yoga';
 import { parseColor } from '../../src/html/css/values.js';
+import { naturalLayoutsMade } from '../../src/html/layout/flex.js';
+import { appendChild, createText } from '../../src/html/index.js';
+import type { Element } from '../../src/html/index.js';
 import {
   RED_PNG,
   SVG_NS,
@@ -3634,3 +3637,50 @@ test('a flex item measured for its content after it was laid out is laid out aga
   assert.strictEqual(a.width, 121, 'its minimum');
   assert.strictEqual(a.x, 80, 'after the first');
 });
+
+metric(
+  'an item measured at its widest is laid out there once a layout, however many times the row it is in is laid out',
+  async () => {
+    // A row whose item its automatic minimum holds wider than the row first
+    // gave it is laid out twice, and the items in it weighed by their widest
+    // are measured there at each. A webmail page's content pane, whose
+    // widest is a hidden strip of 2,496 senders, was laid out again at that
+    // width at every layout of the panes around it, a dozen times a layout.
+    const { node } = await render(
+      '<style>body { margin: 0; font-size: 14px }' +
+        '.a { display: flex; width: 200px }' +
+        '.b { display: flex; flex: 1 1 0 }' +
+        '.c, .e { flex: 1 1 auto; min-width: 0 }' +
+        '.w { flex: none; width: 150px }' +
+        '.d { flex: 1 1 0 }</style>' +
+        '<div class="a"><div class="b">' +
+        '<div class="c">some words <span id="s">in it</span></div>' +
+        '<div class="e">other words here</div><div class="w">x</div></div>' +
+        '<div class="d">d</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const find = (from: { children?: unknown[] }): Element | null => {
+      for (const child of (from.children ?? []) as Element[]) {
+        if (child.attribs?.id === 's') return child;
+        const found = find(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const span = find(el.document as unknown as { children: unknown[] })!;
+    const text = createText(' and more');
+    appendChild(span, text);
+    const before = naturalLayoutsMade();
+    el.touchDocument([
+      { type: 'childList', target: span, addedNodes: [text], removedNodes: [] },
+    ]);
+    await act();
+    // b at the room the row gave it and at its minimum, c and e at their
+    // widest, and at their widths in each, and d at its own in each: c and
+    // e were laid out at their widest again in the second, for 13
+    const made = naturalLayoutsMade() - before;
+    assert.ok(made <= 11, `${made} natural layouts in the row`);
+  },
+);
