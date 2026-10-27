@@ -6,7 +6,7 @@ that would play it, which repository owns each rung, and the first step:
 a page's `<audio>` heard on macOS.
 
 **The first step is built; the rest is design.** react-x11's `<audio>`
-(sidorares/react-x11#1019) and `<Html>`'s sounds here play a page's
+(sidorares/react-x11#1019, in 2.56.0) and `<Html>`'s sounds here play a page's
 `<audio>` on macOS: see "The first step" for what was built and what was
 left. The page that asked was OpenAI's "Working with academic communities
 to build scientific understanding", whose "Listen to article" button made

@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.55.2` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.55.2` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -829,6 +829,18 @@ it up. **The floor is a running one and moves often** — every move since
   registered — is some 20 ms of the load. 2.55.1 under it gives each child
   of a `<glarea>` a pane of its own on Cocoa (react-x11#1011), which took
   `<Flow>`'s GL minimap from a quarter of a core to none.
+- `^2.56.0` — `<audio src>`, the platform's player without a picture
+  (react-x11#1019): AVFoundation on macOS and a `<Frame>` pane's host for a
+  pane, with `<video src>`'s props, events and ref, taking no room and
+  drawing nothing. `<Html>` mounts one for each `<audio>` a page's script
+  plays (`sounds.ts`), and the page's clock follows what its player says:
+  an OpenAI article's "Listen" button, a plain `<audio>` fed one MP3 after
+  another, was silent in the example browser. The same release adds
+  `fakeMediaPlayers(app)` to `react-x11/test`, a player that plays nothing
+  for an app that has none, which `test/html/audio.test.ts` drives in place
+  of AVFoundation. A core without `<audio>` throws on the element, so the
+  floor moves with the feature. It also carries `<textinput mask>`
+  (react-x11#1017), which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
