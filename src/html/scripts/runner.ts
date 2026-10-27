@@ -224,6 +224,9 @@ export class ScriptRunner {
             get webTransport() {
               return _options.webTransport;
             },
+            get webSocket() {
+              return _options.webSocket;
+            },
             log: (level, text) => this._options.log(level, text),
             get userAgent() {
               return _options.userAgent;
@@ -615,8 +618,9 @@ export class ScriptRunner {
    * Whether the document, and every frame's in a realm of its own, may go
    * into the host's back-forward cache rather than unload (HTML 7.4.2.4,
    * a document's "salvageable" state): it has loaded, and it has no
-   * connection open that a peer would see held — a WebTransport session or
-   * a peer connection — as browsers keep such a page out of theirs.
+   * connection open that a peer would see held — a WebTransport session, a
+   * WebSocket or a peer connection, its own or a worker's — as browsers
+   * keep such a page out of theirs.
    */
   salvageable(): boolean {
     if (this._disposed || this._ready !== 'complete') return false;

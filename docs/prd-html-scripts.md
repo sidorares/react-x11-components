@@ -656,7 +656,8 @@ meets runs where it is", has the detail.
 - `MutationObserver` (phase 2, from the same dirty set — built);
 - `IntersectionObserver`, `ResizeObserver`;
 - `XMLHttpRequest` (phase 2 — built, asynchronous only);
-- WebSocket, canvas (IndexedDB came in phase 2 — see below).
+- WebSocket, canvas (IndexedDB came in phase 2 — see below; WebSocket
+  came later, over the `webSocket` seam, docs/components/html.md).
 
 Be honest about what that reaches. A framework-built application touches
 hundreds of these, so phase 1 is for pages that enhance what they already

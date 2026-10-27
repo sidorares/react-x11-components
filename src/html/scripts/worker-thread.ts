@@ -12,6 +12,7 @@ import { DomHost } from './host.js';
 import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
+import { SocketProxy } from './socket-relay.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -142,6 +143,8 @@ const log = (level: string, text: string): void =>
 /** The worker's WebTransport sessions, opened by the page process over the
  *  page's own seam (`transport-relay.ts`). */
 const transports = new TransportProxy((m) => tell(m));
+/** And its WebSockets (`socket-relay.ts`). */
+const sockets = new SocketProxy((m) => tell(m));
 
 const seams: HostSeams = {
   handle: NO_VIEW,
@@ -163,6 +166,7 @@ const seams: HostSeams = {
   title() {},
   fetch: fetchThrough,
   webTransport: transports,
+  webSocket: sockets,
   userAgent,
   language,
 };
@@ -238,6 +242,8 @@ port.on('message', (m: ToWorker) => {
     body?.end(m.error);
   } else if (m.kind === 'wt') {
     transports.heard(m);
+  } else if (m.kind === 'ws') {
+    sockets.heard(m);
   } else if (m.kind === 'rtc') {
     host.rtcHeard(m);
   }

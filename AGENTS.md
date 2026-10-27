@@ -2871,6 +2871,36 @@ closes a way out a DOM binding opens by accident:
   goes into the head (`_noteCsp`, from `_childList`) and kept after it
   goes: **anything new that opens a connection from a page asks
   `connectAllowed` first**, which is where `fetch` would join it.
+- **A page's WebSocket is the standard's state over a seam that opens
+  nothing by default** (`websocket.ts` in the page, `sockets.ts` on the
+  host, `HtmlScripts.webSocket`, `NO_WEBSOCKET`, `src/html/socket.ts`). The
+  ops are `ws…` and the entries `__ws…`, which no other op starts with; a
+  socket is a number and a binary message base64. **What the page reads is
+  kept in the realm** — `readyState`, `bufferedAmount`, `protocol` — and the
+  host tells it what moved (`__wsOpen`, `__wsMessage`, `__wsSent`,
+  `__wsClosed`): nothing is asked across the bridge. A seam answers how many
+  bytes wait (`bufferedAmount()`), not when they go, so `SendWatch` asks it a
+  task after a send and while some wait. **A seam's `failed` is the page's
+  `error` and `close` of 1006**, every failure alike, and anything new the
+  host refuses — a bad port, mixed content, `connect-src` — goes through
+  `_fail`, before the seam is asked. **A seam that answers while it is
+  asked is told a task later** (`PageSockets._tell`, `_inOp`), or the page
+  hears `open` inside the constructor that has not returned. A worker's
+  sockets cross its thread as a `SocketProxy` and a `SocketRelay`
+  (`socket-relay.ts`, `{ kind: 'ws' }`), and a worker's open socket keeps
+  its page out of the back-forward cache through `PageWorkers.connected`,
+  as the page's own does through `DomHost.connected`.
+  `HtmlNetwork.webSockets(page)` is the runtime's `WebSocket`, whose
+  constructor takes `{ protocols, headers }` on Node 22 and later and on
+  Bun, so the handshake carries the opener's `Origin`, the network's
+  `User-Agent` and the jar's cookies; the `Set-Cookie` it is answered with
+  is read only where undici publishes it (`undici:websocket:open`, Node 24
+  and later), and stored before the page hears `open`. **Anything new the
+  adapter tells waits behind `open`** (`held`), since the cookie is stored
+  a microtask after the runtime's `open` event. **And an `error` is the
+  socket's end**, told as `failed` there, whatever `close` comes after it:
+  Node 22's undici fires none after a refused handshake, and a socket that
+  waited for one hung in CONNECTING.
 - **A page's WebRTC is the realm's semantics over the seam's protocol**
   (`webrtc.ts`, `datachannel.ts` and `mediastream.ts` in the page;
   `peers.ts` and `media-sources.ts` on the host; `HtmlScripts.webRTC` and

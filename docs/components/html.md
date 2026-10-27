@@ -761,14 +761,18 @@ const net = useHtmlNetwork(url);
     source={source}
     baseUrl={url}
     onResource={net.onResource}
-    scripts={{ fetch: net.fetch, webTransport: net.webTransport }}
+    scripts={{
+      fetch: net.fetch,
+      webSocket: net.webSocket,
+      webTransport: net.webTransport,
+    }}
   />
 </box>;
 ```
 
 `scripts` runs a document's scripts: classic scripts and modules, an import
 map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, WHATWG
-streams, WebTransport, the DOM, a canvas a script draws on, frames running
+streams, WebSockets, WebTransport, the DOM, a canvas a script draws on, frames running
 in realms of their own and dedicated workers on threads of their own. It is the engine the example
 browser was built over — a `node:vm` context a document, a DOM inside it
 over the tree drawn here, and only primitives crossing between the two —
@@ -807,8 +811,8 @@ charset }` — the `<script>` is the request's `element`, and the root
   same way. `HtmlNetwork` answers so, and bounds only the wait for the
   headers.
 
-`useHtmlNetwork(url)` is all three, from one line: `onResource`, a `fetch`
-and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
+`useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
+a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
 cache, six requests a host at a time, `file:` only for a `file:` page, no
 mixed content, and no cookies unless it is handed a jar — shared by every
 document in the process (`defaultHtmlNetwork`), or one handed in. `new
@@ -870,6 +874,7 @@ since this component navigates nowhere by itself:
 | `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
 | `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
 | `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
+| `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                     |
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
@@ -889,6 +894,51 @@ their queue is past its high-water mark (`writer.ready`,
 strategies. Every algorithm is the standard's, run in the page's realm
 (`src/html/scripts/streams.ts`), and WPT's `streams/` tests pass but the
 tentative `owning` type's.
+
+**A page's WebSockets are the host's to carry** (WHATWG WebSockets). The
+page has the whole API — `WebSocket` with `url`, `readyState` and its four
+constants, `bufferedAmount`, `protocol`, `extensions`, `binaryType`
+(`'blob'` or `'arraybuffer'`), `send()` of a string, a `Blob`, an
+`ArrayBuffer` or a view, `close(code, reason)` and the `open`, `message`,
+`error` and `close` events; and `CloseEvent`, with `wasClean`, `code` and
+`reason` — in a window and in its workers, secure or not. The constructor
+checks what the standard has it check, each a `SyntaxError`: a URL that
+does not parse against the document's base, a scheme but `ws:`, `wss:`,
+`http:` and `https:` (the last two made `ws:` and `wss:`), a fragment, and
+protocols that are no tokens or that repeat, whatever their case; an
+option bag, `{ protocols }`, is taken as WPT has it. `close()` takes 1000
+or 3000 to 4999 (`InvalidAccessError` for anything else) and a reason of at
+most 123 bytes (`SyntaxError`); `send()` before the socket is open throws
+`InvalidStateError`, and once it is closing only counts what it was given
+in `bufferedAmount`. What carries a socket is `scripts.webSocket`, an
+`HtmlWebSocket`: handed the URL, the origin of the document or worker that
+opened it and the protocols it offers, it tells the socket's `open`, each
+message, a `closed` with the close frame's code and reason, or `failed`,
+which the page hears as `error` and a `close` of 1006, as every failure
+looks alike to a script. `bufferedAmount` comes down as the seam says its
+bytes went (`bufferedAmount()`), a task after a send at the soonest. **With
+none, every socket fails** as one a browser with no network opens. Before
+the seam is asked, a socket is refused, and failed, where its port is one
+a browser does not connect to, where it is a secure page's `ws:` endpoint
+on another machine (Mixed Content, as WPT's `mixed-content.https.any.js`
+has it; Chrome and Firefox throw a `SecurityError` from the constructor
+instead), and where the document's `connect-src` does not allow it — the
+same policy a WebTransport session is held to, below. A worker's sockets
+go through the page's seam, across its thread, as its sessions do.
+
+`HtmlNetwork.webSockets(page)` is a real one for the document at `page`,
+over the runtime's own `WebSocket` — Node's from 22, Bun's — whose
+constructor takes `{ protocols, headers }` in both: each opening handshake
+carries the `Origin` of the document or worker that opened it, the
+network's `User-Agent` and language, and the jar's cookies for the URL, as
+a request whose site for cookies is `page`'s. Where the runtime says what
+the handshake was answered with — Node's from 24, through undici's
+`undici:websocket:open` diagnostics channel — its `Set-Cookie` is kept in
+the jar before the page hears `open`; Bun's says nothing of it. Node 20 has
+no `WebSocket`, and there every socket fails as with no network.
+`webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
+answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
+the real one at.
 
 **A page's WebTransport is the host's to carry** (W3C WebTransport). The
 page has the whole API — `WebTransport` with `ready`, `closed`, `draining`,
@@ -1262,8 +1312,9 @@ keeps up to `n` of them — Chrome keeps six on the desktop — the one left
 longest ago going first, and one no entry is of any more going as soon as
 that is so: a push from an earlier entry drops the entries ahead, and the
 documents they were of. A document is kept where its scripts run, it has
-loaded, and it holds no WebTransport session or peer connection open, which
-its server or its peer would see held. As it is left it hears `pageswap`,
+loaded, and it holds no WebTransport session, WebSocket or peer
+connection open — its own or a worker's socket — which its server or its
+peer would see held. As it is left it hears `pageswap`,
 then `pagehide` with `persisted` true and `visibilitychange` to `hidden`,
 its frames' documents first, and no `unload`: a page that listens for one
 is kept all the same and never hears it, as HTML has it and Chrome and

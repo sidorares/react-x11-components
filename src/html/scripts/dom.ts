@@ -33,6 +33,7 @@
 import type { installRaster, PathData } from './raster.js';
 import type { installStreams } from './streams.js';
 import type { installWebTransport } from './webtransport.js';
+import type { installWebSocket } from './websocket.js';
 import type { installDataChannels } from './datachannel.js';
 import type { installMediaStreams } from './mediastream.js';
 import type { installWebAudio } from './webaudio.js';
@@ -66,6 +67,7 @@ export function installDom(
   raster: typeof installRaster,
   streams: typeof installStreams,
   transport: typeof installWebTransport,
+  socket: typeof installWebSocket,
   mediaStreams: typeof installMediaStreams,
   dataChannels: typeof installDataChannels,
   webrtc: typeof installWebRTC,
@@ -25813,6 +25815,39 @@ export function installDom(
       for (const name of Object.getOwnPropertyNames(interfaces)) {
         define(name, interfaces[name]);
       }
+    }
+  }
+
+  // --- WebSocket ---------------------------------------------------------------------
+  //
+  // The WHATWG WebSockets standard (`websocket.ts`), its connections the
+  // host's (`sockets.ts`, the `ws…` ops and `__ws…` entries). A window's and
+  // a worker's alike, and in any context, secure or not.
+  {
+    const trusted = (target: Any, event: Any): void => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    };
+    const interfaces = socket({
+      call: call as Any,
+      entry: (name: string, fn: () => Primitive) => {
+        transportEntries.push([name, fn]);
+      },
+      input: () => input(),
+      DOMException,
+      EventTarget,
+      Event,
+      MessageEvent,
+      Blob,
+      URL,
+      base: () =>
+        workerLocation ? str(workerLocation.href) : str(document.baseURI),
+      fire: trusted,
+      base64OfBytes,
+      bytesOfBase64,
+    });
+    for (const name of Object.getOwnPropertyNames(interfaces)) {
+      define(name, interfaces[name]);
     }
   }
 
