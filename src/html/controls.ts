@@ -29,6 +29,7 @@ import {
   selectedOptions,
 } from './form.js';
 import { fadeColor } from './css/color.js';
+import { inkColor } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert, mapRect } from './css/transform.js';
 import { heldBack, placedMatrix } from './layout/block.js';
@@ -140,7 +141,17 @@ export interface BareField {
   y: number;
   width: number;
   height: number;
+  /** The element's `color`: a text field's caret (`caret-color: auto`), a
+   *  `<select>`'s arrow, and its text where `fill` is missing. */
   color: string;
+  /**
+   * What the text's glyphs are filled with, where `-webkit-text-fill-color`
+   * sets it apart from `color` — `transparent`, most often, on a code
+   * editor's `<textarea>` over the highlighted `<pre>` it types into
+   * (react-simple-code-editor's): its text is the `<pre>`'s to show, and
+   * its caret and selection are its own. Missing is `color`.
+   */
+  fill?: string;
   /** @deprecated The rect's own `fontFamily`, which every rect carries. */
   fontFamily: string;
   /** @deprecated The rect's own `fontSize`, which every rect carries. */
@@ -250,6 +261,9 @@ export function controlRectsOf(
         width: box.contentWidth,
         height: box.contentHeight,
         color: box.style.color,
+        ...(box.style.textFillColor !== null && {
+          fill: inkColor(box.style.textFillColor, box.style.color),
+        }),
         fontFamily: box.style.fontFamily,
         fontSize: box.style.fontSize,
         ...(box.replaced === 'select' && {
