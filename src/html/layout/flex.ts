@@ -56,11 +56,14 @@ import {
   heightThroughRatio,
   widthFromHeight,
   resolveEdges,
+  keepLaid,
+  mayKeepLaid,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
 import { firstBaselineIn } from './inline.js';
 import { TABLE_CONTENT } from './table.js';
 import type { LayoutContext } from './block.js';
+import type { FontsLike } from './inline.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
 // the enum constants are typed rather than written out here and cast at every
@@ -1389,10 +1392,13 @@ function applyItem(
  *  is the cache's: any change to what is in it rebuilds it. */
 const MAX_CONTENT = new WeakMap<Box, number>();
 
-/** Forget an item's max-content width, kept for its life: its lengths, or
- *  those of something in it, changed in place (`forgetSizes`). */
+/** Forget an item's max-content width, kept for its life, and the layout
+ *  a later one would keep (`keptNatural`): its lengths, or those of
+ *  something in it, changed in place, or what is in it was built again
+ *  (`forgetSizes`). */
 export function forgetMaxContent(box: Box): void {
   MAX_CONTENT.delete(box);
+  NATURAL.delete(box);
 }
 
 /** The width and height of the layout an item was last given, its border
@@ -1610,6 +1616,11 @@ function layoutNaturally(
     if (box.kind !== 'replaced') {
       NATURAL.set(box, {
         ctx,
+        pass: ctx.probing ? NaN : (ctx.reusePass ?? NaN),
+        viewportWidth: ctx.viewportWidth,
+        viewportHeight: ctx.viewportHeight,
+        scale: ctx.scale,
+        fonts: ctx.fonts,
         serial: box.layoutSerial,
         width,
         containing: readsContaining(box) ? containing : NaN,
@@ -1673,7 +1684,17 @@ function keptNatural(
   containing: number,
 ): Natural | null {
   const kept = NATURAL.get(box);
-  if (kept === undefined || kept.ctx !== ctx || kept.width !== width) {
+  if (kept === undefined || kept.width !== width) return null;
+  // An earlier layout's, kept as a block in a flow is (`mayKeepLaid`):
+  // where the box has that layout still, and nothing in it has changed
+  // since (`forgetSizes`, which drops this). A page's flex column of a
+  // hundred paragraphs had every one laid out again for a sparkle beside
+  // one of them, three times a second.
+  const before = kept.ctx !== ctx;
+  if (
+    before &&
+    (kept.serial !== box.layoutSerial || !mayKeepLaid(box, ctx, kept))
+  ) {
     return null;
   }
   if (!Number.isNaN(kept.containing) && kept.containing !== containing) {
@@ -1685,24 +1706,39 @@ function keptNatural(
   // the boxes in it that are positioned last are still waiting to be: a
   // `line-clamp: auto` box laid out a second time forgets the ones its
   // first layout found
-  if (kept.queued && ctx.positioned[kept.queued.at] !== kept.queued.first) {
+  if (
+    !before &&
+    kept.queued &&
+    ctx.positioned[kept.queued.at] !== kept.queued.first
+  ) {
     return null;
   }
   const edges = kept.edges;
-  return edges[0] === box.marginTop &&
-    edges[1] === box.marginRight &&
-    edges[2] === box.marginBottom &&
-    edges[3] === box.marginLeft &&
-    edges[4] === box.borderTop &&
-    edges[5] === box.borderRight &&
-    edges[6] === box.borderBottom &&
-    edges[7] === box.borderLeft &&
-    edges[8] === box.padTop &&
-    edges[9] === box.padRight &&
-    edges[10] === box.padBottom &&
-    edges[11] === box.padLeft
-    ? kept
-    : null;
+  if (
+    edges[0] !== box.marginTop ||
+    edges[1] !== box.marginRight ||
+    edges[2] !== box.marginBottom ||
+    edges[3] !== box.marginLeft ||
+    edges[4] !== box.borderTop ||
+    edges[5] !== box.borderRight ||
+    edges[6] !== box.borderBottom ||
+    edges[7] !== box.borderLeft ||
+    edges[8] !== box.padTop ||
+    edges[9] !== box.padRight ||
+    edges[10] !== box.padBottom ||
+    edges[11] !== box.padLeft
+  ) {
+    return null;
+  }
+  if (before) {
+    // this layout's from here on, the boxes out of the flow in it counted
+    // as kept rather than queued (`keepLaid`)
+    keepLaid(box, ctx);
+    kept.ctx = ctx;
+    kept.pass = ctx.reusePass!;
+    kept.queued = null;
+  }
+  return kept;
 }
 
 /** A layout of an item at its content's own height (`layoutNaturally`): in
@@ -1710,6 +1746,14 @@ function keptNatural(
  *  from. */
 interface Natural {
   ctx: LayoutContext;
+  /** What a later layout keeps it by (`mayKeepLaid`): the layout's
+   *  `reusePass`, NaN where it keeps none or was a probe, and the viewport,
+   *  scale and fonts it was laid out at. */
+  pass: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scale: number | undefined;
+  fonts: FontsLike | null;
   serial: number;
   /** The border-box width it was asked for at. */
   width: number;

@@ -50,7 +50,9 @@ import {
   contained,
   exactMinContent,
   heightThroughRatio,
+  keepLaid,
   laidWholeAround,
+  mayKeepLaid,
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
@@ -62,6 +64,7 @@ import {
   widthThroughRatio,
 } from './block.js';
 import type { LayoutContext } from './block.js';
+import type { FontsLike } from './inline.js';
 import { gridLines, placement, subgridLines } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
@@ -1435,7 +1438,8 @@ function layoutItem(
 }
 
 /** Lay an item out at a width: a table stretched across its area at that
- *  width as its own (`STRETCHED_ACROSS`), for this layout alone. */
+ *  width as its own (`STRETCHED_ACROSS`), for this layout alone — or keep
+ *  the layout an earlier one gave it there (`keptItem`). */
 function layoutAcross(
   item: Item,
   width: number,
@@ -1443,16 +1447,173 @@ function layoutAcross(
   ctx: LayoutContext,
 ): void {
   const child = item.box;
-  if (!item.across) {
-    ctx.layoutSubtree(child, width, area);
-    return;
+  if (keptItem(item, width, area, ctx)) return;
+  if (!item.across) ctx.layoutSubtree(child, width, area);
+  else {
+    STRETCHED_ACROSS.add(child);
+    try {
+      ctx.layoutSubtree(child, width, area);
+    } finally {
+      STRETCHED_ACROSS.delete(child);
+    }
   }
-  STRETCHED_ACROSS.add(child);
-  try {
-    ctx.layoutSubtree(child, width, area);
-  } finally {
-    STRETCHED_ACROSS.delete(child);
+  if (child.kind === 'replaced' || SUBGRIDS.has(child)) return;
+  const laid: ItemLaid = {
+    ctx,
+    probe: ctx.probing === true,
+    pass: ctx.probing ? NaN : (ctx.reusePass ?? NaN),
+    viewportWidth: ctx.viewportWidth,
+    viewportHeight: ctx.viewportHeight,
+    scale: ctx.scale,
+    fonts: ctx.fonts,
+    serial: child.layoutSerial,
+    width,
+    area,
+    base: child.percentHeightBase,
+    flexed: FLEXED_HEIGHT.get(child),
+    used: USED_HEIGHT.get(child),
+    across: item.across,
+    edges: edgesOf(child),
+    height: child.height,
+    natural: null,
+  };
+  // A stretch lays out again, at its area's height, an item whose content
+  // takes a percentage of it (`percentHeightsIn`), right after the layout
+  // at its content's own: that one's answer is kept with it, for the first
+  // of the two a later layout of the grid asks.
+  const was = ITEM_LAID.get(child);
+  if (
+    laid.flexed !== undefined &&
+    was?.ctx === ctx &&
+    was.flexed === undefined &&
+    !was.probe &&
+    !laid.probe
+  ) {
+    laid.natural = was;
   }
+  ITEM_LAID.set(child, laid);
+}
+
+/**
+ * What an item's last layout in its grid was laid out from (`layoutAcross`),
+ * where a later layout of the grid may keep it as that one left it, as a
+ * block in a flow is kept (`mayKeepLaid`): the same width in the same area,
+ * the same heights handed down, the same edges, and nothing in it changed
+ * since (`forgetSizes`, which drops this). joshwcomeau.com's article is a
+ * grid of a hundred paragraphs, and every one was set again for a sparkle
+ * beside one of them, three times a second.
+ */
+interface ItemLaid {
+  /** The layout it was made in, and whether as a probe of a size. */
+  ctx: LayoutContext;
+  probe: boolean;
+  pass: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scale: number | undefined;
+  fonts: FontsLike | null;
+  serial: number;
+  width: number;
+  area: number;
+  base: number;
+  flexed: number | undefined;
+  used: number | undefined;
+  across: boolean;
+  edges: number[];
+  height: number;
+  /** Where this is a stretch's layout, the one at its content's own height
+   *  just before it. */
+  natural: ItemLaid | null;
+}
+
+const ITEM_LAID = new WeakMap<Box, ItemLaid>();
+
+/** Forget the layout a grid's later one would keep of an item (`ItemLaid`):
+ *  its lengths, or those of something in it, changed in place, or what is
+ *  in it was built again (`forgetSizes`). */
+export function forgetGridItem(box: Box): void {
+  ITEM_LAID.delete(box);
+}
+
+/**
+ * Keep the layout an earlier layout of its grid gave an item at `width` in
+ * `area` (`ItemLaid`), as its height there, for the grid to stretch and
+ * move it: false where anything it was laid out from is otherwise. One this
+ * layout made is kept as it is; one an earlier layout made is this one's
+ * from here on (`keepLaid`). And an earlier layout's at its content's own
+ * height, which a stretch's followed, is answered from where the stretch
+ * will follow it again, for a content that takes a percentage of the
+ * stretched height: the item still has the stretch's.
+ */
+function keptItem(
+  item: Item,
+  width: number,
+  area: number,
+  ctx: LayoutContext,
+): boolean {
+  const child = item.box;
+  const last = ITEM_LAID.get(child);
+  if (last === undefined || last.serial !== child.layoutSerial) return false;
+  const flexed = FLEXED_HEIGHT.get(child);
+  const used = USED_HEIGHT.get(child);
+  const natural = last.natural;
+  const laid =
+    last.flexed === flexed && last.used === used
+      ? last
+      : natural !== null &&
+          last.ctx !== ctx &&
+          natural.flexed === flexed &&
+          natural.used === used &&
+          percentHeightsIn(child)
+        ? natural
+        : null;
+  if (
+    laid === null ||
+    laid.width !== width ||
+    laid.area !== area ||
+    laid.across !== item.across ||
+    !Object.is(laid.base, child.percentHeightBase) ||
+    !sameEdges(laid.edges, child)
+  ) {
+    return false;
+  }
+  if (last.ctx === ctx) {
+    if (ctx.probing || laid.probe) return false;
+  } else {
+    if (!mayKeepLaid(child, ctx, laid)) return false;
+    keepLaid(child, ctx);
+    for (const one of natural ? [last, natural] : [last]) {
+      one.ctx = ctx;
+      one.pass = ctx.reusePass!;
+    }
+  }
+  child.height = laid.height;
+  return true;
+}
+
+/** A box's edges as a layout resolves them: margins, borders, padding,
+ *  each from the top round. */
+function edgesOf(box: Box): number[] {
+  return [
+    box.marginTop,
+    box.marginRight,
+    box.marginBottom,
+    box.marginLeft,
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+    box.padTop,
+    box.padRight,
+    box.padBottom,
+    box.padLeft,
+  ];
+}
+
+function sameEdges(edges: readonly number[], box: Box): boolean {
+  const now = edgesOf(box);
+  for (let i = 0; i < now.length; i += 1) if (edges[i] !== now[i]) return false;
+  return true;
 }
 
 /** What the percentages in a box's padding come to across it, its edges

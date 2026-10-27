@@ -938,6 +938,87 @@ metric(
 );
 
 metric(
+  'a frame that lays out again what is in a box out of the flow repaints that box and builds only what it reached, to the pixels a build draws',
+  async (t) => {
+    // joshwcomeau.com's like button: a sparkle's drawing turns in a span
+    // placed absolutely, and the start and end of each turn, which change
+    // what the drawing is a stacking context of, built the whole article,
+    // laid all of it out and repainted all of it
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes m { from { text-indent: 100% } to { text-indent: -100% } }' +
+        '#page { position: relative; height: 100px; background: #eeeeee }' +
+        '#a { position: absolute; top: 30px; width: 150px; height: 20px;' +
+        ' overflow: hidden; white-space: nowrap; background: #333333;' +
+        ' color: #ffffff }' +
+        '#m { margin: 0; animation: m 160ms linear infinite }</style>' +
+        '<div id="page"><p id="flow">flow text stays</p>' +
+        '<div id="a"><p id="m">a marquee name</p></div></div>',
+      300,
+    );
+    const rebuilt = t.mock.method(
+      doc.el as unknown as { _rebuildFrame(reach: unknown): void },
+      '_rebuildFrame',
+    );
+    // what the frame did not reach keeps its box
+    const flow = boxOf(doc.el, 'flow');
+    await doc.at(32);
+    assert.ok(rebuilt.mock.callCount() > 0, 'built for the frame');
+    assert.ok(boxOf(doc.el, 'flow') === flow, 'the page was built again');
+    const { repainted, frames } = await framesAgainstBuilds(doc, [64, 112]);
+    assert.ok(repainted.length > 0, 'something was repainted');
+    assert.ok(
+      repainted.every((r) => r !== doc.el),
+      'only the box it is in was repainted',
+    );
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+  },
+);
+
+metric(
+  'a frame that scales a box out of the flow from nothing restyles it in place and lays nothing out, to the pixels a build draws',
+  async (t) => {
+    // joshwcomeau.com's sparkles start their turns scaled to nothing, which
+    // draws nothing: the bounds of no ink are at infinity, which were taken
+    // for reaching past the document's end, and the whole document was laid
+    // out at every frame of every start
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes g { 0%, 50% { transform: scale(0) }' +
+        ' 100% { transform: scale(1) } }' +
+        '#w { position: relative; height: 100px }' +
+        '#s { position: absolute; left: 10px; top: 10px; width: 20px;' +
+        ' height: 20px; background: #aa0000;' +
+        ' animation: g 320ms linear infinite }</style>' +
+        '<div id="w"><div id="s"></div></div><p>after it</p>',
+      300,
+    );
+    const node = doc.el as unknown as {
+      _invalidate(stale: number, ...rest: unknown[]): void;
+      _rebuildFrame(reach: unknown): void;
+    };
+    const rebuilt = t.mock.method(node, '_rebuildFrame');
+    const invalidated = t.mock.method(node, '_invalidate');
+    // into the second half of the turn, where it grows from nothing
+    const { frames } = await framesAgainstBuilds(doc, [144, 192, 240]);
+    assert.strictEqual(rebuilt.mock.callCount(), 0, 'restyled in place');
+    const laidOut = invalidated.mock.calls.filter(
+      (call) => call.arguments[0] === 1,
+    );
+    assert.strictEqual(laidOut.length, 0, 'the document was laid out');
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[2][i]),
+      'it grew',
+    );
+  },
+);
+
+metric(
   'a frame that turns, scales or fades a ::before in the flow restyles it where it is and repaints what it draws, to the pixels a build draws',
   async (t) => {
     // Zen Garden 214's enso: an `h1::before` an animation scales and

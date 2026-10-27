@@ -19,7 +19,7 @@
 import { compile } from 'css-select';
 import * as DomUtils from 'domutils';
 import { Element as DomElement, isTag } from 'domhandler';
-import type { Element } from 'domhandler';
+import type { AnyNode, Element } from 'domhandler';
 
 import {
   NON_RENDERED,
@@ -2250,6 +2250,16 @@ const ANYWHERE_ANCHOR: HasAnchor = {
   siblings: true,
 };
 
+const EMPTY_ANCHORS: ReadonlySet<HasAnchor> = new Set();
+const EMPTY_NODES: readonly AnyNode[] = [];
+
+/** The most elements of what came or went that are matched against the
+ *  subjects of the `:has()`s that ask only of those (`Cascade.
+ *  _heldReached`), past which every such `:has()` is taken to be reached:
+ *  what a framework renders a page's section with is restyled with its
+ *  anchors, as it was. */
+const HELD_WALK = 512;
+
 /** The anchor of a `:has()` in a compound at `at` whose element matches
  *  `stable` (`stableCompound`), its argument starting at a sibling where
  *  `siblings` says. */
@@ -2420,6 +2430,17 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   text: ['a:type'],
 };
 
+/** The keys of what an element holds or where it sits among its siblings
+ *  (`PSEUDO_READS`, `scanFunctionChanges`), its text among them: a
+ *  `:has()` whose argument tests one asks it of elements that stay. */
+const SITS_KEYS = new Set(['s', 'h', 'e', 'n', 'k', 't']);
+
+/** The pseudo-classes whose answer for an element is read from elements
+ *  around it that no key says: a focus inside it, a slot's assigned
+ *  nodes, a radio's group, a direction from its text. */
+const READS_AROUND =
+  /:(?:focus-within|has-slotted|indeterminate|default|dir|lang)\b/i;
+
 /** The pseudo-classes whose answer an element's descendants take from it —
  *  a fieldset's `disabled`, an editing host's — so a change of what they
  *  read reaches what is in the element too. */
@@ -2572,9 +2593,32 @@ function scanFunctionChanges(
       // one that starts at a sibling asks what is after its element
       const sibling = /^\s*[+~]/.test(entry);
       const at = sibling ? withSiblings(anchored) : anchored;
-      scanChanges(entry.replace(/^\s*[>+~]\s*/, ''), bits, at, note);
-      // and what an element holds is what a `:has()` asks
-      note('s', bits, at);
+      const relative = entry.replace(/^\s*[>+~]\s*/, '');
+      const parts = compoundsOf(relative);
+      // And what an element holds is what a `:has()` asks — any of it,
+      // where the argument reads where an element sits or what it holds
+      // (`'s'`). One that reads neither, only each element's own name and
+      // attributes down a line of descendants, answers otherwise for a
+      // child put in or taken out only where what came or went holds an
+      // element its subject can be: no element that stays gains or loses
+      // an ancestor, and what it is matched on is its own (`'g'`).
+      // joshwcomeau.com's `html:has([data-disable-document-scroll=true])`
+      // put the root among what every sparkle its like button made
+      // reached, which built the whole document three times a second.
+      let sits =
+        sibling ||
+        !parts.length ||
+        READS_AROUND.test(relative) ||
+        parts.some(({ next }) => next === '+' || next === '~');
+      scanChanges(relative, bits, at, (key, b, anchor, subject) => {
+        if (SITS_KEYS.has(key)) sits = true;
+        note(key, b, anchor, subject);
+      });
+      if (sits) note('s', bits, at);
+      else {
+        const subject = stableCompound(parts[parts.length - 1].text);
+        note('g', bits, at, subject || '*');
+      }
     }
   } else if (MATCHES_ANY.test(name)) {
     // the element it is written on, as the compound it is in — whose
@@ -2691,6 +2735,10 @@ class MutationRules {
   /** One anchor for each compound, place and kind, so that a set of them
    *  holds each once. */
   private _interned = new Map<string, HasAnchor>();
+  /** For each anchor of a `:has()` that asks what an element holds only of
+   *  the elements its subject can be (`'g'`), those subjects, as stable
+   *  compounds (`Cascade.treeChange`). */
+  private _held = new Map<HasAnchor, Set<string>>();
   /** Every class's, and every id's, for a change whose old value is not
    *  known: what any class a selector tests can reach. */
   anyClass = 0;
@@ -2769,6 +2817,9 @@ class MutationRules {
         this.siblings = true;
         return;
       }
+      // a rule at a tree's edge reaches past what its selector says, and
+      // asks what an element holds of all of it
+      if (key === 'g' && wider) key = 's';
       if (key[0] === 'v' && key[1] === ':') {
         const name = key.slice(2, key.indexOf('\u0000'));
         let tests = this._tests.get(name);
@@ -2791,6 +2842,11 @@ class MutationRules {
           if (!set) this._anchors.set(key, (set = new Set()));
           set.add(one);
           this.everyAnchor.add(one);
+          if (key === 'g') {
+            let subjects = this._held.get(one);
+            if (!subjects) this._held.set(one, (subjects = new Set()));
+            subjects.add(subject || '*');
+          }
           if (isClass) this.anyClassAnchors.add(one);
           else if (isId) this.anyIdAnchors.add(one);
         }
@@ -2858,6 +2914,17 @@ class MutationRules {
   /** The anchors of the `:has()`s whose argument tests a key. */
   anchors(key: string): ReadonlySet<HasAnchor> | undefined {
     return this._anchors.get(key);
+  }
+
+  /** The anchors a child put in or taken out reaches only where what came
+   *  or went holds an element one of its subjects names (`'g'`), with
+   *  those subjects — less the ones another `:has()` with the same anchor
+   *  asks anything of what an element holds (`'s'`), which it reaches
+   *  whatever came. */
+  held(): ReadonlyMap<HasAnchor, ReadonlySet<string>> {
+    const sits = this._anchors.get('s');
+    if (sits) for (const anchor of sits) this._held.delete(anchor);
+    return this._held;
   }
 
   /** The attribute selectors that test an attribute, as `v:` keys. */
@@ -4058,11 +4125,15 @@ export class Cascade {
    * (`CHANGES_*`): the selectors that read what an element holds —
    * `:empty`, `:first-child` and their kin — or its text, `:contains()`,
    * where `text` says the change was a text's; and its children's later
-   * siblings, where a sibling combinator is in play. And every `:has()`,
-   * which may ask anything of what came or went. Null as
-   * `attributeChange`.
+   * siblings, where a sibling combinator is in play. And every `:has()`
+   * that asks what an element holds or where it sits, and those that ask
+   * only of the elements their subject can be where `nodes`, what came or
+   * went, holds one (`MutationRules.held`). Null as `attributeChange`.
    */
-  treeChange(text = false): TreeReach | null {
+  treeChange(
+    text = false,
+    nodes: readonly AnyNode[] = EMPTY_NODES,
+  ): TreeReach | null {
     const rules = this._changeRules;
     if (rules.hasAnywhere) return null;
     // A child coming or going changes where its siblings sit and how they
@@ -4079,11 +4150,73 @@ export class Cascade {
     let later = rules.bits('h') & CHANGES_LATER;
     if (text) later |= rules.bits('t') & CHANGES_LATER;
     bits = (bits & ~CHANGES_LATER) | later;
+    const asked = rules.anchors('s') ?? EMPTY_ANCHORS;
     return {
       bits,
       kidsLater,
-      anchors: this._changeAnchors([rules.everyAnchor]),
+      anchors: this._changeAnchors([
+        text ? asked : this._heldReached(asked, nodes),
+      ]),
     };
+  }
+
+  private _heldIds = new Map<HasAnchor, number>();
+  private _heldSets = new Map<string, Set<HasAnchor>>();
+
+  /**
+   * `sits` and the anchors that ask what an element holds only of the
+   * elements their subject can be (`MutationRules.held`) whose subjects an
+   * element in `nodes`, or in what they hold, matches: as one set, the same
+   * set for the same anchors, which `_changeAnchors` keeps as one. Past
+   * `HELD_WALK` elements, every one of them, as though each matched.
+   */
+  private _heldReached(
+    sits: ReadonlySet<HasAnchor>,
+    nodes: readonly AnyNode[],
+  ): ReadonlySet<HasAnchor> {
+    const held = this._changeRules.held();
+    if (!held.size || !nodes.length) return sits;
+    const pending = new Map<HasAnchor, ((el: Element) => boolean) | null>();
+    for (const [anchor, subjects] of held) {
+      pending.set(anchor, this._subjectsMatcher(subjects));
+    }
+    const reached: HasAnchor[] = [];
+    const reach = (anchor: HasAnchor): void => {
+      reached.push(anchor);
+      pending.delete(anchor);
+    };
+    // what css-select refuses is reached by anything
+    for (const [anchor, match] of pending) if (!match) reach(anchor);
+    const stack = [...nodes];
+    let walked = 0;
+    while (stack.length && pending.size) {
+      const node = stack.pop()!;
+      if (!isTag(node)) continue;
+      if ((walked += 1) > HELD_WALK) {
+        for (const anchor of [...pending.keys()]) reach(anchor);
+        break;
+      }
+      for (const [anchor, match] of pending) {
+        if (match!(node)) reach(anchor);
+      }
+      for (const child of node.children) stack.push(child);
+    }
+    if (!reached.length) return sits;
+    for (const anchor of reached) {
+      if (!this._heldIds.has(anchor)) {
+        this._heldIds.set(anchor, this._heldIds.size);
+      }
+    }
+    const key = `${sits.size} ${reached
+      .map((anchor) => this._heldIds.get(anchor)!)
+      .sort((a, b) => a - b)
+      .join(' ')}`;
+    let set = this._heldSets.get(key);
+    if (!set) {
+      set = new Set([...sits, ...reached]);
+      this._heldSets.set(key, set);
+    }
+    return set;
   }
 
   /**

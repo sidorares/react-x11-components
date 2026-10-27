@@ -1980,7 +1980,21 @@ combinator (`:empty + x`), and a sibling combinator alone reaches the
 holder's children and what is in them (`TreeReach.kidsLater`); the
 Guardian's ad scripts put a `<script>` in its `<head>` some thirty times a
 load, and each restyled the whole `<body>`. A holder nothing draws still
-reaches its later siblings, which are not under it. **An attribute selector is a key of its own** (`v:`), asked of the
+reaches its later siblings, which are not under it. **A child that comes
+or goes reaches a `:has()` that asks only of its subject where what came
+or went holds one** (`'g'`, `MutationRules.held`, `Cascade._heldReached`):
+an argument with no sibling combinator and nothing that reads where an
+element sits, what it holds, its text or the elements around it
+(`SITS_KEYS`, `READS_AROUND`) answers otherwise for a child put in or
+taken out only where that child, or what is in it, matches the stable
+part of its subject, since no element that stays gains or loses an
+ancestor. Any other notes `'s'` and is reached by every child, as every
+`:has()` was. joshwcomeau.com's
+`html:has([data-disable-document-scroll=true])` put the root among what
+each sparkle its like button put in reached, and the root, a seed no
+subtree is built around, built the whole document three times a second. **A pseudo-class read from elements around
+its element that no key says joins `READS_AROUND`**, or a `:has()` that
+tests it is reached by less than it reads. **An attribute selector is a key of its own** (`v:`), asked of the
 value its attribute had and has by css-select itself (`Cascade._flips`),
 which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
 class on github.com/features. **A key tested above its rule's subject
@@ -2063,14 +2077,20 @@ style put in, and where it comes out drawn the whole document is built.
 The layout after it keeps a block an earlier layout laid out where
 nothing it was laid out from changed (`Laid`), moving it to where the
 flow puts it now, with the offsets the passes after the flow put on what
-it holds taken off first (`unoffsetHeld`). Four rules hold it up. **State
+it holds taken off first (`unoffsetHeld`) — and a flex item (`keptNatural`)
+or a grid item (`keptItem`) the same way, by what its last layout in its
+container was laid out from (`Natural`, `ItemLaid`), under the rule a
+block is kept by (`mayKeepLaid`, `keepLaid`): joshwcomeau.com's article is
+a grid of a hundred paragraphs in flex boxes, and each sparkle beside one
+of them laid every one out again. Four rules hold it up. **State
 the builder carries across siblings is a root's to bring to a known
 value, or a refusal**: a new one goes in the table in the design record.
 **Anything new a `BoxTree` lists in document order is spliced in
 `buildSubtrees`**, or a subtree build leaves an entry of the old
 subtree, or none of the new. **Anything new a block's layout reads from
-outside it joins `Laid`**, and anything that changes what a box's layout
-reads calls `forgetSizes`, which forgets the record with the sizes. And
+outside it joins `Laid`** — a flex item's `Natural`, a grid item's
+`ItemLaid` — and anything that changes what a box's layout reads calls
+`forgetSizes`, which forgets the records with the sizes. And
 **anything new a pass after the flow moves boxes by is taken off in
 `unoffsetHeld`**, or a block kept is moved by it twice. A block whose
 layout reaches outside it — what holds a box placed against something
@@ -3471,11 +3491,22 @@ never reached was found. And a transform keeps what each of its functions
 was (`Primitive`): a matrix cannot tell a full turn from none. Layout's
 per-box caches assume a box's style never changes (only the `vw` path
 drops them yet, through `forgetSizes`), so a frame that changes a length
-builds boxes rather than restyling them and laying out again — at once, so
-that where everything it changed is positioned out of the flow
-and no other box moved, it repaints only those boxes' ink
-(`_rebuildFrame`). Compare where a box is laid out there, not how far it
+builds the subtrees it reached rather than restyling them and laying out
+again, keeping every other box (`_rebuildFrame`, `_buildSeeds`) — at once,
+so that where everything it changed is positioned out of the flow, or is
+inside a box that is, and no other box moved, it repaints only those
+boxes' ink. Compare where a box is laid out there, not how far it
 draws: an ancestor's ink bounds take in the marquee scrolling inside it.
+**The boxes a frame's build kept are the same boxes after it**, which its
+layout moves, so where each was laid out, and what the boxes out of the
+flow around what the frame reached drew, are taken before the build
+(`placed`, `KeptInk`): compared after it, a box is always where it is. A
+sparkle on joshwcomeau.com turns a drawing in a span placed absolutely,
+and the start and the end of each turn built the whole article, laid it
+out and repainted all of it. And **a box that draws nothing reaches
+nowhere** (`inkBottom`): its ink's bounds are at infinity, which a
+restyle in place took for past the document's end, and the document was
+laid out at every frame a sparkle was scaled to nothing.
 **A frame repaints a box where it is drawn now** (`_inkOf`): a box fixed
 to the viewport, or in one, is laid out at the document's top and drawn
 where the pane's scroll has the viewport, so its ink is moved by that

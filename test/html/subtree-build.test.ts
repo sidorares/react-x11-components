@@ -689,3 +689,73 @@ metric(
     assert.ok(ends > subtrees / 2, `${ends} of them at the document's end`);
   },
 );
+
+metric(
+  'a layout after a change in one flex item or grid item keeps the others as an earlier layout laid them out, where a layout of all new boxes puts them',
+  async () => {
+    // joshwcomeau.com's article is a grid of a hundred paragraphs in flex
+    // boxes, and a sparkle its like button put in beside one of them laid
+    // every one of them out again, three times a second
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '.col { display: flex; flex-direction: column; gap: 4px }' +
+        '.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px }' +
+        'p { margin: 2px }</style></head><body>' +
+        '<div class="col"><p id="f1">one item of a column</p>' +
+        '<p id="f2">two <span id="fs">s</span></p>' +
+        '<p id="f3">three items down</p></div>' +
+        '<div class="grid"><p id="g1">one cell of a grid</p>' +
+        '<p id="g2">two <span id="gs">s</span></p><p id="g3">three</p>' +
+        '<p id="g4">four cells across</p></div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const serials = (ids: readonly string[]): number[] =>
+      ids.map(
+        (id) =>
+          internals._firstBoxesOf(internals._tree).get(byId(id))!.layoutSerial,
+      );
+    for (const [at, others] of [
+      ['fs', ['f1', 'f3']],
+      ['gs', ['g1', 'g3', 'g4']],
+    ] as const) {
+      const before = serials(others);
+      const span = byId(at);
+      const text = createText(' and more of it');
+      appendChild(span, text);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: span,
+          addedNodes: [text],
+          removedNodes: [],
+        },
+      ]);
+      await act();
+      assert.deepStrictEqual(
+        serials(others),
+        before,
+        `#${others.join(', #')} laid out again for #${at}`,
+      );
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
