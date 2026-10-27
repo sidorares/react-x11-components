@@ -113,6 +113,12 @@ parts.
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,
   Windows, and why X11 can blur synchronously but not run a matrix.
+- [Audio](prd-audio.md) — design: the web's sound APIs against what
+  react-x11 and `<Html>` have, the two doors video already has (the
+  platform's player for a URL, a sink for samples), the ladder per
+  platform, why the platform rungs are core's and windowkit's while
+  decoders and Web Audio are this package's, and the first step: a page's
+  `<audio>` heard on macOS.
 - [`<Html>` against the CSS 2.1 test suite](html-conformance.md) — the
   web-platform-tests reftests run through `<Html>` on X11 and Cocoa: what it
   supports, the hangs and crashes the suite found, what was fixed, and what
