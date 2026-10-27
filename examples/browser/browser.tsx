@@ -32,8 +32,8 @@
 //
 // What a browser keeps between two runs it keeps in its profile
 // (`profile.ts`): the cookies, `localStorage`, `sessionStorage` and
-// IndexedDB of every site, in one database every tab's process shares, and
-// the tabs it had open, which come back with their histories when it starts
+// IndexedDB of every site, in one database every tab's process shares, the
+// HTTP cache in a second beside it, and the tabs it had open, which come back with their histories when it starts
 // again. `BROWSER_PROFILE=temp` (or `--temp-profile`) runs with a profile
 // that goes when the browser does, `BROWSER_PROFILE=<dir>` with another, and
 // `BROWSER_RESTORE=0` without the last session's tabs.

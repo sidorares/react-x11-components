@@ -1870,7 +1870,19 @@ handed a `CookieJar`, a document has `document.cookie` only where
 `scripts.cookies` is one, and `scripts.storage` is the process's memory and
 a document's own IndexedDB unless a host hands in a store — `HtmlProfile`'s,
 an SQLite database every process of a browser opens, and the only place
-anything reaches a disk. **A network with a jar follows redirects itself**
+anything reaches a disk. The HTTP cache is the same: a network's memory
+unless it is handed a store (`httpCache`), and the profile's is a second
+file beside the database (`cache.sqlite`), since its bodies would grow the
+log every cookie write goes through and its writes would move the
+`data_version` every reader of a cookie watches. **A subresource goes
+through the cache's rules, RFC 9111's** (`http-cache.ts`, `_http`): a
+response is used again only while it is fresh, a stale one is asked about by
+its validators, and nothing is kept that may not be — the old memory kept
+every response for the process's life, `no-store` and all, and never asked.
+So **anything new that hands a page a body it may use again goes through
+`load`**, and anything new a response's use depends on — a request header a
+`Vary` can name — is in `_headers`, which the cache compares, or a kept
+response answers a request it was not chosen for. **A network with a jar follows redirects itself**
 (`_exchange`, `redirect: 'manual'`), because a login's session is set on
 the redirect it answers with and the runtime's `fetch` follows it out of
 sight: anything new that sends a request goes through `_exchange` with what
@@ -2455,7 +2467,8 @@ everything itself — markup against the document's base, a sheet's `url()`s,
 parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
 absolute URLs. Without a base nothing is resolved, which is what every host
 before it saw. `examples/browser/` is the host that does fetch, and the
-place a fetching policy belongs: a cache per page process, per-host pacing,
+place a fetching policy belongs: an HTTP cache every tab shares through the
+profile, per-host pacing,
 `file:` only for `file:` pages, no mixed content (a secure page's
 stylesheets and fonts over an insecure connection are blocked and its images
 upgraded, as a browser has it), no cookies.
@@ -2514,6 +2527,19 @@ closes a way out a DOM binding opens by accident:
   dirty; the outermost entry's end refreshes (`settled`), and an op that
   asks the layout anything flushes first, since it has to answer from the
   change.
+- **The page's time is its own code's, counted at the bridge.** The
+  runtime's watchdog counts all of an entry and nothing pauses it, so it is
+  only the ceiling, five times the page's time; the engine counts the
+  page's own with each op's time left out (`ScriptEngine._bridge`), and an
+  op asked once it is spent throws a `TimeoutError`. Counted by the
+  watchdog, a webmail page's 2.4 s forced layout was cut half way at every
+  `getComputedStyle`. So **anything new that calls the host from the page
+  goes through the bridge, and anything new that runs the page's code from
+  the host goes through `_enter` and `_leave`**, or the clock counts one's
+  time as the other's. A cut inside an op still runs no `finally` under it,
+  and the host has `<Html>` make the document again
+  (`interruptedSince`, `HtmlViewNode.interrupted`): **a flag of `<Html>`'s
+  that a `finally` puts back is put back in `interrupted()` too.**
 - **Every script compiled into the context has an `import()` callback**,
   rejecting with the context's own `TypeError` (`refuseImport`), the
   facade's installation included: a page's `eval`, `new Function`, string
@@ -2766,7 +2792,19 @@ closes a way out a DOM binding opens by accident:
   `<Html>` draws the pixels in the canvas's box (`canvasImage`), in its
   place in the paint order, where a mount over the document had to be
   refused wherever anything was painted over it: up.com.au's logo, fixed
-  over the top of its mascot's canvas, hid all of it.
+  over the top of its mascot's canvas, hid all of it. An `OffscreenCanvas`
+  holds a `CanvasState` too, through the same 2d context code — its
+  context's prototype is the canvas context's copied, so it is no
+  `CanvasRenderingContext2D`, as in a browser — and its rectangles go to
+  the `<canvas>` that handed it its control (`transferControlToOffscreen`):
+  this realm's, or across the thread it was transferred over, as a frame,
+  `{ k, s, d }`, that the realm with the placeholder puts (`canvasRoutes`,
+  `canvasFrame`). **Anything new that can make a canvas's bitmap show or
+  stop showing answers in `canvasShown`**, which `markCanvas` asks first:
+  a canvas nothing shows marks nothing, and a placeholder's own bitmap
+  must never reach the host over the frames of the canvas it gave its
+  control to. A bitmap as a file is a PNG the host makes (`encodeImage`,
+  `png.ts`, over node's zlib), whatever type was asked for.
 - **A WebGL context answers and draws nothing** (`webgl.ts`, source text
   handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
   software where there is no GPU, so a null context is a page that
@@ -2792,10 +2830,14 @@ closes a way out a DOM binding opens by accident:
   is a shared worker's, or a connection hears another's messages. A port
   a message transfers there is a wire over the same channel (`wireEnd`,
   `{ q, d }`), and over another realm of the page, its `__wire`: **anything
-  new that posts across a thread or a realm hands `serializeClone` the
-  ports its list transfers and runs its `later` after the send**, or a
+  new that posts across a thread or a realm hands `serializeClone` what
+  its list transfers (`transfersOf`: the ports, the `OffscreenCanvas`es
+  and the `ImageBitmap`s) and runs its `later` after the send**, or a
   port in it is a `DataCloneError`, and what was queued for one arrives
-  before the port does.
+  before the port does. A port's `_deliver` is handed all of what a
+  message moved, not its ports alone, so a canvas a port's message moves
+  crosses a wire with it; **anything that makes a message event of it
+  takes the ports out first**.
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins

@@ -157,6 +157,27 @@ callbacks only at the context's next evaluation. Every host-to-page entry
 is a `Script` run, so this costs nothing, but a host that resolves a page
 promise and returns will see nothing happen.
 
+**And a timeout counts everything, the host's time with the page's.** The
+watchdog runs on a thread of its own from the moment an entry begins, and
+nothing pauses it, on Node or on Bun. So an op the page called — a
+`getComputedStyle` that forces a layout — spent the page's time: a webmail
+page's layout took 2.4 s on a Mac, against the 2 s a task had, and every
+script that read a style was stopped inside the layout, which was left half
+done, its `finally`s skipped. The engine keeps the page's clock itself now
+(`ScriptEngine._bridge`): the host's time in each op is left out, an op
+asked once the page's own time is spent throws a `TimeoutError`, and the
+watchdog is set at five times it, the ceiling for a loop that asks for
+nothing. No op is begun in the last stretch before the ceiling, as long as
+the page's time, so a cut inside an op is rare; one that happens anyway has
+`<Html>` style, build and lay out the document from nothing
+(`HtmlViewNode.interrupted`). Two ways to stop the page at its own time
+were tried and do not work. An inspector session on a worker thread can
+end the main thread's script whenever it likes (`Runtime.terminateExecution`),
+but the termination unwinds every frame up to the event loop — the
+engine's, `<Html>`'s, React's — and Node aborted with its async hook stack
+corrupted. And no `vm` boundary converts a termination its own watchdog did
+not start, so a nested `runInContext` around an op shields nothing.
+
 **Nothing bounds the heap.** `vm.measureMemory` can observe it, and
 nothing can stop it. The process is the bound, which is the first thing
 core is asked for below.
@@ -891,6 +912,24 @@ standards moved from what Acid3 expected):
   by the part of a pixel they reach. Text and an image are kept as state
   and drawn as nothing: a font's outlines and an image's pixels are the
   host's.
+- **An `OffscreenCanvas` is a canvas's bitmap with no element** (HTML
+  4.12.5.3), in a window or a dedicated worker: its 2d context is the
+  canvas's code over a bitmap of its own, a WebGL one draws nothing as a
+  canvas's does, and a `bitmaprenderer` one shows an `ImageBitmap`. A
+  `<canvas>` that hands it its control (`transferControlToOffscreen`)
+  shows what it draws from then on, and refuses a context, a size and a
+  read of its own; transferred to a worker, it draws there, and each
+  task's rectangle comes back across the thread to the realm that has the
+  placeholder, which puts it as its own canvas's (`canvasRoutes`). A
+  dedicated worker has animation frames to draw by, sixty a second on its
+  own clock. `transferToImageBitmap`, `createImageBitmap` — of a canvas,
+  an `OffscreenCanvas`, an `ImageBitmap`, an `ImageData`, and a blob
+  decoded by the host through the decoders a document's images are — and
+  `structuredClone` and `postMessage` of an `ImageBitmap` keep pixels in
+  the realm as a canvas does; an image's and a video's are the host's,
+  so their bitmap is transparent at their size. `convertToBlob`, `toBlob`
+  and `toDataURL` are a PNG the host makes (`encodeImage`), whatever type
+  was asked for, which HTML allows.
 - **A resize observer is told each size its targets come to**: as one is
   observed, where it has a size, and again whenever its content box
   changes, looked at a tenth of a second apart while any observes, since
@@ -909,6 +948,19 @@ standards moved from what Acid3 expected):
   commit and React took the whole page down, as Chrome does with WebGL
   turned off. The cost is a page that tests for WebGL and has a fallback,
   which shows the empty canvas rather than its picture.
+- **The geometry interfaces are the whole module** (`geometry.ts`, source
+  text as `dom.ts` is): `DOMPoint`, `DOMRect`, `DOMQuad` and `DOMMatrix`
+  with their read-only parents, a window's `WebKitCSSMatrix`, `SVGPoint`,
+  `SVGRect` and `SVGMatrix` for them, and each structured-cloned as
+  itself. A page reads where a box was moved to with
+  `new DOMMatrixReadOnly(getComputedStyle(el).transform)`, and there was
+  no `DOMMatrixReadOnly` to make. A string is parsed in the realm as a
+  `<transform-list>`, every transform function with its lengths absolute,
+  since it is no element's and there is no box or font to resolve a
+  percentage or an `em` against; a quarter turn is exact, as Chrome's is.
+  What an element hands over from `getBoundingClientRect` is a `DOMRect`
+  of the module's, its attributes on the prototype, and a canvas's
+  `getTransform()` a `DOMMatrix`.
 - **A response may be made of a stream**, which its body methods read to
   the end, a `Uint8Array` a chunk. three.js's loaders hand a fetch's body
   on through one to count the download, and a body taken as its text was

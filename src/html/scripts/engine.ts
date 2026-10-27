@@ -27,10 +27,13 @@
 //      honours the callback (`SCRIPTS_CONTAINED`).
 //
 // A runaway page is stopped by the timeout, microtasks included
-// (`microtaskMode: 'afterEvaluate'`), and the page is usable after it. That
-// mode has one other side: a promise the host settles runs its callbacks at
-// the context's next evaluation, which is why every answer comes in through
-// an entry. Nothing bounds the heap; the process — the tab — is the bound.
+// (`microtaskMode: 'afterEvaluate'`), and the page is usable after it. The
+// timeout is the page's own time: what the host does for an op — a style, a
+// layout — is not the page's, and the runtime's watchdog, which counts it,
+// is only the ceiling behind it (`_bridge`). The microtask mode has one
+// other side: a promise the host settles runs its callbacks at the
+// context's next evaluation, which is why every answer comes in through an
+// entry. Nothing bounds the heap; the process — the tab — is the bound.
 //
 // **Not a boundary against a hostile page.** Node says so of `vm`, and the
 // PRD's threat model says what is: the process, which is a weak one today.
@@ -56,10 +59,12 @@ import { installRtcTransports } from './rtc-transports.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
+import { installGeometry } from './geometry.js';
 import type { Bridge, Primitive } from './dom.js';
 
 declare const setTimeout: SetTimeout;
 declare const URL: UrlClass;
+declare const performance: { now(): number };
 
 // The runtime's `vm` and `util`, loaded as this module is: it is reached
 // only once a document's scripts are turned on (`./load.ts`).
@@ -101,9 +106,15 @@ async function enableJspi(): Promise<void> {
 await enableJspi();
 
 export interface EngineOptions {
-  /** How long any one entry may run, in milliseconds. */
+  /** How long the page's own code may run in one task — an entry, and
+   *  what it runs — in milliseconds: the host's time in the ops it asks is
+   *  not counted. The task is stopped outright at `ceiling`, ops and all
+   *  (`_bridge`). */
   timeout: number;
-  /** An entry ran past it and was stopped. */
+  /** How long a task may take at all, the host's time in its ops included:
+   *  the runtime's watchdog. Default `CEILING` times `timeout`. */
+  ceiling?: number;
+  /** A task ran past it and was stopped. */
   onTimeout(): void;
   /** Where the engine says what went wrong. */
   log(level: string, text: string): void;
@@ -259,11 +270,12 @@ const INSTALL = `(function () {
   const webrtc = (${installWebRTC.toString()});
   const rtcTransports = (${installRtcTransports.toString()});
   const webaudio = (${installWebAudio.toString()});
+  const geometry = (${installGeometry.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, geometry, named);
 })()`;
 
 /**
@@ -528,6 +540,24 @@ export class ScriptEngine {
    *  V8's termination can stop a tree-moving bridge op partway, so the
    *  host repairs the tree before it is drawn or read again. */
   private _timedOut = false;
+  /** And one was stopped inside an op since the host last asked
+   *  (`interruptedSince`): what the op was in the middle of — a style, a
+   *  layout — ran none of its `finally`s. */
+  private _interrupted = false;
+  /** How long an entry may run at all, ops and all: the runtime's
+   *  watchdog, which nothing can pause (`_bridge`). */
+  private readonly _ceiling: number;
+  /** The task under way — the outermost entry and all it runs — on the
+   *  page's clock: when it began, how long the page's own code ran in it
+   *  before `_since`, whether what has run since is the page's or an op's,
+   *  and how many ops are under way (`_bridge`). */
+  private _taskFrom = 0;
+  private _pageUsed = 0;
+  private _since = 0;
+  private _inPage = false;
+  private _ops = 0;
+  /** The task has spent its time, and every op it asks is refused. */
+  private _stopped = false;
   /** While the document is frozen (`freeze`), what the host asks of the
    *  page, in order, to run as it thaws; and the entries held once
    *  however often they were asked (`HELD_ONCE`). */
@@ -569,6 +599,10 @@ export class ScriptEngine {
         "A page's scripts are not run where its import() would reach the host: run Node 20, or 24 or later, with --experimental-vm-modules, or Bun.",
       );
     }
+    this._ceiling = Math.max(
+      this._options.timeout,
+      this._options.ceiling ?? this._options.timeout * CEILING,
+    );
     this._importer = (specifier) =>
       this._imported(this._dynamic(specifier, this._options.base?.() ?? ''));
     this._context = createPageContext(
@@ -581,7 +615,7 @@ export class ScriptEngine {
       new vm.Script(code, {
         importModuleDynamically: this._importer as never,
       }).runInContext(this._context, {
-        timeout: this._options.timeout,
+        timeout: this._ceiling,
       });
     run(
       `Object.defineProperty(Error, 'prepareStackTrace', ` +
@@ -590,7 +624,7 @@ export class ScriptEngine {
     // the one host object that ever goes in, taken out of the global by
     // the facade before any page code runs, with whether the window can
     // have its named properties
-    (this._context as Record<string, unknown>).__bridge = bridge;
+    (this._context as Record<string, unknown>).__bridge = this._bridge(bridge);
     (this._context as Record<string, unknown>).__named = namedAccessWorks();
     run(INSTALL);
     this._promises = run('Promise.prototype') as object;
@@ -729,13 +763,13 @@ export class ScriptEngine {
     // a top-level `await` is in.
     if (!evaluated && module.status !== 'linked') return module.namespace;
     if (!evaluated) {
-      this._enter();
+      const mark = this._enter();
       try {
-        evaluated = module.evaluate({ timeout: this._options.timeout });
+        evaluated = module.evaluate({ timeout: this._ceiling });
       } catch (error) {
         evaluated = Promise.reject(error);
       } finally {
-        this._leave();
+        this._leave(mark);
         if (!this._depth && !this._disposed) this._options.settled();
       }
       this._evaluated.set(module, evaluated);
@@ -748,8 +782,7 @@ export class ScriptEngine {
       });
     } catch (error) {
       if (ownData(error, 'code') === TIMEOUT) {
-        this._timedOut = true;
-        this._options.onTimeout();
+        this._cut();
         throw this._pageError(`The module ${module.identifier} ran too long.`);
       }
       throw isHostError(error) ? this._pageError(messageOf(error)) : error;
@@ -821,15 +854,15 @@ export class ScriptEngine {
   private _evaluate(module: PageModule): boolean {
     // one an `import()` has evaluated already ran then
     if (this._evaluated.has(module)) return true;
-    this._enter();
+    const mark = this._enter();
     let done: Promise<void>;
     try {
-      done = module.evaluate({ timeout: this._options.timeout });
+      done = module.evaluate({ timeout: this._ceiling });
     } catch (error) {
       this._fault(error);
       return false;
     } finally {
-      this._leave();
+      this._leave(mark);
       if (!this._depth && !this._disposed) this._options.settled();
     }
     this._evaluated.set(module, done);
@@ -855,8 +888,7 @@ export class ScriptEngine {
     if (this._broken || this._disposed) return;
     if (isHostError(error)) {
       if ((error as { code?: unknown }).code === TIMEOUT) {
-        this._timedOut = true;
-        this._options.onTimeout();
+        this._cut();
         return;
       }
       error = this._pageError(messageOf(error));
@@ -868,10 +900,7 @@ export class ScriptEngine {
     }
     // Node makes the timeout's error in the context's realm, so it is told
     // apart only in the page, and its tree wants the same repair
-    if (this.call('__fault', null) === 'timeout') {
-      this._timedOut = true;
-      this._options.onTimeout();
-    }
+    if (this.call('__fault', null) === 'timeout') this._cut();
   }
 
   /**
@@ -949,11 +978,11 @@ export class ScriptEngine {
     }
     let ran = false;
     if (compiled) {
-      this._enter();
+      const mark = this._enter();
       try {
         // what it completes with is the page's, and never read
         compiled.runInContext(this._context, {
-          timeout: this._options.timeout,
+          timeout: this._ceiling,
           ...UNDECORATED,
         });
         ran = true;
@@ -962,7 +991,7 @@ export class ScriptEngine {
         // without reading the page's object (`_fault`)
         this._fault(error);
       } finally {
-        this._leave();
+        this._leave(mark);
       }
     }
     this.call('__ran', null);
@@ -1027,10 +1056,10 @@ export class ScriptEngine {
       this._options.log('error', 'The page broke its script engine.');
       return undefined;
     }
-    this._enter();
+    const mark = this._enter();
     try {
       const out = this._entry(name).runInContext(this._context, {
-        timeout: this._options.timeout,
+        timeout: this._ceiling,
         ...UNDECORATED,
       });
       // Only a primitive comes back. An entry answers one by design; a
@@ -1054,8 +1083,7 @@ export class ScriptEngine {
         code = (error as { code?: unknown } | null)?.code;
       } catch {}
       if (code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
-        this._timedOut = true;
-        this._options.onTimeout();
+        this._cut();
       } else {
         this._options.log(
           'error',
@@ -1064,7 +1092,7 @@ export class ScriptEngine {
       }
       return undefined;
     } finally {
-      this._leave();
+      this._leave(mark);
       if (!this._depth && !this._disposed) this._options.settled();
     }
   }
@@ -1131,12 +1159,105 @@ export class ScriptEngine {
     if (this._held!.length === HELD_MAX) this._options.overflow?.();
   }
 
-  /** An entry begins: the outermost one is a task (`entered`). */
-  private _enter(): void {
-    if (this._depth++ === 0) this._options.entered?.();
+  /**
+   * The bridge the facade is handed: the host's, on the page's clock. The
+   * runtime's watchdog counts the whole of an entry, and nothing pauses it:
+   * an op that forces a layout of a heavy document — 2.4 s of a webmail
+   * page's on a Mac — ran the page past its time inside the layout, which
+   * was stopped half way, every `finally` under it skipped, and the
+   * page's script with it, over and over as the page loaded. So the
+   * watchdog is set at `CEILING` times the page's time, and the page's
+   * own is counted here, the host's time in each op left out. An op asked
+   * once the page has run past it is refused, and the page's code is
+   * thrown a `TimeoutError` there, which stops a runaway that touches the
+   * document as the watchdog used to; one that touches nothing runs into
+   * the ceiling. And no op is begun so near the ceiling that one as long
+   * as the page's time could be cut by it: what a cut leaves half made is
+   * the host's to make again (`interruptedSince`), and a refusal leaves
+   * nothing half made. The ops the facade asks for itself and reads no
+   * error from (`UNREFUSED`) are never refused. Outside a task — a
+   * callback the runtime runs on its own — nothing is counted.
+   */
+  private _bridge(bridge: Bridge): Bridge {
+    return (op, a, b, c, d) => {
+      if (!this._depth) return bridge(op, a, b, c, d);
+      const was = this._stretch(false);
+      if (this._spent() && !UNREFUSED.has(op)) {
+        this._stretch(was);
+        return REFUSED;
+      }
+      this._ops += 1;
+      try {
+        return bridge(op, a, b, c, d);
+      } finally {
+        this._ops -= 1;
+        this._stretch(was);
+      }
+    };
   }
-  private _leave(): void {
-    if (--this._depth === 0) this._options.left?.();
+
+  /** Whose time it is from now, the page's or the host's; what it was. */
+  private _stretch(page: boolean): boolean {
+    const now = performance.now();
+    if (this._inPage) this._pageUsed += now - this._since;
+    this._since = now;
+    const was = this._inPage;
+    this._inPage = page;
+    return was;
+  }
+
+  /** Whether the task has spent its time (`_bridge`): the page's own code
+   *  past the timeout, or the task near enough the ceiling that an op as
+   *  long as the timeout would be cut by it. Told once a task. */
+  private _spent(): boolean {
+    if (this._stopped) return true;
+    const timeout = this._options.timeout;
+    if (
+      this._pageUsed <= timeout &&
+      this._since - this._taskFrom <= this._ceiling - timeout
+    ) {
+      return false;
+    }
+    this._stopped = true;
+    this._options.onTimeout();
+    return true;
+  }
+
+  /** An entry ran into the ceiling and was stopped: told, unless the task
+   *  was told already that it ran past its time (`_spent`). */
+  private _cut(): void {
+    this._timedOut = true;
+    if (!this._stopped) this._options.onTimeout();
+    this._stopped = true;
+  }
+
+  /** An entry begins: the outermost one is a task (`entered`), whose clock
+   *  starts. What it answers is what `_leave` puts back. */
+  private _enter(): EntryMark {
+    const mark = { depth: this._depth, ops: this._ops, page: this._inPage };
+    if (this._depth++ === 0) {
+      this._options.entered?.();
+      this._taskFrom = this._since = performance.now();
+      this._pageUsed = 0;
+      this._inPage = true;
+      this._stopped = false;
+    } else this._stretch(true);
+    return mark;
+  }
+
+  /** An entry ends, and what it began with is put back: where the runtime's
+   *  watchdog cut it, the ops and the entries under it never returned, and
+   *  ran none of their `finally`s. An op that never returned was stopped
+   *  half way through what it did (`interruptedSince`). */
+  private _leave(mark: EntryMark): void {
+    if (this._ops > mark.ops) this._interrupted = true;
+    this._ops = mark.ops;
+    this._depth = mark.depth;
+    if (this._depth) this._stretch(mark.page);
+    else {
+      this._inPage = false;
+      this._options.left?.();
+    }
   }
 
   /**
@@ -1206,6 +1327,20 @@ export class ScriptEngine {
     return was;
   }
 
+  /**
+   * Whether an entry was stopped inside an op since this was last asked,
+   * clearing the flag: an op asked so near the ceiling that the runtime's
+   * watchdog cut it, which the page's clock keeps rare (`_bridge`) and
+   * cannot keep from happening. What it was in the middle of — `<Html>`
+   * styling or laying out the document — ran none of its `finally`s, and
+   * the host has it made again (`HandleInternals.interrupted`).
+   */
+  interruptedSince(): boolean {
+    const was = this._interrupted;
+    this._interrupted = false;
+    return was;
+  }
+
   dispose(): void {
     this._disposed = true;
     this._held = null;
@@ -1234,6 +1369,30 @@ const HELD_ONCE = new Set([
 /** How many turns of the host's the context is entered on after an
  *  `import()` settles (`_drainLater`). */
 const DRAIN_TURNS = 4;
+
+/** How many times the page's time a task may take at all, the host's in
+ *  its ops included (`_bridge`): what bounds a runaway that touches nothing
+ *  of the document, and what the ops the page asks may take. Ten seconds
+ *  for a page's two, short of the fifteen a `<Frame>` pane's watchdog ends
+ *  a tab after. */
+const CEILING = 5;
+
+/** What an op the page asks once its task has spent its time answers
+ *  (`_bridge`): an error the facade throws as a `DOMException`. */
+const REFUSED =
+  '\u0001TimeoutError\u0001The script ran too long, and was stopped.';
+
+/** The ops the facade asks for itself, through the bridge rather than
+ *  through `call`, which reads no error from what they answer: a refusal
+ *  would be taken for the answer (`_bridge`). */
+const UNREFUSED = new Set(['log', 'now', 'rangeDrop', 'iterDrop', 'ceTake']);
+
+/** What an entry found as it began, which it puts back as it ends. */
+interface EntryMark {
+  depth: number;
+  ops: number;
+  page: boolean;
+}
 
 /** The code of the error a `vm` timeout throws. */
 const TIMEOUT = 'ERR_SCRIPT_EXECUTION_TIMEOUT';

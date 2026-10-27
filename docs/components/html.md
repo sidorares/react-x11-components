@@ -772,8 +772,9 @@ const net = useHtmlNetwork(url);
 
 `scripts` runs a document's scripts: classic scripts and modules, an import
 map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, WHATWG
-streams, WebSockets, WebTransport, the DOM, a canvas a script draws on, frames running
-in realms of their own and dedicated workers on threads of their own. It is the engine the example
+streams, WebSockets, WebTransport, the DOM, a canvas a script draws on — or
+an `OffscreenCanvas`, in a worker as well — frames running in realms of
+their own and dedicated workers on threads of their own. It is the engine the example
 browser was built over — a `node:vm` context a document, a DOM inside it
 over the tree drawn here, and only primitives crossing between the two —
 and [the PRD](../prd-html-scripts.md) is its design. **Off unless it is
@@ -812,15 +813,32 @@ charset }` — the `<script>` is the request's `element`, and the root
   headers.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
-a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
-cache, six requests a host at a time, `file:` only for a `file:` page, no
+a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
+HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no
 mixed content, and no cookies unless it is handed a jar — shared by every
 document in the process (`defaultHtmlNetwork`), or one handed in. `new
-HtmlNetwork(options)` takes its own User-Agent, cache size, transport — a
-proxy, a cache on disk, a test's answers — log and cookie jar, and its
-`html(url)` fetches a document whole, decoded, for `source`. Nothing about
-it is required: any `onResource` that answers `'script'` and any `fetch` of
-the same shape will do. See [Cookies and storage](#cookies-and-storage).
+HtmlNetwork(options)` takes its own User-Agent, cache size, a store for its
+cache (`httpCache`), transport — a proxy, a test's answers — log and cookie
+jar, and its `html(url)` fetches a document whole, decoded, for `source`.
+Nothing about it is required: any `onResource` that answers `'script'` and
+any `fetch` of the same shape will do. See [Cookies and
+storage](#cookies-and-storage).
+
+**`HtmlNetwork`'s cache is HTTP's** (RFC 9111, a private cache). A page's
+images, stylesheets, fonts and scripts are used again while their server
+says they are fresh — `max-age`, else `Expires`, else a tenth of the time
+since `Last-Modified`, at most a week — and a stale one is asked about with
+`If-None-Match` and `If-Modified-Since`, so a 304 costs no body. A
+`no-store` response, one that varies by `*` or `Cookie`, and one with no
+freshness and no validator are asked for each time. It is keyed by the site
+of the document that asked, as browsers key theirs. It is the network's
+memory, bounded by `cacheBytes`, and the store it is handed, which a later
+network finds — `HtmlProfile`'s `httpCache` keeps it on disk, for every
+process of a browser. `clear()` is a hard reload: nothing asked for before
+it is used, and the next request for each goes with `Cache-Control:
+no-cache`. A document, a page's own `fetch` and a redirect are not kept;
+where a redirect led is, under its own URL. The `log` option says `cached`
+for a response the cache answered and `revalidated` for a 304.
 
 **`threadTransport()` makes the requests on a thread of its own.** A
 response's body comes off its socket on the thread that asked for it, a
@@ -866,7 +884,7 @@ since this component navigates nowhere by itself:
 | `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
 | `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
 | `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
-| `timeout`        | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                                           |
+| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                 |
 | `onTimeout`      | nothing                   | One was.                                                                                                                                                                     |
 | `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
 | `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
@@ -883,6 +901,20 @@ since this component navigates nowhere by itself:
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+
+**A script's time is its own code's.** `timeout` is how long a task — a
+script, a listener, a timer, and the microtasks it queues — may run the
+page's code. What `<Html>` does for it is not counted: the style a
+`getComputedStyle` forces and the layout an `offsetWidth` asks for, which
+on a heavy document take seconds of their own. A task past its time is
+thrown a `TimeoutError` (a `DOMException`) by the next thing it asks of the
+document, and by everything it asks after that; one that asks nothing is
+stopped outright at five times its time, by the runtime's watchdog, which
+counts everything. `onTimeout` is told once a task either way, and the
+page's next task runs. Nothing is begun in the last stretch before that
+ceiling, as long as `timeout`, so a forced layout is not cut half way
+through, and one cut anyway has the document styled and laid out again from
+nothing.
 
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
@@ -1783,7 +1815,10 @@ import {
 const profile = await HtmlProfile.open(dir, { tab: tabKey }); // null without SQLite
 const cookies = new CookieJar({ store: profile?.cookies });
 publicSuffixList().then((list) => list && (cookies.publicSuffix = list));
-const network = new HtmlNetwork({ cookies });
+const network = new HtmlNetwork({
+  cookies,
+  httpCache: profile?.httpCache ?? undefined,
+});
 
 <Html
   scripts={{
@@ -1798,7 +1833,8 @@ const network = new HtmlNetwork({ cookies });
 network sends no cookie and keeps none, and a document has no
 `document.cookie`; with no `storage` an origin's `localStorage` and
 `sessionStorage` are the process's memory and an IndexedDB database is the
-document's, gone with it. Each is a seam, and [the
+document's, gone with it; with no `httpCache` the HTTP cache is the
+network's memory, gone with the process. Each is a seam, and [the
 PRD](../prd-browser-profile.md) has the design and why the profile is not
 Chrome's format.
 
@@ -1845,7 +1881,12 @@ the runtime's `node:sqlite` (Node 22.13 and later, Bun) or `bun:sqlite`, and
 null on a runtime with neither. `profile.cookies` is a jar's store,
 `profile.storage` a document's storage: `localStorage` per origin,
 `sessionStorage` kept by the tab's key, IndexedDB, and `storage` events
-across processes. `endSession({ keepTabs, keepSessionCookies })` drops what
+across processes. `profile.httpCache` is a network's HTTP cache, in a file
+of its own beside the database (`cache.sqlite`), read straight from the file
+so a response one process kept is there for the next request another makes:
+it forgets the responses used longest ago past `cacheBytes` (an option of
+`open`, 512 MB by default; 0 for none), and `clear()` forgets them all.
+`endSession({ keepTabs, keepSessionCookies })` drops what
 a session that ends takes with it, and `forgetTab(key)` a closed tab's
 `sessionStorage`.
 

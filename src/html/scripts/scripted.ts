@@ -139,8 +139,11 @@ export interface HtmlScripts {
    *  wrong — an uncaught error, a script that failed to load. Default:
    *  nowhere. */
   log?: (level: string, text: string) => void;
-  /** How long a script, a listener or a timer may run before it is
-   *  stopped, in milliseconds. Default 2000. */
+  /** How long a script's own code may run in a task — a script, a
+   *  listener, a timer — in milliseconds, the time `<Html>` takes over a
+   *  style or a layout it asks for not counted: what it asks after that
+   *  throws a `TimeoutError`, and the task is stopped outright at five
+   *  times it, whatever it asks. Default 2000. */
   timeout?: number;
   /** A script ran past `timeout` and was stopped. Default: nothing. */
   onTimeout?: () => void;

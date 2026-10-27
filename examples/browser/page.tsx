@@ -175,14 +175,17 @@ void publicSuffixList().then((list) => {
   if (list) cookies.publicSuffix = list;
 });
 
-/** One process's network: a tab's own cache, where each tab is a process,
- *  and the profile's cookies. `BROWSER_DEBUG=1` logs every request and
- *  what came of it. */
+/** One process's network: a tab's own memory, where each tab is a process,
+ *  over the profile's HTTP cache, which every tab shares and the next run
+ *  finds, and the profile's cookies. `BROWSER_DEBUG=1` logs every request
+ *  and what came of it — `cached` for one the cache answered, `revalidated`
+ *  for a 304. */
 const network = new HtmlNetwork({
   // the default; the component sets it from `props.userAgent` (the toolbar's
   // menu) before each load, so a switch takes on the next navigation
   userAgent: DEFAULT_USER_AGENT,
   cookies,
+  httpCache: profile?.httpCache ?? undefined,
   // on a thread of its own: a page that keeps this one busy laying itself
   // out and running its scripts holds back no download — the 2.3 MB
   // script a playground's frame on joshwcomeau.com waits for came in
@@ -406,11 +409,11 @@ function follow(
  * it was kept is stopped, and asked for again once it is shown; what was
  * on the wire already finishes into the network's cache, which every
  * document shares, so it is not cut, and is handed over once the document
- * is shown. The page's own requests from before it was kept, its
- * `pagehide` beacon among them, finish too: what a page was promised
- * cannot be asked for again on its behalf, and the answer waits for it in
- * its frozen engine. `drop()` lets whatever waits go, as the document
- * does.
+ * is shown — where the cache may keep it, and asked for again where not.
+ * The page's own requests from before it was kept, its `pagehide` beacon
+ * among them, finish too: what a page was promised cannot be asked for
+ * again on its behalf, and the answer waits for it in its frozen engine.
+ * `drop()` lets whatever waits go, as the document does.
  */
 class DocumentRequests {
   /** What `<Html>` asked for and has not had yet, waiting or on its way:

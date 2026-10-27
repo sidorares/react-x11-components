@@ -55,9 +55,11 @@ declare const URL: UrlClass;
 /** A frame of the page's clock, which `scroll` is told at most once in. */
 const FRAME_MS = 16;
 
-/** How long a script, a listener or a timer may run before it is stopped:
- *  long enough for any page that is working, short enough that one that is
- *  not leaves the tab answering. */
+/** How long a script's own code may run in a task — a script, a listener,
+ *  a timer — before it is stopped: long enough for any page that is
+ *  working, short enough that one that is not leaves the tab answering. The
+ *  host's time in what it asks of the document is not counted, and the task
+ *  is stopped outright at five times it (`ScriptEngine._bridge`). */
 export const SCRIPT_TIMEOUT_MS = 2000;
 
 /** What the page around a document gives its scripts. */
@@ -68,7 +70,7 @@ export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
   load(url: string, element: Element | null): Promise<string | null>;
   /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
-  /** How long a script, a listener or a timer may run before it is
+  /** How long a script's own code may run in a task before it is
    *  stopped. Default `SCRIPT_TIMEOUT_MS`. */
   timeout?: number;
   /** Whether the page may start dedicated workers, each a thread of its

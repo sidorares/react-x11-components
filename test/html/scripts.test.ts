@@ -152,6 +152,9 @@ async function hosted(
     url?: string;
     /** Font files answered by their names, a moment later. */
     fonts?: Record<string, Uint8Array>;
+    /** How long the page's own code may run in a task, where a test runs
+     *  one past it: the task is stopped outright at five times it. */
+    timeout?: number;
   } = {},
 ): Promise<Hosted> {
   const scale = options.scale ?? 1;
@@ -195,6 +198,7 @@ async function hosted(
     onTimeout: () => {
       out.timeouts += 1;
     },
+    timeout: options.timeout,
     canPlayType: options.canPlayType,
     network: options.network,
     serviceWorkers: options.serviceWorkers,
@@ -1095,24 +1099,145 @@ test('a script innerHTML puts in never runs, and one a script appends does', asy
 });
 
 test('a script that runs away is stopped, and the page goes on', async () => {
+  // at the ceiling, five times its time, since it asks nothing of the
+  // document that could stop it sooner
   const doc = await hosted(
     '<p id="out">-</p><script>for (;;) {}</script>' +
       "<script>document.getElementById('out').textContent = 'after';</script>",
+    { timeout: 200 },
   );
   assert.equal(doc.timeouts, 1);
   assert.equal(doc.text('out'), 'after');
 });
 
-test('a classic script that runs away leaves the engine timed out, for the host to repair its tree', () => {
+/** The host's time, spent as a forced layout of a heavy document spends
+ *  it: 2.4 s of a webmail page's on a Mac. */
+function spin(ms: number): void {
+  const end = performance.now() + ms;
+  while (performance.now() < end);
+}
+
+/** `<Html>`'s `_update` made `ms` slower for the next `times` calls,
+ *  inside the timing of its layouts (`_counted`) as a real layout is; and
+ *  what ends that sooner. */
+function slowLayouts(view: HtmlViewNode, ms: number, times = 1): () => void {
+  const node = view as unknown as { _update(target: number): void };
+  const update = node._update;
+  let left = times;
+  node._update = function (this: unknown, target: number) {
+    if (left > 0) {
+      left -= 1;
+      spin(ms);
+    }
+    return update.call(this, target);
+  };
+  return () => void (left = 0);
+}
+
+test('the host’s time in an op is not the page’s: a getComputedStyle whose layout takes longer than the script may run reads the style, and the script goes on', async () => {
+  const doc = await hosted('<p id="out">-</p><p id="p">text</p>', {
+    timeout: 200,
+  });
+  // twice the page's time, and well short of the ceiling
+  slowLayouts(doc.view, 400);
+  doc.run(
+    "var p = document.getElementById('p'); p.style.color = 'rgb(1, 2, 3)';" +
+      'var color = getComputedStyle(p).color;' +
+      "document.getElementById('out').textContent = color;",
+  );
+  await settle();
+  assert.equal(doc.timeouts, 0, doc.logs.join('\n'));
+  assert.equal(doc.text('out'), 'rgb(1, 2, 3)');
+});
+
+test('a script that runs past its own time is thrown a TimeoutError at what it next asks of the document, and the next task runs', async () => {
+  const doc = await hosted('<p id="out">-</p><p id="p"></p>', {
+    timeout: 200,
+  });
+  doc.run(
+    "var n = 0; var p = document.getElementById('p');" +
+      'try { for (;;) p.setAttribute("data-n", ++n); }' +
+      // nothing it asks after it is answered either, in this task
+      'catch (e) { window.caught = e.name; try { p.id; } catch (again) { window.caught += " " + again.name; } }',
+  );
+  assert.equal(doc.timeouts, 1);
+  doc.run("document.getElementById('out').textContent = caught;");
+  await settle();
+  assert.equal(doc.text('out'), 'TimeoutError TimeoutError');
+  assert.equal(doc.timeouts, 1);
+});
+
+test('no op is begun so near the ceiling that it could be cut half way: it is refused, and nothing is left half made', async () => {
+  const doc = await hosted('<p id="out">-</p><p id="p"></p>', {
+    timeout: 200,
+  });
+  // layouts of half the page's time each, which its clock leaves out, and
+  // twice the ceiling's worth of them: those begun in the first four
+  // fifths of the ceiling are laid out, and the next is refused rather
+  // than begun and cut by it — as the catch running says, which a cut
+  // would have skipped
+  const fast = slowLayouts(doc.view, 100, 20);
+  doc.run(
+    "var p = document.getElementById('p'); var read = 0;" +
+      'try { for (var i = 0; i < 20; i++) { p.style.width = i + "px"; getComputedStyle(p).width; read += 1; } }' +
+      'catch (e) { window.caught = e.name; }',
+  );
+  fast();
+  doc.run(
+    "document.getElementById('out').textContent = caught + ' ' + (read > 0 && read < 20);",
+  );
+  await settle();
+  assert.equal(doc.text('out'), 'TimeoutError true');
+  assert.equal(doc.timeouts, 1);
+});
+
+test('an op the ceiling cuts half way leaves the document to be styled and laid out again, and nothing of what it was in the middle of', async () => {
+  const doc = await hosted('<p id="out">-</p><p id="p">text</p>', {
+    timeout: 200,
+  });
+  // a layout longer than the ceiling, begun at once: cut inside it, as a
+  // heavy enough document's would be, the flag its timing set left set
+  slowLayouts(doc.view, 1500);
+  doc.run(
+    "var p = document.getElementById('p'); p.style.color = 'rgb(1, 2, 3)';" +
+      'getComputedStyle(p).color;',
+  );
+  assert.equal(doc.timeouts, 1);
+  assert.equal(
+    (doc.view as unknown as { _timing: boolean })._timing,
+    false,
+    'the timing the cut was inside of is let go',
+  );
+  doc.run(
+    "document.getElementById('out').textContent = getComputedStyle(document.getElementById('p')).color;",
+  );
+  await settle();
+  assert.equal(doc.text('out'), 'rgb(1, 2, 3)');
+  assert.equal(doc.timeouts, 1);
+});
+
+test('a classic script that runs away leaves the engine timed out, for the host to repair its tree, and one cut inside an op for it to make the document again', () => {
   // Node makes the timeout's error in the context's realm, so a script the
   // host runs is told it timed out only by the page (`__fault`), and the
   // tree a bridge op was moving when V8 stopped it still wants repairing
   const source = new HtmlSource();
   source.setSource('<html><body></body></html>', true);
+  // a forced style as long as it is told to be, and what the host tells
+  // `<Html>` of a cut inside one
+  let slow = 0;
+  let interrupted = 0;
   const host = new DomHost(
     source.document,
     {
-      handle: { refresh() {}, base: null } as unknown as HtmlHandle,
+      handle: {
+        refresh() {},
+        base: null,
+        computedStyle: () => {
+          spin(slow);
+          return {};
+        },
+        interrupted: () => void (interrupted += 1),
+      } as unknown as HtmlHandle,
       userAgent: 'test',
       language: 'en-US',
       viewport: () => ({
@@ -1136,20 +1261,31 @@ test('a classic script that runs away leaves the engine timed out, for the host 
     'https://example.test/',
   );
   let timeouts = 0;
-  // long enough for the facade to install on a slow runner, which runs
-  // under the same timeout
+  // a ceiling long enough for the facade to install on a slow runner,
+  // which it is installed under
   const engine = new ScriptEngine(host.bridge, {
-    timeout: 1000,
+    timeout: 200,
     onTimeout: () => void (timeouts += 1),
     log() {},
     settled() {},
   });
   host.entries = engine;
+  // cut in the page's own code, with no op of the host's under way
   assert.equal(engine.exec('for (;;) {}', 'a', 0), false);
   assert.equal(timeouts, 1);
   assert.equal(engine.timedOutSince(), true);
   assert.equal(engine.timedOutSince(), false);
+  assert.equal(engine.interruptedSince(), false);
   assert.equal(engine.exec('var after = 1;', 'b', 0), true);
+  // and inside an op longer than the ceiling, begun at once
+  slow = 1500;
+  assert.equal(engine.exec('getComputedStyle(document.body)', 'c', 0), false);
+  assert.equal(timeouts, 2);
+  host.flush();
+  assert.equal(interrupted, 1);
+  assert.equal(engine.interruptedSince(), false, 'told once');
+  slow = 0;
+  assert.equal(engine.exec('getComputedStyle(document.body)', 'd', 0), true);
 });
 
 test('a worker runs in a thread of its own, started from a blob URL as Parcel starts one, and messages go both ways as structured clones', async () => {
@@ -1469,6 +1605,7 @@ test('a WebAssembly module that runs away is stopped as a script is, and the pag
     '<p id="out">-</p><script>' +
       `new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([${SPIN_WASM}]))).exports.spin();` +
       "</script><script>document.getElementById('out').textContent = 'after';</script>",
+    { timeout: 200 },
   );
   assert.equal(doc.timeouts, 1);
   assert.equal(doc.text('out'), 'after');
@@ -2036,6 +2173,7 @@ test('a module that throws, runs away or does not parse is reported, and the pag
       scripts: {
         'https://example.test/dir/lib/value.js': 'export const value = 7;',
       },
+      timeout: 200,
     },
   );
   await settle(200);

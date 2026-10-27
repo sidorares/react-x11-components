@@ -40,6 +40,7 @@ import type { installWebAudio } from './webaudio.js';
 import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
+import type { installGeometry } from './geometry.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -73,6 +74,7 @@ export function installDom(
   webrtc: typeof installWebRTC,
   rtcTransports: typeof installRtcTransports,
   webaudio: typeof installWebAudio,
+  geometry: typeof installGeometry,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -107,14 +109,16 @@ export function installDom(
     d?: Primitive,
   ): Any => {
     // anything but reading a computed style, a frame's document or a
-    // field's selection may change one
+    // field's selection may change one, and encoding a bitmap reads only
+    // what it is handed
     if (
       op !== 'computed' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
       op !== 'selection' &&
       op !== 'fontFaces' &&
-      op !== 'fontMatch'
+      op !== 'fontMatch' &&
+      op !== 'encodeImage'
     ) {
       opEpoch += 1;
     }
@@ -5433,36 +5437,12 @@ export function installDom(
       },
     });
 
-  /** A rectangle as `getBoundingClientRect` hands one over: the viewport's
-   *  coordinates, which are the document's less the scroll. */
-  class DOMRect {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    constructor(x = 0, y = 0, width = 0, height = 0) {
-      this.x = x;
-      this.y = y;
-      this.width = width;
-      this.height = height;
-    }
-    get left(): number {
-      return Math.min(this.x, this.x + this.width);
-    }
-    get top(): number {
-      return Math.min(this.y, this.y + this.height);
-    }
-    get right(): number {
-      return Math.max(this.x, this.x + this.width);
-    }
-    get bottom(): number {
-      return Math.max(this.y, this.y + this.height);
-    }
-    toJSON(): Any {
-      const { x, y, width, height, left, top, right, bottom } = this;
-      return { x, y, width, height, left, top, right, bottom };
-    }
-  }
+  /** The geometry interfaces (`geometry.ts`): a point, a rectangle, a
+   *  quad and a matrix. A rectangle is what `getBoundingClientRect` hands
+   *  over, in the viewport's coordinates, which are the document's less
+   *  the scroll. */
+  const GEOMETRY = geometry({ DOMException });
+  const DOMRect: Any = GEOMETRY.classes.DOMRect;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -8777,11 +8757,12 @@ export function installDom(
       // the origin a message is meant for is the window's it is posted to
       // (HTML 9.4.3), which another origin's frame is not this one's
       const allowed = originAllowed(options, str(global.__origin()));
-      const moving = portsTransferred(
+      // the ports alone: a canvas or a bitmap is no other realm's to make
+      const moving = transfersOf(
         transferListOf(
           options !== null && typeof options === 'object' ? options : transfer,
         ),
-      );
+      ).filter((item) => item instanceof MessagePort);
       if (!allowed) return;
       const named = moving.map(() => `${WIRE_REALM}.${++wireSeq}`);
       global.__message(message, location.origin, from, moving, named);
@@ -9066,7 +9047,8 @@ export function installDom(
    * that what a page reads back is what it wrote, at once; and the part of
    * it that changed since the host last had it, which goes to the host once
    * a task (`flushCanvases`) for the browser to draw over the canvas's box,
-   * as the tree's changes go to `<Html>` once a task.
+   * as the tree's changes go to `<Html>` once a task. An `OffscreenCanvas`
+   * holds one too, which goes to its placeholder's box where it has one.
    */
   interface CanvasState {
     width: number;
@@ -9077,10 +9059,17 @@ export function installDom(
     context: Any;
     /** The kind of context it has, where it has one. */
     kind: string | null;
+    /** The canvas's size the bitmap was made for, `w,h`: a `bitmaprenderer`
+     *  context's bitmap is its image's size, which only a new size of the
+     *  canvas's sets back. */
+    sized: string;
   }
   const canvases = new WeakMap<object, CanvasState>();
   const dirtyCanvases = new Set<Any>();
   let canvasFlush = false;
+  /** The `<canvas>`es that handed their control to an `OffscreenCanvas`
+   *  (`transferControlToOffscreen`), whose bitmap they show from then on. */
+  const placeholders = new WeakSet<object>();
   /** A canvas's `width` or `height` attribute (HTML 4.12.5): a valid
    *  non-negative integer, or its default. */
   const canvasSize = (canvas: Any, name: string, fallback: number): number => {
@@ -9088,34 +9077,64 @@ export function installDom(
     const m = v === null ? null : /^[\t\n\f\r ]*\+?(\d+)/.exec(v);
     return m ? Number(m[1]) : fallback;
   };
-  /** A canvas's bitmap, made anew — cleared — where its size changed. */
+  const newCanvasState = (width: number, height: number): CanvasState => ({
+    width,
+    height,
+    data: new Uint8ClampedArray(width * height * 4),
+    dirty: null,
+    context: null,
+    kind: null,
+    sized: `${width},${height}`,
+  });
+  /** A canvas's bitmap, made anew — cleared — where its size changed; an
+   *  `OffscreenCanvas`'s, made as it is first drawn on or read. */
   const canvasState = (canvas: Any): CanvasState => {
+    if (canvas instanceof OffscreenCanvas) {
+      let state = canvases.get(canvas);
+      if (!state) {
+        state = newCanvasState(canvas._width, canvas._height);
+        canvases.set(canvas, state);
+      }
+      return state;
+    }
     const width = canvasSize(canvas, 'width', 300);
     const height = canvasSize(canvas, 'height', 150);
     let state = canvases.get(canvas);
     if (!state) {
-      state = {
-        width,
-        height,
-        data: new Uint8ClampedArray(width * height * 4),
-        dirty: null,
-        context: null,
-        kind: null,
-      };
+      state = newCanvasState(width, height);
       canvases.set(canvas, state);
-    } else if (state.width !== width || state.height !== height) {
-      // setting either is a new bitmap, and the context's state as it
-      // starts (HTML 4.12.5.1)
-      state.width = width;
-      state.height = height;
-      state.data = new Uint8ClampedArray(width * height * 4);
-      if (state.context instanceof CanvasRenderingContext2D) {
-        state.context._reset();
-      }
-      markCanvas(canvas, state, 0, 0, width, height);
+    } else if (state.sized !== `${width},${height}`) {
+      resetCanvas(canvas, state, width, height);
     }
     return state;
   };
+  /** Whether a context is a 2d one, a canvas's or an `OffscreenCanvas`'s. */
+  const is2d = (context: Any): boolean =>
+    context instanceof CanvasRenderingContext2D ||
+    context instanceof OffscreenCanvasRenderingContext2D;
+  /** A canvas's bitmap made anew at a size, transparent, and its 2d
+   *  context's state as it starts: what setting either side does, even to
+   *  what it was (HTML 4.12.5.1). */
+  const resetCanvas = (
+    canvas: Any,
+    state: CanvasState,
+    width: number,
+    height: number,
+  ): void => {
+    state.width = width;
+    state.height = height;
+    state.sized = `${width},${height}`;
+    state.data = new Uint8ClampedArray(width * height * 4);
+    if (is2d(state.context)) state.context._reset();
+    markCanvas(canvas, state, 0, 0, width, height);
+  };
+  /** Whether what a canvas draws is shown anywhere: a `<canvas>`, until it
+   *  hands its control to an `OffscreenCanvas`; and an `OffscreenCanvas`
+   *  that has a placeholder, here or across a thread. */
+  const canvasShown = (canvas: Any): boolean =>
+    canvas instanceof OffscreenCanvas
+      ? !!(canvas._placeholder || canvas._route)
+      : !placeholders.has(canvas);
   const markCanvas = (
     canvas: Any,
     state: CanvasState,
@@ -9124,6 +9143,7 @@ export function installDom(
     x1: number,
     y1: number,
   ): void => {
+    if (!canvasShown(canvas)) return;
     x0 = Math.max(0, Math.floor(x0));
     y0 = Math.max(0, Math.floor(y0));
     x1 = Math.min(state.width, Math.ceil(x1));
@@ -9148,7 +9168,9 @@ export function installDom(
     }
   };
   /** What changed in each canvas, to the host: the rectangle and its
-   *  pixels as base64, since a string is what crosses. */
+   *  pixels as base64, since a string is what crosses. An
+   *  `OffscreenCanvas`'s goes to its placeholder: this realm's, or across
+   *  the thread it came over, as a frame (`canvasFrame`). */
   const flushCanvases = (): void => {
     canvasFlush = false;
     for (const canvas of dirtyCanvases) {
@@ -9156,6 +9178,7 @@ export function installDom(
       if (!state?.dirty) continue;
       const [x0, y0, x1, y1] = state.dirty;
       state.dirty = null;
+      if (!canvasShown(canvas)) continue;
       const w = Math.max(0, x1 - x0);
       const h = Math.max(0, y1 - y0);
       const rows = new Uint8Array(w * h * 4);
@@ -9163,12 +9186,18 @@ export function installDom(
         const from = ((y0 + y) * state.width + x0) * 4;
         rows.set(state.data.subarray(from, from + w * 4), y * w * 4);
       }
-      call(
-        'canvasPut',
-        idOf(canvas),
-        [state.width, state.height, x0, y0, w, h].join(','),
-        base64OfBytes(rows),
-      );
+      const size = [state.width, state.height, x0, y0, w, h].join(',');
+      const pixels = base64OfBytes(rows);
+      const route = canvas instanceof OffscreenCanvas ? canvas._route : null;
+      if (route) {
+        route.across.send(
+          JSON.stringify({ k: route.token, s: size, d: pixels }),
+        );
+        continue;
+      }
+      const shownIn =
+        canvas instanceof OffscreenCanvas ? canvas._placeholder : canvas;
+      call('canvasPut', idOf(shownIn), size, pixels);
     }
     dirtyCanvases.clear();
   };
@@ -9323,18 +9352,15 @@ export function installDom(
     }
     // the transform
     setTransform(a: Any = 1, b = 0, c = 0, d = 1, e = 0, f = 0): void {
-      if (typeof a === 'object' && a !== null) {
-        this._matrix = [
-          a.a ?? a.m11 ?? 1,
-          a.b ?? a.m12 ?? 0,
-          a.c ?? a.m21 ?? 0,
-          a.d ?? a.m22 ?? 1,
-          a.e ?? a.m41 ?? 0,
-          a.f ?? a.m42 ?? 0,
-        ];
-        return;
-      }
-      const m = [a, b, c, d, e, f].map(Number);
+      // a `DOMMatrix2DInit`, or none, where it is handed one argument
+      // (HTML 4.12.5.1.8)
+      const m =
+        arguments.length <= 1
+          ? GEOMETRY.values2D(
+              arguments[0],
+              "Failed to execute 'setTransform' on 'CanvasRenderingContext2D'",
+            )
+          : [a, b, c, d, e, f].map(Number);
       if (m.every(Number.isFinite)) this._matrix = m;
     }
     resetTransform(): void {
@@ -9364,17 +9390,7 @@ export function installDom(
       this.transform(Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0);
     }
     getTransform(): Any {
-      const [a, b, c, d, e, f] = this._matrix;
-      return {
-        a,
-        b,
-        c,
-        d,
-        e,
-        f,
-        is2D: true,
-        isIdentity: a === 1 && !b && !c && d === 1 && !e && !f,
-      };
+      return GEOMETRY.matrix2D(this._matrix);
     }
     /** A rectangle in the canvas's pixels, where the transform keeps it
      *  one: null where it turns or skews it. */
@@ -9576,11 +9592,11 @@ export function installDom(
       markCanvas(this._canvas, state, x0 + ox, y0 + oy, x1 + ox, y1 + oy);
     }
     drawImage(source: Any, ...args: Any[]): void {
-      // another canvas, an `ImageData`'s pixels being no source: what this
-      // realm has the pixels of
-      const from =
-        source instanceof HTMLCanvasElement ? canvasState(source) : null;
-      if (!from || !from.width || !from.height) return;
+      // another canvas, an `OffscreenCanvas` or an `ImageBitmap`, an
+      // `ImageData`'s pixels being no source: what this realm has the
+      // pixels of
+      const from = drawnPixels(source, this, 'drawImage');
+      if (!from) return;
       let [sx, sy, sw, sh] = [0, 0, from.width, from.height];
       let dx: number;
       let dy: number;
@@ -9916,8 +9932,9 @@ export function installDom(
       const [a, b, c] = finiteArgs('createConicGradient', [angle, x, y]);
       return RASTER.makeConic(a, b, c);
     }
-    /** A pattern of another canvas, as it is now: an image's pixels are
-     *  the host's, and one is no pattern here. */
+    /** A pattern of another canvas, an `OffscreenCanvas` or an
+     *  `ImageBitmap`, as it is now: an image's pixels are the host's, and
+     *  one is no pattern here. */
     createPattern(source: Any, repetition: Any): Any {
       const rep =
         repetition === null || repetition === '' ? 'repeat' : str(repetition);
@@ -9927,14 +9944,8 @@ export function installDom(
           'SyntaxError',
         );
       }
-      if (!(source instanceof HTMLCanvasElement)) return null;
-      const from = canvasState(source);
-      if (!from.width || !from.height) {
-        throw new DOMException(
-          "Failed to execute 'createPattern' on 'CanvasRenderingContext2D': The image argument is a canvas element with a width or height of 0.",
-          'InvalidStateError',
-        );
-      }
+      const from = drawnPixels(source, this, 'createPattern');
+      if (!from) return null;
       return RASTER.makePattern(
         { data: from.data.slice(), width: from.width, height: from.height },
         rep,
@@ -9989,40 +10000,797 @@ export function installDom(
     });
   }
 
+  /** A key the facade makes its own platform objects with, which a page's
+   *  `new` does not have. */
+  const CANVAS_KEY = {};
+
+  /**
+   * Pixels a page holds to draw (HTML 8.11.2): straight RGBA in this realm,
+   * as a canvas's are, and none once it is closed or transferred, which is
+   * its [[Detached]]. `createImageBitmap` and `transferToImageBitmap` make
+   * one; a 2d context draws it, and a `bitmaprenderer` context shows it.
+   */
+  class ImageBitmap {
+    _width = 0;
+    _height = 0;
+    /** Its pixels, or null once it is detached. */
+    _data: Uint8ClampedArray | null = null;
+    constructor(key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+    }
+    get width(): number {
+      return this._data ? this._width : 0;
+    }
+    get height(): number {
+      return this._data ? this._height : 0;
+    }
+    close(): void {
+      detachBitmap(this);
+    }
+  }
+  const makeBitmap = (
+    width: number,
+    height: number,
+    data: Uint8ClampedArray,
+  ): Any => {
+    const bitmap = new ImageBitmap(CANVAS_KEY);
+    bitmap._width = width;
+    bitmap._height = height;
+    bitmap._data = data;
+    return bitmap;
+  };
+  const detachBitmap = (bitmap: Any): void => {
+    bitmap._data = null;
+    bitmap._width = 0;
+    bitmap._height = 0;
+  };
+
+  /** The pixels a source a 2d context draws holds, where this realm has
+   *  them: a canvas's, an `OffscreenCanvas`'s and an `ImageBitmap`'s, or
+   *  null for one whose pixels are the host's — an image, a video — which
+   *  is drawn as nothing. One with nothing to draw is an `InvalidStateError`
+   *  (HTML 4.12.5.1.14, "check the usability of the image argument"). */
+  const drawnPixels = (
+    source: Any,
+    context: Any,
+    method: string,
+  ): { data: Uint8ClampedArray; width: number; height: number } | null => {
+    const where = `Failed to execute '${method}' on '${
+      context instanceof OffscreenCanvasRenderingContext2D
+        ? 'OffscreenCanvasRenderingContext2D'
+        : 'CanvasRenderingContext2D'
+    }'`;
+    let from: { data: Uint8ClampedArray; width: number; height: number };
+    if (source instanceof ImageBitmap) {
+      if (!source._data) {
+        throw new DOMException(
+          `${where}: The image source is detached.`,
+          'InvalidStateError',
+        );
+      }
+      from = {
+        data: source._data,
+        width: source._width,
+        height: source._height,
+      };
+    } else if (
+      source instanceof HTMLCanvasElement ||
+      source instanceof OffscreenCanvas
+    ) {
+      if (source instanceof OffscreenCanvas && source._detached) {
+        throw new DOMException(
+          `${where}: The image source is detached.`,
+          'InvalidStateError',
+        );
+      }
+      from = canvasState(source);
+    } else {
+      return null;
+    }
+    if (!from.width || !from.height) {
+      throw new DOMException(
+        `${where}: The image argument is a canvas element with a width or height of 0.`,
+        'InvalidStateError',
+      );
+    }
+    return from;
+  };
+
+  /**
+   * A canvas's `bitmaprenderer` context (HTML 4.12.5.2): it shows the
+   * `ImageBitmap` it was handed last, at the bitmap's own size, and takes
+   * the bitmap's pixels rather than copying them, detaching it.
+   */
+  class ImageBitmapRenderingContext {
+    _canvas: Any;
+    constructor(canvas: Any, key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+      this._canvas = canvas;
+    }
+    get canvas(): Any {
+      return this._canvas;
+    }
+    transferFromImageBitmap(bitmap: Any): void {
+      const where =
+        "Failed to execute 'transferFromImageBitmap' on 'ImageBitmapRenderingContext'";
+      if (arguments.length < 1) {
+        throw new TypeError(
+          `${where}: 1 argument required, but only 0 present.`,
+        );
+      }
+      if (bitmap !== null && !(bitmap instanceof ImageBitmap)) {
+        throw new TypeError(
+          `${where}: parameter 1 is not of type 'ImageBitmap'.`,
+        );
+      }
+      if (bitmap && !bitmap._data) {
+        throw new DOMException(
+          `${where}: The input ImageBitmap has been detached`,
+          'InvalidStateError',
+        );
+      }
+      const state = canvasState(this._canvas);
+      if (bitmap) {
+        state.width = bitmap._width;
+        state.height = bitmap._height;
+        state.data = bitmap._data;
+        detachBitmap(bitmap);
+      } else {
+        // none: transparent, at the canvas's size
+        const [width, height] = state.sized.split(',').map(Number);
+        state.width = width;
+        state.height = height;
+        state.data = new Uint8ClampedArray(width * height * 4);
+      }
+      markCanvas(this._canvas, state, 0, 0, state.width, state.height);
+    }
+  }
+
+  /**
+   * An `OffscreenCanvas`'s 2d context (HTML 4.12.5.3): a canvas's 2d
+   * context in all but its canvas and `drawFocusIfNeeded`, which has no
+   * element to focus, and an interface of its own, as a browser's is —
+   * `instanceof CanvasRenderingContext2D` is false for one. Its members are
+   * the 2d context's, copied onto its prototype below.
+   */
+  class OffscreenCanvasRenderingContext2D {
+    constructor(canvas: Any, key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+      (this as Any)._canvas = canvas;
+      (this as Any)._reset();
+    }
+  }
+  for (const key of Reflect.ownKeys(CanvasRenderingContext2D.prototype)) {
+    if (key === 'constructor' || key === 'drawFocusIfNeeded') continue;
+    Object.defineProperty(
+      OffscreenCanvasRenderingContext2D.prototype,
+      key,
+      Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, key)!,
+    );
+  }
+
+  /** A canvas's context of a kind, the same each time, and none of another
+   *  kind once the canvas has one (HTML 4.12.5): a 2d context, a
+   *  `bitmaprenderer` one, or a WebGL one that draws nothing (`webgl.ts`). */
+  const contextFor = (canvas: Any, kind: string, options: Any): Any => {
+    const state = canvasState(canvas);
+    if (state.context) return state.kind === kind ? state.context : null;
+    state.kind = kind;
+    state.context =
+      kind === '2d'
+        ? canvas instanceof OffscreenCanvas
+          ? new OffscreenCanvasRenderingContext2D(canvas, CANVAS_KEY)
+          : new CanvasRenderingContext2D(canvas)
+        : kind === 'bitmaprenderer'
+          ? new ImageBitmapRenderingContext(canvas, CANVAS_KEY)
+          : WEBGL.context(canvas, kind as 'webgl' | 'webgl2', options);
+    return state.context;
+  };
+
+  /** A bitmap as a file (HTML 4.12.5.1, "a serialization of the bitmap as
+   *  a file"): a PNG, the one type every bitmap is had as, whatever type
+   *  was asked for, made by the host (`encodeImage`). Null where there is
+   *  none, as for a bitmap of no pixels. */
+  const encodedBitmap = (
+    width: number,
+    height: number,
+    data: Uint8ClampedArray,
+  ): Uint8Array | null => {
+    if (!width || !height) return null;
+    const answer = call(
+      'encodeImage',
+      `${width},${height}`,
+      base64OfBytes(new Uint8Array(data.buffer, data.byteOffset, data.length)),
+    );
+    return typeof answer === 'string' && answer ? bytesOfBase64(answer) : null;
+  };
+
+  /** An `OffscreenCanvas`'s side, an `[EnforceRange] unsigned long long`
+   *  (Web IDL 3.2.4.6). */
+  const offscreenSide = (v: Any, where: string): number => {
+    const n = Number(v);
+    if (n !== n || n === 1 / 0 || n === -1 / 0) {
+      throw new TypeError(`${where}: Value is not a finite number.`);
+    }
+    const t = Math.trunc(n);
+    if (t < 0 || t > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError(
+        `${where}: Value is outside the 'unsigned long long' value range.`,
+      );
+    }
+    return t;
+  };
+  const OFFSCREEN_KINDS = ['2d', 'bitmaprenderer', 'webgl', 'webgl2', 'webgpu'];
+
+  /**
+   * A canvas with no element (HTML 4.12.5.3): a bitmap of its own, drawn on
+   * through the same contexts, in a window or a worker. One a `<canvas>`
+   * handed its control to (`transferControlToOffscreen`) shows what it
+   * draws in that canvas's box, from this realm or from a worker it was
+   * transferred to (`_route`); one a transfer gave up is [[Detached]], and
+   * neither drawn on nor measured again.
+   */
+  class OffscreenCanvas extends EventTarget {
+    _width: number;
+    _height: number;
+    _detached = false;
+    /** The `<canvas>` it shows in, where that is in this realm. */
+    _placeholder: Any = null;
+    /** Where it shows where its placeholder is across a thread: the side
+     *  of the thread it came over, and what the realm there calls the
+     *  placeholder (`canvasRoutes`). */
+    _route: { across: Across; token: string } | null = null;
+    constructor(width: Any, height: Any) {
+      super();
+      const where = "Failed to construct 'OffscreenCanvas'";
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `${where}: 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      this._width = offscreenSide(width, where);
+      this._height = offscreenSide(height, where);
+    }
+    get width(): number {
+      return this._width;
+    }
+    set width(v: Any) {
+      resizeOffscreen(
+        this,
+        offscreenSide(
+          v,
+          "Failed to set the 'width' property on 'OffscreenCanvas'",
+        ),
+        this._height,
+      );
+    }
+    get height(): number {
+      return this._height;
+    }
+    set height(v: Any) {
+      resizeOffscreen(
+        this,
+        this._width,
+        offscreenSide(
+          v,
+          "Failed to set the 'height' property on 'OffscreenCanvas'",
+        ),
+      );
+    }
+    getContext(type: Any, options: Any = null): Any {
+      const where = "Failed to execute 'getContext' on 'OffscreenCanvas'";
+      if (arguments.length < 1) {
+        throw new TypeError(
+          `${where}: 1 argument required, but only 0 present.`,
+        );
+      }
+      const kind = str(type);
+      if (!OFFSCREEN_KINDS.includes(kind)) {
+        throw new TypeError(
+          `${where}: The provided value '${kind}' is not a valid enum value of type OffscreenRenderingContextType.`,
+        );
+      }
+      if (this._detached) {
+        throw new DOMException(
+          `${where}: OffscreenCanvas object is detached.`,
+          'InvalidStateError',
+        );
+      }
+      // WebGPU is not had here
+      if (kind === 'webgpu') return null;
+      return contextFor(this, kind, options);
+    }
+    /** Its bitmap as an `ImageBitmap`, and a new one, transparent, in its
+     *  place: the context keeps its state. */
+    transferToImageBitmap(): Any {
+      const where =
+        "Failed to execute 'transferToImageBitmap' on 'OffscreenCanvas'";
+      if (this._detached) {
+        throw new DOMException(
+          `${where}: Cannot transfer an ImageBitmap from a detached OffscreenCanvas`,
+          'InvalidStateError',
+        );
+      }
+      const state = canvases.get(this);
+      if (!state?.context) {
+        throw new DOMException(
+          `${where}: Cannot transfer an ImageBitmap from an OffscreenCanvas with no context`,
+          'InvalidStateError',
+        );
+      }
+      const bitmap = makeBitmap(state.width, state.height, state.data);
+      state.data = new Uint8ClampedArray(state.width * state.height * 4);
+      markCanvas(this, state, 0, 0, state.width, state.height);
+      return bitmap;
+    }
+    /** Its bitmap as a PNG, a task later: the bitmap as it is now. */
+    convertToBlob(options: Any = {}): Promise<Any> {
+      const where = "Failed to execute 'convertToBlob' on 'OffscreenCanvas'";
+      try {
+        if (options !== null && options !== undefined) {
+          if (typeof options !== 'object' && typeof options !== 'function') {
+            throw new TypeError(
+              `${where}: The provided value is not of type 'ImageEncodeOptions'.`,
+            );
+          }
+        }
+        if (this._detached) {
+          throw new DOMException(
+            `${where}: OffscreenCanvas object is detached.`,
+            'InvalidStateError',
+          );
+        }
+        const state = canvasState(this);
+        if (!state.width || !state.height) {
+          throw new DOMException(
+            `${where}: The size of the OffscreenCanvas is zero.`,
+            'IndexSizeError',
+          );
+        }
+        const { width, height } = state;
+        const data = state.data.slice();
+        return new Promise((resolve, reject) => {
+          setTimer(
+            () => {
+              const bytes = encodedBitmap(width, height, data);
+              if (bytes) resolve(new Blob([bytes], { type: 'image/png' }));
+              else {
+                reject(
+                  new DOMException(
+                    `${where}: Encoding of the OffscreenCanvas failed.`,
+                    'EncodingError',
+                  ),
+                );
+              }
+            },
+            0,
+            [],
+            false,
+          );
+        });
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+  }
+  for (const type of ['contextlost', 'contextrestored']) {
+    Object.defineProperty(OffscreenCanvas.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers?.[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers ??= {};
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+  /** An `OffscreenCanvas` at a new size: its bitmap made anew, as a
+   *  `<canvas>`'s is when either side is set. */
+  const resizeOffscreen = (
+    canvas: Any,
+    width: number,
+    height: number,
+  ): void => {
+    if (canvas._detached) {
+      throw new DOMException(
+        'Cannot resize a detached OffscreenCanvas.',
+        'InvalidStateError',
+      );
+    }
+    canvas._width = width;
+    canvas._height = height;
+    const state = canvases.get(canvas);
+    if (state) resetCanvas(canvas, state, width, height);
+  };
+  /** An `OffscreenCanvas` given up to a transfer (HTML 4.12.5.3, its
+   *  transfer steps): no size, no bitmap and nowhere it shows. */
+  const detachOffscreen = (canvas: Any): void => {
+    canvas._detached = true;
+    canvas._width = 0;
+    canvas._height = 0;
+    canvas._placeholder = null;
+    canvas._route = null;
+    canvases.delete(canvas);
+  };
+  /** An `OffscreenCanvas` a transfer in this realm made, `to`, in the place
+   *  of `from`: its size, its bitmap and where it shows. */
+  const moveOffscreen = (from: Any, to: Any): void => {
+    to._width = from._width;
+    to._height = from._height;
+    to._placeholder = from._placeholder;
+    to._route = from._route;
+    const state = canvases.get(from);
+    detachOffscreen(from);
+    if (state) {
+      canvases.set(to, state);
+      if (state.dirty) dirtyCanvases.add(to);
+    }
+  };
+
+  /** What `createImageBitmap` asks the host to decode, by its number, and
+   *  what to do with the answer (`__imageDecoded`). */
+  const imageDecodes = new Map<number, (size: string, data: string) => void>();
+  let imageDecodeSeq = 0;
+  type Pixels = { data: Uint8ClampedArray; width: number; height: number };
+  /**
+   * A source's pixels cut to a rectangle, resized and flipped as
+   * `createImageBitmap`'s options say (HTML 8.11.3, "cropped to the source
+   * rectangle with formatting"): what the rectangle reaches past the source
+   * is transparent, a resize to one side keeps the rectangle's ratio, and
+   * one at a quality above `low` is bilinear, premultiplied, where `low`
+   * and `pixelated` take the nearest pixel.
+   */
+  const croppedPixels = (
+    from: Pixels,
+    crop: number[] | null,
+    options: Any,
+  ): Pixels => {
+    let [sx, sy, sw, sh] = crop ?? [0, 0, from.width, from.height];
+    if (sw < 0) {
+      sx += sw;
+      sw = -sw;
+    }
+    if (sh < 0) {
+      sy += sh;
+      sh = -sh;
+    }
+    const rw = options.resizeWidth;
+    const rh = options.resizeHeight;
+    const width =
+      rw !== undefined ? rw : rh !== undefined ? Math.ceil((sw * rh) / sh) : sw;
+    const height =
+      rh !== undefined ? rh : rw !== undefined ? Math.ceil((sh * rw) / sw) : sh;
+    const data = new Uint8ClampedArray(width * height * 4);
+    const flip = options.imageOrientation === 'flipY';
+    const quality = options.resizeQuality ?? 'low';
+    const smooth =
+      (width !== sw || height !== sh) &&
+      (quality === 'medium' || quality === 'high');
+    const src = from.data;
+    const fw = from.width;
+    const fh = from.height;
+    for (let oy = 0; oy < height; oy += 1) {
+      const row = (flip ? height - 1 - oy : oy) * width;
+      const v = sy + ((oy + 0.5) * sh) / height;
+      for (let ox = 0; ox < width; ox += 1) {
+        const u = sx + ((ox + 0.5) * sw) / width;
+        const o = (row + ox) * 4;
+        if (u < 0 || v < 0 || u >= fw || v >= fh) continue;
+        if (!smooth) {
+          const i = (Math.floor(v) * fw + Math.floor(u)) * 4;
+          data[o] = src[i];
+          data[o + 1] = src[i + 1];
+          data[o + 2] = src[i + 2];
+          data[o + 3] = src[i + 3];
+          continue;
+        }
+        // the four pixels around the point, each clamped to the source,
+        // weighed by their alpha so a transparent one adds no colour
+        const x0 = Math.max(0, Math.floor(u - 0.5));
+        const y0 = Math.max(0, Math.floor(v - 0.5));
+        const x1 = Math.min(fw - 1, x0 + 1);
+        const y1 = Math.min(fh - 1, y0 + 1);
+        const tx = Math.min(1, Math.max(0, u - 0.5 - x0));
+        const ty = Math.min(1, Math.max(0, v - 0.5 - y0));
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let a = 0;
+        for (const [px, py, w] of [
+          [x0, y0, (1 - tx) * (1 - ty)],
+          [x1, y0, tx * (1 - ty)],
+          [x0, y1, (1 - tx) * ty],
+          [x1, y1, tx * ty],
+        ]) {
+          const i = (py * fw + px) * 4;
+          const wa = w * src[i + 3];
+          r += src[i] * wa;
+          g += src[i + 1] * wa;
+          b += src[i + 2] * wa;
+          a += wa;
+        }
+        if (a > 0) {
+          data[o] = r / a;
+          data[o + 1] = g / a;
+          data[o + 2] = b / a;
+          data[o + 3] = a;
+        }
+      }
+    }
+    return { data, width, height };
+  };
+  const BITMAP_ENUMS: Record<string, string[]> = {
+    imageOrientation: ['from-image', 'flipY', 'none'],
+    premultiplyAlpha: ['none', 'premultiply', 'default'],
+    colorSpaceConversion: ['none', 'default'],
+    resizeQuality: ['pixelated', 'low', 'medium', 'high'],
+  };
+  /**
+   * An `ImageBitmap` of a source (HTML 8.11.3), a task later, or a promise
+   * rejected where the source has nothing to give. A canvas's, an
+   * `OffscreenCanvas`'s, an `ImageBitmap`'s and an `ImageData`'s pixels
+   * are this realm's and are copied as it is called; a blob's image is
+   * decoded by the host, through the decoders a document's images are
+   * (`imageDecode`); an image's and a video's pixels are the host's, which
+   * a 2d context draws as nothing, so theirs is transparent, at their size.
+   */
+  function createImageBitmap(this: Any, image: Any, ...rest: Any[]): Any {
+    const where = `Failed to execute 'createImageBitmap' on '${
+      workerLocation ? 'WorkerGlobalScope' : 'Window'
+    }'`;
+    try {
+      const count = arguments.length;
+      if (count < 1) {
+        throw new TypeError(
+          `${where}: 1 argument required, but only 0 present.`,
+        );
+      }
+      if (count === 3 || count === 4) {
+        throw new TypeError(
+          `${where}: Valid arities are: [1, 2, 5, 6], but ${count} arguments provided.`,
+        );
+      }
+      // a `long` each: NaN and the infinities are 0 (Web IDL 3.2.4.8)
+      const crop =
+        count >= 5
+          ? rest.slice(0, 4).map((v) => {
+              const n = Math.trunc(Number(v));
+              return n === n && n !== 1 / 0 && n !== -1 / 0 ? n | 0 : 0;
+            })
+          : null;
+      const given = count >= 5 ? rest[4] : rest[0];
+      if (
+        given !== undefined &&
+        given !== null &&
+        typeof given !== 'object' &&
+        typeof given !== 'function'
+      ) {
+        throw new TypeError(
+          `${where}: The provided value is not of type 'ImageBitmapOptions'.`,
+        );
+      }
+      const options: Any = {};
+      for (const [name, allowed] of Object.entries(BITMAP_ENUMS)) {
+        const v = given?.[name];
+        if (v === undefined) continue;
+        if (!allowed.includes(str(v))) {
+          throw new TypeError(
+            `${where}: Failed to read the '${name}' property from 'ImageBitmapOptions': The provided value '${str(v)}' is not a valid enum value of type ${name[0].toUpperCase()}${name.slice(1)}.`,
+          );
+        }
+        options[name] = str(v);
+      }
+      for (const name of ['resizeWidth', 'resizeHeight']) {
+        const v = given?.[name];
+        if (v === undefined) continue;
+        const n = Number(v);
+        if (n !== n || n === 1 / 0 || n === -1 / 0 || n < 0 || n > 4294967295) {
+          throw new TypeError(
+            `${where}: Failed to read the '${name}' property from 'ImageBitmapOptions': Value is outside the 'unsigned long' value range.`,
+          );
+        }
+        options[name] = Math.trunc(n);
+      }
+      if (crop && (!crop[2] || !crop[3])) {
+        throw new RangeError(
+          `${where}: The crop rect ${crop[2] ? 'height' : 'width'} is 0.`,
+        );
+      }
+      if (options.resizeWidth === 0 || options.resizeHeight === 0) {
+        throw new DOMException(
+          `${where}: The resize width or height is 0.`,
+          'InvalidStateError',
+        );
+      }
+      const unusable = (why: string) =>
+        new DOMException(`${where}: ${why}`, 'InvalidStateError');
+      const made = (from: Pixels): Promise<Any> => {
+        const cut = croppedPixels(from, crop, options);
+        return new Promise((resolve) => {
+          setTimer(
+            () => resolve(makeBitmap(cut.width, cut.height, cut.data)),
+            0,
+            [],
+            false,
+          );
+        });
+      };
+      if (image instanceof Blob) {
+        if (!image._bytes.length) {
+          throw unusable('The source image could not be decoded.');
+        }
+        return new Promise((resolve, reject) => {
+          const id = ++imageDecodeSeq;
+          imageDecodes.set(id, (size, data) => {
+            const [width, height] = size.split(',').map(Number);
+            if (!(width > 0 && height > 0)) {
+              reject(unusable('The source image could not be decoded.'));
+              return;
+            }
+            const bytes = bytesOfBase64(data);
+            const cut = croppedPixels(
+              {
+                data: new Uint8ClampedArray(
+                  bytes.buffer,
+                  bytes.byteOffset,
+                  bytes.length,
+                ),
+                width,
+                height,
+              },
+              crop,
+              options,
+            );
+            resolve(makeBitmap(cut.width, cut.height, cut.data));
+          });
+          call('imageDecode', id, base64OfBytes(image._bytes));
+        });
+      }
+      if (image instanceof ImageData) {
+        if (image.data.length !== image.width * image.height * 4) {
+          throw unusable('The source data has been detached.');
+        }
+        return made(image);
+      }
+      if (image instanceof ImageBitmap) {
+        if (!image._data) {
+          throw unusable('The image source is detached.');
+        }
+        return made({
+          data: image._data,
+          width: image._width,
+          height: image._height,
+        });
+      }
+      if (
+        image instanceof HTMLCanvasElement ||
+        image instanceof OffscreenCanvas
+      ) {
+        if (image instanceof OffscreenCanvas && image._detached) {
+          throw unusable('The image source is detached.');
+        }
+        const state = canvasState(image);
+        if (!state.width || !state.height) {
+          throw unusable(
+            'The image argument is a canvas element with a width or height of 0.',
+          );
+        }
+        return made(state);
+      }
+      if (
+        image instanceof HTMLImageElement ||
+        image instanceof HTMLVideoElement
+      ) {
+        const video = image instanceof HTMLVideoElement;
+        const width = video ? image.videoWidth : image.naturalWidth;
+        const height = video ? image.videoHeight : image.naturalHeight;
+        if (!width || !height) {
+          throw unusable(
+            video
+              ? 'The provided element has not retrieved data.'
+              : 'The image element contains no image data.',
+          );
+        }
+        return made({
+          data: new Uint8ClampedArray(width * height * 4),
+          width,
+          height,
+        });
+      }
+      throw new TypeError(
+        `${where}: The provided value is not of type '(Blob or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or ImageData or OffscreenCanvas or SVGImageElement or VideoFrame)'.`,
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   /** A canvas's `captureStream()`, once the media facade is in
    *  (`mediastream.ts`'s `captureCanvas`). */
   let canvasCapture: Any = null;
+
+  /** A `<canvas>` whose control went to an `OffscreenCanvas` refuses what
+   *  would read or change its own bitmap (HTML 4.12.5, a placeholder). */
+  const notPlaceholder = (canvas: Any, what: string, why: string): void => {
+    if (placeholders.has(canvas)) {
+      throw new DOMException(
+        `${what} on 'HTMLCanvasElement': ${why}`,
+        'InvalidStateError',
+      );
+    }
+  };
+  /** A `<canvas>` at a new size, set even to what it was: its bitmap made
+   *  anew where it has one (HTML 4.12.5), which `canvas.width =
+   *  canvas.width` clears a canvas by. */
+  const resizeCanvas = (canvas: Any, side: string, v: Any): void => {
+    notPlaceholder(
+      canvas,
+      `Failed to set the '${side}' property`,
+      'Cannot resize canvas after call to transferControlToOffscreen().',
+    );
+    canvas.setAttribute(side, String(Number(v) >>> 0));
+    const state = canvases.get(canvas);
+    if (state) resetCanvas(canvas, state, canvas.width, canvas.height);
+  };
 
   class HTMLCanvasElement extends HTMLElement {
     get width(): number {
       return canvasSize(this, 'width', 300);
     }
     set width(v: Any) {
-      this.setAttribute('width', String(Number(v) >>> 0));
-      canvasState(this);
+      resizeCanvas(this, 'width', v);
     }
     get height(): number {
       return canvasSize(this, 'height', 150);
     }
     set height(v: Any) {
-      this.setAttribute('height', String(Number(v) >>> 0));
-      canvasState(this);
+      resizeCanvas(this, 'height', v);
     }
     /** A context of a kind, the same each time, and none of another kind
-     *  once the canvas has one (HTML 4.12.5): a 2d context, or a WebGL
-     *  one that draws nothing (`webgl.ts`). */
+     *  once the canvas has one (HTML 4.12.5): a 2d context, a
+     *  `bitmaprenderer` one, or a WebGL one that draws nothing
+     *  (`webgl.ts`). */
     getContext(type: Any, options?: Any): Any {
+      notPlaceholder(
+        this,
+        "Failed to execute 'getContext'",
+        'Cannot get context from a canvas that has transferred its control to offscreen.',
+      );
       let kind = str(type);
       if (kind === 'experimental-webgl') kind = 'webgl';
-      if (kind !== '2d' && kind !== 'webgl' && kind !== 'webgl2') return null;
-      const state = canvasState(this);
-      if (state.context) return state.kind === kind ? state.context : null;
-      state.kind = kind;
-      state.context =
-        kind === '2d'
-          ? new CanvasRenderingContext2D(this)
-          : WEBGL.context(this, kind, options);
-      return state.context;
+      if (
+        kind !== '2d' &&
+        kind !== 'webgl' &&
+        kind !== 'webgl2' &&
+        kind !== 'bitmaprenderer'
+      ) {
+        return null;
+      }
+      return contextFor(this, kind, options);
+    }
+    /** An `OffscreenCanvas` of the canvas's size whose bitmap the canvas
+     *  shows from now on, wherever it is drawn on: here, or in a worker it
+     *  is transferred to (HTML 4.12.5). */
+    transferControlToOffscreen(): Any {
+      const what = "Failed to execute 'transferControlToOffscreen'";
+      notPlaceholder(
+        this,
+        what,
+        'Cannot transfer control from a canvas for more than one time.',
+      );
+      if (canvases.get(this)?.context) {
+        throw new DOMException(
+          `${what} on 'HTMLCanvasElement': Cannot transfer control from a canvas that has a rendering context.`,
+          'InvalidStateError',
+        );
+      }
+      const offscreen = new OffscreenCanvas(this.width, this.height);
+      offscreen._placeholder = this;
+      placeholders.add(this);
+      dirtyCanvases.delete(this);
+      return offscreen;
     }
     /** A stream of what the canvas draws (Media Capture from DOM Elements,
      *  3.1): a frame each time it changes, at most `frameRequestRate` a
@@ -10047,11 +10815,44 @@ export function installDom(
       }
       return canvasCapture(this, idOf(this), rate, this.width, this.height);
     }
+    /** The bitmap as a PNG's `data:` URL, whatever type is asked for, and
+     *  `data:,` for one of no pixels (HTML 4.12.5). */
     toDataURL(): string {
-      return 'data:,';
+      notPlaceholder(
+        this,
+        "Failed to execute 'toDataURL'",
+        'Cannot read from a canvas that has transferred its control to offscreen.',
+      );
+      const state = canvasState(this);
+      const bytes = encodedBitmap(state.width, state.height, state.data);
+      return bytes ? `data:image/png;base64,${base64OfBytes(bytes)}` : 'data:,';
     }
+    /** The bitmap as a PNG blob, to `callback` a task later, or null for
+     *  one of no pixels. */
     toBlob(callback: Any): void {
-      setTimeout(() => callback?.(null), 0);
+      const what = "Failed to execute 'toBlob'";
+      notPlaceholder(
+        this,
+        what,
+        'Cannot read from a canvas that has transferred its control to offscreen.',
+      );
+      if (typeof callback !== 'function') {
+        throw new TypeError(
+          `${what} on 'HTMLCanvasElement': The callback provided as parameter 1 is not a function.`,
+        );
+      }
+      const state = canvasState(this);
+      const { width, height } = state;
+      const data = state.data.slice();
+      setTimer(
+        () => {
+          const bytes = encodedBitmap(width, height, data);
+          callback(bytes ? new Blob([bytes], { type: 'image/png' }) : null);
+        },
+        0,
+        [],
+        false,
+      );
     }
   }
   /**
@@ -17132,6 +17933,25 @@ export function installDom(
     const tag = Object.prototype.toString.call(value).slice(8, -1);
     let out: Any;
     if (value instanceof Blob) return value;
+    // an `ImageBitmap` is serializable, its pixels copied (HTML 8.11.2)
+    if (value instanceof ImageBitmap) {
+      if (!value._data) {
+        throw new DOMException(
+          'An ImageBitmap is detached and could not be cloned.',
+          'DataCloneError',
+        );
+      }
+      out = makeBitmap(value._width, value._height, value._data.slice());
+      seen.set(value, out);
+      return out;
+    }
+    // a point, a rectangle, a quad or a matrix (Geometry 1, 7)
+    const shape = GEOMETRY.serialize(value);
+    if (shape) {
+      out = GEOMETRY.deserialize(shape[0], shape[1]);
+      seen.set(value, out);
+      return out;
+    }
     // a node, a window's object, an event: the platform's, and none of
     // them is serializable
     if (value instanceof EventTarget || value instanceof Event) {
@@ -17217,29 +18037,51 @@ export function installDom(
     return Array.isArray(list) ? list : [];
   };
   /**
-   * The ports a list transfers (HTML 2.7.6,
-   * "StructuredSerializeWithTransfer"): each one once, and none given up
-   * already, or a `DataCloneError` before anything is posted.
+   * The ports, the `OffscreenCanvas`es and the `ImageBitmap`s a list
+   * transfers (HTML 2.7.6, "StructuredSerializeWithTransfer"): each one
+   * once, none given up already, and no canvas with a context, or a
+   * `DataCloneError` — an `InvalidStateError` for the canvas — before
+   * anything is posted. A buffer is `giveUp`'s.
    */
-  const portsTransferred = (list: Any[]): Any[] => {
-    const ports: Any[] = [];
+  const transfersOf = (list: Any[]): Any[] => {
+    const moving: Any[] = [];
     list.forEach((item, i) => {
-      if (!(item instanceof MessagePort)) return;
-      if (item._detached) {
+      const name =
+        item instanceof MessagePort
+          ? 'Port'
+          : item instanceof OffscreenCanvas
+            ? 'OffscreenCanvas'
+            : item instanceof ImageBitmap
+              ? 'ImageBitmap'
+              : null;
+      if (!name) return;
+      if (
+        item instanceof MessagePort
+          ? item._detached
+          : item instanceof OffscreenCanvas
+            ? item._detached
+            : !item._data
+      ) {
         throw new DOMException(
-          `Port at index ${i} is already detached.`,
+          `${name} at index ${i} is already detached.`,
           'DataCloneError',
         );
       }
-      if (ports.includes(item)) {
+      if (moving.includes(item)) {
         throw new DOMException(
-          `Port at index ${i} is a duplicate of an earlier port.`,
+          `${name} at index ${i} is a duplicate of an earlier ${name === 'Port' ? 'port' : name}.`,
           'DataCloneError',
         );
       }
-      ports.push(item);
+      if (item instanceof OffscreenCanvas && canvases.get(item)?.context) {
+        throw new DOMException(
+          `OffscreenCanvas at index ${i} has an associated context and thus is not transferable.`,
+          'InvalidStateError',
+        );
+      }
+      moving.push(item);
     });
-    return ports;
+    return moving;
   };
   /**
    * A port's place taken by `to` (HTML 9.4.4, the transfer steps): `to`
@@ -17256,23 +18098,42 @@ export function installDom(
     from._detached = true;
     return from._waiting.splice(0);
   };
-  /** A copy of a message here, with the ports its list transfers each a
-   *  new one in its place, which the copy holds where the message held
-   *  the old: what a port's, a window's and `structuredClone` hand on. */
+  /** A copy of a message here, with what its list transfers each a new
+   *  one in its place — a port, a canvas, a bitmap — which the copy holds
+   *  where the message held the old: what a port's, a window's and
+   *  `structuredClone` hand on. `ports` are the ports of them, which a
+   *  message event lists, and `moved` all of them, which a port hands on
+   *  to a wire across a thread (`_deliver`). */
   const cloneMoving = (
     message: Any,
     list: Any[],
-  ): { data: Any; ports: Any[] } => {
-    const moving = portsTransferred(list);
-    const ports = moving.map(() => new MessagePort());
+  ): { data: Any; ports: Any[]; moved: Any[] } => {
+    const moving = transfersOf(list);
+    const moved = moving.map((item) =>
+      item instanceof MessagePort
+        ? new MessagePort()
+        : item instanceof OffscreenCanvas
+          ? new OffscreenCanvas(0, 0)
+          : makeBitmap(item._width, item._height, item._data),
+    );
     const data = structuredCopy(
       message,
-      new Map(moving.map((port, i) => [port, ports[i]])),
+      new Map(moving.map((item, i) => [item, moved[i]])),
     );
-    moving.forEach((port, i) => {
-      ports[i]._waiting.push(...movePort(port, ports[i]));
+    moving.forEach((item, i) => {
+      if (item instanceof MessagePort) {
+        moved[i]._waiting.push(...movePort(item, moved[i]));
+      } else if (item instanceof OffscreenCanvas) {
+        moveOffscreen(item, moved[i]);
+      } else {
+        detachBitmap(item);
+      }
     });
-    return { data, ports };
+    return {
+      data,
+      ports: moved.filter((item) => item instanceof MessagePort),
+      moved,
+    };
   };
 
   /** A thread a port can be across: what names its channel here, and how
@@ -17295,7 +18156,11 @@ export function installDom(
       _closed: false,
       _deliver(data: Any, ports: Any[] = []): void {
         const later: Array<() => void> = [];
-        const d = serializeClone(data, undefined, { across, ports, later });
+        const d = serializeClone(data, undefined, {
+          across,
+          moving: ports,
+          later,
+        });
         across.send(JSON.stringify({ q: wire, d }));
         for (const go of later) go();
       },
@@ -17322,6 +18187,39 @@ export function installDom(
       return true;
     }
     to._deliver(made.data, made.ports);
+    return true;
+  };
+  /**
+   * The `OffscreenCanvas`es this realm transferred across a thread that
+   * show somewhere, by the thread's side and the token each crossed with:
+   * the placeholder each shows in, where that is this realm's, or the route
+   * back to the realm that has it, where the canvas came here from another.
+   */
+  const canvasRoutes = new Map<
+    string,
+    { placeholder: Any; route: { across: Across; token: string } | null }
+  >();
+  /** A frame an `OffscreenCanvas` across a thread drew, `{ k, s, d }`: its
+   *  token, its rectangle and its pixels, to the placeholder this realm has
+   *  for the token, or on to the realm that has it. False where the text
+   *  is none. */
+  const canvasFrame = (across: Across, text: string): boolean => {
+    if (!text.startsWith('{"k":')) return false;
+    let frame: Any;
+    try {
+      frame = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    const to = canvasRoutes.get(`${across.key} ${str(frame.k)}`);
+    if (!to) return true;
+    if (to.placeholder) {
+      call('canvasPut', idOf(to.placeholder), str(frame.s), str(frame.d));
+    } else if (to.route) {
+      to.route.across.send(
+        JSON.stringify({ k: to.route.token, s: frame.s, d: frame.d }),
+      );
+    }
     return true;
   };
   /** The page's side of a worker's thread, and a worker's of the page. */
@@ -17378,18 +18276,25 @@ export function installDom(
    * `transfer.across`, listed beside the value (`{ p, v }`): once nothing
    * has thrown, each moves to its wire's end here, and what was queued for
    * it is sent by `transfer.later`, which the caller runs once it has sent
-   * the message.
+   * the message. An `OffscreenCanvas` it moves crosses as its size and a
+   * token its frames come back with (`canvasRoutes`), and an `ImageBitmap`
+   * as its pixels, each given up here once nothing has thrown.
    */
   const serializeClone = (
     value: Any,
     moved?: Set<Any>,
-    transfer?: { across: Across; ports: Any[]; later: Array<() => void> },
+    transfer?: { across: Across; moving: Any[]; later: Array<() => void> },
   ): string => {
     const seen = new Map<Any, number>();
     const wireOf = new Map<Any, string>();
-    for (const port of transfer?.ports ?? []) {
-      wireOf.set(port, `${WIRE_REALM}.${++wireSeq}`);
+    const moving = transfer?.moving ?? [];
+    for (const item of moving) {
+      if (item instanceof MessagePort) {
+        wireOf.set(item, `${WIRE_REALM}.${++wireSeq}`);
+      }
     }
+    /** The token each canvas the value holds crossed with. */
+    const tokens = new Map<Any, string>();
     const bytesOf = (b: Uint8Array): string => base64OfBytes(b);
     const walk = (v: Any): Any => {
       if (v === undefined) return { u: 1 };
@@ -17414,12 +18319,42 @@ export function installDom(
       if (v instanceof Blob) {
         return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
       }
+      const shape = GEOMETRY.serialize(v);
+      if (shape) {
+        return { i: index, t: 'G', k: shape[0], v: shape[1].map(walk) };
+      }
       if (moved?.has(v)) {
         const { host, state } = dataChannelsOf.transferData(v);
         return { i: index, t: 'C', h: host, a: state };
       }
       const wire = wireOf.get(v);
       if (wire !== undefined) return { i: index, t: 'Q', w: wire };
+      if (v instanceof OffscreenCanvas && moving.includes(v)) {
+        // a token only where it shows somewhere, which a frame needs
+        let token: string | null = null;
+        if (canvasShown(v)) {
+          token = `${WIRE_REALM}.${++wireSeq}`;
+          tokens.set(v, token);
+        }
+        return { i: index, t: 'K', w: v._width, h: v._height, k: token };
+      }
+      if (v instanceof ImageBitmap) {
+        if (!v._data) {
+          throw new DOMException(
+            'An ImageBitmap is detached and could not be cloned.',
+            'DataCloneError',
+          );
+        }
+        return {
+          i: index,
+          t: 'I',
+          w: v._width,
+          h: v._height,
+          b: bytesOf(
+            new Uint8Array(v._data.buffer, v._data.byteOffset, v._data.length),
+          ),
+        };
+      }
       if (v instanceof EventTarget || v instanceof Event) {
         throw new DOMException(
           `${v.constructor?.name ?? 'The object'} object could not be cloned.`,
@@ -17486,6 +18421,25 @@ export function installDom(
       return { i: index, t: 'O', e };
     };
     const body = walk(value);
+    // nothing threw, so the canvases and the bitmaps are given up: a
+    // canvas that shows somewhere is shown from over there, its frames
+    // coming back across with its token
+    for (const item of moving) {
+      if (item instanceof OffscreenCanvas) {
+        const token = tokens.get(item);
+        if (token !== undefined) {
+          canvasRoutes.set(
+            `${transfer!.across.key} ${token}`,
+            item._placeholder
+              ? { placeholder: item._placeholder, route: null }
+              : { placeholder: null, route: item._route },
+          );
+        }
+        detachOffscreen(item);
+      } else if (item instanceof ImageBitmap) {
+        detachBitmap(item);
+      }
+    }
     if (!wireOf.size) return JSON.stringify(body);
     // nothing threw, so the ports move: each one's place here is its
     // wire's end, and what was queued for it follows the message
@@ -17519,13 +18473,20 @@ export function installDom(
         port._other._other = port;
         byWire.set(str(wire), port);
       }
-      return { data: remake(parsed.v, byWire), ports: [...byWire.values()] };
+      return {
+        data: remake(parsed.v, byWire, across),
+        ports: [...byWire.values()],
+      };
     }
-    return { data: remake(parsed, byWire), ports: [] };
+    return { data: remake(parsed, byWire, across), ports: [] };
   };
   const deserializeClone = (text: string): Any =>
     remake(JSON.parse(text), new Map());
-  const remake = (json: Any, byWire: Map<string, Any>): Any => {
+  const remake = (
+    json: Any,
+    byWire: Map<string, Any>,
+    across?: Across,
+  ): Any => {
     const made: Any[] = [];
     const make = (v: Any): Any => {
       if (v === null || typeof v !== 'object') return v;
@@ -17541,6 +18502,26 @@ export function installDom(
           break;
         case 'L':
           out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          break;
+        case 'K':
+          // a canvas the message transferred, whose frames go back across
+          // to where it shows
+          out = new OffscreenCanvas(Number(v.w) || 0, Number(v.h) || 0);
+          if (across && typeof v.k === 'string') {
+            out._route = { across, token: v.k };
+          }
+          break;
+        case 'I': {
+          const bytes = bytesOfBase64(v.b);
+          out = makeBitmap(
+            Number(v.w) || 0,
+            Number(v.h) || 0,
+            new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+          );
+          break;
+        }
+        case 'G':
+          out = GEOMETRY.deserialize(str(v.k), v.v.map(make));
           break;
         case 'C':
           // a data channel the page handed over: this realm's own, for the
@@ -17630,21 +18611,24 @@ export function installDom(
       // its partner posted through itself: the message, and the channel,
       // are lost (HTML 9.4.4.1, "doomed")
       const doomed = other !== null && list.includes(other);
-      const { data, ports } = cloneMoving(message, list);
+      const { data, moved } = cloneMoving(message, list);
       giveUp(transfer);
       if (doomed || this._closed || !other || other._closed) return;
-      setTimer(() => other._deliver(data, ports), 0, [], false);
+      setTimer(() => other._deliver(data, moved), 0, [], false);
     }
-    _deliver(data: Any, ports: Any[] = []): void {
+    /** A message to this port, with what it transferred: the ports of
+     *  that are the event's, and a wire's end serializes all of it. */
+    _deliver(data: Any, moved: Any[] = []): void {
       if (this._movedTo) {
-        this._movedTo._deliver(data, ports);
+        this._movedTo._deliver(data, moved);
         return;
       }
       if (this._closed) return;
       if (!this._started) {
-        this._waiting.push([data, ports]);
+        this._waiting.push([data, moved]);
         return;
       }
+      const ports = moved.filter((item) => item instanceof MessagePort);
       const ev = new MessageEvent('message', { data, ports });
       ev.isTrusted = true;
       dispatch(this, ev);
@@ -17822,6 +18806,10 @@ export function installDom(
     'AudioBuffer',
     'PeriodicWave',
     'AudioListener',
+    // the geometry interfaces' other name, a window's alone
+    // (`[LegacyWindowAlias]`); `SVGPoint`, `SVGRect` and `SVGMatrix` go
+    // with every other `SVG…`
+    'WebKitCSSMatrix',
     'window',
     'document',
     'parent',
@@ -17855,6 +18843,8 @@ export function installDom(
     'ShadowRoot',
     'Window',
     'SharedWorker',
+    // a window's 2d context: a worker draws through an `OffscreenCanvas`'s
+    'CanvasRenderingContext2D',
   ]);
 
   /** The blob URLs this realm made (`URL.createObjectURL`), to what they
@@ -17921,7 +18911,7 @@ export function installDom(
       const later: Array<() => void> = [];
       const data = serializeClone(message, moved, {
         across: threadAcross(this._id),
-        ports: portsTransferred(transferListOf(transfer)),
+        moving: transfersOf(transferListOf(transfer)),
         later,
       });
       giveUp(transfer);
@@ -17978,7 +18968,7 @@ export function installDom(
       _closed: false,
       _deliver: (data: Any, ports: Any[] = []) => {
         const later: Array<() => void> = [];
-        send(serializeClone(data, undefined, { across, ports, later }));
+        send(serializeClone(data, undefined, { across, moving: ports, later }));
         for (const go of later) go();
       },
     };
@@ -18123,7 +19113,7 @@ export function installDom(
       const later: Array<() => void> = [];
       const data = serializeClone(message, undefined, {
         across: threadAcross(this._id),
-        ports: portsTransferred(transferListOf(transfer)),
+        moving: transfersOf(transferListOf(transfer)),
         later,
       });
       giveUp(transfer);
@@ -18474,7 +19464,7 @@ export function installDom(
       const later: Array<() => void> = [];
       const d = serializeClone(message, undefined, {
         across: UP,
-        ports: portsTransferred(transferListOf(transfer)),
+        moving: transfersOf(transferListOf(transfer)),
         later,
       });
       giveUp(transfer);
@@ -25038,7 +26028,7 @@ export function installDom(
     HTMLUnknownElement,
     DOMTokenList,
     DOMStringMap,
-    DOMRect,
+    ...GEOMETRY.classes,
     NodeList,
     HTMLCollection,
     URL,
@@ -25049,6 +26039,10 @@ export function installDom(
     SharedWorker,
     ImageData,
     CanvasRenderingContext2D,
+    OffscreenCanvas,
+    OffscreenCanvasRenderingContext2D,
+    ImageBitmap,
+    ImageBitmapRenderingContext,
     ...RASTER.classes,
     ...WEBGL.classes,
     Response,
@@ -25550,6 +26544,7 @@ export function installDom(
   });
   // what the options transfer is given up once it is copied, as a
   // `postMessage`'s is
+  define('createImageBitmap', createImageBitmap);
   define('structuredClone', (value: Any, options: Any = undefined) => {
     const { data } = cloneMoving(value, transferListOf(options));
     giveUp(options);
@@ -26424,6 +27419,7 @@ export function installDom(
     // the side of the thread it came from, and a message along a wire on
     // it, to the port across it here
     const across = id === 0 ? UP : threadAcross(Number(id));
+    if (canvasFrame(across, str(text))) return true;
     if (wireMessage(across, str(text))) return true;
     // a shared worker's, to the port of its connection
     if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
@@ -26552,6 +27548,7 @@ export function installDom(
     const { url, name, shared, service } = input();
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
+    GEOMETRY.worker();
     for (const key of Object.getOwnPropertyNames(G)) {
       if (
         /^(HTML|SVG)/.test(key) ||
@@ -26649,13 +27646,61 @@ export function installDom(
       }
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
+      // a dedicated worker's animation frames (HTML 8.10), which a worker
+      // drawing on an `OffscreenCanvas` paces itself by: one every
+      // sixtieth of a second while a callback waits, on the worker's own
+      // clock, its frames reaching the page as each task ends
+      const frameCallbacks = new Map<number, Any>();
+      let frameSeq = 0;
+      let frameTimer = 0;
+      const FRAME_MS = 1000 / 60;
+      const runFrame = (): void => {
+        frameTimer = 0;
+        const due = [...frameCallbacks];
+        frameCallbacks.clear();
+        const t = now();
+        for (const [, fn] of due) {
+          try {
+            fn(t);
+          } catch (error) {
+            report(error);
+          }
+        }
+      };
+      define(
+        'requestAnimationFrame',
+        function requestAnimationFrame(fn: Any): number {
+          if (typeof fn !== 'function') {
+            throw new TypeError(
+              "Failed to execute 'requestAnimationFrame' on 'DedicatedWorkerGlobalScope': The callback provided as parameter 1 is not a function.",
+            );
+          }
+          const id = ++frameSeq;
+          frameCallbacks.set(id, fn);
+          if (!frameTimer) {
+            frameTimer = setTimer(
+              runFrame,
+              FRAME_MS - (now() % FRAME_MS),
+              [],
+              false,
+            );
+          }
+          return id;
+        },
+      );
+      define(
+        'cancelAnimationFrame',
+        function cancelAnimationFrame(id: Any): void {
+          frameCallbacks.delete(Number(id));
+        },
+      );
       define(
         'postMessage',
         function postMessage(message: Any, transfer?: Any): void {
           const later: Array<() => void> = [];
           const text = serializeClone(message, undefined, {
             across: UP,
-            ports: portsTransferred(transferListOf(transfer)),
+            moving: transfersOf(transferListOf(transfer)),
             later,
           });
           giveUp(transfer);
@@ -26703,6 +27748,17 @@ export function installDom(
         ]),
       );
     });
+    return true;
+  });
+
+  // a blob `createImageBitmap` was handed, decoded by the host: its size
+  // and its pixels, or '' where it is no image
+  entry('__imageDecoded', () => {
+    const [id, size, data] = input();
+    const done = imageDecodes.get(id);
+    if (!done) return false;
+    imageDecodes.delete(id);
+    done(str(size), str(data));
     return true;
   });
 

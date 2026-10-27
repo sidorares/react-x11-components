@@ -135,6 +135,8 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import * as ntk from 'react-x11/ntk';
+import { decodeGif } from '../gif.js';
+import { encodePng } from './png.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
@@ -335,6 +337,9 @@ export interface HandleInternals {
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
   layoutNow(): void;
+  /** A page's script was stopped inside an op, and what the document was
+   *  in the middle of is made again (`HtmlViewNode.interrupted`). */
+  interrupted(): void;
   /** The document's `@font-face` faces, as `document.fonts` lists them
    *  (`HtmlViewNode.fontFaces`). */
   fontFaces(): DocumentFontFace[];
@@ -1186,6 +1191,10 @@ export interface Entries {
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
    *  host repairs the tree then, as termination can leave it half-moved. */
   timedOutSince?(): boolean;
+  /** And whether one was stopped inside an op, where `<Html>` may have
+   *  been half way through styling or laying out the document
+   *  (`ScriptEngine.interruptedSince`). */
+  interruptedSince?(): boolean;
   /** A worker's imported script, run in the page from inside its call
    *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
    *  `__thrown`. */
@@ -1483,6 +1492,10 @@ export class DomHost {
     // the tree is whole before it is drawn or read again. Only on a
     // timeout, which is rare, so the walk costs nothing in the common case.
     if (this.entries?.timedOutSince?.()) this._repairTree();
+    // and one stopped inside an op ran none of the `finally`s of what the op
+    // was in the middle of: `<Html>` makes the document's styles, boxes and
+    // layout again rather than go on from what was left
+    if (this.entries?.interruptedSince?.()) this._seams.handle.interrupted?.();
     // a document being left changes nothing anyone sees
     if (this._leaving) {
       this._changes = [];
@@ -3139,6 +3152,50 @@ export class DomHost {
         }
         pixels.version += 1;
         for (const listener of [...this._s.canvasListeners]) listener(canvas);
+        return null;
+      }
+      // a bitmap as a file (`toDataURL`, `toBlob`, `convertToBlob`): its
+      // size and its straight RGBA as base64, and the PNG as base64, the
+      // one type every bitmap is had as
+      case 'encodeImage': {
+        const [width, height] = text(a).split(',').map(Number);
+        if (!(width > 0 && height > 0)) return '';
+        const rgba = Buffer.from(text(b), 'base64');
+        if (rgba.length !== width * height * 4) return '';
+        const png = encodePng(width, height, rgba);
+        return Buffer.from(png.buffer, png.byteOffset, png.length).toString(
+          'base64',
+        );
+      }
+      // a blob's image decoded for `createImageBitmap`, through the ladder
+      // a document's images are, and the page told its size and its
+      // straight RGBA, or '' where it is no image (`__imageDecoded`)
+      case 'imageDecode': {
+        const id = Number(a);
+        const bytes = Buffer.from(text(b), 'base64');
+        const tell = (size: string, data: string) => {
+          if (!this._disposed) {
+            this.entries?.call('__imageDecoded', [id, size, data]);
+          }
+        };
+        void Promise.resolve()
+          .then(
+            () =>
+              decodeGif(bytes) ??
+              ntk.decodeImageBytes(bytes, { offThread: true }),
+          )
+          .then(
+            (image) =>
+              tell(
+                `${image.width},${image.height}`,
+                Buffer.from(
+                  image.data.buffer,
+                  image.data.byteOffset,
+                  image.data.length,
+                ).toString('base64'),
+              ),
+            () => tell('', ''),
+          );
         return null;
       }
       // a colour a page names, as straight RGBA bytes
