@@ -4,6 +4,7 @@
 // design; these run it against an `<Html>` in the in-process X server, with
 // a network and a pane that are stand-ins.
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { afterEach, test as nodeTest } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -149,6 +150,8 @@ async function hosted(
     animate?: boolean;
     /** The page's URL, `baseUrl`, where it is not `PAGE`. */
     url?: string;
+    /** Font files answered by their names, a moment later. */
+    fonts?: Record<string, Uint8Array>;
   } = {},
 ): Promise<Hosted> {
   const scale = options.scale ?? 1;
@@ -236,6 +239,14 @@ async function hosted(
         }
         if (options.held && kind === 'stylesheet') {
           return options.held.ask(url.slice(url.lastIndexOf('/') + 1));
+        }
+        const bytes = options.fonts?.[url.slice(url.lastIndexOf('/') + 1)];
+        if (kind === 'font') {
+          return bytes
+            ? new Promise<ResourceResult>((ok) =>
+                setTimeout(() => ok({ kind, bytes }), 5),
+              )
+            : null;
         }
         const text = options.sheets?.[url.slice(url.lastIndexOf('/') + 1)];
         // a moment later, as over a network
@@ -428,6 +439,8 @@ test('a facade function stringifies as native code; a page function as its sourc
       `r.push(${native('window.localStorage.getItem')});` +
       `r.push(${native('window.location.assign')});` +
       `r.push(${native('navigator.sendBeacon')});` +
+      // an interface no global names, behind a getter
+      `r.push(${native('document.fonts.load')}, ${native('Object.getOwnPropertyDescriptor(Object.getPrototypeOf(document.fonts), "ready").get')});` +
       // the mask itself is native, as `Function.prototype.toString` is
       `r.push(${native('Function.prototype.toString')});` +
       // a page's own function keeps its source
@@ -451,6 +464,8 @@ test('a facade function stringifies as native code; a page function as its sourc
       'true', // localStorage.getItem (Storage.prototype)
       'true', // location.assign (marked from the object behind the getter)
       'true', // navigator.sendBeacon (an instance's own method)
+      'true', // document.fonts.load (FontFaceSet.prototype)
+      'true', // …and its accessors
       'true', // Function.prototype.toString itself
       'false', // a page function is not native
       'true', // …and keeps its real source
@@ -2067,6 +2082,34 @@ test('the window has what scripts read of it: name, crypto, text encodings, Imag
       'OPTION',
       'v',
       't',
+      'true',
+    ].join('|'),
+  );
+});
+
+test('URL.parse is the constructor answering null where it would throw, as URL.canParse says', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var u = URL.parse("b?q=1#h", "https://a.test/dir/");' +
+      'r.push(u instanceof URL, u.href, u.pathname, u.searchParams.get("q"), String(u));' +
+      'r.push(URL.parse("https://a.test/x").host, URL.parse("nope") === null, URL.parse("b", "nope") === null);' +
+      'r.push(URL.canParse("nope"), URL.canParse("b", "https://a.test/"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'true',
+      'https://a.test/dir/b?q=1#h',
+      '/dir/b',
+      '1',
+      'https://a.test/dir/b?q=1#h',
+      'a.test',
+      'true',
+      'true',
+      'false',
       'true',
     ].join('|'),
   );
@@ -6554,6 +6597,151 @@ test('a box a script checked keeps its checkedness when its attribute changes, a
     doc.logs.join('\n'),
   );
 });
+
+test('a text field has a checkedness of its own, which is never its text', async () => {
+  // React sets `checked` on every input it mounts (`initInput`), a text
+  // field's included, and facebook.com's login fields showed `false`
+  const doc = await hosted(
+    '<input id="t" value="hi"><input type="password" id="p" checked><input type="checkbox" id="c">' +
+      '<p id="out"></p><script>' +
+      'var r = []; var t = document.getElementById("t"), p = document.getElementById("p"), c = document.getElementById("c");' +
+      'r.push(t.checked, p.checked);' +
+      't.checked = t.checked; p.checked = false; r.push(t.value, p.value, t.checked, p.checked);' +
+      't.checked = true; r.push(t.checked, t.value, t.hasAttribute("checked"));' +
+      // a box's is its widget's, as before
+      'c.checked = true; r.push(c.checked, document.querySelector(":checked").id);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'false|true|hi||false|false|true|hi|false|true|c',
+    doc.logs.join('\n'),
+  );
+  // and what the fields' widgets hold is their text
+  assert.equal(doc.handle.controlValue(doc.byId('t')), 'hi');
+  assert.equal(doc.handle.controlValue(doc.byId('p')), '');
+  // a boolean handed to a field's control is no text of it
+  assert.equal(doc.handle.setControlValue(doc.byId('p'), false), false);
+  assert.equal(doc.handle.controlValue(doc.byId('p')), '');
+});
+
+test('a dataset is a DOMStringMap, whose names hide its prototype’s members', async () => {
+  // facebook.com asks `e.dataset instanceof window.DOMStringMap`, which
+  // threw where there was no such interface
+  const doc = await hosted(
+    '<div id="d" data-a-b="1" data-to-string="mine"></div><p id="out"></p><script>' +
+      'var r = []; var d = document.getElementById("d"), e = document.createElement("div");' +
+      'r.push(typeof window.DOMStringMap, d.dataset instanceof DOMStringMap, d.dataset.aB, d.dataset.toString);' +
+      'r.push(typeof e.dataset.toString, "toString" in e.dataset, "aB" in d.dataset, "zZ" in d.dataset, Object.keys(d.dataset).join(","));' +
+      'try { new DOMStringMap(); } catch (x) { r.push(x.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'function|true|1|mine|function|true|true|false|aB,toString|TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
+metric(
+  "document.fonts loads the document's own faces a font names, and says which have",
+  async () => {
+    const sans = new Uint8Array(readFileSync(FONTS!['sans-serif']));
+    const doc = await hosted(
+      '<style>' +
+        '@font-face { font-family: Brand; src: url(brand.ttf); }' +
+        '@font-face { font-family: Brand; font-weight: 700; src: url(brand-bold.ttf); }' +
+        '@font-face { font-family: "Brand Cyrillic"; src: url(cyr.ttf); unicode-range: U+400-4FF; }' +
+        '@font-face { font-family: Gone; src: url(gone.ttf); }' +
+        '</style><p id="out"></p><script>' +
+        'var r = []; var fonts = document.fonts;' +
+        'function say() { document.getElementById("out").textContent = r.join("|"); }' +
+        'var faces = Array.from(fonts);' +
+        'r.push(fonts.size, faces.map(function (f) { return f.family + ":" + f.weight + ":" + f.status; }).join(","), faces[2].unicodeRange);' +
+        'r.push(fonts.check("16px Brand"), fonts.check("16px Nobody"), fonts === document.fonts);' +
+        'try { fonts.check("Brand"); } catch (e) { r.push(e.name); }' +
+        'fonts.load("bold 16px Brand").then(function (got) {' +
+        '  r.push(got.length, got[0].weight, got[0].status, got[0] === faces[1], fonts.check("bold 16px Brand"), fonts.check("16px Brand"));' +
+        '  return fonts.load("16px \\"Brand Cyrillic\\"", "abc");' +
+        '}).then(function (got) {' +
+        '  r.push(got.length, faces[2].status);' +
+        '  return fonts.load("16px Nobody, Gone");' +
+        '}).then(null, function (e) {' +
+        '  r.push(e.name, faces[3].status);' +
+        '  return fonts.load("16px");' +
+        '}).then(null, function (e) {' +
+        '  r.push(e.name); return fonts.ready;' +
+        '}).then(function (set) { r.push(set === fonts, fonts.status); say(); });' +
+        'say();' +
+        '</script>',
+      {
+        fonts: { 'brand.ttf': sans, 'brand-bold.ttf': sans, 'cyr.ttf': sans },
+      },
+    );
+    const out = await settled(doc, 'out', (t) => t.endsWith('loaded'));
+    assert.equal(
+      out,
+      [
+        '4',
+        'Brand:400:unloaded,Brand:700:unloaded,Brand Cyrillic:400:unloaded,Gone:400:unloaded',
+        'U+400-4FF',
+        'false',
+        'true',
+        'true',
+        'SyntaxError',
+        // the bold face alone, which the regular one is not for
+        '1',
+        '700',
+        'loaded',
+        'true',
+        'true',
+        'false',
+        // a range that holds none of the text loads nothing
+        '0',
+        'unloaded',
+        // a face that could not be had
+        'NetworkError',
+        'error',
+        'SyntaxError',
+        'true',
+        'loaded',
+      ].join('|'),
+      doc.logs.join('\n'),
+    );
+  },
+);
+
+metric(
+  "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
+  async () => {
+    // fontfaceobserver 2.x asks `load()` every 25 ms until it hands over a
+    // face, and gives up at its timeout: facebook.com draws its QR code only
+    // once Instagram Sans Condensed is in, and an empty answer left it blank
+    const sans = new Uint8Array(readFileSync(FONTS!['sans-serif']));
+    const doc = await hosted(
+      '<style>@font-face { font-family: "Instagram Sans Condensed"; src: url(ig.ttf); }</style>' +
+        '<p id="out"></p><script>' +
+        'var start = Date.now();' +
+        'function poll() {' +
+        '  document.fonts.load("normal normal 100px \\"Instagram Sans Condensed\\"", "BESbswy").then(function (t) {' +
+        '    if (t.length >= 1) document.getElementById("out").textContent = "in:" + t[0].status;' +
+        '    else if (Date.now() - start > 2000) document.getElementById("out").textContent = "timed out";' +
+        '    else setTimeout(poll, 25);' +
+        '  });' +
+        '}' +
+        'poll();' +
+        '</script>',
+      { fonts: { 'ig.ttf': sans } },
+    );
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      'in:loaded',
+      doc.logs.join('\n'),
+    );
+  },
+);
 
 test('a frame’s document: XML read as XML, a malformed one an error, its scripts run, a new src navigates, and open and write build a tree', async () => {
   const files: Record<string, [string, string]> = {

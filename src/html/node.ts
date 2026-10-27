@@ -148,7 +148,12 @@ import {
 import type { TimelineTrigger, ViewPlace } from './css/triggers.js';
 import { AUTO, resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
-import type { ComputedStyle, RootLook, TimelineRef } from './css/style.js';
+import type {
+  ComputedStyle,
+  FontQuery,
+  RootLook,
+  TimelineRef,
+} from './css/style.js';
 import {
   COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
@@ -423,7 +428,7 @@ import type {
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
-import type { DeclaredFace } from './fonts.js';
+import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
@@ -5194,6 +5199,41 @@ export class HtmlViewNode extends Node {
    */
   matchMedia(query: string): boolean {
     return this._mediaHolds([parseMediaQuery(query)]);
+  }
+
+  /**
+   * The document's `@font-face` faces, as `document.fonts` lists them
+   * (`WebFonts.faces`): styled first, as `computedStyle` is, so a sheet a
+   * script has just put in has its faces in the set.
+   */
+  fontFaces(): DocumentFontFace[] {
+    this._prepare(this.abs.width || 1);
+    return this._webFonts.faces();
+  }
+
+  /** The faces a `font` matches, by key, as `document.fonts.load()` and
+   *  `check()` find them (`WebFonts.match`), styled first as `fontFaces`
+   *  is. */
+  matchFonts(query: FontQuery, text: string): FontMatch {
+    this._prepare(this.abs.width || 1);
+    return this._webFonts.match(
+      query.families,
+      query.weight,
+      query.italic,
+      query.stretch,
+      text,
+    );
+  }
+
+  /** Load faces by key, as `FontFace.load()` does (`WebFonts.load`). */
+  loadFonts(keys: readonly string[]): Promise<boolean[]> {
+    return this._webFonts.load(keys);
+  }
+
+  /** Settles once no face of the document's is on its way
+   *  (`WebFonts.settled`). */
+  fontsSettled(): Promise<void> {
+    return this._webFonts.settled();
   }
 
   /**

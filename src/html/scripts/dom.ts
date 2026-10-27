@@ -110,7 +110,9 @@ export function installDom(
       op !== 'computed' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
-      op !== 'selection'
+      op !== 'selection' &&
+      op !== 'fontFaces' &&
+      op !== 'fontMatch'
     ) {
       opEpoch += 1;
     }
@@ -5344,12 +5346,26 @@ export function installDom(
     });
   };
 
-  /** `el.dataset`: the `data-*` attributes, by their names in camel case. */
+  /** What `el.dataset` is an instance of (HTML 3.2.6.6), which a page may
+   *  test a dataset against: Facebook's asks `e.dataset instanceof
+   *  window.DOMStringMap`, and threw where there was none. */
+  class DOMStringMap {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+  }
+
+  /** `el.dataset`: the `data-*` attributes, by their names in camel case,
+   *  over its prototype's members, which a name of an attribute's hides
+   *  (`[LegacyOverrideBuiltIns]`). */
   const datasetOf = (el: Any): Any =>
-    new Proxy(Object.create(null), {
-      get(_t, key) {
-        if (typeof key !== 'string') return undefined;
-        return el.getAttribute(`data-${kebab(key)}`) ?? undefined;
+    new Proxy(Object.create(DOMStringMap.prototype), {
+      get(t, key) {
+        if (typeof key === 'string') {
+          const value = el.getAttribute(`data-${kebab(key)}`);
+          if (value !== null) return value;
+        }
+        return Reflect.get(t, key);
       },
       set(_t, key, value) {
         if (typeof key !== 'string') return false;
@@ -5360,8 +5376,11 @@ export function installDom(
         if (typeof key === 'string') el.removeAttribute(`data-${kebab(key)}`);
         return true;
       },
-      has(_t, key) {
-        return typeof key === 'string' && el.hasAttribute(`data-${kebab(key)}`);
+      has(t, key) {
+        return (
+          (typeof key === 'string' && el.hasAttribute(`data-${kebab(key)}`)) ||
+          Reflect.has(t, key)
+        );
       },
       ownKeys() {
         return el
@@ -7307,12 +7326,26 @@ export function installDom(
     set defaultValue(v: Any) {
       this.setAttribute('value', v);
     }
+    // Every input has a checkedness (HTML 4.10.5), which a box's and a
+    // radio's widget shows and no other type's does: there it is the
+    // element's alone, its attribute until a script sets it. React sets
+    // `checked` on every input it mounts, and a text field's set as its
+    // text showed `false`.
     get checked(): boolean {
-      return controlValue(this) === true;
+      const type = this.type;
+      if (type === 'checkbox' || type === 'radio') {
+        return controlValue(this) === true;
+      }
+      return this._checkedness ?? this.hasAttribute('checked');
     }
     set checked(v: Any) {
-      call('setValue', this._id, !!v);
+      const type = this.type;
+      if (type === 'checkbox' || type === 'radio') {
+        call('setValue', this._id, !!v);
+      } else this._checkedness = !!v;
     }
+    /** A checkedness a script set on a type no widget shows it for. */
+    _checkedness?: boolean;
     get defaultChecked(): boolean {
       return this.hasAttribute('checked');
     }
@@ -12290,6 +12323,342 @@ export function installDom(
     return true;
   };
 
+  // --- the document's fonts -------------------------------------------------------
+  //
+  // `document.fonts` (CSS Font Loading 3): the faces the document's
+  // `@font-face` rules declare, which `<Html>` loads — where a style wants
+  // one, or where `load()` asks — and tells the page of through
+  // `__fontsLoaded` and `__fontsSettled`. A face a script makes with `new
+  // FontFace` is not among them: nothing hands its data to the document's
+  // fonts yet, so there is no `FontFace` to construct, and `add()` takes
+  // none.
+
+  let fontSeq = 0;
+  /** The `load()`s waiting on `<Html>`, by id. */
+  const fontLoads = new Map<number, (loaded: boolean[]) => void>();
+  /** What waits for the document's faces to settle, by id. */
+  const fontSettles = new Map<number, () => void>();
+  const NETWORK_ERROR = () =>
+    new DOMException('A network error occurred.', 'NetworkError');
+
+  /**
+   * A face of the document's, as `document.fonts` hands it over (CSS Font
+   * Loading 3, 2.1): its rule's descriptors, and its status, which is
+   * `<Html>`'s. One object a face, for as long as the document declares it
+   * as it does (`FontFaceSet._face`). A descriptor a page sets reads back,
+   * and changes nothing of the document's face.
+   */
+  class FontFace {
+    _set: Any;
+    _key: string;
+    _desc: Record<string, string>;
+    /** Its `loaded`, made as it is first asked for. */
+    _loaded: Any = null;
+    _settle: [Any, Any] | null = null;
+    constructor(set: Any, key: string, desc: Record<string, string>) {
+      this._set = set;
+      this._key = key;
+      this._desc = {
+        display: 'auto',
+        featureSettings: 'normal',
+        variationSettings: 'normal',
+        ascentOverride: 'normal',
+        descentOverride: 'normal',
+        lineGapOverride: 'normal',
+        ...desc,
+      };
+    }
+    get family(): string {
+      return this._desc.family;
+    }
+    set family(v: Any) {
+      this._desc.family = str(v);
+    }
+    get style(): string {
+      return this._desc.style;
+    }
+    set style(v: Any) {
+      this._desc.style = str(v);
+    }
+    get weight(): string {
+      return this._desc.weight;
+    }
+    set weight(v: Any) {
+      this._desc.weight = str(v);
+    }
+    get stretch(): string {
+      return this._desc.stretch;
+    }
+    set stretch(v: Any) {
+      this._desc.stretch = str(v);
+    }
+    get unicodeRange(): string {
+      return this._desc.unicodeRange;
+    }
+    set unicodeRange(v: Any) {
+      this._desc.unicodeRange = str(v);
+    }
+    get display(): string {
+      return this._desc.display;
+    }
+    set display(v: Any) {
+      this._desc.display = str(v);
+    }
+    get featureSettings(): string {
+      return this._desc.featureSettings;
+    }
+    set featureSettings(v: Any) {
+      this._desc.featureSettings = str(v);
+    }
+    get variationSettings(): string {
+      return this._desc.variationSettings;
+    }
+    set variationSettings(v: Any) {
+      this._desc.variationSettings = str(v);
+    }
+    get ascentOverride(): string {
+      return this._desc.ascentOverride;
+    }
+    set ascentOverride(v: Any) {
+      this._desc.ascentOverride = str(v);
+    }
+    get descentOverride(): string {
+      return this._desc.descentOverride;
+    }
+    set descentOverride(v: Any) {
+      this._desc.descentOverride = str(v);
+    }
+    get lineGapOverride(): string {
+      return this._desc.lineGapOverride;
+    }
+    set lineGapOverride(v: Any) {
+      this._desc.lineGapOverride = str(v);
+    }
+    get status(): string {
+      return this._set._statuses().get(this._key) ?? 'error';
+    }
+    /** Settles once the face has loaded, or could not: pending while
+     *  nothing has asked for it. */
+    get loaded(): Any {
+      if (!this._loaded) {
+        const status = this.status;
+        if (status === 'loaded') this._loaded = Promise.resolve(this);
+        else if (status === 'error')
+          this._loaded = Promise.reject(NETWORK_ERROR());
+        else {
+          this._loaded = new Promise((resolve, reject) => {
+            this._settle = [resolve, reject];
+          });
+          if (status === 'loading') this._set._watch(this);
+        }
+      }
+      return this._loaded;
+    }
+    load(): Any {
+      const loaded = this.loaded;
+      if (this._settle) this._set._loadFaces([this]).catch(() => {});
+      return loaded;
+    }
+    /** What came of loading it, which `loaded` settles with. */
+    _done(ok: boolean): void {
+      const settle = this._settle;
+      if (!settle) return;
+      this._settle = null;
+      if (ok) settle[0](this);
+      else settle[1](NETWORK_ERROR());
+    }
+  }
+
+  /** `document.fonts` (CSS Font Loading 3, 2.5): the document's faces. */
+  class FontFaceSet extends EventTarget {
+    _doc: Any;
+    _faces = new Map<string, Any>();
+    /** The `load()`s on their way to `<Html>` and back. */
+    _loading = 0;
+    /** What waits for the next of them to come back. */
+    _afterLoad: (() => void)[] = [];
+    _ready: Any = null;
+    _readyDone = false;
+    constructor(doc: Any) {
+      super();
+      this._doc = doc;
+    }
+    /** Each face's status, by key, as `<Html>` has it now. */
+    _statuses(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const face of this._list()) out.set(face.key, face.status);
+      return out;
+    }
+    _list(): Any[] {
+      return JSON.parse(str(call('fontFaces', this._doc._id)) || '[]');
+    }
+    /** The faces as objects, one a face. */
+    _all(): Any[] {
+      return this._list().map((d: Any) => this._face(d));
+    }
+    _face(desc: Any): Any {
+      let face = this._faces.get(desc.key);
+      if (!face) {
+        const { key, status: _status, ...rest } = desc;
+        this._faces.set(key, (face = new FontFace(this, key, rest)));
+      }
+      return face;
+    }
+    /** The keys of the faces a `font` matches, or null for a `font` that
+     *  is none. */
+    _match(font: Any, text: Any): string[] | null {
+      const raw = str(call('fontMatch', this._doc._id, str(font), str(text)));
+      return raw ? JSON.parse(raw).keys : null;
+    }
+    /** Load faces, settling each one's `loaded`; rejects where one could
+     *  not. */
+    _loadFaces(faces: Any[]): Any {
+      if (!faces.length) return Promise.resolve([]);
+      const id = ++fontSeq;
+      this._loading += 1;
+      return new Promise((resolve, reject) => {
+        fontLoads.set(id, (loaded) => {
+          this._loading -= 1;
+          faces.forEach((face, i) => face._done(loaded[i] === true));
+          for (const fn of this._afterLoad.splice(0)) fn();
+          if (loaded.every((ok) => ok === true)) resolve(faces);
+          else reject(NETWORK_ERROR());
+        });
+        call(
+          'fontLoad',
+          this._doc._id,
+          id,
+          JSON.stringify(faces.map((f) => f._key)),
+        );
+      });
+    }
+    /** Call `fn` once none of the document's faces is on its way. */
+    _whenSettled(fn: () => void): void {
+      const id = ++fontSeq;
+      fontSettles.set(id, fn);
+      call('fontsSettled', this._doc._id, id);
+    }
+    /** Settle a face's `loaded` once it has left `loading`, which a style
+     *  asked for and no `load()` waits on. */
+    _watch(face: Any): void {
+      this._whenSettled(() => {
+        const status = face.status;
+        if (status === 'loading') this._watch(face);
+        else if (status !== 'unloaded') face._done(status === 'loaded');
+      });
+    }
+    get status(): string {
+      if (this._loading) return 'loading';
+      for (const status of this._statuses().values()) {
+        if (status === 'loading') return 'loading';
+      }
+      return 'loaded';
+    }
+    /** Settles once the document's faces have: the same promise until
+     *  another face starts loading. */
+    get ready(): Any {
+      const loading = this.status === 'loading';
+      if (!this._ready || (loading && this._readyDone)) {
+        this._readyDone = !loading;
+        this._ready = loading
+          ? new Promise((resolve) => this._readyOnce(resolve))
+          : Promise.resolve(this);
+      }
+      return this._ready;
+    }
+    _readyOnce(resolve: Any): void {
+      if (this._loading) {
+        this._afterLoad.push(() => this._readyOnce(resolve));
+        return;
+      }
+      this._whenSettled(() => {
+        if (this.status === 'loading') this._readyOnce(resolve);
+        else {
+          this._readyDone = true;
+          resolve(this);
+        }
+      });
+    }
+    /** The faces `font` matches with a character of `text` in their
+     *  ranges, once they have loaded (2.5.2). */
+    load(font: Any, text: Any = ' '): Any {
+      return new Promise((resolve, reject) => {
+        queueMicrotask(() => {
+          try {
+            const keys = this._match(font, text);
+            if (!keys) {
+              reject(
+                new DOMException(
+                  `Could not resolve '${str(font)}' as a font.`,
+                  'SyntaxError',
+                ),
+              );
+              return;
+            }
+            const all = new Map(this._all().map((f: Any) => [f._key, f]));
+            const faces = keys.map((k) => all.get(k)).filter(Boolean);
+            this._loadFaces(faces).then(resolve, reject);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+    }
+    /** Whether the faces `font` matches have all loaded (2.5.3). */
+    check(font: Any, text: Any = ' '): boolean {
+      const keys = this._match(font, text);
+      if (!keys) {
+        throw new DOMException(
+          `Could not resolve '${str(font)}' as a font.`,
+          'SyntaxError',
+        );
+      }
+      const statuses = this._statuses();
+      return keys.every((k) => statuses.get(k) === 'loaded');
+    }
+    get size(): number {
+      return this._list().length;
+    }
+    has(face: Any): boolean {
+      return this._all().includes(face);
+    }
+    forEach(fn: Any, thisArg?: Any): void {
+      for (const face of this._all()) fn.call(thisArg, face, face, this);
+    }
+    values(): Any {
+      return this._all()[Symbol.iterator]();
+    }
+    keys(): Any {
+      return this.values();
+    }
+    entries(): Any {
+      return this._all()
+        .map((f: Any) => [f, f])
+        [Symbol.iterator]();
+    }
+    [Symbol.iterator](): Any {
+      return this.values();
+    }
+    /** Every face here is its rule's, which a script cannot add again;
+     *  and one it makes is none of this document's yet (above). */
+    add(face: Any): Any {
+      if (face instanceof FontFace) {
+        throw new DOMException(
+          "Failed to execute 'add' on 'FontFaceSet': Cannot add a CSS-connected FontFace.",
+          'InvalidModificationError',
+        );
+      }
+      throw new TypeError(
+        "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+      );
+    }
+    /** A rule's face is not taken out by a script (2.5.1). */
+    delete(_face: Any): boolean {
+      return false;
+    }
+    clear(): void {}
+  }
+
   // --- the document --------------------------------------------------------------
 
   class Document extends ParentNode {
@@ -12473,12 +12842,9 @@ export function installDom(
       return implementationOf(this);
     }
     get fonts(): Any {
-      return {
-        ready: Promise.resolve(),
-        check: () => true,
-        load: () => Promise.resolve([]),
-      };
+      return (this._fontSet ??= new FontFaceSet(this));
     }
+    _fontSet: Any;
     hasFocus(): boolean {
       return true;
     }
@@ -14471,6 +14837,15 @@ export function installDom(
     }
     static canParse(url: Any, base?: Any): boolean {
       return !!call('url', str(url), base === undefined ? '' : str(base));
+    }
+    /** The URL, or null where there is none: the constructor, which does
+     *  not throw (URL Standard, 6.1). */
+    static parse(url: Any, base?: Any): Any {
+      const json = call('url', str(url), base === undefined ? '' : str(base));
+      if (typeof json !== 'string' || !json) return null;
+      const parsed = Object.create(URL.prototype);
+      parsed._href = JSON.parse(json).href;
+      return parsed;
     }
     /** A URL for a blob, this realm's (W3C File API 8.3). */
     static createObjectURL(blob: Any): string {
@@ -24517,6 +24892,7 @@ export function installDom(
     HTMLMetaElement,
     HTMLUnknownElement,
     DOMTokenList,
+    DOMStringMap,
     DOMRect,
     NodeList,
     HTMLCollection,
@@ -26152,6 +26528,24 @@ export function installDom(
     return true;
   });
 
+  // what came of a `document.fonts` load, and the faces settled
+  entry('__fontsLoaded', () => {
+    const [id, loaded] = input();
+    const done = fontLoads.get(id);
+    if (!done) return false;
+    fontLoads.delete(id);
+    done(Array.isArray(loaded) ? loaded : []);
+    return true;
+  });
+  entry('__fontsSettled', () => {
+    const [id] = input();
+    const done = fontSettles.get(id);
+    if (!done) return false;
+    fontSettles.delete(id);
+    done();
+    return true;
+  });
+
   // what came of a `fetch`
   entry('__fetched', () => {
     const [id, answer] = input();
@@ -26909,6 +27303,10 @@ export function installDom(
     } catch {
       /* no location in this realm */
     }
+    // and the interfaces no global names, reached through a getter alone:
+    // `document.fonts`'s, and the faces it hands over
+    markFn(FontFaceSet, 8);
+    markFn(FontFace, 8);
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {

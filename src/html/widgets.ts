@@ -665,6 +665,9 @@ export function useForms(options: FormsOptions): Forms {
         touch();
         return true;
       }
+      // a boolean is a checkedness, which no other control shows: never
+      // its text, which `String(false)` would have made it
+      if (typeof value === 'boolean') return false;
       if (tag === 'select') {
         forms.remember(el);
         setSelectedOption(el, String(value));
