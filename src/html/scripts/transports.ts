@@ -108,6 +108,15 @@ export class PageTransports {
 
   constructor(private readonly _seams: TransportSeams) {}
 
+  /** Whether a session is open, or opening: what keeps a document out of
+   *  the back-forward cache, where its server would see it held. */
+  get open(): boolean {
+    for (const s of this._sessions.values()) {
+      if (s.state === 'connecting' || s.state === 'connected') return true;
+    }
+    return false;
+  }
+
   /** An op of the facade's whose name starts with `wt`. */
   op(op: string, a: Primitive, b: Primitive, c: Primitive): Primitive {
     const text = (v: Primitive): string => (typeof v === 'string' ? v : '');

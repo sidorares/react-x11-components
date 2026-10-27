@@ -186,14 +186,15 @@ export class ScriptRunner {
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
+      // kept frozen with too much waiting: let go, as one the cache drops
+      overflow: () => queueMicrotask(() => this.dispose()),
     });
     this.host.entries = this.engine;
     if (arrival) {
       // told once the page's code is done, where it is running: the host
       // may ask from one of the seams the page's code reached
-      this._unlive = liveSession(
-        arrival,
-        (key) => {
+      this._unlive = liveSession(arrival, {
+        traverse: (key) => {
           const go = () => {
             if (!this._disposed) this.engine.call('__traverseKey', [key]);
           };
@@ -201,9 +202,16 @@ export class ScriptRunner {
           else go();
         },
         // the next document of the session is shown, here or in another
-        // `<Html>`: this one hears where it goes, and goes
-        (swap) => this.dispose(swap),
-      );
+        // `<Html>`: this one hears where it goes, and goes — or, where the
+        // session keeps it to show again and it may be kept, is frozen
+        swap: (swap, keep) => {
+          if (keep && this.freeze(swap)) return true;
+          this.dispose(swap);
+          return false;
+        },
+        reactivate: (view) => this.reactivate(view),
+        destroy: () => this.dispose(),
+      });
     }
     // the page's workers, each in a thread of its own, their network the
     // page's — where the page may have them at all
@@ -591,6 +599,68 @@ export class ScriptRunner {
   }
 
   /**
+   * Whether the document, and every frame's in a realm of its own, may go
+   * into the host's back-forward cache rather than unload (HTML 7.4.2.4,
+   * a document's "salvageable" state): it has loaded, and it has no
+   * connection open that a peer would see held — a WebTransport session or
+   * a peer connection — as browsers keep such a page out of theirs.
+   */
+  salvageable(): boolean {
+    if (this._disposed || this._ready !== 'complete') return false;
+    if (this.host.connected) return false;
+    for (const seat of this._seats.values()) {
+      if (!seat.runner.salvageable()) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The document goes into the host's back-forward cache in place of
+   * unloading, where it may (`salvageable`): told where it goes and hidden
+   * (`pagehide`, `persisted` true), its frames' documents with it, and then
+   * nothing of its runs — no task, timer or message — until it is shown
+   * again (`reactivate`) or let go (`dispose`, which tells it nothing
+   * more). Whether it went in.
+   */
+  freeze(swap: PageSwap | null = null): boolean {
+    if (this._disposed || this.engine.frozen) return false;
+    if (!this.salvageable()) return false;
+    this.engine.call('__freeze', swap ? [swap] : null);
+    this._freezeAll();
+    return true;
+  }
+
+  /** This document's engine and its frames' frozen, the frames' first. */
+  private _freezeAll(): void {
+    for (const seat of this._seats.values()) seat.runner._freezeAll();
+    this.engine.freeze();
+  }
+
+  /**
+   * The document is shown again from the back-forward cache: `view` is the
+   * session as it is now, which its realm takes (`sessionView`), then
+   * `pageshow` with `persisted` true; and then what its timers, its network
+   * and its workers asked of it while it was frozen, in order.
+   */
+  reactivate(view: string | null): void {
+    if (this._disposed || !this.engine.frozen) return;
+    for (const seat of this._seats.values()) seat.runner._thawAll();
+    this.engine.thaw(() => {
+      let seed: unknown = null;
+      try {
+        seed = view ? JSON.parse(view) : null;
+      } catch {}
+      this.engine.call('__reactivate', [seed]);
+    });
+  }
+
+  /** A frame's engine thawed, its own frames' first. */
+  private _thawAll(): void {
+    for (const seat of this._seats.values()) seat.runner._thawAll();
+    this.engine.thaw();
+  }
+
+  /**
    * The document is left, and its scripts stop: the frames' documents in
    * realms of their own unload first, then this one (HTML 7.4.2.4, "unload
    * a document and its descendants") — its `beforeunload` where nothing
@@ -598,7 +668,9 @@ export class ScriptRunner {
    * hidden and `unload` — each under the timeout every entry has, and
    * nothing they change is drawn. `swap` is the document shown in its
    * place, where there is one, which its `pageswap` is told of before it
-   * unloads.
+   * unloads. One in the back-forward cache (`freeze`) has been told it is
+   * hidden already, and is told nothing more: it goes as it is (HTML,
+   * "destroy a document").
    */
   dispose(swap: PageSwap | null = null): void {
     if (this._disposed) return;
@@ -611,7 +683,9 @@ export class ScriptRunner {
     this._seats.clear();
     this._seatsWatched?.();
     this.host.leaving();
-    this.engine.call('__unload', swap ? [swap] : null);
+    if (!this.engine.frozen) {
+      this.engine.call('__unload', swap ? [swap] : null);
+    }
     this._workers?.dispose();
     this._disposed = true;
     if (this._link) this._link.parent.engine.unlink(this._frameId());

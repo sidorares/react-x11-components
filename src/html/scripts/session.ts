@@ -50,6 +50,23 @@ export interface HtmlSessionEntry {
   readonly document: number;
 }
 
+/** How a session keeps the documents it shows. */
+export interface HtmlSessionOptions {
+  /**
+   * How many documents a step back or forward may show again as they were
+   * left — a back-forward cache (HTML 7.4.1, "bfcache"): their scripts'
+   * state, their DOM, what was typed into them. Default 0: none, and each
+   * document left unloads. A document goes into it where its scripts run,
+   * it has loaded, nothing in it listens for `unload` and it holds no
+   * connection open; there it is hidden (`pagehide` with `persisted` true)
+   * and nothing of its runs until a step shows it again (`pageshow` with
+   * `persisted` true). A host that keeps any keeps the `<Html>` of each
+   * document in `kept` mounted, hidden, and shows the one the current entry
+   * is of (`current.document`).
+   */
+  backForwardCache?: number;
+}
+
 /** What a session is made from where a host restores one: a tab whose
  *  history the host kept while what showed its documents started again. */
 export interface HtmlSessionRestore {
@@ -119,13 +136,27 @@ export interface SessionSwap {
   navState?: string | null;
 }
 
-/** The document shown now, where its scripts run: how a traversal the host
- *  starts among its own entries reaches it, and how it hears it is
- *  replaced. */
-interface Live {
-  arrival: SessionArrival;
+/** What a document whose scripts run is told by its session
+ *  (`liveSession`). */
+export interface LiveHandlers {
+  /** A traversal the host starts among its own entries. */
   traverse(key: string): void;
-  swap(to: SessionSwap): void;
+  /** Another document is shown in its place: where it goes, and whether
+   *  the session would keep it to show again. Answers whether it was kept
+   *  — frozen, where it may be — or went. */
+  swap(to: SessionSwap, keep: boolean): boolean | void;
+  /** Shown again from the cache: the session as it is now
+   *  (`sessionView`), as JSON. */
+  reactivate?(view: string): void;
+  /** Let go from the cache, as it is. */
+  destroy?(): void;
+}
+
+/** The document shown now, where its scripts run, or one the session keeps
+ *  to show again: how a traversal the host starts among its own entries
+ *  reaches it, and how it hears it is replaced, shown again or let go. */
+interface Live extends LiveHandlers {
+  arrival: SessionArrival;
 }
 
 interface SessionState {
@@ -143,6 +174,10 @@ interface SessionState {
   /** Who hears of a change (`onChange`), and whether one is owed them. */
   listeners: Set<() => void>;
   owed: boolean;
+  /** How many documents it keeps to show again (`backForwardCache`). */
+  cache: number;
+  /** Those it keeps, by number, the one left longest ago first. */
+  kept: Map<number, Live>;
 }
 
 const STATES = new WeakMap<HtmlSessionHistory, SessionState>();
@@ -160,6 +195,8 @@ function stateOf(session: HtmlSessionHistory): SessionState {
       hosted: null,
       listeners: new Set(),
       owed: false,
+      cache: 0,
+      kept: new Map(),
     };
     STATES.set(session, state);
   }
@@ -169,8 +206,18 @@ function stateOf(session: HtmlSessionHistory): SessionState {
 /** The entries or the current one changed: those listening hear of it a
  *  microtask later, once for every change made in between. Never at once,
  *  since a change is made inside a page's script, or as `<Html>` reads a
- *  new document. */
+ *  new document. A document kept to show again that no entry is of any
+ *  more, or one past what the cache holds, is let go first. */
 function changed(state: SessionState): void {
+  for (const [doc, live] of [...state.kept]) {
+    if (
+      state.kept.size > state.cache ||
+      !state.entries.some((e) => e.doc === doc)
+    ) {
+      state.kept.delete(doc);
+      live.destroy?.();
+    }
+  }
   if (state.owed || !state.listeners.size) return;
   state.owed = true;
   queueMicrotask(() => {
@@ -222,8 +269,9 @@ function publicOf(record: SessionRecord): HtmlSessionEntry {
  */
 export class HtmlSessionHistory {
   /** A new history, empty; or one a host kept, restored (`restore`). */
-  constructor(restore?: HtmlSessionRestore) {
+  constructor(restore?: HtmlSessionRestore, options?: HtmlSessionOptions) {
     const state = stateOf(this);
+    state.cache = Math.max(0, Math.trunc(options?.backForwardCache ?? 0) || 0);
     if (!restore?.entries.length) return;
     // the host's numbers for its documents, each made one of this session's
     const docs = new Map<number, number>();
@@ -278,6 +326,14 @@ export class HtmlSessionHistory {
     return record ? publicOf(record) : null;
   }
 
+  /** The documents the session keeps to show again (`backForwardCache`),
+   *  by number (`HtmlSessionEntry.document`): those whose `<Html>` a host
+   *  keeps mounted, hidden. One that is let go leaves the list, and the
+   *  host hears of it (`onChange`). */
+  get kept(): readonly number[] {
+    return [...stateOf(this).kept.keys()];
+  }
+
   /**
    * Go `delta` entries back or forward, as a browser's Back and Forward do:
    * the entry to show, whose `url` the host loads with this session — the
@@ -285,9 +341,13 @@ export class HtmlSessionHistory {
    * there, or where it is one of the document shown now, which goes there
    * itself, as `history.go` would, and nothing is loaded: its engine
    * traverses as a task, and one the host showed (`show()`) is at the
-   * entry when this returns, for the host to scroll. A page's own
-   * `history.back()` planned its step before it asked the host's `go`, so
-   * a `go` seam that asks this for the entry is answered the same entry.
+   * entry when this returns, for the host to scroll. Null too where the
+   * entry is of a document the session keeps (`kept`), which is shown
+   * again as it was left, once the code that asked is done: the current
+   * entry is its, and the host shows its `<Html>` as it hears of the
+   * change. A page's own `history.back()` planned its step before it asked
+   * the host's `go`, so a `go` seam that asks this for the entry is
+   * answered the same entry.
    */
   go(delta: number): HtmlSessionEntry | null {
     const state = stateOf(this);
@@ -295,6 +355,11 @@ export class HtmlSessionHistory {
     if (!target || !delta) return null;
     if (state.live && target.doc === state.live.arrival.doc) {
       state.live.traverse(target.key);
+      return null;
+    }
+    if (state.kept.has(target.doc)) {
+      state.plan = null;
+      queueMicrotask(() => reactivate(this, target.key));
       return null;
     }
     state.plan = { type: 'traverse', key: target.key };
@@ -341,7 +406,7 @@ export class HtmlSessionHistory {
         state.index = at;
         changed(state);
       },
-      swap: () => {},
+      swap: () => false,
     };
     return publicOf(arrival.entry);
   }
@@ -436,13 +501,41 @@ export function arriveAt(
     doc: entry.doc,
   };
   state.shown = arrival;
+  // a document kept under the number this one takes — a host that loaded
+  // an entry's document again rather than show the one kept — goes
+  const stale = state.kept.get(entry.doc);
+  if (stale) {
+    state.kept.delete(entry.doc);
+    stale.destroy?.();
+  }
   const leaving = state.live;
   state.live = null;
+  swapOut(state, leaving, entry, type);
+  changed(state);
+  return arrival;
+}
+
+/**
+ * The document shown before tells where it goes, and goes — or, where the
+ * session would keep it and it may be kept, is frozen and kept: one an
+ * entry is still of, and not one a reload makes again under its number.
+ */
+function swapOut(
+  state: SessionState,
+  leaving: Live | null,
+  entry: SessionRecord,
+  type: HtmlNavigationType,
+): void {
+  if (!leaving) return;
   // what the document that goes is told of the one shown in its place: the
   // entry, where it is of its origin, and else only that it goes
-  const near =
-    !!leaving && originOf(leaving.arrival.entry.url) === originOf(entry.url);
-  leaving?.swap(
+  const near = originOf(leaving.arrival.entry.url) === originOf(entry.url);
+  const doc = leaving.arrival.doc;
+  const keep =
+    state.cache > 0 &&
+    doc !== entry.doc &&
+    state.entries.some((e) => e.doc === doc);
+  const kept = leaving.swap(
     near
       ? {
           url: entry.url,
@@ -452,9 +545,42 @@ export function arriveAt(
           navState: entry.navState,
         }
       : { type },
+    keep,
   );
+  if (keep && kept === true) {
+    state.kept.delete(doc);
+    state.kept.set(doc, leaving);
+  }
+}
+
+/**
+ * A step went to an entry of a document the session keeps (`go`): it is
+ * the document shown again, at that entry, by a traversal from the entry
+ * shown before (HTML 7.4.6.3, "reactivate a document"). The document shown
+ * before goes, or is kept in its turn; then the kept one hears the session
+ * as it is now. Nothing where it was let go meanwhile.
+ */
+function reactivate(session: HtmlSessionHistory, key: string): void {
+  const state = stateOf(session);
+  const at = state.entries.findIndex((e) => e.key === key);
+  const entry = state.entries[at];
+  const live = entry && state.kept.get(entry.doc);
+  if (!live) return;
+  state.kept.delete(entry.doc);
+  const from = state.entries[state.index] ?? null;
+  state.index = at;
+  state.plan = null;
+  // the arrival its realm writes through, as it was shown now
+  const arrival = live.arrival;
+  arrival.type = 'traverse';
+  arrival.entry = entry;
+  arrival.from = from;
+  state.shown = arrival;
+  const leaving = state.live;
+  state.live = live;
+  swapOut(state, leaving, entry, 'traverse');
+  live.reactivate?.(JSON.stringify(sessionView(arrival)));
   changed(state);
-  return arrival;
 }
 
 /** An address's origin, as a session tells documents apart by: `'null'`
@@ -564,18 +690,22 @@ export function planSession(arrival: SessionArrival, plan: SessionPlan): void {
 }
 
 /** The document shown hears the host's traversals among its own entries
- *  (`HtmlSessionHistory.go`), and the document shown in its place; the way
- *  to stop. */
+ *  (`HtmlSessionHistory.go`), the document shown in its place, and, where
+ *  the session keeps it, that it is shown again or let go; the way to stop,
+ *  which a document that goes calls, kept or not. */
 export function liveSession(
   arrival: SessionArrival,
-  traverse: (key: string) => void,
-  swap: (to: SessionSwap) => void,
+  handlers: LiveHandlers,
 ): () => void {
   const state = stateOf(arrival.session);
   if (state.shown !== arrival) return () => {};
-  const live: Live = { arrival, traverse, swap };
+  const live: Live = { arrival, ...handlers };
   state.live = live;
   return () => {
     if (state.live === live) state.live = null;
+    if (state.kept.get(arrival.doc) === live) {
+      state.kept.delete(arrival.doc);
+      changed(state);
+    }
   };
 }

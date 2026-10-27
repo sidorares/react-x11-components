@@ -432,6 +432,7 @@ export type {
   HtmlProps,
   HtmlScripts,
   HtmlSessionEntry,
+  HtmlSessionOptions,
   HtmlSessionRestore,
   IndicatedPart as HtmlIndicatedPart,
   FetchRequest as HtmlFetchRequest,

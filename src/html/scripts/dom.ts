@@ -20354,16 +20354,25 @@ export function installDom(
 
   const TOKEN = Symbol('navigation');
   class NavigationHistoryEntry extends EventTarget {
-    _entry!: SessionEntry;
-    _session!: Session;
+    declare _entry: SessionEntry;
+    declare _session: Session;
     /** One of no list: an activation's entry of a document that is not
      *  among the entries (`looseEntryOf`), whose key and id it has. */
-    _loose = false;
+    declare _loose: boolean;
     constructor(token?: Any, entry?: SessionEntry, session?: Session) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       super();
-      this._entry = entry!;
-      this._session = session!;
+      // what it stands for is no property a page enumerates: an entry a
+      // page hands `JSON.stringify` — as WPT's remote contexts hand back
+      // what a script ended on — is its accessors' alone, and its entry
+      // holds it in turn
+      for (const [name, value] of [
+        ['_entry', entry],
+        ['_session', session],
+        ['_loose', false],
+      ] as const) {
+        Object.defineProperty(this, name, { value, writable: true });
+      }
     }
     get url(): string | null {
       return this._entry.url;
@@ -21828,6 +21837,137 @@ export function installDom(
         }
       }
       unloadOne(d, at);
+    }
+  };
+
+  /**
+   * A document and its frames hidden where the host keeps them in its
+   * back-forward cache (HTML 7.4.2.4, "unload a document", for a document
+   * that is salvageable): asked first where nothing asked as its navigation
+   * started, then `pagehide` with `persisted` true and the visibility
+   * hidden, frames first — and no `unload`, since the document is not
+   * unloaded, and nothing it does next runs until it is shown again. One
+   * that listens for `unload` is kept all the same and never hears it, as
+   * HTML has it and Chrome and Safari do; Firefox keeps such a page out.
+   */
+  /** The pause steps, as the facade has them before any page runs. */
+  const pauseMedia = HTMLMediaElement.prototype.pause;
+  const hideTree = (doc: Any, target: Any, beforeItself?: () => void): void => {
+    if (doc._unloaded) return;
+    if (!doc._leaveChecked) unloadAllowed(doc, target, false);
+    for (const [d, at] of documentTree(doc, target).reverse()) {
+      if (d._unloaded) continue;
+      d._unloadCounter += 1;
+      try {
+        if (d === doc) beforeItself?.();
+        if (d._pageShowing) {
+          d._pageShowing = false;
+          dispatch(
+            at,
+            asTrusted(
+              new PageTransitionEvent('pagehide', {
+                persisted: true,
+                bubbles: true,
+                cancelable: true,
+              }),
+            ),
+          );
+          if (!d._hidden) {
+            d._hidden = true;
+            dispatch(
+              d,
+              asTrusted(new Event('visibilitychange', { bubbles: true })),
+            );
+          }
+        }
+        // what plays in a document that is not fully active is paused
+        // (HTML 4.8.11.8), its `pause` told as it is shown again
+        for (const el of Array.from(
+          d.querySelectorAll('video, audio'),
+        ) as Any[]) {
+          if (!el.paused) pauseMedia.call(el);
+        }
+      } finally {
+        d._unloadCounter -= 1;
+      }
+    }
+  };
+
+  /** A document and its frames shown again from the back-forward cache
+   *  (HTML 7.4.6.3, "reactivate a document"): `pageshow` with `persisted`
+   *  true and the visibility visible, the document before its frames. */
+  const showTree = (doc: Any, target: Any): void => {
+    for (const [d, at] of documentTree(doc, target)) {
+      if (d._unloaded) continue;
+      // a navigation from it later asks it again
+      d._leaveChecked = false;
+      if (d._hidden) {
+        d._hidden = false;
+        dispatch(
+          d,
+          asTrusted(new Event('visibilitychange', { bubbles: true })),
+        );
+      }
+      if (!d._pageShowing) {
+        d._pageShowing = true;
+        dispatch(
+          at,
+          asTrusted(
+            new PageTransitionEvent('pageshow', {
+              persisted: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          ),
+        );
+      }
+    }
+  };
+
+  /**
+   * HTML 7.4.6.3, "update the navigation API entries for reactivation":
+   * the session as the host has it now that the document is shown again
+   * from the back-forward cache, which the documents shown meanwhile
+   * wrote. The document's own entries that are still there keep their
+   * `NavigationHistoryEntry`, and those that are not are disposed, in a
+   * task of their own; it came to be shown by a traversal, from the entry
+   * it was left for.
+   */
+  const reseedSession = (s: Session, seed: Any): void => {
+    const seeded = seedEntries(seed);
+    if (!seeded || !s.host) return;
+    const own = new Map<string, SessionEntry>();
+    for (const e of s.entries) if (!e.other) own.set(`${e.key} ${e.id}`, e);
+    const entries = seeded.map((e) => {
+      if (e.other) return e;
+      const kept = own.get(`${e.key} ${e.id}`);
+      if (!kept) return e;
+      own.delete(`${e.key} ${e.id}`);
+      kept.url = e.url;
+      kept.origin = undefined;
+      return kept;
+    });
+    s.entries = entries;
+    s.index = Math.max(0, Math.min(entries.length - 1, Number(seed.index)));
+    const fromIndex = Number(seed.fromIndex);
+    s.arrived = {
+      type: str(seed.type),
+      fromIndex: fromIndex >= 0 && fromIndex < entries.length ? fromIndex : -1,
+      from: seed.from ? seedEntry(seed.from, false) : null,
+    };
+    s.activation = null;
+    const disposed = [...own.values()].filter((e) => e.api);
+    if (disposed.length) {
+      setTimer(
+        () => {
+          for (const gone of disposed) {
+            dispatch(gone.api, asTrusted(new Event('dispose')));
+          }
+        },
+        0,
+        [],
+        false,
+      );
     }
   };
 
@@ -25401,6 +25541,36 @@ export function installDom(
       windowTarget,
       swap && typeof swap === 'object' ? () => firePageSwap(swap) : undefined,
     );
+    return true;
+  });
+  // the document goes into the host's back-forward cache, its engine
+  // frozen after this (`ScriptRunner.freeze`): told where it goes, as one
+  // that unloads is, and hidden. The navigation it left by is the next
+  // document's now, and goes nowhere here: one that went on would be
+  // aborted as the next navigation from it starts, which it never made.
+  entry('__freeze', () => {
+    const [swap] = input() ?? [];
+    const s = pageSession.session;
+    s.ongoing = null;
+    s.transition = null;
+    hideTree(
+      document,
+      windowTarget,
+      swap && typeof swap === 'object' ? () => firePageSwap(swap) : undefined,
+    );
+    return true;
+  });
+  // the document is shown again from the host's back-forward cache, its
+  // engine thawed (`ScriptRunner.reactivate`): the session as it is now,
+  // `pageshow`, and `pagereveal` at its next frame
+  entry('__reactivate', () => {
+    const [seed] = input() ?? [];
+    if (seed && typeof seed === 'object') {
+      reseedSession(pageSession.session, seed);
+    }
+    showTree(document, windowTarget);
+    revealOwed = true;
+    wantFrame();
     return true;
   });
   // the host goes to one of the document's own entries, as its Back and

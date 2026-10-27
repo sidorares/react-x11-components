@@ -134,6 +134,7 @@ export { HtmlSessionHistory } from './scripts/session.js';
 export type {
   HtmlNavigationType,
   HtmlSessionEntry,
+  HtmlSessionOptions,
   HtmlSessionRestore,
 } from './scripts/session.js';
 export { NO_WEBTRANSPORT } from './transport.js';

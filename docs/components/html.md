@@ -1191,8 +1191,8 @@ and run its tree over the new one's first frame; where a document was
 scrolled to restored when it is shown again, and its
 `history.scrollRestoration`, which are its own; a traversal the host starts
 with `session.go` told as a `navigate` in the document it leaves, which
-`handle.beforeUnload()` asks the rest of; a frame's history in the tab's;
-and the back-forward cache.
+`handle.beforeUnload()` asks the rest of; and a frame's history in the
+tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
 hears `pageshow` after its `load`. A navigation to another document that
@@ -1208,14 +1208,89 @@ page — its frames' documents and then it hear `pagehide`, with `persisted`
 false, since nothing is kept to be shown again, `visibilitychange` to
 `hidden`, and `unload`, each under the script timeout, with `beforeunload`
 before them where nothing asked as its navigation started; what they
-change is drawn nowhere. While it unloads, and after, it goes nowhere: an
+change is drawn nowhere. One its session keeps to show again is hidden
+instead, and never unloads (below). While it unloads, and after, it goes nowhere: an
 address assigned is dropped, and `navigation`'s methods are refused with an
 `InvalidStateError`, after the URL and the state they are handed are
 checked, as a detached frame's are. Its scripts stop with its engine, so a
 timer it sets as it goes never fires. Not yet: `navigator.sendBeacon`,
-whose request would have to outlive the document, a page in a tab the
-host puts behind another, which stays `visible`, and the back-forward
-cache, which would make `persisted` true.
+whose request would have to outlive the document, and a page in a tab the
+host puts behind another, which stays `visible`.
+
+**A session with a back-forward cache keeps the documents a tab left, and
+a step back shows one again as it was** (HTML 7.4.1, "bfcache"). Made with
+`new HtmlSessionHistory(undefined, { backForwardCache: n })`, a session
+keeps up to `n` of them — Chrome keeps six on the desktop — the one left
+longest ago going first, and one no entry is of any more going as soon as
+that is so: a push from an earlier entry drops the entries ahead, and the
+documents they were of. A document is kept where its scripts run, it has
+loaded, and it holds no WebTransport session or peer connection open, which
+its server or its peer would see held. As it is left it hears `pageswap`,
+then `pagehide` with `persisted` true and `visibilitychange` to `hidden`,
+its frames' documents first, and no `unload`: a page that listens for one
+is kept all the same and never hears it, as HTML has it and Chrome and
+Safari do (Firefox keeps such a page out). Then nothing of its runs — no
+task, no timer, no message, no script — and what its timers, its network
+and its workers ask of it waits, a timer that fires again or a frame
+waiting once. A step to one of its entries, by the page's `history` or
+`navigation` or the host's `session.go`, shows it again: it reads the
+session as it is now — `navigation.entries()` with the entries the
+documents shown meanwhile made, `navigation.activation` a `traverse` from
+the entry it was left for, and its own entries that went disposed, in a
+task after — hears `visibilitychange` to `visible` and `pageshow` with
+`persisted` true, then what waited, in order, and `pagereveal` at its next
+frame. Its DOM, what was typed into it and its scripts' state are as they
+were: nothing is loaded or run again. One let go from the cache goes as
+it is, told nothing more. A reload makes the document again, and a
+document the host showed with no scripts (`show()`) is never kept.
+
+The documents are the host's to keep mounted: the session holds a kept
+document's scripts, and its `<Html>` holds its DOM and its layout. A host
+gives each document an `<Html>` of its own, keeps those of the documents
+in `session.kept` mounted and hidden, and shows the one the current entry
+is of: `session.go()` answers null for a step to a kept document, which is
+shown again once the code that asked is done, and the host hears of it
+through `onChange` — the current entry's `document` is the kept one's. A
+host learns each document's number as its scripts start, as the current
+entry's once its `<Html>` is in; where it loads one under a number it
+knows, a reload's or a step's to an entry no document is kept for, that is
+the entry's `document`. And it unmounts a document neither shown, current
+nor kept, once the one taking its place is in, so that it is told where it
+goes, and kept, as it goes.
+
+```tsx
+const session = useMemo(
+  () => new HtmlSessionHistory(undefined, { backForwardCache: 6 }),
+  [],
+);
+// a document an <Html>: { n, url, number }, the number its session's
+const [tab, setTab] = useState({ docs: [{ n: 0, url: start }], shown: 0 });
+const seq = useRef(0);
+const load = (url: string, number?: number) => {
+  const n = ++seq.current;
+  setTab(({ docs }) => ({ docs: [...docs, { n, url, number }], shown: n }));
+};
+const go = (delta: number) => {
+  const to = session.go(delta);
+  // null: the document is kept, and onChange shows it again
+  if (to) load(to.url, to.document);
+};
+// as onChange reports: the number of the document that came in, the one
+// the current entry is of shown, and those not kept unmounted
+return tab.docs.map((d) => (
+  <Html
+    key={d.n}
+    source={sources[d.url]}
+    baseUrl={d.url}
+    style={d.n === tab.shown ? { flexGrow: 1 } : { display: 'none' }}
+    scripts={{ session, navigate: (to) => load(to), go }}
+  />
+));
+```
+
+The WPT runner keeps one so for each window a test runs in or opens
+(`scripts/conformance/testharness.tsx`'s `Tab`, its `follow` the
+`onChange` half). The example browser does not keep one yet.
 
 **A script's animations are drawn where the page's timing has them.**
 `animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's

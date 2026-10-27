@@ -135,6 +135,13 @@ export class PagePeers {
 
   constructor(private readonly _seams: PeerSeams) {}
 
+  /** Whether a connection is not closed: what keeps a document out of the
+   *  back-forward cache, where its peer would see it held. */
+  get open(): boolean {
+    for (const peer of this._peers.values()) if (!peer.closed) return true;
+    return false;
+  }
+
   /** An op of the facade's whose name starts with `rtc`. */
   op(
     op: string,
