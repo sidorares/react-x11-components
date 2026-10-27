@@ -7364,12 +7364,18 @@ function applyFlexShorthand(
     const len = parseLength(part, ctx);
     if (len !== null) basis = len;
   }
+  // what the shorthand leaves out is grow 1 and basis 0 (CSS Flexbox 7.1.1),
+  // so `flex: 10px` grows. Every browser writes that basis as `0%`, and the
+  // two differ: a percentage of a height that is not definite is the
+  // content's (7.2.3), so `flex: 1` down a column of no height of its own
+  // keeps its content where `min-height: 0` would let `0` take it all
+  // away — a dialog's scrolling body drawn empty. Across a row, and down a
+  // column of a definite height, it is `0` all the same: not `auto`, which
+  // would size each `flex: 1` sibling to its content rather than share.
   if (numbers.length) style.flexGrow = numbers[0];
-  // `flex: 1` is grow 1, shrink 1, basis 0 — the single-number form's basis
-  // is `0`, not `auto`, and getting that wrong makes every `flex: 1` sibling
-  // size to its content instead of sharing the line.
+  else if (basis !== null) style.flexGrow = 1;
   style.flexShrink = numbers.length > 1 ? numbers[1] : 1;
-  style.flexBasis = basis ?? (numbers.length ? 0 : AUTO);
+  style.flexBasis = basis ?? (numbers.length ? { pct: 0 } : AUTO);
 }
 
 // --- grid ------------------------------------------------------------------
