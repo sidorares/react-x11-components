@@ -518,6 +518,53 @@ metric(
   },
 );
 
+metric(
+  'a hover that builds the boxes builds those of the elements it reaches, and keeps the rest',
+  async () => {
+    // joshwcomeau.com's playground divider fades its `::after` in on
+    // `:hover`, which no restyle in place takes: the press that puts
+    // `pointer-events: none` on its panes moves the hover off it, and that
+    // and the release each built every box of the article
+    // in a `<div>`, as a page's body holds what it holds: a fragment's own
+    // elements are the stand-in root's, which builds whole
+    const { result, node } = await render(
+      HOVER_PAGE.replace(
+        '</style>',
+        ' #q:hover{font-weight:bold} #q:hover::after{content:"!"}</style><div>',
+      ) + '</div>',
+      300,
+    );
+    const el = view(node);
+    const before = {
+      q: boxOf(el, 'q'),
+      p: boxOf(el, 'p'),
+      li: boxOf(el, 'li'),
+    };
+    el.setHover(...pointIn(el, 'q'));
+    const bold = await snapshot(result, el);
+    assert.ok(
+      boxOf(el, 'q') !== before.q,
+      'the hovered paragraph kept its box',
+    );
+    assert.ok(boxOf(el, 'p') === before.p, 'a paragraph above it was built');
+    assert.ok(boxOf(el, 'li') === before.li, 'an item below it was built');
+    assert.strictEqual(
+      bytesApart(bold, await rebuilt(result, el)),
+      0,
+      'not as a rebuild draws it',
+    );
+    const kept = boxOf(el, 'p');
+    el.setHover(...pointIn(el, 'li'));
+    const left = await snapshot(result, el);
+    assert.ok(boxOf(el, 'p') === kept, 'leaving it built the paragraph above');
+    assert.strictEqual(
+      bytesApart(left, await rebuilt(result, el)),
+      0,
+      'left, not as a rebuild draws it',
+    );
+  },
+);
+
 /** A card over which a hover casts a wide shadow, raises it over the box
  *  that overlaps it, and lifts it — the three things a card grid's hover
  *  does (Zen Garden's list of designs), none of which moves anything else. */
