@@ -129,10 +129,14 @@ export interface SavedSession {
 }
 
 /** What the browser remembers that is not a session's: the sites whose
- *  scripts someone switched on or off. */
+ *  scripts someone switched on or off, and the User-Agent preset chosen
+ *  for every tab. */
 export interface Preferences {
   version: 1;
   scripts: [site: string, on: boolean][];
+  /** The chosen User-Agent preset, by id (see `useragents.ts`); absent
+   *  means the browser's own default. */
+  userAgent?: string;
 }
 
 const SESSION = 'session.json';

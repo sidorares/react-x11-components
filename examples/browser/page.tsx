@@ -155,13 +155,23 @@ const OPENS = /^(?:https?|file|data|about|view-source):/i;
  * to join a waitlist for Linux. `navigator.platform` is the one this names
  * (`<Html scripts>`).
  */
-const USER_AGENT = `Mozilla/5.0 (${
+const DEFAULT_USER_AGENT = `Mozilla/5.0 (${
   process.platform === 'darwin'
     ? 'Macintosh; Intel Mac OS X 10_15_7'
     : process.platform === 'win32'
       ? 'Windows NT 10.0; Win64; x64'
       : 'X11; Linux x86_64'
 }) react-x11-components/0.9 (example browser; +https://github.com/sidorares/react-x11-components)`;
+
+/**
+ * What this tab's process sends and names as `navigator.userAgent`. The
+ * toolbar's User-Agent menu sets `BROWSER_USER_AGENT` in the pane's
+ * environment (`useragents.ts`), and a change of it respawns the pane
+ * (`<Frame env>`), so the string is read once, here, for both the network
+ * and the page's scripts — a reader never sees one agent on the wire and
+ * another in `navigator`. Unset means the default above.
+ */
+const USER_AGENT = process.env.BROWSER_USER_AGENT || DEFAULT_USER_AGENT;
 
 /** The profile this process keeps its cookies and storage in, where the
  *  browser has one and the runtime has SQLite. */
