@@ -7166,16 +7166,33 @@ function parseFeatureSettings(value: string): string | null {
   return pairs.join(',');
 }
 
-function applyFontShorthand(
-  style: ComputedStyle,
-  parent: ComputedStyle,
+/** A `font` shorthand's parts, as written (CSS Fonts 4, 2.8). */
+interface FontShorthand {
+  style: ComputedStyle['fontStyle'];
+  weight: string | null;
+  smallCaps: boolean;
+  stretch: number;
+  size: string;
+  lineHeight: string | undefined;
+  family: string;
+}
+
+/**
+ * Read a `font` shorthand: its slant, weight, small capitals and width in
+ * any order, then a size, a line height after a slash, and the families.
+ * Null for a value that is none — no size or no family, or a line height
+ * below nought — which CSS drops whole, as it drops any value it cannot
+ * read: `font: 4em/-2em serif` set the text at 4em.
+ */
+function readFontShorthand(
   value: string,
+  parentSize: number,
   ctx: UnitContext,
-): void {
+): FontShorthand | null {
   // The `font: caption | menu | …` system forms name a font this renderer
   // has no table for; leaving the style alone is closer than guessing.
   const parts = splitValue(value);
-  if (parts.length < 2) return;
+  if (parts.length < 2) return null;
   let fontStyle: ComputedStyle['fontStyle'] = 'normal';
   let weight: string | null = null;
   let smallCaps = false;
@@ -7209,38 +7226,99 @@ function applyFontShorthand(
     lineText = slash || parts[next++];
   }
   const family = parts.slice(next).join(' ');
-  // A size and a family, or the value is not a font and the declaration is
-  // dropped whole, as CSS drops any value it cannot read — a line height
-  // below nought included: `font: 4em/-2em serif` set the text at 4em.
   const size =
     keywordFontSize(
       sizeText ?? '',
-      parent.fontSize,
+      parentSize,
       ctx.initial?.fontSize ?? ctx.rem,
-    ) ?? parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
-  if (!family || size === null || size === AUTO) return;
-  if (lineText && negativeLength(lineText, ctx)) return;
+    ) ?? parseLength(sizeText ?? '', { ...ctx, em: parentSize });
+  if (!family || size === null || size === AUTO) return null;
+  if (lineText && negativeLength(lineText, ctx)) return null;
+  return {
+    style: fontStyle,
+    weight,
+    smallCaps,
+    stretch,
+    size: sizeText ?? '',
+    lineHeight: lineText,
+    family,
+  };
+}
+
+function applyFontShorthand(
+  style: ComputedStyle,
+  parent: ComputedStyle,
+  value: string,
+  ctx: UnitContext,
+): void {
+  const font = readFontShorthand(value, parent.fontSize, ctx);
+  if (!font) return;
   // What the shorthand does not name goes back to its initial value rather
   // than keeping the parent's (CSS 2.1 15.8): `p { font: 12pt serif }`
   // inside a document set at `20px/1em` has lines of normal height, not 20px.
-  style.fontStyle = fontStyle;
-  style.fontWeight = weight ? parseWeight(weight, parent.fontWeight) : 400;
-  style.fontStretch = stretch;
+  style.fontStyle = font.style;
+  style.fontWeight = font.weight
+    ? parseWeight(font.weight, parent.fontWeight)
+    : 400;
+  style.fontStretch = font.stretch;
   // the variants too, save the small capitals it may name; not the
   // features `font-feature-settings` sets, which the shorthand leaves
   style.fontVariantNumeric = '';
-  style.fontVariantCaps = smallCaps ? 'smcp=1' : '';
+  style.fontVariantCaps = font.smallCaps ? 'smcp=1' : '';
   style.fontVariantLigatures = '';
   style.fontVariantPosition = '';
   style.fontKerning = '';
   style.lineHeight = 'normal';
   style.lineHeightIsLength = false;
-  applyDeclaration(style, parent, 'font-size', sizeText, ctx);
+  applyDeclaration(style, parent, 'font-size', font.size, ctx);
   // against the element's own size, which `ctx.em` is once the cascade has
   // settled it: a later rule's `font-size` outranks this one's, and
   // `font: 12px/150%` under a `font-size: 16px` is on 24px lines
-  if (lineText) applyDeclaration(style, parent, 'line-height', lineText, ctx);
-  applyDeclaration(style, parent, 'font-family', family, ctx);
+  if (font.lineHeight) {
+    applyDeclaration(style, parent, 'line-height', font.lineHeight, ctx);
+  }
+  applyDeclaration(style, parent, 'font-family', font.family, ctx);
+}
+
+/** What a `font` asks of the faces a document declares (`fontQuery`). */
+export interface FontQuery {
+  /** The families, unquoted, the generic ones left out: a document's
+   *  `@font-face` names a family, never a generic one. */
+  families: string[];
+  weight: number;
+  italic: boolean;
+  /** As a `font-stretch` percentage. */
+  stretch: number;
+}
+
+/** What a `font` shorthand is read against outside a cascade: the initial
+ *  sizes, as CSS Font Loading 3 absolutizes a relative length (2.6). */
+const QUERY_UNITS: UnitContext = { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 };
+
+/**
+ * A `font` shorthand as CSS Font Loading 3 reads `document.fonts.load()`'s
+ * and `check()`'s (2.6, "find the matching font faces"): the families, and
+ * the weight, slant and width a face is matched at, a relative weight
+ * against `normal`. Null for a value that is no `font` or is a CSS-wide
+ * keyword, which the page is answered with a `SyntaxError`.
+ */
+export function fontQuery(value: string): FontQuery | null {
+  if (/^\s*(inherit|initial|unset|revert|revert-layer)\s*$/i.test(value)) {
+    return null;
+  }
+  const font = readFontShorthand(value, 16, QUERY_UNITS);
+  if (!font) return null;
+  const names = splitCommas(font.family);
+  if (!names.every(isFamilyName)) return null;
+  return {
+    families: names
+      .filter((n) => /^['"]/.test(n) || !GENERIC_FAMILY.has(n.toLowerCase()))
+      .map((n) => joinFamilies([n]))
+      .filter(Boolean),
+    weight: font.weight ? parseWeight(font.weight, 400) : 400,
+    italic: font.style !== 'normal',
+    stretch: font.stretch,
+  };
 }
 
 /** Whether a line height is a number or a length below nought. */

@@ -90,7 +90,9 @@ import { Cascade, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
-import type { ComputedStyle, RootLook } from '../css/style.js';
+import { fontQuery } from '../css/style.js';
+import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
+import type { DocumentFontFace, FontMatch } from '../fonts.js';
 import type { Stylesheet } from '../css/parse.js';
 import {
   mediaMatches,
@@ -320,6 +322,17 @@ export interface HandleInternals {
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
   layoutNow(): void;
+  /** The document's `@font-face` faces, as `document.fonts` lists them
+   *  (`HtmlViewNode.fontFaces`). */
+  fontFaces(): DocumentFontFace[];
+  /** The faces a `font` matches, by key, as `document.fonts.load()` and
+   *  `check()` find them (`HtmlViewNode.matchFonts`). */
+  matchFonts(query: FontQuery, text: string): FontMatch;
+  /** Load faces by key, settled with whether each loaded
+   *  (`HtmlViewNode.loadFonts`). */
+  loadFonts(keys: readonly string[]): Promise<boolean[]>;
+  /** Settles once no face is on its way (`HtmlViewNode.fontsSettled`). */
+  fontsSettled(): Promise<void>;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -3570,6 +3583,57 @@ export class DomHost {
           return false;
         }
 
+      // a document's `@font-face` faces, `document.fonts`'s (CSS Font
+      // Loading 3), asked of the view that draws it: the page's, or a
+      // frame's
+      case 'fontFaces': {
+        this.flush();
+        return JSON.stringify(this._fontsOf(a)?.fontFaces?.() ?? []);
+      }
+      // the faces a `font` matches, by key, and whether any matched before
+      // their ranges were asked; '' for a `font` that is none
+      case 'fontMatch': {
+        const query = fontQuery(text(b));
+        if (!query) return '';
+        this.flush();
+        const match = this._fontsOf(a)?.matchFonts?.(query, text(c));
+        return JSON.stringify(match ?? { keys: [], found: false });
+      }
+      // faces loaded by key, and the page told whether each did
+      // (`__fontsLoaded`)
+      case 'fontLoad': {
+        const id = Number(b);
+        let keys: string[] = [];
+        try {
+          const raw: unknown = JSON.parse(text(c));
+          if (Array.isArray(raw)) {
+            keys = raw.filter((k): k is string => typeof k === 'string');
+          }
+        } catch {
+          // no keys, and nothing loads
+        }
+        const loading = this._fontsOf(a)?.loadFonts?.(keys);
+        const tell = (loaded: boolean[]) => {
+          if (!this._disposed)
+            this.entries?.call('__fontsLoaded', [id, loaded]);
+        };
+        if (loading) loading.then(tell, () => tell(keys.map(() => false)));
+        else tell(keys.map(() => false));
+        return null;
+      }
+      // the page told once none of the document's faces is on its way
+      // (`__fontsSettled`), which `document.fonts.ready` waits for
+      case 'fontsSettled': {
+        const id = Number(b);
+        const tell = () => {
+          if (!this._disposed) this.entries?.call('__fontsSettled', [id]);
+        };
+        const settling = this._fontsOf(a)?.fontsSettled?.();
+        if (settling) settling.then(tell, tell);
+        else tell();
+        return null;
+      }
+
       // the CSS animations under way on an element, or on what it holds,
       // or in the whole document for 0: each with its element by its id
       // a CSS animation's keyframes, by its element, its pseudo-element's
@@ -4602,6 +4666,12 @@ export class DomHost {
    */
   /** The `<Html>` that draws a node's document: this realm's, or the one
    *  a frame's document is drawn by; null where nothing draws it. */
+  /** The view that draws the document a page's `document.fonts` is of,
+   *  by the document's id. */
+  private _fontsOf(id: Primitive): Partial<HandleInternals> | null {
+    return this._drawing(this._node(id)) as Partial<HandleInternals> | null;
+  }
+
   private _drawing(node: AnyNode): HtmlHandle | null {
     let at: AnyNode = node;
     for (;;) {

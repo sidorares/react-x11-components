@@ -733,6 +733,23 @@ application's is the font manager's fallback chain: a registered face can
 supply a glyph that no other face has to text anywhere in the app, and
 nothing is ever unregistered, which react-x11's `loadFont` documents.
 
+**A page's `document.fonts` is these faces** (CSS Font Loading 3), where
+`scripts` runs its scripts: each `@font-face` the document's sheets declare
+is a face in the set, one object a face for as long as the sheets declare
+it so, with its rule's descriptors and its status — `unloaded` until a style
+or a script asks for it. `load(font, text)` matches a `font` shorthand
+against them as a style is matched — the face nearest its weight, slant and
+width in each of a family's unicode ranges, less those whose range holds
+none of `text` — loads them as a style's wanting them would, and resolves
+with them once they are in; `check()` says whether they are, and `ready`
+waits for every face on its way. A loader such as FontFaceObserver polls
+`load()` until it hands a face over, and gives up at its timeout:
+facebook.com draws its login QR code only once Instagram Sans Condensed is
+in, and an answer of no faces left the code blank. A face a script makes
+with `new FontFace` is not among them, since nothing hands its data to the
+document's fonts yet: there is no `FontFace` to construct, and `add()` takes
+none.
+
 ## Scripts
 
 ```jsx

@@ -767,8 +767,9 @@ export interface HtmlHandle {
    */
   controlValue(element: Element): string | boolean | null;
   /** Set what a control holds, as a script sets `value` or `checked`: no
-   *  event, and a field's widget shows it where it is, its focus kept.
-   *  False for what is no control. */
+   *  event, and a field's widget shows it where it is, its focus kept. A
+   *  boolean is a checkbox's or a radio's checkedness. False for what is no
+   *  control, and for a boolean handed any other. */
   setControlValue(element: Element, value: string | boolean): boolean;
   /**
    * A text field's selection, as a script reads `selectionStart`,
@@ -1335,6 +1336,13 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>
         nodeRef.current?.matchMedia(query) ?? false,
+      fontFaces: () => nodeRef.current?.fontFaces() ?? [],
+      matchFonts: (query, text) =>
+        nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
+      loadFonts: (keys) =>
+        nodeRef.current?.loadFonts(keys) ??
+        Promise.resolve(keys.map(() => false)),
+      fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
       mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
