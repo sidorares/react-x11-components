@@ -2087,6 +2087,34 @@ test('the window has what scripts read of it: name, crypto, text encodings, Imag
   );
 });
 
+test('URL.parse is the constructor answering null where it would throw, as URL.canParse says', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var u = URL.parse("b?q=1#h", "https://a.test/dir/");' +
+      'r.push(u instanceof URL, u.href, u.pathname, u.searchParams.get("q"), String(u));' +
+      'r.push(URL.parse("https://a.test/x").host, URL.parse("nope") === null, URL.parse("b", "nope") === null);' +
+      'r.push(URL.canParse("nope"), URL.canParse("b", "https://a.test/"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'true',
+      'https://a.test/dir/b?q=1#h',
+      '/dir/b',
+      '1',
+      'https://a.test/dir/b?q=1#h',
+      'a.test',
+      'true',
+      'true',
+      'false',
+      'true',
+    ].join('|'),
+  );
+});
+
 test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
   const doc = await hosted(
     '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +

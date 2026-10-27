@@ -14801,6 +14801,15 @@ export function installDom(
     static canParse(url: Any, base?: Any): boolean {
       return !!call('url', str(url), base === undefined ? '' : str(base));
     }
+    /** The URL, or null where there is none: the constructor, which does
+     *  not throw (URL Standard, 6.1). */
+    static parse(url: Any, base?: Any): Any {
+      const json = call('url', str(url), base === undefined ? '' : str(base));
+      if (typeof json !== 'string' || !json) return null;
+      const parsed = Object.create(URL.prototype);
+      parsed._href = JSON.parse(json).href;
+      return parsed;
+    }
     /** A URL for a blob, this realm's (W3C File API 8.3). */
     static createObjectURL(blob: Any): string {
       if (!(blob instanceof Blob)) {
