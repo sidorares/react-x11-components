@@ -1494,6 +1494,8 @@ function bareField(bare: BareField): Style {
     paddingLeft: 0,
     paddingRight: 0,
     color: bare.fill ?? bare.color,
+    // a text area's lines as far apart as the page's (react-x11 2.56.1)
+    ...(bare.lineHeight !== undefined && { lineHeight: bare.lineHeight }),
   };
 }
 
