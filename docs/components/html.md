@@ -1290,7 +1290,15 @@ return tab.docs.map((d) => (
 
 The WPT runner keeps one so for each window a test runs in or opens
 (`scripts/conformance/testharness.tsx`'s `Tab`, its `follow` the
-`onChange` half). The example browser does not keep one yet.
+`onChange` half), and the example browser for each tab
+(`examples/browser/page.tsx`). The browser adds two things a host whose
+navigations can overlap needs. A document on its way in that another
+overtakes before it has come into the session is unmounted at once, as is
+the one a reload makes again, or it would come into the session after the
+document that overtook it. And a kept document's requests are held while it
+is hidden: nothing new it asks for goes out, what `<Html>` had waiting for
+the network is asked for again once it is shown, and what was already on
+the wire finishes, its answer handed over once it is shown.
 
 **A script's animations are drawn where the page's timing has them.**
 `animate()` and `new Animation(new KeyframeEffect(…))` keep an animation's
@@ -6270,7 +6278,9 @@ site, every site with `BROWSER_SCRIPTS=1` — `<Html scripts>`, with the
 browser's own seams for each of [Scripts](#scripts)' defaults it fills in:
 its network, its history, its title and its chords. Its network is
 `HtmlNetwork`, made with the browser's User-Agent; a script that runs past
-two seconds is stopped and the page goes on, and the bubble says so.
+two seconds is stopped and the page goes on, and the bubble says so. A tab
+keeps the last six pages it left whose scripts ran, frozen, and Back and
+Forward show one again as it was left, what was typed into it included.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils
