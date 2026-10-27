@@ -818,6 +818,24 @@ proxy, a cache on disk, a test's answers — log and cookie jar, and its
 it is required: any `onResource` that answers `'script'` and any `fetch` of
 the same shape will do. See [Cookies and storage](#cookies-and-storage).
 
+**`threadTransport()` makes the requests on a thread of its own.** A
+response's body comes off its socket on the thread that asked for it, a
+read at a time, and in an application that is the thread a page lays itself
+out, paints and runs its scripts on: under a page that keeps it busy, each
+read waits for a turn and the server is held to the socket's buffer. Handed
+to `new HtmlNetwork({ fetch: threadTransport() })`, the runtime's `fetch`
+runs on a worker, as the network would make it on this thread — its
+`connectTimeout`, a page's stream sent once, a redirect as it came where the
+network follows them itself — and the head and then the body come back, the
+thread reading at most 4 MB ahead of what has been read. A playground's
+frame on joshwcomeau.com waits for Babel's 2.3 MB before it says it is
+ready, which came in 2.5 s on the page's thread and 0.27 s on the worker's,
+and the frame showed in 2.5 to 4.6 s where it had taken 11 to 15. It is not
+the default: a thread is the process's, and a test that stands in for
+`globalThis.fetch` does not reach one. The thread is made at the first
+request and keeps the process alive only while one is on its way. The
+example browser uses it.
+
 **Where the page is shown is read from where it is.** Its viewport —
 `innerWidth`, `scrollY`, `scrollTo`, its `scroll` events — is the scroll pane around the `<Html>`, the host's, and its zoom is core's
 `scale` between the two, so an `<Html>` in a `<box scale={1.25}>` is a page

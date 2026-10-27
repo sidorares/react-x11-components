@@ -3217,7 +3217,13 @@ attribute, which the drawing's copy of its tree carries (`svg.ts`). It is
 asked as a drawing is first painted (`BoxTree.shapeStyler`, as
 `::selection`'s style is) and kept by the box — the cache keyed on a `Box`
 the paragraph above warns of, so `_hoverInPlace` asks again for each
-drawing a move reached: `a:hover svg path` changes no box's style. Two
+drawing a move reached: `a:hover svg path` changes no box's style. A
+change inside a drawing a page's script tells is the same: the drawing is
+drawn again, and a `:has()` that asks what it holds restyles what its
+anchors find from the drawing up (`_scopeOf`), as for a change anywhere —
+it had been a restyle of everything wherever a sheet had a `:has()`, and
+joshwcomeau.com's sparkles, a path at a time, restyled its 6,000 elements
+three times a second. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
 ancestor it is for by a class or an id, which is looked for once around
