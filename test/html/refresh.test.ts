@@ -950,7 +950,9 @@ test('a change a :has() anchors at the root of a long document is restyled in pl
   // Next.js puts scripts and styles in its <head> as it loads, and a
   // `:root:has(…)` in its sheets puts the root among the elements each one
   // reaches: the root and all it holds were more than a restyle in place
-  // takes, and each was a build of the whole document
+  // takes, and each was a build of the whole document. One that asks where
+  // an element sits is reached by whatever comes (`:last-child`); one that
+  // asks only of its subject, by what it names (the test after this one)
   const paragraphs = Array.from(
     { length: 400 },
     (_, i) => `<p id="p${i}">Paragraph ${i}</p>`,
@@ -959,7 +961,7 @@ test('a change a :has() anchors at the root of a long document is restyled in pl
     '<html><head><script></script></head><body>' +
       paragraphs +
       '</body></html><style>p { margin: 0 } ' +
-      'html:has(script.flag) { background: #00ff00 }</style>',
+      'html:has(script.flag:last-child) { background: #00ff00 }</style>',
     300,
   );
   const el = view(node);
@@ -994,6 +996,80 @@ test('a change a :has() anchors at the root of a long document is restyled in pl
     el.computedStyle(html)?.['background-color'],
     'rgb(0, 255, 0)',
   );
+});
+
+test('a node put in or taken out restyles a :has() that asks only of its subject where what came or went holds one', async () => {
+  // joshwcomeau.com's `html:has([data-disable-document-scroll=true])`: every
+  // sparkle its like button put in reached the root, and the root as a seed
+  // built the whole document three times a second
+  const { node } = await render(
+    '<html><head><style>body{margin:0} html:has([data-lock]){color:#0000ff}' +
+      ' .card:has(> .x .y){font-weight:bold}' +
+      ' .list:has(li.a:first-child){color:#00aa00}</style></head><body>' +
+      '<div class="card" id="card"><div class="x" id="x"></div></div>' +
+      '<ul class="list" id="list"><li class="a" id="a">a</li></ul>' +
+      '<p id="p">p</p></body></html>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const html = byId(el, 'p').parent!.parent! as Element;
+  assert.strictEqual(html.name, 'html');
+  const p = byId(el, 'p');
+  const card = byId(el, 'card');
+  const ink = el.computedStyle(p)?.color;
+  const added = (target: Element, node: ChildNode): HtmlChange => ({
+    type: 'childList',
+    target,
+    addedNodes: [node],
+    removedNodes: [],
+  });
+  // what holds nothing the subject names: no anchor
+  const span = createElement('span', {});
+  appendChild(p, span);
+  const plain = scopeOf(el, [added(p, span)]);
+  assert.ok(plain, 'a refresh of everything');
+  assert.ok(!plain.has(html), 'the root is restyled');
+  const z = createElement('span', { class: 'z' });
+  appendChild(byId(el, 'x'), z);
+  const other = scopeOf(el, [added(byId(el, 'x'), z)]);
+  assert.ok(other && !other.has(card), 'the card is restyled');
+  // what holds one, however deep: the anchors around it
+  const wrap = createElement('i', {});
+  appendChild(wrap, createElement('b', { 'data-lock': '' }));
+  appendChild(p, wrap);
+  const locked = scopeOf(el, [added(p, wrap)]);
+  assert.ok(locked?.has(html), 'the root is not restyled');
+  el.touchDocument([added(p, span), added(p, wrap)]);
+  await act();
+  assert.equal(el.computedStyle(p)?.color, 'rgb(0, 0, 255)');
+  const y = createElement('span', { class: 'y' });
+  appendChild(byId(el, 'x'), y);
+  assert.ok(scopeOf(el, [added(byId(el, 'x'), y)])?.has(card));
+  // and taken out, which is what went
+  removeNode(wrap);
+  const gone: HtmlChange = {
+    type: 'childList',
+    target: p,
+    addedNodes: [],
+    removedNodes: [wrap],
+  };
+  assert.ok(scopeOf(el, [gone])?.has(html), 'the root is not restyled');
+  el.touchDocument([gone]);
+  await act();
+  assert.equal(el.computedStyle(p)?.color, ink);
+  // A `:has()` that asks where an element sits is reached by any child
+  // that comes: one put in before the list's first item takes it from
+  // being first, and holds nothing the subject names
+  const list = byId(el, 'list');
+  assert.equal(el.computedStyle(list)?.color, 'rgb(0, 170, 0)');
+  const first = createElement('li', {});
+  DomUtils.prependChild(list as never, first as never);
+  const before = scopeOf(el, [added(list, first)]);
+  assert.ok(before?.has(list), 'the list is not restyled');
+  el.touchDocument([added(list, first)]);
+  await act();
+  assert.equal(el.computedStyle(list)?.color, ink);
 });
 
 test('a class that an attribute selector answers alike for before and after restyles nothing it tests, and one it answers otherwise for restyles what it reaches', async () => {

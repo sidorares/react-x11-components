@@ -179,12 +179,23 @@ around blocks, which moves blocks beside what holds it. A block that holds
 an out-of-flow box placed against something inside it is kept with it,
 and the document reaches as far as the box does (`keptPositionedIn`).
 
-**Not yet**: a flex or grid item, and a table cell, is laid out by its
-container's algorithm (`layoutSubtree`), which lays it out more than once
-a pass — for its contribution, at its row's height, for a percentage of
-it — and keeps one geometry; and a probe of a shrink-to-fit box lays out
-all it holds at the probe's width. Both are where most of what a change
-on the Guardian costs still goes.
+**A flex or grid item is kept by what its container laid it out from**
+(`keptNatural` in `layout/flex.ts`, `keptItem` in `layout/css-grid.ts`),
+under the rule a block is (`mayKeepLaid`, `keepLaid`): a flex item's
+layout at its content's own height at a width (`Natural`), and a grid
+item's at its area's width (`ItemLaid`) — with the heights handed down to
+it, and its edges — where the item still has that layout. A container
+lays an item out more than once a pass: for its contribution, at its
+row's height, for a percentage of it. A grid item whose content takes a
+percentage of its stretched height is laid out at its content's height
+and then at the stretch's, and the first is kept with the second, for
+the next layout's first question. joshwcomeau.com's article is a grid of a
+hundred paragraphs inside flex boxes, and a sparkle beside one of them
+laid every one out again, three times a second.
+
+**Not yet**: a table cell, laid out by its table's algorithm; and a probe
+of a shrink-to-fit box, which lays out all it holds at the probe's width.
+Both are where most of what a change on the Guardian costs still goes.
 
 ## What it measured
 

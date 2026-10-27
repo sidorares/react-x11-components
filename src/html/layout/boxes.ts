@@ -1877,15 +1877,31 @@ export function buildSubtrees(
     return out;
   };
   // under an element of `display: none`, as the styles are now
-  const undrawn = (el: Element): boolean => {
-    for (let at: Element | null = el; at; at = flatParentOf(at)) {
-      const style = fresh.get(at)?.style ?? tree.styles.get(at)?.style;
-      if (style?.display === 'none') return true;
+  const undrawnKnown = new Map<Element, boolean>();
+  const noneHere = (at: Element): boolean =>
+    (fresh.get(at)?.style ?? tree.styles.get(at)?.style)?.display === 'none';
+  const undrawn = (el: Element): boolean =>
+    atOrAbove(el, noneHere, undrawnKnown);
+  // in what a root or a tail builds (`insideRoot`), a root's answer kept
+  // for the elements under it
+  const plainRoots = new Set<Element>();
+  for (const o of olds) if (!o.tail) plainRoots.add(o.el!);
+  const tailRoots = olds.filter((o) => o.tail);
+  const plainKnown = new Map<Element, boolean>();
+  const isPlainRoot = (at: Element): boolean => plainRoots.has(at);
+  const insideAny = (node: ChildNode): boolean => {
+    const holder = isElement(node) ? node : node.parent;
+    if (
+      plainRoots.size &&
+      holder &&
+      isElement(holder) &&
+      atOrAbove(holder as Element, isPlainRoot, plainKnown)
+    ) {
+      return true;
     }
-    return false;
+    return tailRoots.some((o) => insideRoot(node, o));
   };
-  const goneElement = (el: Element): boolean =>
-    !connected(el) || olds.some((o) => insideRoot(el, o));
+  const goneElement = (el: Element): boolean => !connected(el) || insideAny(el);
   // and from a list, one no box is made for now: what a script moved out of
   // a root to under an element of `display: none`
   const goneEntry = (el: Element): boolean => goneElement(el) || undrawn(el);
@@ -1893,7 +1909,7 @@ export function buildSubtrees(
   // before the fix-up broke it around a block, which is in no tree
   const elementOfBox = (box: Box): Element | null =>
     box.el ?? GENERATED_FROM.get(box) ?? null;
-  const inRange = (el: Element): boolean => olds.some((o) => insideRoot(el, o));
+  const inRange = (el: Element): boolean => insideAny(el);
   // at the document's end: each list's entries of what was rebuilt end it,
   // and the new ones end it now
   const atEndOf = <T>(
@@ -1962,16 +1978,16 @@ export function buildSubtrees(
     if (
       !holder ||
       !connected(node as unknown as Element) ||
+      insideAny(node) ||
       olds.some(
         (o) =>
-          insideRoot(node, o) ||
           // one moved out of a root to where nothing draws it, at its end
           // too where the root's line took back all it had — but not one
           // before it, drawn, whose space the root's line took back
-          (source.start >= o.start &&
-            source.start <= o.end &&
-            ((isElement(holder) && undrawn(holder)) ||
-              (source.start < o.end && !precedes(source.node, o.first)))),
+          source.start >= o.start &&
+          source.start <= o.end &&
+          ((isElement(holder) && undrawn(holder)) ||
+            (source.start < o.end && !precedes(source.node, o.first))),
       )
     ) {
       continue;
@@ -2118,13 +2134,11 @@ export function buildSubtrees(
   // goes no further into: one a script moved out of a root, into one — at
   // the document's end, of what was built, where nothing kept moved
   const restyled = atEnd ? built.flatMap((b) => [...b.styles.keys()]) : null;
+  const hiddenKnown = new Map<Element, boolean>();
+  const hidesHere = (at: Element): boolean =>
+    styles.get(at)?.style.display === 'none';
   for (const el of restyled ?? styles.keys()) {
-    for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
-      if (styles.get(at)?.style.display === 'none') {
-        styles.delete(el);
-        break;
-      }
-    }
+    if (atOrAbove(flatParentOf(el), hidesHere, hiddenKnown)) styles.delete(el);
   }
   cascade.stylesOf = (el) => styles.get(el)?.style;
 
@@ -2272,6 +2286,36 @@ function textNodeAt(sources: readonly TextSource[], at: number): number {
     else hi = mid;
   }
   return lo;
+}
+
+/**
+ * Whether `test` holds of `el` or of an element above it in the flat tree,
+ * every answer found on the way kept in `known` for the walks after it: a
+ * subtree build asks it of each entry of each list it splices, and a walk
+ * to the top of the document for each was most of the build of a sparkle
+ * in a long article.
+ */
+function atOrAbove(
+  el: Element | null,
+  test: (at: Element) => boolean,
+  known: Map<Element, boolean>,
+): boolean {
+  const path: Element[] = [];
+  let answer = false;
+  for (let at = el; at; at = flatParentOf(at)) {
+    const was = known.get(at);
+    if (was !== undefined) {
+      answer = was;
+      break;
+    }
+    path.push(at);
+    if (test(at)) {
+      answer = true;
+      break;
+    }
+  }
+  for (const at of path) known.set(at, answer);
+  return answer;
 }
 
 /** Whether `node` is in what a root or a tail builds: the root's element

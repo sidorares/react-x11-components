@@ -7021,9 +7021,12 @@ export class HtmlViewNode extends Node {
     // time (`applyRelativeOffsets`), and a later layout moves it the same
     // way; where it reached the document's end, before or after, the
     // document's height may have changed with it, which only a layout says.
+    // One that draws nothing reaches nowhere: a sparkle scaled to nothing
+    // at the start of its animation asked for the whole document's layout
+    // at every frame it spent there.
     let relayout = false;
     for (const [box, was] of moved) {
-      const before = box.boundsY + box.boundsHeight;
+      const before = inkBottom(box);
       retranslate(box, was);
       tree.relative = true;
       if (before >= this._documentHeight) relayout = true;
@@ -7036,9 +7039,7 @@ export class HtmlViewNode extends Node {
       stackLayers(tree.root);
     }
     for (const [box] of moved) {
-      if (box.boundsY + box.boundsHeight >= this._documentHeight) {
-        relayout = true;
-      }
+      if (inkBottom(box) >= this._documentHeight) relayout = true;
     }
     // a box a drag's layout left where it was for drawing nothing, shown:
     // set aside, nothing finds it until a layout places it
@@ -8774,8 +8775,9 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * A frame that changed what layout reads: the boxes built again around
-   * every other element's kept style and the document laid out, at once.
+   * A frame that changed what layout reads: the subtrees of what it reached
+   * built again around every other box, and every other element's kept
+   * style (`_subtreeBuild`), and the document laid out, at once.
    * Where each element whose style changed is positioned out of the flow —
    * absolutely or fixed, before and after — or is inside one that is, it
    * is laid out apart from everything around it (CSS 2.1 9.6); and where
@@ -8783,15 +8785,56 @@ export class HtmlViewNode extends Node {
    * what the frame changed is what those boxes drew before and draw now.
    * That is repainted, and anything else repaints the whole element. Zen
    * Garden 219's marquees and panels are all positioned so.
+   *
+   * The boxes the build keeps are the same boxes after it, which its
+   * layout moves where it moves them: so where each was, and what the
+   * boxes out of the flow around what the frame reached drew — the roots
+   * a change inside them is reported by — are taken before it.
+   * joshwcomeau.com's like button sparkles three times a second, and each
+   * sparkle's turn that started or ended built and laid out the whole
+   * article.
    */
   private _rebuildFrame(reach: ReadonlySet<Element>, follow = false): void {
     const before = this._tree!;
     const width = this._laidOutWidth;
     const size = [this._documentWidth, this._documentHeight];
-    const beforeBoxes = this._firstBoxesOf(before);
+    // the index the build updates for the tree it makes, as it was
+    const beforeBoxes = new Map(this._firstBoxesOf(before));
+    const placed = new Map<Box, Rect>();
+    for (const box of beforeBoxes.values()) {
+      placed.set(box, {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+      });
+    }
+    const drew = new Map<Box, KeptInk>();
+    const climbed = new Set<Element>();
+    for (const el of reach) {
+      for (let at: Element | null = el; at; at = flatParentOf(at)) {
+        if (climbed.has(at)) break;
+        climbed.add(at);
+        const style = before.styles.get(at)?.style;
+        const box = beforeBoxes.get(at);
+        if (!style || !box || !outOfFlow(style)) continue;
+        drew.set(box, {
+          ink: this._inkOf(box),
+          bounds: {
+            x: box.boundsX,
+            y: box.boundsY,
+            width: box.boundsWidth,
+            height: box.boundsHeight,
+          },
+        });
+      }
+    }
     this._stale = Stale.Boxes;
     this._restyleOnly = new Set(reach);
     this._restyleFollows = follow;
+    this._buildSeeds = new Set(reach);
+    this._buildTails = null;
+    this._buildParsed = false;
     this._carryingFrom = width;
     try {
       this._prepare(width);
@@ -8804,9 +8847,12 @@ export class HtmlViewNode extends Node {
       this._laidOutWidth === width &&
       this._documentWidth === size[0] &&
       this._documentHeight === size[1]
-        ? this._changedOutOfFlow(before, beforeBoxes, after, reach)
+        ? this._changedOutOfFlow(before, beforeBoxes, placed, after, reach)
         : null;
     if (changes) {
+      for (const change of changes) {
+        if (change.was) change.drew = drew.get(change.was);
+      }
       this._carrySprites(after!, changes);
       this._quietBuild = {
         before: serialOf(before),
@@ -8822,11 +8868,11 @@ export class HtmlViewNode extends Node {
         if (shown.length < changes.length) this.spritesChanged();
       }
       const inks: Rect[] = [];
-      for (const { was, now } of shown) {
-        for (const box of [was, now]) {
-          const ink = box && this._inkOf(box);
-          if (ink) inks.push(ink);
-        }
+      for (const { was, now, drew: kept } of shown) {
+        const old = kept ? kept.ink : was && this._inkOf(was);
+        if (old) inks.push(old);
+        const ink = now && this._inkOf(now);
+        if (ink) inks.push(ink);
       }
       this._repaintInk(inks);
       return;
@@ -8898,8 +8944,10 @@ export class HtmlViewNode extends Node {
           }
           if (!inside) continue;
         }
-        for (const b of [change.was, change.now])
-          if (b) stale.push(inkOfBox(b));
+        const drew =
+          change.drew?.bounds ?? (change.was && inkOfBox(change.was));
+        if (drew) stale.push(drew);
+        if (change.now) stale.push(inkOfBox(change.now));
       }
       return { box: now, stale };
     });
@@ -8920,26 +8968,56 @@ export class HtmlViewNode extends Node {
 
   /**
    * What a tree built again changed, where all it changed is positioned out
-   * of the flow: each element out of the flow whose style changed, and each
-   * `::before` or `::after` of the elements the frame restyled (`reach`),
-   * with the boxes it was drawn in and is. Null where an element or a
-   * pseudo-element in the flow changed, or a box of one that did not moved.
+   * of the flow or inside what is: for each element whose style changed,
+   * the nearest out of the flow before and after, itself or around it, and
+   * each `::before` or `::after` of the elements the frame restyled
+   * (`reach`) out of the flow, with the boxes it was drawn in and is. Null
+   * where an element or a pseudo-element in the flow changed, or a box of
+   * one that did not moved. A sparkle's drawing that ends its turn in a
+   * span placed absolutely changes nothing outside the span, and built
+   * and laid out the whole document and repainted all of it.
    */
   private _changedOutOfFlow(
     before: BoxTree,
     beforeBoxes: ReadonlyMap<Element, Box>,
+    /** Where each of those was laid out, which a box the build kept is
+     *  not now where the layout moved it. */
+    placed: ReadonlyMap<Box, Rect>,
     after: BoxTree,
     reach: ReadonlySet<Element>,
   ): OutOfFlowChange[] | null {
     if (before.styles.size !== after.styles.size) return null;
     const changed: Element[] = [];
-    const roots: Element[] = [];
+    const found = new Set<Element>();
+    // the nearest element out of the flow in both trees, at or around one
+    // that changed: a box laid out apart from everything around it, with
+    // all it holds (CSS 2.1 9.6)
+    const rootOf = (el: Element): Element | null => {
+      for (let at: Element | null = el; at; at = flatParentOf(at)) {
+        const was = before.styles.get(at)?.style;
+        const now = after.styles.get(at)?.style;
+        if (!was || !now) return null;
+        if (outOfFlow(was) && outOfFlow(now)) return at;
+      }
+      return null;
+    };
     for (const [el, now] of after.styles) {
       const was = before.styles.get(el);
       if (!was) return null;
       if (was.style === now.style || sameValue(was.style, now.style)) continue;
       changed.push(el);
-      if (outOfFlow(was.style) && outOfFlow(now.style)) roots.push(el);
+      const root = rootOf(el);
+      if (!root) return null;
+      found.add(root);
+    }
+    // of those, the outermost: what is in one moves with it
+    const roots: Element[] = [];
+    for (const root of found) {
+      let inside = false;
+      for (let at = flatParentOf(root); at && !inside; at = flatParentOf(at)) {
+        inside = found.has(at);
+      }
+      if (!inside) roots.push(root);
     }
     // what is laid out with the roots, and moves with them
     const apart = new Set<Element>();
@@ -8959,7 +9037,7 @@ export class HtmlViewNode extends Node {
     for (const [el, box] of afterBoxes) {
       if (apart.has(el)) continue;
       const was = beforeBoxes.get(el);
-      if (!was || !sameGeometry(was, box)) return null;
+      if (!was || !sameGeometry(was, box, placed.get(was))) return null;
     }
     const changes: OutOfFlowChange[] = roots.map((el) => ({
       el,
@@ -8975,6 +9053,8 @@ export class HtmlViewNode extends Node {
     // where its own did, and its pseudo-elements, styled over it, can
     // have changed only then.
     for (const el of changed.length ? new Set([...reach, ...changed]) : reach) {
+      // inside a root, whose own change takes in what it holds
+      if (apart.has(el)) continue;
       for (const [which] of GENERATED_BITS) {
         const was = generatedIn(beforeBoxes.get(el), el, which);
         const now = generatedIn(afterBoxes.get(el), el, which);
@@ -9136,7 +9216,10 @@ export class HtmlViewNode extends Node {
                 change.oldValue,
                 attr(change.target, change.attributeName.toLowerCase()) ?? null,
               )
-            : cascade.treeChange(change.type === 'characterData');
+            : cascade.treeChange(
+                change.type === 'characterData',
+                changedNodes(change),
+              );
         if (!reach) return false;
         if (
           reach.anchors &&
@@ -9277,7 +9360,10 @@ export class HtmlViewNode extends Node {
     } else drawn = true;
     if (scope.tails)
       return this._appendedScope(change, parent, drawn, tree, scope);
-    const reach = cascade.treeChange(change.type === 'characterData');
+    const reach = cascade.treeChange(
+      change.type === 'characterData',
+      changedNodes(change),
+    );
     if (!reach) return false;
     const { bits, kidsLater, anchors } = reach;
     if (!drawn && !bits && !kidsLater && !anchors) return true;
@@ -15513,6 +15599,16 @@ interface OutOfFlowChange {
   el: Element;
   was: Box | null;
   now: Box | null;
+  /** Where the build kept `was`, which is `now` then: what it drew before
+   *  the layout (`_rebuildFrame`). */
+  drew?: KeptInk;
+}
+
+/** What a box drew before a layout that may move it: its ink as a repaint
+ *  takes it (`_inkOf`), and its bounds. */
+interface KeptInk {
+  ink: Rect | null;
+  bounds: Rect;
 }
 
 /** What an element, or a pseudo-element of one, was last offered as, and
@@ -15603,6 +15699,20 @@ function outOfFlow(style: ComputedStyle): boolean {
   return style.position === 'absolute' || style.position === 'fixed';
 }
 
+/** What a change of children put in and took out: none, for any other. */
+function changedNodes(change: HtmlChange): readonly AnyNode[] {
+  if (change.type !== 'childList') return [];
+  if (!change.removedNodes.length) return change.addedNodes;
+  if (!change.addedNodes.length) return change.removedNodes;
+  return [...change.addedNodes, ...change.removedNodes];
+}
+
+/** How far down a box's ink reaches (`computePaintBounds`): none, for one
+ *  that draws nothing, whose bounds are at infinity. */
+function inkBottom(box: Box): number {
+  return box.boundsY === Infinity ? -Infinity : box.boundsY + box.boundsHeight;
+}
+
 /**
  * Whether every element a change restyles is positioned out of the flow,
  * or inside one that is, as the tree has them: the only change a frame's
@@ -15629,10 +15739,13 @@ function laidOutApart(own: ReadonlySet<Element>, tree: BoxTree): boolean {
  *  rect of its own — an inline box's text is its block's. How far it
  *  draws is no part of it, since that takes in what it holds, and a box
  *  out of the flow it holds moved. */
-function sameGeometry(a: Box, b: Box): boolean {
+function sameGeometry(a: Box, b: Box, at: Rect = a): boolean {
   if (!hasRect(a) || !hasRect(b)) return hasRect(a) === hasRect(b);
   return (
-    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+    at.x === b.x &&
+    at.y === b.y &&
+    at.width === b.width &&
+    at.height === b.height
   );
 }
 

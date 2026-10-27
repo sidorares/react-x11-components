@@ -167,6 +167,7 @@ import {
 } from './inline.js';
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
 import type { TextRun } from '../../richtext/index.js';
+import { forgetGridItem } from './css-grid.js';
 import { forgetMaxContent, layoutFlex } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
@@ -850,18 +851,62 @@ function reuseLaid(
   }
   child.marginBottom = laid.marginBottom;
   child.bottomStrut = laid.bottomStrut;
-  // what it holds, where its layout put it, as a flow reads a block it has
-  // just laid out: the offsets the passes after the last flow put on are
-  // taken off, and put on again after this one — once a layout, however
-  // many times it keeps the block
-  if (ctx.offsets !== false && !ctx.reused!.has(child)) unoffsetHeld(child);
+  keepLaid(child, ctx);
   moveTo(child, contentLeft + laid.dx, y + laid.dy);
-  ctx.reused!.add(child);
-  if (ctx.blockers!.holders.has(child)) {
-    keptPositionedIn(child, ctx.keptPositioned!);
+  return true;
+}
+
+/**
+ * Whether a layout may keep a box an earlier layout laid out, as that one
+ * left it (`reuseLaid`, and a flex item's `keptNatural`): where both keep
+ * boxes (`LayoutContext.reusePass`), at the same viewport, scale and
+ * fonts, the box no blocker (`reuseBlockers`) and placed where it can be
+ * moved from. What the box itself was laid out from is the caller's to
+ * compare, and whether anything in it changed since is `forgetSizes`'.
+ */
+export function mayKeepLaid(
+  box: Box,
+  ctx: LayoutContext,
+  was: {
+    pass: number;
+    viewportWidth: number;
+    viewportHeight: number;
+    scale: number | undefined;
+    fonts: FontsLike | null;
+  },
+): boolean {
+  return (
+    ctx.reusePass !== undefined &&
+    !ctx.probing &&
+    !Number.isNaN(was.pass) &&
+    was.pass !== ctx.reusePass &&
+    was.viewportWidth === ctx.viewportWidth &&
+    was.viewportHeight === ctx.viewportHeight &&
+    was.scale === ctx.scale &&
+    was.fonts === ctx.fonts &&
+    !ctx.blockers!.blockers.has(box) &&
+    Number.isFinite(box.x) &&
+    Number.isFinite(box.y)
+  );
+}
+
+/**
+ * Keep a box an earlier layout laid out (`mayKeepLaid`), for its caller to
+ * move where this layout puts it: what it holds, where its layout put it,
+ * as a flow reads a block it has just laid out — the offsets the passes
+ * after the last flow put on are taken off, and put on again after this
+ * one, once a layout however many times it keeps the box — and the boxes
+ * out of the flow in it, which this layout does not lay out, counted in
+ * the document's reach.
+ */
+export function keepLaid(box: Box, ctx: LayoutContext): void {
+  if (ctx.reused!.has(box)) return;
+  if (ctx.offsets !== false) unoffsetHeld(box);
+  ctx.reused!.add(box);
+  if (ctx.blockers!.holders.has(box)) {
+    keptPositionedIn(box, ctx.keptPositioned!);
   }
   keptBlocks += 1;
-  return true;
 }
 
 /**
@@ -4706,6 +4751,7 @@ export function forgetSizes(box: Box): void {
     FLOW_PLACE.delete(at);
     LAID.delete(at);
     forgetMaxContent(at);
+    forgetGridItem(at);
   }
 }
 
