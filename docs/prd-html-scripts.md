@@ -891,6 +891,24 @@ standards moved from what Acid3 expected):
   by the part of a pixel they reach. Text and an image are kept as state
   and drawn as nothing: a font's outlines and an image's pixels are the
   host's.
+- **An `OffscreenCanvas` is a canvas's bitmap with no element** (HTML
+  4.12.5.3), in a window or a dedicated worker: its 2d context is the
+  canvas's code over a bitmap of its own, a WebGL one draws nothing as a
+  canvas's does, and a `bitmaprenderer` one shows an `ImageBitmap`. A
+  `<canvas>` that hands it its control (`transferControlToOffscreen`)
+  shows what it draws from then on, and refuses a context, a size and a
+  read of its own; transferred to a worker, it draws there, and each
+  task's rectangle comes back across the thread to the realm that has the
+  placeholder, which puts it as its own canvas's (`canvasRoutes`). A
+  dedicated worker has animation frames to draw by, sixty a second on its
+  own clock. `transferToImageBitmap`, `createImageBitmap` — of a canvas,
+  an `OffscreenCanvas`, an `ImageBitmap`, an `ImageData`, and a blob
+  decoded by the host through the decoders a document's images are — and
+  `structuredClone` and `postMessage` of an `ImageBitmap` keep pixels in
+  the realm as a canvas does; an image's and a video's are the host's,
+  so their bitmap is transparent at their size. `convertToBlob`, `toBlob`
+  and `toDataURL` are a PNG the host makes (`encodeImage`), whatever type
+  was asked for, which HTML allows.
 - **A resize observer is told each size its targets come to**: as one is
   observed, where it has a size, and again whenever its content box
   changes, looked at a tenth of a second apart while any observes, since

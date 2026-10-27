@@ -135,6 +135,8 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import * as ntk from 'react-x11/ntk';
+import { decodeGif } from '../gif.js';
+import { encodePng } from './png.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
@@ -3139,6 +3141,50 @@ export class DomHost {
         }
         pixels.version += 1;
         for (const listener of [...this._s.canvasListeners]) listener(canvas);
+        return null;
+      }
+      // a bitmap as a file (`toDataURL`, `toBlob`, `convertToBlob`): its
+      // size and its straight RGBA as base64, and the PNG as base64, the
+      // one type every bitmap is had as
+      case 'encodeImage': {
+        const [width, height] = text(a).split(',').map(Number);
+        if (!(width > 0 && height > 0)) return '';
+        const rgba = Buffer.from(text(b), 'base64');
+        if (rgba.length !== width * height * 4) return '';
+        const png = encodePng(width, height, rgba);
+        return Buffer.from(png.buffer, png.byteOffset, png.length).toString(
+          'base64',
+        );
+      }
+      // a blob's image decoded for `createImageBitmap`, through the ladder
+      // a document's images are, and the page told its size and its
+      // straight RGBA, or '' where it is no image (`__imageDecoded`)
+      case 'imageDecode': {
+        const id = Number(a);
+        const bytes = Buffer.from(text(b), 'base64');
+        const tell = (size: string, data: string) => {
+          if (!this._disposed) {
+            this.entries?.call('__imageDecoded', [id, size, data]);
+          }
+        };
+        void Promise.resolve()
+          .then(
+            () =>
+              decodeGif(bytes) ??
+              ntk.decodeImageBytes(bytes, { offThread: true }),
+          )
+          .then(
+            (image) =>
+              tell(
+                `${image.width},${image.height}`,
+                Buffer.from(
+                  image.data.buffer,
+                  image.data.byteOffset,
+                  image.data.length,
+                ).toString('base64'),
+              ),
+            () => tell('', ''),
+          );
         return null;
       }
       // a colour a page names, as straight RGBA bytes

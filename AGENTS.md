@@ -2738,7 +2738,19 @@ closes a way out a DOM binding opens by accident:
   `<Html>` draws the pixels in the canvas's box (`canvasImage`), in its
   place in the paint order, where a mount over the document had to be
   refused wherever anything was painted over it: up.com.au's logo, fixed
-  over the top of its mascot's canvas, hid all of it.
+  over the top of its mascot's canvas, hid all of it. An `OffscreenCanvas`
+  holds a `CanvasState` too, through the same 2d context code — its
+  context's prototype is the canvas context's copied, so it is no
+  `CanvasRenderingContext2D`, as in a browser — and its rectangles go to
+  the `<canvas>` that handed it its control (`transferControlToOffscreen`):
+  this realm's, or across the thread it was transferred over, as a frame,
+  `{ k, s, d }`, that the realm with the placeholder puts (`canvasRoutes`,
+  `canvasFrame`). **Anything new that can make a canvas's bitmap show or
+  stop showing answers in `canvasShown`**, which `markCanvas` asks first:
+  a canvas nothing shows marks nothing, and a placeholder's own bitmap
+  must never reach the host over the frames of the canvas it gave its
+  control to. A bitmap as a file is a PNG the host makes (`encodeImage`,
+  `png.ts`, over node's zlib), whatever type was asked for.
 - **A WebGL context answers and draws nothing** (`webgl.ts`, source text
   handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
   software where there is no GPU, so a null context is a page that
@@ -2764,10 +2776,14 @@ closes a way out a DOM binding opens by accident:
   is a shared worker's, or a connection hears another's messages. A port
   a message transfers there is a wire over the same channel (`wireEnd`,
   `{ q, d }`), and over another realm of the page, its `__wire`: **anything
-  new that posts across a thread or a realm hands `serializeClone` the
-  ports its list transfers and runs its `later` after the send**, or a
+  new that posts across a thread or a realm hands `serializeClone` what
+  its list transfers (`transfersOf`: the ports, the `OffscreenCanvas`es
+  and the `ImageBitmap`s) and runs its `later` after the send**, or a
   port in it is a `DataCloneError`, and what was queued for one arrives
-  before the port does.
+  before the port does. A port's `_deliver` is handed all of what a
+  message moved, not its ports alone, so a canvas a port's message moves
+  crosses a wire with it; **anything that makes a message event of it
+  takes the ports out first**.
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins
