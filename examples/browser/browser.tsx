@@ -30,6 +30,14 @@
 // to attack the machine: the tab's process is, and it is a weak one. A page
 // that only draws itself with JavaScript shows what it has without it.
 //
+// What a browser keeps between two runs it keeps in its profile
+// (`profile.ts`): the cookies, `localStorage`, `sessionStorage` and
+// IndexedDB of every site, in one database every tab's process shares, and
+// the tabs it had open, which come back with their histories when it starts
+// again. `BROWSER_PROFILE=temp` (or `--temp-profile`) runs with a profile
+// that goes when the browser does, `BROWSER_PROFILE=<dir>` with another, and
+// `BROWSER_RESTORE=0` without the last session's tabs.
+//
 // Keys, on the platform's shortcut modifier — Ctrl on X11, Cmd on macOS:
 //
 //   T  new tab         W  close tab       L / F6  the address bar
@@ -43,7 +51,14 @@
 // gives the page the whole screen: the strip and the toolbar come back while
 // the pointer is at the top edge or over them, and while the address bar has
 // the focus.
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactElement } from 'react';
 import {
   Button,
@@ -89,6 +104,15 @@ import type { PostData } from '../../src/html/index.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import { HOME, fileName } from './pages.js';
+import {
+  openProfile,
+  readPreferences,
+  readSession,
+  savePreferences,
+  saveSession,
+  tabKey,
+} from './profile.js';
+import type { SavedSession } from './profile.js';
 
 /** The pane each tab's page runs in: `page.tsx`'s default export. */
 const PAGE = new URL('./page.tsx', import.meta.url);
@@ -192,6 +216,9 @@ interface Step {
 
 interface Tab {
   id: string;
+  /** What its `sessionStorage` is kept by in the profile, kept across a
+   *  restart with the tab. */
+  key: string;
   /** The history as the page last told it, and as it told it (JSON), which
    *  a page process that is new to the tab starts from. */
   entries: Entry[];
@@ -254,9 +281,14 @@ function navigation(
   return { seq: nextId(), url, how, key, fresh, post };
 }
 
-function emptyTab(id: string, nav: Navigation, focusAddress: boolean): Tab {
+function emptyTab(
+  id: string,
+  nav: Navigation | null,
+  focusAddress: boolean,
+): Tab {
   return {
     id,
+    key: tabKey(),
     entries: [],
     index: -1,
     history: '',
@@ -271,6 +303,63 @@ function emptyTab(id: string, nav: Navigation, focusAddress: boolean): Tab {
 
 function newTab(url: string, focusAddress = false): Tab {
   return emptyTab(`tab-${nextId()}`, navigation(url), focusAddress);
+}
+
+/**
+ * The tabs a session kept, open again: each with its key and its history,
+ * which its page's process starts from and loads the entry it shows from
+ * (`Page`'s "the entry shown has no document here"), or the address it was
+ * loading where it had no history yet.
+ */
+function restoredState(saved: SavedSession, start: string | null): State {
+  const tabs = saved.tabs.map((kept) => {
+    let history: History | null = null;
+    try {
+      history = kept.history ? (JSON.parse(kept.history) as History) : null;
+    } catch {
+      history = null;
+    }
+    const tab = emptyTab(
+      `tab-${nextId()}`,
+      history?.entries.length ? null : navigation(kept.url || HOME),
+      false,
+    );
+    return history?.entries.length
+      ? {
+          ...tab,
+          key: kept.key,
+          entries: history.entries,
+          index: history.index,
+          history: kept.history,
+          zoom: kept.zoom,
+        }
+      : { ...tab, key: kept.key, zoom: kept.zoom };
+  });
+  let active = tabs[Math.min(Math.max(saved.active, 0), tabs.length - 1)].id;
+  // an address on the command line opens in a tab of its own, shown
+  if (start) {
+    const tab = newTab(start);
+    tabs.push(tab);
+    active = tab.id;
+  }
+  return { tabs, active };
+}
+
+/** The tabs as a session keeps them. */
+function savedOf(state: State): SavedSession {
+  return {
+    version: 1,
+    tabs: state.tabs.map((tab) => ({
+      key: tab.key,
+      history: tab.history,
+      url: tab.loading?.url ?? tab.entries[tab.index]?.url ?? '',
+      zoom: tab.zoom,
+    })),
+    active: Math.max(
+      0,
+      state.tabs.findIndex((tab) => tab.id === state.active),
+    ),
+  };
 }
 
 /** What is kept of the document an entry is of. */
@@ -843,6 +932,11 @@ function TabPage({
   const id = tab.id;
   const latest = useRef(tab);
   latest.current = tab;
+  // the tab's own key, which its process keeps its `sessionStorage` by
+  const env = useMemo(
+    () => ({ ...PANE_ENV, BROWSER_TAB_KEY: tab.key }),
+    [tab.key],
+  );
 
   const onCommit = useCallback(
     (seq: number, _url: string, title: string | null, posted: boolean) =>
@@ -921,7 +1015,7 @@ function TabPage({
       props={props as unknown as FrameProps}
       transport={transport}
       execArgv={PANE_FLAGS}
-      env={PANE_ENV}
+      env={env}
       // A tab aside is still in the window, so its pane would be a stop in
       // the window's order, between the page showing and the tab strip:
       // Tab off the end of a page went on into the next tab's, off screen.
@@ -1044,6 +1138,17 @@ export interface BrowserProps {
   /** Whether a site's scripts run where nobody switched them on or off for
    *  it. Default: `BROWSER_SCRIPTS=1`. */
   scripts?: boolean;
+  /** The last session's tabs, to open again in place of `start`'s alone:
+   *  `start`, where given, opens beside them. */
+  restore?: SavedSession | null;
+  /** Told the tabs as they change, for the next run to restore. */
+  onSession?: (session: SavedSession) => void;
+  /** A tab closed, whose `sessionStorage` the profile can let go. */
+  onTabClosed?: (key: string) => void;
+  /** The sites whose scripts someone switched on or off, as last kept. */
+  sites?: [site: string, on: boolean][];
+  /** Told the sites' switches as they change. */
+  onSites?: (sites: [site: string, on: boolean][]) => void;
 }
 
 /**
@@ -1092,11 +1197,30 @@ export function Browser({
   inline = false,
   paneTransport,
   scripts = process.env.BROWSER_SCRIPTS === '1',
+  restore = null,
+  onSession,
+  onTabClosed,
+  sites: keptSites,
+  onSites,
 }: BrowserProps): ReactElement {
   const [state, dispatch] = useReducer(reducer, start, (url) => {
+    if (restore?.tabs.length) {
+      return restoredState(restore, url === HOME ? null : url);
+    }
     const tab = newTab(url, url === HOME);
     return { tabs: [tab], active: tab.id };
   });
+  // the tabs as they change, for the next run; and a closed tab's session
+  // let go
+  const sessionNow = useRef(onSession);
+  sessionNow.current = onSession;
+  useEffect(() => sessionNow.current?.(savedOf(state)), [state]);
+  const keys = useRef(new Set(state.tabs.map((tab) => tab.key)));
+  useEffect(() => {
+    const now = new Set(state.tabs.map((tab) => tab.key));
+    for (const key of keys.current) if (!now.has(key)) onTabClosed?.(key);
+    keys.current = now;
+  }, [state.tabs]);
   const cocoa = useSupports('nativeControls');
   /** The shortcut modifier, as a chord names it. */
   const mod = cocoa ? 'Super' : 'Control';
@@ -1126,7 +1250,15 @@ export function Browser({
   // Which sites run their scripts: each site's switch, where someone
   // flipped it, and `scripts` for the rest. A site is an origin, as a
   // browser's site settings are kept.
-  const [sites, setSites] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [sites, setSites] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(keptSites ?? []),
+  );
+  const sitesTold = useRef(sites);
+  useEffect(() => {
+    if (sitesTold.current === sites) return;
+    sitesTold.current = sites;
+    onSites?.([...sites]);
+  }, [sites]);
   const scriptsFor = (url: string): boolean =>
     sites.get(siteOf(url)) ?? scripts;
 
@@ -1360,10 +1492,29 @@ export function Browser({
 export default Browser;
 
 if (!process.env.REACT_X11_NO_AUTORUN) {
-  const arg = process.argv[2];
+  const arg = process.argv.slice(2).find((a) => !a.startsWith('--'));
   const start = arg ? (urlFromInput(arg) ?? HOME) : HOME;
+  // The profile is opened before any tab's process is started: what the
+  // last session left that lives only as long as one — its session cookies,
+  // the `sessionStorage` of tabs not coming back — goes first, unless its
+  // tabs do come back, as a browser that continues where it left off keeps
+  // them.
+  const profile = await openProfile();
+  const restore = readSession();
+  profile?.endSession({
+    keepTabs: restore?.tabs.map((tab) => tab.key) ?? [],
+    keepSessionCookies: !!restore,
+  });
   const root = await createRoot();
   root.render(
-    <Browser start={start} inline={process.env.BROWSER_INLINE === '1'} />,
+    <Browser
+      start={start}
+      inline={process.env.BROWSER_INLINE === '1'}
+      restore={restore}
+      onSession={saveSession}
+      onTabClosed={(key) => profile?.forgetTab(key)}
+      sites={readPreferences()?.scripts}
+      onSites={(scripts) => savePreferences({ version: 1, scripts })}
+    />,
   );
 }

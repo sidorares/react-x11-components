@@ -43,6 +43,8 @@ import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
 import type { HtmlWebTransport } from '../transport.js';
+import type { HtmlDocumentCookies } from '../cookies.js';
+import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
@@ -199,6 +201,22 @@ export interface HtmlScripts {
    * is what such a site checks for. Default false.
    */
   serviceWorkers?: boolean;
+  /**
+   * What `document.cookie`, `navigator.cookieEnabled` and `cookieStore`
+   * read and write: a `CookieJar`, the one a network sends its requests
+   * through (`useHtmlNetwork(url).cookies`), so that a cookie a script sets
+   * goes on the next request. Default: none, and a document has no cookies,
+   * as with no network.
+   */
+  cookies?: HtmlDocumentCookies;
+  /**
+   * Where `localStorage`, `sessionStorage` and IndexedDB are kept
+   * (`HtmlStorage`). Default: memory — an origin's items for as long as the
+   * process, a database for as long as the document. `HtmlProfile`'s
+   * `storage` keeps all three on disk, shared by every process that opens
+   * the profile.
+   */
+  storage?: HtmlStorage;
   /** Where the page is shown, as its scripts measure it. Default: the
    *  scroll pane around `<Html>`, or `<Html>` itself where none is. */
   viewport?: () => ScriptViewport;
@@ -377,6 +395,8 @@ export function useScriptedHtml(
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
     webRTC: config.webRTC ?? NO_WEBRTC,
     mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,
+    cookies: config.cookies,
+    storage: config.storage,
     drawsFrames: frames,
   };
   const url = props.baseUrl ?? 'about:blank';

@@ -229,6 +229,44 @@ export type {
   PostData,
   ResourceKind,
 } from './network.js';
+export {
+  CookieJar,
+  defaultPath,
+  domainMatch,
+  parseCookieDate,
+  parseSetCookie,
+  pathMatch,
+  publicSuffixList,
+} from './cookies.js';
+export type {
+  CookieContext,
+  CookieInit,
+  CookieJarOptions,
+  CookieListItem,
+  CookieSameSite,
+  HtmlCookie,
+  HtmlCookieStore,
+  HtmlDocumentCookies,
+  ParsedCookie,
+  PublicSuffix,
+} from './cookies.js';
+export {
+  MemoryStorageArea,
+  STORAGE_QUOTA,
+  defaultStorage,
+  memoryStorage,
+} from './storage.js';
+export type {
+  HtmlIdbCommit,
+  HtmlIdbSnapshot,
+  HtmlIdbStoreSchema,
+  HtmlIndexedDB,
+  HtmlStorage,
+  HtmlStorageArea,
+  HtmlStorageChange,
+} from './storage.js';
+export { HtmlProfile, PROFILE_FILE, PROFILE_VERSION } from './profile.js';
+export type { HtmlProfileOptions } from './profile.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type { ViewportOverflow } from './css/cascade.js';
 export type {

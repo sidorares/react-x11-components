@@ -14,8 +14,10 @@
 //
 // What the page cannot do here is anything the browser does not let it: a
 // `fetch` is its own origin's, or another's that lets it by CORS, through
-// the browser's network; storage is memory, per origin, gone with the
-// process; a navigation is a link the browser follows.
+// the browser's network; storage is its origin's, where the host's
+// `storage` keeps it — memory, gone with the process, unless the host keeps
+// a profile; a cookie is what the host's jar lets the document's address
+// have; a navigation is a link the browser follows.
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
@@ -121,6 +123,9 @@ import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
+import type { HtmlDocumentCookies } from '../cookies.js';
+import { defaultStorage } from '../storage.js';
+import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
@@ -191,6 +196,10 @@ export interface FetchRequest {
    *  (`FetchResponse.chunks`), as a page's `fetch` does. A host may answer
    *  it whole all the same. */
   stream?: boolean;
+  /** Whose cookies it carries (Fetch, a request's credentials mode): none,
+   *  the page's own origin's alone, or any. Absent, `same-origin`, a
+   *  page's `fetch`'s default. A host with no cookie jar sends none. */
+  credentials?: 'omit' | 'same-origin' | 'include';
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -510,6 +519,12 @@ export interface HostSeams {
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
+  /** What `document.cookie` and `cookieStore` read and write (`HtmlScripts`'
+   *  `cookies`). Absent, a document has no cookies. */
+  cookies?: HtmlDocumentCookies;
+  /** Where `localStorage`, `sessionStorage` and IndexedDB are kept
+   *  (`HtmlScripts`' `storage`). Absent, the process's memory. */
+  storage?: HtmlStorage;
   /**
    * Whether the browser draws the page's frames and runs each one's scripts
    * in a realm of its own (`ScriptRunner`'s frames): a frame's document is
@@ -1099,11 +1114,9 @@ interface SheetState {
   version: number;
 }
 
-/** The page's storage: memory, by origin, for as long as the process. */
-const STORAGE = {
-  local: new Map<string, Map<string, string>>(),
-  session: new Map<string, Map<string, string>>(),
-};
+/** Counts the hosts made, each a token its storage changes carry, so
+ *  that the document that made one does not hear it. */
+let hostTokens = 0;
 
 /** A change as an observer is handed it (DOM 4.3.4), by node. */
 interface Mutation {
@@ -1197,6 +1210,9 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
+  /** The top-level document's address: the page's, whose site is the site
+   *  for cookies of every frame in it. */
+  top: string | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -1376,6 +1392,12 @@ export class DomHost {
     this._owners = shared.owners;
     this._doctypes = shared.doctypes;
     shared.drawn.set(document, _seams.handle);
+    shared.top ??= this.url;
+    // what another document of the origin does to its storage, which this
+    // one hears as a `storage` event
+    this._unwatchStorage =
+      this._storageOf().watch?.((change) => this._storageChanged(change)) ??
+      null;
   }
 
   /** The bridge the facade is handed: never throws, never answers an
@@ -1760,6 +1782,8 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    this._unwatchStorage?.();
+    this._unwatchStorage = null;
     this._transportsMade?.dispose();
     this._transportsMade = null;
     this._peersMade?.dispose();
@@ -3926,6 +3950,10 @@ export class DomHost {
         return null;
       case 'storage':
         return this._storage(text(a), text(b), text(c), text(d));
+      case 'cookie':
+        return this._cookie(text(a), text(b), text(c));
+      case 'idb':
+        return this._idb(text(a), text(b), text(c));
       case 'timer': {
         const id = Number(a);
         const repeat = !!c;
@@ -5520,30 +5548,149 @@ export class DomHost {
     return [...this._csp.values()];
   }
 
+  /** This host's token, which its storage changes carry. */
+  private readonly _token = `h${++hostTokens}`;
+  private _unwatchStorage: (() => void) | null = null;
+
+  /** Where the page's storage is kept: the host's, or the process's
+   *  memory. */
+  private _storageOf(): HtmlStorage {
+    return this._seams.storage ?? defaultStorage();
+  }
+
+  /**
+   * `localStorage` and `sessionStorage` (HTML 12.2), the origin's area in
+   * the host's storage. A change that changed something is told to the
+   * other documents of the origin (12.2.4): a key set to what it holds, one
+   * removed that was not there and an area cleared that was empty are none.
+   */
   private _storage(
     kind: string,
     op: string,
     key: string,
     value: string,
   ): Primitive {
-    const all = kind === 'session' ? STORAGE.session : STORAGE.local;
+    const storage = this._storageOf();
     const origin = this._origin();
-    let store = all.get(origin);
-    if (!store) all.set(origin, (store = new Map()));
+    const area =
+      kind === 'session' ? storage.session(origin) : storage.local(origin);
+    const tell = (
+      changed: string | null,
+      oldValue: string | null,
+      newValue: string | null,
+    ) =>
+      storage.tell?.({
+        kind: kind === 'session' ? 'session' : 'local',
+        origin,
+        key: changed,
+        oldValue,
+        newValue,
+        url: this.url,
+        source: this._token,
+      });
     switch (op) {
       case 'get':
-        return store.get(key) ?? null;
-      case 'set':
-        store.set(key, value);
+        return area.get(key);
+      case 'set': {
+        const old = area.get(key);
+        if (!area.set(key, value)) {
+          throw new DomError(
+            'QuotaExceededError',
+            `Setting the value of '${key}' exceeded the quota.`,
+          );
+        }
+        if (old !== value) tell(key, old, value);
         return null;
-      case 'remove':
-        store.delete(key);
+      }
+      case 'remove': {
+        const old = area.get(key);
+        if (old === null) return null;
+        area.remove(key);
+        tell(key, old, null);
         return null;
+      }
       case 'clear':
-        store.clear();
+        if (!area.keys().length) return null;
+        area.clear();
+        tell(null, null, null);
         return null;
       case 'keys':
-        return [...store.keys()].join('\u0000');
+        return area.keys().join('\u0000');
+      default:
+        return null;
+    }
+  }
+
+  /** Another document's change to the storage of this one's origin, told
+   *  to the page as a `storage` event — its tab's, for `sessionStorage`,
+   *  which only this process's documents share. */
+  private _storageChanged(change: HtmlStorageChange): void {
+    if (this._disposed || change.source === this._token) return;
+    if (change.origin !== this._origin()) return;
+    this.entries?.call('__storage', [
+      change.kind,
+      change.key,
+      change.oldValue,
+      change.newValue,
+      change.url,
+    ]);
+  }
+
+  /**
+   * `document.cookie` and `cookieStore` (HTML 3.1.3; Cookie Store API),
+   * through the host's jar, for the document at `url` — which must be of
+   * this realm's origin, whatever the page claims, and on the web: any
+   * other document is cookie-averse, and reads ''.
+   */
+  private _cookie(op: string, url: string, arg: string): Primitive {
+    const jar = this._seams.cookies;
+    if (op === 'enabled') return !!jar;
+    const averse =
+      !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
+    const top = this._s.top;
+    switch (op) {
+      case 'get':
+        return averse ? '' : jar.documentCookie(url, top);
+      case 'set':
+        if (!averse) jar.setDocumentCookie(url, arg, top);
+        return null;
+      case 'list': {
+        if (averse) return '[]';
+        const name = arg ? (JSON.parse(arg) as string) : undefined;
+        return JSON.stringify(jar.list(url, top, name));
+      }
+      case 'store':
+        return averse ? false : jar.setFromInit(url, JSON.parse(arg), top);
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * IndexedDB past the document (`HtmlStorage.indexedDB`): what the page's
+   * realm reads a database from as it opens it, and writes each committed
+   * transaction to, as text it encoded. `on` answers whether there is such
+   * a store; with none, a database is the realm's alone, as it always was.
+   */
+  private _idb(op: string, name: string, json: string): Primitive {
+    const idb = this._storageOf().indexedDB;
+    const origin = this._origin();
+    if (op === 'on') return !!idb && origin !== 'null';
+    if (!idb || origin === 'null') return null;
+    switch (op) {
+      case 'list':
+        return JSON.stringify(idb.list(origin));
+      case 'load': {
+        const snapshot = idb.load(origin, name);
+        return snapshot ? JSON.stringify(snapshot) : null;
+      }
+      case 'stamp':
+        return idb.stamp(origin, name);
+      case 'commit':
+        return idb.commit(origin, name, JSON.parse(json));
+      case 'delete':
+        idb.delete(origin, name);
+        return null;
       default:
         return null;
     }
@@ -5693,6 +5840,8 @@ export class DomHost {
             headers: [['range', 'bytes=0-']],
             body: null,
             stream: true,
+            // a media element's request is `no-cors`, with its cookies
+            credentials: 'include',
           },
           controller.signal,
         );
@@ -5799,6 +5948,7 @@ export class DomHost {
       ...(request.bytes ? { bytes: request.bytes } : {}),
       ...(request.stream ? { stream: true } : {}),
       ...(request.streamedBody ? { streamedBody: true } : {}),
+      credentials: request.credentials,
     };
     if (own) {
       const response = await this._seams.fetch(plain, signal);
@@ -5911,8 +6061,15 @@ export class DomHost {
     if (unsafe.length) {
       headers.push(['access-control-request-headers', unsafe.join(',')]);
     }
+    // a preflight carries no cookies (Fetch 4.9)
     const response = await this._seams.fetch(
-      { url: request.url, method: 'OPTIONS', headers, body: null },
+      {
+        url: request.url,
+        method: 'OPTIONS',
+        headers,
+        body: null,
+        credentials: 'omit',
+      },
       signal,
     );
     const failed = (why: string) =>

@@ -986,6 +986,12 @@ queue as RFC 8831's one byte under payload protocol 56 or 57
 (`WeriftChannel._sendEmpty`), and a werift without the queue sends nothing,
 as before. Ask werift for an empty send before reaching in anywhere else.
 
+`publicSuffixList()` in `src/html/cookies.ts` is the fourth: `tldts`, the
+Public Suffix List with its private domains, is an **optional peer** and a
+devDependency, loaded the first time a host asks for the list and handed
+to a `CookieJar` as `publicSuffix`. Absent, a jar takes the last label of
+a host for its suffix, which refuses `Domain=com` and not `Domain=co.uk`.
+
 ## Running someone else's program
 
 `src/embed/`, `src/terminal/` and `src/media-player/` are the first things
@@ -1836,6 +1842,20 @@ convenience default that fetches**; the absence is the feature.
 application _hands in_ — the example browser's, moved here so that the
 common case is one line — and never a default `<Html>` reaches for.
 
+**Nothing is stored by construction either**
+(docs/prd-browser-profile.md). A network keeps a cookie only where it is
+handed a `CookieJar`, a document has `document.cookie` only where
+`scripts.cookies` is one, and `scripts.storage` is the process's memory and
+a document's own IndexedDB unless a host hands in a store — `HtmlProfile`'s,
+an SQLite database every process of a browser opens, and the only place
+anything reaches a disk. **A network with a jar follows redirects itself**
+(`_exchange`, `redirect: 'manual'`), because a login's session is set on
+the redirect it answers with and the runtime's `fetch` follows it out of
+sight: anything new that sends a request goes through `_exchange` with what
+the request is to the jar — its credentials mode, its site for cookies,
+whether it navigates — or its cookies are neither sent nor kept. Without a
+jar `_exchange` hands the transport `redirect: 'follow'`, as before.
+
 `scripts` is the one switch that executes anything, and it keeps the same
 rule: it is off unless an application turns it on, and what a page loads
 goes through the application's seams — a script's source through
@@ -2388,6 +2408,20 @@ at the size the window last held still at, not the size it is now: one that
 followed the window laid its page out again at every step of a drag, as
 often as the tab showing, for pixels nobody sees.
 
+**The browser's tabs share their profile through the file, not through the
+browser** (`examples/browser/profile.ts`, docs/prd-browser-profile.md). A
+pane's props are fire-and-forget, so nothing could ask the browser's process
+for a request's `Cookie` header and wait; every tab's process opens the
+profile's SQLite database itself, and a reader reads a table again only
+where `PRAGMA data_version` says another connection committed. Two rules
+follow. **The browser opens the profile and ends the last session before
+any pane starts** (`endSession`), since a pane reads what is there as it
+makes its first request; and **a jar reads its store at its first use, not
+as it is made**, since an inline page's jar is made as `page.tsx` is
+imported, before the browser has tidied anything. The tab's key, which its
+`sessionStorage` is kept by across a restart, reaches its process as
+`BROWSER_TAB_KEY`, and the directory as `BROWSER_PROFILE_DIR`.
+
 **`<Html scripts>` runs a page's scripts in a context of their own, and
 what keeps them there is a few rules** (`src/html/scripts/`,
 docs/prd-html-scripts.md). The engine is a `node:vm` context a document —
@@ -2845,6 +2879,26 @@ closes a way out a DOM binding opens by accident:
   its track is silent with nothing failing. A node is kept by what it is
   connected to (`inputs`), never by its context, since a page makes one a
   note.
+- **What a page stores goes through the host's storage, and a change is
+  told.** `localStorage` and `sessionStorage` are one op, `storage`, over
+  `HtmlStorage`'s areas (`DomHost._storage`), which tells
+  `HtmlStorage.tell` of each change that changed something; every host
+  watches the storage and hands another document's change to its realm as
+  a `StorageEvent` (`__storage`). Anything new that writes an area goes
+  through `_storage`, or no other document hears of it. `document.cookie`
+  and `cookieStore` are the `cookie` op, which names the document's
+  address — **held to the realm's origin in the host**, since a page can
+  set anything the facade reads off a document.
+- **IndexedDB is the realm's, and a profile is its disk.** Where the host
+  keeps databases (`idb on`), a transaction's difference is taken at its
+  commit against the copy of each store it kept to undo itself
+  (`_before`, `idbDiff`): a record changed is a record whose value is
+  another object. So **a record is replaced, never changed in place** — a
+  new op that wrote into a record's value would be missed by the diff, and
+  lost at the next restart. A database another document committed to is
+  read again as a transaction starts (`idbRefresh`), never while one of the
+  realm's is under way (`active`), and nothing of it runs where the host
+  keeps none, which is what holds the Interop area where it was.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

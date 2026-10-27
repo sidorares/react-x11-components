@@ -705,6 +705,55 @@ export function installDom(
       return this._persisted;
     }
   }
+  /** `storage` (HTML 12.2.4): what another document of the origin changed
+   *  in its storage. */
+  class StorageEvent extends Event {
+    _key: Any = null;
+    _oldValue: Any = null;
+    _newValue: Any = null;
+    _url = '';
+    _storageArea: Any = null;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this._key = init?.key ?? null;
+      this._oldValue = init?.oldValue ?? null;
+      this._newValue = init?.newValue ?? null;
+      this._url = str(init?.url ?? '');
+      this._storageArea = init?.storageArea ?? null;
+    }
+    get key(): Any {
+      return this._key;
+    }
+    get oldValue(): Any {
+      return this._oldValue;
+    }
+    get newValue(): Any {
+      return this._newValue;
+    }
+    get url(): string {
+      return this._url;
+    }
+    get storageArea(): Any {
+      return this._storageArea;
+    }
+    initStorageEvent(
+      type: Any,
+      bubbles: Any = false,
+      cancelable: Any = false,
+      key: Any = null,
+      oldValue: Any = null,
+      newValue: Any = null,
+      url: Any = '',
+      storageArea: Any = null,
+    ): void {
+      (this as Any).initEvent(type, bubbles, cancelable);
+      this._key = key === null ? null : str(key);
+      this._oldValue = oldValue === null ? null : str(oldValue);
+      this._newValue = newValue === null ? null : str(newValue);
+      this._url = str(url);
+      this._storageArea = storageArea;
+    }
+  }
   /** What only the user agent makes a `BeforeUnloadEvent` with: it has no
    *  constructor of a page's (HTML 7.4.2.4), but `createEvent`. */
   const UNLOADING = Symbol('beforeunload');
@@ -12304,10 +12353,17 @@ export function installDom(
     // what a tag manager sets to share a document with its frames, which
     // here are all the page's origin's or nothing of the page's
     set domain(_v: Any) {}
+    // the host's jar, where it has one, for this document's address: a
+    // document that is not on the web, or one a page made of its own, is
+    // cookie-averse (HTML 3.1.3) and reads ''
     get cookie(): string {
-      return '';
+      if (!windowOfDocument(this)) return '';
+      const v = call('cookie', 'get', str(this.URL));
+      return typeof v === 'string' ? v : '';
     }
-    set cookie(_v: Any) {}
+    set cookie(v: Any) {
+      if (windowOfDocument(this)) call('cookie', 'set', str(this.URL), str(v));
+    }
     /** The window: the page's for its document, a frame's for the
      *  document it holds now, and none for one a page made of its own or one
      *  a frame has gone on from. */
@@ -17863,6 +17919,17 @@ export function installDom(
   // queued, which is where a promise wrapper's next request comes from.
   // Transactions are not held back for one another, as a browser holds two
   // that write the same store: a page here has no other tab.
+  //
+  // Where the host keeps databases past the document (`HtmlStorage`'s
+  // `indexedDB`, which `idb on` asks), the realm still holds each one it
+  // opened and runs it as above, and the host is its disk: a database is
+  // read from it as it is first opened, each committed transaction's
+  // difference is written to it before `complete`, and one another
+  // document committed to since — its stamp moved — is read again as the
+  // next transaction starts, where none of this realm's is under way. So
+  // two tabs see each other's commits at their next transaction, and a
+  // read-modify-write across tabs is not held back as a browser holds it:
+  // the later commit wins, record by record.
 
   /** A key's type, in the standard's order; 0 for no valid key. */
   const keyType = (key: Any, seen: Set<Any> = new Set()): number => {
@@ -18138,8 +18205,180 @@ export function installDom(
     version: number;
     stores: Map<string, IdbStore>;
     connections: Set<Any>;
+    /** The host's stamp for it as this realm last read or wrote it. */
+    stamp?: number;
+    /** Another document committed past what this realm holds. */
+    stale?: boolean;
+    /** Its transactions under way, which a read from the host waits for. */
+    active?: number;
+    /** Its schema as the host was last told it. */
+    schema?: string;
   }
   const idbDatabases = new Map<string, IdbData>();
+
+  /** Whether the host keeps databases past the document, asked once. */
+  let idbKept: boolean | null = null;
+  const idbPersists = (): boolean => (idbKept ??= call('idb', 'on') === true);
+  /** A key as the host keeps it by: one text for one key, whatever it was
+   *  given as — `-0` as `0`, a view as its bytes. */
+  const keyForm = (k: Any): Any =>
+    typeof k === 'number'
+      ? ['n', Number.isFinite(k) ? (k === 0 ? 0 : k) : String(k)]
+      : k instanceof Date
+        ? ['d', k.getTime()]
+        : typeof k === 'string'
+          ? ['s', k]
+          : Array.isArray(k)
+            ? ['a', k.map(keyForm)]
+            : ['b', base64OfBytes(bytesOf(k))];
+  const keyOfForm = (f: Any): Any => {
+    switch (f[0]) {
+      case 'n':
+        return typeof f[1] === 'string' ? Number(f[1]) : f[1];
+      case 'd':
+        return new Date(f[1]);
+      case 's':
+        return f[1];
+      case 'a':
+        return f[1].map(keyOfForm);
+      default:
+        return bytesOfBase64(f[1]).slice().buffer;
+    }
+  };
+  const encodeKey = (k: Any): string => JSON.stringify(keyForm(k));
+  /** A database's stores as the host keeps them, records aside. */
+  const schemaOf = (data: IdbData): Any[] =>
+    [...data.stores.values()].map((store) => ({
+      name: store.name,
+      keyPath: store.keyPath,
+      autoIncrement: store.autoIncrement,
+      current: store.current,
+      indexes: [...store.indexes.values()].map((index) => ({ ...index })),
+    }));
+  /** A database as the host keeps it, made this realm's, or null. */
+  const idbFromHost = (name: string): IdbData | null => {
+    const json = call('idb', 'load', name);
+    if (typeof json !== 'string') return null;
+    const snapshot = JSON.parse(json);
+    const stores = new Map<string, IdbStore>();
+    for (const store of snapshot.stores) {
+      stores.set(store.name, {
+        name: store.name,
+        keyPath: store.keyPath,
+        autoIncrement: store.autoIncrement,
+        current: store.current,
+        records: [],
+        indexes: new Map(store.indexes.map((i: Any) => [i.name, i])),
+      });
+    }
+    for (const [name, key, value] of snapshot.records) {
+      const store = stores.get(name);
+      if (!store) continue;
+      try {
+        store.records.push({
+          key: keyOfForm(JSON.parse(key)),
+          value: deserializeClone(value),
+        });
+      } catch {
+        // a record this realm cannot read back is left where it is
+      }
+    }
+    for (const store of stores.values()) {
+      store.records.sort((a, b) => cmpKey(a.key, b.key));
+    }
+    const data: IdbData = {
+      name,
+      version: snapshot.version,
+      stores,
+      connections: new Set(),
+      stamp: snapshot.stamp,
+      active: 0,
+    };
+    data.schema = JSON.stringify(schemaOf(data));
+    return data;
+  };
+  /** A database read again from the host, where another document
+   *  committed to it since this realm read it and nothing of this realm's
+   *  is under way: in place, where its version is the one this realm's
+   *  connections have. */
+  const idbRefresh = (data: IdbData): void => {
+    if (!idbPersists() || data.active) return;
+    if (idbDatabases.get(data.name) !== data) return;
+    try {
+      if (!data.stale && call('idb', 'stamp', data.name) === data.stamp) {
+        return;
+      }
+      const fresh = idbFromHost(data.name);
+      if (!fresh) return;
+      if (fresh.version === data.version) {
+        data.stores = fresh.stores;
+        data.stamp = fresh.stamp;
+        data.schema = fresh.schema;
+        data.stale = false;
+      } else {
+        // another document upgraded it: the connections open on this
+        // one keep it, and the next to open gets the new
+        idbDatabases.set(data.name, fresh);
+      }
+    } catch {
+      // the realm's copy is what it has
+    }
+  };
+  /** The database as `open` finds it: this realm's, read again where it
+   *  is stale, or the host's where this realm has none. */
+  const idbCurrent = (name: string): IdbData | undefined => {
+    const data = idbDatabases.get(name);
+    if (!idbPersists()) return data;
+    if (data) {
+      idbRefresh(data);
+      return idbDatabases.get(name);
+    }
+    try {
+      const fresh = idbFromHost(name);
+      if (fresh) idbDatabases.set(name, fresh);
+      return fresh ?? undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  /** What changed between a store's records before a transaction and
+   *  after, both in key order: the records to write, and the keys gone. */
+  const idbDiff = (
+    store: string,
+    before: { key: Any; value: Any }[],
+    after: { key: Any; value: Any }[],
+    put: Any[],
+    gone: Any[],
+  ): void => {
+    let i = 0;
+    let j = 0;
+    const write = (record: { key: Any; value: Any }) => {
+      try {
+        put.push([store, encodeKey(record.key), serializeClone(record.value)]);
+      } catch (error) {
+        call(
+          'log',
+          'warn',
+          `IndexedDB: a record of '${store}' is kept for this document alone: ${str((error as Any)?.message)}`,
+        );
+      }
+    };
+    while (i < before.length || j < after.length) {
+      const c =
+        i >= before.length
+          ? 1
+          : j >= after.length
+            ? -1
+            : cmpKey(before[i].key, after[j].key);
+      if (c < 0) gone.push([store, encodeKey(before[i++].key)]);
+      else if (c > 0) write(after[j++]);
+      else {
+        if (before[i].value !== after[j].value) write(after[j]);
+        i += 1;
+        j += 1;
+      }
+    }
+  };
 
   /** Where a key is in a store's records, or would go. */
   const findKey = (
@@ -18293,6 +18532,9 @@ export function installDom(
       if (mode !== 'readonly' && mode !== 'readwrite') {
         throw new TypeError(`'${str(mode)}' is not a valid transaction mode.`);
       }
+      // what another document committed since, where nothing of this
+      // realm's is under way
+      idbRefresh(this._data);
       return new IDBTransaction(this, [...new Set(list)], mode);
     }
     close(): void {
@@ -18315,6 +18557,10 @@ export function installDom(
     _stores = new Map<string, Any>();
     _undo: () => void;
     _onDone: ((ok: boolean) => void) | null = null;
+    /** The stores as they were before it, by name: what a write is undone
+     *  to, and what its difference is taken against for the host. */
+    _before: Map<string, IdbStore> | null = null;
+    _counted = true;
     constructor(db: Any, names: string[], mode: string) {
       super();
       this._db = db;
@@ -18322,17 +18568,20 @@ export function installDom(
       this.mode = mode;
       // what a write is undone to where the transaction aborts
       const data: IdbData = db._data;
+      data.active = (data.active ?? 0) + 1;
       if (mode === 'versionchange') {
         const version = data.version;
         const stores = new Map(
           [...data.stores].map(([k, v]) => [k, copyStore(v)]),
         );
+        this._before = stores;
         this._undo = () => {
           data.version = version;
-          data.stores = stores;
+          data.stores = new Map([...stores].map(([k, v]) => [k, copyStore(v)]));
         };
       } else if (mode === 'readwrite') {
         const kept = names.map((name) => copyStore(data.stores.get(name)!));
+        this._before = new Map(kept.map((store) => [store.name, store]));
         this._undo = () => {
           for (const store of kept) data.stores.set(store.name, store);
         };
@@ -18461,8 +18710,65 @@ export function installDom(
         return;
       }
       this._finished = true;
+      this._persist();
+      this._settle();
       fireAt([this], new Event('complete'));
       this._onDone?.(true);
+    }
+    /** No longer under way: a read of the database from the host may go
+     *  ahead. */
+    _settle(): void {
+      if (!this._counted) return;
+      this._counted = false;
+      const data: IdbData = this._db._data;
+      data.active = Math.max(0, (data.active ?? 1) - 1);
+    }
+    /** What it changed, written to the host where it keeps databases:
+     *  each record written or gone, and the stores as they are now. */
+    _persist(): void {
+      if (this.mode === 'readonly' || !this._before || !idbPersists()) return;
+      const data: IdbData = this._db._data;
+      const put: Any[] = [];
+      const gone: Any[] = [];
+      const names =
+        this.mode === 'versionchange'
+          ? new Set([...this._before.keys(), ...data.stores.keys()])
+          : this._names;
+      for (const name of names) {
+        const after = data.stores.get(name);
+        // a store gone is gone with its records, as the schema says
+        if (!after) continue;
+        idbDiff(
+          name,
+          this._before.get(name)?.records ?? [],
+          after.records,
+          put,
+          gone,
+        );
+      }
+      const stores = schemaOf(data);
+      const schema = JSON.stringify(stores);
+      if (!put.length && !gone.length && schema === data.schema) return;
+      try {
+        const stamp = call(
+          'idb',
+          'commit',
+          data.name,
+          JSON.stringify({ version: data.version, stores, put, delete: gone }),
+        );
+        if (typeof stamp === 'number') {
+          // another document's commit came between: read it at the next
+          if (stamp !== (data.stamp ?? 0) + 1) data.stale = true;
+          data.stamp = stamp;
+          data.schema = schema;
+        }
+      } catch (error) {
+        call(
+          'log',
+          'warn',
+          `IndexedDB: '${data.name}' was not kept: ${str((error as Any)?.message)}`,
+        );
+      }
     }
     /** Aborted: what it wrote undone at once, and what is told of it —
      *  each request still queued failing, then the abort — a task later,
@@ -18472,6 +18778,7 @@ export function installDom(
       if (this._finished) return;
       this._finished = true;
       this._undo();
+      this._settle();
       this.error = error;
       const pending = this._queue;
       this._queue = [];
@@ -19083,7 +19390,7 @@ export function installDom(
       const request = new IDBOpenDBRequest();
       setTimer(
         () => {
-          let data = idbDatabases.get(dbName);
+          let data = idbCurrent(dbName);
           const old = data ? data.version : 0;
           const target = wanted ?? (data ? data.version : 1);
           if (target < old) {
@@ -19104,6 +19411,8 @@ export function installDom(
               version: 0,
               stores: new Map(),
               connections: new Set(),
+              stamp: 0,
+              active: 0,
             };
             idbDatabases.set(dbName, data);
           }
@@ -19185,6 +19494,13 @@ export function installDom(
             }
           }
           idbDatabases.delete(dbName);
+          if (idbPersists()) {
+            try {
+              call('idb', 'delete', dbName);
+            } catch {
+              // gone from this realm, whatever the host kept
+            }
+          }
           request._done = true;
           request._result = undefined;
           fireAt(
@@ -19202,11 +19518,19 @@ export function installDom(
       return request;
     }
     databases(): Promise<Any[]> {
+      const all = new Map<string, number>();
+      if (idbPersists()) {
+        try {
+          for (const d of JSON.parse(str(call('idb', 'list')) || '[]')) {
+            all.set(str(d.name), Number(d.version));
+          }
+        } catch {
+          // this realm's alone
+        }
+      }
+      for (const d of idbDatabases.values()) all.set(d.name, d.version);
       return Promise.resolve(
-        [...idbDatabases.values()].map((d) => ({
-          name: d.name,
-          version: d.version,
-        })),
+        [...all].map(([name, version]) => ({ name, version })),
       );
     }
     cmp(a: Any, b: Any): number {
@@ -19215,6 +19539,121 @@ export function installDom(
       return cmpKey(a, b);
     }
   }
+
+  /**
+   * `cookieStore` (Cookie Store API): the host's jar, as `document.cookie`
+   * reads it, a cookie at a time and asynchronously, in a secure context.
+   * No `change` is told: nothing tells this realm of a cookie a response or
+   * another tab set.
+   */
+  class CookieStore extends EventTarget {
+    get(options?: Any): Promise<Any> {
+      return this.getAll(options).then((list: Any[]) => list[0] ?? null);
+    }
+    getAll(options?: Any): Promise<Any> {
+      return new Promise((ok, fail) => {
+        let name: string | undefined;
+        let url = str(document.URL);
+        if (typeof options === 'string') name = options;
+        else if (options !== undefined && options !== null) {
+          if (options.name !== undefined) name = str(options.name);
+          if (options.url !== undefined) {
+            const asked = new URL(str(options.url), url).href.split('#')[0];
+            if (asked !== url.split('#')[0]) {
+              fail(new TypeError("The URL must be the document's own."));
+              return;
+            }
+            url = asked;
+          }
+        }
+        const list = call(
+          'cookie',
+          'list',
+          url,
+          name === undefined ? '' : JSON.stringify(name),
+        );
+        ok(JSON.parse(str(list) || '[]'));
+      });
+    }
+    set(nameOrInit: Any, value?: Any): Promise<void> {
+      return new Promise((ok, fail) => {
+        const init =
+          typeof nameOrInit === 'object' && nameOrInit !== null
+            ? nameOrInit
+            : { name: nameOrInit, value };
+        const name = str(init.name ?? '');
+        const v = str(init.value ?? '');
+        const host = new URL(str(document.URL)).hostname;
+        const domain =
+          init.domain === undefined || init.domain === null
+            ? null
+            : str(init.domain);
+        const path = init.path === undefined ? '/' : str(init.path);
+        const bad = /[;\u0000-\u0008\u000a-\u001f\u007f]/;
+        const why =
+          bad.test(name) || bad.test(v)
+            ? 'A cookie takes no control character and no semicolon.'
+            : name.includes('=')
+              ? "A cookie's name takes no '='."
+              : !name && v.includes('=')
+                ? "A cookie with no name takes no '=' in its value."
+                : !name && /^__(secure|host)-/i.test(v)
+                  ? 'A cookie with no name cannot look like a prefixed one.'
+                  : !name && !v
+                    ? 'A cookie needs a name or a value.'
+                    : name.length + v.length > 4096
+                      ? 'The cookie is too large.'
+                      : domain !== null &&
+                          (domain.startsWith('.') ||
+                            (host !== domain && !host.endsWith(`.${domain}`)) ||
+                            domain.length > 1024)
+                        ? "The domain is not the document's."
+                        : domain !== null && /^__host-/i.test(name)
+                          ? 'A __Host- cookie takes no domain.'
+                          : !path.startsWith('/') || path.length > 1024
+                            ? "A cookie's path starts with '/'."
+                            : null;
+        if (why) {
+          fail(new TypeError(why));
+          return;
+        }
+        const expires =
+          init.expires === undefined || init.expires === null
+            ? null
+            : Number(init.expires);
+        const sameSite = str(init.sameSite ?? 'strict');
+        if (!['strict', 'lax', 'none'].includes(sameSite)) {
+          fail(new TypeError(`'${sameSite}' is not a SameSite value.`));
+          return;
+        }
+        const stored = call(
+          'cookie',
+          'store',
+          str(document.URL),
+          JSON.stringify({ name, value: v, expires, domain, path, sameSite }),
+        );
+        // a deletion is done whether or not there was a cookie to delete
+        if (stored === true || (expires !== null && expires <= Date.now())) {
+          ok();
+        } else fail(new TypeError('The cookie was not set.'));
+      });
+    }
+    delete(options: Any): Promise<void> {
+      const init =
+        typeof options === 'object' && options !== null
+          ? options
+          : { name: options };
+      return this.set({
+        name: init.name,
+        value: '',
+        expires: 0,
+        domain: init.domain ?? null,
+        path: init.path ?? '/',
+        sameSite: 'strict',
+      });
+    }
+  }
+  handlers(CookieStore, ['change']);
 
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   /** Which storage a `Storage` is: the object and the proxy a page holds
@@ -20056,7 +20495,9 @@ export function installDom(
     language,
     languages: [language],
     onLine: true,
-    cookieEnabled: false,
+    get cookieEnabled(): boolean {
+      return call('cookie', 'enabled') === true;
+    },
     doNotTrack: '1',
     hardwareConcurrency: 4,
     maxTouchPoints: 0,
@@ -23668,6 +24109,8 @@ export function installDom(
     ErrorEvent,
     HashChangeEvent,
     PageTransitionEvent,
+    StorageEvent,
+    CookieStore,
     BeforeUnloadEvent,
     PageSwapEvent,
     PageRevealEvent,
@@ -23958,8 +24401,27 @@ export function installDom(
     define('console', console);
   }
   define('indexedDB', new IDBFactory());
-  define('localStorage', storage('local'));
-  define('sessionStorage', storage('session'));
+  // a secure context's alone (Cookie Store API, `[SecureContext]`)
+  {
+    let here: Any = null;
+    try {
+      here = new URL(str(call('location')));
+    } catch {
+      // a realm with no address of its own is no secure context
+    }
+    if (
+      here &&
+      (here.protocol === 'https:' ||
+        /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(here.hostname) ||
+        here.hostname.endsWith('.localhost'))
+    ) {
+      define('cookieStore', new CookieStore());
+    }
+  }
+  const localArea = storage('local');
+  const sessionArea = storage('session');
+  define('localStorage', localArea);
+  define('sessionStorage', sessionArea);
   define('fetch', fetch);
   // WebAssembly's compile, as the page's. The runtime's asynchronous one
   // settles its promise from a task of the host's, in a context that runs
@@ -25461,6 +25923,23 @@ export function installDom(
   entry('__rendering', () => {
     renderingOwed = true;
     wantFrame();
+    return true;
+  });
+
+  // another document of the origin changed its storage (HTML 12.2.4): a
+  // task at the window, which the document that changed it does not hear
+  entry('__storage', () => {
+    const [kind, key, oldValue, newValue, url] = input();
+    dispatch(
+      windowTarget,
+      new StorageEvent('storage', {
+        key,
+        oldValue,
+        newValue,
+        url,
+        storageArea: kind === 'session' ? sessionArea : localArea,
+      }),
+    );
     return true;
   });
 
