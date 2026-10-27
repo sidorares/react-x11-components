@@ -157,6 +157,27 @@ callbacks only at the context's next evaluation. Every host-to-page entry
 is a `Script` run, so this costs nothing, but a host that resolves a page
 promise and returns will see nothing happen.
 
+**And a timeout counts everything, the host's time with the page's.** The
+watchdog runs on a thread of its own from the moment an entry begins, and
+nothing pauses it, on Node or on Bun. So an op the page called — a
+`getComputedStyle` that forces a layout — spent the page's time: a webmail
+page's layout took 2.4 s on a Mac, against the 2 s a task had, and every
+script that read a style was stopped inside the layout, which was left half
+done, its `finally`s skipped. The engine keeps the page's clock itself now
+(`ScriptEngine._bridge`): the host's time in each op is left out, an op
+asked once the page's own time is spent throws a `TimeoutError`, and the
+watchdog is set at five times it, the ceiling for a loop that asks for
+nothing. No op is begun in the last stretch before the ceiling, as long as
+the page's time, so a cut inside an op is rare; one that happens anyway has
+`<Html>` style, build and lay out the document from nothing
+(`HtmlViewNode.interrupted`). Two ways to stop the page at its own time
+were tried and do not work. An inspector session on a worker thread can
+end the main thread's script whenever it likes (`Runtime.terminateExecution`),
+but the termination unwinds every frame up to the event loop — the
+engine's, `<Html>`'s, React's — and Node aborted with its async hook stack
+corrupted. And no `vm` boundary converts a termination its own watchdog did
+not start, so a nested `runInContext` around an op shields nothing.
+
 **Nothing bounds the heap.** `vm.measureMemory` can observe it, and
 nothing can stop it. The process is the bound, which is the first thing
 core is asked for below.

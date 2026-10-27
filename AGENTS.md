@@ -2499,6 +2499,19 @@ closes a way out a DOM binding opens by accident:
   dirty; the outermost entry's end refreshes (`settled`), and an op that
   asks the layout anything flushes first, since it has to answer from the
   change.
+- **The page's time is its own code's, counted at the bridge.** The
+  runtime's watchdog counts all of an entry and nothing pauses it, so it is
+  only the ceiling, five times the page's time; the engine counts the
+  page's own with each op's time left out (`ScriptEngine._bridge`), and an
+  op asked once it is spent throws a `TimeoutError`. Counted by the
+  watchdog, a webmail page's 2.4 s forced layout was cut half way at every
+  `getComputedStyle`. So **anything new that calls the host from the page
+  goes through the bridge, and anything new that runs the page's code from
+  the host goes through `_enter` and `_leave`**, or the clock counts one's
+  time as the other's. A cut inside an op still runs no `finally` under it,
+  and the host has `<Html>` make the document again
+  (`interruptedSince`, `HtmlViewNode.interrupted`): **a flag of `<Html>`'s
+  that a `finally` puts back is put back in `interrupted()` too.**
 - **Every script compiled into the context has an `import()` callback**,
   rejecting with the context's own `TypeError` (`refuseImport`), the
   facade's installation included: a page's `eval`, `new Function`, string

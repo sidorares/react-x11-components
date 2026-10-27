@@ -884,7 +884,7 @@ since this component navigates nowhere by itself:
 | `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
 | `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
 | `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
-| `timeout`        | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                                                                           |
+| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                 |
 | `onTimeout`      | nothing                   | One was.                                                                                                                                                                     |
 | `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
 | `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
@@ -901,6 +901,20 @@ since this component navigates nowhere by itself:
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+
+**A script's time is its own code's.** `timeout` is how long a task — a
+script, a listener, a timer, and the microtasks it queues — may run the
+page's code. What `<Html>` does for it is not counted: the style a
+`getComputedStyle` forces and the layout an `offsetWidth` asks for, which
+on a heavy document take seconds of their own. A task past its time is
+thrown a `TimeoutError` (a `DOMException`) by the next thing it asks of the
+document, and by everything it asks after that; one that asks nothing is
+stopped outright at five times its time, by the runtime's watchdog, which
+counts everything. `onTimeout` is told once a task either way, and the
+page's next task runs. Nothing is begun in the last stretch before that
+ceiling, as long as `timeout`, so a forced layout is not cut half way
+through, and one cut anyway has the document styled and laid out again from
+nothing.
 
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
