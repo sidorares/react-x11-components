@@ -1162,6 +1162,10 @@ function renderControl(
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
+        // …and what it shows is a bullet a character, as Chrome draws its
+        // `-webkit-text-security: disc` (HTML 4.10.5.1.3: obscured so
+        // nobody else can see it)
+        mask: type === 'password' ? '•' : undefined,
         // a browser's caret is the field's text colour (`caret-color:
         // auto`), which is the page's where the page drew the field — the
         // palette's own field keeps the palette's caret — and not what its
