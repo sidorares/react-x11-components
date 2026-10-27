@@ -221,6 +221,8 @@ export {
   useHtmlNetwork,
   videoSource,
 } from './network.js';
+export { threadTransport } from './thread-transport.js';
+export type { ThreadTransportOptions } from './thread-transport.js';
 export type {
   DocumentResponse,
   Fetched,

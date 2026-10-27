@@ -99,6 +99,7 @@ import {
   resourceResult,
   schemeOf,
   sniffCharset,
+  threadTransport,
   useHtmlHandle,
   videoSource,
 } from '../../src/html/index.js';
@@ -182,6 +183,11 @@ const network = new HtmlNetwork({
   // menu) before each load, so a switch takes on the next navigation
   userAgent: DEFAULT_USER_AGENT,
   cookies,
+  // on a thread of its own: a page that keeps this one busy laying itself
+  // out and running its scripts holds back no download — the 2.3 MB
+  // script a playground's frame on joshwcomeau.com waits for came in
+  // 2.5 s here and 0.27 s there
+  fetch: threadTransport(),
   log: process.env.BROWSER_DEBUG
     ? (...parts) => console.error('[browser]', ...parts)
     : undefined,
