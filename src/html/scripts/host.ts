@@ -43,6 +43,7 @@ import type {
   CssTransitionInfo,
   CssEventInfo,
 } from '../node.js';
+import type { MediaEventKind } from '../media.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import {
   HtmlSource,
@@ -1771,6 +1772,20 @@ export class DomHost {
         events.map((e) => ({ ...e, element: this.idOf(e.element) })),
       ),
     ]);
+  }
+
+  /** What the player of one of the page's media elements said: the page
+   *  hears it on the element whose source it is, and nowhere else
+   *  (`mediaPlayed`, in `dom.ts`). As strings, as `__media` is told, since
+   *  a live stream's length is `Infinity`, which JSON has no word for. */
+  mediaEvent(
+    el: Element,
+    src: string,
+    kind: MediaEventKind,
+    value: string,
+  ): void {
+    if (this._disposed || !this.entries) return;
+    this.entries.call('__player', [this.idOf(el), src, kind, value]);
   }
 
   /** And each one's `scrollend`, a frame after its last `scroll`. */

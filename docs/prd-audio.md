@@ -5,9 +5,12 @@ for, what the three repositories have today, the ladder of platform rungs
 that would play it, which repository owns each rung, and the first step:
 a page's `<audio>` heard on macOS.
 
-**Design; nothing is built yet.** The page that asked was OpenAI's "Working
-with academic communities to build scientific understanding". Its "Listen
-to article" button makes no sound in the example browser.
+**The first step is built; the rest is design.** react-x11's `<audio>`
+(sidorares/react-x11#1019) and `<Html>`'s sounds here play a page's
+`<audio>` on macOS: see "The first step" for what was built and what was
+left. The page that asked was OpenAI's "Working with academic communities
+to build scientific understanding", whose "Listen to article" button made
+no sound in the example browser.
 
 ## What the page does
 
@@ -394,6 +397,26 @@ Two things to know before building it:
   cache has to pause its sounds, or a page left behind goes on talking.
 
 ## The first step: a page's `<audio>` on macOS
+
+**Built**, with these differences from the plan below:
+
+- **No bridge change.** The player is told it has no picture in
+  JavaScript (`element: 'audio'` in `createPlayer`'s options), which is
+  what a pane's host needs to copy no frames; the `AVPlayerLayer` an
+  audio item makes still goes unused.
+- **The test player is `fakeMediaPlayers(app)`** on `react-x11/test`,
+  installed on any app rather than on the mock backend alone.
+- **A waiting player is not ready state 2.** Core reports a player that is
+  waiting as playing, so the page cannot be told `waiting`. Instead the
+  page's clock runs at most half a second past what the player last said
+  (`PLAYER_AHEAD`). On a real Mac, while the player fetched the range a
+  seek asked for, the clock ran on a second and a half ahead of it and
+  jumped back when it spoke; with the cap it holds and goes on.
+- **Not built:** the autoplay policy (item 4), `media-src` (item 5), the
+  tab's speaker in the example browser, and a `<video>` with no box,
+  whose soundtrack is still not heard. A media element played out of the
+  document is paused with the rest when its document goes into the
+  back-forward cache.
 
 The goal is the OpenAI button, heard, with each word highlighted as it is
 said. It takes a PR in each of three repositories, the first of them

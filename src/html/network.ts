@@ -913,20 +913,26 @@ export class HtmlNetwork {
    * An `onResource` for the document at `page`: each image, stylesheet,
    * font and script it asks for through this network, under the rules at
    * the top, and handed back as `<Html>` takes it (`resourceResult`). A
-   * `<video>`'s source is handed to the platform's player where `video` says
-   * there is one (`videoSource`), and declined where not. `signal` stops
-   * what the document asked for, for a host that lets it go.
+   * `<video>`'s source, and an `<audio>`'s, is handed to the platform's
+   * player where `video` says there is one (`videoSource`), and declined
+   * where not. `signal` stops what the document asked for, for a host that
+   * lets it go.
    */
   resources(
     page: string,
     options: { signal?: AbortSignalLike; video?: boolean } = {},
   ): (request: ResourceRequest) => Promise<ResourceResult | null> | null {
     return (request) => {
-      if (request.kind === 'video') {
+      if (request.kind === 'video' || request.kind === 'audio') {
         const src = options.video
           ? videoSource(request.url, request.type, page)
           : null;
-        return src ? Promise.resolve({ kind: 'video', src }) : null;
+        if (!src) return null;
+        return Promise.resolve(
+          request.kind === 'audio'
+            ? { kind: 'audio', src }
+            : { kind: 'video', src },
+        );
       }
       const kind = request.kind;
       return this.resource(request.url, kind, page, options.signal).then(
@@ -1238,7 +1244,13 @@ export function mixedContent(
  * declined and the next asked for, rather than handed to a player that
  * fails on it.
  */
-const UNPLAYABLE = new Set(['video/webm', 'video/ogg', 'application/ogg']);
+const UNPLAYABLE = new Set([
+  'video/webm',
+  'video/ogg',
+  'audio/webm',
+  'audio/ogg',
+  'application/ogg',
+]);
 
 /** What the platform's player opens, by MIME type: AVFoundation's MP4 and
  *  QuickTime readers, its audio, and HTTP Live Streaming's playlists, which
@@ -1276,7 +1288,8 @@ export function canPlayMedia(type: string): '' | 'maybe' {
 
 /**
  * What a page's `<video>` plays, where the platform has a player (core's
- * `useSupports('mediaPlayback')`): the URL itself, for the player to open —
+ * `useSupports('mediaPlayback')`), and its `<audio>` the same: the URL
+ * itself, for the player to open —
  * nothing here fetches it — under the rules a subresource is: upgraded on a
  * secure page, `file:` only for a `file:` page, and no other scheme. Null
  * where none of that holds, or its `<source type>` is a container the
@@ -1786,8 +1799,9 @@ export interface HtmlNetworkSeams {
  * A document's network, for a component: `onResource` and a scripts'
  * `fetch` for the document at `page`, through `network` or the process's
  * (`defaultHtmlNetwork`). What the document asked for is let go when
- * `page` changes or the component unmounts. A `<video>` is played by the
- * platform's player where it has one (`useSupports('mediaPlayback')`).
+ * `page` changes or the component unmounts. A `<video>`, and an
+ * `<audio>`, is played by the platform's player where it has one
+ * (`useSupports('mediaPlayback')`).
  *
  * ```tsx
  * const net = useHtmlNetwork(url);

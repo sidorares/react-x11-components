@@ -2501,8 +2501,17 @@ closes a way out a DOM binding opens by accident:
   is mounted paused, and `paused` is left out until something says, so
   `autoplay` still plays. **Anything new that tells a player what to do
   goes through `setMediaState`**, a press on `controls` included, or the
-  next prop a script sets is no change and the player is not told.
-  Nothing comes back from the player to the page yet. **Where the page's
+  next prop a script sets is no change and the player is not told. An
+  `<audio>` is the same through `sounds.ts` and core's `<audio>`, mounted
+  from the first time it is told it plays until its end (`_sounding`),
+  out of the document as much as in it. **What an audio's player says
+  comes back** (`soundEvent`, the `__player` entry, `mediaPlayed`): its
+  length, its time, its end and its failure are the page's, and the
+  model's clock runs at most `PLAYER_AHEAD` past what the player last
+  said, so it waits while the player does. A video's player says nothing
+  back yet. **Anything new that makes a media element play or stop goes
+  through `mediaSync`**, which keeps `playingMedia`: what a document going
+  into the back-forward cache pauses besides what is in its tree. **Where the page's
   requests reach a network (`network`, `hasNetwork`), the page loads the
   media itself as far as its metadata**: the host fetches the source
   (`_mediaFetch`), reads its container's head (`scripts/media.ts`) and

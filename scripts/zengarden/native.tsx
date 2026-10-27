@@ -188,7 +188,8 @@ export async function captureNative(
   const onResource = (
     request: ResourceRequest,
   ): Promise<ResourceResult | null> => {
-    if (request.kind === 'video') return Promise.resolve(null);
+    if (request.kind === 'video' || request.kind === 'audio')
+      return Promise.resolve(null);
     const kind = request.kind;
     pending += 1;
     return network

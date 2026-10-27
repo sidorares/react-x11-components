@@ -78,6 +78,7 @@ import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
+import { useSounds } from './sounds.js';
 import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
@@ -106,6 +107,7 @@ export type {
   HtmlDomEventType,
 } from './dom-events.js';
 export type {
+  AudioSource,
   ResourceRequest,
   ResourceResult,
   VideoSource,
@@ -1024,6 +1026,8 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // core's `<video>` over each video the document can show one over
   // (`videos.ts`)
   const videos = useVideos(viewNode);
+  // core's `<audio>` for each that a page's script plays (`sounds.ts`)
+  const sounds = useSounds(viewNode);
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
@@ -1083,6 +1087,8 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onDocument: handleDocument,
     onControls: handleControls,
     onMedia: videos.onMedia,
+    onSounds: sounds.onSounds,
+    onMediaEvent: props._onMediaEvent,
     onEmbedded: props.renderEmbedded ? embedded.onEmbedded : undefined,
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
@@ -1113,6 +1119,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     // over is no video a player is mounted for
     ...videos.render(),
     ...embedded.render(),
+    // no room, and nothing drawn: where they are among the children is
+    // nothing anyone sees
+    ...sounds.render(),
   ];
   // The widgets and the stops in the document's order, which is the order
   // core's Tab goes through a subtree in where the document hands it on:

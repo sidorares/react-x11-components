@@ -46,6 +46,7 @@ import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
+import type { MediaEventHandler } from '../media.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
@@ -240,6 +241,9 @@ export interface InternalHtmlProps extends HtmlProps {
   _onPaint?: () => void;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
+  /** What a player with no picture said, for the page that played it
+   *  (`HtmlViewProps.onMediaEvent`). */
+  _onMediaEvent?: MediaEventHandler;
   /** Whether the document may be left, as its scripts answer: what the
    *  handle's `beforeUnload` asks. */
   _unloadCheck?: () => boolean;
@@ -567,6 +571,7 @@ export function useScriptedHtml(
     _onViewportScroll: scripts.scrolled,
     _onPaint: scripts.painted,
     _onCssEvents: scripts.cssEvents,
+    _onMediaEvent: scripts.mediaEvent,
     _unloadCheck: unloadCheck,
     _onParserBlocked: scripts._onParserBlocked,
     _frames:
