@@ -236,11 +236,12 @@ export class AnimationTimeline {
    *  (`HtmlViewNode._oweCssEvents`). A fork has none. */
   onCssEvent: (() => void) | null = null;
   /**
-   * Whether a CSS animation the clock runs starts at the paint that first
-   * shows it rather than as its style is first computed: held at its start
-   * until then (`pending`), and running from that paint's time on
-   * (`startPending`), as a browser holds a new animation until the frame
-   * that renders it (Web Animations 1, 4.4.2, the ready time). A style is
+   * Whether a CSS animation the clock runs, or a transition, starts at the
+   * paint that first shows it rather than as its style is first computed:
+   * held at its start until then (`pending`), and running from that
+   * paint's time on (`startPending`), as a browser holds a new animation —
+   * a `CSSTransition` is one — until the frame that renders it (Web
+   * Animations 1, 4.4.2, the ready time). A style is
    * computed well before the paint where a page asks for one or a build
    * is long — Radix reads a menu's `getComputedStyle` as it mounts it — and
    * a fade of 100ms was over before the menu was first drawn.
@@ -1111,6 +1112,8 @@ export class AnimationTimeline {
     const a = sized as unknown as Record<string, unknown>;
     const running = state?.running ?? new Map<string, Transit>();
     const completed = state?.completed ?? new Map<string, unknown>();
+    // one waiting for the paint that first shows it has only just begun
+    for (const run of running.values()) if (run.pending) beginAt(run, now);
     // one run to its end and left there: a change from a frame a little
     // short of its end, as the document drew it last, is none
     for (const [field, end] of completed) {
@@ -1138,6 +1141,7 @@ export class AnimationTimeline {
         continue;
       }
       running.set(field, {
+        ...this._made(),
         serial: ++transitSeq,
         property: propertyOfField(field, item(list.properties, index)),
         created: now,
@@ -1189,6 +1193,7 @@ export class AnimationTimeline {
           Math.max(0, Math.abs(done * run.shortening + 1 - run.shortening)),
         );
         running.set(field, {
+          ...this._made(),
           serial: ++transitSeq,
           property: run.property,
           created: now,
@@ -1202,6 +1207,7 @@ export class AnimationTimeline {
         });
       } else {
         running.set(field, {
+          ...this._made(),
           serial: ++transitSeq,
           property: run.property,
           created: now,
@@ -1220,7 +1226,8 @@ export class AnimationTimeline {
     let inherits = false;
     let willChange = 0;
     for (const [field, run] of running) {
-      this._seenAt(el, pseudo, run, now);
+      // waiting for its paint it has not begun, and owes nothing yet
+      if (!run.pending) this._seenAt(el, pseudo, run, now);
       if (now >= run.start + run.duration) {
         running.delete(field);
         completed.set(field, run.to);
@@ -1527,11 +1534,20 @@ export class AnimationTimeline {
     this.onCssEvent?.();
   }
 
+  /** What a transition made now is besides its timing: one that waits for
+   *  the paint that first shows it, where this starts there. */
+  private _made(): { pending?: boolean } {
+    if (!this.startsAtPaint) return {};
+    this.pendingSince = Math.min(this.pendingSince, this.now);
+    return { pending: true };
+  }
+
   /**
-   * The paint that first shows the animations made since the last has
-   * happened, at `now`: each that waits for it (`startsAtPaint`) starts
-   * then, from where it is held, which is its start unless a page sought
-   * it. Whether any did.
+   * The paint that first shows the animations and transitions made since
+   * the last has happened, at `now`: each that waits for it
+   * (`startsAtPaint`) starts then — an animation from where it is held,
+   * which is its start unless a page sought it, and a transition made then
+   * with its delay to run. Whether any did.
    */
   startPending(now: number): boolean {
     let any = false;
@@ -1541,6 +1557,16 @@ export class AnimationTimeline {
           if (!run?.pending) continue;
           run.start = now - (run.hold ?? 0);
           run.hold = null;
+          run.pending = false;
+          any = true;
+        }
+      }
+    }
+    for (const states of this._transitions.values()) {
+      for (const state of states.values()) {
+        for (const run of state.running.values()) {
+          if (!run.pending) continue;
+          beginAt(run, now);
           run.pending = false;
           any = true;
         }
@@ -1697,6 +1723,7 @@ export class AnimationTimeline {
             ...run,
             created,
             start: created + (run.start - run.created),
+            pending: false,
           };
           TRANSIT_KEYS.set(moved, key);
           const phase = this._phases.get(run);
@@ -1792,6 +1819,10 @@ export interface Transit {
   /** Its reversing shortening factor: how much of a whole one that turned
    *  back runs. */
   shortening: number;
+  /** Whether it is new and waits for the paint that first shows it
+   *  (`AnimationTimeline.startsAtPaint`): until then it has just begun,
+   *  wherever the clock is (`beginAt`). */
+  pending?: boolean;
 }
 
 let transitSeq = 0;
@@ -2009,4 +2040,10 @@ function proportional(timing: ReturnType<typeof timingAt>, span = 100) {
 function filledForwards(timing: Timing): Timing {
   if (timing.fill === 'forwards' || timing.fill === 'both') return timing;
   return { ...timing, fill: timing.fill === 'backwards' ? 'both' : 'forwards' };
+}
+
+/** A transition begun at `at`: made then, and started its delay after. */
+function beginAt(run: Transit, at: number): void {
+  run.start = at + (run.start - run.created);
+  run.created = at;
 }

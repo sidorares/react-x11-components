@@ -307,6 +307,9 @@ export function liftOf(
     let fade: Readonly<Transit>[] | null = null;
     let turn: Readonly<Transit>[] | null = null;
     for (const [field, run] of transits) {
+      // nor one waiting for the paint that first shows it, whose start is
+      // not known yet
+      if (run.pending) return null;
       if (host.now >= run.start + run.duration) continue;
       // a jump at the end of a delay has no frames to run
       if (!LIFTABLE.has(field) || !(run.duration > 0)) return null;
@@ -1169,6 +1172,8 @@ export function shadowLiftOf(host: SpriteHost, el: Element): ShadowLift | null {
   let end = -Infinity;
   const serials: number[] = [];
   for (const [field, run] of transits) {
+    // one waiting for its first paint has no start yet
+    if (run.pending) return null;
     if (host.now >= run.start + run.duration || !(run.duration > 0)) continue;
     if (field === 'boxShadow') shadows = true;
     // a fade fades the shadows with the box, and a moving origin moves

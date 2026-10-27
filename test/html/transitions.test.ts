@@ -26,6 +26,7 @@ import {
   boxOf,
   bytesApart,
   drawnCorners,
+  findById,
   h,
   layerCorners,
   metric,
@@ -254,6 +255,47 @@ test('a transition holds where it starts through its delay', async (t) => {
   assert.strictEqual(doc.style('a').opacity, 1, 'in its delay');
   await doc.at(64 + 80);
   assert.ok(near(doc.style('a').opacity, 0.6), `${doc.style('a').opacity}`);
+});
+
+test('a transition starts at the paint that first shows it, however long before that its style was worked out', async (t) => {
+  // as an animation does: a menu that slides in and has its style read as
+  // it is put in — a page's getComputedStyle — slid before the paint that
+  // first drew it. A CSSTransition is held at its start until the frame
+  // that renders it (Web Animations 1, 4.4.2).
+  let time = 0;
+  const armed = new Set<() => void>();
+  t.mock.method(animationClock, 'now', () => time);
+  t.mock.method(animationClock, 'arm', (step: () => void) => {
+    armed.add(step);
+    return step;
+  });
+  t.mock.method(animationClock, 'disarm', (step: () => void) => {
+    armed.delete(step);
+  });
+  const { node } = await render(
+    '<style>#a { transition: opacity 100ms linear } #a.off { opacity: 0 }' +
+      '</style><p id="a">x</p>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a')!;
+  a.attribs.class = 'off';
+  el.touchDocument();
+  el.computedStyle(a);
+  // the paint that first shows it, 300ms on
+  time = 300;
+  await act();
+  assert.strictEqual(styleOf(node, 'a').opacity, 1, 'drawn where it starts');
+  // and a frame 50ms after that paint has it half way
+  time = 350;
+  const due = [...armed];
+  armed.clear();
+  await act(() => {
+    for (const step of due) step();
+  });
+  assert.ok(
+    near(styleOf(node, 'a').opacity, 0.5),
+    `${styleOf(node, 'a').opacity}`,
+  );
 });
 
 test('a hover let go of half way turns back, in half the time', async (t) => {

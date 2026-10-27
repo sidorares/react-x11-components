@@ -10411,7 +10411,8 @@ export class HtmlViewNode extends Node {
         duration: run.duration,
         delay: run.start - run.created,
         easing: easingText(run.easing),
-        currentTime: now - run.created,
+        // waiting for the paint that first shows it, it has not begun
+        currentTime: run.pending ? 0 : now - run.created,
       }));
   }
 
