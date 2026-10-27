@@ -68,6 +68,16 @@ wptrunner reads a browser's (`scripts/conformance/testharness.tsx`):
   command to a path the page's `fetch` reaches the host through, and the
   host injects the input into the X server — clicks, keys, wheel, pointer
   actions.
+- **A window a test opens is a window**: `window.open`, and anything else
+  a page sends to a new tab, loads in a top-level `<Html scripts>` of its
+  own, laid out beside the test's, with its own session history and a
+  back-forward cache of six documents, as Chrome keeps on the desktop; the
+  test's window has one too. What a harness in an opened window reports is
+  not the test's. WPT's remote contexts (`/common/dispatcher/`) run in such
+  windows, and so does every back-forward cache test. Each test, and each
+  reference, starts in a window of its own ([#1049]): the runner kept one
+  scroll pane for the whole child before, and a reference started scrolled
+  where its test had left it.
 
 Each child runs under a memory cap of its own (`systemd-run --scope`), so a
 document that runs away with memory is its own child's crash and not the
@@ -122,7 +132,7 @@ PR's run, which the last column names.
 | indexeddb                        | 24    | 0.0%  | 100%  | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869), transferred buffers (#917), service workers (#918)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | media-pseudo-classes             | 5     | 0.0%  | 100%  | `:muted` and `:volume-locked` (#861), `:playing` and `:paused` (#891), `canPlayType` (#904), a source loaded where there is a network (#916, #920)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| navigation                       | 439   | 0.0%  | 50.6% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| navigation                       | 439   | 0.0%  | 58.1% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902), and a back-forward cache, with the windows a test opens ([#1049]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | scoped-custom-element-registries | 29    | 0.2%  | 87.0% | scoped registries, `setHTMLUnsafe` (#863), clonable shadow roots (#887), `getHTML()` (#925), a registry fixed where an element is made (#926)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | scroll-driven-animations         | 146   | 4.9%  | 71.8% | the timeline properties (#885), `ScrollTimeline` and `ViewTimeline` over Web Animations' model (#892), their grammars (#893), CSS's `animation-timeline` (#894), `animation-range` (#899), `CSSAnimation`s (#906), `timeline-scope` (#907), timeline offsets (#908)                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -130,7 +140,7 @@ PR's run, which the last column names.
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | webrtc                           | 91    | 0.2%  | 57.0% | `RTCPeerConnection` over werift, its transceivers, transports and data channels, `MediaStream` and fake devices ([#1030])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| webtransport                     | 58    | 0.0%  | 98.2% | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), its sessions held to the document's `connect-src` ([#1021]), and quico 0.8.0, which retired the adapter's workarounds ([#1046]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                              |
+| webtransport                     | 58    | 0.0%  | 100%  | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), its sessions held to the document's `connect-src` ([#1021]), quico 0.8.0, which retired the adapter's workarounds ([#1046]), and a back-forward cache ([#1049]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                              |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 The second run's jump is the runner's as much as the engine's: WPT's
@@ -314,20 +324,26 @@ as WPT's does, not against WPT's own.
 where the page has a network (#916), from its first byte (#920), and
 `:seeking`, `:buffering` and `:stalled` follow the load.
 
-**navigation (50.6%).** A document a navigation leaves hears
+**navigation (58.1%).** A document a navigation leaves hears
 `beforeunload`, `pagehide`, `visibilitychange` and `unload`, and the
 methods of a document that has gone reject ([#973]). A tab's documents are
 one session history that a host hands each of them, over which
 `navigation.entries()` is the run of entries around the current one that
 share its origin, and a document hears `pageswap` and `pagereveal`
-([#980]). What is left: the `navigate` event in another window — a link or
-a form aimed at a frame, a `window.open` — where a frame without scripts
-has no navigation of its own; a frame's history inside its tab's;
-restoring a document's scroll when it is shown again; a back-forward
-cache, so `persisted` is always false; `navigator.sendBeacon`, which still
-answers false; a page in a background tab, which stays `visible`; and a
-`beforeunload` for an `iframe.src` its parent assigns, told late, as the
-frame goes.
+([#980]). A session keeps the documents a tab left in a back-forward cache
+where the host gives it one, and a step back or forward shows one again as
+it was, with `pageshow` and `pagehide` `persisted`, `navigation.activation`
+a `traverse`, its entries re-read and those that went disposed ([#1049]):
+in [#1049]'s run the area went from 279 of 518 subtests to 284, five
+`*-after-bfcache` tests from timeouts to passes, and the sixth,
+`entries-after-bfcache-in-iframe.html`, stops before the cache, at a
+frame's `navigation`. What is left: the `navigate` event in another window
+— a link or a form aimed at a frame, a `window.open` — where a frame
+without scripts has no navigation of its own; a frame's history inside its
+tab's; restoring a document's scroll when it is shown again;
+`navigator.sendBeacon`, which still answers false; a page in a background
+tab, which stays `visible`; and a `beforeunload` for an `iframe.src` its
+parent assigns, told late, as the frame goes.
 
 The runner hands each test a session now, and loads what the test's
 document navigates to — `location`, `navigation.navigate()`, `reload()`,
@@ -458,7 +474,7 @@ cannot reach; DTMF, RTP and its stats; H.264, which nothing here encodes;
 and the cases werift answers otherwise than a browser, which the PRD
 lists.
 
-**webtransport (98.2%).** A page has the W3C API whole, over its own
+**webtransport (100%).** A page has the W3C API whole, over its own
 WHATWG streams, now the standard's algorithms (WPT's `streams/` passes but
 for the tentative `owning` type), and its sessions go through a seam the
 host answers, `scripts.webTransport`, whose default opens nothing.
@@ -474,7 +490,10 @@ quico's own options, and quico's `closed` says how a session ended. In
 passes but the one subtest of
 `back-forward-cache-with-closed-webtransport-connection`, which needs a
 back-forward cache; the 204 a server establishes a session with, which
-quico 0.7 refused, passes in each of `connect`'s four variants. Beyond
+quico 0.7 refused, passes in each of `connect`'s four variants. That one
+passes since [#1049], which keeps a document left in a back-forward cache
+where its WebTransport sessions are closed, and opens the window the test
+opens. Beyond
 the label, `exportKeyingMaterial()` and `responseHeaders`, which quico
 0.8.0 added, are carried by the seam ([#1048]), and the protocols header a
 page may not set throws as the spec has it: `export-keying-material`,
@@ -557,5 +576,6 @@ Across areas, three things recurred, and each now has its first slice:
 [#1020]: https://github.com/sidorares/react-x11-components/pull/1020
 [#1021]: https://github.com/sidorares/react-x11-components/pull/1021
 [#1030]: https://github.com/sidorares/react-x11-components/pull/1030
+[#1049]: https://github.com/sidorares/react-x11-components/pull/1049
 [#1046]: https://github.com/sidorares/react-x11-components/pull/1046
 [#1048]: https://github.com/sidorares/react-x11-components/pull/1048
