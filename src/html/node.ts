@@ -7611,6 +7611,11 @@ export class HtmlViewNode extends Node {
     timeline.scrollProgress = this._timelineProgress;
     cascade.timeline = timeline;
     timeline.onCssEvent ??= () => this._oweCssEvents();
+    // a new animation starts at the paint that shows it (`paint`), and one
+    // that runs out waits at its end for the page to hear of it, where a
+    // page hears (`_oweCssEvents`)
+    timeline.startsAtPaint = true;
+    timeline.holdsEnds = !!this._props().onCssEvents;
     return timeline;
   }
 
@@ -7633,6 +7638,10 @@ export class HtmlViewNode extends Node {
         ...(this._vt?.timeline.takeCssEvents() ?? []),
         ...this._cssEventsLeft.splice(0),
       ];
+      // the ends held for these are let go as they are told, and the next
+      // frame draws each as its animation leaves it — or as the listeners
+      // keep it, which they do now, before any paint (`holdsEnds`)
+      if (this._timeline.releaseEnds()) this._scheduleFrame();
       const tell = this._props().onCssEvents;
       if (!events.length || !tell) return;
       tell(
@@ -8681,6 +8690,12 @@ export class HtmlViewNode extends Node {
 
   /** What a frame of the animations does, timed (`_counted`). */
   private readonly _makeFrame = (): void => {
+    // an animation no paint has shown for long — nothing draws the
+    // document, or not where it is — starts anyway, and runs to its end
+    const now = animationClock.now();
+    if (now - this._timeline.pendingSince >= PAINT_WAIT_MS) {
+      this._timeline.startPending(now);
+    }
     const tree = this._tree;
     // a build is coming, and styles every animated element at its time
     if (!this._cascade || !tree || this._stale !== Stale.Nothing) return;
@@ -11093,6 +11108,11 @@ export class HtmlViewNode extends Node {
     this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
     this._counted(() => this._paintContent(ctx));
+    // the animations this paint is the first to show start now, and run
+    // from here (`AnimationTimeline.startsAtPaint`)
+    if (this._timeline.startPending(animationClock.now())) {
+      this._scheduleFrame();
+    }
     // what the layouts since the last rendering placed anchored boxes by
     // is their last successful position option now
     commitLastPositions();

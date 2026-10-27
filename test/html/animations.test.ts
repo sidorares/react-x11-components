@@ -450,6 +450,45 @@ test('an animation runs its frames as time passes, and is over at its end', asyn
   assert.strictEqual(doc.clock.pending, false, 'no frame is asked for');
 });
 
+test('an animation starts at the paint that first shows it, however long before that its style was worked out', async (t) => {
+  // A page that reads the style of what it has just put in — Radix reads a
+  // menu's `getComputedStyle` as it mounts it — has it worked out well
+  // before the paint that shows it, and a fade of 100ms was over before the
+  // menu was first drawn. A browser holds a new animation at its start
+  // until the frame that renders it (Web Animations 1, 4.4.2).
+  let time = 0;
+  const armed = new Set<() => void>();
+  t.mock.method(animationClock, 'now', () => time);
+  t.mock.method(animationClock, 'arm', (step: () => void) => {
+    armed.add(step);
+    return step;
+  });
+  t.mock.method(animationClock, 'disarm', (step: () => void) => {
+    armed.delete(step);
+  });
+  const { node } = await render(
+    '<style>@keyframes f { from { opacity: 0 } to { opacity: 1 } }' +
+      '.on { animation: f 100ms linear }</style><p id="a">x</p>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a')!;
+  a.attribs.class = 'on';
+  el.touchDocument();
+  el.computedStyle(a);
+  // the paint that first shows it, 300ms on
+  time = 300;
+  await act();
+  assert.strictEqual(styleOf(node, 'a').opacity, 0, 'drawn at its start');
+  // and a frame 50ms after that paint has it half way
+  time = 350;
+  const due = [...armed];
+  armed.clear();
+  await act(() => {
+    for (const step of due) step();
+  });
+  assert.strictEqual(styleOf(node, 'a').opacity, 0.5);
+});
+
 /**
  * A document whose animations' clock is held, and says how long each frame
  * it asks for waits: `next()` runs the frame asked for soonest, at its time.

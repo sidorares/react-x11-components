@@ -8786,6 +8786,46 @@ test('a CSS animation tells the page as it starts, goes round, ends and is cance
   );
 });
 
+test('an animation that runs out is drawn at its end until the page hears of it, so a listener that keeps the end keeps it from that frame', async (t) => {
+  // Radix unmounts a menu that fades out once its `animationend` comes,
+  // and keeps the fade's end with `animation-fill-mode: forwards` in the
+  // listener, which a browser runs before the frame that would draw the
+  // menu as the fade leaves it. Told after that frame, the menu was drawn
+  // whole between its fade and its unmounting.
+  const clock = holdClock(t, animationClock);
+  const doc = await hosted(
+    '<style>@keyframes out { to { opacity: 0 } }' +
+      ' .closing { animation: out 100ms linear }</style>' +
+      '<div id="m">menu</div><div id="n">none</div><p id="out"></p><script>' +
+      'var m = document.getElementById("m");' +
+      'm.addEventListener("animationend", function (e) {' +
+      '  m.style.animationFillMode = "forwards";' +
+      '  document.getElementById("out").textContent = e.animationName; });' +
+      '</script>',
+  );
+  doc.run(
+    'm.className = "closing"; document.getElementById("n").className = "closing";',
+  );
+  const kept: number[] = [];
+  const left: number[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    await frames(clock, 1);
+    kept.push(drawnStyle(doc, 'm').opacity);
+    left.push(drawnStyle(doc, 'n').opacity);
+  }
+  assert.equal(doc.text('out'), 'out', 'the page heard the end');
+  // faded out, and never drawn whole again
+  const faded = kept.findIndex((o) => o < 0.5);
+  assert.ok(faded >= 0, `it fades: ${kept.join(' ')}`);
+  assert.ok(
+    kept.slice(faded).every((o) => o < 0.5),
+    `kept at its end: ${kept.join(' ')}`,
+  );
+  assert.equal(kept[kept.length - 1], 0);
+  // and one no listener keeps is left as its animation leaves it
+  assert.equal(left[left.length - 1], 1, `let go: ${left.join(' ')}`);
+});
+
 test('a Highlight is a set of ranges and CSS.highlights a map of them, whatever a page does to Set and Map', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
