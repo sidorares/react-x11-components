@@ -7023,10 +7023,13 @@ export class HtmlViewNode extends Node {
     // document's height may have changed with it, which only a layout says.
     // One that draws nothing reaches nowhere: a sparkle scaled to nothing
     // at the start of its animation asked for the whole document's layout
-    // at every frame it spent there.
+    // at every frame it spent there. Nor does one a box around it clips
+    // (`heldByClip`): a mail page's spinner turns at the foot of its
+    // message list, a scroller far shorter than the list, and its every
+    // frame laid the whole page out again for an end it could not reach.
     let relayout = false;
     for (const [box, was] of moved) {
-      const before = inkBottom(box);
+      const before = heldByClip(box) ? -Infinity : inkBottom(box);
       retranslate(box, was);
       tree.relative = true;
       if (before >= this._documentHeight) relayout = true;
@@ -7039,6 +7042,7 @@ export class HtmlViewNode extends Node {
       stackLayers(tree.root);
     }
     for (const [box] of moved) {
+      if (heldByClip(box)) continue;
       if (inkBottom(box) >= this._documentHeight) relayout = true;
     }
     // a box a drag's layout left where it was for drawing nothing, shown:
@@ -15711,6 +15715,22 @@ function changedNodes(change: HtmlChange): readonly AnyNode[] {
  *  that draws nothing, whose bounds are at infinity. */
 function inkBottom(box: Box): number {
   return box.boundsY === Infinity ? -Infinity : box.boundsY + box.boundsHeight;
+}
+
+/**
+ * Whether a box around `box` clips what it holds, with nothing out of the
+ * flow between them: the document is then as tall as that box reaches and
+ * no taller, wherever `box` moves inside it (`computePaintBounds`). Out of
+ * the flow, what a box reaches is counted by the containing blocks it is
+ * placed in (`layoutDocument`), so the answer there is no.
+ */
+function heldByClip(box: Box): boolean {
+  if (box.outOfFlow) return false;
+  for (let at = box.parent; at?.parent; at = at.parent) {
+    if (hasRect(at) && clipsOverflow(at)) return true;
+    if (at.outOfFlow) return false;
+  }
+  return false;
 }
 
 /**

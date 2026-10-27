@@ -1018,6 +1018,45 @@ metric(
   },
 );
 
+test('a frame that turns a box a scroller holds below the end of the document lays nothing out', async (t) => {
+  // A mail page's spinner turns at the foot of its message list, a
+  // scroller far shorter than the list: the spinner's ink is far below the
+  // end of the document, which was taken for reaching it, and every frame
+  // laid the whole page out again — seconds a frame, on that page
+  const doc = await running(
+    t,
+    '<style>body { margin: 0 }' +
+      '@keyframes spin { from { transform: rotate(0) }' +
+      ' to { transform: rotate(1turn) } }' +
+      '#list { height: 60px; overflow: auto }' +
+      '#rows { height: 400px }' +
+      '#spin { display: inline-block; width: 12px; height: 12px;' +
+      ' background: #aa0000; animation: spin 320ms linear infinite }' +
+      '#after { height: 20px }</style>' +
+      '<div id="list"><div id="rows"></div><span id="spin"></span></div>' +
+      '<div id="after"></div>',
+    300,
+  );
+  const node = doc.el as unknown as {
+    _invalidate(stale: number, ...rest: unknown[]): void;
+    _restyleInPlace(...rest: unknown[]): boolean;
+  };
+  const invalidated = t.mock.method(node, '_invalidate');
+  const restyled = t.mock.method(node, '_restyleInPlace');
+  const before = JSON.stringify(doc.style('spin').transform);
+  await doc.at(96);
+  assert.notStrictEqual(
+    JSON.stringify(doc.style('spin').transform),
+    before,
+    'it turned',
+  );
+  assert.ok(restyled.mock.callCount() > 0, 'no frame was made');
+  const laidOut = invalidated.mock.calls.filter(
+    (call) => call.arguments[0] === 1,
+  );
+  assert.strictEqual(laidOut.length, 0, 'the document was laid out');
+});
+
 metric(
   'a frame that turns, scales or fades a ::before in the flow restyles it where it is and repaints what it draws, to the pixels a build draws',
   async (t) => {
