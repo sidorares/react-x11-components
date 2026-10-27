@@ -2887,7 +2887,10 @@ closes a way out a DOM binding opens by accident:
   is read only where undici publishes it (`undici:websocket:open`, Node 24
   and later), and stored before the page hears `open`. **Anything new the
   adapter tells waits behind `open`** (`held`), since the cookie is stored
-  a microtask after the runtime's `open` event.
+  a microtask after the runtime's `open` event. **And an `error` is the
+  socket's end**, told as `failed` there, whatever `close` comes after it:
+  Node 22's undici fires none after a refused handshake, and a socket that
+  waited for one hung in CONNECTING.
 - **A page's WebRTC is the realm's semantics over the seam's protocol**
   (`webrtc.ts`, `datachannel.ts` and `mediastream.ts` in the page;
   `peers.ts` and `media-sources.ts` on the host; `HtmlScripts.webRTC` and

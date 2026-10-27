@@ -1280,7 +1280,6 @@ function runtimeSocket(
   /** Abandoned before the runtime's socket was made. */
   let abandoned = false;
   let done = false;
-  let errored: string | null = null;
   /** What came after `open` and before it was told, which waits for it. */
   let held: (() => void)[] | null = null;
   const inOrder = (fn: () => void): void => {
@@ -1321,7 +1320,10 @@ function runtimeSocket(
           protocol: String(socket.protocol ?? ''),
           extensions: String(socket.extensions ?? ''),
         });
-        for (const fn of waiting) fn();
+        for (const fn of waiting) {
+          if (done) break;
+          fn();
+        }
       });
     };
     socket.onmessage = (event) =>
@@ -1336,21 +1338,23 @@ function runtimeSocket(
           );
         }
       });
-    socket.onerror = (event) => {
-      const message = event?.message ?? (event?.error as Error)?.message;
-      errored = message ? String(message) : 'the connection failed.';
-    };
+    // an error is a failed connection, which is all the page hears of it
+    // and whatever `close` follows it: Node 22's undici fires none after a
+    // refused handshake, and leaves the socket CONNECTING
+    socket.onerror = (event) =>
+      inOrder(() => {
+        done = true;
+        const message = event?.message ?? (event?.error as Error)?.message;
+        events.failed(message ? String(message) : 'the connection failed.');
+      });
     socket.onclose = (event) =>
       inOrder(() => {
         done = true;
-        if (errored !== null) events.failed(errored);
-        else {
-          events.closed(
-            Number(event?.code ?? 1006),
-            String(event?.reason ?? ''),
-            event?.wasClean === true,
-          );
-        }
+        events.closed(
+          Number(event?.code ?? 1006),
+          String(event?.reason ?? ''),
+          event?.wasClean === true,
+        );
       });
   };
   // the handshake's answer is watched for where there is a jar to keep its
