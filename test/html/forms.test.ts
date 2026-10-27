@@ -16,7 +16,7 @@ import {
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 import { XK_ESCAPE } from 'react-x11/keysyms';
-import { Html } from '../../src/index.js';
+import { Html, useHtmlHandle } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import {
@@ -393,6 +393,44 @@ test("a text area's hint keeps its line breaks, and a field's loses them", async
     screen.getByPlaceholder('three'),
     'the field has its own, on one line',
   );
+});
+
+test('a password field draws a bullet a character, and stops when a script makes it a text field', async () => {
+  // HTML 4.10.5.1.3: a password field's value is obscured, which Chrome
+  // draws as `-webkit-text-security: disc`, a U+2022 a character. The
+  // widget was mounted `sensitive`, which keeps the text off the clipboard,
+  // and drew it as typed. A page's "show password" button is a script
+  // setting `type`, and what it shows is the same widget with what was
+  // typed in it.
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Form() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source: '<input id="p" type="password"><input id="t">',
+      partial: false,
+      ref: handle.ref,
+    });
+  }
+  await renderX11(
+    h('box', { style: { width: 300, flexDirection: 'column' } }, h(Form)),
+    { width: 300, height: 200, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  type Field = DrawnNode & Props & { value: string };
+  const fields = () => screen.all((n) => n.kind === 'textinput') as Field[];
+  const [password, text] = fields();
+  assert.strictEqual(password.props.mask, '•');
+  assert.strictEqual(password.props.sensitive, true);
+  assert.strictEqual(text.props.mask, undefined, 'a text field shows its text');
+
+  await userEvent.type(password, 'hunter2');
+  findById(handle!.document, 'p')!.attribs.type = 'text';
+  await act(() => handle!.refresh());
+  const [shown] = fields();
+  assert.ok(shown === password, 'the same widget');
+  assert.strictEqual(shown.props.mask, undefined);
+  assert.strictEqual(shown.props.sensitive, false);
+  assert.strictEqual(shown.value, 'hunter2');
 });
 
 test("::-webkit-input-placeholder is ::placeholder, and another engine's name is nothing", async () => {

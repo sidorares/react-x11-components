@@ -840,7 +840,9 @@ it up. **The floor is a running one and moves often** — every move since
   for an app that has none, which `test/html/audio.test.ts` drives in place
   of AVFoundation. A core without `<audio>` throws on the element, so the
   floor moves with the feature. It also carries `<textinput mask>`
-  (react-x11#1017), which needed no change here.
+  (react-x11#1017), a bullet drawn for each character, which `<Html>`
+  mounts a password field with: its widget was `sensitive`, which keeps
+  the text off the clipboard, and drew what was typed as typed.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

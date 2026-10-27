@@ -1881,6 +1881,12 @@ and a submission carries it as a file with no name and no content, as a
 browser does when none was chosen. Reading a file is a host's business,
 through a dialog of its own; nothing here reaches the disk.
 
+**A password field draws a bullet for each character**, as Chrome draws
+one, through core's `<textinput mask>`, and its text never reaches the
+clipboard or the primary selection (`sensitive`). A script that sets the
+field's `type` to `text`, a page's "show password" button, shows what was
+typed in the same widget.
+
 **A control is drawn in its element's colour scheme.** In the palette's
 scheme it is the palette's widget, so an unstyled form in a document looks
 like the window's own. In the other scheme it is drawn in Chrome's colours
