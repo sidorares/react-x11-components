@@ -40,6 +40,7 @@ import type { installWebAudio } from './webaudio.js';
 import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
+import type { installGeometry } from './geometry.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -73,6 +74,7 @@ export function installDom(
   webrtc: typeof installWebRTC,
   rtcTransports: typeof installRtcTransports,
   webaudio: typeof installWebAudio,
+  geometry: typeof installGeometry,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -5433,36 +5435,12 @@ export function installDom(
       },
     });
 
-  /** A rectangle as `getBoundingClientRect` hands one over: the viewport's
-   *  coordinates, which are the document's less the scroll. */
-  class DOMRect {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    constructor(x = 0, y = 0, width = 0, height = 0) {
-      this.x = x;
-      this.y = y;
-      this.width = width;
-      this.height = height;
-    }
-    get left(): number {
-      return Math.min(this.x, this.x + this.width);
-    }
-    get top(): number {
-      return Math.min(this.y, this.y + this.height);
-    }
-    get right(): number {
-      return Math.max(this.x, this.x + this.width);
-    }
-    get bottom(): number {
-      return Math.max(this.y, this.y + this.height);
-    }
-    toJSON(): Any {
-      const { x, y, width, height, left, top, right, bottom } = this;
-      return { x, y, width, height, left, top, right, bottom };
-    }
-  }
+  /** The geometry interfaces (`geometry.ts`): a point, a rectangle, a
+   *  quad and a matrix. A rectangle is what `getBoundingClientRect` hands
+   *  over, in the viewport's coordinates, which are the document's less
+   *  the scroll. */
+  const GEOMETRY = geometry({ DOMException });
+  const DOMRect: Any = GEOMETRY.classes.DOMRect;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -9323,18 +9301,15 @@ export function installDom(
     }
     // the transform
     setTransform(a: Any = 1, b = 0, c = 0, d = 1, e = 0, f = 0): void {
-      if (typeof a === 'object' && a !== null) {
-        this._matrix = [
-          a.a ?? a.m11 ?? 1,
-          a.b ?? a.m12 ?? 0,
-          a.c ?? a.m21 ?? 0,
-          a.d ?? a.m22 ?? 1,
-          a.e ?? a.m41 ?? 0,
-          a.f ?? a.m42 ?? 0,
-        ];
-        return;
-      }
-      const m = [a, b, c, d, e, f].map(Number);
+      // a `DOMMatrix2DInit`, or none, where it is handed one argument
+      // (HTML 4.12.5.1.8)
+      const m =
+        arguments.length <= 1
+          ? GEOMETRY.values2D(
+              arguments[0],
+              "Failed to execute 'setTransform' on 'CanvasRenderingContext2D'",
+            )
+          : [a, b, c, d, e, f].map(Number);
       if (m.every(Number.isFinite)) this._matrix = m;
     }
     resetTransform(): void {
@@ -9364,17 +9339,7 @@ export function installDom(
       this.transform(Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0);
     }
     getTransform(): Any {
-      const [a, b, c, d, e, f] = this._matrix;
-      return {
-        a,
-        b,
-        c,
-        d,
-        e,
-        f,
-        is2D: true,
-        isIdentity: a === 1 && !b && !c && d === 1 && !e && !f,
-      };
+      return GEOMETRY.matrix2D(this._matrix);
     }
     /** A rectangle in the canvas's pixels, where the transform keeps it
      *  one: null where it turns or skews it. */
@@ -17132,6 +17097,13 @@ export function installDom(
     const tag = Object.prototype.toString.call(value).slice(8, -1);
     let out: Any;
     if (value instanceof Blob) return value;
+    // a point, a rectangle, a quad or a matrix (Geometry 1, 7)
+    const shape = GEOMETRY.serialize(value);
+    if (shape) {
+      out = GEOMETRY.deserialize(shape[0], shape[1]);
+      seen.set(value, out);
+      return out;
+    }
     // a node, a window's object, an event: the platform's, and none of
     // them is serializable
     if (value instanceof EventTarget || value instanceof Event) {
@@ -17414,6 +17386,10 @@ export function installDom(
       if (v instanceof Blob) {
         return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
       }
+      const shape = GEOMETRY.serialize(v);
+      if (shape) {
+        return { i: index, t: 'G', k: shape[0], v: shape[1].map(walk) };
+      }
       if (moved?.has(v)) {
         const { host, state } = dataChannelsOf.transferData(v);
         return { i: index, t: 'C', h: host, a: state };
@@ -17541,6 +17517,9 @@ export function installDom(
           break;
         case 'L':
           out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          break;
+        case 'G':
+          out = GEOMETRY.deserialize(str(v.k), v.v.map(make));
           break;
         case 'C':
           // a data channel the page handed over: this realm's own, for the
@@ -17822,6 +17801,10 @@ export function installDom(
     'AudioBuffer',
     'PeriodicWave',
     'AudioListener',
+    // the geometry interfaces' other name, a window's alone
+    // (`[LegacyWindowAlias]`); `SVGPoint`, `SVGRect` and `SVGMatrix` go
+    // with every other `SVG…`
+    'WebKitCSSMatrix',
     'window',
     'document',
     'parent',
@@ -25038,7 +25021,7 @@ export function installDom(
     HTMLUnknownElement,
     DOMTokenList,
     DOMStringMap,
-    DOMRect,
+    ...GEOMETRY.classes,
     NodeList,
     HTMLCollection,
     URL,
@@ -26552,6 +26535,7 @@ export function installDom(
     const { url, name, shared, service } = input();
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
+    GEOMETRY.worker();
     for (const key of Object.getOwnPropertyNames(G)) {
       if (
         /^(HTML|SVG)/.test(key) ||
