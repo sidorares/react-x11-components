@@ -25,10 +25,15 @@ declare const AbortController: AbortControllerClass;
 const { parentPort, receiveMessageOnPort, workerData } =
   await nodeModule<WorkerThreadsModule>('worker_threads');
 
-/** How long one entry into a worker may run. Longer than a page's: a
- *  worker is where a page puts work that takes a while, and its thread
+/** How long a worker's own code may run in one task. Longer than a page's:
+ *  a worker is where a page puts work that takes a while, and its thread
  *  holds up nothing of the page's. */
 const WORKER_TIMEOUT_MS = 30_000;
+/** And how long a task may take at all, what its ops wait on included
+ *  (`EngineOptions.ceiling`): twice it, where a page's is five times, since
+ *  a worker's ops lay nothing out, and what one waits on is the network,
+ *  an `importScripts`. */
+const WORKER_CEILING_MS = 60_000;
 
 const { init, userAgent, language, sync, flag } =
   workerData as WorkerThreadData;
@@ -190,6 +195,7 @@ host.workerScope = {
 };
 const engine = new ScriptEngine(host.bridge, {
   timeout: WORKER_TIMEOUT_MS,
+  ceiling: WORKER_CEILING_MS,
   onTimeout: () =>
     log('error', 'A script in a worker ran too long, and was stopped.'),
   log,

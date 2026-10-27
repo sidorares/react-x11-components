@@ -1305,6 +1305,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       snapViewport: (x, y, target, relative) =>
         nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
       layoutNow: () => nodeRef.current?.layoutNow(),
+      interrupted: () => nodeRef.current?.interrupted(),
       cssAnimations: (element, subtree) =>
         nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
       cssTransitions: (element, subtree) =>

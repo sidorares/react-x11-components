@@ -9928,6 +9928,29 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
   }
 
+  /**
+   * A page's script was stopped by its engine's watchdog inside something
+   * it asked of the document (`HandleInternals.interrupted`): a style, a
+   * layout, cut half way through, every `finally` under it skipped. So
+   * nothing is gone on from that it may have left half made — the flags a
+   * `finally` puts back, the cascade, whose `timeline` and `stylesOf` a cut
+   * leaves a fork's, and the boxes laid out from them — and the next layout
+   * styles, builds and lays the document out from nothing, as the first
+   * did. Rare: the engine begins no op so near its ceiling that one as long
+   * as a page's time is cut (`ScriptEngine._bridge`).
+   */
+  interrupted(): void {
+    this._timing = false;
+    this._measuring = false;
+    this._painting = false;
+    this._followingLifted = false;
+    this._carryingFrom = null;
+    this._scripts.until = Infinity;
+    // a cascade made again, which a sheet that reads as it did keeps
+    this._sheetsRead = null;
+    this._invalidate(Stale.Style);
+  }
+
   scrollStateOf(element: Element): ScrollState | null {
     this._prepare(this.abs.width || 1);
     const box = this._scrollerOf(element);

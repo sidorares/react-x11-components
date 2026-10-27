@@ -337,6 +337,9 @@ export interface HandleInternals {
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
   layoutNow(): void;
+  /** A page's script was stopped inside an op, and what the document was
+   *  in the middle of is made again (`HtmlViewNode.interrupted`). */
+  interrupted(): void;
   /** The document's `@font-face` faces, as `document.fonts` lists them
    *  (`HtmlViewNode.fontFaces`). */
   fontFaces(): DocumentFontFace[];
@@ -1188,6 +1191,10 @@ export interface Entries {
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
    *  host repairs the tree then, as termination can leave it half-moved. */
   timedOutSince?(): boolean;
+  /** And whether one was stopped inside an op, where `<Html>` may have
+   *  been half way through styling or laying out the document
+   *  (`ScriptEngine.interruptedSince`). */
+  interruptedSince?(): boolean;
   /** A worker's imported script, run in the page from inside its call
    *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
    *  `__thrown`. */
@@ -1485,6 +1492,10 @@ export class DomHost {
     // the tree is whole before it is drawn or read again. Only on a
     // timeout, which is rare, so the walk costs nothing in the common case.
     if (this.entries?.timedOutSince?.()) this._repairTree();
+    // and one stopped inside an op ran none of the `finally`s of what the op
+    // was in the middle of: `<Html>` makes the document's styles, boxes and
+    // layout again rather than go on from what was left
+    if (this.entries?.interruptedSince?.()) this._seams.handle.interrupted?.();
     // a document being left changes nothing anyone sees
     if (this._leaving) {
       this._changes = [];
