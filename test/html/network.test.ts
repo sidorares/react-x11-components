@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import {
   mixedContent,
   HtmlNetwork,
+  HTML_USER_AGENT,
   readDataUrl,
   resourceResult,
 } from '../../src/html/network.js';
@@ -610,5 +611,44 @@ test('a Strict cookie stays home from a link on another site, and goes with one 
     await go('https://news.example/'),
     'lax=1',
     'a link from another site',
+  );
+});
+
+test('the User-Agent can be set, and the next request carries the new one', async (t) => {
+  // A host that lets a reader switch agents (the example browser's menu)
+  // sets it on the running network; the next request sends it, where before
+  // the agent was fixed at construction. An empty string falls back to the
+  // default, so unsetting it is not a blank header.
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.headers['user-agent'] ?? '-');
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<p>ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ connectTimeout: null });
+  const signal = new AbortController().signal;
+
+  assert.equal(network.userAgent, HTML_USER_AGENT, 'the default to begin');
+  await network.document(`${origin}/a`, signal);
+
+  network.userAgent =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+  assert.equal(network.userAgent.includes('Chrome/141'), true, 'the new one');
+  await network.document(`${origin}/b`, signal);
+
+  network.userAgent = '';
+  assert.equal(network.userAgent, HTML_USER_AGENT, 'empty is the default');
+  await network.document(`${origin}/c`, signal);
+
+  assert.deepEqual(
+    seen.map((ua) => (ua.includes('Chrome/141') ? 'chrome' : 'default')),
+    ['default', 'chrome', 'default'],
+    'each request carried the agent set at the time',
   );
 });

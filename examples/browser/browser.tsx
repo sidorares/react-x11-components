@@ -1120,17 +1120,13 @@ function TabPage({
   const id = tab.id;
   const latest = useRef(tab);
   latest.current = tab;
-  // the tab's own key, which its process keeps its `sessionStorage` by, and
-  // the User-Agent it is to use — `undefined` takes the variable away, so a
-  // switch back to the default unsets it rather than leaving the last agent
-  // in the respawned pane's inherited environment (`<Frame env>`).
+  // the tab's own key, which its process keeps its `sessionStorage` by. The
+  // User-Agent goes in the props bag, not here: in the env it would respawn
+  // the pane on every change (`<Frame env>`), where as a prop it reaches the
+  // running process, which sets it on its network and reloads in place.
   const env = useMemo(
-    () => ({
-      ...PANE_ENV,
-      BROWSER_TAB_KEY: tab.key,
-      BROWSER_USER_AGENT: userAgent ?? undefined,
-    }),
-    [tab.key, userAgent],
+    () => ({ ...PANE_ENV, BROWSER_TAB_KEY: tab.key }),
+    [tab.key],
   );
 
   const onCommit = useCallback(
@@ -1194,6 +1190,7 @@ function TabPage({
     history: tab.history,
     zoom: tab.zoom,
     scripts,
+    userAgent,
     onCommit,
     onFinish,
     onHistory,
@@ -1466,20 +1463,23 @@ export function Browser({
 
   // The User-Agent every tab sends and names: the browser's one setting,
   // not a tab's. The presets name the host's OS, so they are worked out
-  // once from `process.platform`. Choosing one respawns every pane through
-  // its env (`TabPage`), so the tabs reload under the new agent.
+  // once from `process.platform`. The chosen string is a prop every page
+  // reads (`TabPage`), so a change reaches each running pane, which sets it
+  // on its network for the next request; the active tab reloads so the agent
+  // shows on the page in view at once, the way a browser's UA override
+  // applies on the next load. Other tabs take it on their next navigation.
   const userAgents = useMemo(() => userAgentPresets(process.platform), []);
   const [userAgentId, setUserAgentId] = useState(
     () => presetFor(userAgents, keptUserAgent).id,
   );
   const userAgentValue = presetFor(userAgents, userAgentId).value;
-  const chooseUserAgent = useCallback(
-    (nextId: string) => {
-      setUserAgentId(nextId);
-      onUserAgent?.(nextId);
-    },
-    [onUserAgent],
-  );
+  const chooseUserAgent = (nextId: string): void => {
+    if (nextId === userAgentId) return;
+    setUserAgentId(nextId);
+    onUserAgent?.(nextId);
+    const nav = reloadOf(active);
+    if (nav) dispatch({ type: 'navigate', id: active.id, nav });
+  };
 
   const open = useCallback(
     (url: string, background: boolean, post: PostData | null = null) => {
