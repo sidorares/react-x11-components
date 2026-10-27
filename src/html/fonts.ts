@@ -284,6 +284,10 @@ export class WebFonts implements FontFamilies {
   private _seen = new Set<number>();
   private _points: Uint32Array = new Uint32Array(0);
   private _destroyed = false;
+  /** The faces by key, for the faces `_declared` names (`_keyed`). */
+  private _keys: { declared: string; faces: Map<string, Face> } | null = null;
+  /** What `settled` handed out, resolved once nothing is loading. */
+  private _waiting: (() => void)[] = [];
 
   constructor(app: unknown, ask: Ask, changed: () => void, fallback: string) {
     this._app = app !== null && typeof app === 'object' ? app : null;
@@ -615,11 +619,135 @@ export class WebFonts implements FontFamilies {
     return stale;
   }
 
+  /**
+   * The document's faces, in the order its sheets declared them, as
+   * `document.fonts` lists them (CSS Font Loading 3, 2.1): each rule's
+   * descriptors, as the `FontFace` attributes serialize them, and where its
+   * loading got to.
+   */
+  faces(): DocumentFontFace[] {
+    const keyed = this._keyed();
+    const out: DocumentFontFace[] = [];
+    for (const [key, face] of keyed) {
+      const { rule } = face;
+      out.push({
+        key,
+        family: rule.family,
+        style: rule.style,
+        weight: spanText(rule.weight, ''),
+        stretch: rule.stretch ? spanText(rule.stretch, '%') : 'normal',
+        unicodeRange: rule.unicodeRange
+          ? rule.unicodeRange.map(([lo, hi]) => rangeText(lo, hi)).join(', ')
+          : 'U+0-10FFFF',
+        status: STATUS[face.state],
+      });
+    }
+    return out;
+  }
+
+  /**
+   * CSS Font Loading 3's "find the matching font faces" (2.6), by key: in
+   * each of `families` the document has faces of, the face CSS matches at
+   * `weight`, `italic` and `stretch` (CSS Fonts 4, 5.2) in each of the
+   * family's unicode ranges, less those whose range holds no character of
+   * `text`. `found` is whether any matched before the ranges were asked.
+   */
+  match(
+    families: readonly string[],
+    weight: number,
+    italic: boolean,
+    stretch: number,
+    text: string,
+  ): FontMatch {
+    const keys = new Map<Face, string>();
+    for (const [key, face] of this._keyed()) keys.set(face, key);
+    const points = codePoints(text);
+    const matched: string[] = [];
+    let found = false;
+    for (const name of families) {
+      const family = this._families.get(name.toLowerCase());
+      if (!family) continue;
+      for (const group of family.groups) {
+        const face = bestFace(group.faces, weight, italic, stretch);
+        if (!face) continue;
+        found = true;
+        const key = keys.get(face)!;
+        if (matched.includes(key)) continue;
+        if (
+          !group.ranges ||
+          points.some((p) =>
+            group.ranges!.some(([lo, hi]) => p >= lo && p <= hi),
+          )
+        ) {
+          matched.push(key);
+        }
+      }
+    }
+    return { keys: matched, found };
+  }
+
+  /**
+   * Load faces by key, as `FontFace.load()` does (CSS Font Loading 3,
+   * 2.1.3): each one's sources tried in order, as a style's wanting it
+   * would, and the boxes built again once it is in. Settles with whether
+   * each loaded — false for one the document no longer declares.
+   */
+  load(keys: readonly string[]): Promise<boolean[]> {
+    const keyed = this._keyed();
+    let arrived = false;
+    const each = keys.map((key): boolean | Promise<boolean> => {
+      const face = keyed.get(key);
+      if (!face || this._destroyed) return false;
+      const idle = face.state === 'idle';
+      const state = idle ? this._load(face) : face.state;
+      if (state === 'ready') {
+        if (idle) arrived = true;
+        return true;
+      }
+      if (state === 'failed') return false;
+      const pending =
+        this._app &&
+        registryOf(this._app).pending.get(faceKey(face.name, face.rule));
+      return pending ? pending.then(() => face.state === 'ready') : false;
+    });
+    // one registered before this returned changes the lists at once, as
+    // one a style asked for does (`request`)
+    if (arrived) {
+      this._forget();
+      this._changed();
+    }
+    return Promise.all(each);
+  }
+
+  /** Settles once no face of the document is on its way: what
+   *  `document.fonts.ready` waits for. */
+  settled(): Promise<void> {
+    if (!this.loading || this._destroyed) return Promise.resolve();
+    return new Promise((resolve) => this._waiting.push(resolve));
+  }
+
+  /** The faces by a key each keeps while the sheets declare it as they do:
+   *  its family and its rule, and how many declared it so before it. */
+  private _keyed(): Map<string, Face> {
+    if (this._keys?.declared === this._declared) return this._keys.faces;
+    const faces = new Map<string, Face>();
+    const seen = new Map<string, number>();
+    for (const face of this._faces) {
+      const base = `${face.rule.family.toLowerCase()}\u0001${faceSignature(face.rule)}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      faces.set(`${base}\u0001${n}`, face);
+    }
+    this._keys = { declared: this._declared, faces };
+    return faces;
+  }
+
   destroy(): void {
     this._destroyed = true;
     this._families.clear();
     this._groups.clear();
     this._forget();
+    for (const resolve of this._waiting.splice(0)) resolve();
   }
 
   /** Every list mapped before this is stale: a face arrived, or the faces
@@ -907,7 +1035,54 @@ export class WebFonts implements FontFamilies {
     if (!ok) face.family.asked.clear();
     this._forget();
     this._changed();
+    if (!this.loading) for (const resolve of this._waiting.splice(0)) resolve();
   }
+}
+
+/** A face of the document's, as `document.fonts` hands it to a page
+ *  (`WebFonts.faces`). */
+export interface DocumentFontFace {
+  /** What it is asked for by (`WebFonts.load`), which it keeps while the
+   *  document declares it as it does. */
+  key: string;
+  family: string;
+  style: string;
+  weight: string;
+  stretch: string;
+  unicodeRange: string;
+  status: 'unloaded' | 'loading' | 'loaded' | 'error';
+}
+
+/** The faces a `font` matches (`WebFonts.match`). */
+export interface FontMatch {
+  keys: string[];
+  found: boolean;
+}
+
+const STATUS: Readonly<Record<Face['state'], DocumentFontFace['status']>> = {
+  idle: 'unloaded',
+  loading: 'loading',
+  ready: 'loaded',
+  failed: 'error',
+};
+
+/** A descriptor's range as `FontFace` serializes it: one value where both
+ *  ends are one. */
+function spanText([lo, hi]: [number, number], unit: string): string {
+  return lo === hi ? `${lo}${unit}` : `${lo}${unit} ${hi}${unit}`;
+}
+
+/** A `unicode-range` entry as `FontFace.unicodeRange` serializes it. */
+function rangeText(lo: number, hi: number): string {
+  const hex = (n: number) => n.toString(16).toUpperCase();
+  return lo === hi ? `U+${hex(lo)}` : `U+${hex(lo)}-${hex(hi)}`;
+}
+
+/** A string's code points. */
+function codePoints(text: string): number[] {
+  const out: number[] = [];
+  for (const ch of text) out.push(ch.codePointAt(0)!);
+  return out;
 }
 
 /** A registered face is the document's to use: what the connection knows
