@@ -203,6 +203,14 @@ export interface FetchRequest {
    *  the page's own origin's alone, or any. Absent, `same-origin`, a
    *  page's `fetch`'s default. A host with no cookie jar sends none. */
   credentials?: 'omit' | 'same-origin' | 'include';
+  /**
+   * The document the request is made from, where it is not the one the
+   * host's `fetch` serves: a frame's that runs its own scripts (Fetch, a
+   * request's client). Its origin is the request's `Origin`, what
+   * `same-origin` credentials are reckoned from and what a CORS answer is
+   * held to, and its address the `Referer`. Absent, the page's.
+   */
+  client?: string;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script

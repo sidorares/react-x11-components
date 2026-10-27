@@ -34,7 +34,7 @@ import type { ComputedStyle } from './css/style.js';
 import { invert, mapRect } from './css/transform.js';
 import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
-import { lineHeightOf } from './layout/inline.js';
+import { lineHeightMultiplier, lineHeightOf } from './layout/inline.js';
 import { frameOf } from './layout/writing.js';
 import type { FontsLike } from './layout/inline.js';
 import {
@@ -152,6 +152,16 @@ export interface BareField {
    * its caret and selection are its own. Missing is `color`.
    */
   fill?: string;
+  /**
+   * A `<textarea>`'s: the multiple of its font's natural line its
+   * `line-height` comes to, as the document's own text is set at it
+   * (`lineHeightMultiplier`), handed to the widget as its `lineHeight`.
+   * A code editor lays its field over the `<pre>` it highlights, the two
+   * in one `line-height`, and the field's caret and selection are on the
+   * `<pre>`'s lines only where its lines are as far apart. Missing at
+   * `normal`, the font's own.
+   */
+  lineHeight?: number;
   /** @deprecated The rect's own `fontFamily`, which every rect carries. */
   fontFamily: string;
   /** @deprecated The rect's own `fontSize`, which every rect carries. */
@@ -180,6 +190,8 @@ export function controlRectsOf(
   fixedShift: { x: number; y: number } | null = null,
   near: Rect | null = null,
   covered: Map<Element, CoverAnswer> | null = null,
+  /** What a field's line is measured in (`BareField.lineHeight`). */
+  fonts: FontsLike | null = null,
 ): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
@@ -264,6 +276,11 @@ export function controlRectsOf(
         ...(box.style.textFillColor !== null && {
           fill: inkColor(box.style.textFillColor, box.style.color),
         }),
+        ...(box.replaced === 'textarea' &&
+          fonts &&
+          box.style.lineHeight !== 'normal' && {
+            lineHeight: lineHeightMultiplier(fonts, box.style),
+          }),
         fontFamily: box.style.fontFamily,
         fontSize: box.style.fontSize,
         ...(box.replaced === 'select' && {

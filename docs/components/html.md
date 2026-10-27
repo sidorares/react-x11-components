@@ -5587,7 +5587,10 @@ go on that background — its glyphs in its `-webkit-text-fill-color` where
 it sets one, and its caret in its colour. A code editor that lays a
 `<textarea>` over the `<pre>` it highlights, react-simple-code-editor's,
 fills the field's text with `transparent`, so the `<pre>` shows the text
-and the field its caret and selection. Its size is then its text's, a line as tall as its
+and the field its caret and selection — on the `<pre>`'s lines, since a
+text area's widget is handed the multiple of its font's own line its
+`line-height` comes to, which the document's text is set at too, and
+spaces its lines by it. Its size is then its text's, a line as tall as its
 `line-height` makes it — at `normal`, its font's own, as a browser's text
 field is — and the border and padding around it are the author's, or the
 web's where the author set only some of them. It is the page setting them
