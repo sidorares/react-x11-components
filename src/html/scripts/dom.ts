@@ -26964,6 +26964,10 @@ export function installDom(
     } catch {
       /* no location in this realm */
     }
+    // and the interfaces no global names, reached through a getter alone:
+    // `document.fonts`'s, and the faces it hands over
+    markFn(FontFaceSet, 8);
+    markFn(FontFace, 8);
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {

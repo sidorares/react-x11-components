@@ -439,6 +439,8 @@ test('a facade function stringifies as native code; a page function as its sourc
       `r.push(${native('window.localStorage.getItem')});` +
       `r.push(${native('window.location.assign')});` +
       `r.push(${native('navigator.sendBeacon')});` +
+      // an interface no global names, behind a getter
+      `r.push(${native('document.fonts.load')}, ${native('Object.getOwnPropertyDescriptor(Object.getPrototypeOf(document.fonts), "ready").get')});` +
       // the mask itself is native, as `Function.prototype.toString` is
       `r.push(${native('Function.prototype.toString')});` +
       // a page's own function keeps its source
@@ -462,6 +464,8 @@ test('a facade function stringifies as native code; a page function as its sourc
       'true', // localStorage.getItem (Storage.prototype)
       'true', // location.assign (marked from the object behind the getter)
       'true', // navigator.sendBeacon (an instance's own method)
+      'true', // document.fonts.load (FontFaceSet.prototype)
+      'true', // …and its accessors
       'true', // Function.prototype.toString itself
       'false', // a page function is not native
       'true', // …and keeps its real source
