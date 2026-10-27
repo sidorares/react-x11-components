@@ -169,6 +169,14 @@ test('operations run in turn on the chain, and a closed connection settles none 
 });
 
 test('negotiationneeded is fired once a change needs it, and not again until it is negotiated', async () => {
+  // The flag is updated in a task the facade queues at 0 ms
+  // (`updateNegotiationNeeded`), so a `wait(0)` after a change runs after
+  // that change's update: Node runs timers of one duration in the order they
+  // were queued. That is how a step says nothing more was fired. A step that
+  // expects an event waits for it, because a 10 ms wait is no bound on a 0 ms
+  // task: a loop that wakes late runs every due timer in the 10 ms list
+  // before it gets to the 1 ms one, and a 10 ms timer queued after the task
+  // can run first.
   const logs = await run(`
     ${NEGOTIATE}
     var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
@@ -176,17 +184,18 @@ test('negotiationneeded is fired once a change needs it, and not again until it 
     pc1.onnegotiationneeded = function () { count++; };
     var t = pc1.addTransceiver('audio');
     pc1.addTransceiver('video');
-    await wait(10);
+    await until(function () { return count > 0; });
+    await wait(0);
     log('added', count);
     await negotiate(pc1, pc2);
-    await wait(10);
+    await wait(0);
     log('negotiated', count);
     t.direction = 'recvonly';
-    await wait(10);
+    await until(function () { return count > 1; });
     log('direction', count);
     await negotiate(pc1, pc2);
     t.direction = 'recvonly';
-    await wait(10);
+    await wait(0);
     log('same direction', count);
     pc1.close(); pc2.close();
   `);
