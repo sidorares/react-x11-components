@@ -3968,6 +3968,7 @@ export class HtmlViewNode extends Node {
       shift,
       near,
       this._covered,
+      this._fonts(),
     ).map((r) =>
       s === 1
         ? r

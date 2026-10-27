@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -841,6 +841,14 @@ it up. **The floor is a running one and moves often** — every move since
   of AVFoundation. A core without `<audio>` throws on the element, so the
   floor moves with the feature. It also carries `<textinput mask>`
   (react-x11#1017), which needed no change here.
+- `^2.56.1` — a `<textarea>`'s lines spaced by its `lineHeight`, as a
+  `<text>`'s are (react-x11#1020). `<Html>` hands a text area the page
+  draws the multiple its `line-height` comes to (`BareField.lineHeight`):
+  a code editor lays its field over the `<pre>` it highlights, and on
+  joshwcomeau.com's playgrounds the field's caret and selection fell
+  behind the text a line by the twenty-fifth. A core before it reads no
+  `lineHeight` on a field and sets it at its font's own, so the floor
+  moves with the fix.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

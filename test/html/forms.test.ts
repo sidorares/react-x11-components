@@ -19,6 +19,8 @@ import { XK_ESCAPE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
+import { lineHeightMultiplier } from '../../src/html/layout/inline.js';
+import type { FontsLike } from '../../src/html/layout/inline.js';
 import {
   FONTS,
   boxOf,
@@ -726,6 +728,67 @@ metric(
       assert.ok(ed.green > 20, "the <pre>'s is");
       assert.ok((await count('shown')).red > 20, 'a field with no fill is');
     });
+  },
+);
+
+metric(
+  "a styled text area hands its widget the multiple its line-height comes to, as the document's text is set at it",
+  async () => {
+    // a code editor's <textarea> lies over the <pre> it highlights, the two
+    // in one `line-height`: its caret and selection are on the <pre>'s lines
+    // only where its lines are as far apart (react-x11 spaces a field's
+    // lines by its `lineHeight`)
+    const { node } = await render(
+      '<style>body{margin:0} textarea,input{margin:0;border:0;padding:0;' +
+        'background:none;font:16px monospace}</style>' +
+        '<textarea id="lined" style="line-height:23px">a\nb\nc</textarea>' +
+        '<textarea id="plain">a</textarea>' +
+        '<input id="field" style="line-height:23px">',
+    );
+    const el = view(node);
+    const rects = (
+      el as unknown as {
+        _controls: {
+          element: { attribs: Record<string, string> };
+          bare?: { lineHeight?: number } | null;
+        }[];
+      }
+    )._controls;
+    const rectOf = (id: string) =>
+      rects.find((r) => r.element.attribs.id === id)!;
+    const box = boxOf(el, 'lined') as unknown as {
+      style: Parameters<typeof lineHeightMultiplier>[1];
+    };
+    const fonts = (node as unknown as { app: { fonts: FontsLike } }).app.fonts;
+    const multiple = lineHeightMultiplier(fonts, box.style);
+    assert.ok(multiple > 1, `23px is more than 16px monospace's own line`);
+    assert.strictEqual(rectOf('lined').bare?.lineHeight, multiple);
+    assert.strictEqual(rectOf('plain').bare?.lineHeight, undefined, 'normal');
+    assert.strictEqual(
+      rectOf('field').bare?.lineHeight,
+      undefined,
+      "a one-line field's line is its widget's",
+    );
+    const [lined, plain] = screen.all((n) => n.kind === 'textarea');
+    assert.strictEqual(
+      (lined as unknown as { style: { lineHeight?: number } }).style.lineHeight,
+      multiple,
+    );
+    assert.strictEqual(
+      (plain as unknown as { style: { lineHeight?: number } }).style.lineHeight,
+      undefined,
+    );
+    // and the widget's lines are the page's 23px apart (react-x11 2.56.1)
+    const lines = (
+      lined as unknown as {
+        _valueLayout(): { lines: { y: number }[] };
+      }
+    )._valueLayout().lines;
+    assert.strictEqual(lines.length, 3);
+    for (let i = 1; i < lines.length; i += 1) {
+      const pitch = lines[i].y - lines[i - 1].y;
+      assert.ok(Math.abs(pitch - 23) < 0.01, `line ${i} is ${pitch} below`);
+    }
   },
 );
 
