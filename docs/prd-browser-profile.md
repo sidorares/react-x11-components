@@ -270,3 +270,9 @@ tab's key as `BROWSER_TAB_KEY`.
   documents, the quota, and an IndexedDB database written by one document
   and read by the next after a restart, then changed by another connection
   and read again in the document that has it open.
+- Interop 2026's `indexeddb` and `fetch` areas, through
+  `scripts/conformance/interop.ts` against WPT's server, score the same on
+  this branch as on the master it was cut from — IndexedDB 640/640 subtests,
+  fetch 230/274 — and the 47 tests' results match subtest by subtest. The
+  runner hands `<Html scripts>` no jar and no store, which is the path every
+  host without a profile takes.
