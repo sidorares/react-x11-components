@@ -76,6 +76,7 @@ import {
   isInputButton,
   isText,
   madeByParser,
+  isStylePreload,
   ShadowRoot,
   shadowRootOf,
   tagOf,
@@ -403,6 +404,8 @@ import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
 import type { AnimatedImage } from './animated.js';
 import type {
+  AudioSource,
+  PlayerKind,
   ResourceRequest,
   ResourceResult,
   VideoSource,
@@ -414,7 +417,9 @@ import {
   askMedia,
   cutByFixed,
   embeddedRectsOf,
+  FIXED_OVER,
   mediaRectsOf,
+  sameSounds,
   videoCandidates,
   videoSignature,
 } from './media.js';
@@ -422,8 +427,11 @@ import type {
   Cover,
   EmbeddedRect,
   MediaAsked,
+  MediaEventHandler,
+  MediaEventKind,
   MediaRect,
   MediaState,
+  Sound,
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
@@ -487,6 +495,17 @@ export interface HtmlViewProps {
    * is asked for, and every video is its poster.
    */
   onMedia?: (rects: MediaRect[]) => void;
+  /**
+   * The players with no picture (`Sound`): each `<audio>` a page's script
+   * has played and not seen to its end, in the document or out of it, with
+   * what it plays and what was asked of it — reported as one is played,
+   * asked something, answered for or let go. Absent, no audio source is
+   * asked for, and the page plays on unheard.
+   */
+  onSounds?: (sounds: Sound[]) => void;
+  /** What a player with no picture said (`soundEvent`), for the page that
+   *  played it. */
+  onMediaEvent?: MediaEventHandler;
   /**
    * Where an `<iframe>`, a `<canvas>` or an `<embed>` is, for what a host
    * mounts over it (`renderEmbedded`), in the same space and at the same
@@ -560,7 +579,9 @@ export interface HtmlViewProps {
   onLoaded?: () => void;
   /** A `<link rel=stylesheet>`'s sheet came to something: `load` once a
    *  restyle has applied it and what it imports, `error` where it, or an
-   *  import of it, is not to be had (`_tellSheets`). Once an `href`. */
+   *  import of it, is not to be had (`_tellSheets`) — and a sheet's
+   *  `<link rel=preload>`, once the sheet arrived or failed. Once an
+   *  `href`. */
   onSheet?: (element: Element, outcome: 'load' | 'error') => void;
   style?: Style | Style[];
 }
@@ -831,6 +852,9 @@ export class HtmlViewNode extends Node {
   /** The `href` each `<link>` was last told a `load` or an `error` for
    *  (`_tellSheets`). */
   private _sheetTold = new WeakMap<Element, string>();
+  /** The same of a sheet's `<link rel=preload>`, apart: loadCSS makes the
+   *  link a sheet's in its `onload`, and the sheet's `load` is told again. */
+  private _preloadTold = new WeakMap<Element, string>();
   /** Each sheet text a shadow tree has read as, by a number
    *  (`_sheetsKey`). */
   private _sheetIds = new Map<string, number>();
@@ -1161,6 +1185,11 @@ export class HtmlViewNode extends Node {
    *  markup says as it is reported. By element, so a player mounted again
    *  is told it too. */
   private _mediaAsked = new WeakMap<Element, MediaAsked>();
+  /** The `<audio>` elements a page's script has played and that have not
+   *  reached their end since (`setMediaState`, `soundEvent`), in the order
+   *  each was first played; and what `onSounds` was last told. */
+  private _sounding = new Set<Element>();
+  private _sounds: Sound[] = [];
   /** The sources each video chose between, and what it chose them from
    *  (`_videoChoice`). */
   private _videoChoices = new WeakMap<
@@ -1202,6 +1231,10 @@ export class HtmlViewNode extends Node {
         // a player goes over one. A sheet declined that late changes no
         // style either, but the first rendering may be held for it.
         if (what === 'video') this._reportMedia();
+        else if (what === 'audio') this._publishSounds();
+        // a sheet only a `<link rel=preload>` asked for: nothing reads it
+        // yet, and its `load` is told as the request settles
+        else if (what === 'stylesheet' && !layout) return;
         else if (what === 'declined') {
           // nothing to restyle, but a first rendering may have waited on it
           if (!this._tree) this._invalidate(Stale.Style);
@@ -1621,11 +1654,12 @@ export class HtmlViewNode extends Node {
       const tag = tagOf(el);
       const url = tag === 'link' ? attr(el, 'href') : imageUrlOf(el);
       if (!url) continue;
-      this._resources.request({
-        url,
-        kind: tag === 'link' ? 'stylesheet' : 'image',
-        element: el,
-      });
+      // a sheet a `<link rel=preload>` fetches is nobody's yet: its
+      // arrival changes nothing, until a sheet's link asks for it too
+      this._resources.request(
+        { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
+        isStylePreload(el),
+      );
     }
   }
 
@@ -2729,7 +2763,9 @@ export class HtmlViewNode extends Node {
    * one's `load` never shows the document under neither — and an `error`
    * where the host declined it, it failed, or an import of it did. Once an
    * `href`: a link given another is told again. A microtask later, as
-   * `onParsed` is: this runs inside a layout.
+   * `onParsed` is: this runs inside a layout. A sheet's preload is told
+   * as its sheet settles (`isStylePreload`), which waits for no restyle,
+   * since nothing reads it.
    */
   private _tellSheets(): void {
     if (!this._props().onSheet) return;
@@ -2747,6 +2783,18 @@ export class HtmlViewNode extends Node {
     };
     ask(facts.sheets);
     for (const { sheets } of facts.shadows) ask(sheets);
+    // and a `<link rel=preload>`'s once what it fetches came to something
+    // (HTML 4.6.7.12): React commits a `precedence` sheet only once the
+    // sheet's preload has told one or the other
+    for (const el of facts.resources) {
+      if (!isStylePreload(el)) continue;
+      const href = attr(el, 'href')!;
+      if (this._preloadTold.get(el) === href) continue;
+      const state = this._resources.state(href);
+      if (state !== 'ready' && state !== 'failed') continue;
+      this._preloadTold.set(el, href);
+      (told ??= []).push([el, state === 'ready' ? 'load' : 'error']);
+    }
     if (!told) return;
     const events: [Element, 'load' | 'error'][] = told;
     const doc = this._source.document;
@@ -3981,7 +4029,12 @@ export class HtmlViewNode extends Node {
     if (!tree || !this._props().onMedia) return;
     this._covers = new Map();
     this._mediaLaid = tree.media.length
-      ? mediaRectsOf(tree, this._scale, (el) => this._videoOf(el), this._covers)
+      ? mediaRectsOf(
+          tree,
+          this._scale,
+          (el) => this._sourceOf('video', el),
+          this._covers,
+        )
       : [];
     const mounted = new Set(this._mediaLaid.map((r) => r.element));
     if (!sameElements(mounted, this._mounted)) {
@@ -4004,7 +4057,7 @@ export class HtmlViewNode extends Node {
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
     const rects = this._mediaLaid.map((laid) => {
-      const rect = this._viewportRect(laid, fixed);
+      const rect = this._viewportRect(laid, FIXED_OVER.get(laid) ?? fixed);
       const asked = this._mediaAsked.get(rect.element);
       return asked ? { ...rect, ...asked } : rect;
     });
@@ -4032,7 +4085,7 @@ export class HtmlViewNode extends Node {
     const report = this._props().onEmbedded;
     if (!tree || !report) return;
     const rects = this._embeddedLaid.map((laid) =>
-      this._viewportRect(laid, FIXED_BOXES.get(tree)),
+      this._viewportRect(laid, FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree)),
     );
     if (sameEmbedded(rects, this._embedded)) return;
     this._embedded = rects;
@@ -4126,16 +4179,22 @@ export class HtmlViewNode extends Node {
     }
   }
 
-  /** The source a `<video>` plays: the first of its sources the host
-   *  answered and no player has failed on, each asked for in turn. Null
-   *  while one ahead of it is still being answered, and where none is
-   *  left. */
-  private _videoOf(el: Element): { source: VideoSource; url: string } | null {
+  /** The source a `<video>` or an `<audio>` plays: the first of its
+   *  sources the host answered for that kind of player and no player has
+   *  failed on, each asked for in turn. Null while one ahead of it is
+   *  still being answered, and where none is left. */
+  private _sourceOf<K extends PlayerKind>(
+    kind: K,
+    el: Element,
+  ): {
+    source: K extends 'video' ? VideoSource : AudioSource;
+    url: string;
+  } | null {
     for (const { url, type } of this._videoChoice(el)) {
-      if (this._resources.video(url) === undefined) {
-        this._resources.requestVideo(url, type, el);
+      if (this._resources.media(kind, url) === undefined) {
+        this._resources.requestMedia(kind, url, type, el);
       }
-      const answer = this._resources.video(url);
+      const answer = this._resources.media(kind, url);
       if (answer === 'pending') return null;
       if (answer === undefined || answer === 'failed') continue;
       return { source: answer, url };
@@ -4176,6 +4235,66 @@ export class HtmlViewNode extends Node {
     if (this._mediaLaid.some((r) => r.element === element)) {
       this._publishMedia();
     }
+    // an `<audio>` is heard from the first time it is played, and not
+    // before: one a page makes for each blip asks for nothing until it
+    // sounds
+    if (tagOf(element) === 'audio' && this._props().onSounds) {
+      if (state.paused === false) this._sounding.add(element);
+      if (this._sounding.has(element)) this._publishSounds();
+    }
+  }
+
+  /**
+   * The players with no picture, to `onSounds` where they changed: each
+   * `<audio>` played and not ended, whose source the host has answered.
+   * One whose answer is on its way is left out until it arrives, and is
+   * reported then (`ResourceChange` `'audio'`).
+   */
+  private _publishSounds(): void {
+    const report = this._props().onSounds;
+    if (!report) return;
+    const sounds: Sound[] = [];
+    for (const element of this._sounding) {
+      const chosen = this._sourceOf('audio', element);
+      if (!chosen) continue;
+      const asked = this._mediaAsked.get(element);
+      sounds.push({
+        ...asked,
+        element,
+        source: chosen.source,
+        url: chosen.url,
+        key: this._resources.keyOf(chosen.url),
+        loop: attr(element, 'loop') !== undefined,
+        // the markup's, until a script says otherwise (`defaultMuted`)
+        muted: asked?.muted ?? attr(element, 'muted') !== undefined,
+      });
+    }
+    if (sameSounds(sounds, this._sounds)) return;
+    this._sounds = sounds;
+    report(sounds);
+  }
+
+  /**
+   * What the player of a sound said (`sounds.ts`), told to the page
+   * (`onMediaEvent`), whose clock follows it. Its end lets the player go:
+   * an `<audio>` played again after its end is played from its start, by a
+   * new one. A failure is the next source's turn, as a `<video>`'s is.
+   */
+  soundEvent(
+    element: Element,
+    url: string,
+    kind: MediaEventKind,
+    value = '',
+  ): void {
+    if (kind === 'error') this._resources.failMedia('audio', url);
+    if (kind === 'ended') this._sounding.delete(element);
+    this._props().onMediaEvent?.(
+      element,
+      this._resources.keyOf(url),
+      kind,
+      value,
+    );
+    if (kind === 'ended' || kind === 'error') this._publishSounds();
   }
 
   /**
@@ -4345,7 +4464,7 @@ export class HtmlViewNode extends Node {
    *  decoder for, a URL that did not answer, a display with no player: the
    *  next source's turn, and the poster where there is none. */
   mediaFailed(element: Element, url: string): void {
-    this._resources.failVideo(url);
+    this._resources.failMedia('video', url);
     if (this._videoSizes.delete(element))
       this._invalidate(Stale.Boxes, EMPTY_SET);
     else this._reportMedia();
@@ -8868,6 +8987,9 @@ export class HtmlViewNode extends Node {
     this._source.touch();
     this._updateBase();
     this._sweep();
+    // a preload of what is here already settles as it is asked for, which
+    // no layout need follow
+    this._tellSheets();
     this._highlightsChanged();
     const scope = changes ? this._changeScope(changes) : null;
     if (!scope) {

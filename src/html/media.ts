@@ -72,14 +72,16 @@ import {
   drawnAtViewport,
   drawsNothing,
   evenScaleOf,
+  FIXED_BOXES,
   NO_ZOOM,
   paintedAfter,
+  paintOrderOf,
   unzoomRect,
   zoomBetween,
   zoomRect,
 } from './paint.js';
 import type { Zoom } from './paint.js';
-import type { VideoSource } from './resources.js';
+import type { AudioSource, VideoSource } from './resources.js';
 import { crowded } from './sprites.js';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -181,6 +183,62 @@ export type MediaAsked = Partial<
   Pick<MediaRect, 'paused' | 'muted' | 'volume' | 'playbackRate' | 'seek'>
 >;
 
+/**
+ * A player with no picture (`HtmlViewNode._publishSounds`): an `<audio>`
+ * a page's script has played, in the document or out of it, and what it
+ * plays. Nothing about where it is: it takes no room, and draws nothing.
+ */
+export interface Sound extends MediaAsked {
+  element: Element;
+  /** What plays: the host's answer for the source the element chose. */
+  source: AudioSource;
+  /** That source, as the document wrote it: what a failure is told by. */
+  url: string;
+  /** The same, resolved against the document's base: the page's
+   *  `currentSrc`, which what the player says is told to the page by. */
+  key: string;
+  loop: boolean;
+}
+
+/** What a player with no picture says, as `<Html>` tells it on
+ *  (`HtmlViewProps.onMediaEvent`): the item's length, how far it has got,
+ *  its end, or a failure. */
+export type MediaEventKind = 'metadata' | 'time' | 'ended' | 'error';
+
+/** Told what a player with no picture said: its element, its source
+ *  resolved, what it said and a value as a string — the length, or the
+ *  time, in seconds, or a failure's message. */
+export type MediaEventHandler = (
+  element: Element,
+  src: string,
+  kind: MediaEventKind,
+  value: string,
+) => void;
+
+/** Whether two lists of sounds say the same: the same elements, in the
+ *  same order, playing the same and told the same. */
+export function sameSounds(a: Sound[], b: Sound[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.element !== y.element ||
+      x.source !== y.source ||
+      x.url !== y.url ||
+      x.loop !== y.loop ||
+      x.paused !== y.paused ||
+      x.muted !== y.muted ||
+      x.volume !== y.volume ||
+      x.playbackRate !== y.playbackRate ||
+      x.seek?.count !== y.seek?.count
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** What was asked, `state` laid over `was`. */
 export function askMedia(
   was: MediaAsked | undefined,
@@ -272,7 +330,7 @@ export function mediaRectsOf(
     // a picture is fitted into whatever rect it is given: what a scale
     // around it does is in the rect already
     const { zoom: _zoom, ...at } = placed;
-    out.push({
+    const rect: MediaRect = {
       ...at,
       ...(over.length && { over: around(over.map((c) => c.rect)) }),
       source: chosen.source,
@@ -283,7 +341,9 @@ export function mediaRectsOf(
       muted: attr(el, 'muted') !== undefined,
       controls: attr(el, 'controls') !== undefined,
       ...(label && { label }),
-    });
+    };
+    FIXED_OVER.set(rect, fixedOver(tree, box));
+    out.push(rect);
   }
   return out;
 }
@@ -336,9 +396,41 @@ export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
   for (const box of tree.embedded) {
     const placed = placementOf(tree, box, scale, null, true);
     if (!placed) continue;
-    out.push({ ...placed, kind: tagOf(placed.element) as EmbeddedKind });
+    const rect = { ...placed, kind: tagOf(placed.element) as EmbeddedKind };
+    FIXED_OVER.set(rect, fixedOver(tree, box));
+    out.push(rect);
   }
   return out;
+}
+
+/** What a scroll can bring over each laid-out rect: the boxes fixed to the
+ *  viewport the document paints after its element (`fixedOver`), which the
+ *  rect is cut by where the scroll has them (`cutByFixed`). */
+export const FIXED_OVER = new WeakMap<EmbeddedRect | MediaRect, Box[]>();
+
+/**
+ * The boxes fixed to the viewport that the document paints after `box`: a
+ * scroll can bring one over what is mounted for it, where one painted
+ * before it is under it wherever the scroll has it. joshwcomeau.com's
+ * floating like button is fixed beside its article, before a playground's
+ * frame in the tree, so Chrome paints the frame over it; taken for a box
+ * over the frame, inside its rect where no rectangle cuts it out, it hid
+ * the frame whole. Where either's place in the paint order cannot be told
+ * (`paintOrderOf`), or one is in the other's stacking context, it counts.
+ */
+function fixedOver(tree: BoxTree, box: Box): Box[] {
+  const fixed = FIXED_BOXES.get(tree);
+  if (!fixed?.length) return [];
+  const at = paintOrderOf(box);
+  if (!at) return fixed;
+  return fixed.filter((f) => {
+    const key = paintOrderOf(f);
+    if (!key) return true;
+    for (let i = 0; i < key.length && i < at.length; i += 1) {
+      if (key[i] !== at[i]) return key[i] > at[i];
+    }
+    return true;
+  });
 }
 
 /**
@@ -580,8 +672,9 @@ function pixelsAround(rect: Rect): Rect {
  * A rect, cut by the boxes fixed to the viewport where the scroll has them,
  * `shift` from where they were laid out: the band one takes off its top, its
  * bottom or a side, or `hidden` where one reaches into it in a way that
- * leaves no rectangle. Only a box painted over the document's flow is
- * asked about — one at a negative `z-index` is under it.
+ * leaves no rectangle. `fixed` is those the document paints after the
+ * rect's element (`fixedOver`), and only one painted over the document's
+ * flow is asked about — one at a negative `z-index` is under it.
  */
 export function cutByFixed(
   rect: Rect,

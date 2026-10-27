@@ -21,6 +21,7 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import type { CssEventInfo } from '../node.js';
+import type { MediaEventHandler } from '../media.js';
 import type { FramePost } from './host.js';
 import type {
   FrameLink,
@@ -102,6 +103,9 @@ export interface ScriptProps {
   onElementScroll?: (element: Element) => void;
   /** The document's CSS transition events, which the page hears. */
   cssEvents?: (events: CssEventInfo[]) => void;
+  /** What a player with no picture said, which the page's media element
+   *  hears (`HtmlViewProps.onMediaEvent`). */
+  mediaEvent?: MediaEventHandler;
   /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
   canvasImage?: (element: Element) => unknown | null;
   /** The document's runner, where its scripts run: what a frame in it is
@@ -339,6 +343,13 @@ export function useScripts(
     if (runner.current) runner.current.cssEvents(events);
     else if (early.current.document) early.current.css.push(...events);
   }, []);
+  // what a sound's player says before the engine is here is nothing the
+  // page could hear: it has played nothing yet
+  const mediaEvent = useCallback<MediaEventHandler>(
+    (element, src, kind, value) =>
+      runner.current?.mediaEvent(element, src, kind, value),
+    [],
+  );
   const getRunner = useCallback(() => runner.current, []);
 
   // the engine, fetched the first time scripts are on; what the document
@@ -411,6 +422,7 @@ export function useScripts(
     painted,
     onElementScroll,
     cssEvents,
+    mediaEvent,
     canvasImage,
     runner: getRunner,
     runtime: engine,

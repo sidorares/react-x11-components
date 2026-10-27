@@ -10083,6 +10083,10 @@ export function installDom(
     ended: boolean;
     /** HTML's "can autoplay flag". */
     autoplaying: boolean;
+    /** Whether a player plays its source (`mediaPlayed`): its clock and
+     *  its end are the player's from then on, and the model's only fill
+     *  in between what the player says. */
+    player: boolean;
     /** Which run of the load algorithm this is: a fetch or a timer of an
      *  earlier one finds another and does nothing. */
     load: number;
@@ -10120,6 +10124,7 @@ export function installDom(
         stalled: false,
         ended: false,
         autoplaying: true,
+        player: false,
         load: 0,
         abort: null,
         since: null,
@@ -10167,11 +10172,24 @@ export function installDom(
   let networkAnswer: boolean | null = null;
   const mediaLoads = (): boolean =>
     (networkAnswer ??= call('hasNetwork') === true);
+  /** The media elements a script has playing, in a document or out of
+   *  one: what a document that stops being fully active pauses
+   *  (`hideTree`), a `new Audio()` it never put in its tree among them. */
+  const playingMedia = new Set<Any>();
+  /** How far, in seconds of the media, the clock runs past what a player
+   *  last said (`mediaPlayed`): it says four times a second while it
+   *  plays, so a player silent for longer is waiting for data — after a
+   *  seek, on a slow network — and the clock waits with it, where it would
+   *  run ahead and come back when the player spoke again. */
+  const PLAYER_AHEAD = 0.5;
   /** The clock: where it is now, while it runs (HTML's "current playback
    *  position"). */
   const mediaTime = (ask: MediaAsk): number => {
     if (ask.since === null) return ask.time;
-    const t = ask.time + ((now() - ask.since) / 1000) * ask.playbackRate;
+    const ran = ((now() - ask.since) / 1000) * ask.playbackRate;
+    const t =
+      ask.time +
+      (ask.player ? Math.min(ran, PLAYER_AHEAD * ask.playbackRate) : ran);
     return Number.isFinite(ask.duration) ? Math.min(t, ask.duration) : t;
   };
   /** Whether the clock runs: playing, with enough to go on, not seeking
@@ -10182,6 +10200,8 @@ export function installDom(
    *  `:seeking`, `:buffering` and `:stalled` read told to the host. */
   const mediaSync = (el: Any): void => {
     const ask = askOf(el);
+    if (ask.paused === false) playingMedia.add(el);
+    else playingMedia.delete(el);
     const runs = mediaRuns(ask);
     if (!runs && ask.since !== null) {
       ask.time = mediaTime(ask);
@@ -10206,7 +10226,10 @@ export function installDom(
     call('mediaState', el._id, 'stalled', buffering && ask.stalled);
   };
   /** A quarter second of play: `timeupdate`, and the end, where it loops
-   *  back to the start or stops (HTML 4.8.11.8, "reaches the end"). */
+   *  back to the start or stops (HTML 4.8.11.8, "reaches the end"). Where
+   *  a player plays it, the player says when that is (`mediaPlayed`): the
+   *  clock at the length may be ahead of what is heard, and a page that
+   *  goes on to the next file at `ended` would cut the last word off. */
   const mediaTick = (el: Any): void => {
     const ask = askOf(el);
     if (!mediaRuns(ask)) return;
@@ -10214,11 +10237,19 @@ export function installDom(
     if (!Number.isFinite(ask.duration) || mediaTime(ask) < ask.duration) {
       return;
     }
+    if (ask.player) return;
     if (el.hasAttribute('loop')) {
       mediaSeek(el, 0);
       return;
     }
-    ask.time = ask.duration;
+    mediaEnd(el);
+  };
+  /** HTML 4.8.11.8's steps where playback "reaches the end" of a source
+   *  that does not loop: paused at its length, `timeupdate`, `pause` and
+   *  `ended`. */
+  const mediaEnd = (el: Any): void => {
+    const ask = askOf(el);
+    ask.time = Number.isFinite(ask.duration) ? ask.duration : mediaTime(ask);
     ask.since = null;
     ask.ended = true;
     ask.paused = true;
@@ -10227,6 +10258,49 @@ export function installDom(
     fireMedia(el, 'timeupdate');
     fireMedia(el, 'pause');
     fireMedia(el, 'ended');
+  };
+  /**
+   * What the player of its source said (`__player`), where `<Html>` has
+   * one play it — an `<audio>`'s, for now (`sounds.ts`): its length, over
+   * the one its head was read for; how far it has got, which the clock is
+   * set to; its end; or its failure. News of another source than the one
+   * it has now is a player's that is gone. Where nothing loads it the
+   * player's metadata is what makes it ready, as a fetch's head would.
+   */
+  const mediaPlayed = (
+    el: Any,
+    src: string,
+    kind: string,
+    value: string,
+  ): void => {
+    const ask = askOf(el);
+    if (ask.src && ask.src !== src) return;
+    ask.player = true;
+    if (kind === 'metadata') {
+      const duration = Number(value);
+      if (duration > 0 && duration !== ask.duration) {
+        const known = !Number.isNaN(ask.duration);
+        ask.duration = duration;
+        const load = ask.load;
+        if (known) {
+          mediaTask(() => {
+            if (ask.load === load) fireMedia(el, 'durationchange');
+          });
+        }
+      }
+      if (!mediaLoads()) mediaReady(el, 4);
+    } else if (kind === 'time') {
+      // a seek is the page's until it lands, and an end is where it is
+      if (ask.seeking || ask.ended) return;
+      const time = Number(value);
+      if (!Number.isFinite(time)) return;
+      ask.time = time;
+      if (ask.since !== null) ask.since = now();
+    } else if (kind === 'ended') {
+      if (!ask.ended && !el.hasAttribute('loop')) mediaEnd(el);
+    } else if (kind === 'error') {
+      mediaFailed(el, ask.load);
+    }
   };
   /** HTML 4.8.11.9, seeking: `seeking` at once, and in a later task, once
    *  what is there can be played, the time, `timeupdate` and `seeked`. */
@@ -10513,6 +10587,7 @@ export function installDom(
     ask.ended = false;
     ask.stalled = false;
     ask.autoplaying = true;
+    ask.player = false;
     mediaSelect(el);
   };
   class MediaError {
@@ -23033,10 +23108,14 @@ export function installDom(
           }
         }
         // what plays in a document that is not fully active is paused
-        // (HTML 4.8.11.8), its `pause` told as it is shown again
-        for (const el of Array.from(
-          d.querySelectorAll('video, audio'),
-        ) as Any[]) {
+        // (HTML 4.8.11.8), its `pause` told as it is shown again — what is
+        // in its tree, and what a script plays out of it
+        for (const el of [
+          ...(Array.from(d.querySelectorAll('video, audio')) as Any[]),
+          ...Array.from(playingMedia).filter(
+            (m: Any) => m.ownerDocument === d && !m.isConnected,
+          ),
+        ]) {
           if (!el.paused) pauseMedia.call(el);
         }
       } finally {
@@ -26702,6 +26781,14 @@ export function installDom(
     const [id, load, kind, a, b, c] = input();
     const el = wrap(id);
     if (el) mediaHeard(el, Number(load), String(kind), a, b, c);
+    return true;
+  });
+
+  // what the player of a media element's source said
+  entry('__player', () => {
+    const [id, src, kind, value] = input();
+    const el = wrap(id);
+    if (el) mediaPlayed(el, String(src), String(kind), String(value));
     return true;
   });
 

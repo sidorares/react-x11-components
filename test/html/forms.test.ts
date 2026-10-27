@@ -18,7 +18,7 @@ import type { DrawnNode } from 'react-x11';
 import { XK_ESCAPE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
-import { parseColor } from '../../src/html/css/values.js';
+import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import {
   FONTS,
   boxOf,
@@ -654,6 +654,80 @@ test("a field is the page's to draw once it sets its border or background, to an
     "a field left alone keeps the theme's frame",
   );
 });
+
+metric(
+  "a styled field's text is filled with its -webkit-text-fill-color, and its caret keeps its color",
+  async () => {
+    // react-simple-code-editor lays a <textarea> over the <pre> it
+    // highlights, `color: inherit` and `-webkit-text-fill-color:
+    // transparent`: the <pre> shows the text, the field its caret and its
+    // selection. joshwcomeau.com's playgrounds are one, and the field's text
+    // was drawn in its colour, a second copy over the highlighted one.
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#000000}' +
+        ' .ed{position:relative;color:#ff0000;font:16px monospace}' +
+        ' pre{margin:0;color:#00ff00;font:inherit}' +
+        ' textarea{margin:0;border:0;padding:0;background:none;resize:none;' +
+        'color:inherit;font:16px monospace}' +
+        ' .ed textarea{position:absolute;top:0;left:0;width:100%;height:100%;' +
+        '-webkit-text-fill-color:transparent}</style>' +
+        '<div class="ed" id="ed"><pre>WWWW</pre><textarea id="over">WWWW' +
+        '</textarea></div><div style="color:#ff0000">' +
+        '<textarea id="shown">WWWW</textarea></div>',
+    );
+    const el = view(node);
+    const rects = (
+      el as unknown as {
+        _controls: {
+          element: { attribs: Record<string, string> };
+          bare?: { color: string; fill?: string } | null;
+        }[];
+      }
+    )._controls;
+    const rectOf = (id: string) =>
+      rects.find((r) => r.element.attribs.id === id)!;
+    assert.strictEqual(rectOf('over').bare?.color, '#ff0000');
+    assert.ok(
+      isTransparent(rectOf('over').bare!.fill!),
+      'its glyphs filled with nothing',
+    );
+    assert.strictEqual(rectOf('shown').bare?.fill, undefined, 'no fill set');
+    // the caret is the field's colour, a browser's `caret-color: auto`
+    const [over, shown] = screen.all((n) => n.kind === 'textarea');
+    assert.strictEqual(
+      (over as unknown as { props: { caretColor?: string } }).props.caretColor,
+      '#ff0000',
+    );
+    assert.strictEqual(
+      (shown as unknown as { props: { caretColor?: string } }).props.caretColor,
+      '#ff0000',
+    );
+    // and what is drawn over the <pre> is its green text, none of it red
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const count = async (id: string) => {
+      const box = boxOf(el, id);
+      const px = await pixelsIn(result.ctx, {
+        x: at.x + box.x,
+        y: at.y + box.y,
+        width: Math.round(box.width),
+        height: Math.round(box.height),
+      });
+      let red = 0;
+      let green = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] > 160 && px[i + 1] < 80) red += 1;
+        if (px[i + 1] > 160 && px[i] < 80) green += 1;
+      }
+      return { red, green };
+    };
+    await waitFor(async () => {
+      const ed = await count('ed');
+      assert.strictEqual(ed.red, 0, "the field's text is not drawn");
+      assert.ok(ed.green > 20, "the <pre>'s is");
+      assert.ok((await count('shown')).red > 20, 'a field with no fill is');
+    });
+  },
+);
 
 metric(
   "a field the page only rounded or recoloured takes Chrome's edges",

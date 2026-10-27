@@ -422,8 +422,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.55.2` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.55.2` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -829,6 +829,18 @@ it up. **The floor is a running one and moves often** — every move since
   registered — is some 20 ms of the load. 2.55.1 under it gives each child
   of a `<glarea>` a pane of its own on Cocoa (react-x11#1011), which took
   `<Flow>`'s GL minimap from a quarter of a core to none.
+- `^2.56.0` — `<audio src>`, the platform's player without a picture
+  (react-x11#1019): AVFoundation on macOS and a `<Frame>` pane's host for a
+  pane, with `<video src>`'s props, events and ref, taking no room and
+  drawing nothing. `<Html>` mounts one for each `<audio>` a page's script
+  plays (`sounds.ts`), and the page's clock follows what its player says:
+  an OpenAI article's "Listen" button, a plain `<audio>` fed one MP3 after
+  another, was silent in the example browser. The same release adds
+  `fakeMediaPlayers(app)` to `react-x11/test`, a player that plays nothing
+  for an app that has none, which `test/html/audio.test.ts` drives in place
+  of AVFoundation. A core without `<audio>` throws on the element, so the
+  floor moves with the feature. It also carries `<textinput mask>`
+  (react-x11#1017), which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -2501,8 +2513,17 @@ closes a way out a DOM binding opens by accident:
   is mounted paused, and `paused` is left out until something says, so
   `autoplay` still plays. **Anything new that tells a player what to do
   goes through `setMediaState`**, a press on `controls` included, or the
-  next prop a script sets is no change and the player is not told.
-  Nothing comes back from the player to the page yet. **Where the page's
+  next prop a script sets is no change and the player is not told. An
+  `<audio>` is the same through `sounds.ts` and core's `<audio>`, mounted
+  from the first time it is told it plays until its end (`_sounding`),
+  out of the document as much as in it. **What an audio's player says
+  comes back** (`soundEvent`, the `__player` entry, `mediaPlayed`): its
+  length, its time, its end and its failure are the page's, and the
+  model's clock runs at most `PLAYER_AHEAD` past what the player last
+  said, so it waits while the player does. A video's player says nothing
+  back yet. **Anything new that makes a media element play or stop goes
+  through `mediaSync`**, which keeps `playingMedia`: what a document going
+  into the back-forward cache pauses besides what is in its tree. **Where the page's
   requests reach a network (`network`, `hasNetwork`), the page loads the
   media itself as far as its metadata**: the host fetches the source
   (`_mediaFetch`), reads its container's head (`scripts/media.ts`) and
@@ -4181,7 +4202,11 @@ player is one React element for its element and source**, cut, rounded and
 faded by the boxes around it (`renderVideo`'s three boxes): a new element
 is a new player, and the video starts again. The boxes fixed to the
 viewport are asked about at each paint (`_publishMedia`), since a scroll
-brings a header over a player and lays nothing out.
+brings a header over a player and lays nothing out — those the document
+paints after the element alone (`fixedOver`, by `paintOrderOf`), worked
+out as the rects are laid out: a fixed box before a frame in the paint
+order is under it, and joshwcomeau.com's like button, fixed beside its
+article, hid every playground's frame it was inside.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document

@@ -40,14 +40,16 @@ export interface ResourceRequest {
   url: string;
   /** An `<img>`, an `<object>`, a background or a list marker; a
    *  `<link rel=stylesheet>` or an `@import`; an `@font-face` source; a
-   *  `<video>`'s `src`, or one of its `<source>`s; a `<script src>`, or a
-   *  module one imports — asked for only where the document's scripts run
+   *  `<video>`'s `src`, or one of its `<source>`s; an `<audio>`'s, asked
+   *  for once its page's script plays it; a `<script src>`, or a module
+   *  one imports — asked for only where the document's scripts run
    *  (`<Html scripts>`). */
-  kind: 'image' | 'stylesheet' | 'font' | 'video' | 'script';
+  kind: 'image' | 'stylesheet' | 'font' | 'video' | 'audio' | 'script';
   /**
-   * A video's: the type its `<source>` says it is (`video/mp4`, and maybe
-   * its `codecs`), for a host that knows what its player plays. Absent
-   * where the markup says none, and for every other kind.
+   * A video's or an audio's: the type its `<source>` says it is
+   * (`video/mp4`, `audio/mpeg`, and maybe its `codecs`), for a host that
+   * knows what its player plays. Absent where the markup says none, and
+   * for every other kind.
    */
   type?: string;
   /** The element that referred to it, for a host that wants the context:
@@ -84,6 +86,11 @@ export interface ResourceRequest {
  * a `VideoFrames` sink the host decodes the video into, which shows on
  * every backend. Handing over a `src` is the host letting the player make
  * the request, since the player, not this component, is what fetches it.
+ *
+ * An audio is the same, with no picture: a `src` core's `<audio>` plays,
+ * where `useSupports('mediaPlayback')` says this display has a player.
+ * Nothing else plays one yet, so a host without a player declines it, and
+ * the page plays on unheard.
  */
 export type ResourceResult =
   | { kind: 'stylesheet'; text: string; url?: string }
@@ -94,19 +101,33 @@ export type ResourceResult =
   | { kind: 'script'; text: string }
   | { kind: 'script'; bytes: Uint8Array; charset?: string }
   | { kind: 'document' }
-  | VideoSource;
+  | VideoSource
+  | AudioSource;
 
 /** What a `<video>` plays: a host's answer to `kind: 'video'`. */
 export type VideoSource =
   { kind: 'video'; src: string } | { kind: 'video'; frames: VideoFrames };
 
-/** What `ResourceStore` tells its owner arrived late: a stylesheet, an
- *  image or a video, or a stylesheet that was declined or failed. */
-export type ResourceChange = 'stylesheet' | 'image' | 'video' | 'declined';
+/** What an `<audio>` plays: a host's answer to `kind: 'audio'`. */
+export type AudioSource = { kind: 'audio'; src: string };
 
-/** Where a video request is: answered with what plays, still being
- *  answered, or declined — by the host, or by the player it was handed to. */
-export type VideoAnswer = VideoSource | 'pending' | 'failed';
+/** Which player a media request is for. */
+export type PlayerKind = 'video' | 'audio';
+
+/** What `ResourceStore` tells its owner arrived late: a stylesheet, an
+ *  image, a video or an audio, or a stylesheet that was declined or
+ *  failed. */
+export type ResourceChange =
+  'stylesheet' | 'image' | 'video' | 'audio' | 'declined';
+
+/** Where a video or an audio request is: answered with what plays, still
+ *  being answered, or declined — by the host, or by the player it was
+ *  handed to. */
+export type MediaAnswer<K extends PlayerKind = PlayerKind> =
+  (K extends 'video' ? VideoSource : AudioSource) | 'pending' | 'failed';
+
+/** Where a video request is (`MediaAnswer`). */
+export type VideoAnswer = MediaAnswer<'video'>;
 
 interface Entry {
   state: 'pending' | 'ready' | 'failed';
@@ -151,14 +172,19 @@ export class ResourceStore {
   private _changed: (what: ResourceChange, layout: boolean) => void;
   private _urls: UrlResolver | null;
   private _destroyed = false;
-  /** What each video URL plays, kept apart from the other resources: a
-   *  `src` that is also some image's is two questions for the host. */
-  private _videos = new Map<string, VideoAnswer>();
+  /** What each video and audio URL plays, kept apart from the other
+   *  resources and from each other: a `src` that is also some image's, or
+   *  played by both, is two questions for the host. */
+  private _players = {
+    video: new Map<string, MediaAnswer<'video'>>(),
+    audio: new Map<string, MediaAnswer<'audio'>>(),
+  };
 
   /**
    * `changed` is told when a resource arrives after the request that asked
-   * for it returned, and which kind: a stylesheet changes the cascade, an
-   * image the boxes — or, where nothing its size lays out asked for it
+   * for it returned, and which kind: a stylesheet changes the cascade —
+   * where a sheet's link asked for it (`layout`), and not only a preload —
+   * an image the boxes — or, where nothing its size lays out asked for it
    * (`layout`), only what is painted — and a video what is mounted over
    * them; a host answering over a network answers every one of them later.
    * It is told too where a stylesheet is declined or fails that late
@@ -203,7 +229,9 @@ export class ResourceStore {
 
   /** Ask for a resource, once per URL: for what only paints it where
    *  `paintOnly` — a background, a border image, a mask — and its arrival
-   *  changes no box. Asked for again by what lays it out, it does. */
+   *  changes no box; or only preloads it, a sheet's `<link rel=preload>`,
+   *  and its arrival changes nothing. Asked for again by what lays it out,
+   *  it does. */
   request(request: ResourceRequest, paintOnly = false): void {
     if (this._destroyed || !request.url) return;
     const url = this._key(request.url);
@@ -255,6 +283,7 @@ export class ResourceStore {
       !result ||
       result.kind === 'font' ||
       result.kind === 'video' ||
+      result.kind === 'audio' ||
       result.kind === 'script'
     ) {
       entry.state = 'failed';
@@ -283,7 +312,9 @@ export class ResourceStore {
         entry.text = result.text;
       }
       entry.state = 'ready';
-      if (!synchronous) this._changed('stylesheet', true);
+      // a sheet nothing reads yet — a `<link rel=preload>`'s — changes no
+      // style, until a sheet's link asks for it and finds it here
+      if (!synchronous) this._changed('stylesheet', entry.layout !== false);
       return;
     }
     if ('image' in result) {
@@ -432,25 +463,31 @@ export class ResourceStore {
   }
 
   /**
-   * Ask what a `<video>`'s source plays, once per URL: what `video`
-   * answers from then on. An answer that is not a video, a throw and a
-   * rejection are each the host declining.
+   * Ask what a `<video>`'s or an `<audio>`'s source plays, once per URL
+   * and kind: what `media` answers from then on. An answer that is not of
+   * the kind asked, a throw and a rejection are each the host declining.
    */
-  requestVideo(url: string, type: string | undefined, element: Element): void {
+  requestMedia(
+    kind: PlayerKind,
+    url: string,
+    type: string | undefined,
+    element: Element,
+  ): void {
     if (this._destroyed || !url) return;
     const key = this._key(url);
-    if (this._videos.has(key)) return;
-    this._videos.set(key, 'pending');
+    const players = this._players[kind] as Map<string, MediaAnswer>;
+    if (players.has(key)) return;
+    players.set(key, 'pending');
     const settle = (result: ResourceResult | null, late: boolean) => {
-      if (this._destroyed || this._videos.get(key) !== 'pending') return;
-      this._videos.set(key, playable(result) ? result : 'failed');
-      if (late) this._changed('video', false);
+      if (this._destroyed || players.get(key) !== 'pending') return;
+      players.set(key, playable(kind, result) ? result : 'failed');
+      if (late) this._changed(kind, false);
     };
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {
       answer = this._ask({
         url: key,
-        kind: 'video',
+        kind,
         ...(type && { type }),
         element,
       });
@@ -468,26 +505,36 @@ export class ResourceStore {
     settle(answer, false);
   }
 
-  /** What a video URL plays, where it was asked about: what the host
-   *  answered, `'pending'` until it has, `'failed'` where it declined or
-   *  the player it was handed to could not play it. */
-  video(url: string): VideoAnswer | undefined {
+  /** What a video or an audio URL plays, where it was asked about: what
+   *  the host answered, `'pending'` until it has, `'failed'` where it
+   *  declined or the player it was handed to could not play it. */
+  media<K extends PlayerKind>(
+    kind: K,
+    url: string,
+  ): MediaAnswer<K> | undefined {
     if (!url) return undefined;
-    return this._videos.get(this._key(url));
+    return this._players[kind].get(this._key(url)) as MediaAnswer<K>;
   }
 
-  /** A video the player could not play — a format it has no decoder for,
+  /** A source the player could not play — a format it has no decoder for,
    *  a URL that did not answer: the element goes on to its next source. */
-  failVideo(url: string): void {
+  failMedia(kind: PlayerKind, url: string): void {
     const key = this._key(url);
-    if (this._videos.has(key)) this._videos.set(key, 'failed');
+    const players = this._players[kind] as Map<string, MediaAnswer>;
+    if (players.has(key)) players.set(key, 'failed');
+  }
+
+  /** Where `url` is kept: the document's base resolves it. */
+  keyOf(url: string): string {
+    return this._key(url);
   }
 
   destroy(): void {
     this._destroyed = true;
     for (const entry of this._entries.values()) entry.animation?.destroy();
     this._entries.clear();
-    this._videos.clear();
+    this._players.video.clear();
+    this._players.audio.clear();
   }
 }
 
@@ -500,9 +547,13 @@ function rasterSize(width: number, height: number): IntrinsicSize {
   };
 }
 
-/** Whether a host's answer is something a `<video>` plays. */
-function playable(result: ResourceResult | null): result is VideoSource {
-  if (result?.kind !== 'video') return false;
+/** Whether a host's answer is something a `<video>`, or an `<audio>`,
+ *  plays. */
+function playable(
+  kind: PlayerKind,
+  result: ResourceResult | null,
+): result is VideoSource | AudioSource {
+  if (result?.kind !== kind) return false;
   if ('frames' in result) return result.frames != null;
   return typeof result.src === 'string' && result.src !== '';
 }

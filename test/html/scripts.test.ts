@@ -9982,6 +9982,51 @@ test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and
   assert.equal(text('f', 'in'), 'from srcdoc');
 });
 
+test('an iframe given a srcdoc by a script goes to it, and one that loses it goes to its src', async () => {
+  // HTML 4.8.5: a frame's srcdoc set, changed or removed processes the
+  // iframe attributes. A playground's React sets the srcdoc of an iframe
+  // the server rendered with none, after the frame had its first
+  // about:blank, and waits for its window's load to say so.
+  const frameScript =
+    '<script>window.onload = function () {' +
+    " parent.postMessage({ source: 'frame-1', message: { type: 'loaded' } }, '*'); };" +
+    '<\\/script>';
+  const { text, logs } = await hostedFrames(
+    '<div style="position:relative;height:120px">' +
+      '<div style="position:absolute;top:8px;right:8px;width:16px;height:16px;background:red"></div>' +
+      '<iframe id="f" src="frame.html" style="width:100%;height:100%"></iframe></div>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f"), r = [];' +
+      'function show() { document.getElementById("out").textContent = r.join("|"); }' +
+      'addEventListener("message", function (e) {' +
+      '  if (e.data.source !== "frame-1") return;' +
+      '  r.push(e.data.message.type + ":" + f.contentDocument.getElementById("in").textContent);' +
+      '  if (r.length === 1) f.removeAttribute("srcdoc");' +
+      '  show();' +
+      '});' +
+      'f.onload = function () {' +
+      '  f.onload = function () {' +
+      '    if (f.contentDocument.getElementById("in").textContent !== "from src") return;' +
+      '    r.push("src"); show(); };' +
+      '  setTimeout(function () {' +
+      '    f.srcdoc = "<p id=in>from srcdoc</p>' +
+      frameScript +
+      '";' +
+      '  }, 0);' +
+      '};' +
+      '</script>',
+    { 'frame.html': '<p id="in">from src</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.includes('src'),
+    ),
+    'loaded:from srcdoc|src',
+    logs.join('\n'),
+  );
+});
+
 test('a frame of another origin runs at its own origin, and the two reach each other only by messages', async () => {
   const frame =
     '<!DOCTYPE html><p id="got">-</p><script>' +
