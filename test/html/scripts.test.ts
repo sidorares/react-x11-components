@@ -1995,6 +1995,21 @@ test('two import()s whose modules share one are both linked, the shared one once
   assert.equal(doc.text('out'), '11 12 1');
 });
 
+test("an error a classic script throws reaches the page with the stack it was thrown with, and none of the script's source", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var seen = [];' +
+      "window.addEventListener('error', function (e) { var s = e.error.stack.split('\\n'); seen.push(s[0], /^ {4}at /.test(s[1]), e.error.stack.indexOf('missing') < 0); });" +
+      '</script>' +
+      '<script>var missing; missing.field;</script>' +
+      "<script>document.getElementById('out').textContent = seen.join('|');</script>",
+  );
+  assert.equal(
+    doc.text('out'),
+    "TypeError: Cannot read properties of undefined (reading 'field')|true|true",
+  );
+});
+
 test('a module that throws, runs away or does not parse is reported, and the page goes on', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -2801,6 +2816,26 @@ test('attribute nodes are the element’s, one each, in a map that is live', asy
   assert.equal(
     doc.text('out'),
     '4|class|true|true|t|u|id,class,title,data-x|d,c,u,1|0||1||en|true|InUseAttributeError|NotFoundError',
+  );
+});
+
+test('an attribute map answers an attribute by its name, which it does not enumerate, under its own members', async () => {
+  const doc = await hosted(
+    '<div id="d" title="t" length="9"></div><p id="out"></p><script>' +
+      'var r = []; var d = document.getElementById("d"); var map = d.attributes;' +
+      // jQuery 1.12 reads a handler attribute so as it loads
+      'd.setAttribute("onfocusin", "t");' +
+      'r.push(map.onfocusin === d.getAttributeNode("onfocusin"), map.onfocusin.expando, "title" in map, map.title.value);' +
+      // a member of the map's is the member, and a name with a capital none
+      'r.push(map.length, typeof map.item, map.TITLE, "nothing" in map, map.nothing);' +
+      'r.push(Object.keys(map).indexOf("title"), Object.getOwnPropertyNames(map).indexOf("title") >= 0, Object.keys(map).slice(0, 4).join(","));' +
+      'var held = map.title; d.removeAttribute("title"); r.push(map.title, held.ownerElement);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'true||true|t|4|function||false||-1|true|0,1,2,3||',
   );
 });
 
@@ -9706,6 +9741,22 @@ async function hostedFrames(
     title: () => {},
     fetch: async (request) => {
       const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+      if (name === 'whose') {
+        // whose request it was, as a server that reflects `Origin` says
+        const from = request.client ?? PAGE;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [
+            ['content-type', 'text/plain'],
+            ['access-control-allow-origin', new URL(from).origin],
+            ['access-control-allow-credentials', 'true'],
+          ],
+          body: from === PAGE ? 'page' : from,
+        };
+      }
       const body = files[name];
       if (body === undefined) throw new Error('no answer');
       return {
@@ -9836,6 +9887,37 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test("a frame's own requests are the frame's, and another origin's answer to it is held to the frame's origin", async () => {
+  // a frame on another origin asks its own origin and the page's, which
+  // answers with its `Access-Control-Allow-Origin` the origin it was asked
+  // from: made as the page's, the frame's own came back as the page's and
+  // the other was refused, as Yandex ID's frame in Yandex Mail was
+  const frame =
+    '<!DOCTYPE html><script>' +
+    'Promise.all(["https://other.test/whose", "https://example.test/dir/whose"].map(function (u) {' +
+    '  return fetch(u, { credentials: "include" }).then(function (r) { return r.text(); }, function (e) { return "refused " + e.message; });' +
+    '})).then(function (t) { parent.postMessage(t.join(","), "*"); });' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/frame.html"></iframe><p id="out"></p><script>' +
+      'var mine, theirs;' +
+      'function show() { if (mine && theirs) document.getElementById("out").textContent = mine + "|" + theirs; }' +
+      'fetch("https://other.test/whose").then(function (x) { return x.text(); }).then(function (t) { mine = t; show(); });' +
+      'addEventListener("message", function (e) { theirs = e.data; show(); });' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(
+    page,
+    'page|https://other.test/frame.html,https://other.test/frame.html',
+    logs.join('\n'),
+  );
 });
 
 test("a port the page posts to another origin's frame is the frame's, and the two talk through it", async () => {

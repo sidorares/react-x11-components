@@ -516,6 +516,98 @@ test('a page’s fetch carries cookies as its credentials mode says, and a redir
   assert.deepEqual(seen, ['GET /api hopped=1']);
 });
 
+test("a frame's request carries the frame's Origin and Referer, and its own origin's cookies, under the page's site", async (t) => {
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    if (url.pathname === '/set') {
+      res.writeHead(200, { 'set-cookie': 'id=1; Path=/' });
+      res.end();
+      return;
+    }
+    seen.push(
+      [req.headers.origin, req.headers.referer, req.headers.cookie ?? '-'].join(
+        ' ',
+      ),
+    );
+    res.end('ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    cookies: new CookieJar(),
+  });
+  const signal = new AbortController().signal;
+  await readText((await network.document(`${origin}/set`, signal)).body);
+  // the page is another site's, and a frame on the server's origin is in it
+  const fetch = network.fetcher('http://page.test/inbox');
+  const ask = (client?: string) =>
+    fetch(
+      {
+        url: `${origin}/api`,
+        method: 'GET',
+        headers: [],
+        body: null,
+        credentials: 'same-origin',
+        ...(client ? { client } : {}),
+      },
+      signal,
+    );
+  await ask();
+  await ask(`${origin}/frame?x=1#top`);
+  assert.deepEqual(seen, [
+    'http://page.test http://page.test/ -',
+    `${origin} ${origin}/frame?x=1 id=1`,
+  ]);
+});
+
+test('a body that keeps arriving is read to its end however long it takes, and one that stops arriving is given up', async (t) => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/css' });
+    // a chunk every 60 ms for half a second, past a bound of 200 ms in all;
+    // or a first chunk, and then nothing for 400 ms
+    const stalls = req.url === '/stalls.css';
+    let sent = 0;
+    const next = (): void => {
+      if (res.destroyed) return;
+      res.write(`a${sent}{}`);
+      sent += 1;
+      if (sent === 8) res.end();
+      else setTimeout(next, stalls ? 400 : 60);
+    };
+    next();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ connectTimeout: null, timeout: 200 });
+  const page = `${origin}/page`;
+  const css = async (path: string) => {
+    const loaded = await network.load(`${origin}${path}`, 'stylesheet', page);
+    return 'fetched' in loaded
+      ? new TextDecoder().decode(loaded.fetched.bytes)
+      : 'failed' in loaded
+        ? 'failed'
+        : loaded;
+  };
+  const whole = 'a0{}a1{}a2{}a3{}a4{}a5{}a6{}a7{}';
+  assert.equal(await css('/slow.css'), whole, 'a slow resource');
+  assert.equal(await css('/stalls.css'), 'failed', 'a stalled resource');
+  const signal = new AbortController().signal;
+  const document = await network.document(`${origin}/slow2.css`, signal);
+  assert.equal(await readText(document.body), whole, 'a slow document');
+  const stalled = await network.document(`${origin}/stalls.css`, signal);
+  await assert.rejects(readText(stalled.body), 'a stalled document');
+});
+
 test('a redirect followed by the network: a loop ends, and a POST’s 302 is a GET', async (t) => {
   const { origin } = await cookieSite(t);
   const network = new HtmlNetwork({

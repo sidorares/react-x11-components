@@ -5631,6 +5631,23 @@ export function installDom(
   /** An element's `attributes`: one map for the element, indexed live. */
   const attributeMaps = new WeakMap<object, Any>();
   const INDEX = /^(?:0|[1-9]\d*)$/;
+  /** The names a map answers as properties of its own (DOM 4.9.1, its
+   *  supported property names): its attributes' qualified names, less any
+   *  with an upper-case letter on an HTML element in an HTML document. */
+  const namedItems = (target: Any): string[] => {
+    const el = target._el;
+    const names: string[] = el.getAttributeNames();
+    return el.namespaceURI === HTML_NS && !el.ownerDocument?._type
+      ? names.filter((name) => !/[A-Z]/.test(name))
+      : names;
+  };
+  /** Whether `key` is an attribute's name that the map answers, where no
+   *  property of its own or of its prototypes has the name (WebIDL 3.10,
+   *  the named property visibility algorithm). */
+  const namedItem = (target: Any, key: Any): boolean =>
+    typeof key === 'string' &&
+    !Reflect.has(target, key) &&
+    namedItems(target).includes(key);
   const namedNodeMapOf = (el: Any): Any => {
     let map = attributeMaps.get(el);
     if (map) return map;
@@ -5639,19 +5656,22 @@ export function installDom(
         if (typeof key === 'string' && INDEX.test(key)) {
           return target.item(Number(key)) ?? undefined;
         }
+        // `attributes.onclick`, which jQuery 1.12 reads as it loads
+        if (namedItem(target, key)) return attrOf(target._el, key);
         return Reflect.get(target, key, target);
       },
       has(target: Any, key: Any): boolean {
         if (typeof key === 'string' && INDEX.test(key)) {
           return Number(key) < target.length;
         }
-        return Reflect.has(target, key);
+        return Reflect.has(target, key) || namedItem(target, key);
       },
       ownKeys(target: Any): Any[] {
         return [
           ...target._el
             .getAttributeNames()
             .map((_: Any, i: number) => String(i)),
+          ...namedItems(target).filter((name) => !Reflect.has(target, name)),
           ...Reflect.ownKeys(target),
         ];
       },
@@ -5661,6 +5681,15 @@ export function installDom(
           return value
             ? { value, enumerable: true, configurable: true, writable: false }
             : undefined;
+        }
+        // [LegacyUnenumerableNamedProperties]: a name is not enumerated
+        if (namedItem(target, key)) {
+          return {
+            value: attrOf(target._el, key),
+            enumerable: false,
+            configurable: true,
+            writable: false,
+          };
         }
         return Reflect.getOwnPropertyDescriptor(target, key);
       },

@@ -142,6 +142,13 @@ export interface HtmlNetworkOptions {
    * Default 2500; null leaves Node's alone.
    */
   connectTimeout?: number | null;
+  /**
+   * How long a request waits with nothing arriving, in milliseconds: no
+   * answer yet, or no more of a document's or a resource's body. A body
+   * that keeps arriving is read to its end however long that takes, as a
+   * browser reads it. Default 30 000.
+   */
+  timeout?: number;
   /** Where each request and what came of it is told: a line of words a
    *  request. Default nowhere. */
   log?: (...parts: unknown[]) => void;
@@ -312,6 +319,7 @@ export class HtmlNetwork {
   private readonly _transport: HtmlTransport | null;
   private readonly _files: boolean;
   private _connectTimeout: number | null;
+  private readonly _timeout: number;
   private readonly _log: (...parts: unknown[]) => void;
   private readonly _webTransport: { ca?: string[] } | false;
   private _sessions: HtmlWebTransport | null = null;
@@ -327,6 +335,7 @@ export class HtmlNetwork {
     this._files = options.files ?? true;
     this._connectTimeout =
       options.connectTimeout === undefined ? 2500 : options.connectTimeout;
+    this._timeout = options.timeout ?? TIMEOUT;
     this._log = options.log ?? (() => {});
     this._webTransport = options.webTransport ?? {};
     this._webRTC = options.webRTC !== false;
@@ -731,7 +740,7 @@ export class HtmlNetwork {
         'ERR_UNKNOWN_URL_SCHEME',
       );
     }
-    const timer = AbortSignal.timeout(TIMEOUT);
+    const stall = stallTimer(this._timeout);
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
       accept: ACCEPT.document,
@@ -752,7 +761,7 @@ export class HtmlNetwork {
         {
           method: posting ? 'POST' : 'GET',
           body: posting ? post.body : undefined,
-          signal: AbortSignal.any([signal, timer]),
+          signal: AbortSignal.any([signal, stall.signal]),
           headers,
         },
         {
@@ -769,9 +778,11 @@ export class HtmlNetwork {
         },
       );
     } catch (error) {
+      stall.stop();
       if (signal.aborted) throw error;
-      throw networkError(error, timer.aborted);
+      throw networkError(error, stall.signal.aborted);
     }
+    stall.progress();
     const { type, charset } = contentType(response.headers.get('content-type'));
     return {
       url: response.url || url,
@@ -779,7 +790,7 @@ export class HtmlNetwork {
       status: response.status,
       type,
       charset,
-      body: bodyOf(response, MAX_DOCUMENT),
+      body: arriving(bodyOf(response, MAX_DOCUMENT), stall),
     };
   }
 
@@ -801,6 +812,9 @@ export class HtmlNetwork {
       /** Whose cookies it carries (Fetch, credentials mode). Default
        *  `same-origin`, a page's `fetch`'s. */
       credentials?: 'omit' | 'same-origin' | 'include';
+      /** The document it is made from, where that is not `page`: a
+       *  frame's (`FetchRequest.client`). */
+      client?: string;
     },
     page: string,
     signal: AbortSignalLike,
@@ -838,8 +852,10 @@ export class HtmlNetwork {
     headers['user-agent'] = this._userAgent;
     headers['accept-language'] ??= this._language;
     headers.accept ??= '*/*';
-    headers.origin = originOf(page);
-    const referrer = referrerFor(page, request.url);
+    // a frame's request is the frame's, and its site for cookies the page's
+    const client = request.client ?? page;
+    headers.origin = originOf(client);
+    const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
     // the wait for an answer is bounded, and its body is not: a page reads
@@ -853,7 +869,7 @@ export class HtmlNetwork {
             'TimeoutError',
           ),
         ),
-      TIMEOUT,
+      this._timeout,
     );
     this._log('fetch', method, request.url);
     const body =
@@ -877,7 +893,7 @@ export class HtmlNetwork {
           },
           {
             credentials: request.credentials ?? 'same-origin',
-            origin: originOf(page),
+            origin: originOf(client),
             site: page,
             topLevel: false,
             initiator: null,
@@ -1085,31 +1101,40 @@ export class HtmlNetwork {
       'accept-language': this._language,
     };
     if (options.referrer) headers.referer = options.referrer;
-    // a page's subresource carries its cookies, as a browser's `no-cors`
-    // request does (credentials mode `include`)
-    const response = await this._exchange(
-      url,
-      { method: 'GET', headers, signal: AbortSignal.timeout(TIMEOUT) },
-      {
-        credentials: 'include',
-        origin: originOf(options.page),
-        site: options.page,
-        topLevel: false,
-        initiator: null,
-      },
-    );
-    const { type, charset } = contentType(response.headers.get('content-type'));
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of bodyOf(response, options.limit)) {
-      chunks.push(chunk);
+    const stall = stallTimer(this._timeout);
+    try {
+      // a page's subresource carries its cookies, as a browser's `no-cors`
+      // request does (credentials mode `include`)
+      const response = await this._exchange(
+        url,
+        { method: 'GET', headers, signal: stall.signal },
+        {
+          credentials: 'include',
+          origin: originOf(options.page),
+          site: options.page,
+          topLevel: false,
+          initiator: null,
+        },
+      );
+      stall.progress();
+      const { type, charset } = contentType(
+        response.headers.get('content-type'),
+      );
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of bodyOf(response, options.limit)) {
+        stall.progress();
+        chunks.push(chunk);
+      }
+      return {
+        url: response.url || url,
+        status: response.status,
+        type,
+        charset,
+        bytes: concat(chunks),
+      };
+    } finally {
+      stall.stop();
     }
-    return {
-      url: response.url || url,
-      status: response.status,
-      type,
-      charset,
-      bytes: concat(chunks),
-    };
   }
 }
 
@@ -1461,6 +1486,66 @@ async function* bodyOf(
     }
   } finally {
     reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * A signal that aborts once `ms` go by with nothing arriving: no answer
+ * yet, or no chunk of its body since the last one (`progress`). A body that
+ * keeps coming is never cut off, as a browser cuts none off: bounded whole,
+ * a webmail's 575 KB script, read a chunk at a time by a process kept busy
+ * by the page, was still arriving at the bound and failed, and the frame it
+ * was for never ran.
+ */
+function stallTimer(ms: number): {
+  signal: InstanceType<typeof AbortController>['signal'];
+  progress(): void;
+  stop(): void;
+} {
+  const controller = new AbortController();
+  let timer: unknown = null;
+  const arm = (): void => {
+    timer = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException(
+            'The operation was aborted due to timeout',
+            'TimeoutError',
+          ),
+        ),
+      ms,
+    );
+    // as `AbortSignal.timeout`'s, it keeps no process alive
+    (timer as { unref?(): void }).unref?.();
+  };
+  arm();
+  return {
+    signal: controller.signal,
+    progress() {
+      if (timer === null) return;
+      clearTimeout(timer as number);
+      arm();
+    },
+    stop() {
+      if (timer !== null) clearTimeout(timer as number);
+      timer = null;
+    },
+  };
+}
+
+/** A body, each chunk of it telling `stall` that something arrived, and
+ *  its end that nothing more will. */
+async function* arriving(
+  body: AsyncIterable<Uint8Array>,
+  stall: ReturnType<typeof stallTimer>,
+): AsyncIterable<Uint8Array> {
+  try {
+    for await (const chunk of body) {
+      stall.progress();
+      yield chunk;
+    }
+  } finally {
+    stall.stop();
   }
 }
 
