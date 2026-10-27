@@ -26836,4 +26836,149 @@ export function installDom(
     report(error);
     return true;
   });
+
+  // --- native-code `toString` ------------------------------------------------
+  //
+  // A built-in function reports `function name() { [native code] }` from
+  // `Function.prototype.toString` (Web IDL 3.6, and every engine). The DOM
+  // here is JavaScript in this realm, so a page that stringified one of its
+  // functions — `document.querySelector.toString()` — read that source, and
+  // a library that tests a function for nativeness this way (core-js's
+  // probes, zone.js) was misled by it. Every function the facade reaches
+  // from the global, an interface, a prototype or an API namespace is
+  // marked, and a patched `toString` answers a marked function with native
+  // source and every page-authored one with its own.
+  //
+  // Two things keep it safe. The walk reads property descriptors, so it runs
+  // no getter and never follows instance data — only prototypes, where the
+  // methods are, so the parsed document's tree under `document` is not
+  // walked. And the patched function closes over this realm's objects alone
+  // (`nativeFns`, the realm's own `toString`), so it hands the page nothing
+  // of the host's; the original `toString` is dropped from the prototype
+  // with it, as a browser gives no way back to a native function's source.
+  {
+    const nativeFns = new WeakSet<Any>();
+    const seen = new WeakSet<Any>();
+    // a function — and, through it, its statics and its prototype
+    const markFn = (fn: Any, depth: number): void => {
+      if (typeof fn !== 'function' || nativeFns.has(fn)) return;
+      nativeFns.add(fn);
+      walk(fn, depth);
+    };
+    // an object's own function members — methods and accessors — without
+    // following its data, so an instance's own methods are marked and the
+    // parsed tree under `document` is not
+    const markMethods = (obj: Any, depth: number): void => {
+      if (
+        depth < 0 ||
+        obj === null ||
+        (typeof obj !== 'object' && typeof obj !== 'function')
+      ) {
+        return;
+      }
+      let names: (string | symbol)[];
+      try {
+        names = [
+          ...Object.getOwnPropertyNames(obj),
+          ...Object.getOwnPropertySymbols(obj),
+        ];
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        // reading any of these off a function throws in strict mode
+        if (name === 'caller' || name === 'arguments' || name === 'callee') {
+          continue;
+        }
+        let desc: PropertyDescriptor | undefined;
+        try {
+          desc = Object.getOwnPropertyDescriptor(obj, name);
+        } catch {
+          continue;
+        }
+        if (!desc) continue;
+        markFn(desc.get, depth - 1);
+        markFn(desc.set, depth - 1);
+        markFn(desc.value, depth - 1);
+      }
+    };
+    // an object's methods: its own, and every prototype's up to (not
+    // including) Object.prototype — an instance (navigator, document,
+    // location) without its data
+    const markChain = (obj: Any, depth: number): void => {
+      let o: Any = obj;
+      let d = depth;
+      while (o && o !== Object.prototype && d > 0) {
+        markMethods(o, d);
+        o = Object.getPrototypeOf(o);
+        d -= 1;
+      }
+    };
+    // a function or the global: its function members marked, a function
+    // member followed for its own statics and prototype, an object member
+    // followed through its prototype chain
+    function walk(node: Any, depth: number): void {
+      if (
+        depth < 0 ||
+        node === null ||
+        (typeof node !== 'object' && typeof node !== 'function') ||
+        seen.has(node)
+      ) {
+        return;
+      }
+      seen.add(node);
+      let names: (string | symbol)[];
+      try {
+        names = [
+          ...Object.getOwnPropertyNames(node),
+          ...Object.getOwnPropertySymbols(node),
+        ];
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        if (name === 'caller' || name === 'arguments' || name === 'callee') {
+          continue;
+        }
+        let desc: PropertyDescriptor | undefined;
+        try {
+          desc = Object.getOwnPropertyDescriptor(node, name);
+        } catch {
+          continue;
+        }
+        if (!desc) continue;
+        markFn(desc.get, depth - 1);
+        markFn(desc.set, depth - 1);
+        const value = desc.value;
+        if (typeof value === 'function') markFn(value, depth - 1);
+        else if (value && typeof value === 'object')
+          markChain(value, depth - 1);
+      }
+    }
+    walk(G, 8);
+    // `location` is reached through a getter, which the walk does not
+    // invoke; its methods (assign, replace, reload) are marked from the
+    // object itself
+    try {
+      if (location && typeof location === 'object') markChain(location, 8);
+    } catch {
+      /* no location in this realm */
+    }
+
+    const realToString = Function.prototype.toString;
+    const toString = function (this: Any): string {
+      if (typeof this === 'function' && nativeFns.has(this)) {
+        return `function ${this.name || ''}() { [native code] }`;
+      }
+      // a page function, or a non-function `this` the real one rejects
+      return realToString.call(this);
+    };
+    nativeFns.add(toString);
+    Object.defineProperty(Function.prototype, 'toString', {
+      value: toString,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
 }

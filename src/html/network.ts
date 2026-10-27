@@ -308,7 +308,7 @@ export class HtmlNetwork {
   private _perHost = new Map<string, number>();
   private _queue: Queued[] = [];
   private _language: string;
-  private readonly _userAgent: string;
+  private _userAgent: string;
   private readonly _transport: HtmlTransport | null;
   private readonly _files: boolean;
   private _connectTimeout: number | null;
@@ -393,9 +393,16 @@ export class HtmlNetwork {
     return this._sessions;
   }
 
-  /** The User-Agent this network's requests carry. */
+  /** The User-Agent this network's requests carry. It can be set, so a host
+   *  that lets a reader switch agents (a browser's UA override) changes what
+   *  the next request sends without rebuilding the network; a page sees the
+   *  new one on its next navigation, the way such an override applies on the
+   *  next load. */
   get userAgent(): string {
     return this._userAgent;
+  }
+  set userAgent(value: string) {
+    this._userAgent = value || HTML_USER_AGENT;
   }
 
   /** What makes a request: the transport this was given, or the runtime's

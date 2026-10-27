@@ -155,7 +155,7 @@ const OPENS = /^(?:https?|file|data|about|view-source):/i;
  * to join a waitlist for Linux. `navigator.platform` is the one this names
  * (`<Html scripts>`).
  */
-const USER_AGENT = `Mozilla/5.0 (${
+const DEFAULT_USER_AGENT = `Mozilla/5.0 (${
   process.platform === 'darwin'
     ? 'Macintosh; Intel Mac OS X 10_15_7'
     : process.platform === 'win32'
@@ -178,7 +178,9 @@ void publicSuffixList().then((list) => {
  *  and the profile's cookies. `BROWSER_DEBUG=1` logs every request and
  *  what came of it. */
 const network = new HtmlNetwork({
-  userAgent: USER_AGENT,
+  // the default; the component sets it from `props.userAgent` (the toolbar's
+  // menu) before each load, so a switch takes on the next navigation
+  userAgent: DEFAULT_USER_AGENT,
   cookies,
   log: process.env.BROWSER_DEBUG
     ? (...parts) => console.error('[browser]', ...parts)
@@ -251,6 +253,11 @@ export interface PageProps {
    *  the page is from. Read as a document is made; the browser reloads the
    *  page when it changes. */
   scripts: boolean;
+  /** The User-Agent to send and to name as `navigator.userAgent`, from the
+   *  toolbar's menu, or `null`/absent for the default. The network takes it
+   *  for its next request and `navigator` as the next document's scripts
+   *  start, so the browser reloads the page when it changes. */
+  userAgent?: string | null;
   /** A navigation's document started to arrive. `posted` when it is the
    *  answer to a POST — not to the GET a redirect after one turned it into
    *  — so a reload sends the POST again. */
@@ -727,6 +734,15 @@ export default function Page(props: PageProps): ReactElement {
     return { entry: current?.id ?? null, again: current?.document };
   };
 
+  // The User-Agent the toolbar's menu chose, onto this process's network —
+  // before the load effect below, so a navigation it starts in the same
+  // commit (the reload the browser dispatches when the agent changes) goes
+  // out with the new agent. `navigator.userAgent` follows through
+  // `scriptsOf`, so the wire and the script agree.
+  useEffect(() => {
+    network.userAgent = props.userAgent ?? DEFAULT_USER_AGENT;
+  }, [props.userAgent]);
+
   // The navigation in progress, loaded; a new one, or none, aborts it. A
   // document cut off mid-stream stays as far as it got — the stop button's
   // meaning — rather than waiting for the rest forever.
@@ -1131,7 +1147,7 @@ export default function Page(props: PageProps): ReactElement {
   // and what its workers ask of the network waits for it to be shown again.
   const scriptsOf = (view: View): HtmlScripts | false =>
     view.scripted && {
-      userAgent: USER_AGENT,
+      userAgent: props.userAgent ?? DEFAULT_USER_AGENT,
       language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
       // what the platform's player opens, where there is one: a stream's
       // playlist among it, which a page with no `MediaSource` hands it

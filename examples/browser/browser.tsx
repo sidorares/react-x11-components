@@ -82,7 +82,7 @@ import type {
   NtkWindow,
   TextInputNode,
 } from 'react-x11';
-import { XK_ESCAPE } from 'react-x11/keysyms';
+import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 
 import {
   Tabs,
@@ -91,6 +91,8 @@ import {
   TabsTrigger,
 } from '../../src/tabs/index.js';
 import { displayUrl, urlFromInput } from './address.js';
+import { presetFor, userAgentPresets } from './useragents.js';
+import type { UserAgentPreset } from './useragents.js';
 import type { TabIcon } from './favicon.js';
 import Page from './page.js';
 import type {
@@ -732,6 +734,175 @@ function TabLabel({
   );
 }
 
+// --- the User-Agent menu -------------------------------------------------------
+
+/** How wide the User-Agent menu's sheet is: a full agent string is long, so
+ *  the rows show the preset's name, not the string itself. */
+const UA_MENU_WIDTH = 200;
+
+/**
+ * The toolbar's User-Agent menu — a button that names the agent in force and
+ * a `<popup>` of the presets (`useragents.ts`). The choice is the browser's,
+ * not one tab's, so picking one here changes `BROWSER_USER_AGENT` for every
+ * pane; a change of that environment respawns each pane (`<Frame env>`), so
+ * the tabs reload under the new agent, the way a browser's UA override
+ * applies on the next load.
+ *
+ * Shaped like `examples/terminal-vt.tsx`' frame-rate menu: the popup grabs
+ * the pointer so a press anywhere else dismisses it, and the button keeps
+ * the keyboard while it is open — Down/Up walk, Enter commits, Escape shuts
+ * — rather than handing focus to a window the next click destroys.
+ */
+function UserAgentMenu({
+  presets,
+  current,
+  onChoose,
+}: {
+  presets: readonly UserAgentPreset[];
+  /** The id of the preset in force. */
+  current: string;
+  onChoose: (id: string) => void;
+}): ReactElement {
+  const theme = useTheme();
+  const trigger = useRef<DrawnNode>(null);
+  const [open, setOpen] = useState(false);
+  // -1 is "nothing yet": a menu dropped with the mouse lights no row until
+  // the pointer or the arrows have said which, so Enter cannot commit a row
+  // nobody chose.
+  const [active, setActive] = useState(-1);
+
+  const chosen = presets.findIndex((p) => p.id === current);
+  const label = presets[chosen]?.short ?? 'UA';
+  const close = (): void => setOpen(false);
+
+  const commit = (index: number): void => {
+    const preset = presets[index];
+    if (!preset) return;
+    close();
+    onChoose(preset.id);
+  };
+
+  const onKeyDown = (ev: X11KeyboardEvent): void => {
+    if (ev.keysym === XK_ESCAPE) {
+      if (!open) return;
+      close();
+    } else if (ev.keysym === XK_DOWN || ev.keysym === XK_UP) {
+      const step = ev.keysym === XK_DOWN ? 1 : -1;
+      if (!open) {
+        // opened from the keyboard, so it opens on the row that is current
+        setActive(chosen);
+        setOpen(true);
+      } else {
+        setActive((at) => {
+          const from = at < 0 ? chosen : at;
+          const n = presets.length;
+          return (((from + step) % n) + n) % n;
+        });
+      }
+    } else if (ev.keysym === XK_RETURN || ev.codepoint === 32) {
+      if (!open) {
+        setActive(chosen);
+        setOpen(true);
+      } else commit(active < 0 ? chosen : active);
+    } else return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+
+  return (
+    <box
+      ref={trigger}
+      role="button"
+      aria-haspopup="menu"
+      aria-expanded={open}
+      aria-label={`User agent: ${presets[chosen]?.label ?? 'default'}`}
+      focusable
+      tabIndex={0}
+      onMouseDown={() => {
+        setActive(-1);
+        setOpen((was) => !was);
+      }}
+      onKeyDown={onKeyDown}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+        height: 24,
+        paddingLeft: 8,
+        paddingRight: 6,
+        borderRadius: 6,
+        backgroundColor: open ? '$surfaceHover' : 'transparent',
+        cursor: 'pointer',
+      }}
+    >
+      <text style={{ fontSize: 12, color: '$text' }}>{label}</text>
+      <Icon name="chevronDown" size={8} />
+
+      {open && (
+        <popup
+          // A popup is a window of its own and inherits no palette, so the
+          // `$token` values in its subtree need the theme handed over.
+          theme={theme as Record<string, string | number>}
+          width={UA_MENU_WIDTH}
+          anchor={{ to: trigger, placement: 'bottom', align: 'end' }}
+          grab
+          onDismiss={close}
+          style={{ backgroundColor: '$background' }}
+        >
+          <box
+            role="menu"
+            style={{
+              flexGrow: 1,
+              padding: 4,
+              gap: 2,
+              borderWidth: 1,
+              borderColor: '$border',
+              backgroundColor: '$background',
+            }}
+          >
+            {presets.map((preset, index) => (
+              <box
+                key={preset.id}
+                role="menuitemradio"
+                aria-checked={index === chosen}
+                onMouseEnter={() => setActive(index)}
+                onClick={() => commit(index)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingLeft: 8,
+                  paddingRight: 8,
+                  paddingTop: 5,
+                  paddingBottom: 5,
+                  borderRadius: 5,
+                  cursor: 'pointer',
+                  ...(index === active && { backgroundColor: '$surfaceHover' }),
+                }}
+              >
+                {/* a fixed-width slot so the labels line up whether or not a
+                    row carries the check */}
+                <box style={{ width: 12, alignItems: 'center' }}>
+                  {index === chosen ? <Icon name="check" size={10} /> : null}
+                </box>
+                <text
+                  style={{
+                    fontSize: 13,
+                    color: '$text',
+                    fontWeight: index === chosen ? 'bold' : 'normal',
+                  }}
+                >
+                  {preset.label}
+                </text>
+              </box>
+            ))}
+          </box>
+        </popup>
+      )}
+    </box>
+  );
+}
+
 // --- one tab's toolbar ---------------------------------------------------------
 
 interface ToolbarProps {
@@ -742,6 +913,11 @@ interface ToolbarProps {
   /** Whether the page's site runs its scripts, and a flip of that. */
   scripts: boolean;
   onScripts: (on: boolean) => void;
+  /** The User-Agent presets, the id in force, and a change of it — the
+   *  browser's one setting, shown in every tab's toolbar. */
+  userAgents: readonly UserAgentPreset[];
+  userAgentId: string;
+  onUserAgent: (id: string) => void;
   /** The address bar took the focus, or gave it up. */
   onAddressFocus: (focused: boolean) => void;
 }
@@ -753,6 +929,9 @@ function Toolbar({
   register,
   scripts,
   onScripts,
+  userAgents,
+  userAgentId,
+  onUserAgent,
   onAddressFocus,
 }: ToolbarProps): ReactElement {
   const entry = tab.entries[tab.index] ?? null;
@@ -881,6 +1060,11 @@ function Toolbar({
           JS
         </Button>
       ) : null}
+      <UserAgentMenu
+        presets={userAgents}
+        current={userAgentId}
+        onChoose={onUserAgent}
+      />
     </box>
   );
 }
@@ -904,6 +1088,9 @@ interface TabPageProps {
   active: boolean;
   /** Whether the page's scripts run (`PageProps.scripts`). */
   scripts: boolean;
+  /** The User-Agent the pane sends and names, or `null` for the default.
+   *  A change respawns the pane, so the tab reloads under the new agent. */
+  userAgent: string | null;
   /** Run the page in this process rather than a pane of its own. */
   inline: boolean;
   transport?: PaneTransport;
@@ -923,6 +1110,7 @@ function TabPage({
   tab,
   active,
   scripts,
+  userAgent,
   inline,
   transport,
   dispatch,
@@ -932,7 +1120,10 @@ function TabPage({
   const id = tab.id;
   const latest = useRef(tab);
   latest.current = tab;
-  // the tab's own key, which its process keeps its `sessionStorage` by
+  // the tab's own key, which its process keeps its `sessionStorage` by. The
+  // User-Agent goes in the props bag, not here: in the env it would respawn
+  // the pane on every change (`<Frame env>`), where as a prop it reaches the
+  // running process, which sets it on its network and reloads in place.
   const env = useMemo(
     () => ({ ...PANE_ENV, BROWSER_TAB_KEY: tab.key }),
     [tab.key],
@@ -999,6 +1190,7 @@ function TabPage({
     history: tab.history,
     zoom: tab.zoom,
     scripts,
+    userAgent,
     onCommit,
     onFinish,
     onHistory,
@@ -1149,6 +1341,11 @@ export interface BrowserProps {
   sites?: [site: string, on: boolean][];
   /** Told the sites' switches as they change. */
   onSites?: (sites: [site: string, on: boolean][]) => void;
+  /** The User-Agent preset in force, by id, as last kept (`useragents.ts`);
+   *  absent means the default. */
+  userAgent?: string;
+  /** Told when the chosen User-Agent preset changes, to keep for next run. */
+  onUserAgent?: (id: string) => void;
 }
 
 /**
@@ -1202,6 +1399,8 @@ export function Browser({
   onTabClosed,
   sites: keptSites,
   onSites,
+  userAgent: keptUserAgent,
+  onUserAgent,
 }: BrowserProps): ReactElement {
   const [state, dispatch] = useReducer(reducer, start, (url) => {
     if (restore?.tabs.length) {
@@ -1261,6 +1460,26 @@ export function Browser({
   }, [sites]);
   const scriptsFor = (url: string): boolean =>
     sites.get(siteOf(url)) ?? scripts;
+
+  // The User-Agent every tab sends and names: the browser's one setting,
+  // not a tab's. The presets name the host's OS, so they are worked out
+  // once from `process.platform`. The chosen string is a prop every page
+  // reads (`TabPage`), so a change reaches each running pane, which sets it
+  // on its network for the next request; the active tab reloads so the agent
+  // shows on the page in view at once, the way a browser's UA override
+  // applies on the next load. Other tabs take it on their next navigation.
+  const userAgents = useMemo(() => userAgentPresets(process.platform), []);
+  const [userAgentId, setUserAgentId] = useState(
+    () => presetFor(userAgents, keptUserAgent).id,
+  );
+  const userAgentValue = presetFor(userAgents, userAgentId).value;
+  const chooseUserAgent = (nextId: string): void => {
+    if (nextId === userAgentId) return;
+    setUserAgentId(nextId);
+    onUserAgent?.(nextId);
+    const nav = reloadOf(active);
+    if (nav) dispatch({ type: 'navigate', id: active.id, nav });
+  };
 
   const open = useCallback(
     (url: string, background: boolean, post: PostData | null = null) => {
@@ -1437,6 +1656,9 @@ export function Browser({
                     // switch takes on the page loaded again
                     dispatch({ type: 'navigate', id: tab.id, nav });
                   }}
+                  userAgents={userAgents}
+                  userAgentId={userAgentId}
+                  onUserAgent={chooseUserAgent}
                   onAddressFocus={chrome.setTyping}
                 />
               </TabsContent>
@@ -1475,6 +1697,7 @@ export function Browser({
                 scripts={scriptsFor(
                   tab.loading?.url ?? tab.entries[tab.index]?.url ?? '',
                 )}
+                userAgent={userAgentValue}
                 inline={inline}
                 transport={paneTransport}
                 dispatch={dispatch}
@@ -1514,7 +1737,21 @@ if (!process.env.REACT_X11_NO_AUTORUN) {
       onSession={saveSession}
       onTabClosed={(key) => profile?.forgetTab(key)}
       sites={readPreferences()?.scripts}
-      onSites={(scripts) => savePreferences({ version: 1, scripts })}
+      onSites={(scripts) =>
+        savePreferences({
+          version: 1,
+          scripts,
+          userAgent: readPreferences()?.userAgent,
+        })
+      }
+      userAgent={readPreferences()?.userAgent}
+      onUserAgent={(userAgent) =>
+        savePreferences({
+          version: 1,
+          scripts: readPreferences()?.scripts ?? [],
+          userAgent,
+        })
+      }
     />,
   );
 }
