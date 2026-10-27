@@ -927,6 +927,19 @@ standards moved from what Acid3 expected):
   commit and React took the whole page down, as Chrome does with WebGL
   turned off. The cost is a page that tests for WebGL and has a fallback,
   which shows the empty canvas rather than its picture.
+- **The geometry interfaces are the whole module** (`geometry.ts`, source
+  text as `dom.ts` is): `DOMPoint`, `DOMRect`, `DOMQuad` and `DOMMatrix`
+  with their read-only parents, a window's `WebKitCSSMatrix`, `SVGPoint`,
+  `SVGRect` and `SVGMatrix` for them, and each structured-cloned as
+  itself. A page reads where a box was moved to with
+  `new DOMMatrixReadOnly(getComputedStyle(el).transform)`, and there was
+  no `DOMMatrixReadOnly` to make. A string is parsed in the realm as a
+  `<transform-list>`, every transform function with its lengths absolute,
+  since it is no element's and there is no box or font to resolve a
+  percentage or an `em` against; a quarter turn is exact, as Chrome's is.
+  What an element hands over from `getBoundingClientRect` is a `DOMRect`
+  of the module's, its attributes on the prototype, and a canvas's
+  `getTransform()` a `DOMMatrix`.
 - **A response may be made of a stream**, which its body methods read to
   the end, a `Uint8Array` a chunk. three.js's loaders hand a fetch's body
   on through one to count the download, and a body taken as its text was
