@@ -4685,6 +4685,20 @@ export function installDom(
   /** A string a node is given: what a page passes, converted here. */
   const str = (v: Any): string => String(v);
 
+  /** A node a page's `new` makes (DOM 4.7, 4.11, 4.14): one of the page's
+   *  document, as `new Range()` is, and of the class `new` was called on,
+   *  so a page's subclass of `Text` makes one of its own. */
+  const constructed = (Kind: Any, type: string, data: string): Any => {
+    const made = wrap(Number(call('create', type, data, document._id)));
+    if (Object.getPrototypeOf(made) !== Kind.prototype) {
+      Object.setPrototypeOf(made, Kind.prototype);
+    }
+    return made;
+  };
+  /** Whether `new` was called on `Kind` or a class under it. */
+  const isOrUnder = (target: Any, Kind: Any): boolean =>
+    target === Kind || target.prototype instanceof Kind;
+
   class Node extends EventTarget {
     static readonly ELEMENT_NODE = 1;
     static readonly ATTRIBUTE_NODE = 2;
@@ -5009,6 +5023,12 @@ export function installDom(
     }
   }
   class Text extends CharacterData {
+    /** `new Text(data)` (DOM 4.11). A `CDATASection` is no page's to make:
+     *  `super()` is `Node`'s, which refuses it. */
+    constructor(data: Any = '') {
+      if (isOrUnder(new.target, CDATASection)) super();
+      return constructed(new.target, 'text', str(data));
+    }
     /** The text and the texts either side of it, run together. */
     get wholeText(): string {
       let first: Any = this;
@@ -5026,7 +5046,15 @@ export function installDom(
     }
   }
   Object.defineProperty(Text.prototype, 'nodeType', nodeTypeOf(3));
-  class Comment extends CharacterData {}
+  class Comment extends CharacterData {
+    /** `new Comment(data)` (DOM 4.14). Nothing under it is refused, and a
+     *  class is never called without `new`: the `super()` is the
+     *  compiler's, and never runs. */
+    constructor(data: Any = '') {
+      if (!new.target) super();
+      return constructed(new.target, 'comment', str(data));
+    }
+  }
   // never made here — HTML has no CDATA outside foreign content, and no
   // processing instruction — but a polyfill patches their prototypes
   class CDATASection extends Text {}
@@ -5066,6 +5094,12 @@ export function installDom(
   Object.defineProperty(DocumentType.prototype, 'nodeType', nodeTypeOf(10));
 
   class DocumentFragment extends ParentNode {
+    /** `new DocumentFragment()` (DOM 4.7). A `ShadowRoot` is made by
+     *  `attachShadow` alone: `super()` is `Node`'s, which refuses it. */
+    constructor() {
+      if (isOrUnder(new.target, ShadowRoot)) super();
+      return constructed(new.target, 'fragment', '');
+    }
     getElementById(id: Any): Any {
       return wrap(
         Number(call('query', this._id, `#${cssEscape(str(id))}`, false)),
@@ -6204,7 +6238,7 @@ export function installDom(
     /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
      *  element its upgrade is constructing, or a new one, as its definition
      *  says (`constructCustom`). Anything else is an illegal constructor,
-     *  as every interface's here is. */
+     *  as `Node`'s is. */
     constructor() {
       const made = constructCustom(new.target);
       if (!made) super();
@@ -8702,15 +8736,50 @@ export function installDom(
   let parentLink: { global: Any; window: Any; frame: number } | null = null;
   /** A message posted to another page realm's window (`__message`), where
    *  it is cloned and told with the window that stands for this one there:
-   *  `from` is 0 for a frame's parent, or this realm's frame there. */
+   *  `from` is 0 for a frame's parent, or this realm's frame there, and
+   *  `name` what this realm calls that one (`realmAcross`). The ports it
+   *  transfers are made there, each at the end of a wire whose other end
+   *  takes the port's place here. */
   const deliverInto =
-    (global: Any, from: number) =>
-    (message: Any, options?: Any): void => {
+    (global: Any, from: number, name: number) =>
+    (message: Any, options?: Any, transfer?: Any): void => {
       // the origin a message is meant for is the window's it is posted to
       // (HTML 9.4.3), which another origin's frame is not this one's
-      if (!originAllowed(options, str(global.__origin()))) return;
-      global.__message(message, location.origin, from);
+      const allowed = originAllowed(options, str(global.__origin()));
+      const moving = portsTransferred(
+        transferListOf(
+          options !== null && typeof options === 'object' ? options : transfer,
+        ),
+      );
+      if (!allowed) return;
+      const named = moving.map(() => `${WIRE_REALM}.${++wireSeq}`);
+      global.__message(message, location.origin, from, moving, named);
+      const across = realmAcross(name);
+      moving.forEach((port, i) => {
+        const end = wireEnd(across, named[i]);
+        for (const [data, ports] of movePort(port, end)) {
+          end._deliver(data, ports);
+        }
+      });
     };
+  /** Another of the page's realms, as a port can be across it: `name` 0
+   *  for this realm's parent, else its frame's id here. What crosses is a
+   *  string, to that realm's `__wire`, which names this one back. */
+  const realmsAcross = new Map<number, Across>();
+  const realmAcross = (name: number): Across => {
+    let across = realmsAcross.get(name);
+    if (!across) {
+      across = {
+        key: `r${name}`,
+        send: (text) => {
+          if (name === 0) parentLink?.global.__wire(parentLink.frame, text);
+          else linkedFrames.get(name)?.__wire(0, text);
+        },
+      };
+      realmsAcross.set(name, across);
+    }
+    return across;
+  };
   /** The frames whose realms are another origin's (`__linkFrame`): what is
    *  reached of their windows is what crosses origins, and no more. */
   const crossLinked = new Set<number>();
@@ -8738,7 +8807,9 @@ export function installDom(
       {
         get(_t, key) {
           const linked = linkedFrames.get(frame._id);
-          if (linked && key === 'postMessage') return deliverInto(linked, 0);
+          if (linked && key === 'postMessage') {
+            return deliverInto(linked, 0, frame._id);
+          }
           const win = current();
           if (win) return Reflect.get(win, key, win);
           const others = across();
@@ -14226,8 +14297,9 @@ export function installDom(
     get: () => '#document',
   });
   /** `new Document()` (DOM 4.5): an XML document no browsing context has,
-   *  of type `application/xml`. Every other interface here is an illegal
-   *  constructor; this one is a page's to call. */
+   *  of type `application/xml`. It, `Text`, `Comment` and
+   *  `DocumentFragment` are a page's to make; every other node interface
+   *  is an illegal constructor. */
   const DocumentConstructor = function Document(this: Any): Any {
     if (!new.target) {
       throw new TypeError(
@@ -17087,8 +17159,6 @@ export function installDom(
     }
     return out;
   };
-  /** A message as it crosses: a copy, the page's structured clone. */
-  const cloneOf = (value: Any): Any => structuredCopy(value, new Map());
   /**
    * What a `postMessage` transfers given up by the sender once its message
    * is copied (HTML 2.7.6, "StructuredSerializeWithTransfer"): an
@@ -17107,6 +17177,138 @@ export function installDom(
         (item as Any).transfer();
       }
     }
+  };
+
+  /** What a `postMessage` transfers, from the list or from the options'
+   *  `transfer`. */
+  const transferListOf = (transfer: Any): Any[] => {
+    const list = Array.isArray(transfer) ? transfer : transfer?.transfer;
+    return Array.isArray(list) ? list : [];
+  };
+  /**
+   * The ports a list transfers (HTML 2.7.6,
+   * "StructuredSerializeWithTransfer"): each one once, and none given up
+   * already, or a `DataCloneError` before anything is posted.
+   */
+  const portsTransferred = (list: Any[]): Any[] => {
+    const ports: Any[] = [];
+    list.forEach((item, i) => {
+      if (!(item instanceof MessagePort)) return;
+      if (item._detached) {
+        throw new DOMException(
+          `Port at index ${i} is already detached.`,
+          'DataCloneError',
+        );
+      }
+      if (ports.includes(item)) {
+        throw new DOMException(
+          `Port at index ${i} is a duplicate of an earlier port.`,
+          'DataCloneError',
+        );
+      }
+      ports.push(item);
+    });
+    return ports;
+  };
+  /**
+   * A port's place taken by `to` (HTML 9.4.4, the transfer steps): `to`
+   * is entangled with the port's partner, the port is given up, and what
+   * still arrives for it goes on to `to`. What was queued for it is
+   * answered, for its new place to have.
+   */
+  const movePort = (from: Any, to: Any): Array<[Any, Any[]]> => {
+    const other = from._other;
+    to._other = other;
+    if (other) other._other = to;
+    from._other = null;
+    from._movedTo = to;
+    from._detached = true;
+    return from._waiting.splice(0);
+  };
+  /** A copy of a message here, with the ports its list transfers each a
+   *  new one in its place, which the copy holds where the message held
+   *  the old: what a port's, a window's and `structuredClone` hand on. */
+  const cloneMoving = (
+    message: Any,
+    list: Any[],
+  ): { data: Any; ports: Any[] } => {
+    const moving = portsTransferred(list);
+    const ports = moving.map(() => new MessagePort());
+    const data = structuredCopy(
+      message,
+      new Map(moving.map((port, i) => [port, ports[i]])),
+    );
+    moving.forEach((port, i) => {
+      ports[i]._waiting.push(...movePort(port, ports[i]));
+    });
+    return { data, ports };
+  };
+
+  /** A thread a port can be across: what names its channel here, and how
+   *  a string reaches the other side, which is all that crosses. */
+  interface Across {
+    key: string;
+    send: (text: string) => void;
+  }
+  /** The ends here of the ports across a thread, by their channel and
+   *  their wire: each stands for the port over there — what is delivered
+   *  to it is sent across — and its `_other` is what hears that port. */
+  const wires = new Map<string, Any>();
+  /** A wire's name is this realm's own, so the two sides of a channel
+   *  never name two wires alike. */
+  const WIRE_REALM = Math.random().toString(36).slice(2, 10);
+  let wireSeq = 0;
+  const wireEnd = (across: Across, wire: string): Any => {
+    const end = {
+      _other: null as Any,
+      _closed: false,
+      _deliver(data: Any, ports: Any[] = []): void {
+        const later: Array<() => void> = [];
+        const d = serializeClone(data, undefined, { across, ports, later });
+        across.send(JSON.stringify({ q: wire, d }));
+        for (const go of later) go();
+      },
+    };
+    wires.set(`${across.key} ${wire}`, end);
+    return end;
+  };
+  /** A message along a wire, `{ q, d }`, to what hears the port across it
+   *  here. False where it is none. */
+  const wireMessage = (across: Across, text: string): boolean => {
+    if (!text.startsWith('{"q":')) return false;
+    let wrapper: Any;
+    try {
+      wrapper = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    const to = wires.get(`${across.key} ${str(wrapper.q)}`)?._other;
+    if (!to) return true;
+    let made: Any;
+    try {
+      made = deserializeWith(str(wrapper.d), across);
+    } catch {
+      return true;
+    }
+    to._deliver(made.data, made.ports);
+    return true;
+  };
+  /** The page's side of a worker's thread, and a worker's of the page. */
+  const threadsAcross = new Map<number, Across>();
+  const threadAcross = (id: number): Across => {
+    let across = threadsAcross.get(id);
+    if (!across) {
+      across = {
+        key: `t${id}`,
+        send: (text) => call('workerPost', id, text),
+      };
+      threadsAcross.set(id, across);
+    }
+    return across;
+  };
+  const UP: Across = {
+    key: 'up',
+    send: (text) => call('workerPostOut', text),
   };
 
   /** `datachannel.ts`'s internals, once the WebRTC block below has made
@@ -17141,10 +17343,22 @@ export function installDom(
    * apart by a tag, and an object met twice met as the first (HTML 2.7.3,
    * "StructuredSerialize"). `deserializeClone` makes it again in this
    * realm. A data channel in `moved` crosses as the host's number for it
-   * and its state.
+   * and its state. The ports `transfer` moves cross as wires across
+   * `transfer.across`, listed beside the value (`{ p, v }`): once nothing
+   * has thrown, each moves to its wire's end here, and what was queued for
+   * it is sent by `transfer.later`, which the caller runs once it has sent
+   * the message.
    */
-  const serializeClone = (value: Any, moved?: Set<Any>): string => {
+  const serializeClone = (
+    value: Any,
+    moved?: Set<Any>,
+    transfer?: { across: Across; ports: Any[]; later: Array<() => void> },
+  ): string => {
     const seen = new Map<Any, number>();
+    const wireOf = new Map<Any, string>();
+    for (const port of transfer?.ports ?? []) {
+      wireOf.set(port, `${WIRE_REALM}.${++wireSeq}`);
+    }
     const bytesOf = (b: Uint8Array): string => base64OfBytes(b);
     const walk = (v: Any): Any => {
       if (v === undefined) return { u: 1 };
@@ -17173,6 +17387,8 @@ export function installDom(
         const { host, state } = dataChannelsOf.transferData(v);
         return { i: index, t: 'C', h: host, a: state };
       }
+      const wire = wireOf.get(v);
+      if (wire !== undefined) return { i: index, t: 'Q', w: wire };
       if (v instanceof EventTarget || v instanceof Event) {
         throw new DOMException(
           `${v.constructor?.name ?? 'The object'} object could not be cloned.`,
@@ -17238,9 +17454,47 @@ export function installDom(
       for (const key of Object.keys(v)) e.push([key, walk(v[key])]);
       return { i: index, t: 'O', e };
     };
-    return JSON.stringify(walk(value));
+    const body = walk(value);
+    if (!wireOf.size) return JSON.stringify(body);
+    // nothing threw, so the ports move: each one's place here is its
+    // wire's end, and what was queued for it follows the message
+    for (const [port, wire] of wireOf) {
+      const end = wireEnd(transfer!.across, wire);
+      const queued = movePort(port, end);
+      transfer!.later.push(() => {
+        for (const [data, ports] of queued) end._deliver(data, ports);
+      });
+    }
+    return JSON.stringify({ p: [...wireOf.values()], v: body });
   };
-  const deserializeClone = (text: string): Any => {
+  /** A message made again here, and the ports it transferred (`p`), each
+   *  a port here at the end of its wire across `across`. */
+  const deserializeWith = (
+    text: string,
+    across?: Across,
+  ): { data: Any; ports: Any[] } => {
+    const parsed = JSON.parse(text);
+    const byWire = new Map<string, Any>();
+    if (
+      across &&
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      Array.isArray(parsed.p) &&
+      'v' in parsed
+    ) {
+      for (const wire of parsed.p) {
+        const port = new MessagePort();
+        port._other = wireEnd(across, str(wire));
+        port._other._other = port;
+        byWire.set(str(wire), port);
+      }
+      return { data: remake(parsed.v, byWire), ports: [...byWire.values()] };
+    }
+    return { data: remake(parsed, byWire), ports: [] };
+  };
+  const deserializeClone = (text: string): Any =>
+    remake(JSON.parse(text), new Map());
+  const remake = (json: Any, byWire: Map<string, Any>): Any => {
     const made: Any[] = [];
     const make = (v: Any): Any => {
       if (v === null || typeof v !== 'object') return v;
@@ -17250,6 +17504,10 @@ export function installDom(
       if ('r' in v) return made[v.r];
       let out: Any;
       switch (v.t) {
+        case 'Q':
+          // a port the message transferred, made as the message arrived
+          out = byWire.get(str(v.w)) ?? null;
+          break;
         case 'L':
           out = new Blob([bytesOfBase64(v.b)], { type: v.y });
           break;
@@ -17310,39 +17568,61 @@ export function installDom(
       made[v.i] = out;
       return out;
     };
-    return make(JSON.parse(text));
+    return make(json);
   };
 
   /** One end of a `MessageChannel` (HTML 9.4.4): what is posted to it is a
    *  task of its own, after the one that posted it, once it is started —
-   *  which setting `onmessage` does. React's scheduler is one of these. */
+   *  which setting `onmessage` does. React's scheduler is one of these.
+   *  One a message transfers is given up, and a new one takes its place
+   *  where the message is told (`movePort`): its partner, or a wire's end
+   *  where that is across a thread. */
   class MessagePort extends EventTarget {
+    /** What hears what this posts: its partner, or a wire's end. */
     _other: Any = null;
     _started = false;
     _closed = false;
-    _waiting: Any[] = [];
+    /** Whether a message transferred it, and where it went. */
+    _detached = false;
+    _movedTo: Any = null;
+    _waiting: Array<[Any, Any[]]> = [];
     postMessage(message: Any, transfer?: Any): void {
-      const data = cloneOf(message);
-      giveUp(transfer);
+      const list = transferListOf(transfer);
+      const at = list.indexOf(this);
+      if (at >= 0) {
+        throw new DOMException(
+          `Port at index ${at} contains the source port.`,
+          'DataCloneError',
+        );
+      }
       const other = this._other;
-      if (this._closed || !other || other._closed) return;
-      setTimer(() => other._deliver(data), 0, [], false);
+      // its partner posted through itself: the message, and the channel,
+      // are lost (HTML 9.4.4.1, "doomed")
+      const doomed = other !== null && list.includes(other);
+      const { data, ports } = cloneMoving(message, list);
+      giveUp(transfer);
+      if (doomed || this._closed || !other || other._closed) return;
+      setTimer(() => other._deliver(data, ports), 0, [], false);
     }
-    _deliver(data: Any): void {
-      if (this._closed) return;
-      if (!this._started) {
-        this._waiting.push(data);
+    _deliver(data: Any, ports: Any[] = []): void {
+      if (this._movedTo) {
+        this._movedTo._deliver(data, ports);
         return;
       }
-      const ev = new MessageEvent('message', { data });
+      if (this._closed) return;
+      if (!this._started) {
+        this._waiting.push([data, ports]);
+        return;
+      }
+      const ev = new MessageEvent('message', { data, ports });
       ev.isTrusted = true;
       dispatch(this, ev);
     }
     start(): void {
       if (this._started) return;
       this._started = true;
-      for (const data of this._waiting.splice(0)) {
-        setTimer(() => this._deliver(data), 0, [], false);
+      for (const [data, ports] of this._waiting.splice(0)) {
+        setTimer(() => this._deliver(data, ports), 0, [], false);
       }
     }
     close(): void {
@@ -17607,7 +17887,12 @@ export function installDom(
     }
     postMessage(message: Any, transfer?: Any): void {
       const moved = channelsTransferred(transfer);
-      const data = serializeClone(message, moved);
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, moved, {
+        across: threadAcross(this._id),
+        ports: portsTransferred(transferListOf(transfer)),
+        later,
+      });
       giveUp(transfer);
       if (!this._id) return;
       // the host tells the worker of each channel before the message that
@@ -17616,6 +17901,7 @@ export function installDom(
         dataChannelsOf.transferOut(channel, this._id);
       }
       call('workerPost', this._id, data);
+      for (const go of later) go();
     }
     terminate(): void {
       if (!this._id) return;
@@ -17652,12 +17938,18 @@ export function installDom(
   const sharedPorts = new Map<number, Any>();
   let connections = 0;
   /** A port whose other end is in another thread: what it posts crosses
-   *  serialized, through `send`. */
-  const wirePort = (send: (text: string) => void): Any => {
+   *  serialized, through `send`, and the ports it transfers as wires
+   *  across `across`. */
+  const wirePort = (send: (text: string) => void, across: Across): Any => {
     const port = new MessagePort();
     port._other = {
+      _other: port,
       _closed: false,
-      _deliver: (data: Any) => send(serializeClone(data)),
+      _deliver: (data: Any, ports: Any[] = []) => {
+        const later: Array<() => void> = [];
+        send(serializeClone(data, undefined, { across, ports, later }));
+        for (const go of later) go();
+      },
     };
     return port;
   };
@@ -17692,8 +17984,9 @@ export function installDom(
       sharedWorkersOf.get(id)!.add(this);
       const c = ++connections;
       const thread = id;
-      this.port = wirePort((d) =>
-        call('workerPost', thread, JSON.stringify({ c, d })),
+      this.port = wirePort(
+        (d) => call('workerPost', thread, JSON.stringify({ c, d })),
+        threadAcross(thread),
       );
       sharedPorts.set(c, this.port);
       call('workerPost', thread, JSON.stringify({ c, connect: true }));
@@ -17713,7 +18006,7 @@ export function installDom(
   let sharedRealm = false;
   /** A message on a shared worker's channel, to the port of the
    *  connection it is of, or the connection made. False where it is none. */
-  const sharedMessage = (text: string): boolean => {
+  const sharedMessage = (text: string, across: Across): boolean => {
     let wrapper: Any;
     try {
       wrapper = JSON.parse(text);
@@ -17723,8 +18016,9 @@ export function installDom(
     const c = Number(wrapper?.c);
     if (!c) return false;
     if (wrapper.connect && sharedRealm) {
-      const port = wirePort((d) =>
-        call('workerPostOut', JSON.stringify({ c, d })),
+      const port = wirePort(
+        (d) => call('workerPostOut', JSON.stringify({ c, d })),
+        across,
       );
       sharedPorts.set(c, port);
       const ev = new MessageEvent('connect', {
@@ -17738,16 +18032,16 @@ export function installDom(
     }
     const port = sharedPorts.get(c);
     if (!port) return false;
-    let data: Any;
+    let made: Any;
     try {
-      data = deserializeClone(str(wrapper.d));
+      made = deserializeWith(str(wrapper.d), across);
     } catch {
       const ev = new MessageEvent('messageerror', {});
       ev.isTrusted = true;
       dispatch(port, ev);
       return true;
     }
-    port._deliver(data);
+    port._deliver(made.data, made.ports);
     return true;
   };
   // --- service workers -------------------------------------------------------------
@@ -17795,10 +18089,16 @@ export function installDom(
       return this._state;
     }
     postMessage(message: Any, transfer?: Any): void {
-      const data = serializeClone(message);
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, undefined, {
+        across: threadAcross(this._id),
+        ports: portsTransferred(transferListOf(transfer)),
+        later,
+      });
       giveUp(transfer);
       if (this._state === 'redundant') return;
       call('workerPost', this._id, data);
+      for (const go of later) go();
     }
   }
   handlerProperty(ServiceWorker.prototype, 'statechange');
@@ -18053,9 +18353,9 @@ export function installDom(
       swState(worker, state);
       return true;
     }
-    let data: Any;
+    let made: Any;
     try {
-      data = deserializeClone(str(wrapper?.d));
+      made = deserializeWith(str(wrapper?.d), threadAcross(id));
     } catch {
       const ev = new MessageEvent('messageerror', { source: worker });
       ev.isTrusted = true;
@@ -18063,9 +18363,10 @@ export function installDom(
       return true;
     }
     const ev = new MessageEvent('message', {
-      data,
+      data: made.data,
       origin: location.origin,
       source: worker,
+      ports: made.ports,
     });
     ev.isTrusted = true;
     dispatch(serviceWorkerContainer, ev);
@@ -18139,9 +18440,15 @@ export function installDom(
       return 'top-level';
     }
     postMessage(message: Any, transfer?: Any): void {
-      const d = serializeClone(message);
+      const later: Array<() => void> = [];
+      const d = serializeClone(message, undefined, {
+        across: UP,
+        ports: portsTransferred(transferListOf(transfer)),
+        later,
+      });
       giveUp(transfer);
       call('workerPostOut', JSON.stringify({ d }));
+      for (const go of later) go();
     }
   }
   class WindowClient extends Client {
@@ -25213,9 +25520,9 @@ export function installDom(
   // what the options transfer is given up once it is copied, as a
   // `postMessage`'s is
   define('structuredClone', (value: Any, options: Any = undefined) => {
-    const copy = structuredCopy(value, new Map());
+    const { data } = cloneMoving(value, transferListOf(options));
     giveUp(options);
-    return copy;
+    return data;
   });
   define('reportError', report);
   define('alert', (message?: Any) =>
@@ -25318,7 +25625,10 @@ export function installDom(
     // the target origin checked first, which may throw, and matched only
     // once the message is copied and its transfer given up (HTML 9.4.3)
     const allowed = originAllowed(options);
-    const data = cloneOf(message);
+    const list = transferListOf(
+      options !== null && typeof options === 'object' ? options : transfer,
+    );
+    const { data, ports } = cloneMoving(message, list);
     giveUp(
       options !== null && typeof options === 'object' ? options : transfer,
     );
@@ -25329,6 +25639,7 @@ export function installDom(
           data,
           origin: location.origin,
           source: G,
+          ports,
         });
         ev.isTrusted = true;
         dispatch(to, ev);
@@ -26046,17 +26357,21 @@ export function installDom(
   // the page posted to it, to the worker's global (id 0)
   entry('__workerMessage', () => {
     const [id, text] = input();
+    // the side of the thread it came from, and a message along a wire on
+    // it, to the port across it here
+    const across = id === 0 ? UP : threadAcross(Number(id));
+    if (wireMessage(across, str(text))) return true;
     // a shared worker's, to the port of its connection
     if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
-      return sharedMessage(str(text));
+      return sharedMessage(str(text), across);
     }
     // a service worker's, its lifecycle or to the page's container
     if (swWorkers.has(id)) return swHeard(id, str(text));
     // and in a service worker, from its client (Service Workers 1, 4.2.7)
     if (id === 0 && serviceRealm) {
-      let data: Any;
+      let made: Any;
       try {
-        data = deserializeClone(str(text));
+        made = deserializeWith(str(text), across);
       } catch {
         const ev = new ExtendableMessageEvent('messageerror', {
           source: clientOf(),
@@ -26066,9 +26381,10 @@ export function installDom(
         return true;
       }
       const ev = new ExtendableMessageEvent('message', {
-        data,
+        data: made.data,
         origin: new URL(serviceRealm.client).origin,
         source: clientOf(),
+        ports: made.ports,
       });
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
@@ -26077,16 +26393,20 @@ export function installDom(
     }
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
-    let data: Any;
+    let made: Any;
     try {
-      data = deserializeClone(str(text));
+      made = deserializeWith(str(text), across);
     } catch {
       const ev = new MessageEvent('messageerror', {});
       ev.isTrusted = true;
       dispatch(target, ev);
       return true;
     }
-    const ev = new MessageEvent('message', { data, origin: '' });
+    const ev = new MessageEvent('message', {
+      data: made.data,
+      origin: '',
+      ports: made.ports,
+    });
     ev.isTrusted = true;
     dispatch(target, ev);
     return true;
@@ -26265,9 +26585,20 @@ export function installDom(
       }
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
-      define('postMessage', function postMessage(message: Any): void {
-        call('workerPostOut', serializeClone(message));
-      });
+      define(
+        'postMessage',
+        function postMessage(message: Any, transfer?: Any): void {
+          const later: Array<() => void> = [];
+          const text = serializeClone(message, undefined, {
+            across: UP,
+            ports: portsTransferred(transferListOf(transfer)),
+            later,
+          });
+          giveUp(transfer);
+          call('workerPostOut', text);
+          for (const go of later) go();
+        },
+      );
     }
     define('close', function close(): void {
       call('workerClose');
@@ -26673,7 +27004,7 @@ export function installDom(
           'SecurityError',
         );
       const allowed: Any = {
-        postMessage: deliverInto(global, frame),
+        postMessage: deliverInto(global, frame, 0),
         closed: false,
         length: 0,
         opener: null,
@@ -26750,7 +27081,7 @@ export function installDom(
       {},
       {
         get(_t, key) {
-          if (key === 'postMessage') return deliverInto(global, frame);
+          if (key === 'postMessage') return deliverInto(global, frame, 0);
           return Reflect.get(global, key, global);
         },
         set: (_t, key, value) => Reflect.set(global, key, value, global),
@@ -26787,9 +27118,29 @@ export function installDom(
   // posted, and told as a task of its own, its source the window that
   // stands for the realm it came from — `from` 0 for this realm's parent,
   // else the frame of this realm's it is.
+  // The ports it transfers (`moving`, the other realm's) are made here,
+  // each at the end of the wire `named` names, back to that realm.
   Object.defineProperty(G, '__message', {
-    value: (message: Any, origin: Any, from: Any) => {
-      const data = cloneOf(message);
+    value: (
+      message: Any,
+      origin: Any,
+      from: Any,
+      moving?: Any,
+      named?: Any,
+    ) => {
+      const across = realmAcross(Number(from));
+      const seen = new Map<Any, Any>();
+      const ports: Any[] = [];
+      if (Array.isArray(moving) && Array.isArray(named)) {
+        moving.forEach((foreign: Any, i: number) => {
+          const port = new MessagePort();
+          port._other = wireEnd(across, str(named[i]));
+          port._other._other = port;
+          seen.set(foreign, port);
+          ports.push(port);
+        });
+      }
+      const data = structuredCopy(message, seen);
       const source =
         from === 0 ? (parentLink?.window ?? null) : frameProxyOf(wrap(from));
       setTimer(
@@ -26798,6 +27149,7 @@ export function installDom(
             data,
             origin: str(origin),
             source,
+            ports,
           });
           ev.isTrusted = true;
           dispatch(windowTarget, ev);
@@ -26806,6 +27158,19 @@ export function installDom(
         [],
         false,
       );
+    },
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+  // a message along a wire from another realm of this page, to the port
+  // across it here: a task of its own, as the message that made the port
+  // is (`__message`)
+  Object.defineProperty(G, '__wire', {
+    value: (from: Any, text: Any) => {
+      const across = realmAcross(Number(from));
+      const said = str(text);
+      setTimer(() => wireMessage(across, said), 0, [], false);
     },
     writable: false,
     configurable: false,

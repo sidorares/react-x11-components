@@ -76,6 +76,7 @@ import {
   isInputButton,
   isText,
   madeByParser,
+  isStylePreload,
   ShadowRoot,
   shadowRootOf,
   tagOf,
@@ -416,6 +417,7 @@ import {
   askMedia,
   cutByFixed,
   embeddedRectsOf,
+  FIXED_OVER,
   mediaRectsOf,
   sameSounds,
   videoCandidates,
@@ -577,7 +579,9 @@ export interface HtmlViewProps {
   onLoaded?: () => void;
   /** A `<link rel=stylesheet>`'s sheet came to something: `load` once a
    *  restyle has applied it and what it imports, `error` where it, or an
-   *  import of it, is not to be had (`_tellSheets`). Once an `href`. */
+   *  import of it, is not to be had (`_tellSheets`) — and a sheet's
+   *  `<link rel=preload>`, once the sheet arrived or failed. Once an
+   *  `href`. */
   onSheet?: (element: Element, outcome: 'load' | 'error') => void;
   style?: Style | Style[];
 }
@@ -848,6 +852,9 @@ export class HtmlViewNode extends Node {
   /** The `href` each `<link>` was last told a `load` or an `error` for
    *  (`_tellSheets`). */
   private _sheetTold = new WeakMap<Element, string>();
+  /** The same of a sheet's `<link rel=preload>`, apart: loadCSS makes the
+   *  link a sheet's in its `onload`, and the sheet's `load` is told again. */
+  private _preloadTold = new WeakMap<Element, string>();
   /** Each sheet text a shadow tree has read as, by a number
    *  (`_sheetsKey`). */
   private _sheetIds = new Map<string, number>();
@@ -1225,6 +1232,9 @@ export class HtmlViewNode extends Node {
         // style either, but the first rendering may be held for it.
         if (what === 'video') this._reportMedia();
         else if (what === 'audio') this._publishSounds();
+        // a sheet only a `<link rel=preload>` asked for: nothing reads it
+        // yet, and its `load` is told as the request settles
+        else if (what === 'stylesheet' && !layout) return;
         else if (what === 'declined') {
           // nothing to restyle, but a first rendering may have waited on it
           if (!this._tree) this._invalidate(Stale.Style);
@@ -1644,11 +1654,12 @@ export class HtmlViewNode extends Node {
       const tag = tagOf(el);
       const url = tag === 'link' ? attr(el, 'href') : imageUrlOf(el);
       if (!url) continue;
-      this._resources.request({
-        url,
-        kind: tag === 'link' ? 'stylesheet' : 'image',
-        element: el,
-      });
+      // a sheet a `<link rel=preload>` fetches is nobody's yet: its
+      // arrival changes nothing, until a sheet's link asks for it too
+      this._resources.request(
+        { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
+        isStylePreload(el),
+      );
     }
   }
 
@@ -2752,7 +2763,9 @@ export class HtmlViewNode extends Node {
    * one's `load` never shows the document under neither — and an `error`
    * where the host declined it, it failed, or an import of it did. Once an
    * `href`: a link given another is told again. A microtask later, as
-   * `onParsed` is: this runs inside a layout.
+   * `onParsed` is: this runs inside a layout. A sheet's preload is told
+   * as its sheet settles (`isStylePreload`), which waits for no restyle,
+   * since nothing reads it.
    */
   private _tellSheets(): void {
     if (!this._props().onSheet) return;
@@ -2770,6 +2783,18 @@ export class HtmlViewNode extends Node {
     };
     ask(facts.sheets);
     for (const { sheets } of facts.shadows) ask(sheets);
+    // and a `<link rel=preload>`'s once what it fetches came to something
+    // (HTML 4.6.7.12): React commits a `precedence` sheet only once the
+    // sheet's preload has told one or the other
+    for (const el of facts.resources) {
+      if (!isStylePreload(el)) continue;
+      const href = attr(el, 'href')!;
+      if (this._preloadTold.get(el) === href) continue;
+      const state = this._resources.state(href);
+      if (state !== 'ready' && state !== 'failed') continue;
+      this._preloadTold.set(el, href);
+      (told ??= []).push([el, state === 'ready' ? 'load' : 'error']);
+    }
     if (!told) return;
     const events: [Element, 'load' | 'error'][] = told;
     const doc = this._source.document;
@@ -4032,7 +4057,7 @@ export class HtmlViewNode extends Node {
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
     const rects = this._mediaLaid.map((laid) => {
-      const rect = this._viewportRect(laid, fixed);
+      const rect = this._viewportRect(laid, FIXED_OVER.get(laid) ?? fixed);
       const asked = this._mediaAsked.get(rect.element);
       return asked ? { ...rect, ...asked } : rect;
     });
@@ -4060,7 +4085,7 @@ export class HtmlViewNode extends Node {
     const report = this._props().onEmbedded;
     if (!tree || !report) return;
     const rects = this._embeddedLaid.map((laid) =>
-      this._viewportRect(laid, FIXED_BOXES.get(tree)),
+      this._viewportRect(laid, FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree)),
     );
     if (sameEmbedded(rects, this._embedded)) return;
     this._embedded = rects;
@@ -8962,6 +8987,9 @@ export class HtmlViewNode extends Node {
     this._source.touch();
     this._updateBase();
     this._sweep();
+    // a preload of what is here already settles as it is asked for, which
+    // no layout need follow
+    this._tellSheets();
     this._highlightsChanged();
     const scope = changes ? this._changeScope(changes) : null;
     if (!scope) {

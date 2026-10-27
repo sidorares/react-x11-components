@@ -2464,12 +2464,8 @@ export class DomHost {
         const oldValue = el.attribs[name] ?? null;
         el.attribs[name] = text(c);
         this._changed(el, 'attributes', name, oldValue);
-        // a frame given another address goes there
-        if (
-          this._frames.has(el) &&
-          name === (el.name === 'object' ? 'data' : 'src') &&
-          this._inDocument(el)
-        ) {
+        // a frame given another address, or another `srcdoc`, goes there
+        if (this._sendsFrame(el, name, true)) {
           this._frameSent.delete(el);
           this._loadFrame(el, true);
         }
@@ -2486,6 +2482,12 @@ export class DomHost {
           const oldValue = el.attribs[name];
           delete el.attribs[name];
           this._changed(el, 'attributes', name, oldValue);
+          // a frame that loses its `srcdoc` goes to its `src`, and one that
+          // loses its `src` to `about:blank`
+          if (this._sendsFrame(el, name, false)) {
+            this._frameSent.delete(el);
+            this._loadFrame(el, true);
+          }
         }
         return null;
       }
@@ -4976,6 +4978,22 @@ export class DomHost {
       url === 'about:srcdoc' ||
       originOf(url) === this._origin()
     );
+  }
+
+  /**
+   * Whether an attribute set (`set`) or removed sends a frame that has a
+   * document to the one its attributes now name (HTML 4.8.5, "process the
+   * iframe attributes"): an iframe's `srcdoc` set, changed or removed, and
+   * a frame's `src` where it has no `srcdoc`, which shows the document it
+   * holds whatever the `src`; an `<object>`'s `data` set. A playground's
+   * React gives an `<iframe>` the server rendered its `srcdoc` after the
+   * frame had its first `about:blank`, and the frame stayed blank.
+   */
+  private _sendsFrame(el: Element, name: string, set: boolean): boolean {
+    if (!this._frames.has(el) || !this._inDocument(el)) return false;
+    if (el.name === 'object') return set && name === 'data';
+    if (name === 'srcdoc') return el.name === 'iframe';
+    return name === 'src' && !(el.name === 'iframe' && 'srcdoc' in el.attribs);
   }
 
   /** The address a frame loads — where its window sent it, else its `src`

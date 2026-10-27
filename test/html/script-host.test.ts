@@ -835,6 +835,85 @@ test("a <link>'s sheet is told as a load once it and what it imports are applied
   );
 });
 
+test("a sheet's <link rel=preload> asks for the sheet and is told a load or an error as that settles, restyling nothing; the sheet's link takes it from there", async () => {
+  // HTML 4.6.7.12. React commits a `precedence` sheet only once its
+  // preload has told one or the other: a playground's commit waited on
+  // one that never did, and every later update of the page with it.
+  const answers = new Map<string, (r: ResourceResult | null) => void>();
+  const asked: string[] = [];
+  const onResource = (r: ResourceRequest) => {
+    const name = r.url.slice(r.url.lastIndexOf('/') + 1);
+    asked.push(`${r.kind}:${name}`);
+    return new Promise<ResourceResult | null>((ok) => answers.set(name, ok));
+  };
+  const doc = await hosted(
+    '<html><head><link id="s" rel="preload" as="style" href="s.css">' +
+      '<link id="i" rel="preload" as="image" href="i.png">' +
+      '<link id="f" rel="preload" as="font" href="f.woff2">' +
+      '<link id="x" rel="preload" as="style" href="x.css">' +
+      '</head><body><p id="p">x</p></body></html>',
+    { onResource },
+  );
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await act();
+  };
+  assert.deepStrictEqual(
+    asked,
+    ['stylesheet:s.css', 'stylesheet:x.css'],
+    'an image and a font are asked for nothing',
+  );
+  const loads = () => doc.told(['load', 'error']);
+  assert.deepStrictEqual(loads(), [], 'all on their way');
+  const tree = (doc.el as unknown as { _tree: unknown })._tree;
+  await act(async () => {
+    answers.get('s.css')!({
+      kind: 'stylesheet',
+      text: '#p { color: #ff0000 }',
+    });
+    answers.get('x.css')!(null);
+  });
+  await settle();
+  assert.deepStrictEqual(loads(), ['load:s', 'error:x']);
+  assert.strictEqual(
+    (doc.el as unknown as { _tree: unknown })._tree,
+    tree,
+    'a preloaded sheet builds nothing',
+  );
+  const color = () => doc.el.computedStyle(doc.byId('p'))!.color;
+  assert.notStrictEqual(color(), 'rgb(255, 0, 0)', 'nor styles anything');
+
+  // the sheet's own link finds it, asking for nothing; and a preload of
+  // what is here already is told, with nothing laid out
+  const head = findOne((e) => e.name === 'head', doc.el.document.children)!;
+  appendChild(
+    head,
+    new DomElement('link', { id: 't', rel: 'stylesheet', href: 's.css' }),
+  );
+  doc.el.touchDocument();
+  await settle();
+  assert.strictEqual(color(), 'rgb(255, 0, 0)');
+  appendChild(
+    head,
+    new DomElement('link', {
+      id: 'u',
+      rel: 'preload',
+      as: 'style',
+      href: 's.css',
+    }),
+  );
+  doc.el.touchDocument([
+    {
+      type: 'childList',
+      target: head,
+      addedNodes: [head.children[head.children.length - 1]],
+      removedNodes: [],
+    },
+  ]);
+  await settle();
+  assert.deepStrictEqual(asked.length, 2, 'asked for nothing more');
+  assert.deepStrictEqual(loads().slice(2), ['load:t', 'load:u']);
+});
+
 test('scriptsUnblocked settles once the sheets the parser met before a script are in, after their load; one under a media query that does not hold, and one a script put in, hold nothing', async () => {
   const answers = new Map<string, (r: ResourceResult | null) => void>();
   const onResource = (r: ResourceRequest) =>

@@ -2719,7 +2719,13 @@ closes a way out a DOM binding opens by accident:
   (`wirePort`): its messages share the thread's one channel tagged with
   the connection, `{ c, d }`, and the first is `{ c, connect }`. **Anything
   new that crosses to a worker goes over that channel**, tagged where it
-  is a shared worker's, or a connection hears another's messages.
+  is a shared worker's, or a connection hears another's messages. A port
+  a message transfers there is a wire over the same channel (`wireEnd`,
+  `{ q, d }`), and over another realm of the page, its `__wire`: **anything
+  new that posts across a thread or a realm hands `serializeClone` the
+  ports its list transfers and runs its `later` after the send**, or a
+  port in it is a `DataCloneError`, and what was queued for one arrives
+  before the port does.
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins
@@ -4184,7 +4190,11 @@ player is one React element for its element and source**, cut, rounded and
 faded by the boxes around it (`renderVideo`'s three boxes): a new element
 is a new player, and the video starts again. The boxes fixed to the
 viewport are asked about at each paint (`_publishMedia`), since a scroll
-brings a header over a player and lays nothing out.
+brings a header over a player and lays nothing out — those the document
+paints after the element alone (`fixedOver`, by `paintOrderOf`), worked
+out as the rects are laid out: a fixed box before a frame in the paint
+order is under it, and joshwcomeau.com's like button, fixed beside its
+article, hid every playground's frame it was inside.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
