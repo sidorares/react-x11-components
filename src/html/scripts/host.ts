@@ -1752,6 +1752,12 @@ export class DomHost {
     this._leaving = true;
   }
 
+  /** Whether the document has a WebTransport session or a peer connection
+   *  open (`ScriptRunner.salvageable`). */
+  get connected(): boolean {
+    return !!this._transportsMade?.open || !!this._peersMade?.open;
+  }
+
   dispose(): void {
     this._disposed = true;
     this._transportsMade?.dispose();

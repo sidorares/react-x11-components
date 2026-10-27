@@ -31,10 +31,18 @@
 //   `history` past its document's entries, `reload()` — load into the place
 //   the test was shown, each document the next of one session history a
 //   test (`HtmlSessionHistory`), as a browser's tab holds them. A frame's
-//   are the engine's, a `window.open` opens nothing, and a link or a form
-//   activated in the test's window goes nowhere, as before: a test that
-//   left its own window would end its harness, and a script's `a.click()` in
-//   a frame's document reaches `onLink` with no point to tell it by.
+//   are the engine's, and a link or a form activated in the test's window
+//   goes nowhere, as before: a test that left its own window would end its
+//   harness, and a script's `a.click()` in a frame's document reaches
+//   `onLink` with no point to tell it by.
+// - **A window the test opens is a window** (`Tab`): `window.open`, and
+//   anything else a page sends to a new tab, loads its address in a top-level
+//   `<Html scripts>` of its own, with its own session history, laid out
+//   beside the test's window where nothing is drawn. Its navigations are its
+//   own, as the test's are; it has no opener — the test's `window.open`
+//   answers null, as one with `noopener` does — and what its harness reports
+//   is not the test's. WPT's remote contexts (`/common/dispatcher/`) open
+//   their pages so.
 //
 // The server's hosts are `web-platform.test` and its subdomains, which this
 // process resolves to the loopback itself, so nothing on the machine has to
@@ -48,7 +56,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ThemeProvider } from 'react-x11';
 import { act, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
@@ -291,22 +299,175 @@ interface Loaded {
 }
 
 /**
- * Mounted once per test, as a browser's tab is: hands its handle out, and
- * shows the test's document and then whatever its scripts navigate it to,
- * each the next of one session history (`HtmlSessionHistory`), in an
- * `<Html>` of its own.
+ * A test's windows: the one it runs in, and those it opens, each a `Tab`.
+ * Mounted once per test, so that what a test opened goes with it.
  */
-function Page(props: {
+function Run(props: {
   first: Loaded;
   network: HtmlNetwork;
   page: Current;
 }): React.ReactElement {
+  const [opened, setOpened] = useState<{ id: number; url: string }[]>([]);
+  const open = (url: string) => {
+    if (props.page !== current) return;
+    setOpened((all) => [...all, { id: all.length + 1, url }]);
+  };
+  const tab = (main: boolean, first: Loaded | string) =>
+    h(Tab, { first, network: props.network, page: props.page, main, open });
+  return h(
+    'box',
+    { style: { flexDirection: 'column', flexGrow: 1 } },
+    h(
+      'box',
+      {
+        style: {
+          width: WIDTH,
+          height: HEIGHT,
+          overflow: 'scroll',
+          backgroundColor: '#ffffff',
+          flexDirection: 'column',
+        },
+        scrollbar: false,
+      },
+      h(
+        'box',
+        { style: { flexDirection: 'column', flexGrow: 1 } },
+        tab(true, props.first),
+      ),
+    ),
+    // beside the test's window, where nothing is drawn: a window of its
+    // own size, which its documents are laid out in
+    ...opened.map(({ id, url }) =>
+      h(
+        'box',
+        {
+          key: id,
+          style: {
+            position: 'absolute',
+            left: WIDTH * id,
+            top: 0,
+            width: WIDTH,
+            height: HEIGHT,
+            overflow: 'scroll',
+            backgroundColor: '#ffffff',
+            flexDirection: 'column',
+          },
+          scrollbar: false,
+        },
+        h(
+          'box',
+          { style: { flexDirection: 'column', flexGrow: 1 } },
+          tab(false, url),
+        ),
+      ),
+    ),
+  );
+}
+
+/** How many documents a window keeps to show again as they were left
+ *  (`backForwardCache`): as many as Chrome keeps on the desktop. */
+const BFCACHE = 6;
+
+/** A document a window shows or keeps: what it was loaded from, and its
+ *  number in the window's session (`HtmlSessionEntry.document`) where that
+ *  is known. */
+interface WindowDoc {
+  n: number;
+  doc: Loaded;
+  number?: number;
+}
+
+/**
+ * What a window shows once its session changed: the document shown came
+ * into the session under a number of its own, once its `<Html>` is in (as
+ * its scripts start); a step to a document the session keeps shows that
+ * one again; and a document neither shown, current nor kept goes. One on
+ * its way in stays shown, and the one it will take the place of stays
+ * mounted until it is in, so that it is told where it goes — and kept,
+ * where it may be — as it goes.
+ */
+function follow(
+  win: { docs: WindowDoc[]; shown: number },
+  session: HtmlSessionHistory,
+  mounted: ReadonlySet<number>,
+): { docs: WindowDoc[]; shown: number } {
+  const entry = session.current;
+  if (!entry) return win;
+  let docs = win.docs;
+  const arriving = (d: WindowDoc) =>
+    !mounted.has(d.n) || d.number === undefined;
+  // the current entry's document, where none has its number, is the one
+  // in last that has none
+  if (!docs.some((d) => d.number === entry.document)) {
+    const fresh = [...docs]
+      .reverse()
+      .find((d) => d.number === undefined && mounted.has(d.n));
+    if (fresh) {
+      docs = docs.map((d) =>
+        d === fresh ? { ...d, number: entry.document } : d,
+      );
+    }
+  }
+  const newest = (number: number | undefined) =>
+    [...docs].reverse().find((d) => d.number === number && mounted.has(d.n))?.n;
+  const shownDoc = docs.find((d) => d.n === win.shown);
+  const showing =
+    shownDoc && arriving(shownDoc)
+      ? win.shown
+      : (newest(entry.document) ?? win.shown);
+  const kept = new Set(session.kept);
+  docs = docs.filter(
+    (d) =>
+      d.n === showing ||
+      arriving(d) ||
+      ((d.number === entry.document || kept.has(d.number!)) &&
+        d.n === newest(d.number)),
+  );
+  const same =
+    docs.length === win.docs.length && docs.every((d, i) => d === win.docs[i]);
+  return same && showing === win.shown
+    ? win
+    : { docs: same ? win.docs : docs, shown: showing };
+}
+
+/**
+ * A top-level window, as a browser's tab is: shows its first document — the
+ * test's, or the address a window was opened at — and then whatever its
+ * scripts navigate it to, each the next of one session history
+ * (`HtmlSessionHistory`), in an `<Html>` of its own. A document left that
+ * the session keeps to show again (its back-forward cache) stays mounted,
+ * hidden and frozen, and a step back or forward to it shows it again. The
+ * test's window hands its handle out and reads what the test's harness
+ * reports; a window the test opened (`main` false) does neither.
+ */
+function Tab(props: {
+  first: Loaded | string;
+  network: HtmlNetwork;
+  page: Current;
+  main: boolean;
+  open: (url: string) => void;
+}): React.ReactElement | null {
   const handleOf = useHtmlHandle();
-  handle = handleOf;
-  const { network, page } = props;
-  const [session] = useState(() => new HtmlSessionHistory());
-  const [shown, setShown] = useState({ doc: props.first, n: 0 });
-  const load = (url: string) => {
+  const { network, page, main } = props;
+  if (main) handle = handleOf;
+  const [session] = useState(
+    () => new HtmlSessionHistory(undefined, { backForwardCache: BFCACHE }),
+  );
+  const [win, setWin] = useState<{ docs: WindowDoc[]; shown: number }>({
+    docs: typeof props.first === 'string' ? [] : [{ n: 0, doc: props.first }],
+    shown: 0,
+  });
+  const { docs, shown } = win;
+  // the documents whose `<Html>` is in, whose scripts have started
+  const mounted = useRef(new Set<number>());
+  useLayoutEffect(() => {
+    mounted.current = new Set(docs.map((d) => d.n));
+  });
+  const seq = useRef(0);
+  /** The window's next document, loaded from `url`: `number` is the one
+   *  the session will know it by where that is known before it arrives —
+   *  a reload's, the current entry's; a step's, its entry's. */
+  const load = (url: string, number?: number) => {
     void network
       .html(url)
       .then((doc) => {
@@ -317,9 +478,17 @@ function Page(props: {
           doc.url.includes('#') || hash < 0
             ? doc.url
             : doc.url + url.slice(hash);
-        setShown(({ n }) => ({
-          doc: { source: doc.source, baseUrl: at, charset: doc.charset },
-          n: n + 1,
+        const n = ++seq.current;
+        setWin((w) => ({
+          docs: [
+            ...w.docs,
+            {
+              n,
+              doc: { source: doc.source, baseUrl: at, charset: doc.charset },
+              number,
+            },
+          ],
+          shown: n,
         }));
       })
       .catch((error) => {
@@ -328,123 +497,158 @@ function Page(props: {
         }
       });
   };
-  const doc = shown.doc;
-  const resources = network.resources(doc.baseUrl);
-  const onResource = (request: ResourceRequest) => {
-    if (request.kind === 'script') {
-      const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0];
-      if (path === '/resources/testharnessreport.js') {
-        return { kind: 'script' as const, bytes: Buffer.from(REPORTER) };
+  // a window opened at an address loads it as it opens
+  const opening = useRef(typeof props.first === 'string' ? props.first : null);
+  useEffect(() => {
+    if (opening.current) load(opening.current);
+    opening.current = null;
+  }, []);
+  useEffect(() => {
+    // the first document came in before this listened
+    setWin((w) => follow(w, session, mounted.current));
+    return session.onChange(() =>
+      setWin((w) => follow(w, session, mounted.current)),
+    );
+  }, []);
+  if (!docs.length) return null;
+  const html = ({ n, doc }: WindowDoc): React.ReactElement => {
+    const visible = n === shown;
+    const resources = network.resources(doc.baseUrl);
+    const onResource = (request: ResourceRequest) => {
+      if (request.kind === 'script') {
+        const path = request.url
+          .replace(/^[a-z]+:\/\/[^/]+/i, '')
+          .split('?')[0];
+        if (path === '/resources/testharnessreport.js') {
+          return { kind: 'script' as const, bytes: Buffer.from(REPORTER) };
+        }
+        if (path === '/resources/testdriver-vendor.js') {
+          return { kind: 'script' as const, bytes: Buffer.from(DRIVER) };
+        }
       }
-      if (path === '/resources/testdriver-vendor.js') {
-        return { kind: 'script' as const, bytes: Buffer.from(DRIVER) };
-      }
-    }
-    return resources(request);
-  };
-  const fetcher = network.fetcher(doc.baseUrl);
-  const scripts: HtmlScripts = {
-    // WPT's `.any.serviceworker.html` variants register their tests' worker
-    serviceWorkers: true,
-    session,
-    navigate: (url, how) => {
-      // a fragment the document went to itself, which its engine wrote
-      if (
-        how === 'tab' ||
-        (url.includes('#') && session.current?.url === url)
-      ) {
-        return;
-      }
-      load(url);
-    },
-    reload: () => load(session.current?.url ?? doc.baseUrl),
-    go: (delta) => {
-      const to = session.go(delta);
-      if (to) load(to.url);
-    },
-    // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
-    webTransport: network.webTransport,
-    // two peers in one page, over werift
-    webRTC: network.webRTC,
-    mediaDevices: page.media,
-    fetch: (request, signal) => {
-      const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
-      if (path.startsWith('/__testdriver__/')) {
-        return driver(path.slice('/__testdriver__/'.length), request.body)
-          .then((answer) => answer)
-          .catch((error) => JSON.stringify({ error: String(error) }))
-          .then((body) => ({
-            url: request.url,
-            status: 200,
-            statusText: 'OK',
-            redirected: false,
-            headers: [['content-type', 'application/json']],
-            body,
-            type: 'basic' as const,
-          }));
-      }
-      return fetcher(request, signal);
-    },
-    log: (level, text) => {
-      if (process.env.WPT_DEBUG)
-        console.error(`[${level}]`, text.slice(0, 500));
-      if (page !== current) return;
-      if (text.startsWith(MARK)) {
-        const report = JSON.parse(text.slice(MARK.length));
-        if (report.kind === 'result') {
-          const t = report.test;
-          page.results.set(t.name, {
-            name: t.name,
-            status: SUBTEST[t.status] ?? String(t.status),
-            message: t.message,
-          });
-        } else {
-          page.done = {
-            status: HARNESS[report.status] ?? String(report.status),
-            message: report.message,
-            tests: report.tests.map((t: Subtest & { status: number }) => ({
+      return resources(request);
+    };
+    const fetcher = network.fetcher(doc.baseUrl);
+    const scripts: HtmlScripts = {
+      // WPT's `.any.serviceworker.html` variants register their tests' worker
+      serviceWorkers: true,
+      session,
+      navigate: (url, how) => {
+        // a window of its own, beside this one
+        if (how === 'tab') {
+          props.open(url);
+          return;
+        }
+        // a fragment the document went to itself, which its engine wrote
+        if (url.includes('#') && session.current?.url === url) return;
+        load(url);
+      },
+      reload: () => {
+        const entry = session.current;
+        load(entry?.url ?? doc.baseUrl, entry?.document);
+      },
+      // a step to an entry of a document the window keeps shows it again
+      // as the session tells of it; to another document's, loads it
+      go: (delta) => {
+        const to = session.go(delta);
+        if (to) load(to.url, to.document);
+      },
+      // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
+      webTransport: network.webTransport,
+      // two peers in one page, over werift
+      webRTC: network.webRTC,
+      mediaDevices: page.media,
+      fetch: (request, signal) => {
+        const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
+        if (path.startsWith('/__testdriver__/')) {
+          return driver(path.slice('/__testdriver__/'.length), request.body)
+            .then((answer) => answer)
+            .catch((error) => JSON.stringify({ error: String(error) }))
+            .then((body) => ({
+              url: request.url,
+              status: 200,
+              statusText: 'OK',
+              redirected: false,
+              headers: [['content-type', 'application/json']],
+              body,
+              type: 'basic' as const,
+            }));
+        }
+        return fetcher(request, signal);
+      },
+      log: (level, text) => {
+        if (process.env.WPT_DEBUG) {
+          console.error(
+            main ? `[${level}]` : `[window ${level}]`,
+            text.slice(0, 500),
+          );
+        }
+        if (page !== current) return;
+        // a harness in a window the test opened is that window's
+        if (!main && text.startsWith(MARK)) return;
+        if (text.startsWith(MARK)) {
+          const report = JSON.parse(text.slice(MARK.length));
+          if (report.kind === 'result') {
+            const t = report.test;
+            page.results.set(t.name, {
               name: t.name,
               status: SUBTEST[t.status] ?? String(t.status),
               message: t.message,
-            })),
-          };
+            });
+          } else {
+            page.done = {
+              status: HARNESS[report.status] ?? String(report.status),
+              message: report.message,
+              tests: report.tests.map((t: Subtest & { status: number }) => ({
+                name: t.name,
+                status: SUBTEST[t.status] ?? String(t.status),
+                message: t.message,
+              })),
+            };
+          }
+          return;
         }
-        return;
-      }
-      if (level === 'error' && page.errors.length < 8) {
-        page.errors.push(text.slice(0, 300));
-      }
-    },
-    timeout: 10000,
-    userAgent:
-      'Mozilla/5.0 (X11; Linux x86_64) react-x11-components (wpt runner)',
+        if (level === 'error' && page.errors.length < 8) {
+          page.errors.push(text.slice(0, 300));
+        }
+      },
+      timeout: 10000,
+      userAgent:
+        'Mozilla/5.0 (X11; Linux x86_64) react-x11-components (wpt runner)',
+    };
+    const htmlProps: HtmlProps & { ref?: React.Ref<unknown>; key: number } = {
+      // the handle is the document shown's
+      ...(visible && {
+        ref: (node: unknown) => {
+          const ref = handleOf.ref as React.Ref<unknown>;
+          if (typeof ref === 'function') ref(node);
+          else if (ref) (ref as React.MutableRefObject<unknown>).current = node;
+          if (main) view = node as typeof view;
+        },
+      }),
+      key: n,
+      source: doc.source,
+      charset: doc.charset,
+      partial: false,
+      baseUrl: doc.baseUrl,
+      onResource,
+      scripts,
+      onLoaded: () => {
+        if (!main) return;
+        page.loaded = true;
+        // The window a browser runs a test in has the focus, and its
+        // document is the focused area where nothing in it has the focus,
+        // so a key a test sends to the document element reaches the page:
+        // the document's surface takes it here, where nothing of the
+        // page's has it, as a press on the document would give it.
+        if (!handleOf.activeElement) view?.parent?.focus?.();
+      },
+      // one kept to show again is laid out nowhere
+      style: visible ? { flexGrow: 1 } : { display: 'none' },
+    };
+    return h(Html, htmlProps);
   };
-  const htmlProps: HtmlProps & { ref: React.Ref<unknown>; key: number } = {
-    ref: (node: unknown) => {
-      const ref = handleOf.ref as React.Ref<unknown>;
-      if (typeof ref === 'function') ref(node);
-      else if (ref) (ref as React.MutableRefObject<unknown>).current = node;
-      view = node as typeof view;
-    },
-    key: shown.n,
-    source: doc.source,
-    charset: doc.charset,
-    partial: false,
-    baseUrl: doc.baseUrl,
-    onResource,
-    scripts,
-    onLoaded: () => {
-      page.loaded = true;
-      // The window a browser runs a test in has the focus, and its
-      // document is the focused area where nothing in it has the focus, so
-      // a key a test sends to the document element reaches the page: the
-      // document's surface takes it here, where nothing of the page's has
-      // it, as a press on the document would give it.
-      if (!handleOf.activeElement) view?.parent?.focus?.();
-    },
-    style: { flexGrow: 1 },
-  };
-  return h(Html, htmlProps);
+  return h(React.Fragment, null, ...docs.map(html));
 }
 
 let serial = 0;
@@ -459,13 +663,11 @@ function tree(element: React.ReactElement | null): React.ReactElement {
         style: {
           width: WIDTH,
           height: HEIGHT,
-          overflow: 'scroll',
           backgroundColor: '#ffffff',
           flexDirection: 'column',
         },
-        scrollbar: false,
       },
-      h('box', { style: { flexDirection: 'column', flexGrow: 1 } }, element),
+      element,
     ),
   );
 }
@@ -728,7 +930,7 @@ async function render(
     return { page, pixels: null, source: '', error: String(error) };
   }
   await show(
-    h(Page, {
+    h(Run, {
       key: `${serial++}`,
       first: {
         source: withTestRendered(doc.source),
@@ -873,7 +1075,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     };
   }
   await show(
-    h(Page, {
+    h(Run, {
       key: `${serial++}`,
       first: { source: doc.source, baseUrl: doc.url, charset: doc.charset },
       network,

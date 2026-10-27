@@ -2726,6 +2726,35 @@ closes a way out a DOM binding opens by accident:
   browser's history is the page process's session mirrored
   (`PageProps.onHistory`), never a second list kept beside it — that list,
   stepped by the browser alone, was the bug.
+- **A document in the back-forward cache is frozen at its engine, and its
+  `<Html>` is the host's to keep** (`backForwardCache`, `swapOut` and
+  `reactivate` in `session.ts`, `ScriptRunner.freeze`). The context runs
+  only as the host enters it, so `ScriptEngine.freeze` holds the whole
+  realm by holding what the host asks — `call`, `exec`, `module`,
+  `rejected` — and `thaw` runs the reactivation's own entry before what
+  waited, in order. **Anything new that enters a page's context goes
+  through one of those**, never `runInContext` itself, or it runs in a
+  document nobody can see; and an entry joins `HELD_ONCE` only where it
+  says that something is due, never where it carries what happened — a
+  message held once is a message lost. The session decides whether to
+  keep a document (an entry is still of it, and it is no reload), the
+  runner whether it may go (`salvageable`: loaded, and nothing open a peer
+  would see held — `DomHost.connected`), so **anything new that holds a
+  connection open answers `open` and joins `connected`**. A page that
+  listens for `unload` is kept and never hears it, as HTML, Chrome and
+  Safari have it. A kept document shown again re-reads the session
+  (`reseedSession`), keeping its own entries' `NavigationHistoryEntry`
+  objects — WPT holds `currentEntry` to the one a script kept — and
+  disposing the rest in a task after `pageshow`. A step to a kept document
+  is taken a microtask later, since a page's `history.back()` reaches
+  `session.go` from inside its own entry. The DOM, the layout and what was
+  typed are the `<Html>`'s, so a host keeps a kept document's `<Html>`
+  mounted and hidden and shows the one the current entry is of — the
+  runner's `follow` is the worked example, and two of its rules came from
+  bugs: **the host's documents are one state, changed by updaters**, since
+  `onChange` can fire before React has drawn the document the host just
+  added; and **a document is unmounted only once the one taking its place
+  is in**, or it unloads before the session could keep it.
 - **A page's streams are the standard's, and none of their state is the
   page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
   operation of WHATWG Streams is there, over slots kept in a `WeakMap` by

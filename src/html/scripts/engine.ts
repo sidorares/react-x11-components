@@ -124,6 +124,9 @@ export interface EngineOptions {
    *  animations' clock stands still for. */
   entered?(): void;
   left?(): void;
+  /** While frozen, more is waiting than a document kept to be shown again
+   *  should hold (`HELD_MAX`): told once, for the host to let it go. */
+  overflow?(): void;
 }
 
 /** `vm.SourceTextModule`, where the runtime has it: Bun always, Node behind
@@ -512,6 +515,11 @@ export class ScriptEngine {
    *  V8's termination can stop a tree-moving bridge op partway, so the
    *  host repairs the tree before it is drawn or read again. */
   private _timedOut = false;
+  /** While the document is frozen (`freeze`), what the host asks of the
+   *  page, in order, to run as it thaws; and the entries held once
+   *  however often they were asked (`HELD_ONCE`). */
+  private _held: (() => void)[] | null = null;
+  private readonly _heldKeys = new Set<string>();
 
   /** This document's module map (HTML 8.1.4.6): one module a URL, however
    *  many import it — and each linked once and evaluated once, which the
@@ -602,6 +610,10 @@ export class ScriptEngine {
    */
   async module(code: string, url: string, external: boolean): Promise<boolean> {
     if (this._broken || this._disposed) return false;
+    if (this._held) {
+      await new Promise<void>((go) => this._held?.push(go));
+      if (this._broken || this._disposed) return false;
+    }
     let root: PageModule;
     try {
       root = this._compile(code, url);
@@ -900,6 +912,10 @@ export class ScriptEngine {
    */
   exec(code: string, url: string, script: number): boolean {
     if (this._broken || this._disposed) return false;
+    if (this._held) {
+      this._held.push(() => void this.exec(code, url, script));
+      return false;
+    }
     this.call('__exec', [script]);
     let compiled: VmScript | null = null;
     try {
@@ -985,6 +1001,10 @@ export class ScriptEngine {
    *  answered: a primitive, or undefined where it was stopped or failed. */
   call(name: string, input: unknown): Primitive {
     if (this._broken || this._disposed) return undefined;
+    if (this._held) {
+      this._hold(name, input, () => void this.call(name, input));
+      return undefined;
+    }
     try {
       (this._context as Record<string, unknown>).__in = JSON.stringify(input);
     } catch {
@@ -1040,6 +1060,62 @@ export class ScriptEngine {
     return this._depth > 0;
   }
 
+  /**
+   * The document is no longer fully active — kept in a back-forward cache
+   * (HTML 7.4.1, "bfcache") — and nothing of the page's runs until `thaw`:
+   * no task, no timer, no message, no script. The context runs only as the
+   * host enters it (`microtaskMode`), so holding what the host asks holds
+   * the whole realm. What it asks meanwhile waits, in order, and answers
+   * nothing; a timer that fires again, or a rendering step, waits once
+   * (`HELD_ONCE`), as a frozen page's interval runs once when it is shown
+   * again.
+   */
+  freeze(): void {
+    if (this._broken || this._disposed) return;
+    this._held ??= [];
+  }
+
+  /** Whether the document is frozen (`freeze`). */
+  get frozen(): boolean {
+    return this._held !== null;
+  }
+
+  /**
+   * The document is fully active again: `first` runs before anything that
+   * waited — the entry that tells the page it is shown again — and then
+   * what the host asked while it was frozen, in the order it asked.
+   */
+  thaw(first?: () => void): void {
+    const held = this._held;
+    if (!held) return;
+    this._held = null;
+    this._heldKeys.clear();
+    first?.();
+    for (let i = 0; i < held.length; i++) {
+      if (this._broken || this._disposed) return;
+      // frozen again by what ran: the rest waits for the next thaw
+      if (this._held) {
+        (this._held as (() => void)[]).push(...held.slice(i));
+        return;
+      }
+      held[i]();
+    }
+  }
+
+  /** An entry asked while frozen, held to run as it thaws. */
+  private _hold(name: string, input: unknown, run: () => void): void {
+    if (HELD_ONCE.has(name)) {
+      let key = name;
+      try {
+        key += JSON.stringify(input);
+      } catch {}
+      if (this._heldKeys.has(key)) return;
+      this._heldKeys.add(key);
+    }
+    this._held!.push(run);
+    if (this._held!.length === HELD_MAX) this._options.overflow?.();
+  }
+
   /** An entry begins: the outermost one is a task (`entered`). */
   private _enter(): void {
     if (this._depth++ === 0) this._options.entered?.();
@@ -1089,6 +1165,10 @@ export class ScriptEngine {
    *  reason is the page's object (`__thrown`). */
   rejected(reason: unknown, promise: unknown): void {
     if (this._broken || this._disposed) return;
+    if (this._held) {
+      this._held.push(() => this.rejected(reason, promise));
+      return;
+    }
     try {
       (this._context as Record<string, unknown>).__thrown = reason;
       (this._context as Record<string, unknown>).__promise = promise;
@@ -1113,10 +1193,28 @@ export class ScriptEngine {
 
   dispose(): void {
     this._disposed = true;
+    this._held = null;
     this._modules.clear();
     ENGINES.delete(this._promises);
   }
 }
+
+/** How much a frozen document may have waiting before it is let go
+ *  (`EngineOptions.overflow`): a worker or a peer that goes on talking to a
+ *  page nobody sees would otherwise grow it without end, as Chrome lets go
+ *  a cached page that something keeps asking to run. */
+const HELD_MAX = 4096;
+
+/** The entries a frozen document waits for once, however often the host
+ *  asked (`ScriptEngine.freeze`): each says only that something is due — a
+ *  timer, by its id, the rendering steps, a scroll, the context's queue. */
+const HELD_ONCE = new Set([
+  '__timer',
+  '__rendering',
+  '__scrolled',
+  '__scrollended',
+  '__drain',
+]);
 
 /** How many turns of the host's the context is entered on after an
  *  `import()` settles (`_drainLater`). */
