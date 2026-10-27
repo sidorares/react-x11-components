@@ -4181,7 +4181,11 @@ player is one React element for its element and source**, cut, rounded and
 faded by the boxes around it (`renderVideo`'s three boxes): a new element
 is a new player, and the video starts again. The boxes fixed to the
 viewport are asked about at each paint (`_publishMedia`), since a scroll
-brings a header over a player and lays nothing out.
+brings a header over a player and lays nothing out — those the document
+paints after the element alone (`fixedOver`, by `paintOrderOf`), worked
+out as the rects are laid out: a fixed box before a frame in the paint
+order is under it, and joshwcomeau.com's like button, fixed beside its
+article, hid every playground's frame it was inside.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document

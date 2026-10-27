@@ -1101,7 +1101,7 @@ function renderControl(
         // caption and the arrow in the page's ink
         ...(rect.bare && {
           labelStyle: {
-            color: rect.bare.color,
+            color: rect.bare.fill ?? rect.bare.color,
             fontFamily: rect.fontFamily,
             fontSize: rect.fontSize,
           },
@@ -1140,6 +1140,8 @@ function renderControl(
         placeholderColor: rect.placeholderColor,
         maxLength: maxLength(el),
         ...order,
+        // its caret is the field's text colour, as a text input's is
+        ...(rect.bare && { caretColor: rect.bare.color }),
         style: [field, FIELD_BOX],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
         ...selectionWatch,
@@ -1162,7 +1164,8 @@ function renderControl(
         sensitive: type === 'password',
         // a browser's caret is the field's text colour (`caret-color:
         // auto`), which is the page's where the page drew the field — the
-        // palette's own field keeps the palette's caret
+        // palette's own field keeps the palette's caret — and not what its
+        // glyphs are filled with, which `-webkit-text-fill-color` may hide
         ...(rect.bare && { caretColor: rect.bare.color }),
         style: [field, FIELD_BOX],
         // What is typed is the field's value and not its `value`
@@ -1480,7 +1483,8 @@ function fieldChrome(look: RootLook, browser: 'light' | 'dark' | null): Style {
  * A text field whose box the author styled: the document draws the border
  * and the background, so the widget draws neither, and its text is the
  * element's colour, which the author chose to go on that background, rather
- * than the theme's. Its face and size are the frame's, as every field's are.
+ * than the theme's — its glyphs' fill, where `-webkit-text-fill-color` sets
+ * one. Its face and size are the frame's, as every field's are.
  */
 function bareField(bare: BareField): Style {
   return {
@@ -1489,7 +1493,7 @@ function bareField(bare: BareField): Style {
     borderRadius: 0,
     paddingLeft: 0,
     paddingRight: 0,
-    color: bare.color,
+    color: bare.fill ?? bare.color,
   };
 }
 

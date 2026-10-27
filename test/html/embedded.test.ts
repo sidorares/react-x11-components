@@ -567,6 +567,29 @@ test('a box over the viewport that draws nothing of its own keeps no frame from 
   assert.ok(!asked.at(-1)?.hidden, 'and shown');
 });
 
+test('a box fixed to the viewport that the document paints before a frame is under it, and one painted after is over it', async () => {
+  // joshwcomeau.com's floating like button, fixed beside its article and
+  // before a playground in the tree: the playground's frame, positioned,
+  // is painted over it, and was hidden whole for it, inside its rect
+  const page = (after: boolean) =>
+    '<style>body{margin:0}iframe{border:0;display:block;position:absolute;' +
+    'top:0;left:0;width:200px;height:100px}' +
+    '.like{position:fixed;top:30px;left:80px;width:20px;height:20px;background:#f00}' +
+    '.wrap{position:relative;width:200px;height:100px}</style>' +
+    (after ? '' : '<div class="like"></div>') +
+    '<div class="wrap"><iframe id="f"></iframe></div>' +
+    (after ? '<div class="like"></div>' : '');
+  const under = await renderEmbedded(page(false));
+  assert.ok(mounted('f'), 'mounted');
+  assert.ok(!under.asked.at(-1)?.hidden, 'and shown, over the box');
+  cleanup();
+  const over = await renderEmbedded(page(true));
+  assert.ok(
+    over.asked.at(-1)?.hidden,
+    'hidden by one painted over it inside its rect, as before',
+  );
+});
+
 test('a mount stays the same node as a layout moves its element', async () => {
   // a new node would be a new document in an iframe, its scripts started
   // again; a new source is a new document, and a new node is right there

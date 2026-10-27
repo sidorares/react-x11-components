@@ -157,8 +157,9 @@ export class ResourceStore {
 
   /**
    * `changed` is told when a resource arrives after the request that asked
-   * for it returned, and which kind: a stylesheet changes the cascade, an
-   * image the boxes — or, where nothing its size lays out asked for it
+   * for it returned, and which kind: a stylesheet changes the cascade —
+   * where a sheet's link asked for it (`layout`), and not only a preload —
+   * an image the boxes — or, where nothing its size lays out asked for it
    * (`layout`), only what is painted — and a video what is mounted over
    * them; a host answering over a network answers every one of them later.
    * It is told too where a stylesheet is declined or fails that late
@@ -203,7 +204,9 @@ export class ResourceStore {
 
   /** Ask for a resource, once per URL: for what only paints it where
    *  `paintOnly` — a background, a border image, a mask — and its arrival
-   *  changes no box. Asked for again by what lays it out, it does. */
+   *  changes no box; or only preloads it, a sheet's `<link rel=preload>`,
+   *  and its arrival changes nothing. Asked for again by what lays it out,
+   *  it does. */
   request(request: ResourceRequest, paintOnly = false): void {
     if (this._destroyed || !request.url) return;
     const url = this._key(request.url);
@@ -283,7 +286,9 @@ export class ResourceStore {
         entry.text = result.text;
       }
       entry.state = 'ready';
-      if (!synchronous) this._changed('stylesheet', true);
+      // a sheet nothing reads yet — a `<link rel=preload>`'s — changes no
+      // style, until a sheet's link asks for it and finds it here
+      if (!synchronous) this._changed('stylesheet', entry.layout !== false);
       return;
     }
     if ('image' in result) {

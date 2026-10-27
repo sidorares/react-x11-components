@@ -270,6 +270,23 @@ export function imageUrlOf(el: Element): string | undefined {
 }
 
 /**
+ * Whether a `<link>` preloads a sheet (`rel=preload as=style`, HTML
+ * 4.6.7.12): asked for as a sheet is, and told a `load` or an `error` as
+ * that settles. A page waits on these: React's commit of a `precedence`
+ * sheet waits for the sheet's preload, and loadCSS turns a preload into a
+ * sheet from its `onload`. A preload of anything else is asked for nothing,
+ * as before: what nothing waits on is not worth fetching ahead of whatever
+ * the page asks for it.
+ */
+export function isStylePreload(el: Element): boolean {
+  if (tagOf(el) !== 'link' || !attr(el, 'href')) return false;
+  const rel = (attr(el, 'rel') ?? '').toLowerCase().split(/\s+/);
+  if (!rel.includes('preload') || rel.includes('stylesheet')) return false;
+  if (sheetConditions(attr(el, 'media') ?? '') === false) return false;
+  return (attr(el, 'as') ?? '').trim().toLowerCase() === 'style';
+}
+
+/**
  * Whether an `<img>`'s image is chosen rather than named: it has a
  * `srcset`, or a `<picture>` is its parent (HTML's "uses srcset or
  * picture"). One that is neither shows its `src`, at 1x.
@@ -1086,8 +1103,9 @@ export interface DocumentFacts {
   shadows: { root: ShadowRoot; sheets: SheetRef[] }[];
   /** Every `<script>`, for the seam. Never parsed and never evaluated. */
   scripts: Element[];
-  /** Elements with a resource to fetch — `<img>`, and `<link>` above —
-   *  in shadow trees as well as in the document. */
+  /** Elements with a resource to fetch — `<img>`, and `<link>` above, a
+   *  sheet's preload among them (`isStylePreload`) — in shadow trees as
+   *  well as in the document. */
   resources: Element[];
   /** The `<img>`s whose image is chosen rather than named — a `srcset`, or
    *  a `<picture>` around them — which are asked for once the viewport
@@ -1816,7 +1834,7 @@ function scanElements(
           sheets.push({ kind: 'link', href, element: el, media });
           facts.resources.push(el);
         }
-      }
+      } else if (isStylePreload(el)) facts.resources.push(el);
     } else if (tag === 'script') {
       facts.scripts.push(el);
     } else if (tag === 'img' && choosesSource(el)) {

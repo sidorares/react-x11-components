@@ -39,7 +39,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
-| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                                           |
+| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                |
 | `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
@@ -2055,7 +2055,12 @@ rest keep their posters:
 - **A box fixed to the viewport is asked about as the pane scrolls**: a
   header that comes over a playing video cuts the player where it reaches
   it, and one that reaches into its middle hides it for as long as it is
-  there, the poster showing in its place and the video playing on.
+  there, the poster showing in its place and the video playing on. Only one
+  the document paints after the video is over it: a fixed box before it in
+  the paint order is under it wherever the scroll has it. The same holds of
+  a frame, which is hidden whole by what it cannot be cut around —
+  joshwcomeau.com's floating like button, fixed beside its article and
+  before its playgrounds in the tree, hid each playground's result.
 - **What a rectangle cannot follow** — a transform that turns or scales the
   video or a box around it, a `clip-path` or a mask, a video fixed to the
   viewport, or corners of its own, or of a box around it that cuts it, that
@@ -2173,7 +2178,12 @@ its scripts in a realm of its own (`src/html/scripts/frames.ts`): a host
 that turns scripts on gets them with no `renderEmbedded` of its own, and
 one that has one is asked first. An `<iframe srcdoc>` shows the markup its
 attribute holds, ahead of any `src`, as a document at `about:srcdoc` of the
-page's origin, with the page's base.
+page's origin, with the page's base — and goes to it again when a script
+sets the attribute, changes it or takes it away, to its `src` then, as
+HTML's "process the iframe attributes" has it; a `src` set while it has a
+`srcdoc` goes nowhere. A server-rendered `<iframe>` a React page hands its
+`srcdoc` after hydrating had its first `about:blank` by then, and stayed
+blank.
 
 **A frame's document has a viewport of its own: its frame's content box.**
 Its window's `innerWidth` and `innerHeight`, `matchMedia`, `visualViewport`
@@ -2305,7 +2315,7 @@ behaviour onto a document with `domutils` — dispatches them, and answers.
 | `reset`                | A reset button pressed                                                      | nothing is put back                              |
 | `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                  | —                                                |
 | `toggle`               | A `<details>` opened or closed                                              | —                                                |
-| `load`, `error`        | A `<link rel=stylesheet>`'s sheet applied, or not to be had                 | —                                                |
+| `load`, `error`        | A sheet's `<link>` applied, or its preload's sheet in; or not to be had     | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
@@ -2329,6 +2339,14 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
   it did. Once an `href`: a link given another is told again, and one put
   in for a sheet the document already has is told once a restyle reads it,
   though nothing is asked for.
+- **A sheet's `<link rel=preload as=style>` is told as its sheet comes
+  in**, asked for through `onResource` as a `stylesheet` and kept for the
+  sheet's link to find, its arrival restyling nothing. React commits a
+  `precedence` sheet only once its preload has told one or the other, and
+  loadCSS turns a preload into a sheet from its `onload`: a playground on
+  joshwcomeau.com waited behind a preload that was never told, and every
+  later update of the page with it. A preload of anything else is asked for
+  nothing and told nothing, as nothing waits on one.
 
 A `mousemove` is told at every move the pointer makes over what the
 document draws, a hit test each, which is why a host decides what crossing
@@ -5496,7 +5514,11 @@ border or background properties of an `<input>`, a `<textarea>` or a
 sets them all, and the document paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
-go on that background. Its size is then its text's, a line as tall as its
+go on that background — its glyphs in its `-webkit-text-fill-color` where
+it sets one, and its caret in its colour. A code editor that lays a
+`<textarea>` over the `<pre>` it highlights, react-simple-code-editor's,
+fills the field's text with `transparent`, so the `<pre>` shows the text
+and the field its caret and selection. Its size is then its text's, a line as tall as its
 `line-height` makes it — at `normal`, its font's own, as a browser's text
 field is — and the border and padding around it are the author's, or the
 web's where the author set only some of them. It is the page setting them
