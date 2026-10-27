@@ -408,6 +408,58 @@ test('nothing of the host is reachable from a page', async () => {
   );
 });
 
+test('a facade function stringifies as native code; a page function as its source', async () => {
+  // Web IDL 3.6, and every engine: a built-in reports
+  // `function name() { [native code] }`. The DOM here is JavaScript in this
+  // realm, so without the mask a page read its source — and a library that
+  // tests a function for nativeness this way was misled. A page-authored
+  // function keeps its own source, and the mask is no way out: the patched
+  // `toString` chains to the realm's own sandboxed `Function`.
+  const native = (expr: string): string =>
+    `/\\[native code\\]/.test((${expr}).toString())`;
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<script>' +
+      'var r = [];' +
+      // reached from the global, an interface prototype, an instance's
+      // class, an instance behind a getter, and an API namespace
+      `r.push(${native('document.querySelector')});` +
+      `r.push(${native('Element.prototype.addEventListener')});` +
+      `r.push(${native('window.localStorage.getItem')});` +
+      `r.push(${native('window.location.assign')});` +
+      `r.push(${native('navigator.sendBeacon')});` +
+      // the mask itself is native, as `Function.prototype.toString` is
+      `r.push(${native('Function.prototype.toString')});` +
+      // a page's own function keeps its source
+      'function mine(a) { return a + 2; }' +
+      `r.push(${native('mine')});` +
+      'r.push(/a \\+ 2/.test(mine.toString()));' +
+      // no escape: the patched toString reaches only the sandboxed Function
+      "r.push(document.querySelector.toString.constructor.constructor('return typeof process')());" +
+      // a non-function `this` still throws, as the real toString does
+      'try { Function.prototype.toString.call({}); r.push("nothrow") }' +
+      ' catch (e) { r.push(e.name) }' +
+      "document.getElementById('out').textContent = r.join(',');" +
+      '</script>',
+  );
+  await settle(60);
+  assert.equal(
+    doc.text('out'),
+    [
+      'true', // document.querySelector (Document.prototype)
+      'true', // Element.prototype.addEventListener (EventTarget.prototype)
+      'true', // localStorage.getItem (Storage.prototype)
+      'true', // location.assign (marked from the object behind the getter)
+      'true', // navigator.sendBeacon (an instance's own method)
+      'true', // Function.prototype.toString itself
+      'false', // a page function is not native
+      'true', // …and keeps its real source
+      'undefined', // the mask leaks nothing of the host
+      'TypeError', // toString on a non-function still throws
+    ].join(','),
+  );
+});
+
 /** The smallest modules: `add`, two i32s summed, and `spin`, a loop with
  *  no end. */
 const ADD_WASM = [
