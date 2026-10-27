@@ -3517,7 +3517,11 @@ timeline holds a CSS animation it has not drawn yet at its start
 mounts it, the paint came 240 ms after, and a fade of 100 ms was over
 before the menu was drawn. It is paced as one that plays, so frames keep
 coming while it waits, and one no paint shows for `PAINT_WAIT_MS` starts
-at a frame. And where a page listens (`holdsEnds`), a run that ends is
+at a frame. Where nothing waits to be painted it starts at once
+(`_claimsPainted`, in `_scheduleFrame`): one whose first frame is what the
+window shows already — a colour from the element's own, on a hover —
+changes nothing a paint would draw, and waited for a paint that was not
+coming. And where a page listens (`holdsEnds`), a run that ends is
 drawn at its end, as though it filled forwards, until its `animationend`
 is told (`releaseEnds`, in `_oweCssEvents`, just before the telling): a
 browser tells it before the frame that draws the element as the animation
