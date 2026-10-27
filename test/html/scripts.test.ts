@@ -6348,6 +6348,41 @@ test('a node iterator steps off the node its filter takes out, and texts merge a
   );
 });
 
+test('a page makes a text, a comment and a fragment with new, a subclass of its own of each, and no other node', async () => {
+  // DOM 4.7, 4.11 and 4.14: the three are constructible, in the page's
+  // document; a UI library's `new DocumentFragment()` threw "Illegal
+  // constructor" and took the page's React tree down with it
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var f = new DocumentFragment(), t = new Text("hi"), c = new Comment("note");' +
+      'r.push(f.nodeType, f instanceof DocumentFragment, f.ownerDocument === document, f.childNodes.length);' +
+      'r.push(t.nodeType, t.data, t instanceof CharacterData, t.ownerDocument === document);' +
+      'r.push(c.nodeType, c.data, c instanceof Comment);' +
+      'r.push(new Text().data === "", new Comment(null).data, new Text(undefined).data === "");' +
+      // what it makes is a node like any: put in the tree, and found again
+      'f.append(t, c); r.push(f.childNodes.length, f.firstChild === t);' +
+      'var p = document.createElement("p"); p.append(f); r.push(p.textContent, f.childNodes.length, t.parentNode === p);' +
+      // a page's subclass makes one of its own, with its fields
+      'class Mine extends Text { tag = "mine"; get loud() { return this.data.toUpperCase(); } }' +
+      'var m = new Mine("quiet"); p.append(m);' +
+      'r.push(m instanceof Mine, m instanceof Text, m.tag, m.loud, p.lastChild === m);' +
+      'class Holder extends DocumentFragment {} r.push(new Holder() instanceof Holder);' +
+      // and the rest are as illegal as they are in a browser
+      'for (const Kind of [Node, CharacterData, CDATASection, ProcessingInstruction, ShadowRoot, DocumentType, Element]) {' +
+      '  try { new Kind(); r.push(Kind.name + " made"); } catch (e) { r.push(e.name); } }' +
+      'try { DocumentFragment(); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '11|true|true|0|3|hi|true|true|8|note|true|true|null|true|2|true|hi|0|true|true|true|mine|QUIET|true|true|' +
+      'TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('DOM Core as Acid3 asks it: constants, namespaces, documents of XML, doctypes and node documents', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><p id="out"></p><script>' +

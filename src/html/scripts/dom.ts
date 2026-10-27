@@ -4685,6 +4685,20 @@ export function installDom(
   /** A string a node is given: what a page passes, converted here. */
   const str = (v: Any): string => String(v);
 
+  /** A node a page's `new` makes (DOM 4.7, 4.11, 4.14): one of the page's
+   *  document, as `new Range()` is, and of the class `new` was called on,
+   *  so a page's subclass of `Text` makes one of its own. */
+  const constructed = (Kind: Any, type: string, data: string): Any => {
+    const made = wrap(Number(call('create', type, data, document._id)));
+    if (Object.getPrototypeOf(made) !== Kind.prototype) {
+      Object.setPrototypeOf(made, Kind.prototype);
+    }
+    return made;
+  };
+  /** Whether `new` was called on `Kind` or a class under it. */
+  const isOrUnder = (target: Any, Kind: Any): boolean =>
+    target === Kind || target.prototype instanceof Kind;
+
   class Node extends EventTarget {
     static readonly ELEMENT_NODE = 1;
     static readonly ATTRIBUTE_NODE = 2;
@@ -5009,6 +5023,12 @@ export function installDom(
     }
   }
   class Text extends CharacterData {
+    /** `new Text(data)` (DOM 4.11). A `CDATASection` is no page's to make:
+     *  `super()` is `Node`'s, which refuses it. */
+    constructor(data: Any = '') {
+      if (isOrUnder(new.target, CDATASection)) super();
+      return constructed(new.target, 'text', str(data));
+    }
     /** The text and the texts either side of it, run together. */
     get wholeText(): string {
       let first: Any = this;
@@ -5026,7 +5046,15 @@ export function installDom(
     }
   }
   Object.defineProperty(Text.prototype, 'nodeType', nodeTypeOf(3));
-  class Comment extends CharacterData {}
+  class Comment extends CharacterData {
+    /** `new Comment(data)` (DOM 4.14). Nothing under it is refused, and a
+     *  class is never called without `new`: the `super()` is the
+     *  compiler's, and never runs. */
+    constructor(data: Any = '') {
+      if (!new.target) super();
+      return constructed(new.target, 'comment', str(data));
+    }
+  }
   // never made here — HTML has no CDATA outside foreign content, and no
   // processing instruction — but a polyfill patches their prototypes
   class CDATASection extends Text {}
@@ -5066,6 +5094,12 @@ export function installDom(
   Object.defineProperty(DocumentType.prototype, 'nodeType', nodeTypeOf(10));
 
   class DocumentFragment extends ParentNode {
+    /** `new DocumentFragment()` (DOM 4.7). A `ShadowRoot` is made by
+     *  `attachShadow` alone: `super()` is `Node`'s, which refuses it. */
+    constructor() {
+      if (isOrUnder(new.target, ShadowRoot)) super();
+      return constructed(new.target, 'fragment', '');
+    }
     getElementById(id: Any): Any {
       return wrap(
         Number(call('query', this._id, `#${cssEscape(str(id))}`, false)),
@@ -6204,7 +6238,7 @@ export function installDom(
     /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
      *  element its upgrade is constructing, or a new one, as its definition
      *  says (`constructCustom`). Anything else is an illegal constructor,
-     *  as every interface's here is. */
+     *  as `Node`'s is. */
     constructor() {
       const made = constructCustom(new.target);
       if (!made) super();
@@ -14151,8 +14185,9 @@ export function installDom(
     get: () => '#document',
   });
   /** `new Document()` (DOM 4.5): an XML document no browsing context has,
-   *  of type `application/xml`. Every other interface here is an illegal
-   *  constructor; this one is a page's to call. */
+   *  of type `application/xml`. It, `Text`, `Comment` and
+   *  `DocumentFragment` are a page's to make; every other node interface
+   *  is an illegal constructor. */
   const DocumentConstructor = function Document(this: Any): Any {
     if (!new.target) {
       throw new TypeError(
