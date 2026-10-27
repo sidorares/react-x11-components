@@ -3555,18 +3555,27 @@ timeline holds a CSS animation it has not drawn yet at its start
 mounts it, the paint came 240 ms after, and a fade of 100 ms was over
 before the menu was drawn. It is paced as one that plays, so frames keep
 coming while it waits, and one no paint shows for `PAINT_WAIT_MS` starts
-at a frame. And where a page listens (`holdsEnds`), a run that ends is
+at a frame. Where nothing waits to be painted it starts at once
+(`_claimsPainted`, in `_scheduleFrame`): one whose first frame is what the
+window shows already — a colour from the element's own, on a hover —
+changes nothing a paint would draw, and waited for a paint that was not
+coming. A transition waits the same way (`Transit.pending`, a
+`CSSTransition` being an animation): it is made again at the clock's time
+each time it is sampled while it waits (`beginAt`), its delay with it, so
+whatever reads its times — the lifts, `getAnimations()` — finds one only
+just begun, and the paint makes it once more and lets it go. And where a
+page listens (`holdsEnds`), a run that ends is
 drawn at its end, as though it filled forwards, until its `animationend`
 is told (`releaseEnds`, in `_oweCssEvents`, just before the telling): a
 browser tells it before the frame that draws the element as the animation
 leaves it, and Radix keeps a menu that faded out at its end from the
 listener, so told a frame late the menu was drawn whole between its fade
 and its unmounting. Two things are load-bearing. **A run on the
-document's clock is made in `sample`**, or it starts as its style is
-worked out. And **no page code runs from a frame**: `_frame` is also
-called from core's `spritesLifted`, inside the presenter's pass, which is
-why an end is held until the events' own tick rather than told before the
-frame.
+document's clock is made in `sample`, and a transition in `transition`
+through `_made`**, or it starts as its style is worked out. And **no
+page code runs from a frame**: `_frame` is also called from core's
+`spritesLifted`, inside the presenter's pass, which is why an end is held
+until the events' own tick rather than told before the frame.
 
 **A transition runs on the same timeline, from the style the document
 draws.** `AnimationTimeline.transition` is asked of every style the cascade

@@ -489,6 +489,24 @@ test('an animation starts at the paint that first shows it, however long before 
   assert.strictEqual(styleOf(node, 'a').opacity, 0.5);
 });
 
+test('an animation whose start is what the window shows already starts at once, with no paint to wait for', async (t) => {
+  // a colour from the element's own, on a hover: its first frame changes
+  // nothing, so nothing is painted for it, and it would have waited for a
+  // paint that was not coming
+  const doc = await running(
+    t,
+    '<style>@keyframes c { to { color: #ffffff } }' +
+      '#a { color: #000000 } #a:hover { animation: c 160ms linear }</style>' +
+      '<p id="a">x</p>',
+  );
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const box = boxOf(doc.el, 'a');
+  doc.el.setHover(abs.x + box.x + 2, abs.y + box.y + 2);
+  await doc.at(80);
+  assert.notStrictEqual(doc.style('a').color, '#000000', 'under way');
+  assert.notStrictEqual(doc.style('a').color, '#ffffff');
+});
+
 /**
  * A document whose animations' clock is held, and says how long each frame
  * it asks for waits: `next()` runs the frame asked for soonest, at its time.

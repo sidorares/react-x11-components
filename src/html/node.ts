@@ -8026,6 +8026,13 @@ export class HtmlViewNode extends Node {
    *  timer already waits for it. */
   private _scheduleFrame(): void {
     if (this.destroyed) return;
+    // what was made since the last paint starts now where nothing waits to
+    // be painted: the window shows each as it starts already, and no paint
+    // is coming to start it — a transition turned back from where it was
+    // drawn, a fade out from what the element looks like
+    if (this._claims === this._claimsPainted) {
+      this._timeline.startPending(animationClock.now());
+    }
     // the surfaces kept for an animation that is over: a box drawn on one
     // keeps one from now on only where it is small enough to keep still
     this._sprites?.sweep((box) => {
@@ -8749,6 +8756,10 @@ export class HtmlViewNode extends Node {
   private _waitingForPaint = false;
   /** Repaints asked for, which a frame compares across its work. */
   private _claims = 0;
+  /** How many had been asked for at the last paint, -1 before the first:
+   *  where it is all of them, nothing waits to be painted
+   *  (`_scheduleFrame`). */
+  private _claimsPainted = -1;
 
   override invalidate(
     layout?: boolean,
@@ -10428,7 +10439,8 @@ export class HtmlViewNode extends Node {
         duration: run.duration,
         delay: run.start - run.created,
         easing: easingText(run.easing),
-        currentTime: now - run.created,
+        // waiting for the paint that first shows it, it has not begun
+        currentTime: run.pending ? 0 : now - run.created,
       }));
   }
 
@@ -11138,6 +11150,7 @@ export class HtmlViewNode extends Node {
     this._counted(() => this._paintContent(ctx));
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
+    this._claimsPainted = this._claims;
     if (this._timeline.startPending(animationClock.now())) {
       this._scheduleFrame();
     }
