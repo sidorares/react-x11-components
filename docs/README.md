@@ -104,6 +104,11 @@ parts.
   layer, and the three parts of them that could. Then a plugin system in
   two halves for network and in-document blocking, automation, MCP and
   base styles, the six seams `<Html>` would grow for it, and the phases.
+- [A browser profile](prd-browser-profile.md) — implemented: Chrome's
+  profile formats part by part and why this is not one of them; cookies
+  after RFC 6265bis, `localStorage`, `sessionStorage` and IndexedDB in one
+  SQLite database every tab's process shares, and the tabs back after a
+  restart.
 - [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,

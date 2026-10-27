@@ -793,12 +793,13 @@ charset }` — the `<script>` is the request's `element`, and the root
 `useHtmlNetwork(url)` is all three, from one line: `onResource`, a `fetch`
 and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
 cache, six requests a host at a time, `file:` only for a `file:` page, no
-mixed content, no cookies — shared by every document in the process
-(`defaultHtmlNetwork`), or one handed in. `new HtmlNetwork(options)` takes
-its own User-Agent, cache size, transport — a proxy, a cache on disk, a
-test's answers — and log, and its `html(url)` fetches a document whole,
-decoded, for `source`. Nothing about it is required: any `onResource` that
-answers `'script'` and any `fetch` of the same shape will do.
+mixed content, and no cookies unless it is handed a jar — shared by every
+document in the process (`defaultHtmlNetwork`), or one handed in. `new
+HtmlNetwork(options)` takes its own User-Agent, cache size, transport — a
+proxy, a cache on disk, a test's answers — log and cookie jar, and its
+`html(url)` fetches a document whole, decoded, for `source`. Nothing about
+it is required: any `onResource` that answers `'script'` and any `fetch` of
+the same shape will do. See [Cookies and storage](#cookies-and-storage).
 
 **Where the page is shown is read from where it is.** Its viewport —
 `innerWidth`, `scrollY`, `scrollTo`, its `scroll` events — is the scroll pane around the `<Html>`, the host's, and its zoom is core's
@@ -837,6 +838,8 @@ since this component navigates nowhere by itself:
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
+| `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
+| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
@@ -1672,6 +1675,94 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
+
+### Cookies and storage
+
+```js
+import {
+  CookieJar,
+  HtmlNetwork,
+  HtmlProfile,
+  publicSuffixList,
+} from '@react-x11/components/html';
+
+const profile = await HtmlProfile.open(dir, { tab: tabKey }); // null without SQLite
+const cookies = new CookieJar({ store: profile?.cookies });
+publicSuffixList().then((list) => list && (cookies.publicSuffix = list));
+const network = new HtmlNetwork({ cookies });
+
+<Html
+  scripts={{
+    fetch: network.fetcher(url),
+    cookies,
+    storage: profile?.storage,
+  }}
+/>;
+```
+
+**Nothing is stored unless the application keeps it.** With no jar a
+network sends no cookie and keeps none, and a document has no
+`document.cookie`; with no `storage` an origin's `localStorage` and
+`sessionStorage` are the process's memory and an IndexedDB database is the
+document's, gone with it. Each is a seam, and [the
+PRD](../prd-browser-profile.md) has the design and why the profile is not
+Chrome's format.
+
+**`CookieJar` is RFC 6265bis**, pure: `Set-Cookie` parsed with every
+attribute, a cookie for its host or its domain, never for a public suffix,
+paths longest first, `Secure` set and sent over `https:` or a loopback host
+alone, `HttpOnly` never shown to a script nor set by one, `SameSite` held to
+in every context, the `__Secure-` and `__Host-` prefixes, and Chrome's caps.
+A cookie that names no `SameSite` is `None`'s, as Firefox and Safari have
+it; `thirdParty: false` sends none on another site's request. The Public
+Suffix List comes from the optional peer `tldts` through
+`publicSuffixList()`; without it only a top-level domain is a suffix. Its
+cookies live in an `HtmlCookieStore` — memory by default — which the jar
+reads again whenever the store says another writer changed it.
+
+**`HtmlNetwork({ cookies })` sends and stores through it.** A navigation is
+top-level, same-site where the document that started it is
+(`document(url, signal, post, { initiator })`, a form's `from`) or where
+nothing did — an address typed. A subresource carries its cookies; a page's
+`fetch` as its credentials mode says (`FetchRequest.credentials`, by default
+`same-origin`); a preflight none. A network with a jar follows redirects
+itself, because a login's session is set on the redirect it answers with:
+each hop's `Set-Cookie` is stored and each hop's cookies sent, with Fetch's
+method rules and limit.
+
+**A document's cookies are the jar's** (`scripts.cookies`):
+`document.cookie` reads the document's cookies but its `HttpOnly` ones and
+writes one, a document not on the web or made by a page reads `''`, and the
+address the host is told is held to the realm's origin whatever the page
+claims. `cookieStore` (secure contexts) has `get`, `getAll`, `set` and
+`delete`; its `change` is never told, since nothing tells a realm of a
+cookie a response set.
+
+**Storage** (`scripts.storage`, `HtmlStorage`) is an origin's areas and a
+channel for the `storage` event. An origin keeps 5 MiB of keys and values,
+and `setItem` past it throws `QuotaExceededError`. A change that changed
+something is told, as a `StorageEvent`, to every other document of the
+origin that shares the storage — a frame beside its page in memory, and
+every tab in a profile — and never to the document that made it.
+
+**`HtmlProfile.open(dir, { tab })`** is all of it on disk: one SQLite
+database (`profile.sqlite`) that every process opening it shares, through
+the runtime's `node:sqlite` (Node 22.13 and later, Bun) or `bun:sqlite`, and
+null on a runtime with neither. `profile.cookies` is a jar's store,
+`profile.storage` a document's storage: `localStorage` per origin,
+`sessionStorage` kept by the tab's key, IndexedDB, and `storage` events
+across processes. `endSession({ keepTabs, keepSessionCookies })` drops what
+a session that ends takes with it, and `forgetTab(key)` a closed tab's
+`sessionStorage`.
+
+**IndexedDB in a profile** is still run in the page's realm, as it is in
+memory: a database is read from the profile as it is first opened, each
+committed transaction's difference is written before `complete`, and a
+transaction that starts after another document committed reads the database
+again. Transactions in two tabs are not held back for one another, as a
+browser holds them: the later commit wins, record by record, and an upgrade
+in one tab is seen by the next `open` in another. A worker's IndexedDB is
+the worker's alone.
 
 ## Forms
 

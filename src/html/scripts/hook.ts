@@ -194,6 +194,12 @@ export function useScripts(
     get mediaDevices() {
       return latest.current.mediaDevices;
     },
+    get cookies() {
+      return latest.current.cookies;
+    },
+    get storage() {
+      return latest.current.storage;
+    },
     get drawsFrames() {
       return latest.current.drawsFrames;
     },

@@ -18,11 +18,16 @@
 //   - **No mixed content.** A secure page's stylesheets, fonts and scripts
 //     come over a secure connection or not at all, and its images are
 //     asked for over one (`mixedContent`), as a browser has it.
-//   - **No cookies, no downloads.** Nothing is stored between requests.
-//     Anything that is not a document, an image, a stylesheet, a font or a
-//     script is not fetched at all — but a script's own `fetch`, of the
-//     page's own origin, or of another where CORS lets the page read it
-//     (the engine keeps to that; this keeps the host's headers on it).
+//   - **Cookies only where the application hands in a jar** (`cookies`, a
+//     `CookieJar`): then every request carries what RFC 6265bis lets it,
+//     and every response's `Set-Cookie` is stored — on each redirect too,
+//     which is why such a network follows redirects itself. Without one
+//     nothing is stored between requests, as before.
+//   - **No downloads.** Anything that is not a document, an image, a
+//     stylesheet, a font or a script is not fetched at all — but a script's
+//     own `fetch`, of the page's own origin, or of another where CORS lets
+//     the page read it (the engine keeps to that; this keeps the host's
+//     headers on it).
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
 //     POST from a forged one by them.
@@ -35,6 +40,7 @@
 import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
+import type { CookieJar } from './cookies.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
 import type { HtmlWebRTC } from './rtc.js';
@@ -78,6 +84,9 @@ interface ResponseLike {
   readonly headers: {
     get(name: string): string | null;
     entries(): IterableIterator<[string, string]>;
+    /** Each `Set-Cookie` field apart, which `get` joins with commas a
+     *  date's own comma cannot be told from. Node's and Bun's have it. */
+    getSetCookie?(): string[];
   };
   readonly body: {
     getReader(): {
@@ -102,7 +111,11 @@ export type HtmlTransport = (
      *  once. */
     streamedBody?: boolean;
     signal: AbortSignalLike;
-    redirect: 'follow';
+    /** `manual` where the network follows redirects itself, as it does
+     *  with a cookie jar: a redirect is answered as it came, its
+     *  `Location` and `Set-Cookie` read. A transport that follows it
+     *  anyway loses only the cookies set on the way. */
+    redirect: 'follow' | 'manual';
   },
 ) => Promise<ResponseLike>;
 
@@ -147,7 +160,34 @@ export interface HtmlNetworkOptions {
    * first time a page makes one. False: none is made, as with no network.
    */
   webRTC?: false;
+  /**
+   * The cookie jar every request is sent and answered through, and a
+   * page's `document.cookie` reads (`cookies`). Default none: no request
+   * carries a cookie, and none is kept.
+   */
+  cookies?: CookieJar;
 }
+
+/** Whose cookies a request carries (Fetch, a request's credentials mode),
+ *  and what decides whether they are held back from another site. */
+interface CookieRequest {
+  credentials: 'omit' | 'same-origin' | 'include';
+  /** The origin `same-origin` is reckoned from: the document's. */
+  origin: string;
+  /** The top-level document, whose site is the site for cookies; for a
+   *  top-level navigation, its destination. */
+  site: string | null;
+  /** Whether the request navigates a top-level document. */
+  topLevel: boolean;
+  /** The document that started a navigation, or null for the browser —
+   *  an address typed, a bookmark — which is same-site with anything. */
+  initiator: string | null;
+}
+
+/** A redirect's statuses (Fetch, "redirect status"). */
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+/** How many a request follows (Fetch 4.4, "HTTP-redirect fetch"). */
+const MAX_REDIRECTS = 20;
 
 /**
  * The User-Agent an `HtmlNetwork` sends, and `<Html scripts>`' pages read
@@ -277,6 +317,7 @@ export class HtmlNetwork {
   private _sessions: HtmlWebTransport | null = null;
   private readonly _webRTC: boolean;
   private _peers: HtmlWebRTC | null = null;
+  private readonly _cookies: CookieJar | null;
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
@@ -289,6 +330,14 @@ export class HtmlNetwork {
     this._log = options.log ?? (() => {});
     this._webTransport = options.webTransport ?? {};
     this._webRTC = options.webRTC !== false;
+    this._cookies = options.cookies ?? null;
+  }
+
+  /** The cookie jar this network sends and stores cookies through, and a
+   *  page's `document.cookie` reads (`<Html scripts={{ cookies }}>`), or
+   *  null for none. */
+  get cookies(): CookieJar | null {
+    return this._cookies;
   }
 
   /**
@@ -402,6 +451,122 @@ export class HtmlNetwork {
     });
   }
 
+  /**
+   * A request sent with its cookies, where this network has a jar and the
+   * request's credentials mode lets it carry them: each redirect followed
+   * here, the `Set-Cookie` of every response on the way stored and the
+   * cookies of every URL on the way sent (Fetch 4.4, 4.5). Without a jar,
+   * the transport follows redirects, as it always did.
+   */
+  private async _exchange(
+    url: string,
+    init: Omit<Parameters<HtmlTransport>[1], 'redirect'>,
+    cookies: CookieRequest | null,
+  ): Promise<ResponseLike> {
+    const jar = this._cookies;
+    if (!jar || !cookies || cookies.credentials === 'omit') {
+      return this._send(url, { ...init, redirect: 'follow' });
+    }
+    let at = url;
+    let method = init.method;
+    let body = init.body;
+    let headers = { ...init.headers };
+    /** The URLs before this one, which a request that left the site on
+     *  its way is held to as not same-site (6265bis 5.2). */
+    const before: string[] = [];
+    for (let hop = 0; ; hop += 1) {
+      const include =
+        cookies.credentials === 'include' || originOf(at) === cookies.origin;
+      const sameSite = this._sameSite(at, cookies, before);
+      const context = {
+        http: true,
+        sameSite,
+        topLevel: cookies.topLevel,
+        method,
+      };
+      delete headers.cookie;
+      if (include) {
+        const header = jar.header(at, context);
+        if (header) headers.cookie = header;
+      }
+      const response = await this._send(at, {
+        ...init,
+        method,
+        body,
+        headers,
+        ...(body !== undefined && init.streamedBody
+          ? { streamedBody: true }
+          : { streamedBody: undefined }),
+        redirect: 'manual',
+      });
+      if (include) jar.store(at, setCookies(response.headers), context);
+      const location = response.headers.get('location');
+      if (!REDIRECTS.has(response.status) || location === null) {
+        return answered(
+          response,
+          response.url || at,
+          hop > 0 || response.redirected,
+        );
+      }
+      response.body
+        ?.getReader()
+        .cancel()
+        .catch(() => {});
+      if (hop >= MAX_REDIRECTS) {
+        throw new TypeError('Failed to fetch: too many redirects.');
+      }
+      let next: string;
+      try {
+        next = new URL(location, at).href;
+      } catch {
+        throw new TypeError('Failed to fetch: a redirect to no URL.');
+      }
+      const scheme = schemeOf(next);
+      if (scheme !== 'http' && scheme !== 'https') {
+        throw new TypeError(`Failed to fetch: a redirect to ${scheme}:.`);
+      }
+      // a page's stream is sent once, and a redirect but a 303's sends it
+      // again (Fetch 4.4, step 11)
+      if (init.streamedBody && body !== undefined && response.status !== 303) {
+        throw new TypeError('Failed to fetch: a redirect of a streamed body.');
+      }
+      if (
+        ((response.status === 301 || response.status === 302) &&
+          method === 'POST') ||
+        (response.status === 303 && method !== 'GET' && method !== 'HEAD')
+      ) {
+        method = 'GET';
+        body = undefined;
+        headers = Object.fromEntries(
+          Object.entries(headers).filter(
+            ([name]) =>
+              !/^content-(type|length|encoding|language|location)$/i.test(name),
+          ),
+        );
+      }
+      if (originOf(next) !== originOf(at)) delete headers.authorization;
+      before.push(at);
+      at = next;
+    }
+  }
+
+  /** Whether a request to `url` is same-site for its cookies (6265bis
+   *  5.2): with its top-level document, or for a navigation with the
+   *  document that started it, every URL on its way included. */
+  private _sameSite(
+    url: string,
+    cookies: CookieRequest,
+    before: readonly string[],
+  ): boolean {
+    const jar = this._cookies!;
+    const against = cookies.topLevel ? cookies.initiator : cookies.site;
+    if (cookies.topLevel && against === null) {
+      return before.every((b) => jar.sameSite(b, url));
+    }
+    if (!jar.sameSite(url, against)) return false;
+    return before.every((b) => jar.sameSite(b, against));
+  }
+
   /** How many requests are waiting or running. */
   get busy(): number {
     return this._running + this._queue.length;
@@ -465,6 +630,7 @@ export class HtmlNetwork {
                   accept: ACCEPT[kind],
                   referrer: referrerFor(page, url),
                   limit: MAX_RESOURCE,
+                  page,
                 }),
           );
     const promise = made.then(
@@ -524,6 +690,13 @@ export class HtmlNetwork {
     url: string,
     signal: AbortSignalLike,
     post: PostData | null = null,
+    options: {
+      /** The document that started the navigation — a link's, a
+       *  script's — or null for the browser, whose own navigations are
+       *  same-site with anything (6265bis 5.2.2). A form's POST is started
+       *  by its `from`. */
+      initiator?: string | null;
+    } = {},
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
     if (scheme === 'file') {
@@ -567,13 +740,27 @@ export class HtmlNetwork {
     }
     let response: ResponseLike;
     try {
-      response = await this._send(url, {
-        method: posting ? 'POST' : 'GET',
-        body: posting ? post.body : undefined,
-        signal: AbortSignal.any([signal, timer]),
-        headers,
-        redirect: 'follow',
-      });
+      response = await this._exchange(
+        url,
+        {
+          method: posting ? 'POST' : 'GET',
+          body: posting ? post.body : undefined,
+          signal: AbortSignal.any([signal, timer]),
+          headers,
+        },
+        {
+          credentials: 'include',
+          origin: originOf(url),
+          site: url,
+          topLevel: true,
+          initiator:
+            options.initiator !== undefined
+              ? options.initiator
+              : posting
+                ? post.from
+                : null,
+        },
+      );
     } catch (error) {
       if (signal.aborted) throw error;
       throw networkError(error, timer.aborted);
@@ -604,6 +791,9 @@ export class HtmlNetwork {
       bytes?: Uint8Array;
       stream?: boolean;
       streamedBody?: boolean;
+      /** Whose cookies it carries (Fetch, credentials mode). Default
+       *  `same-origin`, a page's `fetch`'s. */
+      credentials?: 'omit' | 'same-origin' | 'include';
     },
     page: string,
     signal: AbortSignalLike,
@@ -666,17 +856,26 @@ export class HtmlNetwork {
     let response: ResponseLike;
     try {
       response = await this._paced(request.url, signal, () =>
-        this._send(request.url, {
-          method,
-          headers,
-          body,
-          // a page's stream, which nothing sends again
-          ...(body !== undefined && request.streamedBody
-            ? { streamedBody: true }
-            : {}),
-          signal: AbortSignal.any([signal, timer.signal]),
-          redirect: 'follow',
-        }),
+        this._exchange(
+          request.url,
+          {
+            method,
+            headers,
+            body,
+            // a page's stream, which nothing sends again
+            ...(body !== undefined && request.streamedBody
+              ? { streamedBody: true }
+              : {}),
+            signal: AbortSignal.any([signal, timer.signal]),
+          },
+          {
+            credentials: request.credentials ?? 'same-origin',
+            origin: originOf(page),
+            site: page,
+            topLevel: false,
+            initiator: null,
+          },
+        ),
       );
     } finally {
       clearTimeout(timeout);
@@ -847,7 +1046,12 @@ export class HtmlNetwork {
    *  than the server: a reset, a timeout, a refused socket. */
   private async _fetch(
     url: string,
-    options: { accept: string; referrer: string | null; limit: number },
+    options: {
+      accept: string;
+      referrer: string | null;
+      limit: number;
+      page: string;
+    },
   ): Promise<Fetched> {
     try {
       return await this._fetchOnce(url, options);
@@ -861,7 +1065,12 @@ export class HtmlNetwork {
 
   private async _fetchOnce(
     url: string,
-    options: { accept: string; referrer: string | null; limit: number },
+    options: {
+      accept: string;
+      referrer: string | null;
+      limit: number;
+      page: string;
+    },
   ): Promise<Fetched> {
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
@@ -869,12 +1078,19 @@ export class HtmlNetwork {
       'accept-language': this._language,
     };
     if (options.referrer) headers.referer = options.referrer;
-    const response = await this._send(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(TIMEOUT),
-      redirect: 'follow',
-    });
+    // a page's subresource carries its cookies, as a browser's `no-cors`
+    // request does (credentials mode `include`)
+    const response = await this._exchange(
+      url,
+      { method: 'GET', headers, signal: AbortSignal.timeout(TIMEOUT) },
+      {
+        credentials: 'include',
+        origin: originOf(options.page),
+        site: options.page,
+        topLevel: false,
+        initiator: null,
+      },
+    );
     const { type, charset } = contentType(response.headers.get('content-type'));
     const chunks: Uint8Array[] = [];
     for await (const chunk of bodyOf(response, options.limit)) {
@@ -904,6 +1120,32 @@ function transient(error: unknown): boolean {
     code === 'UND_ERR_CONNECT_TIMEOUT' ||
     Array.isArray(cause?.errors)
   );
+}
+
+/** A response's `Set-Cookie` fields, each apart. */
+function setCookies(headers: ResponseLike['headers']): string[] {
+  if (headers.getSetCookie) return headers.getSetCookie();
+  const joined = headers.get('set-cookie');
+  // joined with commas, which an `Expires` date has one of: a comma
+  // followed by what starts a cookie's name and its `=` starts another
+  return joined ? joined.split(/,(?=\s*[^;,=\s]+=)/) : [];
+}
+
+/** A response as the network answers it after following its redirects:
+ *  the last one's, with where it ended and whether it was redirected. */
+function answered(
+  response: ResponseLike,
+  url: string,
+  redirected: boolean,
+): ResponseLike {
+  return {
+    url,
+    redirected,
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+    body: response.body,
+  };
 }
 
 /** What an `<object>` shows as a document of its own. */
@@ -1528,6 +1770,9 @@ export interface HtmlNetworkSeams {
   ) => Promise<FetchResponse>;
   webTransport: HtmlWebTransport;
   webRTC: HtmlWebRTC;
+  /** The network's cookie jar, for `<Html scripts={{ cookies }}>`, where it
+   *  has one. */
+  cookies?: CookieJar;
 }
 
 /**
@@ -1561,6 +1806,7 @@ export function useHtmlNetwork(
       fetch: net.fetcher(address),
       webTransport: net.webTransport,
       webRTC: net.webRTC,
+      ...(net.cookies ? { cookies: net.cookies } : {}),
     }),
     [net, address, plays, controller],
   );

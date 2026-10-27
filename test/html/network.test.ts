@@ -9,6 +9,7 @@ import {
   readDataUrl,
   resourceResult,
 } from '../../src/html/network.js';
+import { CookieJar } from '../../src/html/cookies.js';
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
@@ -369,4 +370,245 @@ test("a page's stream body is sent once: a 421 is its answer, where Node's fetch
   const replayed = await post('/string', 'Test', false);
   assert.deepEqual([replayed.status, replayed.body], [421, 'sent 2']);
   assert.deepEqual(seen, ['/string 4 Test', '/string 4 Test']);
+});
+
+/** A site that logs in by cookie, as most do: a form POSTed to `/login`
+ *  answers a 303 that sets the session, `/home` says whose it is, and every
+ *  request is noted with the cookies it carried. */
+async function cookieSite(t: { after(fn: () => void): void }) {
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    seen.push(`${req.method} ${url.pathname} ${req.headers.cookie ?? '-'}`);
+    if (url.pathname === '/login') {
+      res.writeHead(303, {
+        location: '/home',
+        'set-cookie': [
+          'session=alice; Path=/; HttpOnly; SameSite=Lax',
+          'theme=dark; Path=/; Expires=Wed, 21 Oct 2037 07:28:00 GMT',
+        ],
+      });
+      res.end();
+      return;
+    }
+    if (url.pathname === '/hop') {
+      res.writeHead(302, {
+        location: url.searchParams.get('to') ?? '/home',
+        'set-cookie': 'hopped=1; Path=/',
+      });
+      res.end();
+      return;
+    }
+    if (url.pathname === '/loop') {
+      res.writeHead(302, { location: '/loop' });
+      res.end();
+      return;
+    }
+    const who = /session=(\w+)/.exec(req.headers.cookie ?? '')?.[1];
+    res.writeHead(200, {
+      'content-type': 'text/plain',
+      'access-control-allow-origin': req.headers.origin ?? '*',
+      'access-control-allow-credentials': 'true',
+    });
+    res.end(who ? `hello ${who}` : 'who are you?');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return {
+    origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    seen,
+  };
+}
+
+async function readText(body: AsyncIterable<Uint8Array>): Promise<string> {
+  let text = '';
+  for await (const chunk of body) text += Buffer.from(chunk).toString();
+  return text;
+}
+
+test('with a jar, a login’s cookies are kept from its redirect and sent on every request after', async (t) => {
+  const { origin, seen } = await cookieSite(t);
+  const jar = new CookieJar();
+  const network = new HtmlNetwork({ connectTimeout: null, cookies: jar });
+  const signal = new AbortController().signal;
+  const home = await network.document(`${origin}/login`, signal, {
+    body: 'user=alice',
+    contentType: 'application/x-www-form-urlencoded',
+    from: `${origin}/form`,
+  });
+  assert.equal(home.url, `${origin}/home`, 'the 303 is followed');
+  assert.equal(home.redirected, true);
+  assert.equal(await readText(home.body), 'hello alice');
+  assert.deepEqual(seen, [
+    'POST /login -',
+    // the session set on the 303 goes with the GET it turned into
+    'GET /home session=alice; theme=dark',
+  ]);
+  // a subresource, and a page's own fetch, carry it too
+  seen.length = 0;
+  const image = await network.load(
+    `${origin}/a.png`,
+    'image',
+    `${origin}/home`,
+  );
+  assert.ok('fetched' in image);
+  const fetched = await network.fetcher(`${origin}/home`)(
+    { url: `${origin}/api`, method: 'GET', headers: [], body: null },
+    signal,
+  );
+  assert.equal(fetched.body, 'hello alice');
+  assert.deepEqual(seen, [
+    'GET /a.png session=alice; theme=dark',
+    'GET /api session=alice; theme=dark',
+  ]);
+  assert.equal(network.cookies, jar);
+});
+
+test('a page’s fetch carries cookies as its credentials mode says, and a redirect’s Set-Cookie is kept', async (t) => {
+  const { origin, seen } = await cookieSite(t);
+  const jar = new CookieJar();
+  const network = new HtmlNetwork({ connectTimeout: null, cookies: jar });
+  const signal = new AbortController().signal;
+  await readText(
+    (await network.document(`${origin}/hop?to=/home`, signal)).body,
+  );
+  assert.deepEqual(seen, ['GET /hop -', 'GET /home hopped=1']);
+  seen.length = 0;
+  const fetch = network.fetcher(`${origin}/page`);
+  const ask = (credentials: 'omit' | 'same-origin' | 'include', page = fetch) =>
+    page(
+      {
+        url: `${origin}/api`,
+        method: 'GET',
+        headers: [],
+        body: null,
+        credentials,
+      },
+      signal,
+    );
+  await ask('omit');
+  await ask('same-origin');
+  // from another origin's page: `same-origin` sends none, `include` all
+  const other = network.fetcher('http://other.test/page');
+  await ask('same-origin', other);
+  await ask('include', other);
+  assert.deepEqual(seen, [
+    'GET /api -',
+    'GET /api hopped=1',
+    'GET /api -',
+    'GET /api hopped=1',
+  ]);
+  // a page may not set its own Cookie header
+  seen.length = 0;
+  await fetch(
+    {
+      url: `${origin}/api`,
+      method: 'GET',
+      headers: [['cookie', 'forged=1']],
+      body: null,
+    },
+    signal,
+  );
+  assert.deepEqual(seen, ['GET /api hopped=1']);
+});
+
+test('a redirect followed by the network: a loop ends, and a POST’s 302 is a GET', async (t) => {
+  const { origin } = await cookieSite(t);
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    cookies: new CookieJar(),
+  });
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    network.fetcher(`${origin}/page`)(
+      { url: `${origin}/loop`, method: 'GET', headers: [], body: null },
+      signal,
+    ),
+    /too many redirects/,
+  );
+  const answer = await network.fetcher(`${origin}/page`)(
+    {
+      url: `${origin}/hop?to=/echo`,
+      method: 'POST',
+      headers: [['content-type', 'text/plain']],
+      body: 'x',
+    },
+    signal,
+  );
+  assert.equal(answer.status, 200);
+  assert.equal(answer.redirected, true);
+  assert.equal(answer.url, `${origin}/echo`);
+});
+
+test('a network with no jar keeps no cookies and leaves redirects to the transport', async () => {
+  const asked: string[] = [];
+  const network = new HtmlNetwork({
+    fetch: async (url, init) => {
+      asked.push(`${init.redirect} ${init.headers.cookie ?? '-'}`);
+      return {
+        url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: new Headers({ 'set-cookie': 'a=1' }),
+        body: null,
+      };
+    },
+  });
+  const signal = new AbortController().signal;
+  await network.fetcher('https://example.test/')(
+    { url: 'https://example.test/a', method: 'GET', headers: [], body: null },
+    signal,
+  );
+  await network.fetcher('https://example.test/')(
+    { url: 'https://example.test/b', method: 'GET', headers: [], body: null },
+    signal,
+  );
+  assert.deepEqual(asked, ['follow -', 'follow -']);
+  assert.equal(network.cookies, null);
+});
+
+test('a Strict cookie stays home from a link on another site, and goes with one typed', async (t) => {
+  const server = createServer((req, res) => {
+    if (req.url === '/set') {
+      res.writeHead(200, {
+        'set-cookie': ['strict=1; SameSite=Strict', 'lax=1; SameSite=Lax'],
+      });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(req.headers.cookie ?? '-');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    cookies: new CookieJar(),
+  });
+  const signal = new AbortController().signal;
+  const go = async (initiator: string | null) =>
+    readText(
+      (await network.document(`${origin}/page`, signal, null, { initiator }))
+        .body,
+    );
+  await readText((await network.document(`${origin}/set`, signal)).body);
+  assert.equal(await go(null), 'strict=1; lax=1', 'typed, or a bookmark');
+  assert.equal(
+    await go(`${origin}/elsewhere`),
+    'strict=1; lax=1',
+    'a link of its own',
+  );
+  assert.equal(
+    await go('https://news.example/'),
+    'lax=1',
+    'a link from another site',
+  );
 });

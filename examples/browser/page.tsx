@@ -28,6 +28,12 @@
 // is shown follows from it: a step to another document's entry shows the
 // document the tab still has, or asks the browser to load it again.
 //
+// Its cookies and its storage are the profile's (`profile.ts`): this
+// process opens the database every tab's shares, sends and stores its
+// requests' cookies through a jar over it, and hands a page's scripts the
+// same jar for `document.cookie` and the database for `localStorage`,
+// IndexedDB and — kept by the tab's key — `sessionStorage`.
+//
 // What crosses the boundary is small on purpose. In: what to load and how
 // it comes into the history, a step to take in it, the zoom, whether
 // scripts run — numbers, strings and a flag, so a browser re-render that
@@ -75,6 +81,7 @@ import {
 } from 'react-x11/keysyms';
 
 import {
+  CookieJar,
   Html,
   HtmlNetwork,
   HtmlSessionHistory,
@@ -84,6 +91,7 @@ import {
   linkTarget,
   navigableFor,
   preloadHtmlScripts,
+  publicSuffixList,
   resourceResult,
   schemeOf,
   sniffCharset,
@@ -104,6 +112,7 @@ import type {
   ViewportOverflow,
 } from '../../src/html/index.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
+import { openProfile } from './profile.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
@@ -150,10 +159,23 @@ const USER_AGENT = `Mozilla/5.0 (${
       : 'X11; Linux x86_64'
 }) react-x11-components/0.9 (example browser; +https://github.com/sidorares/react-x11-components)`;
 
-/** One process's network: a tab's own cache, where each tab is a process.
- *  `BROWSER_DEBUG=1` logs every request and what came of it. */
+/** The profile this process keeps its cookies and storage in, where the
+ *  browser has one and the runtime has SQLite. */
+const profile = await openProfile();
+
+/** The cookies every tab shares, through the profile; the Public Suffix
+ *  List where the optional `tldts` is installed. */
+const cookies = new CookieJar({ store: profile?.cookies });
+void publicSuffixList().then((list) => {
+  if (list) cookies.publicSuffix = list;
+});
+
+/** One process's network: a tab's own cache, where each tab is a process,
+ *  and the profile's cookies. `BROWSER_DEBUG=1` logs every request and
+ *  what came of it. */
 const network = new HtmlNetwork({
   userAgent: USER_AGENT,
+  cookies,
   log: process.env.BROWSER_DEBUG
     ? (...parts) => console.error('[browser]', ...parts)
     : undefined,
@@ -495,6 +517,10 @@ export default function Page(props: PageProps): ReactElement {
         url: props.loadUrl,
         fresh: props.loadFresh,
         post: props.loadPost,
+        // a link or a script's navigation is the document's, whose site
+        // decides which cookies go with it; the browser's own are
+        // same-site with anything
+        initiator: how === 'page' ? (session.current?.url ?? null) : null,
       },
       cocoa,
       controller.signal,
@@ -856,6 +882,10 @@ export default function Page(props: PageProps): ReactElement {
     },
     title: (title) => live.current.onMeta(doc, title, undefined),
     fetch: (request, signal) => network.fetcher(pageUrl)(request, signal),
+    // `document.cookie` is the jar the network sends with, and the storage
+    // the profile's, where there is one, shared with every tab
+    cookies,
+    storage: profile?.storage,
     // a page's WebTransport sessions, over quico where it is installed
     webTransport: network.webTransport,
     // and its peer connections, over werift where it is installed
@@ -1102,6 +1132,8 @@ interface Navigation {
   url: string;
   fresh: boolean;
   post: PostData | null;
+  /** The document that started it, or null for the browser. */
+  initiator: string | null;
 }
 
 interface LoadCallbacks {
@@ -1151,7 +1183,9 @@ async function loadDocument(
 
   let response: DocumentResponse;
   try {
-    response = await network.document(target, signal, nav.post);
+    response = await network.document(target, signal, nav.post, {
+      initiator: nav.initiator,
+    });
   } catch (error) {
     if (signal.aborted) return;
     const { message, code } =
