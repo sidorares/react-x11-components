@@ -1,4 +1,4 @@
-# A browser profile: cookies and storage that outlive a restart
+# A browser profile: cookies, storage and a cache that outlive a restart
 
 The example browser (`examples/browser/`) kept nothing between two runs, and
 little between two tabs. `HtmlNetwork` sent no cookie and kept none, so no
@@ -7,7 +7,8 @@ site that logs in by cookie could be used. `localStorage` and
 went, and each tab is a process of its own (`<Frame>`). IndexedDB lived in
 the page's realm, gone with the document. This record is the survey of what
 a profile needs, what Chrome keeps one in, the decision not to use Chrome's
-formats, and the design that was built.
+formats, and the design that was built. The HTTP cache came after, on the
+same profile (see "The HTTP cache").
 
 ## What was asked
 
@@ -133,9 +134,14 @@ in one tab is on the next request any tab makes.
   `localStorage`, `sessionStorage`, the `storage` event's channel and,
   optionally, IndexedDB's store; with none, memory per process, as before —
   and IndexedDB stays the document's.
-- **`HtmlProfile`** (`src/html/profile.ts`) answers all three from the
+- **`HtmlNetworkOptions.httpCache`** (`HtmlHttpCacheStore`,
+  `src/html/http-cache.ts`) is where a network keeps responses past its own
+  memory; with none, the HTTP cache is the network's memory alone, gone
+  with the process.
+- **`HtmlProfile`** (`src/html/profile.ts`) answers all of them from the
   database: `profile.cookies` is a jar's store, `profile.storage` a
-  document's storage.
+  document's storage, and `profile.httpCache` a network's cache, in a file
+  of its own beside the database.
 
 ### Cookies
 
@@ -224,6 +230,65 @@ Where it does (`HtmlStorage.indexedDB`):
 - A worker's IndexedDB is the worker's realm's and is not kept: the worker's
   thread has no storage seam yet.
 
+### The HTTP cache
+
+A page's static resources were asked for again by every tab, and by every
+run. `HtmlNetwork` kept a cache keyed by URL, but in the process's memory,
+and each tab is a process; and it read none of a response's caching
+headers, so what it did keep it kept for the process's life, `no-store`
+included, and never asked whether a copy still held.
+
+The cache is RFC 9111's now, as a private cache keeps it
+(`src/html/http-cache.ts`, pure, its clock passed in):
+
+- **What is kept** is a 200 or a 203 with no `no-store`, a `Vary` that can
+  be answered, and something to be used again by — a freshness lifetime,
+  or a validator (`ETag`, `Last-Modified`). One with neither could answer
+  nothing later, so it is not kept. A `Vary: *`, and a `Vary: Cookie`, are
+  not: the cookies go on a request inside the network, after the cache is
+  asked. `Accept-Encoding` is left out of `Vary`, since the runtime's
+  `fetch` sends the same one each time and the body is kept decoded. Of the
+  header fields, `Set-Cookie` and those about the connection and the
+  coding are left out.
+- **Fresh** is `max-age`, else `Expires` less `Date`, else a tenth of the
+  time since `Last-Modified`, at most a week; `no-cache` (or a `Pragma:
+no-cache` with no `Cache-Control`, as Chrome reads one) is fresh for no
+  time, and so is freshness written wrong. A private cache reads no
+  `s-maxage`. Age is 4.2.3's: the `Age` it came with, the time it took to
+  come, and the time since.
+- **A stale response is asked about** with `If-None-Match` and
+  `If-Modified-Since`; a 304's fields replace the kept ones, and a `Date`
+  or an `Age` it does not have goes, rather than age the response by the
+  time it was kept. A 200 replaces it.
+- **Keyed by the site of the document that asked** and the URL without its
+  fragment, as browsers have keyed theirs since 2020, so a page cannot tell
+  what another site's pages loaded by how soon a resource comes. It is the
+  site of the document, not the top-level one's, which `load` is not told.
+- **A hard reload** (`HtmlNetwork.clear()`, Shift+R in the browser) uses
+  nothing asked for before it and asks about nothing: the next request for
+  each goes with `Cache-Control: no-cache` and `Pragma: no-cache` (Fetch's
+  cache mode `reload`), and what comes back is kept in its place.
+
+Where it is kept is two layers. The network's memory holds every resource
+it has, bounded by bytes as before, and shares a request still on its way.
+Behind it is a store it is handed (`HtmlNetworkOptions.httpCache`), and
+`profile.httpCache` is one: **a second SQLite file, `cache.sqlite`**, beside
+`profile.sqlite`, a row a response with its head as JSON and its body as a
+blob. Not a table in the profile's file, for two reasons: a body is up to
+megabytes, which would grow the write-ahead log every cookie write goes
+through, and every write to it would move the `data_version` that makes
+every other process read its cookies and storage again. It is read straight
+from the file at each `get` — there is nothing to mirror — so a stylesheet
+one tab kept is there for the next tab's request, and the next run's. It
+forgets the responses used longest ago once its rows come to more than
+`HtmlProfileOptions.cacheBytes` (512 MB by default), and a use writes
+`last_used` again only once it is an hour old, so a page of a hundred
+images read from the cache is not a hundred writes. A file of another
+schema is started over rather than read: a cache is what can be asked for
+again. Its `busy_timeout` is a second where the profile's is five: a cache
+that is busy is a response not kept this time, and the page has it all the
+same — a store that throws or rejects is one that kept nothing.
+
 ### Tabs and a restart
 
 The browser (`examples/browser/profile.ts`) keeps the tabs in
@@ -250,6 +315,12 @@ tab's key as `BROWSER_TAB_KEY`.
 - `cookieStore`'s `change` event: nothing tells a realm of a cookie a
   response, or another tab, set.
 - Importing a Chrome profile's cookies.
+- What the HTTP cache does not keep: a document — a navigation is asked
+  for whole, as before — a page's own `fetch`, `XMLHttpRequest` and a
+  worker's scripts (`HtmlNetwork.request`), and a redirect, which is
+  followed each time while where it led is kept under its own URL. Nor
+  does it serve a stale response while it asks about it
+  (`stale-while-revalidate`), or when the server cannot be reached.
 - A worker's IndexedDB, and `localStorage` from a frame realm's document in
   another origin's tab, are as described above.
 
@@ -263,6 +334,16 @@ tab's key as `BROWSER_TAB_KEY`.
   session, and checks the cookies on every request after, the credentials
   modes, a redirect's `Set-Cookie`, a loop, a Strict cookie and a link from
   another site, and a network with no jar keeping none.
+- `test/html/http-cache.test.ts` holds the rules to RFC 9111 — the
+  directives, freshness from each source, age, what is kept, the
+  validators and a 304's fields — and runs networks against a local server
+  whose paths each answer one way: a fresh response asked for once across
+  two networks sharing a store, a 304 answering with the kept body and a
+  200 replacing it, `no-store` and a response with nothing to be used
+  again by asked for each time, `Vary: Accept`, a page of another site, a
+  redirect, a hard reload's `no-cache`, a failing store, and the profile's
+  file open in two connections at once, again after a restart, and past
+  its bytes.
 - `test/html/storage.test.ts` opens one profile from two connections and
   again after closing both, hears a `storage` event across them, commits
   and reads IndexedDB, and runs pages through `<Html scripts>`:

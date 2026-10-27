@@ -277,8 +277,18 @@ export type {
   HtmlStorageArea,
   HtmlStorageChange,
 } from './storage.js';
-export { HtmlProfile, PROFILE_FILE, PROFILE_VERSION } from './profile.js';
-export type { HtmlProfileOptions } from './profile.js';
+export {
+  CACHE_FILE,
+  HtmlProfile,
+  PROFILE_FILE,
+  PROFILE_VERSION,
+} from './profile.js';
+export type { HtmlProfileHttpCache, HtmlProfileOptions } from './profile.js';
+export type {
+  HtmlCachedHead,
+  HtmlCachedResponse,
+  HtmlHttpCacheStore,
+} from './http-cache.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type { ViewportOverflow } from './css/cascade.js';
 export type {

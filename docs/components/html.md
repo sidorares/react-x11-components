@@ -813,15 +813,32 @@ charset }` — the `<script>` is the request's `element`, and the root
   headers.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
-a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
-cache, six requests a host at a time, `file:` only for a `file:` page, no
+a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
+HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no
 mixed content, and no cookies unless it is handed a jar — shared by every
 document in the process (`defaultHtmlNetwork`), or one handed in. `new
-HtmlNetwork(options)` takes its own User-Agent, cache size, transport — a
-proxy, a cache on disk, a test's answers — log and cookie jar, and its
-`html(url)` fetches a document whole, decoded, for `source`. Nothing about
-it is required: any `onResource` that answers `'script'` and any `fetch` of
-the same shape will do. See [Cookies and storage](#cookies-and-storage).
+HtmlNetwork(options)` takes its own User-Agent, cache size, a store for its
+cache (`httpCache`), transport — a proxy, a test's answers — log and cookie
+jar, and its `html(url)` fetches a document whole, decoded, for `source`.
+Nothing about it is required: any `onResource` that answers `'script'` and
+any `fetch` of the same shape will do. See [Cookies and
+storage](#cookies-and-storage).
+
+**`HtmlNetwork`'s cache is HTTP's** (RFC 9111, a private cache). A page's
+images, stylesheets, fonts and scripts are used again while their server
+says they are fresh — `max-age`, else `Expires`, else a tenth of the time
+since `Last-Modified`, at most a week — and a stale one is asked about with
+`If-None-Match` and `If-Modified-Since`, so a 304 costs no body. A
+`no-store` response, one that varies by `*` or `Cookie`, and one with no
+freshness and no validator are asked for each time. It is keyed by the site
+of the document that asked, as browsers key theirs. It is the network's
+memory, bounded by `cacheBytes`, and the store it is handed, which a later
+network finds — `HtmlProfile`'s `httpCache` keeps it on disk, for every
+process of a browser. `clear()` is a hard reload: nothing asked for before
+it is used, and the next request for each goes with `Cache-Control:
+no-cache`. A document, a page's own `fetch` and a redirect are not kept;
+where a redirect led is, under its own URL. The `log` option says `cached`
+for a response the cache answered and `revalidated` for a 304.
 
 **`threadTransport()` makes the requests on a thread of its own.** A
 response's body comes off its socket on the thread that asked for it, a
@@ -1784,7 +1801,10 @@ import {
 const profile = await HtmlProfile.open(dir, { tab: tabKey }); // null without SQLite
 const cookies = new CookieJar({ store: profile?.cookies });
 publicSuffixList().then((list) => list && (cookies.publicSuffix = list));
-const network = new HtmlNetwork({ cookies });
+const network = new HtmlNetwork({
+  cookies,
+  httpCache: profile?.httpCache ?? undefined,
+});
 
 <Html
   scripts={{
@@ -1799,7 +1819,8 @@ const network = new HtmlNetwork({ cookies });
 network sends no cookie and keeps none, and a document has no
 `document.cookie`; with no `storage` an origin's `localStorage` and
 `sessionStorage` are the process's memory and an IndexedDB database is the
-document's, gone with it. Each is a seam, and [the
+document's, gone with it; with no `httpCache` the HTTP cache is the
+network's memory, gone with the process. Each is a seam, and [the
 PRD](../prd-browser-profile.md) has the design and why the profile is not
 Chrome's format.
 
@@ -1846,7 +1867,12 @@ the runtime's `node:sqlite` (Node 22.13 and later, Bun) or `bun:sqlite`, and
 null on a runtime with neither. `profile.cookies` is a jar's store,
 `profile.storage` a document's storage: `localStorage` per origin,
 `sessionStorage` kept by the tab's key, IndexedDB, and `storage` events
-across processes. `endSession({ keepTabs, keepSessionCookies })` drops what
+across processes. `profile.httpCache` is a network's HTTP cache, in a file
+of its own beside the database (`cache.sqlite`), read straight from the file
+so a response one process kept is there for the next request another makes:
+it forgets the responses used longest ago past `cacheBytes` (an option of
+`open`, 512 MB by default; 0 for none), and `clear()` forgets them all.
+`endSession({ keepTabs, keepSessionCookies })` drops what
 a session that ends takes with it, and `forgetTab(key)` a closed tab's
 `sessionStorage`.
 
