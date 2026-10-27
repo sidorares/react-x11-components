@@ -23,7 +23,17 @@
 // compiler cannot see, their types written out here. A runtime with
 // neither — Node 20 — has no profile: `HtmlProfile.open` answers null and a
 // host keeps memory. Nothing happens as this module is imported.
+//
+// The HTTP cache is a second file beside it, `cache.sqlite`
+// (`profile.httpCache`): its rows are bodies of up to megabytes, which would
+// grow the profile's write-ahead log, and every write to it would move the
+// `data_version` that makes every other process read its cookies again.
 import type { HtmlCookie, HtmlCookieStore } from './cookies.js';
+import type {
+  HtmlCachedHead,
+  HtmlCachedResponse,
+  HtmlHttpCacheStore,
+} from './http-cache.js';
 import { MemoryStorageArea } from './storage.js';
 import type {
   HtmlIdbCommit,
@@ -46,6 +56,10 @@ export const PROFILE_VERSION = 1;
 
 /** The file in a profile's directory. */
 export const PROFILE_FILE = 'profile.sqlite';
+
+/** The HTTP cache's file beside it, and the schema it is in. */
+export const CACHE_FILE = 'cache.sqlite';
+const CACHE_VERSION = 1;
 
 /** A prepared statement: the slice `node:sqlite` and `bun:sqlite` share,
  *  with positional parameters alone. */
@@ -94,6 +108,11 @@ export interface HtmlProfileOptions {
    * process.
    */
   tab?: string;
+  /**
+   * How many bytes of responses the HTTP cache keeps (`httpCache`) before
+   * it forgets those used longest ago. Default 512 MB; 0 keeps no cache.
+   */
+  cacheBytes?: number;
 }
 
 const SCHEMA = `
@@ -165,6 +184,13 @@ const WATCH_MS = 250;
 export class HtmlProfile {
   readonly cookies: HtmlCookieStore;
   readonly storage: HtmlStorage;
+  /**
+   * The HTTP cache's store (`HtmlNetworkOptions.httpCache`), which every
+   * process that opens the profile shares; null where it was asked for no
+   * bytes, or its file could not be opened.
+   */
+  readonly httpCache: HtmlProfileHttpCache | null;
+  private _cache: ProfileHttpCache | null;
   private _db: Database;
   private _dataVersion: Statement;
   private _lastData = -1;
@@ -208,14 +234,30 @@ export class HtmlProfile {
       db.exec(`PRAGMA user_version = ${PROFILE_VERSION}`);
       db.exec('COMMIT');
     }
-    return new HtmlProfile(db, options);
+    const bytes = options.cacheBytes ?? 512 * 1024 * 1024;
+    let cache: ProfileHttpCache | null = null;
+    if (bytes > 0) {
+      try {
+        cache = ProfileHttpCache.open(Database, fs, dir, bytes);
+      } catch {
+        // a cache that cannot be opened is a profile with none: what it
+        // would have kept is asked for again
+      }
+    }
+    return new HtmlProfile(db, options, cache);
   }
 
-  private constructor(db: Database, options: HtmlProfileOptions) {
+  private constructor(
+    db: Database,
+    options: HtmlProfileOptions,
+    cache: ProfileHttpCache | null,
+  ) {
     this._db = db;
     this._dataVersion = db.prepare('PRAGMA data_version');
     this.cookies = new ProfileCookies(this, db);
     this.storage = new ProfileStorage(this, db, options.tab ?? null);
+    this._cache = cache;
+    this.httpCache = cache;
   }
 
   /** How many times another connection was found to have committed: a
@@ -274,6 +316,7 @@ export class HtmlProfile {
     this._closed = true;
     (this.storage as ProfileStorage).stop();
     this._db.close();
+    this._cache?.close();
   }
 
   /** A function run in one transaction, which a throw rolls back. */
@@ -283,6 +326,183 @@ export class HtmlProfile {
       const out = run();
       this._db.exec('COMMIT');
       return out;
+    } catch (error) {
+      this._db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+}
+
+// --- the HTTP cache -------------------------------------------------------------
+
+/** The profile's HTTP cache: a store that answers at once, and can be
+ *  cleared. */
+export interface HtmlProfileHttpCache extends HtmlHttpCacheStore {
+  get(key: string): HtmlCachedResponse | null;
+  put(key: string, response: HtmlCachedResponse): void;
+  refresh(key: string, head: HtmlCachedHead): void;
+  delete(key: string): void;
+  clear(): void;
+}
+
+const CACHE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS responses (
+  key TEXT NOT NULL UNIQUE,
+  head TEXT NOT NULL,
+  body BLOB NOT NULL,
+  size INTEGER NOT NULL,
+  last_used INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS responses_used ON responses (last_used, size);
+`;
+
+/** How stale a response's `last_used` may be before a use writes it again:
+ *  the order it is forgotten in needs no finer clock, and a page of a
+ *  hundred images read from the cache is not a hundred writes. */
+const TOUCH_MS = 60 * 60 * 1000;
+
+/**
+ * The HTTP cache on disk (`HtmlProfile.httpCache`): a response a row, its
+ * head as JSON and its body as a blob, read straight from the file at each
+ * `get` — so a response one tab's process kept is there for the next
+ * another makes — and forgotten, used longest ago first, once the rows come
+ * to more than `limit` bytes. A rowid table, as SQLite has rows this large
+ * kept best.
+ */
+class ProfileHttpCache implements HtmlProfileHttpCache {
+  private _get: Statement;
+  private _put: Statement;
+  private _refresh: Statement;
+  private _touch: Statement;
+  private _delete: Statement;
+  private _total: Statement;
+  private _oldest: Statement;
+
+  static open(
+    Database: DatabaseClass,
+    fs: FsModule,
+    dir: string,
+    limit: number,
+  ): ProfileHttpCache {
+    const path = `${dir.replace(/[\\/]+$/, '')}/${CACHE_FILE}`;
+    const db = new Database(path);
+    try {
+      try {
+        fs.chmodSync(path, 0o600);
+      } catch {
+        // a file system with no modes
+      }
+      // shorter than the profile's: a cache that is busy is a cache that
+      // kept nothing this time, where a cookie that waits is one that is
+      // not lost
+      db.exec('PRAGMA busy_timeout = 1000');
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = NORMAL');
+      const version = (): number =>
+        Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
+      if (version() !== CACHE_VERSION) {
+        // a cache is what can be asked for again: one of another schema
+        // is started over rather than read — asked again inside the
+        // transaction, since another process may have just made it
+        db.exec('BEGIN IMMEDIATE');
+        if (version() !== CACHE_VERSION) {
+          db.exec('DROP TABLE IF EXISTS responses');
+          db.exec(CACHE_SCHEMA);
+          db.exec(`PRAGMA user_version = ${CACHE_VERSION}`);
+        }
+        db.exec('COMMIT');
+      }
+      return new ProfileHttpCache(db, limit);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  private constructor(
+    private readonly _db: Database,
+    private readonly _limit: number,
+  ) {
+    this._get = _db.prepare(
+      'SELECT head, body, last_used FROM responses WHERE key = ?',
+    );
+    this._put = _db.prepare(
+      `INSERT OR REPLACE INTO responses (key, head, body, size, last_used)
+         VALUES (?, ?, ?, ?, ?)`,
+    );
+    this._refresh = _db.prepare(
+      'UPDATE responses SET head = ?, last_used = ? WHERE key = ?',
+    );
+    this._touch = _db.prepare(
+      'UPDATE responses SET last_used = ? WHERE key = ?',
+    );
+    this._delete = _db.prepare('DELETE FROM responses WHERE key = ?');
+    this._total = _db.prepare('SELECT total(size) AS total FROM responses');
+    this._oldest = _db.prepare(
+      'SELECT key, size FROM responses WHERE key != ? ORDER BY last_used LIMIT 64',
+    );
+  }
+
+  get(key: string): HtmlCachedResponse | null {
+    const row = this._get.get(key);
+    if (!row) return null;
+    let head: HtmlCachedHead;
+    try {
+      head = JSON.parse(String(row.head)) as HtmlCachedHead;
+    } catch {
+      this._delete.run(key);
+      return null;
+    }
+    const now = Date.now();
+    if (Number(row.last_used) < now - TOUCH_MS) this._touch.run(now, key);
+    const body = row.body as Uint8Array;
+    return {
+      ...head,
+      bytes: body instanceof Uint8Array ? body : new Uint8Array(body),
+    };
+  }
+
+  put(key: string, response: HtmlCachedResponse): void {
+    const { bytes, ...head } = response;
+    const text = JSON.stringify(head);
+    const size = bytes.length + text.length;
+    if (size > this._limit) return;
+    this._transaction(() => {
+      this._put.run(key, text, bytes, size, Date.now());
+      let over = Number(this._total.get()?.total ?? 0) - this._limit;
+      while (over > 0) {
+        const rows = this._oldest.all(key);
+        if (!rows.length) break;
+        for (const row of rows) {
+          if (over <= 0) break;
+          this._delete.run(String(row.key));
+          over -= Number(row.size);
+        }
+      }
+    });
+  }
+
+  refresh(key: string, head: HtmlCachedHead): void {
+    this._refresh.run(JSON.stringify(head), Date.now(), key);
+  }
+
+  delete(key: string): void {
+    this._delete.run(key);
+  }
+
+  clear(): void {
+    this._db.exec('DELETE FROM responses');
+  }
+
+  close(): void {
+    this._db.close();
+  }
+
+  private _transaction(run: () => void): void {
+    this._db.exec('BEGIN IMMEDIATE');
+    try {
+      run();
+      this._db.exec('COMMIT');
     } catch (error) {
       this._db.exec('ROLLBACK');
       throw error;

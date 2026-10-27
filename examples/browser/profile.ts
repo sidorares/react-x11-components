@@ -1,11 +1,13 @@
 // The browser's profile: where its cookies, `localStorage`,
-// `sessionStorage` and IndexedDB are kept across a restart, and the tabs it
-// had open (docs/prd-browser-profile.md).
+// `sessionStorage`, IndexedDB and HTTP cache are kept across a restart, and
+// the tabs it had open (docs/prd-browser-profile.md).
 //
 // The cookies and the storage are one SQLite database, `HtmlProfile`'s,
 // which every tab's process opens for itself: a cookie one tab's login set
 // is on the next request another tab makes, without passing through this
-// process. The tabs, their histories and the sites whose scripts run are
+// process. The HTTP cache is a second database beside it, which every tab's
+// process opens the same way: a stylesheet one tab fetched is not fetched
+// again by the next tab, or the next run, while it is fresh. The tabs, their histories and the sites whose scripts run are
 // this process's alone, and are JSON files it writes as they change.
 //
 //   BROWSER_PROFILE=<dir>   the profile in that directory

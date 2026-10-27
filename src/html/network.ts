@@ -7,9 +7,15 @@
 // side of those seams — the example browser's, which it was written for —
 // and it is where a policy lives, which an application takes or leaves:
 //
-//   - **One cache**, keyed by absolute URL. Back, or a second page from the
-//     same site, costs no request for anything already here. It is bounded
-//     by bytes and forgets the oldest first.
+//   - **An HTTP cache**, as a browser's is (RFC 9111, `http-cache.ts`): a
+//     page's images, stylesheets, fonts and scripts are used again for as
+//     long as their server says they are fresh, and a stale one is asked
+//     about by its validators, so a 304 costs no body. It is this network's
+//     memory, bounded by bytes, and a store the application hands in
+//     (`httpCache`) — `HtmlProfile`'s, on disk, which every process of a
+//     browser shares. Keyed by the site of the document that asked, as
+//     browsers key theirs. A document, a page's own `fetch` and a redirect
+//     are not kept.
 //   - **A few requests at a time**, six per host, the way browsers pace a
 //     page's hundred images, rather than a burst the server throttles.
 //   - **`file:` only for `file:` pages.** A page from the web naming
@@ -41,6 +47,15 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { CookieJar } from './cookies.js';
+import {
+  cachedResponse,
+  conditionalHeaders,
+  freshened,
+  headerOf,
+  isFresh,
+  varyMatches,
+} from './http-cache.js';
+import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
 import type { HtmlWebRTC } from './rtc.js';
@@ -130,9 +145,16 @@ export type HtmlTransport = (
 export interface HtmlNetworkOptions {
   /** The `User-Agent` every request carries. Default `HTML_USER_AGENT`. */
   userAgent?: string;
-  /** How many bytes the cache keeps before it forgets the oldest. Default
-   *  256 MB. */
+  /** How many bytes the cache keeps in memory before it forgets the
+   *  oldest. Default 256 MB. */
   cacheBytes?: number;
+  /**
+   * Where the HTTP cache keeps responses past this network's memory, for
+   * the next network that opens it to find: `HtmlProfile`'s `httpCache`,
+   * on disk, which every process of a browser shares. Default none: what
+   * the cache keeps is this network's, and goes with it.
+   */
+  httpCache?: HtmlHttpCacheStore;
   /** What makes the requests. Default the runtime's `fetch`. */
   fetch?: HtmlTransport;
   /** Whether a `file:` page may read its own `file:` resources, and a
@@ -307,6 +329,53 @@ const MAX_DOCUMENT = 32 * 1024 * 1024;
 const MAX_RESOURCE = 16 * 1024 * 1024;
 const TIMEOUT = 30_000;
 
+/** What the network keeps of a resource in its memory. */
+interface Kept {
+  /** What came of asking for it, or comes. */
+  loaded: Promise<Loaded>;
+  /**
+   * Once it is here, the response as the HTTP cache keeps it, which says
+   * whether it may answer again; null for one that may not. Undefined while
+   * it is on its way, and every request for it shares the one.
+   */
+  response?: HtmlCachedResponse | null;
+  /** A body no server sent — a `data:` URL, a local file, a document
+   *  seeded — which answers for as long as the memory keeps it. */
+  forever?: boolean;
+}
+
+/** What asking for a resource came to: its body, and where the HTTP cache
+ *  keeps the response, that, and whether it came from the cache
+ *  (`cached`) or a server's 304 (`revalidated`) — what the log says. */
+interface Obtained {
+  fetched: Fetched | null;
+  response?: HtmlCachedResponse | null;
+  via?: 'cached' | 'revalidated';
+}
+
+/** A server's answer to a request for a resource: its body, and what the
+ *  HTTP cache reads of it. */
+interface Answer {
+  fetched: Fetched;
+  redirected: boolean;
+  headers: [string, string][];
+  /** When it was asked for and when its head came (RFC 9111, 4.2.3). */
+  requestTime: number;
+  responseTime: number;
+}
+
+/** What a request past every cache says, to a cache on the way too
+ *  (Fetch, cache mode `reload`). */
+const RELOAD = { 'cache-control': 'no-cache', pragma: 'no-cache' };
+
+/** A kept response as a page has it. */
+function fetchedOf(url: string, response: HtmlCachedResponse): Fetched {
+  const { type, charset } = contentType(
+    headerOf(response.headers, 'content-type'),
+  );
+  return { url, status: response.status, type, charset, bytes: response.bytes };
+}
+
 interface Queued {
   host: string;
   start: () => void;
@@ -320,7 +389,11 @@ interface Queued {
  * every document it shows shares the cache.
  */
 export class HtmlNetwork {
-  private _cache = new Map<string, Promise<Loaded>>();
+  private _cache = new Map<string, Kept>();
+  private readonly _store: HtmlHttpCacheStore | null;
+  /** When `clear()` was last called: a response asked for before it is
+   *  not used again, nor asked about. */
+  private _clearedAt = -Infinity;
   private _sizes = new Map<string, number>();
   private _bytes = 0;
   private _limit: number;
@@ -343,6 +416,7 @@ export class HtmlNetwork {
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
+    this._store = options.httpCache ?? null;
     this._language = acceptLanguage();
     this._userAgent = options.userAgent ?? HTML_USER_AGENT;
     this._transport = options.fetch ?? null;
@@ -631,11 +705,17 @@ export class HtmlNetwork {
     return this._running + this._queue.length;
   }
 
-  /** Forget everything cached: a hard reload. */
+  /**
+   * Forget everything cached: a hard reload. What the store kept from
+   * before is not used by this network again: the next time a page asks
+   * for one it goes past every cache (Fetch's cache mode `reload`), and
+   * what comes back is kept in its place.
+   */
   clear(): void {
     this._cache.clear();
     this._sizes.clear();
     this._bytes = 0;
+    this._clearedAt = Date.now();
   }
 
   /**
@@ -670,43 +750,60 @@ export class HtmlNetwork {
       return refused;
     }
     if (!['http', 'https', 'data', 'file'].includes(scheme)) return refused;
-    const hit = this._cache.get(url);
-    if (hit) {
+    const http = scheme === 'http' || scheme === 'https';
+    const key = this._cacheKey(url, page);
+    // only what goes to a server is sent with header fields, and a
+    // `data:` URL of megabytes is not parsed again to make them
+    const headers = http ? this._headers(kind, url, page) : null;
+    const kept = this._cache.get(key);
+    if (kept && this._answers(kept, headers)) {
       // most recently used goes to the end, oldest is evicted first
-      this._cache.delete(url);
-      this._cache.set(url, hit);
-      return hit;
+      this._cache.delete(key);
+      this._cache.set(key, kept);
+      return kept.loaded;
     }
     // a `data:` URL is its own body, read here rather than asked of a
     // network it never goes to (`readDataUrl`)
-    const made =
+    const made: Promise<Obtained> =
       scheme === 'data'
-        ? Promise.resolve(readDataUrl(url))
-        : this._paced(url, signal, () =>
-            scheme === 'file'
-              ? readLocal(url, MAX_RESOURCE)
-              : this._fetch(url, {
-                  accept: ACCEPT[kind],
-                  referrer: referrerFor(page, url),
-                  limit: MAX_RESOURCE,
-                  page,
-                }),
-          );
-    const promise = made.then(
-      (fetched): Loaded => {
+        ? Promise.resolve({ fetched: readDataUrl(url) })
+        : scheme === 'file'
+          ? this._paced(url, signal, () => readLocal(url, MAX_RESOURCE)).then(
+              (fetched) => ({ fetched }),
+            )
+          : this._http(
+              key,
+              url,
+              page,
+              headers!,
+              signal,
+              kept?.response ?? null,
+            );
+    // what the memory holds of it until it is here, and after if it is
+    // kept: what a later answer is checked against, so that one made after
+    // a `clear()`, or after it was asked for again, is not forgotten for it
+    const mine = {} as Kept;
+    mine.loaded = made.then(
+      ({ fetched, response = null, via }): Loaded => {
         if (!fetched || fetched.status < 200 || fetched.status >= 300) {
           this._log(kind, fetched ? fetched.status : 'nothing to read', url);
-          this._cache.delete(url);
+          this._forget(key, mine);
           return fetched ? { status: fetched.status } : { refused: true };
         }
         this._log(
           kind,
-          fetched.status,
+          via ?? fetched.status,
           fetched.type,
           fetched.bytes.length,
           url,
         );
-        this._remember(url, fetched.bytes.length);
+        mine.response = response;
+        mine.forever = !http;
+        // a response the cache may not use again is not kept to be
+        if (http && !response) this._forget(key, mine);
+        else if (this._cache.get(key) === mine) {
+          this._remember(key, fetched.bytes.length);
+        }
         return { fetched };
       },
       (error): Loaded => {
@@ -717,19 +814,180 @@ export class HtmlNetwork {
           (error as Error)?.message,
           (error as { cause?: unknown })?.cause,
         );
-        this._cache.delete(url);
+        this._forget(key, mine);
         return { failed: error };
       },
     );
-    this._cache.set(url, promise);
-    return promise;
+    this._cache.set(key, mine);
+    return mine.loaded;
   }
 
   /** Put a body in the cache that arrived some other way — a document that
    *  turned out to be an image, which its page then asks for. */
   seed(fetched: Fetched): void {
-    this._cache.set(fetched.url, Promise.resolve({ fetched }));
-    this._remember(fetched.url, fetched.bytes.length);
+    const key = this._cacheKey(fetched.url, fetched.url);
+    this._cache.set(key, {
+      loaded: Promise.resolve({ fetched }),
+      forever: true,
+    });
+    this._remember(key, fetched.bytes.length);
+  }
+
+  /** Where a resource is kept: a URL not on the web by itself, one on the
+   *  web without its fragment and under the site of the document that
+   *  asked — the HTTP cache keyed by site, as browsers key theirs, so a
+   *  page cannot tell by how soon a resource came what another site's
+   *  pages loaded. */
+  private _cacheKey(url: string, page: string): string {
+    const scheme = schemeOf(url);
+    if (scheme !== 'http' && scheme !== 'https') return url;
+    const site = this._cookies?.site(page) ?? originOf(page);
+    return `${site} ${url.split('#')[0]}`;
+  }
+
+  /** The header fields a page's request for a resource carries, before
+   *  the cookies `_exchange` adds: what a kept response's `Vary` is
+   *  compared with. */
+  private _headers(
+    kind: ResourceKind,
+    url: string,
+    page: string,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      'user-agent': this._userAgent,
+      accept: ACCEPT[kind],
+      'accept-language': this._language,
+    };
+    const referrer = referrerFor(page, url);
+    if (referrer) headers.referer = referrer;
+    return headers;
+  }
+
+  /** Whether what the memory keeps answers a request: one on its way, a
+   *  body that is no server's, or a response still fresh for it. */
+  private _answers(
+    kept: Kept,
+    headers: Record<string, string> | null,
+  ): boolean {
+    if (kept.response === undefined || kept.forever) return true;
+    const response = kept.response;
+    return (
+      !!response &&
+      !!headers &&
+      response.requestTime >= this._clearedAt &&
+      varyMatches(response, headers) &&
+      isFresh(response, Date.now())
+    );
+  }
+
+  /** Let a resource go from the memory, unless something newer took its
+   *  place there. */
+  private _forget(key: string, kept: Kept): void {
+    if (this._cache.get(key) !== kept) return;
+    this._cache.delete(key);
+    this._bytes -= this._sizes.get(key) ?? 0;
+    this._sizes.delete(key);
+  }
+
+  /**
+   * A resource over HTTP, through the cache (RFC 9111, 4): a response kept
+   * — `candidate`, from the memory, or the store's — that is still fresh
+   * answers at once; a stale one with a validator is asked about, and a
+   * 304 answers with its body; anything else is asked for whole, and kept
+   * where it may be.
+   */
+  private async _http(
+    key: string,
+    url: string,
+    page: string,
+    headers: Record<string, string>,
+    signal: AbortSignalLike | undefined,
+    candidate: HtmlCachedResponse | null,
+  ): Promise<Obtained> {
+    const had = candidate ?? (await this._stored(key));
+    // asked for before a hard reload: neither used nor asked about, and
+    // the request goes past every cache on its way too
+    const reload = !!had && had.requestTime < this._clearedAt;
+    const stored = had && !reload && varyMatches(had, headers) ? had : null;
+    if (stored && isFresh(stored, Date.now())) {
+      return {
+        fetched: fetchedOf(url, stored),
+        response: stored,
+        via: 'cached',
+      };
+    }
+    const validators = stored && conditionalHeaders(stored);
+    const answer = await this._paced(url, signal, () =>
+      this._fetch(url, {
+        headers: { ...headers, ...validators, ...(reload ? RELOAD : null) },
+        limit: MAX_RESOURCE,
+        page,
+      }),
+    );
+    if (answer.fetched.status === 304 && stored && validators) {
+      const head = freshened(
+        stored,
+        answer.headers,
+        answer.requestTime,
+        answer.responseTime,
+      );
+      const response = { ...head, bytes: stored.bytes };
+      await this._keep((store) => store.refresh(key, head));
+      return {
+        fetched: fetchedOf(url, response),
+        response,
+        via: 'revalidated',
+      };
+    }
+    const { fetched } = answer;
+    if (fetched.status < 200 || fetched.status >= 300) return { fetched };
+    const response = cachedResponse(
+      {
+        status: fetched.status,
+        headers: answer.headers,
+        bytes: fetched.bytes,
+        requestTime: answer.requestTime,
+        responseTime: answer.responseTime,
+      },
+      headers,
+    );
+    if (answer.redirected) {
+      // a redirect is asked for each time; where it led is kept under the
+      // URL it led to, which a page may name too
+      if (response && /^https?:/i.test(fetched.url)) {
+        const there = this._cacheKey(fetched.url, page);
+        await this._keep((store) => store.put(there, response));
+      }
+      return { fetched };
+    }
+    if (response) await this._keep((store) => store.put(key, response));
+    else if (had) await this._keep((store) => store.delete(key));
+    return { fetched, response };
+  }
+
+  /** What the store kept for `key`, or null — for a store that answers
+   *  nothing, or fails to. */
+  private async _stored(key: string): Promise<HtmlCachedResponse | null> {
+    if (!this._store) return null;
+    try {
+      return (await this._store.get(key)) ?? null;
+    } catch (error) {
+      this._log('cache', 'unread', key, (error as Error)?.message);
+      return null;
+    }
+  }
+
+  /** A write to the store, whose failure is a response not kept: the page
+   *  has it all the same. */
+  private async _keep(
+    write: (store: HtmlHttpCacheStore) => void | Promise<void>,
+  ): Promise<void> {
+    if (!this._store) return;
+    try {
+      await write(this._store);
+    } catch (error) {
+      this._log('cache', 'not kept', (error as Error)?.message);
+    }
   }
 
   /**
@@ -1057,14 +1315,14 @@ export class HtmlNetwork {
     };
   }
 
-  private _remember(url: string, size: number): void {
-    const before = this._sizes.get(url) ?? 0;
-    this._sizes.set(url, size);
+  private _remember(kept: string, size: number): void {
+    const before = this._sizes.get(kept) ?? 0;
+    this._sizes.set(kept, size);
     this._bytes += size - before;
     for (const key of this._cache.keys()) {
       if (this._bytes <= this._limit) break;
       // one still on its way has no size yet, and is not what fills this
-      if (key === url || !this._sizes.has(key)) continue;
+      if (key === kept || !this._sizes.has(key)) continue;
       this._bytes -= this._sizes.get(key) ?? 0;
       this._sizes.delete(key);
       this._cache.delete(key);
@@ -1119,12 +1377,11 @@ export class HtmlNetwork {
   private async _fetch(
     url: string,
     options: {
-      accept: string;
-      referrer: string | null;
+      headers: Record<string, string>;
       limit: number;
       page: string;
     },
-  ): Promise<Fetched> {
+  ): Promise<Answer> {
     try {
       return await this._fetchOnce(url, options);
     } catch (error) {
@@ -1138,25 +1395,19 @@ export class HtmlNetwork {
   private async _fetchOnce(
     url: string,
     options: {
-      accept: string;
-      referrer: string | null;
+      headers: Record<string, string>;
       limit: number;
       page: string;
     },
-  ): Promise<Fetched> {
-    const headers: Record<string, string> = {
-      'user-agent': this._userAgent,
-      accept: options.accept,
-      'accept-language': this._language,
-    };
-    if (options.referrer) headers.referer = options.referrer;
+  ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
     try {
+      const requestTime = Date.now();
       // a page's subresource carries its cookies, as a browser's `no-cors`
       // request does (credentials mode `include`)
       const response = await this._exchange(
         url,
-        { method: 'GET', headers, signal: stall.signal },
+        { method: 'GET', headers: options.headers, signal: stall.signal },
         {
           credentials: 'include',
           origin: originOf(options.page),
@@ -1165,6 +1416,7 @@ export class HtmlNetwork {
           initiator: null,
         },
       );
+      const responseTime = Date.now();
       stall.progress();
       const { type, charset } = contentType(
         response.headers.get('content-type'),
@@ -1175,11 +1427,17 @@ export class HtmlNetwork {
         chunks.push(chunk);
       }
       return {
-        url: response.url || url,
-        status: response.status,
-        type,
-        charset,
-        bytes: concat(chunks),
+        fetched: {
+          url: response.url || url,
+          status: response.status,
+          type,
+          charset,
+          bytes: concat(chunks),
+        },
+        redirected: response.redirected,
+        headers: [...response.headers.entries()],
+        requestTime,
+        responseTime,
       };
     } finally {
       stall.stop();

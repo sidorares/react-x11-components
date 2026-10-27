@@ -1870,7 +1870,19 @@ handed a `CookieJar`, a document has `document.cookie` only where
 `scripts.cookies` is one, and `scripts.storage` is the process's memory and
 a document's own IndexedDB unless a host hands in a store — `HtmlProfile`'s,
 an SQLite database every process of a browser opens, and the only place
-anything reaches a disk. **A network with a jar follows redirects itself**
+anything reaches a disk. The HTTP cache is the same: a network's memory
+unless it is handed a store (`httpCache`), and the profile's is a second
+file beside the database (`cache.sqlite`), since its bodies would grow the
+log every cookie write goes through and its writes would move the
+`data_version` every reader of a cookie watches. **A subresource goes
+through the cache's rules, RFC 9111's** (`http-cache.ts`, `_http`): a
+response is used again only while it is fresh, a stale one is asked about by
+its validators, and nothing is kept that may not be — the old memory kept
+every response for the process's life, `no-store` and all, and never asked.
+So **anything new that hands a page a body it may use again goes through
+`load`**, and anything new a response's use depends on — a request header a
+`Vary` can name — is in `_headers`, which the cache compares, or a kept
+response answers a request it was not chosen for. **A network with a jar follows redirects itself**
 (`_exchange`, `redirect: 'manual'`), because a login's session is set on
 the redirect it answers with and the runtime's `fetch` follows it out of
 sight: anything new that sends a request goes through `_exchange` with what
@@ -2427,7 +2439,8 @@ everything itself — markup against the document's base, a sheet's `url()`s,
 parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
 absolute URLs. Without a base nothing is resolved, which is what every host
 before it saw. `examples/browser/` is the host that does fetch, and the
-place a fetching policy belongs: a cache per page process, per-host pacing,
+place a fetching policy belongs: an HTTP cache every tab shares through the
+profile, per-host pacing,
 `file:` only for `file:` pages, no mixed content (a secure page's
 stylesheets and fonts over an insecure connection are blocked and its images
 upgraded, as a browser has it), no cookies.
