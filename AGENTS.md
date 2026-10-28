@@ -1593,6 +1593,19 @@ function found — so 9.7 is sums of numbers, and Yoga is asked again only
 where its answer differs. A page of Tailwind rows, most of them
 `min-w-0`, makes the same calls into Yoga as before.
 
+**Along such a line of a row, what Yoga is asked before the line settles
+is its widths** (`Laid.sizing`): the measure answers a height from what
+the item has rather than laying it out (`sizingHeight`), and once
+`resolveLine` and `autoMinimums` are done, one pass with each item frozen
+at the width it came to lays each out there, alone. Laid out at each width
+Yoga tried — its flex basis, the row's whole width for an item `width:
+100%`, then Yoga's answer, then the line's — a webmail page's three rows
+one inside another laid its message list out some fifty times a layout.
+That stands on **a single-line row's widths being no function of its
+items' heights**: anything new that makes one so — a ratio handed to Yoga,
+a basis read from a height the measure found — turns sizing off for its
+row, or the widths come out of heights nobody measured.
+
 **Three phases, three invalidation reasons, and the split is the component.**
 Boxes depend on the DOM and the stylesheets; layout depends on the width;
 paint depends on neither. So a resize skips the cascade and an expose skips
