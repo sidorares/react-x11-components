@@ -1409,6 +1409,7 @@ export class HtmlViewNode extends Node {
      *  (`ChangeScope.tails`). */
     tails: ReadonlyMap<ParentNode, ChildNode> | null = null,
   ): void {
+    this._geometry += 1;
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
       const seeded = only !== null && seeds !== null;
@@ -3136,6 +3137,7 @@ export class HtmlViewNode extends Node {
     ) {
       return;
     }
+    this._geometry += 1;
     // Nothing but the viewport: the size core laid this element out at came
     // from a layout under the old one, and nothing else will tell it so.
     const onlyViewport =
@@ -6704,6 +6706,7 @@ export class HtmlViewNode extends Node {
      *  out again from them, where they build the boxes otherwise. */
     lengths = 0,
   ): boolean {
+    this._geometry += 1;
     this._resizedInPlace = [];
     const cascade = this._cascade;
     const tree = this._tree;
@@ -9032,6 +9035,7 @@ export class HtmlViewNode extends Node {
    * article.
    */
   private _rebuildFrame(reach: ReadonlySet<Element>, follow = false): void {
+    this._geometry += 1;
     const before = this._tree!;
     const width = this._laidOutWidth;
     const size = [this._documentWidth, this._documentHeight];
@@ -10196,6 +10200,25 @@ export class HtmlViewNode extends Node {
     this._invalidate(Stale.Style);
   }
 
+  /**
+   * What the boxes were laid out and scrolled as, as a key: one that moves
+   * with every invalidation, layout, restyle in place, frame and scroll of
+   * a box in the document, and with the pane's scroll and the element's
+   * size — and a new one at each ask while a change waits to be laid out.
+   * A look of a page's observers that finds it as it was finds what the
+   * last one found (`geometry`): a `ResizeObserver` measured every target
+   * ten times a second for as long as it was open, most of what a webmail
+   * page at rest cost.
+   */
+  geometryKey(): string {
+    if (this._stale !== Stale.Nothing) return `owed ${++this._geometry}`;
+    const at = this._scrolledOrigin();
+    return `${this._geometry} ${at.x},${at.y} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;
+  }
+
+  /** Moved by everything `geometryKey` follows. */
+  private _geometry = 0;
+
   scrollStateOf(element: Element): ScrollState | null {
     this._prepare(this.abs.width || 1);
     const box = this._scrollerOf(element);
@@ -11244,6 +11267,7 @@ export class HtmlViewNode extends Node {
    * where its element went. Answers where it came to.
    */
   private _scrollBox(box: Box, x: number, y: number): ScrollOffset {
+    this._geometry += 1;
     const s = this._scale;
     const was = scrollStateOf(box);
     // what is anchored to something it scrolls moves with it, and may be

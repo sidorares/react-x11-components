@@ -2786,6 +2786,18 @@ closes a way out a DOM binding opens by accident:
   whole, and joshwcomeau.com's header, which hears that it is stuck from
   an observer with `rootMargin: "-1px 0px 0px 0px"` and a threshold of 1,
   never put its glass on.
+- **A `ResizeObserver` measures only where the boxes moved.** Its look,
+  a tenth of a second after the last, first asks the host what the boxes
+  were laid out and scrolled as (`geometry`, `HtmlViewNode.geometryKey`):
+  a key that moves with every invalidation, layout, restyle in place,
+  frame and scroll of a box (`_geometry`), with the pane's scroll and the
+  element's size, and is new at each ask while a change waits to be laid
+  out. A look that finds the key as the last left it measures nothing,
+  but for a target observed since. **Anything new that moves a box
+  without going through one of those bumps `_geometry`**, or an observer
+  is not told the size its target came to. Measured at every look, a
+  webmail page's observers were most of what it cost at rest: 6 to 8% of
+  a core, where it is 1 to 3.
 - **The facade runs in the page's realm, so its own work calls what a page
   replaced, and an op that only reads moves no count.** `opEpoch` counts
   the ops that may change a computed style (`getComputedStyle`'s cache) or
