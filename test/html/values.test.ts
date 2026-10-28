@@ -214,6 +214,18 @@ test('calc() and its kin come down to pixels and a percentage of what layout kno
   assert.strictEqual(len('calc(1 + 2)'), null);
   assert.strictEqual(len('calc(10px / 0)'), null);
   assert.strictEqual(parseNumber('calc(1 + 0.5)'), 1.5);
+  // a length over a length is a number (CSS Values 4, 10.9.1), where its
+  // units are absolute: nothing says what an em is in a number
+  assert.strictEqual(parseNumber('calc(22px / 192px)'), 22 / 192);
+  assert.strictEqual(parseNumber('calc(1in / 1px + 1pt / 1pt)'), 97);
+  assert.strictEqual(parseNumber('calc(1em / 1px)'), null);
+  assert.strictEqual(parseNumber('calc(10% / 1px)'), null);
+  assert.strictEqual(parseNumber('calc(1px / 0px)'), null);
+  assert.strictEqual(parseNumber('calc(1px)'), null);
+  // and a length again where another scales it
+  assert.strictEqual(len('calc(100px / 4px * 1em)'), 500);
+  assert.strictEqual(len('calc(100px / 4px)'), null);
+  assert.strictEqual(len('calc(100% / 4px * 1px)'), null);
   // with no percentage in them, the comparisons come to a length
   assert.strictEqual(len('min(10px, 2em)'), 10);
   assert.strictEqual(len('max(10px, 2em)'), 40);
