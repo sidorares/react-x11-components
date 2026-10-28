@@ -3639,6 +3639,94 @@ test('a flex item measured for its content after it was laid out is laid out aga
 });
 
 metric(
+  'rows inside rows lay each item out at the width its line comes to, and not at each width Yoga tries first',
+  async () => {
+    // A webmail page's panes: three rows one inside another, each an item
+    // `width: 100%` beside one its automatic minimum holds wider than Yoga
+    // first gives it. Each row was laid out at its flex basis, at Yoga's
+    // answer and at what the line came to, each of those at as many widths
+    // inside, and the message list in the innermost some fifty times a
+    // layout.
+    const row = (inner: string) =>
+      '<div class="r"><div class="m">' +
+      inner +
+      '</div><div class="s">sidebar</div></div>';
+    const { node } = await render(
+      '<style>body { margin: 0; font-size: 14px }' +
+        '.r { display: flex; width: 100% }' +
+        '.m { width: 100%; min-width: 0 }' +
+        '.s { flex: 0 1 auto }</style>' +
+        row(row(row('<p>some words <span id="s">in it</span></p>'))),
+      300,
+    );
+    const el = view(node);
+    await act();
+    const find = (from: { children?: unknown[] }): Element | null => {
+      for (const child of (from.children ?? []) as Element[]) {
+        if (child.attribs?.id === 's') return child;
+        const found = find(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const span = find(el.document as unknown as { children: unknown[] })!;
+    const text = createText(' and more');
+    appendChild(span, text);
+    const before = naturalLayoutsMade();
+    el.touchDocument([
+      { type: 'childList', target: span, addedNodes: [text], removedNodes: [] },
+    ]);
+    await act();
+    // each row's items at their widths, where each row was laid out at
+    // three of them and the ones inside it at each: 39
+    const made = naturalLayoutsMade() - before;
+    assert.ok(made <= 9, `${made} natural layouts in the rows`);
+  },
+);
+
+metric(
+  'what a column item with a height of its own comes to apart from it is measured once a width in a layout',
+  async () => {
+    // Its automatic minimum is its content's height where nothing in it
+    // takes a percentage of its own (CSS Flexbox 4.5), which is a layout of
+    // it apart from that height; and a column that holds another item at
+    // its own asks every item again. A webmail page's column of panes,
+    // each a height over percentages, was laid out apart again each time.
+    const { node } = await render(
+      '<style>body { margin: 0; font-size: 14px }' +
+        '.a { display: flex; flex-direction: column; height: 100px }' +
+        '.b { display: flex; flex-direction: column; height: 300px }' +
+        '.d { height: 50% }</style>' +
+        '<div class="a"><div class="b"><div class="d">' +
+        'some words <span id="s">in it</span></div></div>' +
+        '<div>one line<br>and another<br>and a third</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const find = (from: { children?: unknown[] }): Element | null => {
+      for (const child of (from.children ?? []) as Element[]) {
+        if (child.attribs?.id === 's') return child;
+        const found = find(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const span = find(el.document as unknown as { children: unknown[] })!;
+    const text = createText(' and more');
+    appendChild(span, text);
+    const before = naturalLayoutsMade();
+    el.touchDocument([
+      { type: 'childList', target: span, addedNodes: [text], removedNodes: [] },
+    ]);
+    await act();
+    // once each of its layouts, where the second ask laid it out again: 19
+    const made = naturalLayoutsMade() - before;
+    assert.ok(made <= 12, `${made} layouts of the column's items`);
+  },
+);
+
+metric(
   'an item measured at its widest is laid out there once a layout, however many times the row it is in is laid out',
   async () => {
     // A row whose item its automatic minimum holds wider than the row first

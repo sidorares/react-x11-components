@@ -206,6 +206,7 @@ export function layoutFlex(
       across: false,
       unstretched: NaN,
       refit: null,
+      sizing: false,
     };
     applyItem(
       node,
@@ -385,6 +386,19 @@ export function layoutFlex(
       if (cappedLines(items, row, room, breaks, gap, hold, ask)) read();
     }
   };
+  // Along the one line of a row of a width, what Yoga is asked before the
+  // line is settled is its widths: shared out again here (`resolveLine`),
+  // and its items held at their least (`autoMinimums`), the line's sizes
+  // are what this engine makes of them, and no height Yoga has of an item
+  // has a say in them. So those passes are sizing ones (`Laid.sizing`), an
+  // item answering its height from what it has rather than laid out at
+  // each width Yoga tries, and one pass after them lays each out at the
+  // width it comes to. Laid out at each, a webmail page's panes were laid
+  // out at their widest, at what Yoga made of the row and at what the
+  // line came to, in each of three rows inside one another: its message
+  // list some fifty times a layout.
+  const sizing = row && line !== null && !line.probe;
+  if (sizing) for (const { laid } of items) laid.sizing = true;
   ctx.flexDepth = depth + 1;
   try {
     calculate();
@@ -397,6 +411,31 @@ export function layoutFlex(
       pass += 1
     ) {
       calculate();
+    }
+    if (sizing) {
+      // each frozen at the width it came to, as this engine meant it
+      // (`meant`), which Yoga then asks it at alone — not at its flex base
+      // size first, the row's whole width for an item `width: 100%` — and
+      // with the heights it was answered forgotten, which it would keep for
+      // an item asked again at a width it had
+      for (const { node, laid } of items) {
+        laid.sizing = false;
+        const at = meant(
+          laid.main,
+          laid.held,
+          laid.fitted,
+          laid.set,
+          laid.stretch,
+          laid.width,
+        );
+        laid.held = at;
+        node.setFlexGrow(0);
+        node.setFlexShrink(0);
+        node.setFlexBasis(at);
+        node.markDirty();
+      }
+      ask();
+      read();
     }
   } finally {
     ctx.flexDepth = depth;
@@ -1224,7 +1263,12 @@ function applyItem(
   node.setMeasureFunc((w, wm, h, hm) => {
     // the width Yoga gave, as this engine meant it (`meant`)
     const extra = box.horizontalExtra;
-    const width = meant(w, laid.set - extra, laid.stretch - extra);
+    const width = meant(
+      w,
+      laid.set - extra,
+      laid.stretch - extra,
+      alongRow ? laid.held - extra : NaN,
+    );
     const given = hm === Y.MEASURE_MODE_EXACTLY && Number.isFinite(h);
     const exact = wm === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width);
     // the height it was flexed to, that is: one its automatic minimum
@@ -1322,7 +1366,13 @@ function applyItem(
       answer = { width: inner, height: inner / ratio };
     } else {
       answer = answers.get(inner);
-      if (answer === undefined) {
+      if (answer === undefined && laid.sizing) {
+        // a sizing pass's, whose heights are no answer's (`layoutFlex`)
+        answer = {
+          width: inner,
+          height: sizingHeight(box, ctx, inner, containingWidth),
+        };
+      } else if (answer === undefined) {
         answer = measureBox(box, ctx, inner, containingWidth, laid);
         answers.set(inner, answer);
       }
@@ -1415,6 +1465,10 @@ export function forgetMaxContent(box: Box): void {
 interface Laid {
   width: number;
   height: number;
+  /** Whether Yoga is asked only for the widths of the line it is on, which
+   *  this engine shares out again (`layoutFlex`): its measure answers a
+   *  height without laying it out (`sizingHeight`). */
+  sizing: boolean;
   /** The content height that layout was made at, where the flex layout gave
    *  the item one (`FLEXED_HEIGHT`, `USED_HEIGHT`), and NaN where its
    *  content's own. */
@@ -1576,6 +1630,25 @@ function measureBox(
     width: inner,
     height: Math.max(0, box.height - box.verticalExtra),
   };
+}
+
+/** The height a sizing pass answers for an item at a content width
+ *  (`Laid.sizing`), its content box's: what it came to there, where that is
+ *  known (`keptNatural`), and else what it has. No pass that places an
+ *  item reads it. */
+function sizingHeight(
+  box: Box,
+  ctx: LayoutContext,
+  inner: number,
+  containing: number,
+): number {
+  const width = inner + box.horizontalExtra;
+  const kept = keptNatural(box, ctx, width, containing);
+  const height = kept !== null ? kept.height : box.height;
+  return Math.max(
+    0,
+    (Number.isFinite(height) ? height : 0) - box.verticalExtra,
+  );
 }
 
 /** An item's height as its content's own makes it at a border-box width,
@@ -1832,8 +1905,9 @@ interface Natural {
 const NATURAL = new WeakMap<Box, Natural[]>();
 const NATURAL_WIDTHS = 4;
 
-/** How many natural layouts were made (`layoutNaturally`), for a test to
- *  count what a layout lays out again. */
+/** How many natural layouts were made (`layoutNaturally`), and layouts
+ *  apart that a column item's content is measured from (`columnContent`),
+ *  for a test to count what a layout lays out again. */
 let naturalLayouts = 0;
 export function naturalLayoutsMade(): number {
   return naturalLayouts;
@@ -2194,15 +2268,23 @@ function columnContent(
   if (box.style.height !== AUTO && percentHeightsIn(box)) {
     // what its content comes to where it has no height to take
     // percentages of, as an intrinsic size is measured: laid out so
-    // apart, and the final pass lays it out again
+    // apart, and the final pass lays it out again. What that came to is
+    // kept with the natural layout at this width, as a content is, for the
+    // next time the column asks — which it does of every item again once
+    // it holds one at its least: a webmail page's whole document was laid
+    // out apart twice a layout so, and a pane in it seven times.
+    const natural = keptNatural(box, ctx, width, containingWidth);
     FLEXED_HEIGHT.set(box, NaN);
     try {
       ctx.layoutSubtree(box, width, containingWidth);
     } finally {
       FLEXED_HEIGHT.delete(box);
     }
+    naturalLayouts += 1;
     laid.width = NaN;
-    return ratioContent(box, contentBottom(box) + box.verticalExtra);
+    const content = ratioContent(box, contentBottom(box) + box.verticalExtra);
+    if (natural !== null) natural.content = content;
+    return content;
   }
   const content = ratioContent(box, contentBottom(box) + box.verticalExtra);
   remember(box, ctx, width, containingWidth, 'content', content);
