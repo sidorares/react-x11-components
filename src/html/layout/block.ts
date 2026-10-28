@@ -155,6 +155,7 @@ import type {
 import { FloatContext } from './floats.js';
 import { drawingViewport, foreignRect } from '../svg.js';
 import {
+  CUT_LINES,
   emptyLinePoint,
   faceExtentOf,
   isButton,
@@ -5419,8 +5420,10 @@ export function intrinsicWidth(
     widest = Math.max(widest, box.floatRow);
     // a line `text-overflow` cut short is wider than this finds it
     if (seen && !seen.cut && box.style.textOverflow === 'ellipsis') {
-      seen.cut = lines.some((line) =>
-        line.texts.some((text) => text.layout.truncated),
+      seen.cut = lines.some(
+        (line) =>
+          CUT_LINES.has(line) ||
+          line.texts.some((text) => text.layout.truncated),
       );
     }
   }

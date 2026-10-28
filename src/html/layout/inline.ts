@@ -46,6 +46,7 @@ import { inkColor, isTransparent, resolve } from '../css/values.js';
 import { isInputButton, tagOf } from '../dom.js';
 import {
   BOX_RAISES,
+  CLAMPED,
   CONTROL_BASELINES,
   GRID_TRACKS,
   LINE_BOX_RAISES,
@@ -1624,6 +1625,14 @@ function linesOf(
     close(true);
   }
   placeDeferred();
+  // `text-overflow` on what the lines a piece at a time hold, which the
+  // one-layout paths above leave to the engine
+  if (
+    ellipsizes.any ||
+    (!rtl && !options.clamp && cutOf(style, undefined, options.width))
+  ) {
+    widest = ellipsizeLines(lines, style, options, fonts, base, lineHeightMul);
+  }
 
   if (!floatsPlaced.length) {
     const result = { lines, height: y, width: widest };
@@ -5771,6 +5780,236 @@ function ellipsized(
   spans.add(at, 1, null);
   kept.push(mark);
   return { layout: fonts.layout(kept, base, options), runs: kept, spans };
+}
+
+/** Whether a line has been cut short a piece at a time (`ellipsizeLines`):
+ *  until one has, no layout has an atomic a cut took off a line to put
+ *  back on it. */
+const ellipsizes = { any: false };
+
+/** The lines `ellipsizeLines` cut, each wider than it is drawn: what an
+ *  intrinsic width reads of them is of what was drawn (`intrinsicWidth`),
+ *  as of a line the engine cut. */
+export const CUT_LINES = new WeakSet<LineBox>();
+
+/** How far past its room a piece may reach and still be taken to fit: the
+ *  rounding a width set in other units comes to. */
+const CUT_SLACK = 0.01;
+
+/**
+ * `text-overflow: ellipsis` on the lines of a block laid out a piece at a
+ * time (CSS Overflow 3, 5.1): a line that runs past the box's end edge
+ * ends in an ellipsis inside it, and what does not fit beside the ellipsis
+ * is hidden — characters, and atomic inlines whole. The paths that lay a
+ * block's text out in one layout have the engine cut it; a line with an
+ * image or an inline-block on it is pieces, and was cut by nothing but the
+ * box's clip. Gmail's message list ends a preview's line with an emoji
+ * `<img>` in it, and the line was clipped mid-word with no ellipsis.
+ *
+ * The first text that does not fit beside the ellipsis is laid out again
+ * cut where the ellipsis starts, and the ellipsis is set after it — after
+ * what is before it, where what does not fit is an atomic, which is hidden
+ * (`CLAMPED`). All that comes after on the line is hidden too. A line
+ * ordered by bidi into another order than the document's, and a
+ * right-to-left block, are left as they were. Answers the widest line.
+ */
+function ellipsizeLines(
+  lines: LineBox[],
+  style: ComputedStyle,
+  options: InlineOptions,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  lineHeight: number,
+): number {
+  // what a cut took off a line is back on it, until it is cut again
+  if (ellipsizes.any) {
+    for (const line of lines) {
+      for (const placed of line.atomics) CLAMPED.delete(placed.box);
+    }
+  }
+  const edge = options.width;
+  const cuts =
+    style.direction !== 'rtl' &&
+    !options.clamp &&
+    cutOf(style, undefined, edge);
+  let widest = 0;
+  for (const line of lines) {
+    if (cuts && line.x + line.width > edge + CUT_SLACK) {
+      ellipsizeLine(line, style, edge, fonts, base, lineHeight);
+    }
+    widest = Math.max(widest, line.width);
+  }
+  return widest;
+}
+
+function ellipsizeLine(
+  line: LineBox,
+  style: ComputedStyle,
+  edge: number,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  lineHeight: number,
+): void {
+  const markRuns = [runFor('\u2026', style)];
+  const mark = fonts.layout(markRuns, base, {});
+  const markLine = mark.lines[0];
+  if (!markLine) return;
+  const room = edge - mark.width;
+  // the line's texts and atomics in the document's order, each where it
+  // starts and ends across the line
+  const pieces: { text?: LineText; atomic?: AtomicPlacement }[] = [];
+  for (let i = 0, j = 0; i <= line.texts.length; i += 1) {
+    for (; j < line.atomics.length && line.atomics[j].before <= i; j += 1) {
+      pieces.push({ atomic: line.atomics[j] });
+    }
+    if (i < line.texts.length) pieces.push({ text: line.texts[i] });
+  }
+  const span = (piece: (typeof pieces)[number]): [number, number] => {
+    if (piece.atomic) {
+      const { box, x } = piece.atomic;
+      return [x - box.marginLeft, x + box.width + box.marginRight];
+    }
+    const text = piece.text!;
+    const natural = text.layout.lines[text.layoutLine];
+    const left = text.drawX + (natural?.x ?? 0);
+    return [left, left + (natural?.width ?? 0)];
+  };
+  let at = -1;
+  let before = line.x;
+  let last = -Infinity;
+  for (let i = 0; i < pieces.length; i += 1) {
+    const [left, right] = span(pieces[i]);
+    // drawn in another order than the document's: no end to cut it at
+    if (left < last - CUT_SLACK) return;
+    last = left;
+    if (right > room + CUT_SLACK) {
+      at = i;
+      break;
+    }
+    before = Math.max(before, right);
+  }
+  if (at < 0) return;
+  // the text it runs past the room in, as much of it as fits there
+  const crossing = pieces[at].text;
+  const [left] = span(pieces[at]);
+  if (crossing && left < room) {
+    const end = clipText(crossing, room - left, style, fonts, base, lineHeight);
+    if (end !== null) {
+      before = end;
+      at += 1;
+    }
+  }
+  // then the ellipsis, in the block's style and baseline-aligned in its
+  // line (5.1), no text of the document's
+  let index = line.textStart;
+  for (let i = at - 1; i >= 0; i -= 1) {
+    const text = pieces[i].text;
+    if (text) {
+      index = text.textEnd;
+      break;
+    }
+  }
+  const spans = new SpanMap();
+  spans.add(index, 1, null);
+  LAYOUT_RUNS.set(mark, markRuns);
+  pieces.splice(at, 0, {
+    text: {
+      layout: mark,
+      layoutLine: 0,
+      drawX: before - markLine.x,
+      drawY: line.y + line.baseline - markLine.baseline,
+      textStart: index,
+      textEnd: index,
+      layoutStart: 0,
+      spans,
+    },
+  });
+  const end = before + mark.width;
+  at += 1;
+  // and what comes after it is hidden: its text off the line, and an
+  // atomic passed over by paint, as one past a clamp point is
+  const texts: LineText[] = [];
+  for (let i = 0; i < pieces.length; i += 1) {
+    const { text, atomic } = pieces[i];
+    if (text && i < at) texts.push(text);
+    else if (atomic && i >= at) {
+      CLAMPED.add(atomic.box);
+      ellipsizes.any = true;
+    }
+  }
+  line.texts = texts;
+  line.width = Math.max(0, end - line.x);
+  CUT_LINES.add(line);
+}
+
+/**
+ * A line's text laid out again cut at `room`, inside a word where it runs
+ * past it, as `text-overflow` cuts (`cutOf`): the text takes the layout,
+ * and keeps its place on the line and its baseline. Where what is left of
+ * it ends on the line, the spaces it ends on included, or null where none
+ * of it is left, or its layout's runs are not known.
+ */
+function clipText(
+  text: LineText,
+  room: number,
+  style: ComputedStyle,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  lineHeight: number,
+): number | null {
+  const natural = text.layout.lines[text.layoutLine];
+  const runs = LAYOUT_RUNS.get(text.layout);
+  if (!natural || !runs?.length || typeof runs[0] !== 'object') return null;
+  // the line alone, out of a layout that may hold more, to the last
+  // character that fits: no engine cuts a line it does not wrap but for
+  // an ellipsis of its own, which would be in the last run's style
+  const from = natural.start;
+  const fits = fitted(fonts, runs as TextRun[], from, natural.end, room, base);
+  if (!fits) return null;
+  const kept = sliceRuns(runs as TextRun[], from, from + fits);
+  const laid = fonts.layout(kept, base, {
+    lineHeight,
+    align: 'left',
+    direction: style.direction,
+    fit: PARAGRAPH_FIT,
+  });
+  const line = laid.lines[0];
+  if (!line) return null;
+  LAYOUT_RUNS.set(laid, kept);
+  const left = text.drawX + natural.x;
+  const baseline = text.drawY + natural.baseline;
+  text.layout = laid;
+  text.layoutLine = 0;
+  text.drawX = left - line.x;
+  text.drawY = baseline - line.baseline;
+  if (from) {
+    text.layoutStart -= from;
+    text.spans = shiftedSpans(text.spans, from);
+    if (text.gaps) text.gaps = text.gaps.map((g) => g - from);
+  }
+  text.textEnd = text.spans.documentAt(line.end);
+  // what hung past its end is past the cut
+  delete text.hung;
+  delete text.trail;
+  delete text.trailRun;
+  // a space it was cut after stands before the ellipsis, as it does in a
+  // browser: "will …", not "will…"
+  return left + (line.advance ?? line.width);
+}
+
+/** A layout's span map read from `by` code units into the text it maps:
+ *  what a layout of the rest of that text from there is mapped with. */
+function shiftedSpans(spans: LineText['spans'], by: number): LineText['spans'] {
+  const boxAt = spans.boxAt;
+  const shift = spans.shiftDocument;
+  return {
+    documentAt: (offset) => spans.documentAt(offset + by),
+    ...(boxAt && { boxAt: (offset: number) => boxAt.call(spans, offset + by) }),
+    ...(shift && {
+      shiftDocument: (moved: number, pass: number) =>
+        shift.call(spans, moved, pass),
+    }),
+  };
 }
 
 /** How much of the runs' text from `from` to `to`, in code units, fits in

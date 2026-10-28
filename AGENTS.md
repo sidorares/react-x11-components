@@ -1866,6 +1866,23 @@ answers `justifies` as the engine does** — `withLayout` forwards what an
 engine has, and the layout cache and the recorder say it themselves: a
 wrapper that dropped it would send every paragraph back to the spacing.
 
+**A line made a piece at a time is cut for `text-overflow` after the
+lines are placed** (`ellipsizeLines`, CSS Overflow 3, 5.1). A line with an
+image or an inline-block on it is pieces, which no engine sees whole, and
+the engine's cut is what ends a line of the other paths in an ellipsis:
+Gmail ends a message's preview with an emoji `<img>`, and the line was
+clipped mid-word with nothing after it. The text the cut falls in is laid
+out again as far as it fits beside the mark (`clipText`), the mark is set
+after it in the block's style and on the line's baseline, and what comes
+after is gone — a text taken off the line, an atomic hidden whole through
+`CLAMPED`, which paint and the ink bounds pass over. Two things are
+load-bearing. **What a cut hid is shown again at the next layout of its
+lines** (`ellipsizes`), before they are cut again: `CLAMPED` outlives a
+layout, and a wider box would draw a hole where the icon was. And **a line
+cut so tells an intrinsic width it was** (`CUT_LINES`, beside the engine's
+`truncated`), as one the engine cut does: it is wider than it was drawn,
+and what a probe measured of it is of what was drawn.
+
 **Nothing is fetched, by construction, and nothing is executed unless the
 application turns it on.** `onResource` is the only way anything loads —
 the same call the desktop calendar makes about credentials: the host
