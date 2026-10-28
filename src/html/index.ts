@@ -1291,6 +1291,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
+      geometryKey: () => nodeRef.current?.geometryKey() ?? '',
       intersectionsOf: (
         elements: readonly (Element | null)[],
         root: Element | null,

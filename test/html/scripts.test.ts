@@ -2943,6 +2943,40 @@ test('a resize observer is told a size as its target is observed and again each 
   assert.equal(text, 'box:100:20:5:114,box:100:40:5:114|function');
 });
 
+test('a resize observer measures nothing while the page is at rest, and is told the next change all the same', async (t) => {
+  // A webmail page at rest spent most of what it cost measuring every
+  // target of its observers ten times a second, each time the same
+  const ops = t.mock.method(
+    DomHost.prototype as unknown as { _op(op: string): unknown },
+    '_op',
+  );
+  const measured = () =>
+    ops.mock.calls.filter((c) =>
+      ['rect', 'edges'].includes(c.arguments[0] as string),
+    ).length;
+  const doc = await hosted(
+    '<style>#box{width:100px;height:20px}</style>' +
+      '<div id="box"></div><div id="other"></div><p id="out"></p><script>' +
+      'var seen = []; var box = document.getElementById("box");' +
+      'new ResizeObserver(function (entries) { entries.forEach(function (e) {' +
+      '  seen.push(e.target.id + ":" + e.contentRect.height); });' +
+      '  document.getElementById("out").textContent = seen.join(","); })' +
+      '.observe(box);' +
+      'window.grow = function () { box.style.height = "40px"; };' +
+      '</script>',
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  await settle(250);
+  const before = measured();
+  await settle(500);
+  assert.equal(measured() - before, 0, 'it measured a page at rest');
+  await act(async () => {
+    doc.run('grow()');
+  });
+  const text = await settled(doc, 'out', (text) => text.includes(','));
+  assert.equal(text, 'box:20,box:40');
+});
+
 test('attribute nodes are the element’s, one each, in a map that is live', async () => {
   const doc = await hosted(
     '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +

@@ -22297,16 +22297,29 @@ export function installDom(
   /** The observers observing something, and whether their sizes are to
    *  be looked at again: a tenth of a second after the last look, while
    *  any observes, as nothing tells this realm a layout came out
-   *  otherwise. */
+   *  otherwise — but only where the host says the boxes were laid out or
+   *  scrolled since the last (`geometry`), or a target was observed: a
+   *  look that would find what the last found is skipped, and a page at
+   *  rest asks one question a tenth of a second, where it measured every
+   *  target. */
   const resizing = new Set<Any>();
   let resizeLook = false;
+  /** What the boxes were as the last look measured them, and whether a
+   *  target was observed since, which the next look measures whatever. */
+  let resizeLooked = '';
+  let resizeFresh = false;
   const lookAgain = (ms: number): void => {
     if (resizeLook || !resizing.size) return;
     resizeLook = true;
     setTimer(
       () => {
         resizeLook = false;
-        for (const observer of [...resizing]) observer._look();
+        const geometry = String(call('geometry'));
+        if (resizeFresh || geometry !== resizeLooked) {
+          resizeFresh = false;
+          resizeLooked = geometry;
+          for (const observer of [...resizing]) observer._look();
+        }
         lookAgain(100);
       },
       ms,
@@ -22337,6 +22350,7 @@ export function installDom(
     observe(el: Any): void {
       if (!this._told.has(el)) this._told.set(el, [0, 0]);
       resizing.add(this);
+      resizeFresh = true;
       lookAgain(0);
     }
     unobserve(el: Any): void {

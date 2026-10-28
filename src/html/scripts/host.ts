@@ -433,6 +433,9 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** What the boxes were laid out and scrolled as, as a key that moves
+   *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
+  geometryKey(): string;
   /** What an `IntersectionObserver` measures of its targets against its
    *  root, the viewport for null (`HtmlViewNode.intersectionsOf`). */
   intersectionsOf(
@@ -2155,6 +2158,9 @@ export class DomHost {
     return added;
   }
 
+  /** How many looks a handle with no `geometryKey` was asked for. */
+  private _looks = 0;
+
   private _op(
     op: string,
     a: Primitive,
@@ -3603,6 +3609,13 @@ export class DomHost {
           n('border-bottom-width'),
           n('border-left-width'),
         ].join(',');
+      }
+      // what the boxes were laid out and scrolled as: a look of the page's
+      // observers that finds the same skips what it would find again, and
+      // one with no such key asks for it each time
+      case 'geometry': {
+        this.flush();
+        return this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
       }
       case 'rect': {
         this.flush();
