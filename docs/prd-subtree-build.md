@@ -169,16 +169,41 @@ offsets, their scrolls — and a flow reads what a block holds as it laid it
 out: a line's baseline in an inline-block, a marker's first line. So a
 kept block has those offsets taken off what it holds (`unoffsetHeld`)
 before it is moved, and the passes put them on again: each is a move of
-the same boxes, worked out from sizes the block keeps, and moves add up in
-any order.
+the same boxes, and moves add up in any order. A relative offset, a
+translation and a scroll are worked out again from sizes the block keeps;
+a sticky box's shift turns on where the block is, so it is taken off by
+how far it was moved (`STUCK`), which a scroll that places it again
+keeps.
 
 **A block that holds something placed against what is outside it is
 laid out** (`reuseBlockers`): the boxes between an out-of-flow box and its
-containing block, every box around a sticky box, a box in the top layer
-or one fixed to the viewport, and around a relative inline box broken
-around blocks, which moves blocks beside what holds it. A block that holds
-an out-of-flow box placed against something inside it is kept with it,
-and the document reaches as far as the box does (`keptPositionedIn`).
+containing block, every box around a box in the top layer or one fixed to
+the viewport, and around a relative or sticky inline box broken around
+blocks, which moves blocks beside what holds it. A block that holds an
+out-of-flow box placed against something inside it is kept with it, and
+the document reaches as far as the box does (`keptPositionedIn`). A block
+that holds a sticky box is kept: it had been a blocker, and with every box
+around it, which on joshwcomeau.com — a copy button stuck to the viewport
+in each code block, the contents list beside the article — laid half the
+article's grid out again at every layout of the page.
+
+**The passes after the flow walk what they move, and the ink of the rest
+is kept** (`Blockers.moved`; `KEPT_INK`, `frontierBounds` in `paint.ts`).
+Taking the offsets off a kept block, putting them on again, placing the
+sticky boxes and working the ink out each walked every box of the tree,
+where a bare layout of that article lays out ten boxes of its 3,380. A box
+the passes move, or move what it holds (`movesAfterFlow`: a relative box
+with an inset, a sticky one, a transformed one, a scroll container), is
+noted with every box around it as the blockers are, a tenth of that
+article's boxes, and the passes go down those alone; a restyle in place
+that makes a box one notes it (`noteMoving`). The walk of the ink records,
+for each block outside them it reaches from a box inside them, where the
+block's border box was and how far it reached; a later walk keeps the
+block's ink where a layout kept it or a block around it, its border box is
+where it was, and no sticky box is around it, which a pane's scroll places
+with no walk of the tree (`boundsAfterMove`). A walk of the whole tree's
+ink that keeps none — every one but a layout's — makes the records stale
+(`INK_EPOCHS`).
 
 **A flex or grid item is kept by what its container laid it out from**
 (`keptNatural` in `layout/flex.ts`, `keptItem` in `layout/css-grid.ts`),

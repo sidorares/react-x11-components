@@ -1029,6 +1029,37 @@ test('a sticky box keeps inside its containing block by its own margins, not by 
   }
 });
 
+test("a sticky element's text is no sticky box: a scroll of the pane places the element, and grows no ink around it", async () => {
+  // A text box carries its element's style, and is no box of its own: its
+  // rect is never laid out. Taken for a sticky box, the section's text was
+  // held 12px down the viewport from wherever its rect had drifted to, the
+  // top of the document, and the ink of the section and of every box
+  // around it grown to reach it there
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}p{margin:0;height:300px}' +
+      '#s{position:sticky;top:12px;height:20px}</style>' +
+      '<p>above</p><section id="s">stuck</section>' +
+      '<div style="height:600px"></div>',
+    200,
+  );
+  const pane = paneOf(el);
+  for (const y of [0, 100, 400]) {
+    await act(async () => pane.scrollTo(y));
+    const box = boxOf(el, 's') as unknown as {
+      y: number;
+      height: number;
+      boundsY: number;
+      boundsHeight: number;
+    };
+    assert.strictEqual(box.y, Math.max(300, y + 12), `scrolled to ${y}`);
+    assert.deepStrictEqual(
+      [box.boundsY, box.boundsHeight],
+      [box.y, box.height],
+      `its ink is its box, scrolled to ${y}`,
+    );
+  }
+});
+
 test('a box fixed to the viewport stays where the viewport has it, whatever a sticky or a relative box around it is moved by', async () => {
   // docs.github.com's search dialog is fixed under the header, inside a
   // header stuck to the top: moved with the header as it stuck and then

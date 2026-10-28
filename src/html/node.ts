@@ -227,6 +227,7 @@ import {
   laidWhole,
   layoutAsks,
   layoutDocument,
+  noteMoving,
   placedMatrix,
   asideIn,
   setAsideHere,
@@ -7231,6 +7232,12 @@ export class HtmlViewNode extends Node {
         moved.push([box, was]);
       }
     }
+    // what a transform or an inset moves after the flow now, which the
+    // passes after it walk down to
+    noteMoving(
+      tree,
+      restyled.map(([box]) => box),
+    );
     for (const [box, decoration] of redecorated) {
       // what is inside it keeps which boxes around it paint, and this is
       // one more or one fewer of them
