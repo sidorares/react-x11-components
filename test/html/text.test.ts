@@ -3,6 +3,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
+import { CLAMPED } from '../../src/html/layout/boxes.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import { prettyBreaks } from '../../src/html/layout/pretty.js';
 import type {
@@ -2093,6 +2094,57 @@ metric('a truncated block cuts each of its lines, and loses none', async () => {
   assert.strictEqual(pre.length, 2);
   assert.deepStrictEqual(pre.map(truncated), [true, false]);
 });
+
+metric(
+  'a truncated line with an inline-block on it ends in an ellipsis too',
+  async () => {
+    // CSS Overflow 3, 5.1: characters and atomic inlines that do not fit
+    // beside the ellipsis are hidden, an atomic whole. A line with one on
+    // it is laid out a piece at a time and was clipped with no ellipsis:
+    // Gmail's previews, an emoji `<img>` among their words
+    const icon = (id: string, width: number) =>
+      `<span id="${id}" style="display:inline-block;width:${width}px;` +
+      'height:10px;background:red"></span>';
+    const { node } = await render(
+      '<style>body{margin:0} .t{width:120px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap}</style>' +
+        // cut inside the words before the icon
+        `<div id="a" class="t">Please let us know if you will be ${icon('i', 16)} ok</div>` +
+        // the icon is what does not fit: the ellipsis goes after the text
+        `<div id="b" class="t">Short ${icon('j', 200)} after</div>` +
+        // and a line that fits is left whole
+        `<div id="c" class="t">ab ${icon('k', 16)} cd</div>`,
+    );
+    const el = view(node);
+    const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+    const [a] = linesOf(el, 'a');
+    assert.ok(a.width <= 120, `within the box: ${a.width}`);
+    assert.strictEqual(a.texts.length, 2, 'the words cut, and an ellipsis');
+    assert.strictEqual(lastRunText(a), '\u2026');
+    const [from, to] = extentOf(a.texts[1]);
+    assert.ok(to <= 120 + 0.01 && to > 100, `at the edge: ${to}`);
+    assert.ok(extentOf(a.texts[0])[1] <= from + 0.01, 'after the words');
+    assert.ok(hidden('i'), 'and the icon past the cut');
+    const [b] = linesOf(el, 'b');
+    assert.ok(b.width <= 120, `within the box: ${b.width}`);
+    assert.strictEqual(b.texts.length, 2, 'the text and an ellipsis');
+    assert.strictEqual(lastRunText(b), '\u2026');
+    assert.ok(
+      extentOf(b.texts[1])[0] >= extentOf(b.texts[0])[1] - 0.01,
+      'after the text',
+    );
+    assert.ok(hidden('j'), 'the icon hidden whole');
+    const [c] = linesOf(el, 'c');
+    assert.strictEqual(c.texts.length, 2, 'both words');
+    assert.ok(!hidden('k'), 'and the icon');
+    assert.ok(
+      c.texts.every(
+        (text) => lastRunText({ ...c, texts: [text] }) !== '\u2026',
+      ),
+      'and no ellipsis',
+    );
+  },
+);
 
 metric(
   'a truncated line is as wide as it is whole to what holds its box',
