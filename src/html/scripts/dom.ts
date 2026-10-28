@@ -6732,13 +6732,30 @@ export function installDom(
   for (const name of ['type', 'charset', 'crossOrigin', 'integrity']) {
     Object.defineProperty(HTMLScriptElement.prototype, name, reflect(name));
   }
-  for (const name of ['async', 'defer', 'noModule']) {
+  for (const name of ['defer', 'noModule']) {
     Object.defineProperty(
       HTMLScriptElement.prototype,
       name,
       flag(name.toLowerCase()),
     );
   }
+  // true in a script a script made until it is set, as the attribute's
+  // absence alone would not say (HTML 4.12.1, "force async"): set false,
+  // the script runs in the order it went in, which Google's module loader
+  // stands on
+  Object.defineProperty(HTMLScriptElement.prototype, 'async', {
+    get(this: Any): boolean {
+      return (
+        this.hasAttribute('async') ||
+        call('scriptForceAsync', this._id) === true
+      );
+    },
+    set(this: Any, v: Any) {
+      call('scriptAsyncSet', this._id);
+      this.toggleAttribute('async', !!v);
+    },
+    configurable: true,
+  });
 
   class HTMLLinkElement extends HTMLElement {}
   Object.defineProperty(HTMLLinkElement.prototype, 'href', urlProperty('href'));

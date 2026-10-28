@@ -2658,10 +2658,18 @@ closes a way out a DOM binding opens by accident:
   global it made, as jQuery's `globalEval` does: met at `<Html>`'s next
   read of the tree, it never ran. So **anything new that puts nodes into a
   document goes through `_put` or `_replaceAll`**, and **anything new that
-  copies a script carries `inert` over** (`_keepStarted`, HTML's cloning
+  copies a script carries `inert` over** (`_copiedScripts`, HTML's cloning
   steps), or a copy of what `innerHTML` made runs. On Node the context
   runs the microtasks queued so far as the inner script ends, as it does
-  for a worker's `importScripts`.
+  for a worker's `importScripts`. One with a `src`, and a module, is handed
+  to the runner in the same op (`scriptConnected`), since a script made by
+  a script and set `async` false runs in the order it went in
+  (`forceAsync`, `inOrder`, `_runInOrder`), and the document's order is
+  not that one: Google's module loader puts each module at the top of the
+  `<head>`. Met at `<Html>`'s read of the tree, they ran backwards and a
+  module ran before the one defining what it needs. **Anything new that
+  makes a `<script>` element sets its `forceAsync`**, as `create` and a
+  copy do.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the
