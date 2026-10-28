@@ -902,10 +902,35 @@ export function installDom(
   /** And a `<body onerror>`'s, which take the window's five arguments. */
   const compiledGlobalErrors = new Map<string, Any>();
 
+  /** What `EventTarget`'s methods do on a window, by the window: the
+   *  page's global keeps its listeners on `windowTarget`, and a frame's
+   *  window on a target of its own (`frameWindowOf`). The global inherits
+   *  the methods from `EventTarget.prototype`, through `Window.prototype`,
+   *  as a browser's does, and Shady DOM — which YouTube forces — copies
+   *  them from there and calls them on the window; called on nothing, as a
+   *  page's bare `addEventListener(…)` calls them, they are the global's
+   *  (Web IDL 3.7.6). */
+  const windowMethods = new WeakMap<object, Any>();
+  /** The window's methods a call of `EventTarget`'s on `self` is for, or
+   *  null where `self` is a target of its own. A frame's window in a realm
+   *  of its own is reached through this realm's proxy, which hands out the
+   *  frame's methods and is `this` to them: the window it is for is its
+   *  `window`, as a WindowProxy is its window's to Web IDL. */
+  const windowCalled = (self: Any): Any => {
+    const own = windowMethods.get(self ?? G);
+    if (own !== undefined) return own;
+    if (self._listeners !== undefined) return null;
+    const proxied = windowMethods.get(self.window);
+    if (proxied !== undefined) return proxied;
+    throw new TypeError('Illegal invocation');
+  };
+
   class EventTarget {
     _listeners: Record<string, Listener[]> = Object.create(null);
     _handlers: Record<string, Any> = Object.create(null);
     addEventListener(type: string, fn: Any, options: Any = {}): void {
+      const win = windowCalled(this);
+      if (win) return win.addEventListener(type, fn, options);
       if (!fn) return;
       const opts =
         typeof options === 'boolean' ? { capture: options } : options || {};
@@ -927,6 +952,8 @@ export function installDom(
       );
     }
     removeEventListener(type: string, fn: Any, options: Any = {}): void {
+      const win = windowCalled(this);
+      if (win) return win.removeEventListener(type, fn, options);
       const capture =
         typeof options === 'boolean' ? options : !!options?.capture;
       const list = this._listeners[type];
@@ -935,6 +962,8 @@ export function installDom(
       if (at >= 0) list.splice(at, 1);
     }
     dispatchEvent(event: Any): boolean {
+      const win = windowCalled(this);
+      if (win) return win.dispatchEvent(event);
       if (!(event instanceof Event)) {
         throw new TypeError(
           "Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.",
@@ -948,6 +977,11 @@ export function installDom(
       return dispatch(this, event);
     }
   }
+  /** `EventTarget`'s own methods, which a window's are passed on to: a page
+   *  that patches the prototype, as zone.js does, hears a window's call
+   *  once, and not again as it reaches the window's target. */
+  const listen = EventTarget.prototype.addEventListener;
+  const unlisten = EventTarget.prototype.removeEventListener;
 
   /** The events whose `on…` attribute on `<body>` is the window's handler
    *  (HTML 8.1.8.2, the window-reflecting body element event handlers):
@@ -8688,11 +8722,11 @@ export function installDom(
     });
     const methods: Record<string, Any> = {
       addEventListener: (type: Any, fn: Any, options?: Any) => {
-        target.addEventListener(type, fn, options);
+        listen.call(target, type, fn, options);
         if (String(type) === 'resize' && fn) watchViewport(view);
       },
       removeEventListener: (type: Any, fn: Any, options?: Any) =>
-        target.removeEventListener(type, fn, options),
+        unlisten.call(target, type, fn, options),
       dispatchEvent: (event: Any) => {
         if (!(event instanceof Event)) throw new TypeError('not an Event');
         event.isTrusted = false;
@@ -8727,6 +8761,7 @@ export function installDom(
         configurable: true,
       });
     }
+    windowMethods.set(win, methods);
     for (const type of [
       'load',
       'error',
@@ -8945,6 +8980,21 @@ export function installDom(
         },
       },
     );
+    // `EventTarget`'s methods called on it are its window's, this realm's
+    // (`windowMethods`) or another's, which knows its own global
+    const forward =
+      (name: string) =>
+      (...args: Any[]): Any => {
+        const win = current();
+        if (!win) throw crossOrigin();
+        const own = windowMethods.get(win);
+        return own ? own[name](...args) : Reflect.apply(win[name], win, args);
+      };
+    windowMethods.set(proxy, {
+      addEventListener: forward('addEventListener'),
+      removeEventListener: forward('removeEventListener'),
+      dispatchEvent: forward('dispatchEvent'),
+    });
     frameProxies.set(frame, proxy);
     proxiedFrames.set(proxy, frame);
     return proxy;
@@ -18021,7 +18071,7 @@ export function installDom(
 
   /** The window's interface. The global is no instance of it — a page's
    *  context has a global of its own — so `instanceof` asks for that
-   *  global, and its methods are the window's. */
+   *  global, and a frame's window. */
   class Window extends EventTarget {
     static override [Symbol.hasInstance](value: Any): boolean {
       return (
@@ -18032,19 +18082,21 @@ export function installDom(
       );
     }
   }
-  for (const name of [
-    'addEventListener',
-    'removeEventListener',
-    'dispatchEvent',
-  ]) {
-    Object.defineProperty(Window.prototype, name, {
-      value(...args: Any[]): Any {
-        return G[name](...args);
-      },
-      writable: true,
-      configurable: true,
-    });
-  }
+  // what the global inherits is a window's (HTML 7.2.2.1): `EventTarget`'s
+  // methods among it, which a polyfill finds on the prototypes and not on
+  // the global (`windowMethods`)
+  Object.setPrototypeOf(G, Window.prototype);
+  /** Whether a name the global inherits is one a script reaches bare. On
+   *  JavaScriptCore's own global it is not — the scope reads the global
+   *  object under its proxy, whose prototype this did not change — and the
+   *  global keeps the window's methods as its own there. */
+  const inheritsGlobals = ((): boolean => {
+    try {
+      return new Function('return typeof dispatchEvent')() === 'function';
+    } catch {
+      return false;
+    }
+  })();
 
   /**
    * A structured clone (HTML 2.7.3), of what this context makes: a
@@ -27077,14 +27129,23 @@ export function installDom(
   define('getSelection', () => selection);
   define('Selection', Selection);
   define('CaretPosition', CaretPosition);
-  for (const name of ['addEventListener', 'removeEventListener']) {
-    define(name, (...args: Any[]) => (windowTarget as Any)[name](...args));
+  // the window's listeners, on its target; inherited from `EventTarget`
+  // where the scope reaches what the global inherits (`inheritsGlobals`)
+  const globalMethods: Record<string, Any> = {
+    addEventListener: (type: Any, fn: Any, options?: Any) =>
+      listen.call(windowTarget, type, fn, options),
+    removeEventListener: (type: Any, fn: Any, options?: Any) =>
+      unlisten.call(windowTarget, type, fn, options),
+    dispatchEvent: (event: Any) => {
+      if (!(event instanceof Event)) throw new TypeError('not an Event');
+      event.isTrusted = false;
+      return dispatch(windowTarget, event);
+    },
+  };
+  windowMethods.set(G, globalMethods);
+  if (!inheritsGlobals) {
+    for (const [name, fn] of Object.entries(globalMethods)) define(name, fn);
   }
-  define('dispatchEvent', (event: Any) => {
-    if (!(event instanceof Event)) throw new TypeError('not an Event');
-    event.isTrusted = false;
-    return dispatch(windowTarget, event);
-  });
   for (const type of [
     'load',
     'error',
@@ -27956,6 +28017,13 @@ export function installDom(
         try {
           delete (G as Any)[key];
         } catch {}
+      }
+    }
+    // and what it inherits is no window's, but still `EventTarget`'s
+    for (let o: Any = G; o; o = Object.getPrototypeOf(o)) {
+      if (Object.getPrototypeOf(o) === Window.prototype) {
+        Object.setPrototypeOf(o, EventTarget.prototype);
+        break;
       }
     }
     const here = new URL(str(url));

@@ -2440,6 +2440,48 @@ test('the window has what scripts read of it: name, crypto, text encodings, Imag
   );
 });
 
+test("the window inherits EventTarget's methods, and they are its own however they are called", async () => {
+  // Shady DOM, which YouTube forces, copies them from the prototypes under
+  // names of its own and calls the copies on the window: the window had
+  // them as its own, and inherited none
+  const doc = await hosted(
+    '<p id="out"></p><iframe id="b"></iframe><script>' +
+      'var r = [], heard = [];' +
+      'r.push(Window.prototype.isPrototypeOf(window), window instanceof EventTarget,' +
+      '  Object.prototype.hasOwnProperty.call(window, "addEventListener"),' +
+      '  window.addEventListener === EventTarget.prototype.addEventListener);' +
+      'Object.defineProperty(EventTarget.prototype, "__native_add",' +
+      '  Object.getOwnPropertyDescriptor(EventTarget.prototype, "addEventListener"));' +
+      'window.__native_add("a", function (e) {' +
+      '  heard.push("copied:" + (this === window) + ":" + (e.currentTarget === window)); }, true);' +
+      'addEventListener("a", function () { heard.push("bare"); });' +
+      'EventTarget.prototype.addEventListener.call(window, "a", function () { heard.push("called"); });' +
+      'function gone() { heard.push("removed"); }' +
+      'window.addEventListener("a", gone);' +
+      'EventTarget.prototype.removeEventListener.call(window, "a", gone);' +
+      'r.push(dispatchEvent(new Event("a")), heard.join(","));' +
+      // a page that patches the prototype hears the window's, as zone.js does
+      'var patched = 0, add = EventTarget.prototype.addEventListener;' +
+      'EventTarget.prototype.addEventListener = function () { patched++; return add.apply(this, arguments); };' +
+      'window.addEventListener("b", function () {}); addEventListener("b", function () {});' +
+      'EventTarget.prototype.addEventListener = add; r.push(patched);' +
+      // a frame's window is its own, and what is no target is refused
+      'var w = document.getElementById("b").contentWindow, inFrame = [];' +
+      'EventTarget.prototype.addEventListener.call(w, "c", function () { inFrame.push("frame"); });' +
+      'w.dispatchEvent(new Event("c")); window.dispatchEvent(new Event("c"));' +
+      'r.push(inFrame.join(","));' +
+      'try { EventTarget.prototype.addEventListener.call({}, "d", function () {}); r.push("added"); }' +
+      'catch (e) { r.push(e.name); }' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|true|true|copied:true:true,bare,called|2|frame|TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('URL.parse is the constructor answering null where it would throw, as URL.canParse says', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -3319,6 +3361,32 @@ test("what a template holds is its content's, and no search of the document find
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
     '|0|1|0||2|undefined|true|[object HTMLDivElement]',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a template's content is walked by its children's siblings, as Polymer walks it", async () => {
+  // its content is made of copies of the template's children, which were
+  // linked to no sibling: the first one's `nextSibling` was null, and
+  // Polymer, which finds a template's ids by walking it, found none of
+  // YouTube's
+  const doc = await hosted(
+    '<template id="m"><!--a--><div id="x"></div>\n<i></i></template>' +
+      '<p id="out"></p><script>' +
+      'function walk(f) { var s = [], n;' +
+      '  for (n = f.firstChild; n; n = n.nextSibling) s.push(n.nodeName);' +
+      '  for (n = f.lastChild; n; n = n.previousSibling) s.push(n.nodeName);' +
+      '  return s.join(","); }' +
+      'var t = document.createElement("template");' +
+      't.innerHTML = "<!--a--><div id=x></div>\\n<i></i>";' +
+      'var r = [walk(document.getElementById("m").content), walk(t.content)];' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  const walked = '#comment,DIV,#text,I,I,#text,DIV,#comment';
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    `${walked}|${walked}`,
     doc.logs.join('\n'),
   );
 });
@@ -10446,6 +10514,31 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test("a frame's window in a realm of its own hears what the page adds to it, by its methods or by EventTarget's", async () => {
+  // the page reaches it through a proxy, which is `this` to the methods
+  // the frame's window inherits from its realm's `EventTarget`: they find
+  // the window it stands for by its `window`
+  const frame =
+    '<!DOCTYPE html><p id="got"></p><script>parent.postMessage("ready", "*");</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'addEventListener("message", function () {' +
+      '  var w = document.getElementById("f").contentWindow, r = [];' +
+      '  w.addEventListener("ping", function (e) { r.push("own:" + e.type); });' +
+      '  EventTarget.prototype.addEventListener.call(w, "ping", function () { r.push("page"); });' +
+      '  r.push(w.dispatchEvent(new w.Event("ping")));' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, 'own:ping|page|true', logs.join('\n'));
 });
 
 test("a frame's own requests are the frame's, and another origin's answer to it is held to the frame's origin", async () => {
