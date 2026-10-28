@@ -125,6 +125,7 @@ import {
   COLUMN_PIECES,
   COLUMN_ROWS,
   columned,
+  DRAWING_SCALE,
   FADED_BLOCKS,
   GENERATED_FROM,
   GRID_TRACKS,
@@ -132,6 +133,7 @@ import {
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
   SHADOWED_TEXT,
+  SHAPE_STYLES,
   SHIFTED_LINES,
   TEXT_RAISES,
   TEXT_SHIFTS,
@@ -175,6 +177,7 @@ import {
   quotedFamilies,
 } from './svg.js';
 import type {
+  DrawingCut,
   ForeignBox,
   ForeignPainter,
   IntrinsicSize,
@@ -780,6 +783,18 @@ function boundsOf(
     y1 -= out.top;
     x2 += out.right;
     y2 += out.bottom;
+  }
+  // and so is what an inline drawing that shows its overflow paints past
+  // its box: a flow editor's edges, each in an `<svg>` of the default size
+  // at the corner of the graph
+  if (own && box.replaced === 'svg') {
+    const drawn = drawingOverflow(box);
+    if (drawn) {
+      x1 = Math.min(x1, drawn.x);
+      y1 = Math.min(y1, drawn.y);
+      x2 = Math.max(x2, drawn.x + drawn.width);
+      y2 = Math.max(y2, drawn.y + drawn.height);
+    }
   }
   // and so is an outline
   if (own && box.style.outlineStyle !== 'none') {
@@ -12924,7 +12939,51 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       ? foreignPainter(options.foreign, options)
       : null,
     options.drawingUnits?.() ?? null,
+    drawingCut(style),
   );
+}
+
+/** The axes an inline drawing is cut to its content box on: those its
+ *  `overflow` is not `visible` on, `auto` among them, as every engine cuts
+ *  one. */
+function drawingCut(style: ComputedStyle): DrawingCut {
+  const x = style.overflowX !== 'visible';
+  const y = style.overflowY !== 'visible';
+  return x && y ? CUT_BOTH : { x, y };
+}
+
+const CUT_BOTH: DrawingCut = { x: true, y: true };
+
+/** Where an inline drawing whose `overflow` shows what is past its box
+ *  paints, in document coordinates, on the axes it shows it on
+ *  (`SvgDrawing.reach`): null where it is cut on both, or paints nothing
+ *  past its box. */
+function drawingOverflow(box: Box): Rect | null {
+  const style = box.style;
+  if (!box.el || box.replaced !== 'svg') return null;
+  const cut = drawingCut(style);
+  if (cut.x && cut.y) return null;
+  const scale = DRAWING_SCALE.get(box) ?? style.effectiveZoom;
+  const x = box.contentX;
+  const y = box.contentY;
+  const w = box.contentWidth;
+  const h = box.contentHeight;
+  const reach = inlineDrawing(box.el).reach(
+    x,
+    y,
+    w,
+    h,
+    scale,
+    SHAPE_STYLES.get(box) ?? null,
+    style.fontSize / scale,
+  );
+  if (!reach) return null;
+  // and a pixel round it, for what an edge's antialiasing touches
+  const x1 = cut.x ? x : Math.min(x, reach.x - 1);
+  const y1 = cut.y ? y : Math.min(y, reach.y - 1);
+  const x2 = cut.x ? x + w : Math.max(x + w, reach.x + reach.width + 1);
+  const y2 = cut.y ? y + h : Math.max(y + h, reach.y + reach.height + 1);
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
 /** What paints the HTML of a drawing's `<foreignObject>`s where the
