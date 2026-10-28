@@ -51,9 +51,12 @@ export function parseMath(
   return toLen(term);
 }
 
-/** A math function's value as a number (`calc(1 + 0.5)`), or null. */
+/** A math function's value as a number (`calc(1 + 0.5)`), or null. A
+ *  length in it in an absolute unit is one over another such
+ *  (`calc(22px / 192px)`); a relative one has nothing here to resolve it
+ *  against, and makes the value none. */
 export function parseMathNumber(value: string): number | null {
-  const term = parseTerm(value, () => null);
+  const term = parseTerm(value, absoluteLength);
   if (!term || term.kind !== 'linear' || term.length) return null;
   return censor(term.px);
 }
@@ -330,9 +333,17 @@ class Parser {
         if (isNumber(left)) left = scale(right, left.px);
         else if (isNumber(right)) left = scale(left, right.px);
         else return null;
-      } else {
-        if (!isNumber(right) || right.px === 0) return null;
+      } else if (isNumber(right)) {
+        if (right.px === 0) return null;
         left = scale(left, 1 / right.px);
+      } else {
+        // a length over a length is a number (CSS Values 4, 10.9.1):
+        // `scale(calc(var(--icon, 22px) / 192px))` shrinks a drawing made
+        // at 192px to the size of an icon. A percentage on either side is
+        // a different number at every width, and none here
+        const ratio = lengthRatio(left, right);
+        if (ratio === null) return null;
+        left = linear(false, ratio, 0, false);
       }
     }
   }
@@ -363,6 +374,35 @@ function linear(
 
 function isNumber(term: Term): term is Linear {
   return term.kind === 'linear' && !term.length;
+}
+
+/** `a / b` for two lengths of pixels alone, or null for anything else:
+ *  a percentage, a comparison, or a division by nought. */
+function lengthRatio(a: Term, b: Term): number | null {
+  if (a.kind !== 'linear' || b.kind !== 'linear') return null;
+  if (!a.length || !b.length || a.hasPct || b.hasPct || b.px === 0) {
+    return null;
+  }
+  return a.px / b.px;
+}
+
+/** CSS pixels per one of each absolute length unit: what a length is in a
+ *  calculation that comes to a number (`parseMathNumber`), where a length
+ *  is only ever over another, and nothing says what an em is. */
+const ABSOLUTE_PX: Record<string, number> = {
+  px: 1,
+  in: 96,
+  cm: 96 / 2.54,
+  mm: 96 / 25.4,
+  q: 96 / 101.6,
+  pt: 96 / 72,
+  pc: 16,
+};
+
+function absoluteLength(token: string): number | null {
+  const m = /^([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)([a-z]+)$/i.exec(token);
+  const per = m ? ABSOLUTE_PX[m[2].toLowerCase()] : undefined;
+  return per === undefined ? null : Number(m![1]) * per;
 }
 
 /** `a + b`, or `a - b` for a sign of -1, distributed into a comparison. */

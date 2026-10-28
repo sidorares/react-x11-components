@@ -130,7 +130,9 @@ test('a transform is read as its functions, in the order written', async () => {
       '<div id="k" style="transform:rotate(calc(90deg * -1))"></div>' +
       '<div id="l" style="-webkit-transform:matrix3d(1, 0, 0, 0, 0, 1, 0, 0, ' +
       '0, 0, 1, 0, 7, 8, 9, 1)"></div>' +
-      '<div id="m" style="transform:rotate(90deg) scale()"></div>',
+      '<div id="m" style="transform:rotate(90deg) scale()"></div>' +
+      '<div id="n" style="transform:scale(calc(var(--icon, 22px) / 192px))">' +
+      '</div>',
   );
   const el = view(node);
   const list = (id: string) => (boxOf(el, id) as Styled).style.transform;
@@ -199,6 +201,10 @@ test('a transform is read as its functions, in the order written', async () => {
     [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, 8, 9, 1],
   );
   assert.strictEqual(list('m'), null, 'a function with no argument: dropped');
+  // a length over a length is a factor: a drawing made at 192px shrunk to
+  // an icon's size, as Gmail draws its Gemini star
+  const n = 22 / 192;
+  assert.ok(near(matrix('n'), [n, 0, 0, n, 0, 0]), `${list('n')}`);
 });
 
 test('rotate, scale and transform-origin are read', async () => {
