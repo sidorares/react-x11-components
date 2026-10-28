@@ -4997,8 +4997,21 @@ export class DomHost {
     ) {
       edits += 1;
     }
+    // up to the document it is in, through the host of a shadow tree
     let at: AnyNode = node;
-    while (at.parent) at = at.parent;
+    for (;;) {
+      while (at.parent) at = at.parent;
+      if (!(at instanceof ShadowRoot) || !at.host) break;
+      at = at.host;
+    }
+    // A node in no document — what a script builds before it puts it in —
+    // changes nothing drawn, and the change that puts it in is told with
+    // all it holds. Told, they were most of a change: a webmail page's
+    // list builds thirty messages, a thousand elements, apart and puts
+    // them in, and the records of the building passed what a change is
+    // told as (`CHANGES_TOLD`), so the whole page was styled and built
+    // again, three seconds, at every page of messages a scroll loaded.
+    if (!this._isDocument(at)) return;
     const doc = at as Document;
     if (doc === this.document) {
       this._changes.push(change);
@@ -5011,10 +5024,6 @@ export class DomHost {
       // and a frame's style worked out here for the page realm reads it
       // (`_frameStyle`) as it reads one nothing draws
       this._s.foreignChanges += 1;
-      return;
-    }
-    if (!this._documents.has(doc)) {
-      this._changes.push(change);
       return;
     }
     this._s.foreignChanges += 1;
