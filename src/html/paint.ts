@@ -6693,11 +6693,56 @@ export function inkMeets(
   extent: Rect,
   apart: ((parent: Box, child: Box) => boolean) | null = null,
 ): boolean {
+  return walkInk(root, extent, apart, () => true);
+}
+
+/**
+ * Where what `inkMeets` finds is: the least rect around all of the ink a
+ * box and what it holds put within `extent`, cut to the extent, as
+ * `inkMeets` reads ink. Null where they put none there. What cuts a mount
+ * by a box over it asks it, and not the box's bounds: joshwcomeau.com's
+ * header is a white bar and, over it, its links, whose bounds reach a
+ * third of the bar's height past it for the labels of its icons, which
+ * draw nothing.
+ */
+export function inkWithin(
+  root: Box,
+  extent: Rect,
+  apart: ((parent: Box, child: Box) => boolean) | null = null,
+): Rect | null {
+  const x0 = extent.x;
+  const y0 = extent.y;
+  const x1 = extent.x + extent.width;
+  const y1 = extent.y + extent.height;
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  walkInk(root, extent, apart, (ink) => {
+    left = Math.min(left, Math.max(ink.x, x0));
+    top = Math.min(top, Math.max(ink.y, y0));
+    right = Math.max(right, Math.min(ink.x + ink.width, x1));
+    bottom = Math.max(bottom, Math.min(ink.y + ink.height, y1));
+    return false;
+  });
+  if (!(right > left && bottom > top)) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** `inkMeets`'s walk: `hit` is handed each piece of ink that meets
+ *  `extent`, and stops the walk with true. */
+function walkInk(
+  root: Box,
+  extent: Rect,
+  apart: ((parent: Box, child: Box) => boolean) | null,
+  hit: (ink: Rect) => boolean,
+): boolean {
   const stack: Box[] = [root];
   while (stack.length) {
     const at = stack.pop()!;
     if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) continue;
-    if (!meets(inkOf(at), extent)) continue;
+    const bounds = inkOf(at);
+    if (!meets(bounds, extent)) continue;
     const style = at.style;
     // nothing it or what it holds draws shows
     if (drawsNothing(at)) continue;
@@ -6710,7 +6755,8 @@ export function inkMeets(
       style.filter !== null ||
       at.marker
     ) {
-      return true;
+      if (hit(bounds)) return true;
+      continue;
     }
     const outlined = style.outlineStyle !== 'none' && style.outlineWidth > 0;
     if (
@@ -6735,7 +6781,8 @@ export function inkMeets(
         width += 2 * grow;
         height += 2 * grow;
       }
-      if (meets({ x, y, width, height }, extent)) return true;
+      const own = { x, y, width, height };
+      if (meets(own, extent) && hit(own)) return true;
     }
     // what it holds, where a box that clips it leaves it within reach
     if (

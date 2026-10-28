@@ -611,6 +611,83 @@ test('a box fixed to the viewport that draws nothing where it reaches a frame hi
   });
 });
 
+test('a sticky header the viewport holds cuts a frame where it draws over it, however far the frame is scrolled under it, at 1x and 2x', async () => {
+  // joshwcomeau.com's header: its links, sticky at the top, and under them
+  // a white bar, sticky with them. A playground's frame scrolled up under
+  // it was refused its mount, and was blank. The links' box reaches past
+  // the bar for a label hung off its right, which draws nothing over the
+  // frame, and the links alone leave no rectangle of it
+  const source =
+    '<style>body{margin:0}iframe{border:0;display:block}' +
+    '.links{position:sticky;top:0;z-index:3;height:30px}' +
+    '.links a{display:inline-block;margin-left:20px;width:40px;height:20px;' +
+    'background:#00f}' +
+    '.links span{position:absolute;right:0;top:30px;width:10px;height:30px;' +
+    'background:#0f0}' +
+    '.bar{position:sticky;top:0;z-index:2;height:30px;margin-top:-30px;' +
+    'background:#fff}</style>' +
+    '<div class="links"><a></a><span></span></div><div class="bar"></div>' +
+    '<div style="height:100px"></div>' +
+    '<iframe id="f" width="120" height="100"></iframe>' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    const asked: EmbeddedRect[] = [];
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const result = await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 300, height: 200, overflow: 'scroll' },
+        },
+        h(Html, {
+          source,
+          partial: false,
+          renderEmbedded: (rect: EmbeddedRect) => {
+            asked.push(rect);
+            return h('box', {
+              'data-testname': 'in-f',
+              style: { flexGrow: 1, backgroundColor: '#ff0000' },
+            });
+          },
+        }),
+      ),
+      { width: 340, height: 240, scale, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const shown = () => {
+      const rect = asked.at(-1);
+      assert.ok(rect, `asked, ${scale}x`);
+      assert.ok(!rect.hidden, `shown, ${scale}x`);
+      return rect.clip && [rect.clip.y, rect.clip.height];
+    };
+    assert.strictEqual(shown(), undefined, `clear of the header, ${scale}x`);
+    // the bar over the frame's top 20px; and then over 30px of its middle,
+    // its top 50px scrolled away above it
+    for (const [y, clip] of [
+      [120, [150, 80]],
+      [180, [210, 20]],
+    ] as const) {
+      await act(async () => pane!.scrollTo(y));
+      await act();
+      assert.deepStrictEqual(shown(), clip, `scrolled to ${y}, ${scale}x`);
+      assert.ok(mounted('f'), `mounted, ${y}, ${scale}x`);
+    }
+    await expectPixel(result.ctx, 10 * scale, 20 * scale, '#ffffff', {
+      message: `the bar, over the frame, ${scale}x`,
+    });
+    await expectPixel(result.ctx, 30 * scale, 10 * scale, '#0000ff', {
+      message: `a link, over the bar, ${scale}x`,
+    });
+    await expectPixel(result.ctx, 10 * scale, 40 * scale, '#ff0000', {
+      message: `what is mounted for the frame, under the header, ${scale}x`,
+    });
+    cleanup();
+  }
+});
+
 test('a mount stays the same node as a layout moves its element', async () => {
   // a new node would be a new document in an iframe, its scripts started
   // again; a new source is a new document, and a new node is right there

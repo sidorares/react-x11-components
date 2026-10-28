@@ -541,20 +541,26 @@ function unionRect(a: Rect, b: Rect): Rect {
  * draws there (`inkMeets`), and not how far it reaches. Where `extentIn`
  * is given, the extent is asked of what a box on the path holds in that
  * box's own coordinates, which a matrix around it may make others
- * (`media.ts`, for a box drawn through a scale).
+ * (`media.ts`, for a box drawn through a scale). The boxes in `passed`,
+ * and all they hold, are not asked about: the caller asks about them where
+ * they are (`media.ts`, for the sticky boxes the viewport holds).
  */
 export function crowded(
   tree: BoxTree,
   box: Box,
   extent: Rect,
   extentIn: ((parent: Box) => Rect) | null = null,
+  passed: ReadonlySet<Box> | null = null,
 ): boolean {
   const path = new Set<Box>();
   for (let at = box.parent; at; at = at.parent) path.add(at);
+  const apart = passed
+    ? (_parent: Box, child: Box): boolean => passed.has(child)
+    : null;
   const stack: Box[] = [tree.root];
   while (stack.length) {
     const at = stack.pop()!;
-    if (at === box) continue;
+    if (at === box || (passed?.has(at) && !path.has(at))) continue;
     if (path.has(at)) {
       const outline = at.style.outlineWidth;
       if (outline > 0 && at.style.outlineStyle !== 'none') return true;
@@ -562,7 +568,7 @@ export function crowded(
       continue;
     }
     const within = extentIn && at.parent ? extentIn(at.parent) : extent;
-    if (inkMeets(at, within)) return true;
+    if (inkMeets(at, within, apart)) return true;
   }
   return false;
 }

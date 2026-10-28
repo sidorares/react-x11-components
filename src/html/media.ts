@@ -41,6 +41,12 @@
 //    (`cutByFixed`): a header that comes over a playing video cuts the
 //    player where it reaches it, and one that reaches into its middle hides
 //    it, the poster drawn there in the meantime and the video playing on.
+//    A sticky box the viewport holds (`VIEWPORT_STICKY`), which the pane's
+//    scroll moves over the document as it moves a fixed one, is painted
+//    over a player again where it is held (`coversOf`), and cuts what is
+//    mounted for an embedded element as a fixed box does: joshwcomeau.com's
+//    header is one, and a playground's frame that scrolled up under it was
+//    mounted nowhere.
 //  - **What a rectangle cannot follow keeps the poster**: a transform that
 //    turns, skews, flips or scales one way more than the other, a
 //    `clip-path` or a mask on the video or around it, a video fixed to the
@@ -63,7 +69,7 @@ import { covers, shownBy } from './controls.js';
 import { attr, isElement, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
 import { masked } from './css/style.js';
-import { heldBack, placedMatrix } from './layout/block.js';
+import { heldBack, placedMatrix, VIEWPORT_STICKY } from './layout/block.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   clipFor,
@@ -72,7 +78,7 @@ import {
   drawnAtViewport,
   evenScaleOf,
   FIXED_BOXES,
-  inkMeets,
+  inkWithin,
   NO_ZOOM,
   paintedAfter,
   paintOrderOf,
@@ -398,6 +404,7 @@ export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
     if (!placed) continue;
     const rect = { ...placed, kind: tagOf(placed.element) as EmbeddedKind };
     FIXED_OVER.set(rect, fixedOver(tree, box));
+    HELD_OVER.set(rect, heldOver(tree, box));
     out.push(rect);
   }
   return out;
@@ -407,6 +414,11 @@ export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
  *  viewport the document paints after its element (`fixedOver`), which the
  *  rect is cut by where the scroll has them (`cutByFixed`). */
 export const FIXED_OVER = new WeakMap<EmbeddedRect | MediaRect, Box[]>();
+
+/** And the sticky boxes the viewport holds that the document paints after
+ *  each embedded element (`heldOver`), which its rect is cut by where the
+ *  pane's scroll has put them (`cutByFixed`'s `held`). */
+export const HELD_OVER = new WeakMap<EmbeddedRect, readonly Box[]>();
 
 /**
  * The boxes fixed to the viewport that the document paints after `box`: a
@@ -421,9 +433,26 @@ export const FIXED_OVER = new WeakMap<EmbeddedRect | MediaRect, Box[]>();
 function fixedOver(tree: BoxTree, box: Box): Box[] {
   const fixed = FIXED_BOXES.get(tree);
   if (!fixed?.length) return [];
+  return paintedAfterOf(fixed, box);
+}
+
+/** The sticky boxes the viewport holds that the document paints after
+ *  `box`, as `fixedOver` finds the fixed ones: but for one around it,
+ *  which it is in and not under. */
+function heldOver(tree: BoxTree, box: Box): readonly Box[] {
+  const held = VIEWPORT_STICKY.get(tree);
+  if (!held?.length) return NO_BOXES;
+  const around = held.filter((h) => !holds(h, box));
+  return around.length ? paintedAfterOf(around, box) : NO_BOXES;
+}
+
+/** Of `boxes`, those painted after `box`: each where either's place in the
+ *  paint order cannot be told (`paintOrderOf`), or one is in the other's
+ *  stacking context. */
+function paintedAfterOf(boxes: readonly Box[], box: Box): Box[] {
   const at = paintOrderOf(box);
-  if (!at) return fixed;
-  return fixed.filter((f) => {
+  if (!at) return boxes.slice();
+  return boxes.filter((f) => {
     const key = paintOrderOf(f);
     if (!key) return true;
     for (let i = 0; i < key.length && i < at.length; i += 1) {
@@ -432,6 +461,35 @@ function fixedOver(tree: BoxTree, box: Box): Box[] {
     return true;
   });
 }
+
+/** Whether `outer` is `box` or a box around it. */
+function holds(outer: Box, box: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at === outer) return true;
+  }
+  return false;
+}
+
+const NO_BOXES: readonly Box[] = [];
+
+/**
+ * The sticky boxes the viewport holds (`VIEWPORT_STICKY`), as a set: what
+ * asks whether an embedded element's mount would be under something passes
+ * them over, and the mount is cut by them where the pane's scroll has them
+ * instead (`cutByFixed`), as by a box fixed to the viewport. Asked of them
+ * where they are when the mount is placed, a header held over a frame
+ * refused the frame its mount, and the frame was blank under it and below
+ * it.
+ */
+function heldSet(tree: BoxTree): ReadonlySet<Box> | null {
+  const held = VIEWPORT_STICKY.get(tree);
+  if (!held?.length) return null;
+  let set = HELD_SETS.get(held);
+  if (!set) HELD_SETS.set(held, (set = new Set(held)));
+  return set;
+}
+
+const HELD_SETS = new WeakMap<readonly Box[], ReadonlySet<Box>>();
 
 /**
  * Where a sibling over the document stands for a replaced box, in device
@@ -497,6 +555,11 @@ function placementOf(
   const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
   if (reach.width > 0 && reach.height > 0) {
+    // the sticky boxes the viewport holds are asked about where the scroll
+    // has them, as the fixed ones are, for an embedded element: a player's
+    // covers paint one over it where it is held (`coversOf`). And not for a
+    // box at the viewport, which `_viewportRect` cuts by nothing
+    const held = drawnOver || atViewport ? null : heldSet(tree);
     if (drawnOver && !zoomed && !atViewport) {
       // what the document paints after it, where a sibling after the
       // player can paint it again — from the box it is painted with, where
@@ -517,13 +580,13 @@ function placementOf(
       // it in the same terms, which no scroll moves it against
       const fixedReach = atViewport ? reach : null;
       const after = zoomed
-        ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, null, true)
-        : paintedAfter(box, reach, fixedReach);
+        ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, held, true)
+        : paintedAfter(box, reach, fixedReach, held);
       if (after === null) {
         const inside = zoomed
           ? (parent: Box): Rect => unzoomRect(zoomBetween(parent)!, reach)
           : null;
-        if (crowded(tree, box, reach, inside)) return null;
+        if (crowded(tree, box, reach, inside, held)) return null;
       } else if (after) return null;
     }
   }
@@ -670,21 +733,34 @@ function pixelsAround(rect: Rect): Rect {
 
 /**
  * A rect, cut by the boxes fixed to the viewport where the scroll has them,
- * `shift` from where they were laid out: the band one takes off its top, its
- * bottom or a side, or `hidden` where one reaches into it in a way that
- * leaves no rectangle. `fixed` is those the document paints after the
- * rect's element (`fixedOver`), and only one painted over the document's
- * flow is asked about — one at a negative `z-index` is under it. And only
- * one that draws something where it reaches the rect (`inkMeets`): a fixed
- * box's ink is the union of all it holds, and joshwcomeau.com keeps a
- * popup fixed over its article, a wrapper with nothing of its own around a
- * card at an opacity of 0, whose ink a playground's frame reached once its
- * divider was dragged. The frame was hidden whole for it.
+ * `shift` from where they were laid out, and by the sticky boxes the
+ * viewport holds, `held`, where the pane's scroll has put them already
+ * (`_followViewport`): the band one takes off its top, its bottom or a
+ * side, or `hidden` where one reaches into it in a way that leaves no
+ * rectangle. Each is those the document paints after the rect's element
+ * (`fixedOver`, `heldOver`), and only one painted over the document's flow
+ * is asked about — one at a negative `z-index` is under it.
+ *
+ * A box cuts the rect where it draws something in it (`inkWithin`), and
+ * not as far as its bounds reach: a fixed box's ink is the union of all it
+ * holds, and joshwcomeau.com keeps a popup fixed over its article, a
+ * wrapper with nothing of its own around a card at an opacity of 0, whose
+ * ink a playground's frame reached once its divider was dragged. The frame
+ * was hidden whole for it. Its header, held at the top, is a white bar and
+ * its links over it, whose bounds reach a third of the bar again below it.
+ * And a box that leaves no rectangle is asked again once the others have
+ * cut the rect, which may leave it nothing to reach: the links come first
+ * in the tree, and only the bar under them takes a band.
  */
 export function cutByFixed(
   rect: Rect,
   fixed: readonly Box[],
   shift: { x: number; y: number } | null,
+  held: readonly Box[] = NO_BOXES,
+  /** What the pane shows of the document, where it is known: a box held
+   *  at its top takes a band off what of the rect it shows, whatever of
+   *  the rect is scrolled away above it. */
+  viewport: Rect | null = null,
 ): Rect | 'hidden' {
   let x0 = rect.x;
   let y0 = rect.y;
@@ -692,28 +768,73 @@ export function cutByFixed(
   let y1 = rect.y + rect.height;
   const dx = shift?.x ?? 0;
   const dy = shift?.y ?? 0;
-  for (const box of fixed) {
-    if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
-    const z = box.style.zIndex;
-    if (typeof z === 'number' && z < 0) continue;
-    const bx0 = box.boundsX + dx;
-    const by0 = box.boundsY + dy;
-    const bx1 = bx0 + box.boundsWidth;
-    const by1 = by0 + box.boundsHeight;
-    if (bx1 <= x0 || bx0 >= x1 || by1 <= y0 || by0 >= y1) continue;
-    // where it was laid out, at the document's top
-    const within = { x: x0 - dx, y: y0 - dy, width: x1 - x0, height: y1 - y0 };
-    if (!inkMeets(box, within)) continue;
-    const across = bx0 <= x0 && bx1 >= x1;
-    const down = by0 <= y0 && by1 >= y1;
-    if (across && by0 <= y0) y0 = Math.min(y1, by1);
-    else if (across && by1 >= y1) y1 = Math.max(y0, by0);
-    else if (down && bx0 <= x0) x0 = Math.min(x1, bx1);
-    else if (down && bx1 >= x1) x1 = Math.max(x0, bx0);
-    else return 'hidden';
+  // each with how far the scroll moved it from where its boxes are
+  let left: [Box, number, number][] = [];
+  for (const box of fixed) left.push([box, dx, dy]);
+  for (const box of held) left.push([box, 0, 0]);
+  for (let cut = true; cut && left.length;) {
+    cut = false;
+    const again: [Box, number, number][] = [];
+    for (const entry of left) {
+      const [box, sx, sy] = entry;
+      if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+      const z = box.style.zIndex;
+      if (typeof z === 'number' && z < 0) continue;
+      // what of the rect shows, where its boxes are: for a fixed one, at
+      // the document's top
+      const vx0 = viewport ? Math.max(x0, viewport.x) : x0;
+      const vy0 = viewport ? Math.max(y0, viewport.y) : y0;
+      const vx1 = viewport ? Math.min(x1, viewport.x + viewport.width) : x1;
+      const vy1 = viewport ? Math.min(y1, viewport.y + viewport.height) : y1;
+      // nothing of it shows, which nothing hides
+      if (!(vx1 > vx0 && vy1 > vy0)) return spanned(x0, y0, x1, y1);
+      const within = {
+        x: vx0 - sx,
+        y: vy0 - sy,
+        width: vx1 - vx0,
+        height: vy1 - vy0,
+      };
+      const ink = inkWithin(box, within);
+      // a rect that only gets smaller is never reached by it
+      if (!ink) continue;
+      const right = ink.x + ink.width;
+      const bottom = ink.y + ink.height;
+      const across =
+        ink.x <= within.x + EDGE && right >= within.x + within.width - EDGE;
+      const down =
+        ink.y <= within.y + EDGE && bottom >= within.y + within.height - EDGE;
+      if (across && ink.y <= within.y + EDGE) y0 = Math.min(y1, bottom + sy);
+      else if (across && bottom >= within.y + within.height - EDGE) {
+        y1 = Math.max(y0, ink.y + sy);
+      } else if (down && ink.x <= within.x + EDGE) {
+        x0 = Math.min(x1, right + sx);
+      } else if (down && right >= within.x + within.width - EDGE) {
+        x1 = Math.max(x0, ink.x + sx);
+      } else {
+        again.push(entry);
+        continue;
+      }
+      cut = true;
+    }
+    left = again;
   }
-  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  if (left.length && x1 > x0 && y1 > y0) return 'hidden';
+  return spanned(x0, y0, x1, y1);
 }
+
+/** The rect between two corners, of no size where they cross. */
+function spanned(x0: number, y0: number, x1: number, y1: number): Rect {
+  return {
+    x: x0,
+    y: y0,
+    width: Math.max(0, x1 - x0),
+    height: Math.max(0, y1 - y0),
+  };
+}
+
+/** How far short of an edge of the rect, in device pixels, ink that
+ *  reaches it may be by the arithmetic that cut it to the rect. */
+const EDGE = 1e-3;
 
 /**
  * How far into the picture, in device pixels, a box may reach and not be
