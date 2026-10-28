@@ -71,6 +71,54 @@ export function useHref(el: Element): string | null {
   return href.length > 1 && href.startsWith('#') ? href.slice(1) : null;
 }
 
+/** The properties that name another element of the document by a
+ *  `url(#…)`: a paint server, a marker, a clip path, a mask, a filter. */
+const REFERRING = [
+  'fill',
+  'stroke',
+  'marker-start',
+  'marker-mid',
+  'marker-end',
+  'clip-path',
+  'mask',
+  'filter',
+];
+
+/** A `url()` naming an element by its id, written as a property has it. */
+const URL_ID = /url\(\s*['"]?#([^'")\s]+)['"]?\s*\)/g;
+
+/**
+ * Each id an element of a drawing names by a `url(#…)`: in a property
+ * above, as an attribute, or anywhere in its `style`, the `marker`
+ * shorthand among it — and the gradient or pattern one takes after
+ * (`href`). `attribs` may be what the rules give the element
+ * (`ShapeStyle`), which names no `style`. Such a reference is to the
+ * document, not to the drawing it is made in (SVG 2, 16.1, "Linking"): a
+ * flow editor draws each edge in an `<svg>` of its own, and the `<marker>`s
+ * of its arrowheads in another.
+ */
+export function urlIds(
+  name: string,
+  attribs: Readonly<Record<string, string>>,
+  each: (id: string) => void,
+): void {
+  const read = (value: string | undefined): void => {
+    if (!value || !value.includes('url(')) return;
+    for (const m of value.matchAll(URL_ID)) each(m[1]);
+  };
+  for (const prop of REFERRING) read(attribs[prop]);
+  read(attribs.style);
+  const local = name.slice(name.indexOf(':') + 1).toLowerCase();
+  if (
+    local === 'lineargradient' ||
+    local === 'radialgradient' ||
+    local === 'pattern'
+  ) {
+    const href = attribs.href ?? attribs['xlink:href'] ?? '';
+    if (href.length > 1 && href.startsWith('#')) each(href.slice(1));
+  }
+}
+
 /** Whether an element is a `<use>`, with a prefix or not. */
 export function isUse(el: Element): boolean {
   const name = el.name;

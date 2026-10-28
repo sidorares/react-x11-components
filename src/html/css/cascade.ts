@@ -157,6 +157,7 @@ import {
   isUse,
   shapeFont,
   shapeValue,
+  urlIds,
   useHref,
 } from './shapes.js';
 import type {
@@ -7632,7 +7633,11 @@ export class Cascade {
       }
       return style.custom;
     };
-    walk(root, false, (el, candidates) => {
+    // the ids its elements name by a `url(#…)`, some of which may be of
+    // elements outside it
+    let refs: string[] | null = null;
+    const refer = (id: string): void => void (refs ??= []).push(id);
+    const each = (el: Element, candidates: Candidate[] | null): void => {
       place += 1;
       if (isUse(el)) (uses ??= []).push(el);
       if (el !== root) {
@@ -7647,11 +7652,36 @@ export class Cascade {
           );
         }
       }
+      urlIds(el.name, el.attribs, refer);
       const own = candidates && resolve(candidates, el === root, customOf(el));
       if (!own) return;
+      urlIds('', own, refer);
       (of ??= new Map()).set(el, own);
       key += named(own, place);
-    });
+    };
+    walk(root, false, each);
+    // What it names outside itself — the `<marker>`s of a flow editor's
+    // arrowheads in an `<svg>` of their own, a gradient kept in a hidden
+    // one — is styled where it stands, as its own elements are, with what
+    // the drawing's root has where nothing between sets its own; and drawn
+    // from a copy (`copyTree`). An id it has an element of is its own.
+    if (refs) {
+      const list: string[] = refs;
+      let outside: Set<Element> | null = null;
+      for (let i = 0; i < list.length; i += 1) {
+        const id = list[i];
+        if (ids?.has(id) || root.attribs.id === id) continue;
+        const target = byId(id);
+        if (!target || outside?.has(target)) continue;
+        (outside ??= new Set()).add(target);
+        if (asks) {
+          for (let at = target.parent; at && isTag(at); at = at.parent) {
+            note(at as Element);
+          }
+        }
+        walk(target, false, each);
+      }
+    }
     if (!uses) return of ? { of, used: null, key } : null;
 
     // Each element a `<use>` names, in the tree of its copy: once however
@@ -8606,10 +8636,10 @@ function elementById(from: Element, id: string): Element | null {
 /**
  * Whether a drawing has a `var()` in a presentation attribute of a shape's
  * properties or in a `style`, or sets a custom property in a `style` —
- * in it, or in what a `<use>` in it draws — for `shapeStyles` to read where
- * no rule reaches the drawing. Only the attributes by those names are
- * looked at: a path's `d` may be thousands of characters long, and is no
- * declaration.
+ * in it, in what a `<use>` in it draws, or in what it names by a `url(#…)`
+ * — for `shapeStyles` to read where no rule reaches the drawing. Only the
+ * attributes by those names are looked at: a path's `d` may be thousands
+ * of characters long, and is no declaration.
  */
 export function drawingVars(
   root: Element,
@@ -8624,14 +8654,16 @@ export function drawingVars(
     if (style && (hasVar(style) || (el !== root && style.includes('--')))) {
       return true;
     }
-    if (isUse(el)) {
-      const id = useHref(el);
+    const follow = (id: string | null): void => {
       const target = id === null ? null : byId(id);
       if (target && !(targets ??= new Set()).has(target)) {
         targets.add(target);
         stack.push(target);
       }
-    }
+    };
+    if (isUse(el)) follow(useHref(el));
+    // and in what it names by a `url(#…)`, which `shapeStyles` styles too
+    urlIds(el.name, el.attribs, follow);
     const children = el.children;
     for (let i = children.length - 1; i >= 0; i -= 1) {
       if (children[i].type === 'tag') stack.push(children[i] as Element);
