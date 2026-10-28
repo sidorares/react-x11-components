@@ -880,6 +880,11 @@ export type ShapeStyler = (box: Box) => ShapeStyles | null;
  *  its answer put here again (`HtmlViewNode._hoverInPlace`). */
 export const SHAPE_STYLES = new WeakMap<Box, ShapeStyles | null>();
 
+/** The device pixels a user unit of an inline drawing's is, by its box: the
+ *  document's scale and the box's zoom, as it was built. What it paints
+ *  past its box is worked out from it (`SvgDrawing.reach`). */
+export const DRAWING_SCALE = new WeakMap<Box, number>();
+
 /** The element a pseudo-element's box is generated from, which has no
  *  element of its own (`Box.pseudo`): whose the images its styles name are,
  *  when the host is asked for them. */
@@ -4112,6 +4117,7 @@ class Builder {
       // its `em` is its own font size, in CSS pixels like the rest of it
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       setIntrinsics(box, svgIntrinsics(el, style.fontSize / scale), scale);
+      DRAWING_SCALE.set(box, scale);
       // and the HTML its `<foreignObject>`s hold, which most drawings have
       // none of, where `SvgView` hands an object over to be drawn
       const objects = inlineDrawing(el).foreignObjects();

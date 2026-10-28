@@ -33,6 +33,8 @@ import {
   resolve,
 } from './css/values.js';
 import type { UnitContext } from './css/values.js';
+import { mapRect, multiply } from './css/transform.js';
+import type { Matrix } from './css/transform.js';
 
 export { isSvgRoot, quotedFamilies };
 
@@ -475,6 +477,14 @@ function lend(ctx: ClipContext): Lent {
   return lent;
 }
 
+/** The axes a drawing is cut to its rectangle on (`SvgDrawing.draw`). */
+export interface DrawingCut {
+  readonly x: boolean;
+  readonly y: boolean;
+}
+
+const CUT_BOTH: DrawingCut = { x: true, y: true };
+
 const ALIGN = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/;
 const AT: Record<string, number> = { Min: 0, Mid: 0.5, Max: 1 };
 
@@ -544,6 +554,11 @@ export class SvgDrawing {
   private _foreign: Element[] | null = null;
   private _foreignEnd: End | null = null;
 
+  /** Where it last worked out what it paints reaches (`reach`): for what,
+   *  and where the drawing ended then. */
+  private _reached: { key: string; end: End; edges: Edges | null } | null =
+    null;
+
   /** The element an SVG image's URL names by its fragment, its own
    *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
   private readonly _target: Element | null;
@@ -601,6 +616,10 @@ export class SvgDrawing {
      *  (`DrawingUnits`); an image's are its initial font size and the
      *  rectangle it is drawn in. */
     units: DrawingUnits | null = null,
+    /** The axes it is cut to the rectangle on: an inline drawing's whose
+     *  `overflow` is not `visible` there, which is every one the page says
+     *  nothing of (`svg:not(:root) { overflow: hidden }`, SVG 2, 6.14). */
+    cut: DrawingCut = CUT_BOTH,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -674,9 +693,21 @@ export class SvgDrawing {
     lent.open = 0;
     lent.alpha = alphaOf(ctx);
     try {
-      ctx.beginPath();
-      ctx.rect(x, y, w, h);
-      ctx.clip();
+      if (cut.x && cut.y) {
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+      } else if (cut.x || cut.y) {
+        // cut on one axis, and as far as it reaches on the other
+        const r = this.reach(x, y, w, h, scale, shapes, lengths.em);
+        const x1 = cut.x || !r ? x : Math.min(x, Math.floor(r.x) - 1);
+        const y1 = cut.y || !r ? y : Math.min(y, Math.floor(r.y) - 1);
+        const x2 = cut.x || !r ? x + w : Math.max(x + w, r.x + r.width + 1);
+        const y2 = cut.y || !r ? y + h : Math.max(y + h, r.y + r.height + 1);
+        ctx.beginPath();
+        ctx.rect(x1, y1, x2 - x1, y2 - y1);
+        ctx.clip();
+      }
       const opts: ViewOptions = {};
       if (color) opts.color = color;
       if (surface) opts.surface = surface;
@@ -732,6 +763,59 @@ export class SvgDrawing {
       lent.alpha = outerAlpha;
       ctx.restore();
     }
+  }
+
+  /**
+   * The rectangle around what the drawing paints, drawn into `x`, `y`, `w`
+   * and `h` as `draw` draws it, or null where it paints nothing
+   * (`drawingReach`): past the rectangle where its shapes reach outside its
+   * viewport, which an inline drawing whose `overflow` is `visible` shows.
+   * A flow editor draws each edge in an `<svg>` of the default size, 300 by
+   * 150, at the corner of its graph, and the edge wherever it goes. `em` is
+   * its root's font size, in user units. Worked out again once more of a
+   * streamed drawing has arrived, or for another viewport or other rules.
+   */
+  reach(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    scale: number,
+    shapes: ShapeStyles | null,
+    em: number,
+  ): { x: number; y: number; width: number; height: number } | null {
+    if (this._failed || !(w > 0 && h > 0)) return null;
+    const root = this._root;
+    if (drawsNothing(root)) return null;
+    const box = viewBoxOf(root);
+    const vw = box ? box[2] : w / scale;
+    const vh = box ? box[3] : h / scale;
+    const key = `${vw}x${vh}|${em}|${shapes?.key ?? ''}`;
+    let kept = this._reached;
+    if (!kept || kept.key !== key || moved(kept.end)) {
+      const lengths: Lengths = { em, rem: 16, vw: w / scale, vh: h / scale };
+      kept = {
+        key,
+        end: endOf(root),
+        edges: drawingReach(root, [vw, vh], lengths, shapes?.of ?? null),
+      };
+      this._reached = kept;
+    }
+    const e = kept.edges;
+    if (!e) return null;
+    // where a user unit is drawn, as `draw` fits the drawing in
+    const fit = box
+      ? svgTransform(
+          fitTransform(box, x, y, w, h, svgAttr(root, 'preserveAspectRatio')),
+        )
+      : null;
+    return mapRect(
+      fit ?? [scale, 0, 0, scale, x, y],
+      e.x1,
+      e.y1,
+      e.x2 - e.x1,
+      e.y2 - e.y1,
+    );
   }
 
   /**
@@ -1907,4 +1991,560 @@ function textOf(bytes: Uint8Array): string {
   let out = '';
   for (const b of bytes) out += String.fromCharCode(b);
   return out;
+}
+
+/** A rectangle by its edges, in a drawing's user space. */
+interface Edges {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+/** What a reach is worked out against: the viewport its percentages are
+ *  of, the lengths its units are, and what the rules give its elements. */
+interface ReachContext {
+  viewport: [number, number];
+  lengths: Lengths;
+  styles: ReadonlyMap<Element, ShapeStyle> | null;
+  find: (id: string) => Element | null;
+  /** What is being walked now: a `<use>` naming what it is in finds it. */
+  walking: Set<Element>;
+}
+
+/** What a shape inherits that its reach is of: how wide its stroke is,
+ *  the markers on its vertices, and its font size. */
+interface ReachInherited {
+  stroke: number;
+  markers: readonly Element[];
+  size: number;
+}
+
+/** The properties that put a marker on a shape's vertices, each inherited
+ *  (SVG 2, 11.6.1); `marker` is the shorthand of them. */
+const MARKER_PROPERTIES = ['marker-start', 'marker-mid', 'marker-end'];
+
+/** The elements that draw nothing where they stand. */
+const DRAWS_NOTHING = new Set([
+  'defs',
+  'symbol',
+  'marker',
+  'pattern',
+  'lineargradient',
+  'radialgradient',
+  'clippath',
+  'mask',
+  'filter',
+  'style',
+  'script',
+  'title',
+  'desc',
+  'metadata',
+]);
+
+/** What `parseSvgPath` makes of a path's data: its commands, absolute,
+ *  arcs as cubics. */
+interface PathCommand {
+  type: string;
+  x?: number;
+  y?: number;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+}
+
+type ParseSvgPath = (d: string) => PathCommand[];
+
+function parseSvgPath(): ParseSvgPath | null {
+  const parse = (ntk as unknown as Record<string, unknown>).parseSvgPath;
+  return typeof parse === 'function' ? (parse as ParseSvgPath) : null;
+}
+
+/** An SVG `transform` attribute as a matrix (SVG 2's own syntax: numbers
+ *  with no units), or null for none, and the identity for one this cannot
+ *  read, which `SvgView` draws as none. */
+function svgTransform(value: string | undefined): Matrix | null {
+  if (!value || !value.trim()) return null;
+  let m: Matrix = [1, 0, 0, 1, 0, 0];
+  for (const [, fn, args] of value.matchAll(
+    /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/gi,
+  )) {
+    const n = args
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map(Number);
+    if (!n.every(Number.isFinite)) return [1, 0, 0, 1, 0, 0];
+    const rad = ((n[0] ?? 0) * Math.PI) / 180;
+    let t: Matrix;
+    switch (fn.toLowerCase()) {
+      case 'matrix':
+        if (n.length < 6) return [1, 0, 0, 1, 0, 0];
+        t = [n[0], n[1], n[2], n[3], n[4], n[5]];
+        break;
+      case 'translate':
+        t = [1, 0, 0, 1, n[0] ?? 0, n[1] ?? 0];
+        break;
+      case 'scale':
+        t = [n[0] ?? 1, 0, 0, n[1] ?? n[0] ?? 1, 0, 0];
+        break;
+      case 'rotate': {
+        const c = Math.cos(rad);
+        const s = Math.sin(rad);
+        const cx = n[1] ?? 0;
+        const cy = n[2] ?? 0;
+        t = [c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy];
+        break;
+      }
+      case 'skewx':
+        t = [1, 0, Math.tan(rad), 1, 0, 0];
+        break;
+      default:
+        t = [1, Math.tan(rad), 0, 1, 0, 0];
+    }
+    m = multiply(m, t);
+  }
+  return m;
+}
+
+/** One of an element's properties as it draws it: what the rules give it,
+ *  else its `style`'s last declaration of it, else its attribute. */
+function propertyOf(
+  el: Element,
+  name: string,
+  styles: ReadonlyMap<Element, ShapeStyle> | null,
+): string | undefined {
+  const ruled = styles?.get(el)?.[name];
+  if (ruled !== undefined) return ruled;
+  const style = el.attribs.style;
+  let found: string | undefined;
+  if (style && style.includes(name)) {
+    for (const declaration of style.split(';')) {
+      const colon = declaration.indexOf(':');
+      if (colon < 0) continue;
+      if (declaration.slice(0, colon).trim().toLowerCase() === name) {
+        found = declaration.slice(colon + 1).trim();
+      }
+    }
+  }
+  return found ?? svgAttr(el, name);
+}
+
+/** A length of a drawing's geometry in user units: a number, or what
+ *  `geometryLength` works out; `fallback` for one it cannot read. */
+function reachLength(
+  value: string | undefined,
+  of: number,
+  size: number,
+  ctx: ReachContext,
+  fallback = 0,
+): number {
+  if (value === undefined) return fallback;
+  const v = value.trim();
+  const n = Number(v);
+  if (v !== '' && Number.isFinite(n)) return n;
+  const worked = geometryLength(v, of, size, ctx.lengths);
+  if (worked !== null) return worked;
+  const lead = parseFloat(v);
+  return Number.isFinite(lead) ? lead : fallback;
+}
+
+function grow(into: Edges | null, by: Edges | null): Edges | null {
+  if (!by) return into;
+  if (!into) return { ...by };
+  into.x1 = Math.min(into.x1, by.x1);
+  into.y1 = Math.min(into.y1, by.y1);
+  into.x2 = Math.max(into.x2, by.x2);
+  into.y2 = Math.max(into.y2, by.y2);
+  return into;
+}
+
+function padded(edges: Edges | null, by: number): Edges | null {
+  if (!edges || !(by > 0)) return edges;
+  return {
+    x1: edges.x1 - by,
+    y1: edges.y1 - by,
+    x2: edges.x2 + by,
+    y2: edges.y2 + by,
+  };
+}
+
+function through(m: Matrix | null, edges: Edges | null): Edges | null {
+  if (!edges || !m) return edges;
+  const r = mapRect(
+    m,
+    edges.x1,
+    edges.y1,
+    edges.x2 - edges.x1,
+    edges.y2 - edges.y1,
+  );
+  return { x1: r.x, y1: r.y, x2: r.x + r.width, y2: r.y + r.height };
+}
+
+/** The rectangle around a list of points. */
+function around(points: number[]): Edges | null {
+  let out: Edges | null = null;
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    const x = points[i];
+    const y = points[i + 1];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    out = grow(out, { x1: x, y1: y, x2: x, y2: y });
+  }
+  return out;
+}
+
+/** The markers an element may put on its vertices: those it inherits and
+ *  those it names itself. One it names over one it inherits leaves both
+ *  here, which is more than it draws, and as far as a reach needs. */
+function markersOf(
+  el: Element,
+  up: readonly Element[],
+  ctx: ReachContext,
+): readonly Element[] {
+  const shorthand = propertyOf(el, 'marker', ctx.styles);
+  let out: Element[] | null = null;
+  for (const name of MARKER_PROPERTIES) {
+    const value = propertyOf(el, name, ctx.styles) ?? shorthand;
+    const m = value && /url\(\s*['"]?#([^'")\s]+)/.exec(value);
+    const marker = m ? ctx.find(m[1]) : null;
+    if (!marker || localName(marker.name) !== 'marker') continue;
+    (out ??= [...up]).push(marker);
+  }
+  return out ?? up;
+}
+
+/** How far past its vertices a shape's markers reach, at most: each
+ *  marker's viewport, wherever its reference point is in it and however it
+ *  is turned, a stroke width a unit unless it says otherwise. */
+function markerReach(
+  markers: readonly Element[],
+  stroke: number,
+  ctx: ReachContext,
+): number {
+  let reach = 0;
+  for (const marker of markers) {
+    const w = reachLength(svgAttr(marker, 'markerWidth'), 0, 16, ctx, 3);
+    const h = reachLength(svgAttr(marker, 'markerHeight'), 0, 16, ctx, 3);
+    const units =
+      (svgAttr(marker, 'markerUnits') ?? '').trim() === 'userSpaceOnUse'
+        ? 1
+        : stroke;
+    // twice the diagonal: the reference point may be at a corner
+    reach = Math.max(reach, 2 * Math.hypot(w, h) * units);
+  }
+  return reach;
+}
+
+/**
+ * The rectangle around what an element of a drawing paints, in its
+ * parent's user space, or null where it paints nothing: its geometry, its
+ * stroke past it, its markers, its text as far as its letters could reach,
+ * what a `<use>` draws and what a `<filter>`'s region takes in. Generous
+ * where it cannot be exact — a stroke reaches as far as its miters could,
+ * a letter is as wide as it is tall — since what is outside it is not
+ * painted where a repaint does not reach the box (`SvgDrawing.reach`).
+ */
+function reachOf(
+  el: Element,
+  ctx: ReachContext,
+  up: ReachInherited,
+  depth: number,
+): Edges | null {
+  const name = localName(el.name);
+  if (DRAWS_NOTHING.has(name) || depth > 64) return null;
+  if (propertyOf(el, 'display', ctx.styles)?.trim() === 'none') return null;
+  const [vw, vh] = ctx.viewport;
+  const diagonal = Math.sqrt((vw * vw + vh * vh) / 2);
+  let size = up.size;
+  const ownSize = propertyOf(el, 'font-size', ctx.styles);
+  if (ownSize !== undefined) {
+    size = fontSizeOf({ 'font-size': ownSize }, up.size, ctx.lengths, () => {});
+  }
+  const strokeWidth = propertyOf(el, 'stroke-width', ctx.styles);
+  const stroke =
+    strokeWidth === undefined || strokeWidth === 'inherit'
+      ? up.stroke
+      : Math.abs(reachLength(strokeWidth, diagonal, size, ctx, up.stroke));
+  const markers = markersOf(el, up.markers, ctx);
+  const inherited: ReachInherited = { stroke, markers, size };
+  const len = (attr: string, of: number): number =>
+    reachLength(svgAttr(el, attr), of, size, ctx);
+  // a stroke past the geometry, as far as a miter at the default limit
+  // takes it; and the markers on its vertices
+  const shape = (edges: Edges | null): Edges | null => {
+    const pad = 2 * stroke + markerReach(markers, stroke, ctx);
+    return padded(edges, pad);
+  };
+  let edges: Edges | null = null;
+  switch (name) {
+    case 'rect':
+    case 'image':
+    case 'foreignobject': {
+      const x = len('x', vw);
+      const y = len('y', vh);
+      edges = {
+        x1: x,
+        y1: y,
+        x2: x + len('width', vw),
+        y2: y + len('height', vh),
+      };
+      if (name === 'rect') edges = shape(edges);
+      break;
+    }
+    case 'circle':
+    case 'ellipse': {
+      const cx = len('cx', vw);
+      const cy = len('cy', vh);
+      const rx = name === 'circle' ? len('r', diagonal) : len('rx', vw);
+      const ry = name === 'circle' ? rx : len('ry', vh);
+      edges = shape({ x1: cx - rx, y1: cy - ry, x2: cx + rx, y2: cy + ry });
+      break;
+    }
+    case 'line':
+      edges = shape(
+        around([len('x1', vw), len('y1', vh), len('x2', vw), len('y2', vh)]),
+      );
+      break;
+    case 'polyline':
+    case 'polygon':
+      edges = shape(
+        around(
+          (el.attribs.points ?? '')
+            .split(/[\s,]+/)
+            .filter(Boolean)
+            .map(Number),
+        ),
+      );
+      break;
+    case 'path': {
+      const parse = parseSvgPath();
+      const d = el.attribs.d;
+      if (!parse || !d) break;
+      const points: number[] = [];
+      try {
+        for (const c of parse(d)) {
+          if (c.x !== undefined && c.y !== undefined) points.push(c.x, c.y);
+          if (c.x1 !== undefined && c.y1 !== undefined) points.push(c.x1, c.y1);
+          if (c.x2 !== undefined && c.y2 !== undefined) points.push(c.x2, c.y2);
+        }
+      } catch {
+        break;
+      }
+      edges = shape(around(points));
+      break;
+    }
+    case 'text': {
+      // every position its text is set from, and as far either way of them
+      // as its letters could reach, at an em each
+      const points: number[] = [];
+      let letters = 0;
+      const read = (at: Element): void => {
+        const xs = (svgAttr(at, 'x') ?? '').split(/[\s,]+/).filter(Boolean);
+        const ys = (svgAttr(at, 'y') ?? '').split(/[\s,]+/).filter(Boolean);
+        for (let i = 0; i < Math.max(xs.length, ys.length, 1); i += 1) {
+          points.push(
+            reachLength(xs[i] ?? xs[0], vw, size, ctx),
+            reachLength(ys[i] ?? ys[0], vh, size, ctx),
+          );
+        }
+        for (const child of at.children) {
+          if (child.type === 'text') letters += child.data.length;
+          else if (child.type === 'tag') {
+            const inner = child as Element;
+            if (localName(inner.name) === 'textpath') {
+              const id = useHref(inner);
+              const path = id === null ? null : ctx.find(id);
+              if (path) {
+                edges = grow(edges, reachOf(path, ctx, inherited, depth + 1));
+              }
+            }
+            read(inner);
+          }
+        }
+      };
+      read(el);
+      const reach = Math.max(1, letters) * size + 2 * stroke;
+      const at = around(points);
+      if (at) {
+        edges = grow(edges, {
+          x1: at.x1 - reach,
+          y1: at.y1 - 2 * size - 2 * stroke,
+          x2: at.x2 + reach,
+          y2: at.y2 + 2 * size + 2 * stroke,
+        });
+      }
+      edges = padded(edges, 2 * size);
+      break;
+    }
+    case 'use': {
+      const id = useHref(el);
+      const target = id === null ? null : ctx.find(id);
+      if (!target || ctx.walking.has(target)) break;
+      const x = len('x', vw);
+      const y = len('y', vh);
+      ctx.walking.add(target);
+      try {
+        if (localName(target.name) !== 'symbol') {
+          // moved by the use's `x` and `y`, as `copyTree` moves it
+          edges = through(
+            [1, 0, 0, 1, x, y],
+            reachOf(target, ctx, inherited, depth + 1),
+          );
+          break;
+        }
+        // a symbol is a viewport, of the use's size or its own, its
+        // `viewBox` fitted in; and what it draws past it, which its
+        // `overflow` may show
+        const w = reachLength(
+          el.attribs.width ?? svgAttr(target, 'width'),
+          vw,
+          size,
+          ctx,
+          vw,
+        );
+        const h = reachLength(
+          el.attribs.height ?? svgAttr(target, 'height'),
+          vh,
+          size,
+          ctx,
+          vh,
+        );
+        const box = viewBoxOf(target);
+        const fit = box
+          ? svgTransform(
+              fitTransform(
+                box,
+                x,
+                y,
+                w,
+                h,
+                svgAttr(target, 'preserveAspectRatio'),
+              ),
+            )
+          : ([1, 0, 0, 1, x, y] as const);
+        const inner: ReachContext = box
+          ? { ...ctx, viewport: [box[2], box[3]] }
+          : ctx;
+        edges = grow(
+          { x1: x, y1: y, x2: x + w, y2: y + h },
+          through(fit, childrenReach(target, inner, inherited, depth + 1)),
+        );
+      } finally {
+        ctx.walking.delete(target);
+      }
+      break;
+    }
+    case 'svg': {
+      // a viewport in it: cut to its rectangle unless it shows what
+      // overflows it, as `SvgView` cuts it
+      const x = len('x', vw);
+      const y = len('y', vh);
+      const w = reachLength(svgAttr(el, 'width'), vw, size, ctx, vw);
+      const h = reachLength(svgAttr(el, 'height'), vh, size, ctx, vh);
+      const overflow = propertyOf(el, 'overflow', ctx.styles)?.trim();
+      if (overflow !== 'visible' && overflow !== 'auto') {
+        edges = { x1: x, y1: y, x2: x + w, y2: y + h };
+        break;
+      }
+      const box = viewBoxOf(el);
+      const inner: ReachContext = {
+        ...ctx,
+        viewport: box ? [box[2], box[3]] : [w, h],
+      };
+      const fit = box
+        ? svgTransform(
+            fitTransform(box, x, y, w, h, svgAttr(el, 'preserveAspectRatio')),
+          )
+        : ([1, 0, 0, 1, x, y] as const);
+      edges = grow(
+        { x1: x, y1: y, x2: x + w, y2: y + h },
+        through(fit, childrenReach(el, inner, inherited, depth + 1)),
+      );
+      break;
+    }
+    default:
+      edges = childrenReach(el, ctx, inherited, depth + 1);
+  }
+  // a filter draws as far as its region (Filter Effects 1, 5.1): by
+  // default a tenth of the bounding box either way, and anywhere a
+  // `filterUnits` of the user space puts it
+  const filter = propertyOf(el, 'filter', ctx.styles);
+  if (edges && filter && filter.trim() !== 'none') {
+    const m = /url\(\s*['"]?#([^'")\s]+)/.exec(filter);
+    const region = m ? ctx.find(m[1]) : null;
+    const w = edges.x2 - edges.x1;
+    const h = edges.y2 - edges.y1;
+    if (region && localName(region.name) === 'filter') {
+      const user =
+        (svgAttr(region, 'filterUnits') ?? '').trim() === 'userSpaceOnUse';
+      const of = (
+        attr: string,
+        base: number,
+        span: number,
+        initial: number,
+      ) => {
+        const v = svgAttr(region, attr)?.trim();
+        if (v === undefined || v === '') return base + span * initial;
+        if (user)
+          return reachLength(
+            v,
+            attr === 'x' || attr === 'width' ? vw : vh,
+            size,
+            ctx,
+          );
+        const f = v.endsWith('%') ? parseFloat(v) / 100 : Number(v);
+        return base + span * (Number.isFinite(f) ? f : initial);
+      };
+      const x = user ? of('x', 0, vw, -0.1) : of('x', edges.x1, w, -0.1);
+      const y = user ? of('y', 0, vh, -0.1) : of('y', edges.y1, h, -0.1);
+      const fw = user ? of('width', 0, vw, 1.2) : of('width', 0, w, 1.2);
+      const fh = user ? of('height', 0, vh, 1.2) : of('height', 0, h, 1.2);
+      edges = grow(edges, { x1: x, y1: y, x2: x + fw, y2: y + fh });
+    } else {
+      // a CSS filter function, a blur or a shadow: as far again as the box
+      edges = padded(edges, Math.max(w, h));
+    }
+  }
+  return through(svgTransform(el.attribs.transform), edges);
+}
+
+function childrenReach(
+  el: Element,
+  ctx: ReachContext,
+  up: ReachInherited,
+  depth: number,
+): Edges | null {
+  let out: Edges | null = null;
+  for (const child of el.children) {
+    if (child.type !== 'tag') continue;
+    out = grow(out, reachOf(child as Element, ctx, up, depth));
+  }
+  return out;
+}
+
+/** The rectangle around what a drawing paints, in its root's user space
+ *  (`reachOf`), or null where it paints nothing. */
+function drawingReach(
+  root: Element,
+  viewport: [number, number],
+  lengths: Lengths,
+  styles: ReadonlyMap<Element, ShapeStyle> | null,
+): Edges | null {
+  let ids: Map<string, Element> | null = null;
+  const ctx: ReachContext = {
+    viewport,
+    lengths,
+    styles,
+    find: (id) =>
+      (ids ??= idsUnder(root)).get(id) ?? elementById(documentOf(root), id),
+    walking: new Set([root]),
+  };
+  const stroke = propertyOf(root, 'stroke-width', styles);
+  const up: ReachInherited = {
+    stroke: stroke === undefined ? 1 : Math.abs(parseFloat(stroke)) || 1,
+    markers: [],
+    size: lengths.em,
+  };
+  up.markers = markersOf(root, [], ctx);
+  return childrenReach(root, ctx, up, 0);
 }

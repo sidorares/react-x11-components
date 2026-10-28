@@ -2977,6 +2977,45 @@ test('a resize observer measures nothing while the page is at rest, and is told 
   assert.equal(text, 'box:20,box:40');
 });
 
+test('what a script builds apart from the document is no change to it, and putting it in is one change', async (t) => {
+  // A webmail page's list builds each page of messages, a thousand
+  // elements, apart and then puts it in. Every record of the building was
+  // told to <Html>, past what a change is told as, and the whole page was
+  // styled and built again, three seconds, at every page a scroll loaded.
+  const doc = await hosted(
+    '<p id="out"></p><div id="list"></div><script>' +
+      'window.more = function () {' +
+      '  var page = document.createElement("div");' +
+      '  for (var i = 0; i < 500; i++) {' +
+      '    var row = document.createElement("div");' +
+      '    row.className = "row"; row.setAttribute("data-i", i); row.title = "r" + i;' +
+      '    var b = document.createElement("b"); b.textContent = "message " + i;' +
+      '    row.appendChild(b); page.appendChild(row);' +
+      '  }' +
+      '  page.lastChild.id = "last";' +
+      '  document.getElementById("list").appendChild(page);' +
+      '  document.getElementById("out").textContent = "in";' +
+      '};' +
+      '</script>',
+  );
+  await settle(100);
+  const touched = t.mock.method(
+    doc.view as unknown as { touchDocument(changes: unknown): void },
+    'touchDocument',
+  );
+  await act(async () => {
+    doc.run('more()');
+  });
+  await settled(doc, 'out', (text) => text === 'in');
+  const told = touched.mock.calls.map((c) => c.arguments[0]);
+  assert.ok(told.length > 0, 'nothing was told');
+  assert.ok(
+    told.every((changes) => Array.isArray(changes) && changes.length < 10),
+    `told ${told.map((c) => (Array.isArray(c) ? c.length : 'everything')).join(', ')}`,
+  );
+  assert.ok(doc.view.elementRect(doc.byId('last') as never), 'not drawn');
+});
+
 test('attribute nodes are the element’s, one each, in a map that is live', async () => {
   const doc = await hosted(
     '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +

@@ -147,9 +147,15 @@ export function wheelScrolls(box: Box, axis: 'x' | 'y'): boolean {
  * Move every scroll container's content by the offset its element is
  * scrolled to, each kept within how far it can be: after layout, and before
  * the ink bounds are worked out, as `position: relative` is. A container
- * with no offset moves nothing and costs a style read.
+ * with no offset moves nothing and costs a style read. Given `moved`, only
+ * down the boxes in it, which every scroll container is
+ * (`Blockers.moved` in `block.ts`).
  */
-export function applyScrollOffsets(tree: BoxTree, move: MoveBox): void {
+export function applyScrollOffsets(
+  tree: BoxTree,
+  move: MoveBox,
+  moved?: ReadonlySet<Box>,
+): void {
   extents = new WeakMap();
   const given = OFFSETS.get(tree);
   const offsets = given?.offsets;
@@ -167,7 +173,8 @@ export function applyScrollOffsets(tree: BoxTree, move: MoveBox): void {
       scrollContent(box, want.x * s, want.y * s, move);
     }
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
+      const child = box.children[i];
+      if (!moved || moved.has(child)) stack.push(child);
     }
   }
 }

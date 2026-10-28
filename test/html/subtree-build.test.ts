@@ -20,8 +20,9 @@ import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
 import { blocksKept } from '../../src/html/layout/block.js';
+import { inkKept } from '../../src/html/paint.js';
 import { shadowRootOf } from '../../src/html/dom.js';
-import { FONTS, h, metric, render, view } from './harness.js';
+import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
@@ -834,6 +835,75 @@ metric(
 );
 
 metric(
+  'a layout under another viewport height keeps the blocks, flex items and grid items an earlier one laid out where that one read none of the height, where a layout of all new boxes puts them',
+  async () => {
+    // A pane's height is a frame's to decide, after the document's first
+    // layout, and the layout after that one laid out again every block,
+    // flex item and grid item the first had laid out, whatever they held:
+    // a grid of a hundred paragraphs set again for nothing. A document that
+    // reads the height — here a box placed against the viewport's bottom —
+    // is laid out again under the new one, as it was.
+    for (const reads of [false, true]) {
+      const { el, resize } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          'article { display: grid; grid-template-columns: 1fr; gap: 6px }' +
+          '.col { display: flex; flex-direction: column; gap: 4px }' +
+          'p { margin: 2px } .code { height: 300px }' +
+          '.foot { position: fixed; bottom: 0; height: 10px; width: 10px }' +
+          '</style></head><body><article><p id="g1">a paragraph</p>' +
+          '<div class="code" id="g2">let a = 1;</div>' +
+          '<p id="g3">another paragraph below it</p></article>' +
+          '<div class="col"><p id="f1">one item of a column</p>' +
+          '<p id="f2">two items down</p></div><p id="b1">and a block</p>' +
+          (reads ? '<div class="foot"></div>' : '') +
+          '</body></html>',
+        160,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+        _invalidate(stale: number): void;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const ids = ['g1', 'g2', 'g3', 'f1', 'f2', 'b1'];
+      const serials = (): number[] =>
+        ids.map(
+          (id) =>
+            internals._firstBoxesOf(internals._tree).get(byId(id))!
+              .layoutSerial,
+        );
+      const before = serials();
+      await resize(220);
+      internals._invalidate(1);
+      await act();
+      if (reads) {
+        assert.notDeepStrictEqual(serials(), before, 'kept under a new height');
+      } else {
+        assert.deepStrictEqual(
+          serials(),
+          before,
+          `#${ids.join(', #')} laid out again under a new height`,
+        );
+      }
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `reads ${reads}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+      cleanup();
+    }
+  },
+);
+
+metric(
   'a change beside a block that styles its first letter builds only the subtree it reached, where a build of all new boxes puts it',
   async (t) => {
     // a webmail page's header styles the first letter of the account's
@@ -979,6 +1049,331 @@ metric(
       assert.ok(
         line < 0 && kept.length === whole.length,
         `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
+
+/** What the passes after a flow move — sticky boxes held to the viewport
+ *  and to scroll containers, relative boxes with insets and without,
+ *  transforms, scrolls — in blocks a layout keeps, beside flex and grid
+ *  items, boxes out of the flow placed in them, and ink past a box. */
+const MOVING_SHEET = `body { margin: 0; font-size: 14px }
+.st { position: sticky; top: 12px; background: #eeeeee }
+.sb { position: sticky; bottom: 6px }
+.r { position: relative; top: 3px; left: 2px }
+.z { position: relative }
+.t { transform: translate(4px, 3px) }
+.sc { overflow: auto; height: 36px }
+.ab { position: absolute; top: 2px; right: 3px; width: 12px; height: 6px }
+.sh { box-shadow: 0 3px 5px #000000 }
+.fx { display: flex; gap: 3px }
+.gr { display: grid; grid-template-columns: 1fr 1fr }
+.tall { min-height: 90px }
+p { margin: 4px 0 }`;
+
+const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr'];
+
+function moving(next: () => number, depth: number): Element {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const classes = MOVING_CLASSES.filter(() => next() < 0.14);
+  if (next() < 0.15) classes.push('tall');
+  const el = createElement(
+    pick(['div', 'p', 'section']),
+    classes.length ? { class: classes.join(' ') } : {},
+  );
+  // something out of the flow, placed against a box it is in
+  if (classes.includes('z') || classes.includes('r')) {
+    if (next() < 0.5) appendChild(el, createElement('i', { class: 'ab' }));
+  }
+  const count = depth > 2 ? 1 : 1 + Math.floor(next() * 3);
+  for (let i = 0; i < count; i += 1) {
+    const roll = next();
+    if (depth < 3 && roll < 0.45) appendChild(el, moving(next, depth + 1));
+    else if (roll < 0.6) {
+      appendChild(
+        el,
+        createElement('span', { class: pick(['r', 'z', 'sh', '']) }, [
+          createText(pick(WORDS)),
+        ]),
+      );
+    } else appendChild(el, createText(pick(['one two', 'three four five'])));
+  }
+  return el;
+}
+
+metric(
+  'a layout keeps blocks that hold sticky, relative, transformed and scrolled boxes, and places them and keeps their ink as a layout of all new boxes does',
+  async () => {
+    const keptAtStart = blocksKept();
+    const inkAtStart = inkKept();
+    let stickyKept = 0;
+    // MOVING_SEEDS sweeps more of them, and MOVING_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.MOVING_SEEDS ?? 30);
+    for (let seed = Number(env.MOVING_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 6151);
+      const pick = <T>(list: readonly T[]): T =>
+        list[Math.floor(next() * list.length)];
+      const body = createElement('body', {});
+      const blocks = 4 + Math.floor(next() * 5);
+      for (let i = 0; i < blocks; i += 1) appendChild(body, moving(next, 0));
+      appendChild(body, createElement('div', { style: 'height: 400px' }));
+      const markup = DomUtils.getOuterHTML(body as never);
+      const { el, result } = await renderScrolled(
+        `<!doctype html><html><head><style>${MOVING_SHEET}</style></head>${markup}</html>`,
+        160,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      };
+      const pane = movingPane(el);
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      for (let step = 0; step < 10; step += 1) {
+        const all = elementsUnder(bodyEl);
+        const kind = Math.floor(next() * 8);
+        // the blocks that hold a sticky box, and when each was laid out
+        const holding = () =>
+          [...internals._firstBoxesOf(internals._tree)]
+            .filter(
+              ([e, box]) =>
+                box.kind === 'block' &&
+                e.name !== 'body' &&
+                elementsUnder(e).some((d) =>
+                  /\bs[tb]\b/.test(d.attribs.class ?? ''),
+                ),
+            )
+            .map(([e, box]) => [e, box.layoutSerial] as const);
+        const before = holding();
+        let what = '';
+        if (kind === 0 || kind === 1) {
+          // something above the rest, which moves every block after it
+          const into = pick([bodyEl, ...all.filter((e) => e.name !== 'i')]);
+          const added = createElement('p', {}, [
+            createText(pick(['added', 'a longer line of words added here'])),
+          ]);
+          const first = into.children.find((n) => (n as Element).attribs);
+          if (first && kind === 0) DomUtils.prepend(first as never, added);
+          else appendChild(into, added);
+          el.touchDocument([
+            {
+              type: 'childList',
+              target: added.parent as unknown as Element,
+              addedNodes: [added],
+              removedNodes: [],
+            },
+          ]);
+          what = `a paragraph in ${pathOf(into)}`;
+        } else if (kind === 2) {
+          const target = pick(all);
+          const text = target.children.find((n) => n.type === 'text') as
+            { data: string } | undefined;
+          if (text) {
+            text.data = pick(['x', 'a much longer run of text than before']);
+            el.touchDocument([
+              { type: 'characterData', target: text as never },
+            ]);
+          }
+          what = `the text of ${pathOf(target)}`;
+        } else if (kind === 3 || kind === 4) {
+          // in place: a transform, or a relative box's inset
+          const target = pick(all.filter((e) => e.name !== 'i'));
+          const was = target.attribs.style ?? null;
+          target.attribs.style =
+            kind === 3
+              ? pick(['transform: translate(6px, 2px)', ''])
+              : pick(['top: 5px', 'left: 7px', '']);
+          el.touchDocument([
+            {
+              type: 'attributes',
+              target,
+              attributeName: 'style',
+              oldValue: was,
+            },
+          ]);
+          what = `${pathOf(target)} styled ${target.attribs.style}`;
+        } else if (kind === 5) {
+          const scrollers = all.filter((e) =>
+            /\bsc\b/.test(e.attribs.class ?? ''),
+          );
+          if (scrollers.length) {
+            el.scrollElementTo(pick(scrollers), {
+              y: Math.floor(next() * 40),
+            });
+          }
+          await act();
+          // and a layout after it, which is the one held to a whole one: a
+          // scroll alone leaves the boxes around what it moved as large as
+          // they were (`boundsAfterMove`)
+          internals._invalidate(1);
+          what = 'a scroll container scrolled, and laid out again';
+        } else if (kind === 6) {
+          await act(async () => pane.scrollTo(Math.floor(next() * 300)));
+          internals._invalidate(1);
+          what = 'the pane scrolled, and laid out again';
+        } else {
+          internals._invalidate(1);
+          what = 'laid out again';
+        }
+        await act();
+        const after = new Map(holding());
+        for (const [e, serial] of before) {
+          if (after.get(e) === serial) stickyKept += 1;
+        }
+        const kept = treeLines(internals._tree);
+        internals._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step} (${what}): line ${at}\n` +
+            `kept  ${kept[at]}\nwhole ${whole[at]}\n${markup}`,
+        );
+      }
+      result.unmount();
+    }
+    const kept = blocksKept() - keptAtStart;
+    assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+    assert.ok(
+      stickyKept > 20,
+      `${stickyKept} blocks holding a sticky box kept`,
+    );
+    const ink = inkKept() - inkAtStart;
+    assert.ok(ink > 100, `${ink} blocks' ink kept from an earlier layout`);
+  },
+);
+
+/** The pane a document scrolled in (`renderScrolled`). */
+function movingPane(node: unknown): { scrollTo(y: number): void } {
+  type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
+  let at = (node as Up).parent;
+  while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
+  assert.ok(at, 'a pane');
+  return at as unknown as { scrollTo(y: number): void };
+}
+
+metric(
+  'a transform a hover puts on a box where it is moves the box at every layout after, whether it keeps the box or lays it out again',
+  async () => {
+    // A relative box with no inset moves nowhere, and the passes after a
+    // flow pass it by (`Blockers.moved`); a hover that turns it, restyled
+    // in place, has them walk to it from then on (`noteMoving`), or a
+    // layout that lays it out again leaves it where the flow put it.
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 2px } .card { position: relative; z-index: 1; padding: 4px }' +
+        '.card:hover { transform: translate(0px, -5px) }</style></head><body>' +
+        '<div><p>above it</p></div>' +
+        '<div><div class="card" id="card"><p id="in">a card</p></div>' +
+        '<p>beside it</p></div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const card = byId('card');
+    const flow = el.elementRect(card)!;
+    const tree = internals._tree;
+    el.setHover(flow.x + 10, flow.y + flow.height / 2);
+    await act();
+    assert.strictEqual(internals._tree, tree, 'the hover restyled in place');
+    const top = () => el.elementRect(card)!.y;
+    assert.strictEqual(top(), flow.y - 5, 'hovered');
+    internals._invalidate(1);
+    await act();
+    assert.strictEqual(top(), flow.y - 5, 'kept by a layout');
+    const text = byId('in').children[0] as unknown as { data: string };
+    text.data = 'a card still';
+    el.touchDocument([{ type: 'characterData', target: text as never }]);
+    await act();
+    assert.strictEqual(top(), flow.y - 5, 'laid out again');
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const line = kept.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      line < 0 && kept.length === whole.length,
+      `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+    );
+  },
+);
+
+metric(
+  'a block holding a sticky box the viewport holds is kept by a layout, and its sticky box held where a layout of all new boxes holds it',
+  async () => {
+    // joshwcomeau.com's code blocks each hold a copy button stuck 88px
+    // down the viewport, and every box around one was laid out at every
+    // layout of the page: its article's grid, a hundred items, half of
+    // them laid out again for nothing
+    const { el } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'article { display: grid; grid-template-columns: 1fr; gap: 6px }' +
+        'p { margin: 0 } .code { height: 300px; background: #eeeeee }' +
+        '.copy { display: block; position: sticky; top: 10px; height: 20px;' +
+        ' width: 20px; margin-left: auto }</style></head><body><article>' +
+        '<p id="first">a paragraph above the code</p>' +
+        '<div class="code" id="code"><button class="copy" id="copy"></button>' +
+        '<pre>let a = 1;</pre></div>' +
+        '<p id="last">a paragraph below it</p></article>' +
+        '<div style="height: 600px"></div></body></html>',
+      160,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const serial = () =>
+      internals._firstBoxesOf(internals._tree).get(byId('code'))!.layoutSerial;
+    const code = el.elementRect(byId('code'))!;
+    await act(async () => movingPane(el).scrollTo(code.y + 100));
+    const held = () => el.elementRect(byId('copy'))!.y;
+    assert.strictEqual(held(), code.y + 110, 'held 10px down the viewport');
+    const before = serial();
+    internals._invalidate(1);
+    await act();
+    assert.strictEqual(serial(), before, 'kept by a bare layout');
+    assert.strictEqual(held(), code.y + 110, 'and held');
+    // a change below it, and then one above it, which moves it
+    for (const id of ['last', 'first']) {
+      const was = serial();
+      const text = byId(id).children[0] as unknown as { data: string };
+      text.data += ', and a line more of words than it had before';
+      el.touchDocument([{ type: 'characterData', target: text as never }]);
+      await act();
+      assert.strictEqual(serial(), was, `kept for a change in #${id}`);
+      const moved = el.elementRect(byId('code'))!.y - code.y;
+      assert.strictEqual(held(), code.y + 110, `held after #${id} (${moved})`);
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `#${id}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
       );
     }
   },
