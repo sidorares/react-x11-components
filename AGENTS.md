@@ -3375,7 +3375,13 @@ its `wdth` axis, each clamped to the range its `@font-face` declares (CSS
 Fonts 4, 7.2), and an engine knows the file, not the rule: ntk moves the
 weight axis to the style's weight whatever was declared, CoreText, for a
 face core registered, does not move it — every heading set in Geist was its
-regular on macOS — and neither knows a width at all. `WebFonts.setting`
+regular on macOS — and neither knows a width at all. **A single weight is
+a range of one**: Gmail declares Google Sans at 400, 500 and 700, each the
+same variable file, and on macOS its bold was the file's regular. The one
+weight left to the engine is a bold asked of a face declared lighter than
+600 (`emboldened`), which a browser draws by emboldening the outlines; no
+engine here does, and ntk's axis at the style's weight is the nearest
+there is. `WebFonts.setting`
 says the values and `layout/axes.ts` hands them on as the run's
 `variations`, under the layout cache, so nothing a layout is found by
 changes. Four things there are load-bearing: only a run whose list
