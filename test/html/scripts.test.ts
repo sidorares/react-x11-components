@@ -1196,6 +1196,29 @@ test("a global's onerror is handed the error's message, file, line, column and e
   );
 });
 
+test('an error a handler cancels is not reported on the console, and one no handler cancels, or one a handler throws, is', async () => {
+  // Google's pages cancel every error their `onerror` hears
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var n = 0;' +
+      'window.onerror = function (m) { n++; if (n === 2) throw new Error("in handler"); return n === 1; };' +
+      'setTimeout(function () { throw new Error("handled"); });' +
+      'setTimeout(function () { throw new Error("thrown over"); });' +
+      'setTimeout(function () { window.onerror = null; throw new Error("unhandled"); });' +
+      'setTimeout(function () { document.getElementById("out").textContent = "done " + n; });' +
+      '</script>',
+  );
+  await settled(doc, 'out', (t) => t !== '');
+  const uncaught = doc.logs
+    .filter((l) => l.includes('Uncaught'))
+    .map((l) => /Error: ([\w ]+)/.exec(l)?.[1]);
+  assert.deepEqual(
+    uncaught,
+    ['in handler', 'thrown over', 'unhandled'],
+    doc.logs.join('\n'),
+  );
+});
+
 test("a <body onerror> is the window's, and takes the same five arguments", async () => {
   const doc = await hosted(
     "<body onerror=\"document.getElementById('out').textContent = [typeof event, event, typeof source, lineno > 0, error.message].join('|')\">" +
