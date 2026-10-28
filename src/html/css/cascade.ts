@@ -2499,10 +2499,36 @@ type NoteChange = (
   /** For a key a pseudo-class tests, what of the compound it is in no
    *  change to the tree can change, the elements around it in an `:is()`
    *  or a `:not()` with it: what the element whose answer to it changes
-   *  has to match for the compound to (`MutationRules.where`). Absent, or
+   *  has to match for the compound to (`MutationRules.tested`). Absent, or
    *  '', for any. */
   where?: string | null,
+  /** And what the pseudo-class tests of that element: what it holds
+   *  (`:empty`), or where it sits among its siblings (`:first-child`);
+   *  absent for anything else. */
+  tests?: Tests,
+  /** For one that tests where an element sits in a rule's subject, what
+   *  of the compound a child combinator leads to it from no change to the
+   *  tree can change: what the element it sits in has to match. */
+  parent?: string | null,
 ) => void;
+
+/** What a pseudo-class tests of its element (`NoteChange`). */
+type Tests = 'holds' | 'sits';
+
+/** The pseudo-classes that test what an element holds, which a change to
+ *  what it holds can change the answer to of that element alone. */
+const HOLDS_TESTS = new Set(['empty', 'blank', 'parent']);
+
+/** Those that test where an element sits among its siblings, which a
+ *  change to what holds it can change the answer to of its siblings. */
+const SITS_TESTS = new Set([
+  'first-child',
+  'last-child',
+  'only-child',
+  'first-of-type',
+  'last-of-type',
+  'only-of-type',
+]);
 
 /**
  * The keys a complex selector tests, each with where (`CHANGES_*`): `at`
@@ -2525,20 +2551,26 @@ function scanChanges(
   const parts = compoundsOf(selector);
   for (let i = 0; i < parts.length; i += 1) {
     const { text, next } = parts[i];
-    const bits =
-      i === parts.length - 1
-        ? at
-        : next === '+' || next === '~'
-          ? CHANGES_LATER
-          : CHANGES_BELOW;
+    const last = i === parts.length - 1;
+    const bits = last
+      ? at
+      : next === '+' || next === '~'
+        ? CHANGES_LATER
+        : CHANGES_BELOW;
     if (has === null && (next === '+' || next === '~')) note('+', bits, null);
+    // what a child combinator leads to a rule's own subject from
+    const parent =
+      last && subject !== null && i > 0 && parts[i - 1].next === '>'
+        ? stableCompound(parts[i - 1].text)
+        : null;
     scanCompoundChanges(
       text,
       bits,
       has,
       note,
-      i === parts.length - 1 ? outer : '',
-      i === parts.length - 1 ? null : subject,
+      last ? outer : '',
+      last ? null : subject,
+      parent,
     );
   }
 }
@@ -2553,6 +2585,7 @@ function scanCompoundChanges(
   note: NoteChange,
   outer = '',
   subject: string | null = null,
+  parent: string | null = null,
 ): void {
   let i = 0;
   while (i < text.length) {
@@ -2586,6 +2619,7 @@ function scanCompoundChanges(
           bits,
           has,
           note,
+          parent,
         );
         i = close + 1;
         continue;
@@ -2599,6 +2633,11 @@ function scanCompoundChanges(
       // style-only one, and a change of any other restyles its element
       // and everything in it (`HtmlViewNode._scopeOf`).
       const inherited = has === null && PSEUDO_INHERITED.has(name);
+      const tests: Tests | undefined = HOLDS_TESTS.has(name)
+        ? 'holds'
+        : SITS_TESTS.has(name)
+          ? 'sits'
+          : undefined;
       for (const key of reads) {
         note(
           key,
@@ -2606,6 +2645,8 @@ function scanCompoundChanges(
           has,
           inherited ? null : subject,
           bothOf(outer, stableCompound(text)),
+          tests,
+          parent,
         );
       }
       i += m ? m[0].length : 1;
@@ -2626,6 +2667,9 @@ function scanFunctionChanges(
   bits: number,
   has: HasAnchor | null,
   note: NoteChange,
+  /** What a child combinator leads to the compound from, in a rule's own
+   *  subject (`NoteChange`'s `parent`). */
+  parent: string | null = null,
 ): void {
   if (name === 'has') {
     // a `:has()` inside another's argument: the outer one's element is the
@@ -2678,7 +2722,7 @@ function scanFunctionChanges(
       note(key, has ? bits : bits | CHANGES_BELOW, has);
     }
   } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
-    note('s', bits, has, null, stable);
+    note('s', bits, has, null, stable, 'sits', parent);
     // counted from the end: every child's place, where one is put in at it
     if (name.startsWith('nth-last-')) note('n', bits, has, null, stable);
     // `of S`: what S tests decides where an element's siblings count it
@@ -2770,10 +2814,9 @@ class MutationRules {
    *  element it changes: the subjects' stable compounds, or null for all
    *  that is there (`below`). */
   private _below = new Map<string, Set<string> | null>();
-  /** And the compounds each is in there (`where`), or null for any; and
-   *  where it is tested of a rule's subject (`whereSelf`). */
-  private _where = new Map<string, Set<string> | null>();
-  private _whereSelf = new Map<string, Set<string> | null>();
+  /** What a test of what an element holds or where it sits is of
+   *  (`tested`), by where it reaches and whom. */
+  private _tested = new Map<string, Set<string> | null>();
   private _pseudo = new Map<string, 0 | 1 | 2>();
   private _anchors = new Map<string, Set<HasAnchor>>();
   /** Each attribute's selectors (`v:` keys), by the attribute's name. */
@@ -2858,7 +2901,15 @@ class MutationRules {
     declarations: readonly Declaration[],
     wider: number,
   ): void {
-    const note: NoteChange = (key, narrow, anchor, subject, where) => {
+    const note: NoteChange = (
+      key,
+      narrow,
+      anchor,
+      subject,
+      where,
+      tests,
+      parent,
+    ) => {
       if (key === '+') {
         this.siblings = true;
         return;
@@ -2909,12 +2960,11 @@ class MutationRules {
           } else if (kept) kept.add(subject);
           else this._below.set(key, new Set([subject]));
         }
-        // and the element that leads there is one its compound names
-        this._noteWhere(this._where, key, where, !!wider || !!anchor);
       }
-      // as the element whose own style the key changes is
-      if (bits & CHANGES_SELF) {
-        this._noteWhere(this._whereSelf, key, where, !!wider || !!anchor);
+      // and of what holds what came or went, or of its children, which
+      // elements its compound names
+      if (key === 's' || key === 'h') {
+        this._noteTested(bits, tests, where, parent, !!wider || !!anchor);
       }
       if (isClass) {
         this.anyClass |= bits;
@@ -2940,19 +2990,49 @@ class MutationRules {
     }
   }
 
-  /** A compound a key is tested in, into `into` (`where`): or every one,
-   *  where it names none or is wider than its selector says. */
-  private _noteWhere(
-    into: Map<string, Set<string> | null>,
-    key: string,
+  /**
+   * A test of what an element holds or where it sits, into `tested`: of
+   * the holder of what came or went, for one of what an element holds, or
+   * of its children, for one of where an element sits; for the element's
+   * own style, or for what is below it. By the compound it is in, and for
+   * a child in a rule's subject the one a child combinator leads to it
+   * from as well, which the holder has to match; or any, where it says
+   * none, is no such test, or is wider than its selector.
+   */
+  private _noteTested(
+    bits: number,
+    tests: Tests | undefined,
     where: string | null | undefined,
+    parent: string | null | undefined,
     wider: boolean,
   ): void {
-    const at = into.get(key);
-    if (at === null) return;
-    if (!where || where === '*' || wider) into.set(key, null);
-    else if (at) at.add(where);
-    else into.set(key, new Set([where]));
+    for (const [bit, at] of [
+      [CHANGES_SELF, 'self'],
+      [CHANGES_BELOW, 'below'],
+    ] as const) {
+      if (!(bits & bit)) continue;
+      if (!tests || wider) {
+        this._tested.set(`${at} holder`, null);
+        this._tested.set(`${at} kid`, null);
+        continue;
+      }
+      const who = tests === 'holds' ? 'holder' : 'kid';
+      const named = where && where !== '*' ? where : null;
+      // a child, in a rule's subject that a child combinator leads to, is
+      // one of what the compound it leads from names: as a selector of the
+      // two, matched of the child
+      const from =
+        at === 'self' && who === 'kid' && parent && parent !== '*'
+          ? parent
+          : null;
+      const one = from ? `${from} > ${named ?? '*'}` : named;
+      const key = `${at} ${who}`;
+      const kept = this._tested.get(key);
+      if (kept === null) continue;
+      if (!one) this._tested.set(key, null);
+      else if (kept) kept.add(one);
+      else this._tested.set(key, new Set([one]));
+    }
   }
 
   /** The one anchor like `anchor`, its place widened by `wider`. */
@@ -2978,17 +3058,19 @@ class MutationRules {
     return this._below.get(key) ?? null;
   }
 
-  /** The compounds a key a pseudo-class tests above a subject is in, as
-   *  stable compounds (`NoteChange`'s `where`): only from an element one
-   *  of them names does it reach below; null for any element. */
-  where(key: string): ReadonlySet<string> | null {
-    return this._where.get(key) ?? null;
-  }
-
-  /** `where` for a key tested of a rule's subject: the compounds the
-   *  element whose own style it changes is named by; null for any. */
-  whereSelf(key: string): ReadonlySet<string> | null {
-    return this._whereSelf.get(key) ?? null;
+  /**
+   * Which elements a test of what an element holds or where it sits can
+   * change the answer of, to their own style (`self`) or to what is below
+   * them (`below`): of the holder of what came or went (`holder`), or of
+   * its children (`kid`). Stable compounds, a child's with the one its
+   * parent is to match before it; null for any element, and undefined for
+   * none.
+   */
+  tested(
+    at: 'self' | 'below',
+    who: 'holder' | 'kid',
+  ): ReadonlySet<string> | null | undefined {
+    return this._tested.get(`${at} ${who}`);
   }
 
   /** The anchors of the `:has()`s whose argument tests a key. */
@@ -3118,21 +3200,30 @@ export interface TreeReach {
    *  is in them: a sibling combinator, which reads an element's earlier
    *  siblings and no later one. */
   followers: boolean;
-  /** Where `bits` reach below: from which of the holder and its children,
-   *  the elements a test of what an element holds or where it sits can be
-   *  of (`at`), and what there it can restyle (`subjects`, null for
-   *  anything); null for everything in the holder. */
-  below: TreeBelow | null;
   /** Where `bits` reach the holder and its children themselves, which of
    *  them a test of what an element holds or where it sits in a rule's
-   *  subject can be of; null for every one. */
-  self: ((el: Element) => boolean) | null;
+   *  subject can change; null for every one. */
+  self: TreeTested | null;
+  /** Where `bits` reach below: from which of them a test of that above a
+   *  subject reaches, and what there it can restyle (`subjects`, null for
+   *  anything); null for everything in the holder. */
+  below: TreeBelow | null;
   anchors: ChangeAnchors | null;
 }
 
+/** Which elements a test reaches (`TreeTested`): those a matcher takes,
+ *  every one, or none. */
+export type Tested = ((el: Element) => boolean) | boolean;
+
+/** `TreeReach.self`: of the holder of what came or went, and of each of its
+ *  children, which a test can change the answer for. */
+export interface TreeTested {
+  holder: Tested;
+  kids: Tested;
+}
+
 /** `TreeReach.below`. */
-export interface TreeBelow {
-  at: (el: Element) => boolean;
+export interface TreeBelow extends TreeTested {
   subjects: ((el: Element) => boolean) | null;
 }
 
@@ -4375,58 +4466,57 @@ export class Cascade {
 
   /** One matcher for a set of stable compounds (`AttributeReach.below`),
    *  kept for the cascade's life; null where css-select refuses it. */
-  /** `TreeReach.below` for this cascade's rules: the compounds the tests
-   *  of what an element holds and where it sits are in above a subject,
-   *  and those subjects; null where some test is in one that names any
-   *  element. */
+  /** `TreeReach.below` for this cascade's rules: what the tests of what an
+   *  element holds and where it sits above a subject are of
+   *  (`MutationRules.tested`), and those subjects; null where a compound
+   *  could not be compiled. */
   private _treeBelow(): TreeBelow | null {
     if (this._treeBelowKept !== undefined) return this._treeBelowKept;
     const rules = this._changeRules;
-    const at = new Set<string>();
     let subjects: Set<string> | null = new Set();
-    let any = false;
     for (const key of ['s', 'h']) {
       if (!(rules.bits(key) & CHANGES_BELOW)) continue;
-      const where = rules.where(key);
-      if (!where) any = true;
-      else for (const one of where) at.add(one);
       const below = rules.below(key);
       if (!below) subjects = null;
       else if (subjects) for (const one of below) subjects.add(one);
     }
-    const match = any || !at.size ? null : this._subjectsMatcher(at);
-    this._treeBelowKept = match
-      ? {
-          at: match,
-          subjects:
-            subjects && subjects.size ? this._subjectsMatcher(subjects) : null,
-        }
-      : null;
+    const tested = this._treeTested('below');
+    this._treeBelowKept = tested && {
+      ...tested,
+      subjects:
+        subjects && subjects.size ? this._subjectsMatcher(subjects) : null,
+    };
     return this._treeBelowKept;
   }
 
   private _treeBelowKept: TreeBelow | null | undefined = undefined;
 
-  /** `TreeReach.self` for this cascade's rules: the compounds of the
-   *  subjects that test what an element holds or where it sits, or null
-   *  where one names any element. */
-  private _treeSelf(): ((el: Element) => boolean) | null {
-    if (this._treeSelfKept !== undefined) return this._treeSelfKept;
-    const rules = this._changeRules;
-    const at = new Set<string>();
-    let any = false;
-    for (const key of ['s', 'h']) {
-      if (!(rules.bits(key) & CHANGES_SELF)) continue;
-      const where = rules.whereSelf(key);
-      if (!where) any = true;
-      else for (const one of where) at.add(one);
+  /** `TreeReach.self` for this cascade's rules. */
+  private _treeSelf(): TreeTested | null {
+    if (this._treeSelfKept === undefined) {
+      this._treeSelfKept = this._treeTested('self');
     }
-    this._treeSelfKept = any || !at.size ? null : this._subjectsMatcher(at);
     return this._treeSelfKept;
   }
 
-  private _treeSelfKept: ((el: Element) => boolean) | null | undefined =
-    undefined;
+  private _treeSelfKept: TreeTested | null | undefined = undefined;
+
+  /** What the tests of what an element holds and where it sits are of,
+   *  where they reach (`MutationRules.tested`), as matchers; null where
+   *  one could not be compiled. */
+  private _treeTested(at: 'self' | 'below'): TreeTested | null {
+    const rules = this._changeRules;
+    const one = (set: ReadonlySet<string> | null | undefined): Tested | null =>
+      set === undefined
+        ? false
+        : set === null
+          ? true
+          : this._subjectsMatcher(set);
+    const holder = one(rules.tested(at, 'holder'));
+    const kids = one(rules.tested(at, 'kid'));
+    if (holder === null || kids === null) return null;
+    return { holder, kids };
+  }
 
   private _subjectsMatcher(
     subjects: ReadonlySet<string>,

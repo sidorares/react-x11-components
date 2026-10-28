@@ -2007,9 +2007,15 @@ holder's children after where the child came or went and what is in them
 not say where; the Guardian's ad scripts put a `<script>` in its `<head>`
 some thirty times a load, and each restyled the whole `<body>`. **A test
 of where a child sits, or of what an element holds, reaches from what its
-compound names** (`TreeReach.self` and `below`, `MutationRules.where`):
-of the holder and its children, those the stable part of the compound it
-is in matches, and below them what its rule's subject names. A webmail
+compound names** (`TreeReach.self` and `below`, `MutationRules.tested`):
+the holder for a test of what an element holds (`:empty`), its children
+for one of where an element sits (`:first-child`, `:nth-child()`), each
+where the stable part of the compound it is in matches — a child in a
+rule's subject where the compound a child combinator leads to it from
+matches the holder too, `.menu > :first-child` — and below them what its
+rule's subject names. **A new pseudo-class that reads what an element holds
+or where it sits joins `HOLDS_TESTS` or `SITS_TESTS`**, or it is taken to
+reach every one of them, as `:default` is. A webmail
 page hides a split button's separator by where the button sits,
 `.btn:not(:last-child) .label`, and every popup it put at the end of its
 `<body>` restyled all 13,000 of its elements. So **a record says where
@@ -2259,6 +2265,25 @@ where it needs it, or kept by the few boxes it is about.
 chunk at a time, cut inside words, tags and attributes, and holds every step
 to the same chunks styled, built and scanned whole; `STREAM_SEEDS` sweeps
 more of them, and `STREAM_FROM` starts at one.
+
+**A script's child put in or taken out builds the end of what holds it
+too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,
+or what its record says was after what it took out, or past the last,
+where the record says where — a tail holds a child, so one past the last
+is built from the last (`_subtreeRoots`). A webmail page puts its popups at
+the end of its `<body>` and takes them out, and each built the whole
+document: 1.1 seconds in the harness where it is 0.1. Three things are
+load-bearing. **The end of a flex or grid box is built as a block's is**
+(`tailRoot`'s `items`): each of its children is an item of its own, and
+nothing of one before a tail is carried to it. **A block's is built only
+where the build noted what came before** (`ranBefore`'s `noted`): a build
+of a document handed over whole notes no wrap (`notesWrapped`), so an
+anonymous block before the tail is a wrap of what ran that nothing says,
+and a box out of the flow after it was left unwrapped. And **a tail's
+styles go before what follows its holder** (`placed`): a script's tail may
+hold what it moved there from before, styled where it was, where a
+stream's held only what came. The subtree fuzz hands on where its
+children came and went half the time, and builds such tails.
 
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in

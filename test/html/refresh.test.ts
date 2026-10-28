@@ -968,6 +968,56 @@ test('below a child whose place changed, what a test of the place reaches is its
   assert.notEqual(el.computedStyle(byId(el, 'c1'))?.color, 'rgb(255, 0, 0)');
 });
 
+test('a child coming or going restyles the children a test of where they sit can be of, and the holder a test of what it holds can', async () => {
+  // A popup's `> :first-child` names its parent and nothing of the child,
+  // and `:empty` asks of what holds what came: every child of a webmail
+  // page's <body> was restyled for each popup it put there
+  const { node } = await render(
+    '<style>body{margin:0} .menu > :first-child{color:#ff0000}' +
+      ' div:empty{height:2px}</style>' +
+      '<main id="page"><div id="d1">a</div><div id="d2">b</div></main>' +
+      '<div class="menu" id="menu"><span id="m1">x</span></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const page = byId(el, 'page');
+  const extra = createElement('div', {}, [createText('c')]);
+  appendChild(page, extra);
+  const put: HtmlChange = {
+    type: 'childList',
+    target: page,
+    addedNodes: [extra],
+    removedNodes: [],
+    previousSibling: byId(el, 'd2'),
+    nextSibling: null,
+  };
+  const own = scopeOf(el, [put]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(!own.has(byId(el, 'd1')), 'a child of no menu is restyled');
+  assert.ok(!own.has(page), 'what holds them is restyled');
+  el.touchDocument([put]);
+  await act();
+  // and in a menu, the child that was first and is not now
+  const menu = byId(el, 'menu');
+  const m0 = createElement('span', {}, [createText('w')]);
+  DomUtils.prepend(byId(el, 'm1') as never, m0 as never);
+  const first: HtmlChange = {
+    type: 'childList',
+    target: menu,
+    addedNodes: [m0],
+    removedNodes: [],
+    previousSibling: null,
+    nextSibling: byId(el, 'm1'),
+  };
+  const moved = scopeOf(el, [first]);
+  assert.ok(moved?.has(byId(el, 'm1')), 'the first child is not restyled');
+  el.touchDocument([first]);
+  await act();
+  assert.notEqual(el.computedStyle(byId(el, 'm1'))?.color, 'rgb(255, 0, 0)');
+  assert.equal(el.computedStyle(m0)?.color, 'rgb(255, 0, 0)');
+});
+
 /** What a refresh told of `changes` would restyle by itself, or null where
  *  it would restyle everything. */
 function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {
