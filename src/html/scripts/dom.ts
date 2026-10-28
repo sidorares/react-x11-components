@@ -9000,6 +9000,27 @@ export function installDom(
       reflect(name === 'referrerPolicy' ? 'referrerpolicy' : name),
     );
   }
+  // the tokens HTML's `sandbox` has (4.8.5), which a page asks
+  // `supports()` of before it adds one: Google's sign-in page does
+  Object.defineProperty(
+    HTMLIFrameElement.prototype,
+    'sandbox',
+    tokenList('sandbox', [
+      'allow-downloads',
+      'allow-forms',
+      'allow-modals',
+      'allow-orientation-lock',
+      'allow-pointer-lock',
+      'allow-popups',
+      'allow-popups-to-escape-sandbox',
+      'allow-presentation',
+      'allow-same-origin',
+      'allow-scripts',
+      'allow-top-navigation',
+      'allow-top-navigation-by-user-activation',
+      'allow-top-navigation-to-custom-protocols',
+    ]),
+  );
   // --- <canvas> --------------------------------------------------------------
 
   /** Pixels a page holds: straight RGBA, as a canvas reads them out. */

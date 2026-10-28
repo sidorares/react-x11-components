@@ -1101,6 +1101,27 @@ test('a script innerHTML puts in never runs, and one a script appends does', asy
   assert.equal(doc.text('out'), '-appended');
 });
 
+test("an iframe's sandbox is a token list of the tokens HTML has", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var f = document.createElement("iframe");' +
+      'var r = [f.sandbox === f.sandbox, f.sandbox.length, f.sandbox.supports("allow-scripts"),' +
+      '  f.sandbox.supports("ALLOW-SAME-ORIGIN"), f.sandbox.supports("allow-everything")];' +
+      // as Google's sign-in page sandboxes a frame
+      'f.setAttribute("sandbox", ""); ["allow-scripts", "allow-forms"].forEach(function (t) {' +
+      '  f.sandbox.supports && !f.sandbox.supports(t) || f.sandbox.add(t); });' +
+      'r.push(f.getAttribute("sandbox"), f.sandbox.contains("allow-forms"));' +
+      'f.sandbox = "allow-popups"; r.push(f.sandbox.value, f.sandbox instanceof DOMTokenList);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    'true|0|true|true|false|allow-scripts allow-forms|true|allow-popups|true',
+  );
+});
+
 test('a script that runs away is stopped, and the page goes on', async () => {
   // at the ceiling, five times its time, since it asks nothing of the
   // document that could stop it sooner
