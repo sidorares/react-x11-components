@@ -4206,6 +4206,175 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
 }
 
 /**
+ * Where a masked box shows anything of itself and what it holds, in the
+ * document's coordinates (CSS Masking 1, 7): the mask painting area, its
+ * border box, as `paintMasked` cuts it, less where every layer is
+ * transparent. A layer reaches its painting area (`mask-clip`); a gradient
+ * straight down or across reaches only as far along it as its stops are
+ * not all transparent, and where one tile of it covers the painting area
+ * that way, or it does not repeat, the tiles past it are not painted
+ * there. Whatever the layers are composited with, the mask is transparent
+ * wherever all of them are. An image, which may be anything, reaches all
+ * of its painting area. Null where the box has no mask.
+ *
+ * joshwcomeau.com's frosted header has a layer of glass that reaches 100px
+ * past the bar, for its blur to catch what is under the bar's edge, masked
+ * by `linear-gradient(to bottom, #000 calc(100% - 100px), transparent 0)`
+ * to the bar: what asks what is over a frame under it (`inkWithin`) took
+ * it for the 100px it draws nothing in, and the frame was cut that far
+ * below the bar.
+ */
+export function maskShows(box: Box): Rect | null {
+  const style = box.style;
+  if (!masked(style)) return null;
+  const top = frameY(box);
+  const height = frameHeight(box);
+  const area = (which: BackgroundClip): Rect => {
+    const [t, r, b, l] = edgeInsets(box, which);
+    return {
+      x: box.x + l,
+      y: top + t,
+      width: box.width - l - r,
+      height: height - t - b,
+    };
+  };
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const layer of maskLayersOf(style)) {
+    const clip = area(layer.backgroundClip);
+    const gradient = layer.backgroundGradient;
+    const reach = gradient
+      ? gradientLayerReach(layer, gradient, area(layer.backgroundOrigin), clip)
+      : clip;
+    if (!reach || !(reach.width > 0 && reach.height > 0)) continue;
+    x0 = Math.min(x0, reach.x);
+    y0 = Math.min(y0, reach.y);
+    x1 = Math.max(x1, reach.x + reach.width);
+    y1 = Math.max(y1, reach.y + reach.height);
+  }
+  // no further than the border box, and none of it where no layer shows
+  const left = Math.max(x0, box.x);
+  const right = Math.min(x1, box.x + box.width);
+  const upper = Math.max(y0, top);
+  const lower = Math.min(y1, top + height);
+  return {
+    x: left,
+    y: upper,
+    width: Math.max(0, right - left),
+    height: Math.max(0, lower - upper),
+  };
+}
+
+/** Where a gradient layer of a mask paints anything, in its painting area
+ *  `clip`, its tiles placed in `at` as `paintGradient` places them: null
+ *  where it is transparent all through there. */
+function gradientLayerReach(
+  layer: ComputedStyle,
+  gradient: Gradient,
+  at: Rect,
+  clip: Rect,
+): Rect | null {
+  const repeat = layer.backgroundRepeat;
+  const [w, h] = roundedTile(
+    layer.backgroundSize,
+    repeat,
+    sizedTile(layer.backgroundSize, NO_SIZE, at, 1),
+    at,
+  );
+  if (!(w > 0 && h > 0)) return null;
+  const x =
+    w === at.width
+      ? at.x
+      : at.x + resolve(layer.backgroundPositionX, at.width - w);
+  const y =
+    h === at.height
+      ? at.y
+      : at.y + resolve(layer.backgroundPositionY, at.height - h);
+  const tile = gradientReach(
+    unrolled(gradient, w, h, layer.color),
+    x,
+    y,
+    w,
+    h,
+    layer.color,
+  );
+  if (!tile) return null;
+  // along an axis the tiles repeat on, all of the painting area, but where
+  // the one tile covers it that way
+  const once = (
+    mode: RepeatMode,
+    from: number,
+    size: number,
+    a: number,
+    b: number,
+  ): boolean => mode === 'no-repeat' || (from <= a && from + size >= b);
+  const alongX = once(repeat[0], x, w, clip.x, clip.x + clip.width);
+  const alongY = once(repeat[1], y, h, clip.y, clip.y + clip.height);
+  return meet(
+    {
+      x: alongX ? tile.x : clip.x,
+      y: alongY ? tile.y : clip.y,
+      width: alongX ? tile.width : clip.width,
+      height: alongY ? tile.height : clip.height,
+    },
+    clip,
+  );
+}
+
+/** Where a gradient `w` by `h` at (`x`, `y`) is not transparent: as far
+ *  along it as its stops are not all transparent, where it runs straight
+ *  down or across, and all of it otherwise. Null where every stop is. */
+function gradientReach(
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+): Rect | null {
+  const stops = gradient.stops;
+  // a colour this cannot read is taken for one that shows
+  const alpha = stops.map(
+    (stop) => rgbaOf(inkColor(stop.color, currentColor))?.[3] ?? 1,
+  );
+  if (alpha.every((a) => a === 0)) return null;
+  const tile = { x, y, width: w, height: h };
+  if (gradient.kind !== 'linear' || gradient.corner) return tile;
+  const across = Math.abs(Math.cos(gradient.angle)) < 1e-9;
+  if (!across && Math.abs(Math.sin(gradient.angle)) >= 1e-9) return tile;
+  // where each stop is along the axis, as `gradientRuns` lays them, and
+  // the runs between them and past the ends that show
+  const length = across ? w : h;
+  const dir = across ? Math.sin(gradient.angle) : -Math.cos(gradient.angle);
+  const start = across ? x + w / 2 - (dir * w) / 2 : y + h / 2 - (dir * h) / 2;
+  const at = stopOffsets(stops, length);
+  const n = stops.length;
+  let lo = Infinity;
+  let hi = -Infinity;
+  const take = (from: number, to: number): void => {
+    const p = start + dir * length * from;
+    const q = start + dir * length * to;
+    lo = Math.min(lo, p, q);
+    hi = Math.max(hi, p, q);
+  };
+  if (alpha[0] > 0) take(-Infinity, at[0]);
+  for (let i = 0; i + 1 < n; i += 1) {
+    if (at[i + 1] > at[i] && (alpha[i] > 0 || alpha[i + 1] > 0)) {
+      take(at[i], at[i + 1]);
+    }
+  }
+  if (alpha[n - 1] > 0) take(at[n - 1], Infinity);
+  const a = Math.max(lo, across ? x : y);
+  const b = Math.min(hi, across ? x + w : y + h);
+  if (!(b > a)) return null;
+  return across
+    ? { x: a, y, width: b - a, height: h }
+    : { x, y: a, width: w, height: b - a };
+}
+
+/**
  * A masked box (CSS Masking 1, 7): the box and what it holds drawn on a
  * surface of their own, which the alpha of its mask layers — painted as a
  * background's are, on a second surface, each composited with the ones
@@ -6730,7 +6899,8 @@ export function inkWithin(
 }
 
 /** `inkMeets`'s walk: `hit` is handed each piece of ink that meets
- *  `extent`, and stops the walk with true. */
+ *  `extent`, and stops the walk with true. Inside a mask, what is handed
+ *  is cut to where the mask shows anything (`maskShows`). */
 function walkInk(
   root: Box,
   extent: Rect,
@@ -6738,11 +6908,16 @@ function walkInk(
   hit: (ink: Rect) => boolean,
 ): boolean {
   const stack: Box[] = [root];
+  // the extent each is asked in: the caller's, or less of it inside a mask
+  const reaches: Rect[] = [extent];
+  const found = (ink: Rect, reach: Rect): boolean =>
+    hit(reach === extent ? ink : meet(ink, reach)!);
   while (stack.length) {
     const at = stack.pop()!;
+    let reach = reaches.pop()!;
     if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) continue;
     const bounds = inkOf(at);
-    if (!meets(bounds, extent)) continue;
+    if (!meets(bounds, reach)) continue;
     const style = at.style;
     // nothing it or what it holds draws shows
     if (drawsNothing(at)) continue;
@@ -6755,8 +6930,17 @@ function walkInk(
       style.filter !== null ||
       at.marker
     ) {
-      if (hit(bounds)) return true;
+      if (found(bounds, reach)) return true;
       continue;
+    }
+    // a mask shows nothing of it or of what it holds where it is
+    // transparent: joshwcomeau.com's frosted header is a layer of glass
+    // that reaches 100px past the bar, for its blur to catch what comes
+    // up under it, masked to the bar
+    if (masked(style)) {
+      const shows = meet(reach, maskShows(at)!);
+      if (!shows) continue;
+      reach = shows;
     }
     const outlined = style.outlineStyle !== 'none' && style.outlineWidth > 0;
     if (
@@ -6782,7 +6966,7 @@ function walkInk(
         height += 2 * grow;
       }
       const own = { x, y, width, height };
-      if (meets(own, extent) && hit(own)) return true;
+      if (meets(own, reach) && found(own, reach)) return true;
     }
     // what it holds, where a box that clips it leaves it within reach
     if (
@@ -6796,13 +6980,15 @@ function walkInk(
           width: at.width - at.borderLeft - at.borderRight,
           height: at.height - at.borderTop - at.borderBottom,
         },
-        extent,
+        reach,
       )
     ) {
       continue;
     }
     for (const child of at.children) {
-      if (!apart?.(at, child)) stack.push(child);
+      if (apart?.(at, child)) continue;
+      stack.push(child);
+      reaches.push(reach);
     }
   }
   return false;
@@ -6911,7 +7097,24 @@ export function drawnInkOf(box: Box): Rect | null {
   return drawnInk(box).ink;
 }
 
+/** `drawnInkOf`'s, with whether it is the box's bounds as they are — and
+ *  cut, where the box is masked, to where its mask shows (`maskShows`). */
 function drawnInk(box: Box): { ink: Rect | null; whole: boolean } {
+  const drawn = unmaskedInk(box);
+  if (!drawn.ink || !masked(box.style) || !hasRect(box) || placedMatrix(box)) {
+    return drawn;
+  }
+  const ink = meet(drawn.ink, maskShows(box)!);
+  const same =
+    ink !== null &&
+    ink.x === drawn.ink.x &&
+    ink.y === drawn.ink.y &&
+    ink.width === drawn.ink.width &&
+    ink.height === drawn.ink.height;
+  return { ink, whole: drawn.whole && same };
+}
+
+function unmaskedInk(box: Box): { ink: Rect | null; whole: boolean } {
   if (drawsNothing(box)) return { ink: null, whole: false };
   let whole = true;
   let parts: Rect[] | null = null;
