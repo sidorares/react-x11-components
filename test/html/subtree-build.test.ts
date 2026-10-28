@@ -19,7 +19,7 @@ import {
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
-import { blocksKept } from '../../src/html/layout/block.js';
+import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { shadowRootOf } from '../../src/html/dom.js';
 import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
@@ -456,6 +456,210 @@ metric(
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** What a probe measures (`measureIntrinsicWidth`): rows whose items
+ *  their automatic minimums hold wider than the row gives them, grid
+ *  columns as wide as what is in them, cells, boxes sized by their content,
+ *  rows that wrap and lines cut short — around blocks of text, which a
+ *  probe takes for what they came to before (`Stand`). */
+const PROBE_SHEET = `body { margin: 0; font-size: 14px }
+.row { display: flex }
+.w { width: calc(100% - 30px) }
+.s { flex: 0 0 60px }
+.wrap { display: flex; flex-wrap: wrap }
+.col { display: flex; flex-direction: column }
+.gr { display: grid; grid-template-columns: auto 1fr }
+.mc { width: min-content }
+.fc { width: fit-content }
+.xc { width: max-content; max-width: 100% }
+.ib { display: inline-block }
+.fl { float: left }
+.tb { display: table }
+.tc { display: table-cell }
+.el { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.pc { margin: 0 10%; padding: 0 5% }
+.l { margin: 6px 0 }
+.h { padding: 3px; border: 1px solid #000 }
+.nw { white-space: nowrap }`;
+
+const PROBE_CLASSES = [
+  'row',
+  'w',
+  's',
+  'wrap',
+  'col',
+  'gr',
+  'mc',
+  'fc',
+  'xc',
+  'ib',
+  'fl',
+  'tb',
+  'tc',
+  'el',
+  'pc',
+  'l',
+  'h',
+  'nw',
+];
+
+const PROBE_WORDS = [
+  'one two',
+  'three four five six',
+  'averyveryverylongword',
+  'seven',
+  'eight nine ten eleven twelve',
+];
+
+function probed(next: () => number, depth: number): Element {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const classes = PROBE_CLASSES.filter(() => next() < 0.1);
+  const el = createElement(
+    pick(['div', 'p', 'section']),
+    classes.length ? { class: classes.join(' ') } : {},
+  );
+  // a list of blocks, now and then, which a probe of what holds it lays
+  // out as often as it measures it
+  const count = depth > 2 ? 1 : 1 + Math.floor(next() * (depth ? 3 : 5));
+  for (let i = 0; i < count; i += 1) {
+    const roll = next();
+    if (depth < 3 && roll < 0.55) appendChild(el, probed(next, depth + 1));
+    else if (roll < 0.7) {
+      appendChild(
+        el,
+        createElement(pick(['span', 'b']), {}, [createText(pick(PROBE_WORDS))]),
+      );
+    } else appendChild(el, createText(pick(PROBE_WORDS)));
+  }
+  return el;
+}
+
+/** A change to a document of `probed` elements, done, and its records. */
+function probedChange(next: () => number, body: Element): HtmlChange[] {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const all = [body, ...elementsUnder(body)];
+  const inside = all.slice(1);
+  const kind = Math.floor(next() * 5);
+  if (kind === 0 || !inside.length) {
+    const parent = pick(all);
+    const child = probed(next, 2);
+    const kids = parent.children.filter((n) => (n as Element).attribs);
+    if (kids.length && next() < 0.5) DomUtils.prepend(pick(kids), child);
+    else appendChild(parent, child);
+    return [
+      {
+        type: 'childList',
+        target: parent,
+        addedNodes: [child],
+        removedNodes: [],
+        ...sidesOf(next, child),
+      },
+    ];
+  }
+  if (kind === 1) {
+    const target = pick(inside);
+    const parent = target.parent as unknown as Element;
+    const sides = sidesOf(next, target);
+    removeNode(target as unknown as ChildNode);
+    return [
+      {
+        type: 'childList',
+        target: parent,
+        addedNodes: [],
+        removedNodes: [target],
+        ...sides,
+      },
+    ];
+  }
+  if (kind === 2) {
+    const target = pick(all);
+    const was = target.attribs.class ?? null;
+    const has = new Set((was ?? '').split(' ').filter(Boolean));
+    const c = pick(PROBE_CLASSES);
+    if (has.has(c)) has.delete(c);
+    else has.add(c);
+    target.attribs.class = [...has].join(' ');
+    return [
+      { type: 'attributes', target, attributeName: 'class', oldValue: was },
+    ];
+  }
+  if (kind === 3) {
+    const target = pick(all);
+    const text = target.children.find((n) => n.type === 'text') as
+      { data: string } | undefined;
+    if (text) {
+      text.data = pick(PROBE_WORDS);
+      return [{ type: 'characterData', target: text as never }];
+    }
+  }
+  const target = pick(all);
+  const was = target.attribs.style ?? null;
+  target.attribs.style = pick([
+    'width: 50px',
+    'margin-left: 12px',
+    'display: none',
+    'padding: 0 8%',
+    'min-width: 0',
+    '',
+  ]);
+  return [
+    { type: 'attributes', target, attributeName: 'style', oldValue: was },
+  ];
+}
+
+metric(
+  'a probe that takes blocks for what they came to before measures what a probe of all new boxes measures',
+  async () => {
+    const standsAtStart = standsMade();
+    // PROBE_SEEDS sweeps more of them, and PROBE_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.PROBE_SEEDS ?? 40);
+    for (let seed = Number(env.PROBE_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 7919);
+      const body = createElement('body', {});
+      const blocks = 3 + Math.floor(next() * 4);
+      for (let i = 0; i < blocks; i += 1) appendChild(body, probed(next, 0));
+      const markup = DomUtils.getOuterHTML(body as never);
+      const { result, node } = await render(
+        `<!doctype html><html><head><style>${PROBE_SHEET}</style></head>${markup}</html>`,
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as { _tree: BoxTree };
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      for (let step = 0; step < 8; step += 1) {
+        el.touchDocument(probedChange(next, bodyEl));
+        await act();
+        const kept = treeLines(internals._tree);
+        // the whole document built again, laid out with no block that
+        // stood for a probe before
+        (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step}: line ${at}\nkept  ${kept[at]}\n` +
+            `whole ${whole[at]}\n${markup}\n` +
+            DomUtils.getOuterHTML(bodyEl as never),
+        );
+      }
+      result.unmount();
+    }
+    const stood = standsMade() - standsAtStart;
+    assert.ok(
+      stood > 200,
+      `${stood} blocks a probe took for what they came to`,
+    );
   },
 );
 

@@ -5,7 +5,12 @@ import { act, cleanup, waitFor } from 'react-x11/test';
 import { Yoga } from 'react-x11/yoga';
 import { parseColor } from '../../src/html/css/values.js';
 import { naturalLayoutsMade } from '../../src/html/layout/flex.js';
-import { appendChild, createText } from '../../src/html/index.js';
+import { boxLayoutsMade, standsMade } from '../../src/html/layout/block.js';
+import {
+  appendChild,
+  createHtmlElement,
+  createText,
+} from '../../src/html/index.js';
 import type { Element } from '../../src/html/index.js';
 import {
   RED_PNG,
@@ -3723,6 +3728,89 @@ metric(
     // once each of its layouts, where the second ask laid it out again: 19
     const made = naturalLayoutsMade() - before;
     assert.ok(made <= 12, `${made} layouts of the column's items`);
+  },
+);
+
+metric(
+  'a probe of an item in a row lays out again the block in a list that changed, and the layout after it keeps the rest',
+  async () => {
+    // A webmail page's content pane, held to its least width in a row a
+    // sidebar makes too narrow, holds its list of messages and a footer
+    // that a spinner comes into whenever the next page loads. Each probe
+    // of the pane laid every message out again, at no width and at none
+    // at all, and the layout after it could keep none of them.
+    const rows = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `<div class="row">sender ${i} <b>subject</b> a line of it</div>`,
+    ).join('');
+    const source =
+      '<style>body { margin: 0; font-size: 14px }' +
+      '.r { display: flex; width: 300px }' +
+      '.m { width: calc(100% - 20px) }' +
+      '.s { flex: 0 0 40px }</style>' +
+      `<div class="r"><div class="m"><div id="list">${rows}</div>` +
+      '<div id="foot"></div></div><div class="s">side</div></div>';
+    const { node } = await render(source, 400);
+    const el = view(node);
+    await act();
+    const find = (from: { children?: unknown[] }): Element | null => {
+      for (const child of (from.children ?? []) as Element[]) {
+        if (child.attribs?.id === 'foot') return child;
+        const found = find(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const foot = find(el.document as unknown as { children: unknown[] })!;
+    const spinner = createHtmlElement('div', { id: 'spin' }, [
+      createText('loading'),
+    ]);
+    appendChild(foot, spinner);
+    const before = boxLayoutsMade();
+    const stood = standsMade();
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: foot,
+        addedNodes: [spinner],
+        removedNodes: [],
+        previousSibling: null,
+        nextSibling: null,
+      },
+    ]);
+    await act();
+    // the footer and the spinner, and the boxes around them: where every
+    // message was laid out again in the probe and in the layout, 89
+    const made = boxLayoutsMade() - before;
+    assert.ok(made <= 20, `${made} boxes laid out`);
+    assert.ok(
+      standsMade() > stood,
+      'a probe took a message for what it came to',
+    );
+    // and where a layout of all new boxes puts them
+    const spin = boxOf(el, 'spin');
+    const list = boxOf(el, 'list');
+    const { node: fresh } = await render(
+      source.replace(
+        '<div id="foot"></div>',
+        '<div id="foot"><div id="spin">loading</div></div>',
+      ),
+      400,
+    );
+    const whole = view(fresh);
+    await act();
+    for (const [id, box] of [
+      ['spin', spin],
+      ['list', list],
+    ] as const) {
+      const want = boxOf(whole, id);
+      assert.deepStrictEqual(
+        [box.x, box.y, box.width, box.height],
+        [want.x, want.y, want.width, want.height],
+        `#${id}`,
+      );
+    }
   },
 );
 
