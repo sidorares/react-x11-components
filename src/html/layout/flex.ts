@@ -62,7 +62,7 @@ import {
 import { layoutGrid } from './css-grid.js';
 import { firstBaselineIn } from './inline.js';
 import { TABLE_CONTENT } from './table.js';
-import type { LayoutContext } from './block.js';
+import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -1634,7 +1634,7 @@ function layoutNaturally(
             ctx.keep === undefined &&
             ctx.reach === undefined),
         viewportWidth: ctx.viewportWidth,
-        viewportHeight: ctx.viewportHeight,
+        under: ctx.under,
         scale: ctx.scale,
         fonts: ctx.fonts,
         serial: box.layoutSerial,
@@ -1795,7 +1795,7 @@ interface Natural {
    *  layout that stops made may leave some of it set aside. */
   whole: boolean;
   viewportWidth: number;
-  viewportHeight: number;
+  under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;
   serial: number;

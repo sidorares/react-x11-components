@@ -63,7 +63,7 @@ import {
   wholeAgain,
   widthThroughRatio,
 } from './block.js';
-import type { LayoutContext } from './block.js';
+import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
 import { gridLines, placement, subgridLines } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
@@ -1463,7 +1463,7 @@ function layoutAcross(
     probe: ctx.probing === true,
     pass: ctx.probing ? NaN : (ctx.reusePass ?? NaN),
     viewportWidth: ctx.viewportWidth,
-    viewportHeight: ctx.viewportHeight,
+    under: ctx.under,
     scale: ctx.scale,
     fonts: ctx.fonts,
     serial: child.layoutSerial,
@@ -1509,7 +1509,7 @@ interface ItemLaid {
   probe: boolean;
   pass: number;
   viewportWidth: number;
-  viewportHeight: number;
+  under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;
   serial: number;
