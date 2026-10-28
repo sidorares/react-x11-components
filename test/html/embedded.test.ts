@@ -590,6 +590,27 @@ test('a box fixed to the viewport that the document paints before a frame is und
   );
 });
 
+test('a box fixed to the viewport that draws nothing where it reaches a frame hides none of it', async () => {
+  // joshwcomeau.com's popup, fixed over its article: a wrapper with nothing
+  // of its own around a card at an opacity of 0. A playground's divider
+  // dragged left brought the frame's edge under the card, and the frame
+  // was hidden whole for the wrapper's ink
+  const { result, asked } = await renderEmbedded(
+    '<style>body{margin:0}iframe{border:0;display:block;margin-left:100px}' +
+      '.popup{position:fixed;top:20px;left:40px;pointer-events:none}' +
+      '.card{opacity:0;width:120px;height:40px;background:#000}</style>' +
+      '<iframe id="f" width="120" height="80"></iframe>' +
+      '<div class="popup"><div class="card"></div></div>',
+  );
+  const frame = asked.at(-1);
+  assert.ok(frame, 'the frame was asked about');
+  assert.ok(!frame.hidden, 'shown');
+  assert.strictEqual(frame.clip, undefined, 'and uncut');
+  await expectPixel(result.ctx, 130, 40, '#ff0000', {
+    message: 'what is mounted for it is drawn, under the card',
+  });
+});
+
 test('a mount stays the same node as a layout moves its element', async () => {
   // a new node would be a new document in an iframe, its scripts started
   // again; a new source is a new document, and a new node is right there
