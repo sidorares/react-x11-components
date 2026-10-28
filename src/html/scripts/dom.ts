@@ -294,21 +294,30 @@ export function installDom(
       colno: at ? Number(at[3]) : 0,
     };
   };
+  // HTML's "report an exception": the event first, and the console only
+  // where no handler cancelled it. Google's pages install an `onerror` that
+  // returns true for every error, having sent it home, and throw the
+  // hydration errors a Wiz controller of a node a render replaced runs
+  // into as a matter of course; told on the console regardless, Photos'
+  // updates page printed one for each update. An exception thrown while
+  // one is being reported is told on the console alone.
   const report = (error: Any): void => {
-    const { text } = describe(error);
-    bridge('log', 'error', `Uncaught ${text}`);
-    if (reporting) return;
-    reporting = true;
-    try {
-      const ev = new ErrorEvent('error', {
-        ...errorInit(error, 'Uncaught '),
-        cancelable: true,
-      });
-      dispatch(windowTarget, ev);
-    } catch {
-    } finally {
-      reporting = false;
+    if (!reporting) {
+      reporting = true;
+      let handled = false;
+      try {
+        const ev = new ErrorEvent('error', {
+          ...errorInit(error, 'Uncaught '),
+          cancelable: true,
+        });
+        handled = !dispatch(windowTarget, ev);
+      } catch {
+      } finally {
+        reporting = false;
+      }
+      if (handled) return;
     }
+    bridge('log', 'error', `Uncaught ${describe(error).text}`);
   };
 
   // --- events ------------------------------------------------------------------
