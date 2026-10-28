@@ -89,22 +89,23 @@ document's top on Next.js, Tailwind and the Guardian.
 The builder carries state across siblings, and a root is where all of it
 is at a known value and comes out the same:
 
-| builder state                                                          | why a root is safe for it                                                                                                                                            |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| white space (`_ws`), a word's first letter (`_lettered`)               | a block-level box ends the line before it and starts its own (`_endLine`, `after`)                                                                                   |
-| the document's text (`_chunks`, `_length`) and every box's `textStart` | the root's text is built from its old start, and every later box shifts by the difference                                                                            |
-| `::first-letter` (`_firstLetter`)                                      | refused where any rule styles one                                                                                                                                    |
-| `::first-line` (`FIRST_LINE`)                                          | refused where any rule styles one                                                                                                                                    |
-| CSS counters and quotes (`_scopes`, `_quoteDepth`)                     | refused where the old or new subtree changes or reads a counter or a quote — but for list items whose markers show no number, as many after as before (`_listItems`) |
-| depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                       |
-| the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                             |
-| the flat tree                                                          | the root is in the document's own tree, assigned to no slot, and neither subtree hosts a shadow tree (`inLightTree`, `holdsShadow`)                                  |
+| builder state                                                          | why a root is safe for it                                                                                                                                                                                            |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| white space (`_ws`), a word's first letter (`_lettered`)               | a block-level box ends the line before it and starts its own (`_endLine`, `after`)                                                                                                                                   |
+| the document's text (`_chunks`, `_length`) and every box's `textStart` | the root's text is built from its old start, and every later box shifts by the difference                                                                                                                            |
+| `::first-letter` (`_firstLetter`)                                      | refused where a block at or around the root's parent looks for one: a `::first-letter` rule matches it (`lookedForLetter`). Only such a block hands the builder a search, and none is carried out past what it holds |
+| `::first-line` (`FIRST_LINE`)                                          | refused where any rule styles one                                                                                                                                                                                    |
+| CSS counters and quotes (`_scopes`, `_quoteDepth`)                     | refused where the old or new subtree changes or reads a counter or a quote — but for list items whose markers show no number, as many after as before (`_listItems`)                                                 |
+| depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                                                                       |
+| the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                                                                             |
+| the flat tree                                                          | the root is in the document's own tree, assigned to no slot, and neither subtree hosts a shadow tree (`inLightTree`, `holdsShadow`)                                                                                  |
 
 So a rebuild root is an element whose old box is its only box, an in-flow
 block-level box (`block` or `flex`), child of a block or flex container,
 and whose new box is one too — and nothing in the document styles a first
-letter or a first line. A root that fails any of these hands its parent
-the role, and a root at the document's top is a whole build.
+line, and no block around it styles its first letter. A root that fails
+any of these hands its parent the role, and a root at the document's top
+is a whole build.
 
 ### What the tree keeps besides boxes
 
@@ -193,9 +194,26 @@ the next layout's first question. joshwcomeau.com's article is a grid of a
 hundred paragraphs inside flex boxes, and a sparkle beside one of them
 laid every one out again, three times a second.
 
+**A probe keeps a flex item too** (`keepsNatural`): a natural layout a
+probe or a layout made, where all of the item was laid out and it holds
+nothing out of the flow, which a kept box counts in the document's reach.
+A layout keeps only a layout's, since a probe keeps none of what a layout
+keeps by the boxes in the item (`FLOW_PLACE`, `LAID`). An item along a
+row in no room whose automatic minimum is its content at its narrowest is
+fitted there at once (`heldAtMinContent`), where it was laid out at no
+width for `autoMinimums` to hold it there, which made its record one at
+no width. And an item keeps one natural layout a width, four at most
+(`NATURAL_WIDTHS`): the latest is the layout it has, and another answers
+the height its width came to (`measureBox`). A webmail page's hidden strip
+of 2,496 senders, in the `auto` column of a grid whose min-content the
+flex row around it asks, was laid out again inside each probe of it at
+every layout, and its content pane at its widest and at its width by
+turns, a dozen times a layout.
+
 **Not yet**: a table cell, laid out by its table's algorithm; and a probe
-of a shrink-to-fit box, which lays out all it holds at the probe's width.
-Both are where most of what a change on the Guardian costs still goes.
+of a shrink-to-fit box, which lays out all else it holds at the probe's
+width. Both are where most of what a change on the Guardian costs still
+goes.
 
 ## What it measured
 
@@ -270,7 +288,7 @@ state there is the one it starts a build of its own at:
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | white space, a word's first letter | the block before it ended its line (`_endLine`, `after`); and a float or a box out of the flow around it holds the space before it from its line's end only where it pushed text (`after`'s `held`), so one whose text comes to some, or to none, is refused — as a root is                                                                                |
 | the document's text                | the tail's text starts where the block before it left the text (`textAfterBox`: the end of the text the tree's ranges say is at or before it, and past it what the fix-up dropped from it, which the list of text boxes keeps) and ends where the holder's did; what follows moves by the difference, its lines and their span maps with it (`shiftLines`) |
-| `::first-letter`, `::first-line`   | refused where any rule styles one                                                                                                                                                                                                                                                                                                                          |
+| `::first-letter`, `::first-line`   | a first letter: refused where the holder, or a block around it, looks for one (`lookedForLetter`); a first line: refused where any rule styles one                                                                                                                                                                                                         |
 | counters and quotes                | a build apart notes a read of any counter it did not make, or of one whose reach a counter outside could change, and refuses (`CounterScopes.detach`); it counts otherwise than the old run did only where nothing kept after it reads a counter                                                                                                           |
 | the fix-up                         | the tail is fixed up after a stand-in block, with what the fix-up saw before the block among the holder's children (`ranBefore`, from the first block after each, which `RAN_FROM` keeps by the holder): inline content, which wraps every run, and floats or boxes out of the flow, wrapped only so; refused where the tail would change how they are     |
 | the holder                         | its box and style stay: a block container in the document's own tree, hosting no shadow tree, of no element that lays out its children otherwise (`TAILS_REFUSED`), and none whose style the change can reach                                                                                                                                              |

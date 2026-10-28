@@ -48,6 +48,7 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .f::before { content: "* " }
 .g { display: none }
 .h { padding: 4px; border: 1px solid #000 }
+.h::first-letter { font-size: 20px; color: #00aa00 }
 .i { white-space: pre }
 .j { text-transform: uppercase }
 .k { user-select: none }
@@ -746,6 +747,157 @@ metric(
         serials(others),
         before,
         `#${others.join(', #')} laid out again for #${at}`,
+      );
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
+
+metric(
+  'a change beside a block that styles its first letter builds only the subtree it reached, where a build of all new boxes puts it',
+  async (t) => {
+    // a webmail page's header styles the first letter of the account's
+    // name, one rule in all its sheets, and every change the page made was
+    // a build of all 12,894 of its elements
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '.lead::first-letter { font-size: 24px; color: #00aa00 }' +
+        'p { margin: 2px }</style></head><body>' +
+        '<div class="lead"><p id="l1">Opening <span id="ls">words</span></p>' +
+        '<p id="l2">and more</p></div>' +
+        '<div><p id="b1">beside <span id="bs">it</span></p>' +
+        '<p id="b2">a second row</p></div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    for (const [at, apart] of [
+      ['bs', true],
+      ['ls', false],
+    ] as const) {
+      const built = t.mock.method(internals, '_subtreeBuild');
+      const span = byId(at);
+      const text = createText(' and more of it');
+      appendChild(span, text);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: span,
+          addedNodes: [text],
+          removedNodes: [],
+        },
+      ]);
+      await act();
+      const result = built.mock.calls.at(-1)?.result;
+      built.mock.restore();
+      // inside the block whose letter is looked for, the whole is built
+      assert.strictEqual(
+        result !== null && result !== undefined,
+        apart,
+        `#${at} built ${result ? 'its subtree' : 'the whole document'}`,
+      );
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
+
+metric(
+  'a probe of a flex row keeps the items an earlier layout laid out, where a layout of all new boxes puts them',
+  async () => {
+    // A webmail page's promo holds a hidden strip of 2,496 senders, a
+    // nowrap row in a grid's `auto` column, and the flex row around the
+    // grid asks for its least width: a probe at no width, which laid every
+    // sender out again at each layout of the page, whatever changed.
+    const items = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `<div class="item"><span class="b"><i class="av"></i>` +
+        `<span>sender ${i}</span></span></div>`,
+    ).join('');
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '.root { display: flex }' +
+        '.body { display: flex; width: calc(100% - 57px); flex-grow: 1 }' +
+        '.aside { width: 70px; flex-shrink: 0 }' +
+        '.main { flex-grow: 1; min-width: 0; display: flex; overflow: hidden }' +
+        '.mc { flex: auto; min-width: 0; display: flex; flex-direction: column }' +
+        '.grid { display: grid; grid-template-columns: min-content 60px auto;' +
+        ' overflow: hidden; white-space: nowrap }' +
+        '.strip { width: 100%; overflow: hidden }' +
+        '.list { display: flex; width: 100%; overflow: hidden; height: 0 }' +
+        '.item { flex: none }' +
+        '.b { display: flex; align-items: center; padding: 2px 4px }' +
+        '.av { display: block; width: 10px; height: 10px; margin-right: 3px }' +
+        'p { margin: 2px }</style></head><body><div class="root">' +
+        '<div class="body"><div class="main"><div class="mc">' +
+        '<div class="grid"><span>i</span><span>title</span>' +
+        `<div class="strip"><div class="list">${items}</div></div></div>` +
+        '<p id="msg">a message <span id="ms">row</span></p></div></div></div>' +
+        '<div class="aside">bar</div></div></body></html>',
+      480,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const senders = (): Box[] => {
+      const out: Box[] = [];
+      const walk = (box: Box) => {
+        if (box.el?.attribs.class === 'item') out.push(box);
+        for (const child of box.children) walk(child);
+      };
+      walk(internals._tree.root);
+      return out;
+    };
+    const span = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'ms',
+    )!;
+    for (let round = 0; round < 2; round += 1) {
+      const before = senders().map((box) => box.layoutSerial);
+      const text = createText(' and more');
+      appendChild(span, text);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: span,
+          addedNodes: [text],
+          removedNodes: [],
+        },
+      ]);
+      await act();
+      const after = senders().map((box) => box.layoutSerial);
+      const again = after.filter((serial, i) => serial !== before[i]).length;
+      assert.strictEqual(
+        again,
+        0,
+        `${again} of ${after.length} senders laid out again (round ${round})`,
       );
       const kept = treeLines(internals._tree);
       internals._invalidate(2);
