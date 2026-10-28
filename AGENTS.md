@@ -2624,6 +2624,18 @@ closes a way out a DOM binding opens by accident:
   dirty; the outermost entry's end refreshes (`settled`), and an op that
   asks the layout anything flushes first, since it has to answer from the
   change.
+- **But an inline script a page's script puts in runs inside the op that
+  puts it in** (`_prepareScript`, from `_connected`), as a script of its
+  own (`exec`), `inert` from then on, with `currentScript` the outer
+  script's again once it ends (`outerScripts`). Google's sign-in page puts
+  its BotGuard program in a `<script>`, takes it out at once and reads the
+  global it made, as jQuery's `globalEval` does: met at `<Html>`'s next
+  read of the tree, it never ran. So **anything new that puts nodes into a
+  document goes through `_put` or `_replaceAll`**, and **anything new that
+  copies a script carries `inert` over** (`_keepStarted`, HTML's cloning
+  steps), or a copy of what `innerHTML` made runs. On Node the context
+  runs the microtasks queued so far as the inner script ends, as it does
+  for a worker's `importScripts`.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the
@@ -2736,14 +2748,19 @@ closes a way out a DOM binding opens by accident:
   instance: GitHub's delegated-events takes `currentTarget`'s descriptor
   off `Event.prototype` to shadow it on the event, and found none. And a
   reflected attribute the facade leaves out is an expando that changes
-  nothing: github.blog's menus open by `ariaHidden`. Listing the
-  getter-only accessors on the facade's interfaces, and checking each
-  against the IDL, is a quick way to find the next one. When a stand-in
-  hands its callback what it has counts as well: an observer hands every
-  entry it has in one call. Wikipedia's contents pick the heading above the
-  top out of all their entries, and an `IntersectionObserver` that called
-  back once a target had them mark every section in turn, with a layout
-  each, five times a second while the article scrolled. A library's
+  nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
+  page sandboxes a frame through `sandbox.supports()`. How a callback is
+  called is the IDL's too: a global's `onerror` is handed an error's
+  message, file, line, column and error rather than the event
+  (`globalError`), and Closure's handler read the event as the message's
+  string. Listing the getter-only accessors on the facade's interfaces,
+  and checking each against the IDL, is a quick way to find the next one.
+  When a stand-in hands its callback what it has counts as well: an
+  observer hands every entry it has in one call. Wikipedia's contents pick
+  the heading above the top out of all their entries, and an
+  `IntersectionObserver` that called back once a target had them mark
+  every section in turn, with a layout each, five times a second while the
+  article scrolled. A library's
   reading of a standard counts too: css-select reads a query from an
   element as jQuery does, `:scope .a .b`, where the DOM matches the
   selector against the whole document, so `el.querySelectorAll('.a .b')`

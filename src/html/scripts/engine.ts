@@ -958,7 +958,8 @@ export class ScriptEngine {
       this._held.push(() => void this.exec(code, url, script));
       return false;
     }
-    this.call('__exec', [script]);
+    // inside another script, which put this one in (`_prepareScript`)
+    this.call('__exec', [script, this._depth > 0]);
     let compiled: VmScript | null = null;
     try {
       compiled = new vm.Script(code, {
