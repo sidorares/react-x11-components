@@ -9891,6 +9891,86 @@ test('an IntersectionObserver reports what it was asked to observe in one callba
   assert.equal(doc.text('out'), 'a,b,c|a,b');
 });
 
+test('an IntersectionObserver finds a target a scroller holds below its scrollport out of view, and in view once scrolled to', async () => {
+  // A webmail page's list observes a sentinel at its foot and loads more
+  // where it is in view. Told it was, every target being, the page loaded
+  // thirty more messages every few seconds for as long as it was open.
+  const rows = Array.from({ length: 5 }, () => '<div class="row">r</div>').join(
+    '',
+  );
+  const doc = await hosted(
+    '<style>body { margin: 0 } #list { height: 100px; overflow: auto }' +
+      '.row { height: 30px }</style><p id="out"></p>' +
+      `<div id="list">${rows}<div id="foot" style="height: 1px"></div></div>` +
+      '<script>' +
+      'var seen = [];' +
+      'new IntersectionObserver(function (entries) {' +
+      '  entries.forEach(function (e) { seen.push(e.isIntersecting + "@" + Math.round(e.intersectionRect.height)); });' +
+      '  document.getElementById("out").textContent = seen.join(",");' +
+      '  if (seen.length === 1) setTimeout(function () { document.getElementById("list").scrollTop = 100; }, 50);' +
+      '}).observe(document.getElementById("foot"));' +
+      '</script>',
+  );
+  await settled(doc, 'out', (t) => t.split(',').length >= 2);
+  await settle(250);
+  assert.equal(doc.text('out'), 'false@0,true@1');
+});
+
+test("an IntersectionObserver meets its target with its root's padding box grown by its margin, and picks its thresholds by the ratio", async () => {
+  const doc = await hosted(
+    '<style>body { margin: 0 } #root { height: 100px; overflow: hidden;' +
+      ' border: 5px solid black } #gap { height: 50px } #t { height: 100px }' +
+      '#far { margin-top: 1000px; height: 10px } #none { display: none }</style>' +
+      '<p id="out"></p><div id="root"><div id="gap"></div><div id="t"></div></div>' +
+      '<div id="far"></div><div id="none"></div><script>' +
+      'var r = {}; var el = function (id) { return document.getElementById(id); };' +
+      'function out() { document.getElementById("out").textContent = Object.keys(r).sort().map(function (k) { return k + "=" + r[k]; }).join(" "); }' +
+      'function watch(name, options, target) {' +
+      '  new IntersectionObserver(function (entries) {' +
+      '    var e = entries[entries.length - 1];' +
+      '    r[name] = [e.isIntersecting, Math.round(e.intersectionRatio * 100) / 100, e.rootBounds && Math.round(e.rootBounds.height), Math.round(e.intersectionRect.height)].join("/");' +
+      '    out();' +
+      '  }, options).observe(target);' +
+      '}' +
+      'watch("half", { root: el("root"), threshold: [0, 0.5, 1] }, el("t"));' +
+      'watch("grown", { root: el("root"), rootMargin: "0px 0px 50px 0px" }, el("t"));' +
+      'watch("below", {}, el("far"));' +
+      'watch("reached", { rootMargin: "0px 0px 400% 0px" }, el("far"));' +
+      'watch("hidden", {}, el("none"));' +
+      '</script>',
+  );
+  await settled(doc, 'out', (t) => t.split(' ').length >= 5);
+  assert.equal(
+    doc.text('out'),
+    'below=false/0/300/0 grown=true/1/150/100 half=true/0.5/100/50' +
+      ' hidden=false/0/300/0 reached=true/1/1500/10',
+  );
+});
+
+test('an IntersectionObserver takes the options the spec has, and refuses the others', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var fn = function () {};' +
+      'var io = new IntersectionObserver(fn, { rootMargin: "10px 20%", threshold: [1, 0, 0.5] });' +
+      'r.push(io.rootMargin, io.thresholds.join(","), io.root);' +
+      'r.push(new IntersectionObserver(fn).rootMargin, new IntersectionObserver(fn).thresholds.join(","));' +
+      'function fails(f) { try { f(); return "none"; } catch (e) { return e.name; } }' +
+      'r.push(fails(function () { new IntersectionObserver(fn, { rootMargin: "10" }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(fn, { rootMargin: "1em" }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(fn, { threshold: 2 }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(fn, { root: 3 }); }));' +
+      'r.push(fails(function () { io.observe(document); }));' +
+      'r.push(io.takeRecords().length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    '10px 20% 10px 20%|0,0.5,1||0px 0px 0px 0px|0|SyntaxError|SyntaxError|RangeError|TypeError|TypeError|0',
+  );
+});
+
 /** A page whose frames run in realms of their own, as `<Html scripts>`
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays

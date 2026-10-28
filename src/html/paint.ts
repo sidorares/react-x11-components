@@ -6274,6 +6274,19 @@ function pushEdgeClip(ctx: PaintContext, edge: ClipEdge): boolean {
  * draw where the text measures from the border edge. Along an axis it lets
  * overflow show, nothing is cut.
  */
+/** The edge a box that clips what it holds cuts it at (`clipEdge`), in
+ *  the document's device pixels at `scale`, its corners left out: what an
+ *  `IntersectionObserver`'s target is clipped to (`intersectionsOf`). */
+export function clipEdgeRect(box: Box, scale: number): Rect {
+  const { rect } = rectClipEdge(box, {
+    originX: 0,
+    originY: 0,
+    scale,
+    damage: null,
+  });
+  return { x: rect.x, y: rect.y, width: rect.w, height: rect.h };
+}
+
 function clipEdge(box: Box, options: ClipSpace): ClipEdge {
   const edge = rectClipEdge(box, options);
   // and a border drawn as a shape cuts it to the inner shape, as its

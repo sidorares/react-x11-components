@@ -346,6 +346,7 @@ import {
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   boundsAfterMove,
+  clipEdgeRect,
   clipFor,
   clipsOverflow,
   computePaintBounds,
@@ -5747,6 +5748,80 @@ export class HtmlViewNode extends Node {
     return rect
       ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
       : null;
+  }
+
+  /**
+   * What an `IntersectionObserver` reads of its targets (Intersection
+   * Observer 1, 3.2.8, "compute the intersection"), laid out first, in
+   * `elementRect`'s coordinates: each target's border box; and what of it
+   * the boxes between it and `root` let be seen — the document's root
+   * where there is none — cut at the clip edge of each box that clips what
+   * it holds and holds the target (`clipEdgeRect`, walked as `clipFor`
+   * walks them, so an out-of-flow box escapes what its containing block is
+   * outside), each edge drawn through the transforms around it. Touching
+   * counts as seen, as the spec's edge-inclusive intersection has it, and
+   * a clip that leaves none of the target leaves `seen` null. And `root`'s
+   * own rectangle, its padding box where it clips what it holds and its
+   * border box where not. A target with no box is null, as is one `root`
+   * does not hold; `root` is null where it has no box. A target never
+   * clipped was every target there was: the stub this replaced answered
+   * each once as all in view, and a webmail page's list, told that the
+   * sentinel at its foot far below its scrollport was, loaded thirty more
+   * messages every few seconds for as long as it was open.
+   */
+  intersectionsOf(
+    targets: readonly Element[],
+    root: Element | null,
+  ): {
+    root: Rect | null;
+    targets: ({ rect: Rect; seen: Rect | null } | null)[];
+  } {
+    this._prepare(this.abs.width || 1);
+    this._followViewport();
+    const tree = this._tree;
+    const rootBox = tree && root ? boxOf(tree, root) : null;
+    let rootRect: Rect | null = null;
+    if (tree && rootBox) {
+      const own = clipsOverflow(rootBox)
+        ? throughTransforms(clipEdgeRect(rootBox, this._scale), rootBox)
+        : this._drawnRect(tree, rootBox, false);
+      rootRect = own && this._moveToViewport(rootBox, own);
+    }
+    const out: ({ rect: Rect; seen: Rect | null } | null)[] = [];
+    for (const target of targets) {
+      const box = tree ? boxOf(tree, target) : null;
+      const drawn = tree && box ? this._drawnRect(tree, box, false) : null;
+      if (!box || !drawn || (root && (!rootBox || !holds(rootBox, box)))) {
+        out.push(null);
+        continue;
+      }
+      let seen: Rect | null = drawn;
+      const escaping: Box[] = box.outOfFlow ? [box] : [];
+      let below = box;
+      for (
+        let at = box.parent;
+        seen && at?.parent;
+        below = at, at = at.parent
+      ) {
+        if (at === rootBox) break;
+        if (
+          clipsOverflow(at) &&
+          !(at.kind === 'table' && below.kind === 'table-caption') &&
+          escaping.every((o) => holds(at, containingBlockOf(o)))
+        ) {
+          seen = meetsTouching(
+            seen,
+            throughTransforms(clipEdgeRect(at, this._scale), at),
+          );
+        }
+        if (at.outOfFlow) escaping.push(at);
+      }
+      out.push({
+        rect: this._moveToViewport(box, drawn),
+        seen: seen && this._moveToViewport(box, seen),
+      });
+    }
+    return { root: rootRect, targets: out };
   }
 
   /** `elementRect`, in the layout there is — or its first fragment's. */
@@ -13718,6 +13793,18 @@ function caretAt(
   };
   visit(box);
   return found;
+}
+
+/** Where two rectangles meet, touching edges counting as meeting
+ *  (Intersection Observer 1's edge-inclusive intersection); null where
+ *  they do not. */
+function meetsTouching(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (right < x || bottom < y) return null;
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 /**

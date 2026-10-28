@@ -1290,6 +1290,11 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
+      intersections: (targets: readonly Element[], root: Element | null) =>
+        nodeRef.current?.intersectionsOf(targets, root) ?? {
+          root: null,
+          targets: targets.map(() => null),
+        },
       textPointAt: (x: number, y: number) =>
         nodeRef.current?.textPointAt(x, y) ?? null,
       textRects: (

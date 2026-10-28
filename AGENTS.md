@@ -2631,6 +2631,20 @@ closes a way out a DOM binding opens by accident:
   selector against the whole document, so `el.querySelectorAll('.a .b')`
   found nothing whose `.a` was above `el`. **A page's selector goes
   through `_query`**, which compiles it as the DOM does and keeps it.
+- **What a page is told it can see is measured, never assumed.** An
+  `IntersectionObserver`'s look asks the host once for all of its targets
+  (`intersect`, `intersectionsOf`): each border box, cut at the clip edge
+  of every box between it and the root that clips what it holds, met with
+  the root's rectangle grown by `rootMargin`, its threshold picked by the
+  ratio; and only a target whose threshold or whether it intersects
+  changed is told. The stand-in it replaced answered every target once as
+  in view, which is what a lazy image loader waits for, and a webmail
+  page's infinite scroll, whose sentinel sat at the foot of a list far
+  taller than its scrollport, loaded thirty more messages every few
+  seconds for as long as it was open. **Anything new that answers a page
+  about what is in view asks the boxes, their clips included.** A target
+  in a frame's document is still answered as in view, since the page's
+  view draws none of it.
 - **What HTML gates on the user's gesture reads the realm's activation.**
   `__event` notes an activation-triggering press or key (`lastActivation`),
   `hasTransientActivation` holds for five seconds after, and

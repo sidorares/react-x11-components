@@ -675,7 +675,9 @@ meets runs where it is", has the detail.
 - modules: `vm.SourceTextModule` needs a flag on Node (phase 2 — built);
 - workers;
 - `MutationObserver` (phase 2, from the same dirty set — built);
-- `IntersectionObserver`, `ResizeObserver`;
+- `IntersectionObserver`, `ResizeObserver` (both built later; an
+  intersection is measured from the box tree, clipped by every scroll
+  container on the way to its root, `intersectionsOf`);
 - `XMLHttpRequest` (phase 2 — built, asynchronous only);
 - WebSocket, canvas (IndexedDB came in phase 2 — see below; WebSocket
   came later, over the `webSocket` seam, docs/components/html.md).

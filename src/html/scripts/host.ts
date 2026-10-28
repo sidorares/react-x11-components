@@ -431,6 +431,17 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** What an `IntersectionObserver` reads of its targets, in
+   *  `elementRect`'s coordinates: each one's border box and what the boxes
+   *  between it and `root` let be seen of it, and `root`'s rectangle
+   *  (`HtmlViewNode.intersectionsOf`). */
+  intersections(
+    targets: readonly Element[],
+    root: Element | null,
+  ): {
+    root: Rect | null;
+    targets: ({ rect: Rect; seen: Rect | null } | null)[];
+  };
   /** The DOM boundary point nearest a logical window point, as
    *  `caretPositionFromPoint` answers (`HtmlViewNode.textPointAt`). */
   textPointAt(x: number, y: number): { node: AnyNode; offset: number } | null;
@@ -3530,6 +3541,35 @@ export class DomHost {
           n('border-bottom-width'),
           n('border-left-width'),
         ].join(',');
+      }
+      // an `IntersectionObserver`'s targets, all of one observer's in one
+      // crossing (`intersectionsOf`): the root's rectangle, '' for the
+      // viewport and '-' for one with no box, then each target's border
+      // box and what of it is seen, '-' where nothing is, '' for none. A
+      // target in a frame's document is '*', in view as it was before any
+      // was measured: the page's view draws none of it, and what is in
+      // view of a frame is the frame's place in the page as well
+      case 'intersect': {
+        this.flush();
+        const targets = text(a)
+          .split(',')
+          .filter(Boolean)
+          .map((id) => this._element(Number(id)));
+        const root = Number(b) ? this._element(b) : null;
+        const here = targets.filter((t) => this._ownerOf(t) === this.document);
+        const found = this._seams.handle.intersections?.(here, root);
+        if (!found) return '';
+        const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
+        const head = !root ? '' : found.root ? rect(found.root) : '-';
+        let next = 0;
+        const rows = targets.map((t) => {
+          if (this._ownerOf(t) !== this.document) return '*';
+          const one = found.targets[next++];
+          return one
+            ? `${rect(one.rect)},${one.seen ? rect(one.seen) : '-'}`
+            : '';
+        });
+        return `${head}|${rows.join(';')}`;
       }
       case 'rect': {
         this.flush();
