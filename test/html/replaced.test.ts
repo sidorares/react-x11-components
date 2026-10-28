@@ -5,6 +5,7 @@ import {
   act,
   cleanup,
   expectPixel,
+  fireEvent,
   renderX11,
   screen,
   waitFor,
@@ -2106,6 +2107,94 @@ metric(
     await expectPixel(ctx, 5, 50, '#ffffff', { message: 'and not stretched' });
   },
 );
+
+metric(
+  'an inline <svg> is cut to its box unless its overflow is visible, and is repainted where it draws past it',
+  async () => {
+    // Every engine's sheet cuts an inline drawing to its box
+    // (`svg:not(:root) { overflow: hidden }`, SVG 2, 6.14), and a page that
+    // sets `overflow: visible` shows what is past it, on the axes it sets
+    // it on. A flow editor draws each edge in an `<svg>` of the default
+    // size, 300 by 150, at the corner of its graph, and the edge wherever
+    // it goes: the edges below the first 150 pixels were cut away. What it
+    // draws past its box is the box's ink, so a hover that repaints what
+    // is under it repaints it.
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{position:absolute;left:0}' +
+        '#under{position:absolute;top:60px;width:60px;height:40px}' +
+        '#under:hover{background:#eeeeee}</style>' +
+        '<div id="under"></div>' +
+        // shown past its box both ways
+        '<svg id="shown" style="top:0;overflow:visible" width="20" height="20">' +
+        '<rect x="30" y="70" width="10" height="10" fill="#00aa00"/></svg>' +
+        // cut across, with `clip`, and shown down
+        '<svg style="top:120px;overflow-x:clip;overflow-y:visible" ' +
+        'width="20" height="20">' +
+        '<rect x="5" y="25" width="10" height="10" fill="#00aa00"/>' +
+        '<rect x="25" width="10" height="10" fill="#ff0000"/></svg>' +
+        // cut as the page says nothing, and with `auto`
+        '<svg id="cut" style="top:180px" width="20" height="20">' +
+        '<rect x="25" width="10" height="10" fill="#ff0000"/></svg>' +
+        '<svg style="top:210px;overflow:auto" width="20" height="20">' +
+        '<rect x="25" width="10" height="10" fill="#ff0000"/></svg>',
+      200,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 35, 75, '#00aa00', { message: 'past it both ways' });
+    await expectPixel(ctx, 10, 150, '#00aa00', { message: 'shown down' });
+    await expectPixel(ctx, 30, 125, '#ffffff', { message: 'cut across' });
+    await expectPixel(ctx, 30, 185, '#ffffff', { message: 'cut by default' });
+    await expectPixel(ctx, 30, 215, '#ffffff', { message: 'and with auto' });
+    const el = view(node);
+    const overflow = (id: string) =>
+      (el.computedStyle(findById(el.document, id)!) as { overflow: string })
+        .overflow;
+    assert.strictEqual(overflow('cut'), 'hidden', "the sheet's");
+    assert.strictEqual(overflow('shown'), 'visible', "the page's");
+    // the pointer onto what is under the drawing, beside its rect
+    const abs = (el as unknown as DrawnNode).abs;
+    fireEvent.mouseMove(el as unknown as DrawnNode, {
+      dx: 10 - abs.width / 2,
+      dy: 95 - abs.height / 2,
+    });
+    await waitFor(() =>
+      expectPixel(ctx, 10, 95, '#eeeeee', { message: 'the hover' }),
+    );
+    await expectPixel(ctx, 35, 75, '#00aa00', {
+      message: 'and what the drawing draws over it, repainted',
+    });
+  },
+);
+
+test('what a drawing paints past its box takes in its strokes, markers, uses and transforms', () => {
+  // The ink of an inline drawing whose overflow shows is as far as it
+  // paints (`SvgDrawing.reach`): reaching less, a repaint of what is past
+  // its box leaves that part out.
+  const doc = parseDocument(
+    '<svg id="d" width="20" height="20">' +
+      '<defs><marker id="m" markerWidth="10" markerHeight="10" ' +
+      'markerUnits="userSpaceOnUse"><path d="M0,0H10V10H0Z"/></marker>' +
+      '<rect id="r" width="10" height="10"/></defs>' +
+      '<g transform="translate(100,0)"><rect width="10" height="10"/></g>' +
+      '<g marker-end="url(#m)"><path d="M0,0 V200" stroke-width="4"/></g>' +
+      '<use href="#r" x="-50"/>' +
+      '<text x="0" y="-30">ab</text></svg>',
+  );
+  const root = findById(doc, 'd')!;
+  const r = inlineDrawing(root).reach(0, 0, 20, 20, 1, null, 16)!;
+  assert.ok(
+    r.x + r.width >= 110,
+    `the group moved right: ${JSON.stringify(r)}`,
+  );
+  assert.ok(r.y + r.height >= 210, 'the stroke, and the marker at its end');
+  assert.ok(r.x <= -50, 'what the use moved left');
+  assert.ok(r.y <= -30 - 16, 'the text above the box');
+  assert.ok(r.x + r.width < 400 && r.y + r.height < 400, 'and no further');
+  // drawn at twice the size, at a corner of its own
+  const twice = inlineDrawing(root).reach(5, 5, 40, 40, 2, null, 16)!;
+  assert.ok(twice.x + twice.width >= 5 + 220, 'scaled with it');
+  assert.ok(twice.x <= 5 - 100, 'and moved with it');
+});
 
 metric(
   'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
