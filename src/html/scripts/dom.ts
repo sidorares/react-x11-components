@@ -14958,6 +14958,30 @@ export function installDom(
     return false;
   };
 
+  /** Each document's update callback queue (7, "schedule the update
+   *  callback"): the transitions whose update is yet to be called, run at
+   *  a task of their own or at the next transition's setup, whichever
+   *  comes first. The setup is what orders them: a timer of no delay is
+   *  not sure to fire before one of a frame's, on a busy runner. */
+  const updateQueues = new WeakMap<object, Any[]>();
+  const queueUpdate = (vt: Any): void => {
+    const queue = updateQueues.get(vt._doc);
+    if (queue) queue.push(vt);
+    else updateQueues.set(vt._doc, [vt]);
+  };
+  const scheduleUpdate = (vt: Any): void => {
+    queueUpdate(vt);
+    setTimer(() => flushUpdates(vt._doc), 0, [], false);
+  };
+  /** Call the updates a document's queue holds, in the order they were
+   *  queued (7, "flush the update callback queue"). */
+  const flushUpdates = (doc: Any): void => {
+    const queue = updateQueues.get(doc);
+    if (!queue) return;
+    updateQueues.delete(doc);
+    for (const vt of queue) callUpdate(vt);
+  };
+
   /** Skip a transition (7.6): it is no longer the active one, its update
    *  is still called, `ready` is rejected, and `finished` settles as the
    *  update does. */
@@ -14966,7 +14990,7 @@ export function installDom(
     leaveActive(vt);
     const called = vt._called;
     vt._phase = 'done';
-    if (!called) setTimer(() => callUpdate(vt), 0, [], false);
+    if (!called) scheduleUpdate(vt);
     vt._rejectReady(reason);
     vt._done.then(
       () => vt._resolveFinished(),
@@ -15004,11 +15028,16 @@ export function installDom(
     if (doc === document) activeTransition = vt;
     else frameTransitions.set(doc, vt);
     tellActive(doc, vt);
-    // the old state is captured at the next frame, and the update called
-    // straight after (7.4, "capture the old state")
+    // the old state is captured at the next frame, once the updates of the
+    // transitions skipped before it have run, so that it is the state they
+    // leave; and the update is called in a task after it, once what those
+    // updates settled has been heard (7.4, "setup view transition")
     setTimer(
       () => {
         if (vt._phase === 'done') return;
+        flushUpdates(doc);
+        // an update the flush called may have skipped it
+        if ((vt as Any)._phase === 'done') return;
         const shared = str(transitionOp(vt, 'vtOld'));
         if (shared) {
           skipTransition(
@@ -15020,7 +15049,16 @@ export function installDom(
           );
           return;
         }
-        callUpdate(vt);
+        setTimer(
+          () => {
+            if (vt._phase === 'done') return;
+            queueUpdate(vt);
+            flushUpdates(doc);
+          },
+          0,
+          [],
+          false,
+        );
       },
       16,
       [],
