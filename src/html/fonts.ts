@@ -481,7 +481,7 @@ export class WebFonts implements FontFamilies {
   }
 
   /** Whether any face the document has loaded has an axis a style moves —
-   *  a weight axis its rule declares a range of, or a width axis — or is
+   *  a weight axis its rule declares a weight on, or a width axis — or is
    *  one of a family's faces of several widths: whether `setting` has
    *  anything to say. */
   get active(): boolean {
@@ -524,8 +524,11 @@ export class WebFonts implements FontFamilies {
    * every weight of Geist on macOS was the regular. The width axis neither
    * moves.
    *
-   * The weight is said only for a face whose rule declares a range of
-   * them: one declared at a single weight is left as the engine sets it.
+   * A single weight is a range of one, so a face declared at 700 is set at
+   * 700: Gmail declares its family at 400, 500 and 700, each the same
+   * variable file, and on macOS every one of them was its file's regular.
+   * Only where a browser would embolden the face instead (`emboldened`) is
+   * a single weight left as the engine sets it.
    * The width is said wherever the file has the axis and the value is not
    * its default, since no engine moves it: a rule's `auto` clamps it to
    * nothing narrower than the file's own range, as `auto` has it (4.4).
@@ -1163,9 +1166,10 @@ function variationsOf(
   stretch: number,
 ): Variations | null {
   const range = ranged(face);
-  const wght = range
-    ? Math.max(range[0], Math.min(weight, range[1]))
-    : undefined;
+  const wght =
+    range && !emboldened(face, weight)
+      ? Math.max(range[0], Math.min(weight, range[1]))
+      : undefined;
   let wdth: number | undefined;
   if (face.wdth) {
     const [least, initial, most] = face.wdth;
@@ -1224,15 +1228,29 @@ function widthKey(rule: FontFaceRule): string {
 }
 
 /** The weights a loaded face's axis is set within: the range its rule
- *  declares, inside the one its file has. Null for a face with no axis, or
- *  declared at a single weight. */
+ *  declares — a single weight a range of one — inside the one its file
+ *  has. Null for a face with no axis, or none of it in that range. */
 function ranged(face: Face): [number, number] | null {
   if (face.state !== 'ready' || !face.wght) return null;
   const lo = Math.max(face.rule.weight[0], face.wght[0]);
   const hi = Math.min(face.rule.weight[1], face.wght[1]);
-  return face.rule.weight[0] < face.rule.weight[1] && lo <= hi
-    ? [lo, hi]
-    : null;
+  return lo <= hi ? [lo, hi] : null;
+}
+
+/** The least weight a browser sets text bold at, by emboldening a face
+ *  that has nothing that heavy (Blink's `BoldThreshold()`). */
+const BOLD = 600;
+
+/**
+ * Whether a face declared at one weight is asked for a bold it does not
+ * have, which a browser draws by emboldening the face's outlines (CSS Fonts
+ * 4, `font-synthesis-weight`). No engine here emboldens, and ntk, left
+ * alone, sets the face's axis at the style's weight — the nearest it comes —
+ * so the weight is left to the engine there.
+ */
+function emboldened(face: Face, weight: number): boolean {
+  const [lo, hi] = face.rule.weight;
+  return lo === hi && hi < BOLD && weight >= BOLD;
 }
 
 /** The slice of an opened face `refusal` reads: react-x11's `Font`. */

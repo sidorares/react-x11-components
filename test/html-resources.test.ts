@@ -2058,6 +2058,101 @@ withFonts(
 );
 
 withFonts(
+  'a variable face declared at one weight is set at that weight',
+  async (t) => {
+    // A single weight is a range of one (CSS Fonts 4, 7.2): Gmail declares
+    // Google Sans at 400, 500 and 700, three rules of one variable file, and
+    // CoreText, which moves no axis by itself, set all three at the file's
+    // 400. `Each` is that; `Heavy` has its 700 alone, which text at 400 is
+    // set in (5.2); and `One`'s 400 under bold is what a browser emboldens,
+    // which is left to the engine.
+    const face = (family: string, weight: number, file: string) =>
+      `@font-face { font-family: ${family}; font-weight: ${weight};` +
+      `  src: url(${file}.woff2) format("woff2") }`;
+    const source =
+      '<style>' +
+      face('Each', 400, 'each') +
+      face('Each', 500, 'each') +
+      face('Each', 700, 'each') +
+      face('Heavy', 700, 'heavy') +
+      face('One', 400, 'one') +
+      'p { font-family: Each, monospace; margin: 0; font-size: 40px }' +
+      '.heavy { font-family: Heavy, monospace }' +
+      '.one { font-family: One, monospace }</style>' +
+      '<p><span id="e3" style="font-weight: 300">x</span><span id="e4">x</span>' +
+      '<span id="e5" style="font-weight: 500">x</span>' +
+      '<span id="e6" style="font-weight: 600">x</span>' +
+      '<b id="e7">x</b><span id="e9" style="font-weight: 900">x</span></p>' +
+      '<p class="heavy"><span id="h4">x</span><b id="h7">x</b></p>' +
+      '<p class="one"><span id="o5" style="font-weight: 500">x</span>' +
+      '<b id="o7">x</b></p>';
+    const host: Answer = (r) =>
+      r.kind === 'font' ? { kind: 'font', bytes: wedge() } : null;
+    const { result } = await mount('<p>x</p>', host, {}, true);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const layout = fonts.layout.bind(fonts);
+    const handed = new Map<string, unknown>();
+    fonts.layout = (content, style, options) => {
+      for (const run of content as Array<{
+        family?: string;
+        weight?: unknown;
+        variations?: unknown;
+      }>) {
+        const weight = run.weight ?? style.weight;
+        handed.set(`${run.family ?? style.family} ${weight}`, run.variations);
+      }
+      return layout(content, style, options);
+    };
+    t.after(() => {
+      fonts.layout = layout;
+    });
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            onResource: host,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    const node = view(screen.getByTestName('doc') as DrawnNode);
+    await settle(node, 8);
+    const axis = (id: string, weight: number) =>
+      handed.get(`${boxOf(node, id).style.fontFamily} ${weight}`);
+    assert.match(boxOf(node, 'e4').style.fontFamily, /^html webfont/);
+    assert.deepStrictEqual(
+      [axis('e4', 400), axis('e5', 500), axis('e7', 700)],
+      [{ wght: 400 }, { wght: 500 }, { wght: 700 }],
+      'each face at the weight its rule declares',
+    );
+    assert.deepStrictEqual(
+      [axis('e3', 300), axis('e6', 600), axis('e9', 900)],
+      [{ wght: 400 }, { wght: 700 }, { wght: 700 }],
+      'and a weight with no face of its own at the face CSS matches',
+    );
+    assert.deepStrictEqual(
+      [axis('h4', 400), axis('h7', 700)],
+      [{ wght: 700 }, { wght: 700 }],
+      'a face that is heavier than the text is as heavy as it is',
+    );
+    assert.deepStrictEqual(axis('o5', 500), { wght: 400 }, 'and lighter');
+    assert.strictEqual(axis('o7', 700), undefined, 'but a bold it emboldens');
+    const width = (id: string) =>
+      node.elementRect(boxOf(node, id).el as never)!.width;
+    assert.ok(width('e4') < width('e5'), 'drawn wider');
+    assert.ok(width('e5') < width('e7'), 'the heavier it is');
+    const same = (a: number, b: number) => Math.abs(a - b) < 0.01;
+    assert.ok(same(width('e9'), width('e7')), '900 is the 700 face’s');
+    assert.ok(same(width('h4'), width('e7')), 'and 400 the 700 one’s');
+  },
+);
+
+withFonts(
   'a variable face is set at the width its rule has for a style’s',
   async (t) => {
     // CSS Fonts 4 (7.2): a style's `font-stretch`, clamped to the range the
