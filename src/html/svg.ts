@@ -20,7 +20,7 @@ import { isSvgRoot, mutationGeneration, rawTextOf } from './dom.js';
 import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
-import { quotedFamilies, useHref } from './css/shapes.js';
+import { quotedFamilies, urlIds, useHref } from './css/shapes.js';
 import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
 import { parseMath } from './css/calc.js';
@@ -507,6 +507,9 @@ export class SvgDrawing {
   /** Whether a `<use>` in the tree is one `SvgView` cannot draw as it
    *  stands (`needsExpanding`). */
   private _uses = false;
+  /** Whether the tree names an element outside it by a `url(#…)`
+   *  (`refersOutside`), which its copy brings. */
+  private _outside = false;
   /** The document's last node when a `<use>` was last looked up and its
    *  element not found: a streamed document may bring it yet, and has
    *  when its last node is another. Undefined where none was missing. */
@@ -891,6 +894,7 @@ export class SvgDrawing {
     if (grown || this._lengths === null) {
       this._lengths = lengthsToWorkOut(root);
       this._uses = needsExpanding(root);
+      this._outside = refersOutside(root);
     }
     const sized = this._lengths || this._uses;
     // and, for a drawing with lengths to work out, what they are of
@@ -917,7 +921,7 @@ export class SvgDrawing {
       const view = this._view ?? new View(null);
       const reached: Reached = { missing: false, outside: new Set() };
       const tree =
-        sized || shapes || root.name.includes(':')
+        sized || shapes || this._outside || root.name.includes(':')
           ? copyTree(
               root,
               sized ? [width, height] : null,
@@ -1367,6 +1371,31 @@ function needsExpanding(root: Element): boolean {
   return walk(root);
 }
 
+/**
+ * Whether an element under a root names one outside it by a `url(#…)`
+ * (`urlIds`): `SvgView` looks a reference up among the root's own
+ * elements, so the drawing is drawn from a copy that has it (`copyTree`).
+ */
+function refersOutside(root: Element): boolean {
+  let ids: Map<string, Element> | null = null;
+  let outside = false;
+  const name = (id: string): void => {
+    if (outside) return;
+    ids ??= idsUnder(root);
+    if (!ids.has(id) && root.attribs.id !== id) outside = true;
+  };
+  const stack: Element[] = [root];
+  for (let el = stack.pop(); el && !outside; el = stack.pop()) {
+    urlIds(el.name, el.attribs, name);
+    // what a `<foreignObject>` holds is HTML, and not the drawing's
+    if (localName(el.name) === 'foreignobject') continue;
+    for (const child of el.children) {
+      if (child.type === 'tag') stack.push(child as Element);
+    }
+  }
+  return outside;
+}
+
 function documentOf(el: Element): ParentNode {
   let top: ParentNode = el;
   while (top.parent) top = top.parent;
@@ -1632,20 +1661,23 @@ function copyTree(
     }
     return new Element('g', attribs, children);
   };
-  /** What a `<use>` in a `<clipPath>` names outside the root, copied, by
-   *  its id: `SvgView` looks a use's element up in the tree it is given,
-   *  so they go in it, in a `<defs>` at its end. */
+  /** What the drawing names outside the root, copied, by its id: an
+   *  element a `<use>` in a `<clipPath>` names, and one a `url(#…)` names
+   *  (`urlIds`) — a marker, a gradient, a clip path. `SvgView` looks a
+   *  reference up in the tree it is given, so they go in it, in a `<defs>`
+   *  at its end. One a `url(#…)` names is styled as the rules have it
+   *  where it stands (`ShapeStyles.of`); a `<use>`'s, as it is written. */
   const brought = new Map<string, Element | null>();
   const bring = (
-    use: Element,
+    id: string | null,
     resolve: boolean,
     depth: number,
     size: number,
+    styles: ReadonlyMap<Element, ShapeStyle> | null,
   ): void => {
-    const id = useHref(use);
     if (id === null || brought.has(id) || depth >= USE_DEPTH) return;
     ids ??= idsUnder(root);
-    if (ids.has(id)) return;
+    if (ids.has(id) || root.attribs.id === id) return;
     brought.set(id, null);
     const target = elementById(documentOf(root), id);
     if (!target) {
@@ -1653,7 +1685,9 @@ function copyTree(
       return;
     }
     reached?.outside.add(target);
-    brought.set(id, copy(target, resolve, depth + 1, false, null, size));
+    // a marker's lengths are of the viewport it makes, not the root's
+    const own = resolve && localName(target.name) !== 'marker';
+    brought.set(id, copy(target, own, depth + 1, false, styles, size));
   };
   /** Whether an element is drawn at all, in a group that is hidden or
    *  not: one no rule gives `display: none`, and no shape a rule hides. */
@@ -1714,12 +1748,16 @@ function copyTree(
       // a group clips as nothing (CSS Masking 1, 6.3): it stays a use.
       const parent = el.parent;
       if (parent?.type === 'tag' && localName(parent.name) === 'clippath') {
-        bring(el, resolve, depth, size);
+        bring(useHref(el), resolve, depth, size, null);
       } else {
         const group = expand(el, resolve, depth, hidden, own, size);
         if (group) return group;
       }
     }
+    // what it names outside the root, which comes with it
+    urlIds(el.name, attribs, (id) =>
+      bring(id, resolve, depth, size, shapes?.of ?? null),
+    );
     const here = resolve && !OWN_UNITS.has(localName(el.name));
     if (here && viewport && el !== root) {
       for (const name in attribs) {

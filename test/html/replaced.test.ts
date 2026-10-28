@@ -2108,6 +2108,63 @@ metric(
 );
 
 metric(
+  'a drawing finds a marker or a gradient its url(#…) names in another <svg>, styled where it stands',
+  async () => {
+    // A `url(#…)` names an element of the document, wherever it is (SVG 2,
+    // 16.1). A flow editor draws each edge in an `<svg>` of its own and the
+    // `<marker>`s of its arrowheads in another, and a page keeps its
+    // gradients in a hidden one. `SvgView` looks a reference up among the
+    // elements of the drawing it is handed, and every edge was drawn with
+    // no arrowhead.
+    const marker = (id: string, attrs: string, inside: string) =>
+      `<marker id="${id}" ${attrs} viewBox="0 0 10 10" refY="5" ` +
+      'markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse">' +
+      `${inside}</marker>`;
+    const square = (attrs = '') => `<path d="M0,0H10V10H0Z" ${attrs}/>`;
+    // a line to x = 10, the marker the ten pixels past it
+    const edge = (end: string) =>
+      '<svg width="40" height="10"><path d="M0,5 L10,5" stroke="#000000" ' +
+      `stroke-width="2" marker-end="${end}"/></svg>`;
+    const rows: [string, string, string][] = [
+      [edge("url('#var')"), '#ff0000', "its fill a var(), the page's"],
+      [edge('url(#ruled)'), '#0000ff', 'a rule that names its marker'],
+      [edge('url(#bare)'), '#000000', 'and no rule'],
+      [edge('url(#nowhere)'), '#ffffff', 'and one that names nothing'],
+      [
+        '<svg width="40" height="10"><rect width="20" height="10" ' +
+          'fill="url(#g)"/></svg>',
+        '#00aa00',
+        'a gradient, after the one it takes after',
+      ],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>:root{--ink:#ff0000} body{margin:0} svg{display:block}' +
+        '.arrows .ruled path{fill:#0000ff}</style>' +
+        '<svg class="arrows" width="0" height="0" ' +
+        'style="position:absolute"><defs>' +
+        marker('var', '', square('style="fill: var(--ink)"')) +
+        marker('ruled', 'class="ruled"', square()) +
+        marker('bare', '', square()) +
+        '<linearGradient id="g0"><stop stop-color="#00aa00"/></linearGradient>' +
+        '<linearGradient id="g" href="#g0"/>' +
+        '</defs></svg>' +
+        rows.map(([markup]) => markup).join(''),
+      {},
+    );
+    for (const [i, [, colour, message]] of rows.entries()) {
+      const line = i < 4 ? '#000000' : colour;
+      await expectPixel(result.ctx, 5, i * 10 + 5, line, {
+        message: `${message}: the line`,
+      });
+      await expectPixel(result.ctx, 15, i * 10 + 5, colour, { message });
+      await expectPixel(result.ctx, 25, i * 10 + 5, '#ffffff', {
+        message: `${message}: no further`,
+      });
+    }
+  },
+);
+
+metric(
   'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
   async () => {
     // A `<use>` draws a copy of what it names, in a tree of the copy's own
