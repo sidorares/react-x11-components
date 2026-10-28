@@ -58,6 +58,8 @@ import {
   resolveEdges,
   keepLaid,
   mayKeepLaid,
+  keptPartial,
+  partialsMade,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
 import { firstBaselineIn } from './inline.js';
@@ -1392,7 +1394,7 @@ function applyItem(
         if (Number.isNaN(content)) {
           if (kept === null || kept.serial !== box.layoutSerial) {
             layoutNaturally(box, ctx, width, containingWidth, laid);
-          }
+          } else if (kept.partial) keptPartial();
           content = columnContent(box, ctx, laid, width, containingWidth);
         }
         answer = {
@@ -1689,10 +1691,12 @@ function layoutNaturally(
 ): void {
   const kept = keptNatural(box, ctx, width, containing);
   if (kept !== null && kept.serial === box.layoutSerial) {
-    // put back, where the flex layout stretched it
+    // put back, where the flex layout stretched it, and partial where it is
+    if (kept.partial) keptPartial();
     box.height = kept.height;
   } else {
     const at = ctx.positioned.length;
+    const stands = partialsMade();
     layoutAt(box, ctx, width, containing, laid);
     naturalLayouts += 1;
     // a replaced box is sized, not laid out, and has no layout to count
@@ -1720,6 +1724,7 @@ function layoutNaturally(
           ctx.positioned.length > at ? { at, first: ctx.positioned[at] } : null,
         drawn: NaN,
         content: NaN,
+        partial: partialsMade() !== stands,
       });
     }
   }
@@ -1774,6 +1779,7 @@ function keptNatural(
 ): Natural | null {
   const kept = naturalAt(box, width);
   if (kept === undefined) return null;
+  if (kept.partial && !ctx.probing) return null;
   // An earlier layout's, kept as a block in a flow is (`mayKeepLaid`):
   // where the box has that layout still, and nothing in it has changed
   // since (`forgetSizes`, which drops this). A page's flex column of a
@@ -1891,6 +1897,10 @@ interface Natural {
    *  it drew, and how far down its content came, each its border box's. */
   drawn: number;
   content: number;
+  /** Whether a block in it stood for a probe, and is where an earlier
+   *  layout put it (`partialsMade`): a layout of it only a probe may keep,
+   *  or read how far down it came. */
+  partial: boolean;
 }
 
 /** By box, the natural layouts made of it, one a width, the latest last:

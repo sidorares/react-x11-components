@@ -665,12 +665,14 @@ function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
   ctx.until = undefined;
   ctx.reach = undefined;
   ctx.probing = true;
+  standsOff += 1;
   try {
     layoutInternals(box, ctx, Infinity, 0, 0, floats);
   } finally {
     ctx.until = until;
     ctx.reach = reach;
     ctx.probing = probing;
+    standsOff -= 1;
   }
 }
 
@@ -779,6 +781,176 @@ interface Laid {
 }
 
 const LAID = new WeakMap<Box, Laid>();
+
+/**
+ * What a block in a flow came to the last time a probe laid it out
+ * (`LayoutContext.probing`), for a later probe of the flow to take in its
+ * place (`STOOD`). A probe lays a box out at no width, or at none at all,
+ * to measure it, and all it reads of a block in a flow is how far down it
+ * reaches, the margin it leaves hanging and what the walk of what it drew
+ * finds (`intrinsicWidth`) — the same at the same room, while nothing in it
+ * changes (`forgetSizes`, which drops this). Laid out again instead, at
+ * each probe, the blocks of a webmail page's list of messages were laid out
+ * at no width whenever a spinner came into its footer, and again at their
+ * own width by the layout after, which could keep none of them.
+ */
+interface Stand {
+  /** What it was laid out from, as a kept block's (`Laid`). */
+  width: number;
+  base: number;
+  viewportWidth: number;
+  under: LaidUnder;
+  scale: number | undefined;
+  fonts: FontsLike | null;
+  /** The layout it is of (`Box.layoutSerial`), which a walk reads. */
+  serial: number;
+  /** How far below where the flow placed it its border box reaches, and
+   *  its bottom margin with what came out through its bottom edge. */
+  bottom: number;
+  hanging: MarginStrut;
+  /** What a walk of that layout reads of it (`intrinsicWidth`), read as
+   *  it was laid out: its width, the widest thing in it — NaN for a box
+   *  with a width of its own, whose walk reads none — and whether a line
+   *  in it was cut short. */
+  boxWidth: number;
+  inner: number;
+  cut: boolean;
+}
+
+/** By box, what it came to in the probes that laid it out, one a room, the
+ *  latest last: no more than `STAND_WIDTHS` of them. A probe of a pane
+ *  measures what is in it at its widest and its narrowest, and lays it out
+ *  at the widths between that a flex layout asks of it, each in its turn. */
+const STANDS = new WeakMap<Box, Stand[]>();
+const STAND_WIDTHS = 8;
+
+/** Note what a box came to in a probe, in place of one in that room. */
+function noteStand(box: Box, stand: Stand): void {
+  const made = STANDS.get(box);
+  if (made === undefined) {
+    STANDS.set(box, [stand]);
+    return;
+  }
+  const at = made.findIndex((one) => one.width === stand.width);
+  if (at >= 0) made.splice(at, 1);
+  made.push(stand);
+  if (made.length > STAND_WIDTHS) made.shift();
+}
+
+/** What a box came to in the probe layout it has, where one noted it. */
+function standOf(box: Box): Stand | undefined {
+  const made = STANDS.get(box);
+  if (made === undefined) return undefined;
+  for (let i = made.length - 1; i >= 0; i -= 1) {
+    if (made[i].serial === box.layoutSerial) return made[i];
+  }
+  return undefined;
+}
+
+/**
+ * The blocks a probe took from what they came to before (`Stand`), where
+ * their flow did not lay them out: they are where the last layout of them
+ * put them, which is not where the probe has them, and a walk of what the
+ * probe drew reads them from this. Until their flow places them again.
+ */
+const STOOD = new WeakMap<Box, Stand>();
+/** Whether any block has stood for a probe, so that a flow with none to
+ *  forget asks nothing. */
+let stoodAny = false;
+
+/** How many probes are under way (`measureIntrinsicWidth`), whose walks
+ *  read the blocks that stood for them: a walk of a layout reads what it
+ *  laid out. And how many of them take none: the shrink-to-fit probe's
+ *  caller reads the words of what it laid out (`wordBound`), which a block
+ *  that stood has as its last layout set them. */
+let probesOpen = 0;
+let standsOff = 0;
+
+/** How many blocks probes took from what they came to before, for a test
+ *  to count. */
+let standsTaken = 0;
+export function standsMade(): number {
+  return standsTaken;
+}
+
+/** How many layouts were left partial — a block stood in them, or a probe
+ *  kept a layout one stood in — counted, so that a layout around one can
+ *  tell it is partial too (`LAID_OWN`, a flex item's `Natural`), which no
+ *  layout but a probe may keep. */
+let partials = 0;
+export function partialsMade(): number {
+  return partials;
+}
+/** Note that a probe kept a partial layout, which makes the one around it
+ *  partial. */
+export function keptPartial(): void {
+  partials += 1;
+}
+
+/** The rows a walk met that may wrap (`intrinsicWidth`), which make what
+ *  it finds a question of whether it measures a box at its narrowest:
+ *  counted, so a walk can tell whether a block's answer is. */
+let wrapRows = 0;
+
+/** What a block came to in a probe, where it is to stand for it in this
+ *  one: laid out in the same room, from the same things. */
+function standFor(child: Box, ctx: LayoutContext, width: number): Stand | null {
+  const made = STANDS.get(child);
+  if (made === undefined) return null;
+  let stand: Stand | undefined;
+  for (let i = made.length - 1; i >= 0; i -= 1) {
+    if (made[i].width === width) {
+      stand = made[i];
+      break;
+    }
+  }
+  if (
+    stand === undefined ||
+    !Object.is(stand.base, child.percentHeightBase) ||
+    stand.viewportWidth !== ctx.viewportWidth ||
+    !heightHolds(stand.under, ctx) ||
+    stand.scale !== ctx.scale ||
+    stand.fonts !== ctx.fonts
+  ) {
+    return null;
+  }
+  return stand;
+}
+
+/**
+ * Note what a block a probe has just laid out came to (`Stand`), its walk
+ * read now: what a later walk of the probe reads of it then, as of a block
+ * that stood, each block once. Not where whether the walk measures at the
+ * narrowest is a matter to it: a row in it may wrap.
+ */
+function standAfter(
+  child: Box,
+  ctx: LayoutContext,
+  width: number,
+  childY: number,
+): void {
+  let inner = NaN;
+  const seen = { cut: false };
+  if (typeof child.style.width !== 'number') {
+    const rows = wrapRows;
+    inner = intrinsicWidth(child, seen);
+    if (wrapRows !== rows) return;
+  }
+  noteStand(child, {
+    width,
+    base: child.percentHeightBase,
+    viewportWidth: ctx.viewportWidth,
+    under: ctx.under,
+    scale: ctx.scale,
+    fonts: ctx.fonts,
+    serial: child.layoutSerial,
+    bottom: child.y + child.height - childY,
+    hanging: bottomOf(child),
+    boxWidth: child.width,
+    inner,
+    cut: seen.cut,
+  });
+}
 
 /**
  * The viewport's height a layout was made under, and whether the layout
@@ -2389,6 +2561,7 @@ function layoutChildren(
       }
       CLAMPED.delete(child);
     }
+    const handedHere = firstLine !== null;
     if (firstLine && !child.outOfFlow && !child.isFloat) {
       if (!FIRST_LINE.has(child)) HANDED.set(child, firstLine);
       firstLine = null;
@@ -2480,6 +2653,45 @@ function layoutChildren(
 
     const counted = clamp?.fit?.lines ?? 0;
     const floatMark = floats.count;
+    // A probe takes a block it laid out before in the same room, from the
+    // same things, for what it came to then (`Stand`), where nothing but
+    // the room reaches into it: no float, no clearance, no first line or
+    // marker handed down, no clamp, no columns, no other way to write. Not
+    // a table, which the pass keeps at a width it laid it out at already
+    // (`kept`): standing, it would leave the layout around it partial,
+    // which no layout but a probe may keep, and a table in a table's cell
+    // was laid out again at every level
+    const standable =
+      probing &&
+      standsOff === 0 &&
+      clamp === null &&
+      !markedHere &&
+      !handedHere &&
+      pushed === null &&
+      childY === at &&
+      child.kind !== 'replaced' &&
+      child.kind !== 'table' &&
+      floats.bottom <= childY &&
+      !framed.any &&
+      !(columned.any && (inColumnsFlow ??= inMulticol(box)));
+    const stand = standable ? standFor(child, ctx, contentWidth) : null;
+    if (stand !== null) {
+      STOOD.set(child, stand);
+      stoodAny = true;
+      standsTaken += 1;
+      partials += 1;
+      first = false;
+      CLEARED_FROM.delete(child);
+      open = false;
+      y = childY + stand.bottom;
+      pendingMargin = stand.hanging;
+      openFloats = Infinity;
+      cleared = false;
+      afterClear = NO_MARGIN;
+      clearTop = 0;
+      continue;
+    }
+    if (stoodAny) STOOD.delete(child);
     // A block laid out by an earlier layout from what it has now — the same
     // room, the same percentage base, no float reaching into it — and
     // neither laid out nor changed since (`reuseLaid`) is moved to where
@@ -2515,6 +2727,10 @@ function layoutChildren(
       if (keepable && floats.count === floatMark) {
         noteLaid(child, ctx, contentLeft, childY, contentWidth);
       } else LAID.delete(child);
+      // and for a later probe, what it came to
+      if (standable && floats.count === floatMark && !collapsesThrough(child)) {
+        standAfter(child, ctx, contentWidth, childY);
+      }
     }
     if (pushed !== null) {
       const line = firstLineIn(child);
@@ -3070,6 +3286,7 @@ function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
     laid.ctx === ctx &&
     // and nothing, a probe of its content, has laid it out since
     laid.serial === box.layoutSerial &&
+    (ctx.probing === true || !laid.partial) &&
     laid.width === width &&
     // NaN where no height is a base, which `===` would never find again
     Object.is(laid.base, box.percentHeightBase) &&
@@ -3083,10 +3300,12 @@ function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
     Number.isFinite(box.x) &&
     Number.isFinite(box.y)
   ) {
+    if (laid.partial) partials += 1;
     box.height = laid.height;
     moveTo(box, 0, 0);
     return;
   }
+  const stands = partials;
   layoutInternals(box, ctx, width, 0, 0);
   LAID_OWN.set(box, {
     ctx,
@@ -3098,11 +3317,18 @@ function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
     padBottom: box.padBottom,
     padLeft: box.padLeft,
     height: box.height,
+    partial: partials !== stands,
   });
 }
 
 /** Every box's layout counted, for `Box.layoutSerial`. */
 let layoutSerial = 0;
+
+/** How many boxes have been laid out, for a test to count what a layout
+ *  lays out again. */
+export function boxLayoutsMade(): number {
+  return layoutSerial;
+}
 
 /**
  * Whether a box's layout is one this pass made at `width`, with the same
@@ -3118,6 +3344,7 @@ function kept(box: Box, ctx: LayoutContext, width: number): boolean {
     laid === undefined ||
     laid.ctx !== ctx ||
     laid.serial !== box.layoutSerial ||
+    (laid.partial && ctx.probing !== true) ||
     laid.width !== width ||
     !Object.is(laid.base, box.percentHeightBase) ||
     laid.padTop !== box.padTop ||
@@ -3129,13 +3356,21 @@ function kept(box: Box, ctx: LayoutContext, width: number): boolean {
   ) {
     return false;
   }
+  if (laid.partial) partials += 1;
   box.height = laid.height;
   return true;
 }
 
-/** Note the layout a box was just given, at `width`, for `kept`. */
-function keep(box: Box, ctx: LayoutContext, width: number): void {
+/** Note the layout a box was just given, at `width`, for `kept`: one left
+ *  partial since `stands` (`partialsMade`) is partial. */
+function keep(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  stands: number,
+): void {
   LAID_OWN.set(box, {
+    partial: partials !== stands,
     ctx,
     serial: box.layoutSerial,
     width,
@@ -3161,6 +3396,9 @@ const LAID_OWN = new WeakMap<
     padBottom: number;
     padLeft: number;
     height: number;
+    /** Whether a block in it stood for a probe (`STOOD`), and is where an
+     *  earlier layout put it: only a probe may keep it. */
+    partial: boolean;
   }
 >();
 
@@ -3205,6 +3443,7 @@ function layoutBlockLevel(
   }
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
+  const stands = partials;
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
   // what can be seen starts here: the layout stops as far past it as it
   // was asked to (`LayoutContext.reach`)
@@ -3227,7 +3466,7 @@ function layoutBlockLevel(
     box.x = x;
     translate(box, dx, 0);
   }
-  if (box.kind === 'table') keep(box, ctx, width);
+  if (box.kind === 'table') keep(box, ctx, width, stands);
 }
 
 /**
@@ -3289,21 +3528,27 @@ export function measureIntrinsicWidth(
   ctx.until = undefined;
   ctx.reach = undefined;
   ctx.probing = true;
+  // and the walk of what it laid out reads the blocks that stood for it
+  probesOpen += 1;
   try {
-    layoutSubtree(box, ctx, available, undefined, true);
+    try {
+      layoutSubtree(box, ctx, available, undefined, true);
+    } finally {
+      ctx.until = until;
+      ctx.reach = reach;
+      ctx.probing = probing;
+    }
+    const specified = box.style.width;
+    if (!content && specified !== AUTO && Number.isFinite(box.width)) {
+      return box.width;
+    }
+    return (
+      intrinsicWidth(box, undefined, available === MIN_CONTENT_PROBE) +
+      box.horizontalExtra
+    );
   } finally {
-    ctx.until = until;
-    ctx.reach = reach;
-    ctx.probing = probing;
+    probesOpen -= 1;
   }
-  const specified = box.style.width;
-  if (!content && specified !== AUTO && Number.isFinite(box.width)) {
-    return box.width;
-  }
-  return (
-    intrinsicWidth(box, undefined, available === MIN_CONTENT_PROBE) +
-    box.horizontalExtra
-  );
 }
 
 /**
@@ -4939,6 +5184,8 @@ export function forgetSizes(box: Box): void {
     PERCENT_HEIGHTS.delete(at);
     FLOW_PLACE.delete(at);
     LAID.delete(at);
+    STANDS.delete(at);
+    if (stoodAny) STOOD.delete(at);
     forgetMaxContent(at);
     forgetGridItem(at);
   }
@@ -5159,6 +5406,7 @@ export function intrinsicWidth(
     (display === 'flex' || display === 'inline-flex') &&
     box.style.flexDirection.startsWith('row');
   const wraps = row && narrowest && box.style.flexWrap !== 'nowrap';
+  if (row && box.style.flexWrap !== 'nowrap') wrapRows += 1;
   let total = 0;
   let items = 0;
   const lines = box.lines;
@@ -5195,7 +5443,14 @@ export function intrinsicWidth(
     // inline-block after a negative `text-indent` ends where its line does
     if (lines && (isInlineLevel(child) || child.isFloat)) continue;
     const margins = child.marginLeft + child.marginRight;
-    const own = Number.isFinite(child.width) ? child.width + margins : 0;
+    // a block a probe took for what it came to before is where the last
+    // layout put it, and is what it came to then (`STOOD`); one a probe
+    // laid out was read as it was laid out (`standAfter`)
+    const stood =
+      (stoodAny && probesOpen > 0 ? STOOD.get(child) : undefined) ??
+      standOf(child);
+    const width = stood !== undefined ? stood.boxWidth : child.width;
+    const own = Number.isFinite(width) ? width + margins : 0;
     const style = child.style;
     // a minimum's percentage is of zero here (CSS Sizing 3 5.2.1), which
     // leaves a `calc()` its pixels
@@ -5226,8 +5481,12 @@ export function intrinsicWidth(
         contribution = Math.max(contribution, stated + margins);
       }
     } else {
-      let inner =
-        intrinsicWidth(child, seen, narrowest) + child.horizontalExtra;
+      let drew: number;
+      if (stood !== undefined) {
+        drew = stood.inner;
+        if (seen && stood.cut) seen.cut = true;
+      } else drew = intrinsicWidth(child, seen, narrowest);
+      let inner = drew + child.horizontalExtra;
       if (typeof style.maxWidth === 'number') {
         inner = Math.min(inner, style.maxWidth + contentExtra(child));
       }

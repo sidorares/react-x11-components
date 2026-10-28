@@ -2172,6 +2172,32 @@ documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
 at the one that failed, and `MOVING_SEEDS` sweeps documents of sticky,
 relative, transformed and scrolled boxes in blocks a layout keeps.
 
+**A probe takes a block it laid out before in the same room for what it
+came to then** (`Stand`, `STOOD`): how far down it reached, the margin it
+left hanging, and what a walk of it read (`intrinsicWidth`), noted as it
+is laid out (`standAfter`) and dropped with its sizes (`forgetSizes`). The
+block is not laid out, and is where the last layout put it, so the layout
+after the probe keeps it (`reuseLaid`). A webmail page's content pane is
+held to its least width, and a spinner coming into its footer had every
+message in the list laid out again at no width, at none at all and at the
+widths between, and the layout after could keep none of them: 12,672
+boxes in the harness where it is some 600. Four things are load-bearing.
+**Anything new a walk reads of a block in a flow joins `Stand`**, or a
+block that stood answers with less than one laid out. **A layout a block
+stood in is partial**, since that block is where another layout put it,
+and only a probe keeps one (`LAID_OWN`'s and a flex item's `Natural`'s
+`partial`), and a probe that keeps one counts it (`keptPartial`), which
+makes the layout around it partial too: **anything new that keeps a box's
+layout within a pass refuses a partial one outside a probe**, or a block
+is drawn where a probe found it. **A block where a row may wrap stands
+for nothing** (`wrapRows`): a walk at the narrowest reads it otherwise.
+Nor does a table, which the pass keeps at a width it laid it out at
+already (`kept`): standing, it left the layout around it partial, and a
+table in a table's cell was laid out again at every level. And **the
+shrink-to-fit probe takes none** (`standsOff`): its caller reads the
+words of what it laid out (`wordBound`). `PROBE_SEEDS` sweeps more
+documents of what a probe measures in `test/html/subtree-build.test.ts`.
+
 **A change a refresh is told of that is lengths alone keeps the boxes,
 and its layout repaints what it moved** (`_restyleInPlace`'s `lengths`,
 `_layoutOwed`, `_claimLaidOut`). A box's lengths and a flex item's grow
