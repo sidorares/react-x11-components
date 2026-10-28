@@ -2002,9 +2002,22 @@ owed. **What a holder holds and where its children sit are two keys**
 (`'h'`, `'s'`): a child coming or going reaches its holder's own later
 siblings only through a test of what the holder holds before a sibling
 combinator (`:empty + x`), and a sibling combinator alone reaches the
-holder's children and what is in them (`TreeReach.kidsLater`); the
-Guardian's ad scripts put a `<script>` in its `<head>` some thirty times a
-load, and each restyled the whole `<body>`. A holder nothing draws still
+holder's children after where the child came or went and what is in them
+(`TreeReach.followers`, `followersOf`) — all of them where the record does
+not say where; the Guardian's ad scripts put a `<script>` in its `<head>`
+some thirty times a load, and each restyled the whole `<body>`. **A test
+of where a child sits, or of what an element holds, reaches from what its
+compound names** (`TreeReach.self` and `below`, `MutationRules.where`):
+of the holder and its children, those the stable part of the compound it
+is in matches, and below them what its rule's subject names. A webmail
+page hides a split button's separator by where the button sits,
+`.btn:not(:last-child) .label`, and every popup it put at the end of its
+`<body>` restyled all 13,000 of its elements. So **a record says where
+its nodes came or went where it can** (`HtmlChange`'s `previousSibling`
+and `nextSibling`, which the script host hands on as a `MutationRecord`
+has them), and a sibling it names that the list took out as well is
+followed to what that one's record names (`ChangeScope.gone`): a page
+that takes its popups out one after another names each the next. A holder nothing draws still
 reaches its later siblings, which are not under it. **A child that comes
 or goes reaches a `:has()` that asks only of its subject where what came
 or went holds one** (`'g'`, `MutationRules.held`, `Cascade._heldReached`):

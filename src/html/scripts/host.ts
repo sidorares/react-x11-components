@@ -4557,6 +4557,8 @@ export class DomHost {
       target: parent,
       addedNodes: added,
       removedNodes: removed,
+      previousSibling: previous,
+      nextSibling: next,
     });
     // a policy a `<meta>` brings is the document's once the element is in
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
