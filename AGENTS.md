@@ -2125,8 +2125,15 @@ and a size and edges of its own, so a kept block moves it where its own
 layout would — a link's `sr-only` label is one, and with it every
 paragraph, list and aside around such a link on joshwcomeau.com was laid
 out at every layout. **Anything new that places an absolute box from
-its containing block keeps it out of `movesWithFlow`.** A hover's or a
-focus's build is seeded with its reach, as a frame's is.
+its containing block keeps it out of `movesWithFlow`.** A box is kept
+under another viewport height where the layout that laid it out read none
+of it (`LaidUnder`, `heightHolds`): a pane's height is a frame's to
+decide, after the document's first layout, and the next layout laid out
+again every block, flex item and grid item the first had. So **anything
+new a layout reads of the viewport's height sets `readViewportHeight`**,
+as `containingRect` does, or a box kept under a new height is laid out as
+it was under the old one. A hover's or a focus's build is seeded with
+its reach, as a frame's is.
 `test/html/subtree-build.test.ts` holds a subtree build and the layout
 after it to a whole build, box, line, list and style, over generated
 documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts

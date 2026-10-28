@@ -219,6 +219,9 @@ export interface LayoutContext {
   /** Set once a box is placed against the initial containing block, whose
    *  height is the viewport's (`LayoutResult.readsViewportHeight`). */
   readViewportHeight?: boolean;
+  /** The viewport's height this layout is made under, and whether it read
+   *  it, which every box it notes it laid out keeps (`LaidUnder`). */
+  under: LaidUnder;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
    *  an absolutely positioned box may be positioned against an ancestor
    *  whose size is not known until its in-flow content has been laid out. */
@@ -764,7 +767,7 @@ interface Laid {
   width: number;
   base: number;
   viewportWidth: number;
-  viewportHeight: number;
+  under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;
   /** Where it went from where the flow had it, before any offset moved it. */
@@ -776,6 +779,28 @@ interface Laid {
 }
 
 const LAID = new WeakMap<Box, Laid>();
+
+/**
+ * The viewport's height a layout was made under, and whether the layout
+ * read it (`LayoutResult.readsViewportHeight`), which it is taken to have
+ * until it ends. One a layout, shared by every box it notes it laid out
+ * (`Laid`, a grid item's `ItemLaid`, a flex item's `Natural`): a layout
+ * that read none of it laid them out as it would have under any height,
+ * and a later layout keeps them under another (`heightHolds`). A pane's
+ * height is a frame's to decide, after the document's first layout, and
+ * the layout after that one laid out again every block, every flex item
+ * and every grid item the first had laid out.
+ */
+export interface LaidUnder {
+  height: number;
+  read: boolean;
+}
+
+/** Whether what a layout made under `under` holds under this layout's
+ *  viewport: the same height, or one that layout read none of. */
+function heightHolds(under: LaidUnder, ctx: LayoutContext): boolean {
+  return under.height === ctx.viewportHeight || !under.read;
+}
 
 /** Every layout that may keep blocks counted, for `Laid.pass`. */
 let reusePasses = 0;
@@ -806,7 +831,7 @@ function noteLaid(
     width,
     base: child.percentHeightBase,
     viewportWidth: ctx.viewportWidth,
-    viewportHeight: ctx.viewportHeight,
+    under: ctx.under,
     scale: ctx.scale,
     fonts: ctx.fonts,
     dx: child.x - contentLeft,
@@ -840,7 +865,7 @@ function reuseLaid(
     laid.width !== width ||
     !Object.is(laid.base, child.percentHeightBase) ||
     laid.viewportWidth !== ctx.viewportWidth ||
-    laid.viewportHeight !== ctx.viewportHeight ||
+    !heightHolds(laid.under, ctx) ||
     laid.scale !== ctx.scale ||
     laid.fonts !== ctx.fonts ||
     ctx.blockers!.blockers.has(child) ||
@@ -859,9 +884,10 @@ function reuseLaid(
 /**
  * Whether a layout may keep a box an earlier layout laid out, as that one
  * left it (`reuseLaid`, and a flex item's `keptNatural`): where both keep
- * boxes (`LayoutContext.reusePass`), at the same viewport, scale and
- * fonts, the box no blocker (`reuseBlockers`) and placed where it can be
- * moved from. What the box itself was laid out from is the caller's to
+ * boxes (`LayoutContext.reusePass`), at the same viewport — or at another
+ * height the earlier one read none of (`heightHolds`) — scale and fonts,
+ * the box no blocker (`reuseBlockers`) and placed where it can be moved
+ * from. What the box itself was laid out from is the caller's to
  * compare, and whether anything in it changed since is `forgetSizes`'.
  */
 export function mayKeepLaid(
@@ -870,7 +896,7 @@ export function mayKeepLaid(
   was: {
     pass: number;
     viewportWidth: number;
-    viewportHeight: number;
+    under: LaidUnder;
     scale: number | undefined;
     fonts: FontsLike | null;
   },
@@ -884,7 +910,7 @@ export function mayKeepLaid(
     !Number.isNaN(was.pass) &&
     was.pass !== ctx.reusePass &&
     was.viewportWidth === ctx.viewportWidth &&
-    was.viewportHeight === ctx.viewportHeight &&
+    heightHolds(was.under, ctx) &&
     was.scale === ctx.scale &&
     was.fonts === ctx.fonts &&
     !ctx.blockers!.blockers.has(box) &&
@@ -1453,6 +1479,7 @@ export function layoutDocument(
     scale,
     viewportWidth,
     viewportHeight,
+    under: { height: viewportHeight, read: true },
     positioned: [],
     layoutSubtree: (box, width, containing) =>
       layoutSubtree(box, ctx, width, containing),
@@ -1686,10 +1713,13 @@ export function layoutDocument(
   if (fixed) FIXED_BOXES.set(tree, fixed);
   else FIXED_BOXES.delete(tree);
   if (tree.foreign) layoutForeign(tree.foreign, fonts, scale);
+  // what this layout laid out holds under another height where it read
+  // none of this one's
+  ctx.under.read = readsViewportHeight || ctx.readViewportHeight === true;
   return {
     width: viewportWidth,
     height: bottom,
-    readsViewportHeight: readsViewportHeight || ctx.readViewportHeight === true,
+    readsViewportHeight: ctx.under.read,
     partial: (aside?.size ?? 0) > 0,
   };
 }

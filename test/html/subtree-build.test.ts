@@ -835,6 +835,75 @@ metric(
 );
 
 metric(
+  'a layout under another viewport height keeps the blocks, flex items and grid items an earlier one laid out where that one read none of the height, where a layout of all new boxes puts them',
+  async () => {
+    // A pane's height is a frame's to decide, after the document's first
+    // layout, and the layout after that one laid out again every block,
+    // flex item and grid item the first had laid out, whatever they held:
+    // a grid of a hundred paragraphs set again for nothing. A document that
+    // reads the height — here a box placed against the viewport's bottom —
+    // is laid out again under the new one, as it was.
+    for (const reads of [false, true]) {
+      const { el, resize } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          'article { display: grid; grid-template-columns: 1fr; gap: 6px }' +
+          '.col { display: flex; flex-direction: column; gap: 4px }' +
+          'p { margin: 2px } .code { height: 300px }' +
+          '.foot { position: fixed; bottom: 0; height: 10px; width: 10px }' +
+          '</style></head><body><article><p id="g1">a paragraph</p>' +
+          '<div class="code" id="g2">let a = 1;</div>' +
+          '<p id="g3">another paragraph below it</p></article>' +
+          '<div class="col"><p id="f1">one item of a column</p>' +
+          '<p id="f2">two items down</p></div><p id="b1">and a block</p>' +
+          (reads ? '<div class="foot"></div>' : '') +
+          '</body></html>',
+        160,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+        _invalidate(stale: number): void;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const ids = ['g1', 'g2', 'g3', 'f1', 'f2', 'b1'];
+      const serials = (): number[] =>
+        ids.map(
+          (id) =>
+            internals._firstBoxesOf(internals._tree).get(byId(id))!
+              .layoutSerial,
+        );
+      const before = serials();
+      await resize(220);
+      internals._invalidate(1);
+      await act();
+      if (reads) {
+        assert.notDeepStrictEqual(serials(), before, 'kept under a new height');
+      } else {
+        assert.deepStrictEqual(
+          serials(),
+          before,
+          `#${ids.join(', #')} laid out again under a new height`,
+        );
+      }
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `reads ${reads}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+      cleanup();
+    }
+  },
+);
+
+metric(
   'a change beside a block that styles its first letter builds only the subtree it reached, where a build of all new boxes puts it',
   async (t) => {
     // a webmail page's header styles the first letter of the account's
@@ -1282,10 +1351,6 @@ metric(
     await act(async () => movingPane(el).scrollTo(code.y + 100));
     const held = () => el.elementRect(byId('copy'))!.y;
     assert.strictEqual(held(), code.y + 110, 'held 10px down the viewport');
-    // a grid keeps an item from the layout after the one that laid it out
-    // first, whatever the item holds
-    internals._invalidate(1);
-    await act();
     const before = serial();
     internals._invalidate(1);
     await act();
@@ -1293,9 +1358,6 @@ metric(
     assert.strictEqual(held(), code.y + 110, 'and held');
     // a change below it, and then one above it, which moves it
     for (const id of ['last', 'first']) {
-      // a tree of new boxes from the second step, laid out once to keep
-      internals._invalidate(1);
-      await act();
       const was = serial();
       const text = byId(id).children[0] as unknown as { data: string };
       text.data += ', and a line more of words than it had before';
