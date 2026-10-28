@@ -3408,7 +3408,15 @@ the subject names, not all that is in it: Bootstrap's `:hover >
 whole page. The subject is read without its functional pseudo-classes
 (`subjectOf`), each of which only narrows what the rest of it names, so
 Angular's `*:hover > kbd:not(:has(kbd))` reaches keys and not all of every
-hovered element. **Anything that draws an element some other box's way has to
+hovered element. A compound that is its selector's subject, at its top,
+reaches its element alone (`HOVER_SELF`, `PointerCompounds.subjects`), and
+the restyle follows down from it only where a style comes out other than it
+was (`StateReach.follows`, `_restyleInPlace`'s `from`): a webmail page's
+banner, `:hover` a background, holds a hidden strip of ten thousand
+elements, past what a hover restyles in place, and each move across it
+built them all. **A touch that reaches less than an element's subtree says
+how the restyle reaches what inherits from it**, or what it hands down is
+left as it was. **Anything that draws an element some other box's way has to
 bring that box into the reach** — a shape in an inline `<svg>` brings the
 drawing (`_stateReach`'s `subject`), since only an `<svg>` in the reach
 has its shapes asked for again. And a rule at a shadow tree's edge is in

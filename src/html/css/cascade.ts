@@ -342,14 +342,17 @@ const UA_SCOPE = -1;
 const SCOPING = /:host|::?(?:slotted|part)\(/i;
 
 /** What the pointer entering or leaving an element can change
- *  (`Cascade.hoverTouches`): nothing, the element and what is in it, those
- *  and the siblings after it, or those through a rule at a shadow tree's
- *  edge, which no restyle in place can answer (`StateRules.edge`). */
-export type HoverTouch = 0 | 1 | 2 | 3;
+ *  (`Cascade.hoverTouches`): nothing; the element alone, and what is in it
+ *  only through what it inherits (`HOVER_SELF`); the element and what is in
+ *  it; those and the siblings after it; or those through a rule at a
+ *  shadow tree's edge, which no restyle in place can answer
+ *  (`StateRules.edge`). Each reaches more than the one before. */
+export type HoverTouch = 0 | 1 | 2 | 3 | 4;
 export const HOVER_UNTOUCHED = 0;
-export const HOVER_TOUCHED = 1;
-export const HOVER_FOLLOWED = 2;
-export const HOVER_EDGE = 3;
+export const HOVER_SELF = 1;
+export const HOVER_TOUCHED = 2;
+export const HOVER_FOLLOWED = 3;
+export const HOVER_EDGE = 4;
 
 /**
  * The elements under one whose state changed that a compound leading below
@@ -940,6 +943,7 @@ export function pointerCompounds(
 ): PointerCompounds {
   const out: PointerCompounds = {
     compounds: [],
+    subjects: [],
     siblings: false,
     nested: false,
     has: [],
@@ -976,6 +980,11 @@ export const FOCUS_STATE: StateKind = {
 
 export interface PointerCompounds {
   compounds: string[];
+  /** The compounds in `compounds` that are their selector's subject, at
+   *  its top: `.card:hover`'s, and `.card:hover::before`'s. A change of
+   *  the state changes the style of the element one matches and no other,
+   *  and of what is in it only through what that inherits. */
+  subjects: string[];
   siblings: boolean;
   nested: boolean;
   has: { anchor: string; siblings: boolean }[];
@@ -1334,7 +1343,12 @@ function scanComplex(
         subject,
         child: next === '>' && p === parts.length - 2,
       });
-    } else if (found.pointer) out.compounds.push(found.bare.trim() || '*');
+    } else if (found.pointer) {
+      out.compounds.push(found.bare.trim() || '*');
+      if (top && p === parts.length - 1) {
+        out.subjects.push(found.bare.trim() || '*');
+      }
+    }
     // what follows the element this compound matches follows one whose
     // hover, or whose answer to a `:has()`, changed
     // — the one this compound matches, or one a selector nested in it
@@ -2017,11 +2031,13 @@ function atShadowEdge(el: Element): boolean {
  * the anchors of the `:has()`s that test it (`pointerCompounds`).
  */
 class StateRules {
-  /** The compounds, each without the state, and their matchers, compiled
-   *  when a change first asks (`touches`). */
-  private _compounds = new Map<string, boolean>();
+  /** The compounds, each without the state, with what a change of it
+   *  reaches from an element one matches (`HoverTouch`), the most any
+   *  selector has it reach; and their matchers, compiled when a change
+   *  first asks (`touches`). */
+  private _compounds = new Map<string, HoverTouch>();
   private _matchers:
-    { match: (el: Element) => boolean; followed: boolean }[] | null = null;
+    { match: (el: Element) => boolean; touch: HoverTouch }[] | null = null;
   /** Whether a change can be restyled where it happened
    *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
    *  state inside a functional pseudo-class, which reaches elements no
@@ -2066,11 +2082,19 @@ class StateRules {
       subjects.set(subject, child && (subjects.get(subject) ?? true));
     }
     const followed = new Set(found.followed);
+    // a compound that is a subject here may be followed or lead elsewhere
+    // in the same selector, which reaches more
+    const subjects = found.subjects.filter(
+      (c) => found.compounds.indexOf(c) === found.compounds.lastIndexOf(c),
+    );
     for (const c of found.compounds) {
-      this._compounds.set(
-        c,
-        followed.has(c) || (this._compounds.get(c) ?? false),
-      );
+      const touch = followed.has(c)
+        ? HOVER_FOLLOWED
+        : subjects.includes(c)
+          ? HOVER_SELF
+          : HOVER_TOUCHED;
+      const was = this._compounds.get(c) ?? HOVER_UNTOUCHED;
+      if (touch > was) this._compounds.set(c, touch);
     }
     for (const { anchor, siblings } of found.has) {
       const was = this._anchors.get(anchor);
@@ -2106,17 +2130,25 @@ class StateRules {
     below?: BelowReach[],
   ): HoverTouch {
     if (this.edge && atShadowEdge(el)) return HOVER_EDGE;
-    // the followed ones first, so the first that matches is the answer
+    // the ones that reach most first, so the first that matches is the
+    // answer
     this._matchers ??= [...this._compounds]
-      .sort(([, a], [, b]) => Number(b) - Number(a))
-      .flatMap(([compound, followed]) => {
+      .sort(([, a], [, b]) => b - a)
+      .flatMap(([compound, touch]) => {
         const match = compile(compound);
-        return match ? [{ match, followed }] : [];
+        return match ? [{ match, touch }] : [];
       });
-    for (const { match, followed } of this._matchers) {
-      if (match(el)) return followed ? HOVER_FOLLOWED : HOVER_TOUCHED;
+    let found: HoverTouch = HOVER_UNTOUCHED;
+    for (const { match, touch } of this._matchers) {
+      if (match(el)) {
+        found = touch;
+        break;
+      }
     }
-    if (!this._below.size) return HOVER_UNTOUCHED;
+    // the element alone is all a subject reaches, so what a compound that
+    // leads below reaches from it is asked for as well
+    if (found > HOVER_SELF) return found;
+    if (!this._below.size) return found;
     if (!this._belowMatchers) {
       // one matcher a subject, shared by every compound that leads to it
       const subjects = new Map<string, ((el: Element) => boolean) | null>();
@@ -2147,7 +2179,7 @@ class StateRules {
       if (!match(el)) continue;
       if (below) for (const r of reaches) if (!below.includes(r)) below.push(r);
     }
-    return HOVER_UNTOUCHED;
+    return found;
   }
 
   /** `Cascade.hoverAnchors`, for this state. */
@@ -2165,7 +2197,9 @@ class StateRules {
       });
     const note = (at: Element, followed: boolean): void => {
       if (followed) into.set(at, HOVER_FOLLOWED);
-      else if (!into.has(at)) into.set(at, HOVER_TOUCHED);
+      else if ((into.get(at) ?? HOVER_UNTOUCHED) < HOVER_TOUCHED) {
+        into.set(at, HOVER_TOUCHED);
+      }
     };
     const siblings = this._anchorMatchers.some((m) => m.siblings);
     for (let at: Element | null = el; at;) {
