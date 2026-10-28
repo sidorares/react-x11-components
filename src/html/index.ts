@@ -86,6 +86,7 @@ import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
 import type { HandleInternals } from './scripts/host.js';
+import type { MarginLength } from './paint.js';
 import { useParsedOnceLaidOut } from './parsed.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
@@ -1290,6 +1291,11 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
+      intersectionsOf: (
+        elements: readonly (Element | null)[],
+        root: Element | null,
+        margin: readonly MarginLength[] | null,
+      ) => nodeRef.current?.intersectionsOf(elements, root, margin) ?? null,
       textPointAt: (x: number, y: number) =>
         nodeRef.current?.textPointAt(x, y) ?? null,
       textRects: (

@@ -365,11 +365,13 @@ import {
   holdsAbsolute,
   inClip,
   inClipPath,
+  intersectionClips,
   layered,
   layerOf,
   onLine,
   opaqueCanvas,
   opaqueWithin,
+  overflowClipRect,
   ownBounds,
   paintCapture,
   paintCover,
@@ -385,6 +387,7 @@ import {
   topLayerBoxes,
 } from './paint.js';
 import type {
+  MarginLength,
   PaintContext,
   PaintOptions,
   SpriteSource,
@@ -613,6 +616,19 @@ export interface IndicatedPart {
   /** Where in the viewport a browser scrolls it to: text to the middle
    *  (`scrollIntoView({ block: 'center' })`), an element to the top. */
   block: 'start' | 'center';
+}
+
+/**
+ * What an `IntersectionObserver` measures of its targets
+ * (`HtmlViewNode.intersectionsOf`), in `elementRect`'s coordinates.
+ */
+export interface ElementIntersections {
+  /** The root's rectangle, before its margin; null for the viewport. */
+  root: Rect | null;
+  /** Each target's bounding box, and what of that the boxes around it
+   *  leave to be seen as far as the root, null for none; null where it
+   *  has no box, or is not in the root by containing blocks. */
+  targets: ({ rect: Rect; shown: Rect | null } | null)[];
 }
 
 /** The text a URL's text directives name, as they were sought
@@ -5392,6 +5408,77 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * What an `IntersectionObserver` measures of its targets against its root
+   * (Intersection Observer, 3.2.8), laid out first as `elementRect` is and
+   * in its coordinates. The root's rectangle: its padding box where it
+   * clips its overflow and its border box where it does not, null where
+   * the root is the viewport, which is the caller's. And for each target
+   * its bounding box, as `elementRect` has it, and the part of that the
+   * boxes around it leave to be seen as far as the root
+   * (`intersectionClips`), drawn through the matrices around each — an
+   * edge that only meets one kept as a rectangle of no area, or null where
+   * they leave none of it; null for a target with no box, or not in `root`
+   * by containing blocks. Null where the document or `root` has no box at
+   * all. `margin` is the observer's `scrollMargin`, which grows the clip
+   * of each box around that scrolls. All of an observer's targets at once,
+   * as each frame asks them and again after each paint: laid out and
+   * followed once a target, that was most of what measuring one cost.
+   */
+  intersectionsOf(
+    elements: readonly (Element | null)[],
+    root: Element | null,
+    margin: readonly MarginLength[] | null = null,
+  ): ElementIntersections | null {
+    this._prepare(this.abs.width || 1);
+    this._followViewport();
+    const tree = this._tree;
+    if (!tree) return null;
+    // by the index, not `boxOf`, a walk of the tree a target
+    const first = this._firstBoxesOf(tree);
+    const rootBox = root ? first.get(root) : null;
+    if (rootBox === undefined) return null;
+    const shift = this._fixedShift(this._scrolledOrigin());
+    let rootRect: Rect | null = null;
+    if (rootBox) {
+      const edge = overflowClipRect(rootBox, this._scale);
+      const r = edge
+        ? throughTransforms(edge, rootBox)
+        : this._drawnRect(tree, rootBox, false);
+      if (!r) return null;
+      rootRect = this._moveToViewport(rootBox, r, shift);
+    }
+    const targets = elements.map((element) => {
+      const box = element ? first.get(element) : undefined;
+      const drawn = box ? this._drawnRect(tree, box, false) : null;
+      const clips =
+        box && drawn && intersectionClips(box, rootBox, this._scale, margin);
+      if (!box || !drawn || !clips) return null;
+      const rect = this._moveToViewport(box, drawn, shift);
+      let x0 = rect.x;
+      let y0 = rect.y;
+      let x1 = rect.x + rect.width;
+      let y1 = rect.y + rect.height;
+      for (const clip of clips) {
+        const c = this._moveToViewport(
+          clip.at,
+          throughTransforms(clip.rect, clip.at),
+          shift,
+        );
+        x0 = Math.max(x0, c.x);
+        y0 = Math.max(y0, c.y);
+        x1 = Math.min(x1, c.x + c.width);
+        y1 = Math.min(y1, c.y + c.height);
+      }
+      const shown =
+        x0 <= x1 && y0 <= y1
+          ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+          : null;
+      return { rect, shown };
+    });
+    return { root: rootRect, targets };
+  }
+
+  /**
    * Where the fragment of the document's URL points, laid out first, for
    * a host to scroll there (HTML's "scroll to the fragment"): the text the
    * first of its text directives that found any names, around all its
@@ -5911,8 +5998,11 @@ export class HtmlViewNode extends Node {
    * the offsets the pane has now, the next pass's as well as the last's
    * (`_scrolledOrigin`): a page measures straight after its `scrollTo`.
    */
-  private _moveToViewport(box: Box, rect: Rect): Rect {
-    const shift = this._fixedShift(this._scrolledOrigin());
+  private _moveToViewport(
+    box: Box,
+    rect: Rect,
+    shift = this._fixedShift(this._scrolledOrigin()),
+  ): Rect {
     const moved = shift && drawnAtViewport(box);
     const s = this._scale;
     return {

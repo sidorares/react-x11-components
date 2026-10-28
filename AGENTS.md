@@ -2768,6 +2768,24 @@ closes a way out a DOM binding opens by accident:
   its case wherever the facade carries one: `el.style` lowercased
   `--brand-Tabs-slider-width`, a property Primer's sheet never reads, and
   the pill came out as wide as its borders.
+- **An `IntersectionObserver` is measured by the host, and asked again
+  after each paint.** Each frame hands the host every observer's root and
+  targets in one op (`intersections`, `HtmlViewNode.intersectionsOf`),
+  which measures them in `elementRect`'s coordinates — each target's
+  bounding box, and what the boxes around it leave of that as far as the
+  root (`intersectionClips`) — and the facade does the rest of 3.2.8: the
+  root margin, the ratio, the thresholds, the entries. Nothing tells the
+  realm that a layout, a scroll inside the document or an image's arrival
+  moved a target, so the host asks the last frame's question again after
+  each paint and wakes a frame where the answer moved
+  (`DomHost.renderingMoved`); **a frame with no target left says so with
+  an empty query**, or the host measures after every paint for good. And
+  **an observer's targets are measured together**, the layout and the
+  viewport's follow once for all of them: once a target, that was most of
+  a measurement. It had been a stand-in that reported each target once,
+  whole, and joshwcomeau.com's header, which hears that it is stuck from
+  an observer with `rootMargin: "-1px 0px 0px 0px"` and a threshold of 1,
+  never put its glass on.
 - **The facade runs in the page's realm, so its own work calls what a page
   replaced, and an op that only reads moves no count.** `opEpoch` counts
   the ops that may change a computed style (`getComputedStyle`'s cache) or

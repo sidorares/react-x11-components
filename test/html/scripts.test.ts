@@ -262,8 +262,11 @@ async function hosted(
       },
       'data-testname': 'doc',
       ...scripts,
-      // as `useScriptedHtml` hands it to `<Html>`, an internal prop
-      ...({ _onCssEvents: scripts.cssEvents } as object),
+      // as `useScriptedHtml` hands them to `<Html>`, internal props
+      ...({
+        _onCssEvents: scripts.cssEvents,
+        _onPaint: scripts.painted,
+      } as object),
     });
   }
   out.result = await renderX11(
@@ -9889,6 +9892,114 @@ test('an IntersectionObserver reports what it was asked to observe in one callba
   await settled(doc, 'out', (t) => t.split('|').length >= 2);
   await settle(60);
   assert.equal(doc.text('out'), 'a,b,c|a,b');
+});
+
+for (const scale of [1, 2]) {
+  test(`an IntersectionObserver measures its targets in the viewport less its root margin, so a sticky header hears that it is stuck, at scale ${scale}`, async () => {
+    // joshwcomeau.com's header turns its glass on where its observer, with
+    // `rootMargin: "-1px 0px 0px 0px"` and thresholds of 0 and 1, says
+    // less than all of it is in the root: held at the viewport's top, its
+    // first pixel is above the root's. A stand-in that reported every
+    // target once, whole, left the header transparent for good. Chrome 154
+    // answers the same at 400x300
+    const doc = await hosted(
+      whole(
+        'body { margin: 0 } #hero { height: 100px }' +
+          ' #head { position: sticky; top: 0; height: 40px }' +
+          ' .tall { height: 2000px }',
+        '<div id="hero"></div><div id="head"></div><div class="tall"></div>' +
+          '<p id="out"></p><script>' +
+          'var seen = [];' +
+          'new IntersectionObserver(function (entries) {' +
+          '  entries.forEach(function (e) {' +
+          '    var b = e.boundingClientRect, r = e.rootBounds, i = e.intersectionRect;' +
+          '    seen.push([e.isIntersecting, e.intersectionRatio, b.top, i.top, i.height, r.top, r.height].join(" "));' +
+          '  });' +
+          '  document.getElementById("out").textContent = seen.join("|");' +
+          '}, { rootMargin: "-1px 0px 0px 0px", threshold: [0, 1] })' +
+          '.observe(document.getElementById("head"));' +
+          '</script>',
+      ),
+      { pane: 300, scale },
+    );
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      'true 1 100 100 40 1 299',
+    );
+    await act(async () => doc.pane!.scrollTo({ y: 500 * scale }));
+    await act(async () => doc.scrolled());
+    assert.equal(
+      await settled(doc, 'out', (t) => t.includes('|')),
+      'true 1 100 100 40 1 299|true 0.975 0 1 39 1 299',
+    );
+    // and nothing more while it stays stuck
+    await act(async () => doc.pane!.scrollTo({ y: 600 * scale }));
+    await act(async () => doc.scrolled());
+    await settle(100);
+    assert.equal(doc.text('out').split('|').length, 2);
+  });
+}
+
+test('an IntersectionObserver reports a target as it comes into an element root that clips it and leaves it, wherever a scroll inside the document or a change of layout moves it', async () => {
+  // A list's own scroll lays nothing out and is no scroll of the viewport,
+  // so it is the paint after it that has the observer measured again
+  // (`DomHost.renderingMoved`); a lazy list's images load so
+  const doc = await hosted(
+    whole(
+      'body { margin: 0 } #box { height: 100px; overflow: auto }' +
+        ' #gap { height: 300px } #t { height: 20px }',
+      '<div id="box"><div id="gap"></div><div id="t"></div></div>' +
+        '<p id="out"></p><script>' +
+        'var seen = [];' +
+        'var box = document.getElementById("box");' +
+        'new IntersectionObserver(function (entries) {' +
+        '  entries.forEach(function (e) {' +
+        '    seen.push(e.isIntersecting + " " + e.intersectionRatio + " " + e.rootBounds.height);' +
+        '  });' +
+        '  document.getElementById("out").textContent = seen.join("|");' +
+        '}, { root: box }).observe(document.getElementById("t"));' +
+        '</script>',
+    ),
+  );
+  const step = async (code: string, entries: number) => {
+    doc.run(code);
+    return settled(doc, 'out', (t) => t.split('|').length >= entries);
+  };
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), 'false 0 100');
+  // scrolled into the box, then on inside it, which crosses no threshold
+  assert.equal(await step('box.scrollTop = 250', 2), 'false 0 100|true 1 100');
+  doc.run('box.scrollTop = 220');
+  await settle(100);
+  assert.equal(doc.text('out'), 'false 0 100|true 1 100');
+  // and out of it by a change of layout, with no scroll at all
+  assert.equal(
+    await step('document.getElementById("gap").style.height = "600px"', 3),
+    'false 0 100|true 1 100|false 0 100',
+  );
+});
+
+test("an IntersectionObserver's options are read as Chrome reads them, and what it cannot take is refused", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var io = new IntersectionObserver(function () {}, { rootMargin: "10px 5%", threshold: [1, 0.5, 0] });' +
+      'r.push(io.rootMargin, io.scrollMargin, io.thresholds.join(","), Object.isFrozen(io.thresholds), io.thresholds === io.thresholds, io.root === null);' +
+      'r.push(new IntersectionObserver(function () {}, { root: document }).root === document);' +
+      'function fails(f) { try { f(); return "none"; } catch (e) { return e.name; } }' +
+      'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "10" }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "1em" }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(function () {}, { threshold: 2 }); }));' +
+      'r.push(fails(function () { new IntersectionObserver(function () {}, { root: {} }); }));' +
+      'r.push(fails(function () { io.observe(document); }));' +
+      'r.push(io.takeRecords().length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '10px 5% 10px 5%|0px 0px 0px 0px|0,0.5,1|true|true|true|true|' +
+      'SyntaxError|SyntaxError|RangeError|TypeError|TypeError|0',
+  );
 });
 
 /** A page whose frames run in realms of their own, as `<Html scripts>`
