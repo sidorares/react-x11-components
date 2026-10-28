@@ -620,7 +620,141 @@ export function ownBounds(box: Box): Rect {
   );
 }
 
-export function computePaintBounds(box: Box, moved = false): number {
+/**
+ * The ink bounds above, of a box and all it holds (`boundsOf`). Given
+ * `kept`, by a layout that kept blocks, the ink of a block nothing in which
+ * was laid out or moved is kept from the walk before (`frontierBounds`);
+ * without it none is, and every record of before is stale from then on
+ * (`INK_EPOCHS`).
+ */
+export function computePaintBounds(
+  box: Box,
+  moved = false,
+  kept?: KeptInk,
+): number {
+  let root = box;
+  while (root.parent) root = root.parent;
+  let epoch = INK_EPOCHS.get(root) ?? 0;
+  // a walk that keeps none of the ink it found before works out ink
+  // that ink may have been found from, and no record of before is kept
+  if (!kept) INK_EPOCHS.set(root, (epoch += 1));
+  return boundsOf(box, moved, kept ? { ...kept, epoch } : null, false, false);
+}
+
+/**
+ * What a layout that kept blocks an earlier one laid out hands the walk of
+ * the ink after it (`computePaintBounds`), which keeps the ink of what was
+ * not laid out and was not moved: the boxes the passes after its flow
+ * moved something in (`moves`, `Blockers.moved` in `layout/block.ts`), and
+ * the blocks it kept (`kept`, `LayoutContext.reused`).
+ */
+export interface KeptInk {
+  moves: ReadonlySet<Box>;
+  kept: ReadonlySet<Box>;
+}
+
+/**
+ * The ink a walk found of a block that nothing the passes after a flow
+ * move is in (`KeptInk.moves`) — one the walk reached from a box it walked
+ * because something in it moved — where its border box was, and how far
+ * it reached (`boundsOf`'s answer): what a later walk keeps, where the
+ * block is still where it was and a layout kept it or a block it is in,
+ * and nothing has worked ink out since but the walks that keep it
+ * (`INK_EPOCHS`). Nothing a layout keeps moves in the block, and nothing
+ * else moves anything in it without a walk of the whole tree, which marks
+ * the record stale. A bare layout of joshwcomeau.com's article walked its
+ * 3,380 boxes for ink that came out as it was.
+ */
+interface KeptBlockInk {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  reach: number;
+  epoch: number;
+}
+
+const KEPT_INK = new WeakMap<Box, KeptBlockInk>();
+
+/** How many blocks' ink walks have kept (`frontierBounds`), for a test to
+ *  say that some was. */
+let inkKeptCount = 0;
+export function inkKept(): number {
+  return inkKeptCount;
+}
+
+/** How many walks of each tree's ink, by its root box, kept none of the
+ *  ink before (`computePaintBounds` with no `KeptInk`): a record of a
+ *  block's ink (`KEPT_INK`) is kept only by the walks after it until one
+ *  does. */
+const INK_EPOCHS = new WeakMap<Box, number>();
+
+/** The ink a walk keeps from before, and of what: `computePaintBounds`'
+ *  `KeptInk`, with the walk's `INK_EPOCHS`. */
+interface HeldInk extends KeptInk {
+  epoch: number;
+}
+
+/**
+ * `boundsOf` a box that nothing in moves after a flow, reached from one
+ * something in which moves (`HeldInk.moves`): the ink it had, where a
+ * layout kept it or a block it is in (`inKept`), its border box is where it
+ * was, and no sticky box moves it (`sticky`), which a scroll of the pane
+ * places again with no walk of the tree (`boundsAfterMove`); else worked
+ * out, and recorded. Never an inline box, whose ink is its block's lines',
+ * and which casts onto them for the walk of its block (`LINE_CASTS`).
+ */
+function frontierBounds(
+  box: Box,
+  moved: boolean,
+  held: HeldInk,
+  inKept: boolean,
+  sticky: boolean,
+): number {
+  if (sticky || box.kind === 'inline') {
+    return boundsOf(box, moved, null, false, false);
+  }
+  const was = KEPT_INK.get(box);
+  if (
+    was !== undefined &&
+    was.epoch === held.epoch &&
+    (inKept || held.kept.has(box)) &&
+    was.x === box.x &&
+    was.y === box.y &&
+    was.width === box.width &&
+    was.height === box.height
+  ) {
+    inkKeptCount += 1;
+    return was.reach;
+  }
+  const reach = boundsOf(box, moved, null, false, false);
+  if (was === undefined) {
+    KEPT_INK.set(box, {
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      reach,
+      epoch: held.epoch,
+    });
+  } else {
+    was.x = box.x;
+    was.y = box.y;
+    was.width = box.width;
+    was.height = box.height;
+    was.reach = reach;
+    was.epoch = held.epoch;
+  }
+  return reach;
+}
+
+function boundsOf(
+  box: Box,
+  moved: boolean,
+  held: HeldInk | null,
+  inKept: boolean,
+  sticky: boolean,
+): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
   const own = hasRect(box);
@@ -754,7 +888,18 @@ export function computePaintBounds(box: Box, moved = false): number {
       child.boundsHeight = 0;
       continue;
     }
-    const reach = computePaintBounds(child, moved);
+    const reach =
+      held === null
+        ? boundsOf(child, moved, null, false, false)
+        : held.moves.has(child)
+          ? boundsOf(
+              child,
+              moved,
+              held,
+              inKept || held.kept.has(child),
+              sticky || child.style.position === 'sticky',
+            )
+          : frontierBounds(child, moved, held, inKept, sticky);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
     else OUT_OF_FLOW_REACH.set(child, reach);
     if (child.boundsY === Infinity) continue;
@@ -927,7 +1072,10 @@ export function boundsAfterMove(box: Box, moved = false): boolean {
     if (style.filter !== null || style.clipPath) return false;
     if (hasRect(at) && placedMatrix(at)) return false;
   }
-  computePaintBounds(box, moved);
+  // no ink a walk keeps from before is under a sticky box (`frontierBounds`),
+  // and what else moves keeps none
+  if (box.style.position === 'sticky') boundsOf(box, moved, null, false, false);
+  else computePaintBounds(box, moved);
   let child = box;
   for (let at = box.parent; at; child = at, at = at.parent) {
     buildChildIndexes(at);

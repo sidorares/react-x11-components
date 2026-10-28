@@ -2113,8 +2113,13 @@ outside it joins `Laid`** — a flex item's `Natural`, a grid item's
 **anything new a pass after the flow moves boxes by is taken off in
 `unoffsetHeld`**, or a block kept is moved by it twice. A block whose
 layout reaches outside it — what holds a box placed against something
-outside it, a sticky box, or a relative inline broken around blocks — is
-laid out every time (`reuseBlockers`). An absolute box placed by nothing
+outside it, or a relative or sticky inline broken around blocks — is laid
+out every time (`reuseBlockers`). A sticky box is kept with its block:
+where it sticks turns on where the block is, so it is taken off by how far
+it was moved (`STUCK`) and worked out again after the flow, where it had
+made every box around it a blocker — joshwcomeau.com's code blocks each
+hold a copy button stuck to the viewport, and its article's grid laid
+half its items out again at every layout. An absolute box placed by nothing
 of what it is placed against is no such box (`movesWithFlow`): no inset,
 and a size and edges of its own, so a kept block moves it where its own
 layout would — a link's `sr-only` label is one, and with it every
@@ -2125,7 +2130,8 @@ focus's build is seeded with its reach, as a frame's is.
 `test/html/subtree-build.test.ts` holds a subtree build and the layout
 after it to a whole build, box, line, list and style, over generated
 documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
-at the one that failed.
+at the one that failed, and `MOVING_SEEDS` sweeps documents of sticky,
+relative, transformed and scrolled boxes in blocks a layout keeps.
 
 **A change a refresh is told of that is lengths alone keeps the boxes,
 and its layout repaints what it moved** (`_restyleInPlace`'s `lengths`,
@@ -2146,6 +2152,32 @@ built the panes and repainted the whole article in view. **Anything new
 a layout can change in how a box is drawn, besides its rect, its lines
 and its marker, joins `reshaped`**, or a refresh leaves it drawn as it
 was.
+
+**The passes after a layout that keeps blocks walk what they move, and
+the walk of the ink keeps the rest's** (`Blockers.moved`, `KEPT_INK` in
+`paint.ts`). A box the passes after a flow move, or move what it holds —
+a relative box with an inset, a sticky one, a transformed one, a scroll
+container (`movesAfterFlow`) — is in `moved` with every box around it,
+and `unoffsetHeld`, `applyRelativeOffsets`, `applyScrollOffsets` and
+`restickAll` go down it alone. The walk of the ink records, for a block
+outside it that it reached from a box inside it, where its border box was
+and how far it reached, and a later walk keeps that block's ink where a
+layout kept the block or one around it, its border box is where it was,
+and no sticky box is around it (`frontierBounds`). With the sticky boxes
+kept, a bare layout of joshwcomeau.com's article went from 4 ms to 0.8.
+Three things are load-bearing. **Anything new that makes a box one the
+passes move joins `movesAfterFlow`, and anything that makes one so in
+place calls `noteMoving`**, as a restyle in place does, or a layout that
+lays the box out again leaves it where the flow put it. **Anything new
+that moves boxes or changes their ink outside a layout walks the tree's
+ink whole** (`computePaintBounds` with no `KeptInk`), which makes every
+record stale, or a later walk keeps ink of where the boxes were: a sticky
+box the pane's scroll places is the one walk of part of it
+(`boundsAfterMove`), and why no ink under one is kept. And **a text or a
+break carries its element's style and is no box of its own**: no pass
+moves it, and no scroll places it (`stickyBlock`). Taken for a sticky
+box, a sticky element's text was held where its rect had drifted to, and
+the ink around it grown to reach it.
 
 **A stream's chunk is a change the parser tells of, and builds the ends of
 what it touched** (`HtmlSource.takeAppended`, `_parsedChanges`,

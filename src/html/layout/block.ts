@@ -254,13 +254,13 @@ export interface LayoutContext {
    *  out (`reuseLaid`): one of the whole document, of a tree with no
    *  anchor, no vertical flow, no `::first-line` and no foreign object. */
   reusePass?: number;
-  /** The blocks this layout kept rather than laid out, which the passes
-   *  after the flow move as wholes and do not look inside: what is in one
-   *  was moved by its relative offsets and its scrolls when it was laid
-   *  out, and has been since (`applyRelativeOffsets`, `applyScrollOffsets`). */
+  /** The blocks this layout kept rather than laid out, which it takes the
+   *  offsets the passes after the flow put on off (`keepLaid`), and whose
+   *  ink, where nothing in them moved, the walk after it keeps
+   *  (`computePaintBounds`). */
   reused?: Set<Box>;
-  /** The boxes no layout keeps, and those that hold a box out of the flow
-   *  (`reuseBlockers`). */
+  /** The boxes no layout keeps, those that hold a box out of the flow, and
+   *  those the passes after a flow move something in (`reuseBlockers`). */
   blockers?: Blockers;
   /** The boxes out of the flow in the blocks this layout kept, which it
    *  does not lay out and the document reaches as far as (`keptPositionedIn`). */
@@ -904,30 +904,36 @@ export function mayKeepLaid(
  */
 export function keepLaid(box: Box, ctx: LayoutContext): void {
   if (ctx.reused!.has(box)) return;
-  if (ctx.offsets !== false) unoffsetHeld(box);
+  const { holders, moved } = ctx.blockers!;
+  if (ctx.offsets !== false && moved.has(box)) unoffsetHeld(box, moved);
   ctx.reused!.add(box);
-  if (ctx.blockers!.holders.has(box)) {
-    keptPositionedIn(box, ctx.keptPositioned!);
-  }
+  if (holders.has(box)) keptPositionedIn(box, holders, ctx.keptPositioned!);
   keptBlocks += 1;
 }
 
 /**
- * The boxes no layout keeps (`LayoutContext.blockers`), and the ones that
- * hold a box out of the flow (`Blockers.holders`). A box out of the flow is
+ * The boxes no layout keeps (`LayoutContext.blockers`), the ones that hold
+ * a box out of the flow (`Blockers.holders`), and the ones the passes after
+ * a flow move something in (`Blockers.moved`). A box out of the flow is
  * laid out after the flow against its containing block, so a block that
  * holds one can be kept where that block is in it too, and the box moves
  * with it; the boxes between the two cannot, and neither can the box. A
- * sticky box sticks to a scroll container outside what holds it, a box in
- * the top layer, or fixed to the viewport, is placed against no box in the
- * document, and a relative inline box broken around blocks moves blocks
- * beside what holds it (`CUT_BLOCKS`): every box around one is a blocker.
- * Once a tree.
+ * box in the top layer, or fixed to the viewport, is placed against no box
+ * in the document, and a relative or a sticky inline box broken around
+ * blocks moves blocks beside what holds it (`CUT_BLOCKS`): every box around
+ * one is a blocker. A sticky box is none: where it sticks is worked out
+ * again after every flow, from where the flow put it, and a kept block
+ * takes the shift off it as it takes a relative offset off
+ * (`unoffsetHeld`). Once a tree.
  */
 function reuseBlockers(tree: BoxTree): Blockers {
   let found = BLOCKERS.get(tree);
   if (found) return found;
-  found = { blockers: new Set<Box>(), holders: new Set<Box>() };
+  found = {
+    blockers: new Set<Box>(),
+    holders: new Set<Box>(),
+    moved: new Set<Box>(),
+  };
   BLOCKERS.set(tree, found);
   noteBlockers([tree.root], found);
   return found;
@@ -935,20 +941,30 @@ function reuseBlockers(tree: BoxTree): Blockers {
 
 /** `reuseBlockers` of the boxes on `stack` and all they hold: where one
  *  is placed against what is outside it, the boxes between, and those that
- *  hold it. One loop with all of it in it: a walk of every box of a tree,
- *  whose step a function of its own made a loop that its optimized code
- *  left at every box with children, and was thrown away for leaving. */
-function noteBlockers(stack: Box[], { blockers, holders }: Blockers): void {
+ *  hold it; and where one is moved after the flow, it and those that hold
+ *  it. One loop with all of it in it: a walk of every box of a tree, whose
+ *  step a function of its own made a loop that its optimized code left at
+ *  every box with children, and was thrown away for leaving. */
+function noteBlockers(
+  stack: Box[],
+  { blockers, holders, moved }: Blockers,
+): void {
   while (stack.length) {
     const box = stack.pop()!;
     const position = box.style.position;
+    if (movesAfterFlow(box)) {
+      for (let up: Box | null = box; up && !moved.has(up); up = up.parent) {
+        moved.add(up);
+      }
+    }
     if (
       box.outOfFlow ||
       box.topLayer ||
-      position === 'sticky' ||
       // an inline box broken around blocks moves them with its offset,
       // and they are beside the block that holds it (`CUT_BLOCKS`)
-      (position === 'relative' && box.kind === 'inline' && box.cut !== 0)
+      ((position === 'relative' || position === 'sticky') &&
+        box.kind === 'inline' &&
+        box.cut !== 0)
     ) {
       const placed = box.outOfFlow || box.topLayer;
       // the box it is placed against, which holds it whole
@@ -1035,11 +1051,13 @@ export function carryBlockers(
   const found: Blockers = {
     blockers: new Set(was.blockers),
     holders: new Set(was.holders),
+    moved: new Set(was.moved),
   };
   for (const boxes of replaced) {
     for (const box of boxes) {
       found.blockers.delete(box);
       found.holders.delete(box);
+      found.moved.delete(box);
     }
   }
   noteBlockers([...added], found);
@@ -1050,28 +1068,91 @@ export function carryBlockers(
 interface Blockers {
   blockers: Set<Box>;
   holders: Set<Box>;
+  /**
+   * Every box the passes after a flow move, or move what it holds
+   * (`movesAfterFlow`), and every box that holds one: the boxes those
+   * passes, and the one that takes what they did off a kept block
+   * (`unoffsetHeld`), walk. A box outside it has nothing in it any of them
+   * moves, and they pass it by: joshwcomeau.com's article is 3,380 boxes,
+   * a tenth of them in it, and each walked all of them at every layout of
+   * the page.
+   */
+  moved: Set<Box>;
 }
 
 const BLOCKERS = new WeakMap<BoxTree, Blockers>();
 
 /**
- * Take off what the passes after a flow moved the boxes in a block by —
- * their transforms' translations, their relative offsets and their
- * scrolls (`applyRelativeOffsets`, `applyScrollOffsets`) — and not the
- * block's own, which moves all it holds alike: what it holds is where the
- * block's last layout put it, from its corner, and a flow that reads it
- * finds it there. Each is a move of the same boxes, worked out from sizes
- * a kept block keeps, and moves add up in any order. What a sticky box, a
- * box in the top layer or a relative inline broken around blocks moves is
- * in no kept block (`reuseBlockers`).
+ * Whether the passes after a flow move a box, or what it holds
+ * (`Blockers.moved`): a relative box an inset moves — one with none moves
+ * nowhere, and joshwcomeau.com's inline code and links are 314 of them — a
+ * sticky one, a transformed one but for an inline box, which no transform
+ * moves, and a scroll container, whose scroll moves what it holds.
  */
-function unoffsetHeld(block: Box): void {
-  for (const child of block.children) unoffset(child);
+function movesAfterFlow(box: Box): boolean {
+  if (box.kind === 'text' || box.kind === 'break') return false;
+  const style = box.style;
+  const position = style.position;
+  if (position === 'sticky') return true;
+  if (
+    position === 'relative' &&
+    (style.top !== AUTO ||
+      style.right !== AUTO ||
+      style.bottom !== AUTO ||
+      style.left !== AUTO)
+  ) {
+    return true;
+  }
+  return (box.kind !== 'inline' && transformed(style)) || isScroller(box);
+}
+
+/**
+ * Note that boxes restyled in place may be ones the passes after a flow
+ * move now (`Blockers.moved`): a transform a hover or an animation put on
+ * it, or an inset on a relative box, which a restyle in place takes where
+ * nothing else about the box changes (`hoverChange`, `lengthChange`).
+ * Whatever else makes a box one — a position, an overflow — builds the
+ * boxes again, and the tree it builds is noted as it is laid out. Never
+ * taken out: a box in it that moves nothing costs a walk.
+ */
+export function noteMoving(tree: BoxTree, boxes: Iterable<Box>): void {
+  const moved = BLOCKERS.get(tree)?.moved;
+  if (!moved) return;
+  for (const box of boxes) {
+    if (moved.has(box) || !movesAfterFlow(box)) continue;
+    for (let up: Box | null = box; up && !moved.has(up); up = up.parent) {
+      moved.add(up);
+    }
+  }
+}
+
+/**
+ * Take off what the passes after a flow moved the boxes in a block by —
+ * their transforms' translations, their relative and sticky offsets and
+ * their scrolls (`applyRelativeOffsets`, `restickAll`,
+ * `applyScrollOffsets`) — and not the block's own, which moves all it
+ * holds alike: what it holds is where the block's last layout put it, from
+ * its corner, and a flow that reads it finds it there. Each is a move of
+ * the same boxes, and moves add up in any order. A relative offset is
+ * worked out again from sizes a kept block keeps; a sticky one is not,
+ * since where it sticks turns on where the block is, so it is taken off by
+ * how far it moved the box (`STUCK`), which the element's scroll of the
+ * pane (`restickToViewport`) and a scroll container's (`restickWithin`)
+ * keep as they move it. What a box in the top layer or an inline broken
+ * around blocks moves is in no kept block (`reuseBlockers`).
+ */
+function unoffsetHeld(block: Box, moved: ReadonlySet<Box>): void {
+  for (const child of block.children) {
+    if (moved.has(child)) unoffset(child, moved);
+  }
   scrollBack(block, translate);
 }
 
-function unoffset(box: Box): void {
-  for (const child of box.children) unoffset(child);
+function unoffset(box: Box, moved: ReadonlySet<Box>): void {
+  for (const child of box.children) {
+    if (moved.has(child)) unoffset(child, moved);
+  }
+  if (box.kind === 'text' || box.kind === 'break') return;
   const style = box.style;
   if (transformed(style) && box.kind !== 'inline') {
     const [dx, dy] = translationOf(box);
@@ -1083,16 +1164,33 @@ function unoffset(box: Box): void {
       offsetBox(box, -dx, -dy, false);
       if (box.kind === 'inline') offsetInline(box, -dx, -dy);
     }
+  } else if (style.position === 'sticky') {
+    const stuck = STUCK.get(box);
+    if (stuck) {
+      // where the flow has it, and no shift on, until the passes after
+      // this flow work one out
+      STUCK.delete(box);
+      const [dx, dy] = stuck;
+      if (dx || dy) {
+        offsetBox(box, -dx, -dy, true);
+        if (box.kind === 'inline') offsetInline(box, -dx, -dy);
+      }
+    }
   }
   scrollBack(box, translate);
 }
 
 /** The boxes out of the flow in a block a layout kept, which it lays out
- *  none of and counts in the document's reach (`LayoutContext.keptPositioned`). */
-function keptPositionedIn(box: Box, into: Box[]): void {
+ *  none of and counts in the document's reach (`LayoutContext.keptPositioned`):
+ *  found down the boxes that hold one (`Blockers.holders`). */
+function keptPositionedIn(
+  box: Box,
+  holders: ReadonlySet<Box>,
+  into: Box[],
+): void {
   for (const child of box.children) {
     if (child.outOfFlow) into.push(child);
-    if (child.children.length) keptPositionedIn(child, into);
+    if (holders.has(child)) keptPositionedIn(child, holders, into);
   }
 }
 
@@ -1527,10 +1625,15 @@ export function layoutDocument(
   // against where it *was* — which is the whole of what makes it relative —
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
-  if (tree.relative) applyRelativeOffsets(root, viewportWidth, viewportHeight);
+  // Where the layout keeps blocks, only down what holds a box any of the
+  // passes after the flow move (`Blockers.moved`).
+  const moved = ctx.blockers?.moved;
+  if (tree.relative) {
+    applyRelativeOffsets(root, viewportWidth, viewportHeight, moved);
+  }
   // and a scroll container moves what it holds by where it is scrolled to,
   // the same way: everything else reads the boxes where they are drawn
-  applyScrollOffsets(tree, translate);
+  applyScrollOffsets(tree, translate, moved);
   // and `position-visibility` hides what it hides where all of that left
   // the boxes, with how far that scrolled the anchors noted
   if (tree.anchors) settleAnchorScrolls(root, ctx.viewport ?? null);
@@ -1539,10 +1642,16 @@ export function layoutDocument(
   // scrolled to, which it was placed in as though it were scrolled to its
   // start; the ones the viewport keeps are the element's to place again
   // where the pane around it is scrolled to (`restickToViewport`)
-  const viewportSticky = tree.relative ? restickAll(root) : null;
+  const viewportSticky = tree.relative ? restickAll(root, moved) : null;
   if (viewportSticky) VIEWPORT_STICKY.set(tree, viewportSticky);
   else VIEWPORT_STICKY.delete(tree);
-  const reach = computePaintBounds(root, tree.movedInline);
+  // the ink of what nothing laid out or moved, where the layout kept
+  // blocks, as the walk after the last layout found it
+  const reach = computePaintBounds(
+    root,
+    tree.movedInline,
+    moved ? { moves: moved, kept: ctx.reused! } : undefined,
+  );
   if (tree.negative) hoistNegative(root);
   stackLayers(root);
 
@@ -8018,14 +8127,20 @@ const STANDS_FOR_BODY = new WeakSet<Box>();
 /** What a box's `position: relative` offset moves it by, applied after
  *  layout so it does not affect anything else's position — which is the
  *  whole of what makes it *relative* — and its translation with it, and
- *  where `position: sticky` puts one at rest (`stickyOffset`). */
+ *  where `position: sticky` puts one at rest (`stickyOffset`). Given
+ *  `moved`, only down the boxes in it (`Blockers.moved`). */
 export function applyRelativeOffsets(
   box: Box,
   viewportWidth: number,
   viewportHeight: number,
+  moved?: ReadonlySet<Box>,
 ): void {
-  for (const child of box.children)
-    applyRelativeOffsets(child, viewportWidth, viewportHeight);
+  for (const child of box.children) {
+    if (moved && !moved.has(child)) continue;
+    applyRelativeOffsets(child, viewportWidth, viewportHeight, moved);
+  }
+  // a text or a break carries its element's style, and moves with it
+  if (box.kind === 'text' || box.kind === 'break') return;
   const style = box.style;
   if (transformed(style) && box.kind !== 'inline') {
     // a transform moves the box it is on, and an inline box is none —
@@ -8488,7 +8603,7 @@ export function restickWithin(scroller: Box): boolean {
   let moved = false;
   const visit = (box: Box): void => {
     for (const child of box.children) {
-      if (child.style.position === 'sticky' && child.kind !== 'inline') {
+      if (child.style.position === 'sticky' && stickyBlock(child)) {
         if (restick(child, scroller)) moved = true;
       }
       // a scroll container inside keeps its own
@@ -8503,12 +8618,14 @@ export function restickWithin(scroller: Box): boolean {
  *  which placed each sticky box as though its container were scrolled to
  *  its start. Answers the sticky boxes the viewport keeps, in tree order,
  *  an outer one ahead of one in it — but for one in a box fixed to the
- *  viewport, which no scroll of it moves. */
-function restickAll(root: Box): Box[] | null {
+ *  viewport, which no scroll of it moves. Given `moved`, only down the
+ *  boxes in it (`Blockers.moved`), where every sticky box is. */
+function restickAll(root: Box, moved?: ReadonlySet<Box>): Box[] | null {
   let viewport: Box[] | null = null;
   const visit = (box: Box, port: Box | null, fixed: boolean): void => {
     for (const child of box.children) {
-      if (child.style.position === 'sticky' && child.kind !== 'inline') {
+      if (moved && !moved.has(child)) continue;
+      if (child.style.position === 'sticky' && stickyBlock(child)) {
         if (port) restick(child, port);
         else if (!fixed) (viewport ??= []).push(child);
       }
@@ -8521,6 +8638,15 @@ function restickAll(root: Box): Box[] | null {
   };
   visit(root, null, false);
   return viewport;
+}
+
+/** Whether a box whose style is sticky is one a scroll places again: not
+ *  an inline box, whose text is its block's lines', and not a text or a
+ *  break, which carries its element's style and is no box of its own —
+ *  taken for one, a sticky element's text was placed at where its rect
+ *  had drifted to, and the ink of every box around it grown to reach it. */
+function stickyBlock(box: Box): boolean {
+  return box.kind !== 'inline' && box.kind !== 'text' && box.kind !== 'break';
 }
 
 /** The sticky boxes each tree's viewport keeps (`restickAll`): placed at
