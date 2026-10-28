@@ -283,6 +283,7 @@ import type {
 const BARS_SHOWN = { x: false, y: false };
 import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
+  drawnThrough,
   invert,
   mapPoint,
   mapRect,
@@ -1428,6 +1429,136 @@ export class HtmlViewNode extends Node {
     if (stale > this._stale) this._stale = stale;
     if (stale >= Stale.Layout) this.invalidateMeasure('content');
     this.invalidate(stale >= Stale.Layout, this, 'props');
+  }
+
+  /**
+   * A layout owed for lengths a restyle took in place (`_resizedInPlace`),
+   * laid out at once, as a frame's build is (`_rebuildFrame`), and what it
+   * moved and reshaped repainted (`_claimLaidOut`): only the layout says
+   * what that is, and core's measure of the element, which would ask for
+   * it in the frame, claims all the element shows, before and after. A
+   * playground's divider sets its panes' `flex` at every step of a drag,
+   * which moves nothing outside the playground, and each step repainted
+   * all of joshwcomeau.com's article in view. Where something else is
+   * owed already, or the document comes out another size, the element is
+   * measured and repainted whole, as before.
+   */
+  private _layoutOwed(resized: readonly Box[]): void {
+    const width = this._laidOutWidth;
+    if (this._stale !== Stale.Nothing || !this._tree || width < 0) {
+      this._invalidate(Stale.Layout);
+      return;
+    }
+    this._stale = Stale.Layout;
+    const shapes = this._laidShapes();
+    this._prepare(width);
+    if (!this._claimLaidOut(shapes, new Set(resized))) {
+      this.invalidateMeasure('content');
+      this.invalidate(true, this, 'props');
+    }
+  }
+
+  /** Each box as the last layout left it, for an owed layout's damage to be
+   *  found by (`_claimLaidOut`); null where that layout is not the one
+   *  owed — a build is, or a box is set aside. */
+  private _laidShapes(): LaidShapes | null {
+    const tree = this._tree;
+    if (!tree || this._stale !== Stale.Layout || asideIn(tree)) return null;
+    const boxes = new Map<Box, LaidShape>();
+    const stack: Box[] = [tree.root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      boxes.set(box, {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+        lines: box.lines,
+        markerX: box.marker?.x ?? NaN,
+        markerY: box.marker?.y ?? NaN,
+        ink: boundsOf(box),
+      });
+      for (const child of box.children) stack.push(child);
+    }
+    return {
+      tree,
+      width: this._laidOutWidth,
+      size: [this._documentWidth, this._documentHeight],
+      boxes,
+    };
+  }
+
+  /**
+   * Claim what an owed layout changed (`_layoutOwed`): where and as large
+   * as each box was and is — its ink, and so all it holds — for each box
+   * it moved, resized or set other lines in, and each of the `resized`,
+   * whose own lengths may draw it otherwise where it is — a background
+   * from its content box, after a padding — and nothing for the rest.
+   * False where that cannot be said, for the whole element to be: another
+   * tree, another width or height of the document, a box drawn through a
+   * matrix around what changed, which its bounds before do not place, or
+   * more changes than a few rects hold.
+   */
+  private _claimLaidOut(
+    shapes: LaidShapes | null,
+    resized: ReadonlySet<Box>,
+  ): boolean {
+    const tree = this._tree;
+    if (
+      !shapes ||
+      !tree ||
+      tree !== shapes.tree ||
+      this._stale !== Stale.Nothing ||
+      this._failedAt !== -1 ||
+      this._laidOutWidth !== shapes.width ||
+      this._documentWidth !== shapes.size[0] ||
+      this._documentHeight !== shapes.size[1] ||
+      asideIn(tree)
+    ) {
+      return false;
+    }
+    const inks: Rect[] = [];
+    const changed: Box[] = [];
+    const stack: Box[] = [tree.root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      const was = shapes.boxes.get(box);
+      if (!was || changed.length > CLAIMED_SHAPES) return false;
+      // what a box reshaped holds is in its ink, before and after
+      if (!resized.has(box) && !reshaped(box, was)) {
+        for (const child of box.children) stack.push(child);
+        continue;
+      }
+      for (let at: Box | null = box; at; at = at.parent) {
+        if (drawnThrough(at.style)) return false;
+      }
+      changed.push(box);
+      const shift = drawnAtViewport(box) ? this._fixedShift() : null;
+      for (const ink of [was.ink, boundsOf(box)]) {
+        if (!ink) continue;
+        inks.push(
+          shift ? { ...ink, x: ink.x + shift.x, y: ink.y + shift.y } : ink,
+        );
+      }
+    }
+    // a lifted box's pixels are its layer's, painted again in a frame
+    if (this._lifted.size && changed.some((box) => this._insideLifted(box))) {
+      this.spritesChanged();
+    }
+    // what the pane shows of each, which is all that is drawn: one far
+    // down the document, made one rect with the rest, stretched it down to
+    // the viewport's foot. What a scroll brings into view is painted then.
+    const shown = this._viewportInDocument();
+    const seen: Rect[] = [];
+    for (const ink of inks) {
+      const part = shown ? rectWithin(ink, shown) : ink;
+      if (part) seen.push(part);
+    }
+    // and the ones that meet as one: a box's ink before and after are
+    // most of each other, which core keeps as pieces apart and paints a
+    // pass a piece — a pane and its neighbour were six passes a step
+    this._repaintInk(mergeMeeting(seen));
+    return true;
   }
 
   /** Take the props' source into the parser. Cheap when nothing changed, and
@@ -3167,7 +3298,7 @@ export class HtmlViewNode extends Node {
           HOVER_PSEUDO_NONE,
           limit,
           reach ? null : readers,
-          true,
+          BOX_LENGTHS | FONT_LENGTHS,
         )
       ) {
         this._styledWidth = target;
@@ -6191,7 +6322,12 @@ export class HtmlViewNode extends Node {
         return;
       }
     }
-    this._invalidate(Stale.Boxes, reach);
+    // the reach holds each element whose style can change and all it
+    // holds, so only their subtrees are built (`_subtreeBuild`): a
+    // playground's divider fades its `::after` in on `:hover`, and the
+    // press that sets `pointer-events: none` on the panes, and the release,
+    // each built every box of joshwcomeau.com's article
+    this._invalidate(Stale.Boxes, reach, false, reach);
   }
 
   /** The element whose widget holds the focus, or null (`setFocus`). */
@@ -6256,7 +6392,8 @@ export class HtmlViewNode extends Node {
         return true;
       }
     }
-    this._invalidate(Stale.Boxes, reach);
+    // built where the reach is, as a hover is (`_restyleHover`)
+    this._invalidate(Stale.Boxes, reach, false, reach);
     return true;
   }
 
@@ -6416,6 +6553,10 @@ export class HtmlViewNode extends Node {
     return { reach, edge };
   }
 
+  /** The boxes the last restyle in place took a change of lengths for
+   *  (`_restyleInPlace`'s `lengths`), which a layout is owed for. */
+  private _resizedInPlace: readonly Box[] = [];
+
   /**
    * A pointer move restyled where it happened, when all it changed is ink.
    *
@@ -6467,12 +6608,13 @@ export class HtmlViewNode extends Node {
      *  place of `given`, a reach worked out before: what a change to the
      *  root reaches is everything, and what it changes, mostly nothing. */
     from: ReadonlySet<Element> | null = null,
-    /** Whether a layout follows, as one does at a new width: a block's
-     *  change of lengths alone — its width, its margins, its offsets — is
-     *  taken in place, and laid out again from them, where it builds the
-     *  boxes otherwise (`lengthsOnly`). */
-    lengths = false,
+    /** Which changes of lengths alone a layout follows, as one does at a
+     *  new width (`BOX_LENGTHS`, `FONT_LENGTHS`): a block's width, its
+     *  margins, its offsets — or its text's size — taken in place, and laid
+     *  out again from them, where they build the boxes otherwise. */
+    lengths = 0,
   ): boolean {
+    this._resizedInPlace = [];
     const cascade = this._cascade;
     const tree = this._tree;
     const layouts = this._layouts;
@@ -6513,7 +6655,7 @@ export class HtmlViewNode extends Node {
     const resized = new Map<Element, number>();
     const resizedBoxes: Box[] = [];
     const resizeAs = (el: Element, change: number): boolean => {
-      if (!change) return false;
+      if (!change || change & ~lengths) return false;
       resized.set(el, change);
       return true;
     };
@@ -6883,7 +7025,7 @@ export class HtmlViewNode extends Node {
         // and the size its parent's text came to, which its own content
         // was measured at: the text of a flex row is in one, a flex item
         // whose max-content sized the line
-        if (lengths && lengthChange(box.style, style)) {
+        if (lengthChange(box.style, style) & lengths) {
           if (box.kind !== 'block' && box.kind !== 'flex') return false;
           resizedBoxes.push(box);
         }
@@ -6970,6 +7112,7 @@ export class HtmlViewNode extends Node {
     // what was kept of the sizes of a box at other lengths, and of every
     // box it is in, which take it in
     for (const box of resizedBoxes) forgetSizes(box);
+    this._resizedInPlace = resizedBoxes;
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
@@ -9840,6 +9983,14 @@ export class HtmlViewNode extends Node {
       // anchors at the root puts the root among them for a change to a
       // `<script>` in the head (`_restyleInPlace`'s `from`)
       const reach = withDescendants(scope.own, HOVER_RESTYLE_LIMIT);
+      // what is laid out apart from all around it is built again and
+      // repainted where it was and is (`_rebuildFrame`), where a layout of
+      // lengths taken in place repaints the document
+      const apart =
+        this._stale === Stale.Nothing &&
+        !!this._tree &&
+        this._laidOutWidth >= 0 &&
+        laidOutApart(scope.own, this._tree);
       if (
         this._restyleInPlace(
           reach ?? EMPTY_SET,
@@ -9847,18 +9998,18 @@ export class HtmlViewNode extends Node {
           scope.pseudo,
           HOVER_RESTYLE_LIMIT,
           reach ? null : scope.own,
+          // a box's lengths, and not a text's size: a root's is every
+          // `rem`'s, which a build follows (`_rootMoved`)
+          apart ? 0 : BOX_LENGTHS,
         )
       ) {
+        // a change of lengths alone keeps the boxes, and is laid out again
+        if (this._resizedInPlace.length) this._layoutOwed(this._resizedInPlace);
         // a transition the change started wants its frames
         this._scheduleFrame();
         return;
       }
-      if (
-        this._stale === Stale.Nothing &&
-        this._tree &&
-        this._laidOutWidth >= 0 &&
-        laidOutApart(scope.own, this._tree)
-      ) {
+      if (apart) {
         this._rebuildFrame(scope.own, true);
         return;
       }
@@ -12883,6 +13034,39 @@ function textAfter(root: Box, target: Box): number {
   return before;
 }
 
+/** Rects that overlap or touch made one, until none of those left do. */
+function mergeMeeting(rects: Rect[]): Rect[] {
+  const out = rects.slice();
+  for (let i = 0; i < out.length; i += 1) {
+    for (let j = i + 1; j < out.length; j += 1) {
+      const a = out[i];
+      const b = out[j];
+      if (
+        a.x <= b.x + b.width &&
+        b.x <= a.x + a.width &&
+        a.y <= b.y + b.height &&
+        b.y <= a.y + a.height
+      ) {
+        out[i] = unionRect(a, b);
+        out.splice(j, 1);
+        // what the grown rect meets may be one it passed
+        j = i;
+      }
+    }
+  }
+  return out;
+}
+
+/** What of `a` is inside `b`, or null for none. */
+function rectWithin(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (!(right > x && bottom > y)) return null;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 function unionRect(a: Rect, b: Rect): Rect {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);
@@ -15369,11 +15553,13 @@ function opaqueGround(style: ComputedStyle): boolean {
 
 /**
  * The lengths of a box's style its layout reads as it lays the box out
- * (`layoutBox`, `resolveEdges`), and nothing builds a box from: a change of
- * them alone is laid out again in place where a layout follows
- * (`_restyleInPlace`'s `lengths`). Not a font's size or a line's height,
- * which a block's runs are made of, and not a sizing keyword, which says
- * how the box is measured.
+ * (`layoutBox`, `resolveEdges`), and the factors a flex item grows and
+ * shrinks by, which nothing builds a box from: a change of them alone is
+ * laid out again in place where a layout follows (`_restyleInPlace`'s
+ * `lengths`). A splitter sets its panes' `flex` at every step of a drag —
+ * joshwcomeau.com's playgrounds do — and each built the panes' boxes. Not a
+ * font's size or a line's height, which a block's runs are made of, and
+ * not a sizing keyword, which says how the box is measured.
  */
 const LENGTH_FIELDS: ReadonlySet<string> = new Set([
   'width',
@@ -15397,6 +15583,8 @@ const LENGTH_FIELDS: ReadonlySet<string> = new Set([
   'rowGap',
   'columnGap',
   'flexBasis',
+  'flexGrow',
+  'flexShrink',
 ]);
 
 /**
@@ -15738,6 +15926,124 @@ function changedNodes(change: HtmlChange): readonly AnyNode[] {
  *  that draws nothing, whose bounds are at infinity. */
 function inkBottom(box: Box): number {
   return box.boundsY === Infinity ? -Infinity : box.boundsY + box.boundsHeight;
+}
+
+/** A box as a layout left it, for an owed layout to be compared with
+ *  (`HtmlViewNode._laidShapes`): where it is and how large, the lines it
+ *  holds — the same array where nothing set them again — where its marker
+ *  is, and its ink. */
+interface LaidShape {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  lines: LineBox[] | null;
+  markerX: number;
+  markerY: number;
+  ink: Rect | null;
+}
+
+/** Every box of a tree as a layout left it, with the width it was laid out
+ *  at and the size it came to. */
+interface LaidShapes {
+  tree: BoxTree;
+  width: number;
+  size: [number, number];
+  boxes: Map<Box, LaidShape>;
+}
+
+/** How many boxes an owed layout may have reshaped before the whole
+ *  element is claimed: their inks are one rect round them all by then
+ *  (`_repaintInk`). */
+const CLAIMED_SHAPES = 64;
+
+/** A box's ink bounds, in the coordinates of the box it is in: null where
+ *  it draws nothing. */
+function boundsOf(box: Box): Rect | null {
+  if (box.boundsY === Infinity) return null;
+  if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) return null;
+  return {
+    x: box.boundsX,
+    y: box.boundsY,
+    width: box.boundsWidth,
+    height: box.boundsHeight,
+  };
+}
+
+/**
+ * Whether a layout moved, resized or set other lines in a box than `was`
+ * says: its rect, where it has one laid out — a text's, a break's and an
+ * inline box's are their block's lines — its lines where they are other
+ * arrays and otherwise set, and its marker. A box laid out again where it
+ * was, and as it was, is none: an aside a sticky box keeps from being kept
+ * comes out the same at every layout.
+ */
+function reshaped(box: Box, was: LaidShape): boolean {
+  if (
+    box.kind !== 'text' &&
+    box.kind !== 'break' &&
+    hasRect(box) &&
+    (box.x !== was.x ||
+      box.y !== was.y ||
+      box.width !== was.width ||
+      box.height !== was.height)
+  ) {
+    return true;
+  }
+  if (box.lines !== was.lines && !sameLines(box.lines, was.lines)) return true;
+  const marker = box.marker;
+  return marker
+    ? marker.x !== was.markerX || marker.y !== was.markerY
+    : !Number.isNaN(was.markerX);
+}
+
+/** Whether two sets of lines are set alike: each line where it was, as
+ *  large, over the same text, its fragments drawn from the same layouts at
+ *  the same places, and what sits on it where it sat. */
+function sameLines(a: LineBox[] | null, b: LineBox[] | null): boolean {
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const p = a[i];
+    const q = b[i];
+    if (
+      p.x !== q.x ||
+      p.y !== q.y ||
+      p.width !== q.width ||
+      p.height !== q.height ||
+      p.baseline !== q.baseline ||
+      p.textStart !== q.textStart ||
+      p.textEnd !== q.textEnd ||
+      p.texts.length !== q.texts.length ||
+      p.atomics.length !== q.atomics.length ||
+      (p.edges?.length ?? 0) !== (q.edges?.length ?? 0)
+    ) {
+      return false;
+    }
+    for (let j = 0; j < p.texts.length; j += 1) {
+      const s = p.texts[j];
+      const t = q.texts[j];
+      if (
+        s.layout !== t.layout ||
+        s.layoutLine !== t.layoutLine ||
+        s.drawX !== t.drawX ||
+        s.drawY !== t.drawY ||
+        s.textStart !== t.textStart ||
+        s.textEnd !== t.textEnd
+      ) {
+        return false;
+      }
+    }
+    for (let j = 0; j < p.atomics.length; j += 1) {
+      if (p.atomics[j].x !== q.atomics[j].x) return false;
+      if (p.atomics[j].y !== q.atomics[j].y) return false;
+    }
+    for (let j = 0; j < (p.edges?.length ?? 0); j += 1) {
+      if (p.edges![j].x !== q.edges![j].x) return false;
+      if (p.edges![j].width !== q.edges![j].width) return false;
+    }
+  }
+  return true;
 }
 
 /**

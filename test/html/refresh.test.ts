@@ -271,6 +271,142 @@ metric(
 );
 
 metric(
+  "a splitter's change of its panes' flex keeps their boxes, and lays them out again where a build puts them",
+  async () => {
+    // joshwcomeau.com's playgrounds set `flex` on two panes at every step
+    // of a drag of the divider between them, and each step built the
+    // panes' boxes: a code editor's worth of spans
+    // as many as the narrowest pane holds: what overflows a pane that
+    // clips it is in its ink, and repainted with it
+    const tokens = Array.from(
+      { length: 12 },
+      (_, i) => `<span>token${i}</span> `,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} .row{display:flex;height:120px}' +
+        ' .l{background:#ddeeff;overflow:hidden} .r{background:#ffeedd}' +
+        ' .d{width:8px;background:#444444}</style><div class="row">' +
+        `<div class="l" id="l" style="flex: 200">${tokens}</div>` +
+        '<div class="d"></div>' +
+        '<div class="r" id="r" style="flex: 100"><p>result</p></div></div>' +
+        '<p id="after">below the playground</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const l = byId(el, 'l');
+    const r = byId(el, 'r');
+    const flex = (target: Element, value: number): HtmlChange => {
+      const oldValue = target.attribs.style ?? null;
+      target.attribs.style = `flex: ${value}`;
+      return { type: 'attributes', target, attributeName: 'style', oldValue };
+    };
+    for (const [left, right] of [
+      [120, 180],
+      [250, 50],
+    ]) {
+      const tree = treeOf(el);
+      const before = el.elementRect(r)!;
+      // what the layout moved and reshaped, which is the row: the
+      // paragraph below it is where it was
+      const damage = await damageOf(el, () =>
+        el.touchDocument([flex(l, left), flex(r, right)]),
+      );
+      assert.ok(damage.length > 0, 'nothing repainted');
+      assert.ok(!damage.includes(el), 'the whole document repainted');
+      const below = el.elementRect(byId(el, 'after'))!;
+      for (const rect of damage as { y: number; height: number }[]) {
+        const { abs } = el as unknown as { abs: { y: number } };
+        assert.ok(
+          rect.y + rect.height <= abs.y + below.y + 1,
+          'repainted below the row',
+        );
+      }
+      const drawn = await snapshot(result, el);
+      assert.ok(treeOf(el) === tree, `built again for flex ${left}/${right}`);
+      assert.notStrictEqual(
+        el.elementRect(r)!.x,
+        before.x,
+        'the right pane did not move',
+      );
+      assert.strictEqual(
+        bytesApart(drawn, await rebuilt(result, el)),
+        0,
+        `flex ${left}/${right} is not as a build draws it`,
+      );
+    }
+  },
+);
+
+metric(
+  'a box a margin taken in place moves is repainted where it was and where it is, and nowhere else',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0} .row{height:40px;' +
+        'background:#ffffff}</style><div class="row"><div id="m" style="' +
+        'width:40px;height:40px;background:#ff0000;margin-left:10px"></div>' +
+        '</div><p id="after">below it</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const m = byId(el, 'm');
+    const tree = treeOf(el);
+    const damage = await damageOf(el, () => {
+      const oldValue = m.attribs.style;
+      m.attribs.style = oldValue.replace(
+        'margin-left:10px',
+        'margin-left:200px',
+      );
+      el.touchDocument([
+        { type: 'attributes', target: m, attributeName: 'style', oldValue },
+      ]);
+    });
+    assert.ok(damage.length > 0, 'nothing repainted');
+    assert.ok(!damage.includes(el), 'the whole document repainted');
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'built again');
+    assert.strictEqual(
+      bytesApart(drawn, await rebuilt(result, el)),
+      0,
+      'not as a build draws it',
+    );
+  },
+);
+
+metric(
+  'a width taken in place that makes the document taller repaints all of it, as a build draws it',
+  async () => {
+    // what moves below a box that grows is the rest of the document, and
+    // the element is another height for core to measure
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0}</style>' +
+        '<div id="d" style="width: 280px">a paragraph that wraps once it is' +
+        ' narrower than it is now, onto more lines</div>' +
+        '<p id="after">below it</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const d = byId(el, 'd');
+    const tall = el.elementRect(d)!.height;
+    const damage = await damageOf(el, () => {
+      const oldValue = d.attribs.style;
+      d.attribs.style = 'width: 90px';
+      el.touchDocument([
+        { type: 'attributes', target: d, attributeName: 'style', oldValue },
+      ]);
+    });
+    assert.ok(damage.includes(el), 'the document was not repainted whole');
+    // the size it came to, which a snapshot taken as it changes is not of
+    await snapshot(result, el);
+    const drawn = await snapshot(result, el);
+    assert.ok(el.elementRect(d)!.height > tall, 'it did not grow');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
   'an inline style that moves a box out of the flow repaints where it was and is',
   async () => {
     const paragraphs = Array.from(

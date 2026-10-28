@@ -2114,10 +2114,38 @@ outside it joins `Laid`** — a flex item's `Natural`, a grid item's
 `unoffsetHeld`**, or a block kept is moved by it twice. A block whose
 layout reaches outside it — what holds a box placed against something
 outside it, a sticky box, or a relative inline broken around blocks — is
-laid out every time (`reuseBlockers`). `test/html/subtree-build.test.ts`
-holds a subtree build and the layout after it to a whole build, box,
-line, list and style, over generated documents; `SUBTREE_SEEDS` sweeps
-more of them, and `SUBTREE_FROM` starts at the one that failed.
+laid out every time (`reuseBlockers`). An absolute box placed by nothing
+of what it is placed against is no such box (`movesWithFlow`): no inset,
+and a size and edges of its own, so a kept block moves it where its own
+layout would — a link's `sr-only` label is one, and with it every
+paragraph, list and aside around such a link on joshwcomeau.com was laid
+out at every layout. **Anything new that places an absolute box from
+its containing block keeps it out of `movesWithFlow`.** A hover's or a
+focus's build is seeded with its reach, as a frame's is.
+`test/html/subtree-build.test.ts` holds a subtree build and the layout
+after it to a whole build, box, line, list and style, over generated
+documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
+at the one that failed.
+
+**A change a refresh is told of that is lengths alone keeps the boxes,
+and its layout repaints what it moved** (`_restyleInPlace`'s `lengths`,
+`_layoutOwed`, `_claimLaidOut`). A box's lengths and a flex item's grow
+and shrink factors (`LENGTH_FIELDS`, `BOX_LENGTHS`) are taken in place,
+and not a text's size, whose `rem`s a build follows; a box laid out
+apart from all around it goes to a frame's build (`_rebuildFrame`). The
+document is laid out at once, and each box's place, size, lines and
+marker before it (`_laidShapes`) say which it moved or reshaped
+(`reshaped`): their ink before and after, cut to what the pane shows, is
+claimed, and the whole element where the document is another size, a box
+around a change is drawn through a matrix, or more changed than a few
+rects hold. Core's measure of the element, which a layout owed to the
+frame asks for, claims all the element shows before and after — so a
+layout that knows what it moved does not wait for it. A playground's
+divider sets its panes' `flex` at every step of a drag, and each step
+built the panes and repainted the whole article in view. **Anything new
+a layout can change in how a box is drawn, besides its rect, its lines
+and its marker, joins `reshaped`**, or a refresh leaves it drawn as it
+was.
 
 **A stream's chunk is a change the parser tells of, and builds the ends of
 what it touched** (`HtmlSource.takeAppended`, `_parsedChanges`,

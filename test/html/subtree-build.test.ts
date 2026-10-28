@@ -692,6 +692,78 @@ metric(
 );
 
 metric(
+  "a block holding an absolute box with no inset and a size of its own — a link's sr-only label — is kept by a layout, and the box moves with it where a layout of all new boxes puts it",
+  async () => {
+    // placed against the article and not the paragraph, each such label
+    // made the boxes between them laid out again at every layout:
+    // joshwcomeau.com's paragraphs, lists and asides, at every step of a
+    // playground's divider. One with an inset, or a size that is a
+    // percentage of what it is placed against, still makes them so.
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'article { position: relative } p { margin: 2px }' +
+        '.sr { position: absolute; width: 1px; height: 1px; margin: -1px;' +
+        ' padding: 0; overflow: hidden; clip: rect(0 0 0 0);' +
+        ' white-space: nowrap }' +
+        '.inset { position: absolute; top: 0; width: 1px; height: 1px }' +
+        '</style></head><body><article>' +
+        '<p id="a">first <span id="grow">s</span></p>' +
+        '<p id="b">a <a href="#x">link<span class="sr">opens elsewhere' +
+        '</span></a> in it</p>' +
+        '<div id="c"><p id="c1">and <a href="#y">another<span class="sr">' +
+        'label</span></a> after</p></div>' +
+        '<p id="d">and one <span class="inset">placed</span> at the top</p>' +
+        '</article></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const serials = (ids: readonly string[]): number[] =>
+      ids.map(
+        (id) =>
+          internals._firstBoxesOf(internals._tree).get(byId(id))!.layoutSerial,
+      );
+    const kept = serials(['b', 'c', 'c1']);
+    const inset = serials(['d']);
+    const span = byId('grow');
+    const text = createText(' and more of it, enough to wrap a line or two');
+    appendChild(span, text);
+    el.touchDocument([
+      { type: 'childList', target: span, addedNodes: [text], removedNodes: [] },
+    ]);
+    await act();
+    assert.deepStrictEqual(
+      serials(['b', 'c', 'c1']),
+      kept,
+      'a block holding an sr-only label was laid out again',
+    );
+    assert.notDeepStrictEqual(
+      serials(['d']),
+      inset,
+      'a block holding a box placed by its inset was kept',
+    );
+    const lines = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const line = lines.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      line < 0 && lines.length === whole.length,
+      `line ${line}\nkept  ${lines[line]}\nwhole ${whole[line]}`,
+    );
+  },
+);
+
+metric(
   'a layout after a change in one flex item or grid item keeps the others as an earlier layout laid them out, where a layout of all new boxes puts them',
   async () => {
     // joshwcomeau.com's article is a grid of a hundred paragraphs in flex

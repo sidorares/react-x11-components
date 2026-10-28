@@ -956,8 +956,10 @@ function noteBlockers(stack: Box[], { blockers, holders }: Blockers): void {
         placed && !box.topLayer && box.style.position !== 'fixed'
           ? containingBlockFor(box)
           : null;
-      let at: Box | null = box;
-      for (; at && at !== containing; at = at.parent) blockers.add(at);
+      if (!placed || !movesWithFlow(box, containing)) {
+        let at: Box | null = box;
+        for (; at && at !== containing; at = at.parent) blockers.add(at);
+      }
       if (placed) {
         for (let up = box.parent; up && !holders.has(up); up = up.parent) {
           holders.add(up);
@@ -966,6 +968,51 @@ function noteBlockers(stack: Box[], { blockers, holders }: Blockers): void {
     }
     for (const child of box.children) stack.push(child);
   }
+}
+
+/**
+ * Whether an absolute box is placed by nothing of the box it is placed
+ * against (`containing`), so that a block kept around it moves it where the
+ * block goes (`translate`), as its own layout would have: one with no
+ * inset is where the flow put it (CSS 2.1 10.3.7, 10.6.4), and one whose
+ * size and edges are lengths of its own is as large whatever that box
+ * comes to. A link's `sr-only` label for a screen reader is one —
+ * `position: absolute; width: 1px; height: 1px; margin: -1px` — and with
+ * it a blocker, every paragraph, list and aside around such a link on
+ * joshwcomeau.com was laid out again at every layout of the page, at rest
+ * and at each step of a drag. Not where a scroll container is between the
+ * two, whose scroll leaves the box where it is (`escapes`).
+ */
+function movesWithFlow(box: Box, containing: Box | null): boolean {
+  const s = box.style;
+  if (s.position !== 'absolute' || box.topLayer) return false;
+  if (s.top !== AUTO || s.right !== AUTO || s.bottom !== AUTO) return false;
+  if (s.left !== AUTO) return false;
+  if (typeof s.width !== 'number' || typeof s.height !== 'number') {
+    return false;
+  }
+  if (s.widthKeyword || s.heightKeyword) return false;
+  if (s.minWidthKeyword || s.maxWidthKeyword) return false;
+  if (s.minHeightKeyword || s.maxHeightKeyword) return false;
+  if (isPct(s.minWidth) || isPct(s.minHeight)) return false;
+  if (s.maxWidth !== 'none' && isPct(s.maxWidth)) return false;
+  if (s.maxHeight !== 'none' && isPct(s.maxHeight)) return false;
+  for (const edge of [
+    s.marginTop,
+    s.marginRight,
+    s.marginBottom,
+    s.marginLeft,
+    s.paddingTop,
+    s.paddingRight,
+    s.paddingBottom,
+    s.paddingLeft,
+  ]) {
+    if (isPct(edge)) return false;
+  }
+  for (let at = box.parent; at && at !== containing; at = at.parent) {
+    if (isScroller(at)) return false;
+  }
+  return true;
 }
 
 /**
