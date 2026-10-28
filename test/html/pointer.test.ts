@@ -869,6 +869,57 @@ metric('a hover in a long document builds and lays out nothing', async () => {
   assert.ok(updates.n < 1000, 'a hover built the document again');
 });
 
+metric(
+  "a :hover that is its rule's subject restyles its element, and what is in it only where that inherits",
+  async () => {
+    // A webmail page's banner is `:hover` a background and holds a hidden
+    // strip of ten thousand elements: each move of the pointer across it
+    // built them all again, 300 elements past what a hover restyles in
+    // place, and the move between it and a message beside it took seconds
+    const items = Array.from(
+      { length: 600 },
+      (_, i) => `<span class="item"><b>${i}</b></span>`,
+    ).join('');
+    const { result, node } = await render(
+      `<style>body{margin:0} .banner{height:40px;overflow:hidden}
+        .banner:hover{background:#eeeeee} .strip{display:flex;height:0}
+        .row{color:#000000} .row:hover{color:#ff0000;cursor:pointer}</style>
+       <div class="banner" id="banner"><div class="strip">${items}</div></div>
+       <div class="row" id="row">a message <i id="from">from someone</i></div>`,
+      300,
+    );
+    const el = view(node);
+    const builds = { n: 0 };
+    const proto = el as unknown as { _update(width: number): void };
+    const update = proto._update.bind(el);
+    proto._update = (width: number) => {
+      const tree = treeOf(el);
+      update(width);
+      if (treeOf(el) !== tree) builds.n += 1;
+    };
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+    const plain = style('banner').backgroundColor;
+    el.setHover(...pointIn(el, 'banner'));
+    await snapshot(result, el);
+    assert.strictEqual(style('banner').backgroundColor, '#eeeeee');
+    // and from it to the row, in one move, which a row's own rules reach
+    // too: its colour handed down to what is in it
+    el.setHover(...pointIn(el, 'from'));
+    await snapshot(result, el);
+    assert.strictEqual(style('banner').backgroundColor, plain);
+    assert.strictEqual(style('row').color, '#ff0000');
+    assert.strictEqual(style('from').color, '#ff0000');
+    el.clearHover();
+    await snapshot(result, el);
+    assert.strictEqual(style('from').color, '#000000');
+    assert.ok(treeOf(el) === tree, 'a move built the boxes');
+    assert.strictEqual(builds.n, 0);
+  },
+);
+
 test("a :hover in a :has() names the element that holds it, and is no rule's nested pointer", async () => {
   const { pointerCompounds } = await import('../../src/html/css/cascade.js');
   // what iana.org writes, which made every hover on the page build it again
@@ -876,6 +927,7 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
     pointerCompounds('#rir-map:has(tr[data-rir]:hover) svg .rir'),
     {
       compounds: [],
+      subjects: [],
       siblings: false,
       nested: false,
       has: [{ anchor: '#rir-map', siblings: false }],
@@ -958,6 +1010,7 @@ test('a :hover that leads below names the subject it reaches, not all that is in
   // heading, or anything, is hovered
   assert.deepStrictEqual(pointerCompounds(':hover > .anchor-link'), {
     compounds: [],
+    subjects: [],
     siblings: false,
     nested: false,
     has: [],
@@ -999,9 +1052,14 @@ test('a :hover that leads below names the subject it reaches, not all that is in
     pointerCompounds('.a:hover b[data-x="(:not)"]:not(.q)').below,
     [{ compound: '.a', subject: 'b[data-x="(:not)"]', child: false }],
   );
-  // the subject testing the state is a compound of its own as well
+  // the subject testing the state is a compound of its own as well, which
+  // reaches its element alone
   const both = pointerCompounds('a:hover > b:hover');
   assert.deepStrictEqual(both.compounds, ['b']);
+  assert.deepStrictEqual(both.subjects, ['b']);
+  assert.deepStrictEqual(pointerCompounds('.card:hover::before').subjects, [
+    '.card::before',
+  ]);
   assert.deepStrictEqual(both.below, [
     { compound: 'a', subject: 'b', child: true },
   ]);

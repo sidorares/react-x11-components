@@ -102,6 +102,7 @@ import {
   HOVER_PSEUDO_GENERATED,
   HOVER_PSEUDO_NONE,
   HOVER_PSEUDO_OTHER,
+  HOVER_SELF,
   HOVER_UNTOUCHED,
   NO_FOCUS,
   TARGET_TEXT,
@@ -6406,7 +6407,15 @@ export class HtmlViewNode extends Node {
       const own = found.edge
         ? () => true
         : (el: Element) => cascade.pointerChanged(el, before, focus);
-      if (this._restyleInPlace(found.reach, own, cascade.hoverPseudo)) {
+      if (
+        this._restyleInPlace(
+          found.reach,
+          own,
+          cascade.hoverPseudo,
+          HOVER_RESTYLE_LIMIT,
+          found.follows ? found.reach : null,
+        )
+      ) {
         if (cascade.placeholderFollows('hoverSensitive')) {
           this._reportControls();
         }
@@ -6420,7 +6429,7 @@ export class HtmlViewNode extends Node {
     // playground's divider fades its `::after` in on `:hover`, and the
     // press that sets `pointer-events: none` on the panes, and the release,
     // each built every box of joshwcomeau.com's article
-    this._invalidate(Stale.Boxes, reach, false, reach);
+    this._invalidate(Stale.Boxes, reach, found?.follows ?? false, reach);
   }
 
   /** The element whose widget holds the focus, or null (`setFocus`). */
@@ -6475,7 +6484,15 @@ export class HtmlViewNode extends Node {
       const own = found.edge
         ? () => true
         : (el: Element) => cascade.pointerChanged(el, pointer, was);
-      if (this._restyleInPlace(found.reach, own, cascade.focusPseudo)) {
+      if (
+        this._restyleInPlace(
+          found.reach,
+          own,
+          cascade.focusPseudo,
+          HOVER_RESTYLE_LIMIT,
+          found.follows ? found.reach : null,
+        )
+      ) {
         // what a field's placeholder is drawn in is its widget's, which no
         // restyle of a box tells (`Cascade.placeholderFollows`)
         if (cascade.placeholderFollows('focusSensitive')) {
@@ -6486,7 +6503,7 @@ export class HtmlViewNode extends Node {
       }
     }
     // built where the reach is, as a hover is (`_restyleHover`)
-    this._invalidate(Stale.Boxes, reach, false, reach);
+    this._invalidate(Stale.Boxes, reach, found?.follows ?? false, reach);
     return true;
   }
 
@@ -6564,13 +6581,20 @@ export class HtmlViewNode extends Node {
     // the roots' subtrees, which a descendant combinator reaches, and
     // what inherits from them, through a host's shadow tree and a slot's
     // assigned children; and their later siblings' too where a sibling
-    // combinator follows the compound that tests the pointer
+    // combinator follows the compound that tests the pointer. A root only a
+    // subject's compound matches is its own alone (`HOVER_SELF`), and the
+    // restyle follows what it hands down (`StateReach.follows`): a webmail
+    // page's banner, `:hover` a background, holds a hidden strip of ten
+    // thousand elements, and each move of the pointer across it built them.
     const reach = new Set<Element>();
+    /** The roots in `reach` without what is in them. */
+    const alone = new Set<Element>();
     const collect = (el: Element): void => {
       const stack: Element[] = [el];
       while (stack.length) {
         const at = stack.pop()!;
-        if (reach.has(at)) continue;
+        if (reach.has(at) && !alone.has(at)) continue;
+        alone.delete(at);
         reach.add(at);
         for (const child of at.children)
           if (isElement(child)) stack.push(child);
@@ -6581,6 +6605,13 @@ export class HtmlViewNode extends Node {
       }
     };
     for (const [root, touch] of roots) {
+      if (touch === HOVER_SELF) {
+        if (!reach.has(root)) {
+          reach.add(root);
+          alone.add(root);
+        }
+        continue;
+      }
       collect(root);
       if (touch !== HOVER_FOLLOWED && touch !== HOVER_EDGE) continue;
       for (let s = root.nextSibling; s; s = s.nextSibling) {
@@ -6598,8 +6629,9 @@ export class HtmlViewNode extends Node {
         for (let at = flatParentOf(el); at; at = flatParentOf(at)) depth += 1;
         return depth;
       };
+      const whole = (el: Element): boolean => reach.has(el) && !alone.has(el);
       const order = [...leading.keys()]
-        .filter((el) => !reach.has(el))
+        .filter((el) => !whole(el))
         .map((el) => [depthOf(el), el] as const)
         .sort((a, b) => a[0] - b[0]);
       const covered = new Set<Element>();
@@ -6616,7 +6648,7 @@ export class HtmlViewNode extends Node {
         if (drawing) reach.add(drawing);
       };
       for (const [, el] of order) {
-        if (reach.has(el) || covered.has(el)) continue;
+        if (whole(el) || covered.has(el)) continue;
         const below = leading.get(el)!;
         const deep = below.filter((r) => !r.child).map((r) => r.match);
         for (const r of below) {
@@ -6630,7 +6662,7 @@ export class HtmlViewNode extends Node {
         while (stack.length) {
           const at = stack.pop()!;
           if (at !== el) {
-            if (reach.has(at)) continue;
+            if (whole(at)) continue;
             if (deep.some((match) => match(at))) {
               subject(at);
               continue;
@@ -6643,7 +6675,7 @@ export class HtmlViewNode extends Node {
         }
       }
     }
-    return { reach, edge };
+    return { reach, edge, follows: alone.size > 0 };
   }
 
   /** The boxes the last restyle in place took a change of lengths for
@@ -14726,6 +14758,10 @@ function compareKeys(a: readonly number[], b: readonly number[]): number {
 interface StateReach {
   reach: Set<Element>;
   edge: boolean;
+  /** Whether a root is in `reach` without what is in it (`HOVER_SELF`):
+   *  the restyle follows down from each element whose style came out other
+   *  than it was, to what inherits from it. */
+  follows: boolean;
 }
 
 /** How many elements a pointer move restyles in place before the document
