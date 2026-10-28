@@ -9456,6 +9456,14 @@ export class HtmlViewNode extends Node {
     };
     const unchanged = unchangedAttributes(changes);
     for (const change of changes) {
+      if (change.type !== 'childList' || change.nextSibling === undefined) {
+        continue;
+      }
+      for (const node of change.removedNodes) {
+        (scope.gone ??= new Map()).set(node, change.nextSibling);
+      }
+    }
+    for (const change of changes) {
       if (unchanged?.has(change)) continue;
       if (!this._scopeOf(change, cascade, tree, scope)) return null;
     }
@@ -9645,8 +9653,9 @@ export class HtmlViewNode extends Node {
       changedNodes(change),
     );
     if (!reach) return false;
-    const { bits, kidsLater, anchors } = reach;
-    if (!drawn && !bits && !kidsLater && !anchors) return true;
+    const { kidsLater, followers, below, self, anchors } = reach;
+    let bits = reach.bits;
+    if (!drawn && !bits && !kidsLater && !followers && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
     // under a holder nothing draws nothing it reaches is drawn — but its
     // own later siblings, which a test of what it holds before a sibling
@@ -9676,16 +9685,53 @@ export class HtmlViewNode extends Node {
         if (isElement(node)) addSubtree(node, scope.own, crossing);
       }
     }
-    if (root) spreadRootChange(root, bits, scope.own, crossing, kidsLater);
-    else {
+    if (root) {
+      spreadRootChange(root, bits, scope.own, crossing, kidsLater || followers);
+    } else {
+      // What a test of what the holder holds, or of where one of its
+      // children sits, reaches: those of them its compound names
+      // (`TreeReach.self`), and below the one it is of, from those, what
+      // its rule's subject names (`TreeReach.below`)
+      if (bits & CHANGES_SELF && self) {
+        bits &= ~CHANGES_SELF;
+        if (self(holder)) scope.own.add(holder);
+        for (const child of holder.children) {
+          if (isElement(child) && self(child)) scope.own.add(child);
+        }
+      }
+      if (bits & CHANGES_BELOW && below) {
+        bits &= ~CHANGES_BELOW;
+        const reachFrom = (el: Element): void => {
+          if (!below.at(el)) return;
+          if (below.subjects) addSubjects(el, scope.own, below.subjects);
+          else addSubtree(el, scope.own, crossing);
+        };
+        reachFrom(holder);
+        for (const child of holder.children) {
+          if (isElement(child)) reachFrom(child);
+        }
+      }
+      // A sibling combinator reads an element's earlier siblings, so what
+      // came or went reaches the children after where it did and what is
+      // in them (`followersOf`), or all of them where the change does not
+      // say where.
+      const from =
+        followers && !kidsLater
+          ? followersOf(change, parent, scope.gone)
+          : null;
       spreadChange(
         parent as Element,
         bits,
         true,
         scope.own,
         crossing,
-        kidsLater,
+        kidsLater || (followers && from === undefined),
       );
+      if (from && !(bits & CHANGES_BELOW)) {
+        for (let s: AnyNode | null = from; s; s = s.next) {
+          if (isElement(s)) addSubtree(s, scope.own, crossing);
+        }
+      }
     }
     return (
       !anchors ||
@@ -14818,6 +14864,10 @@ interface ChangeScope {
   /** The elements of a chunk an attribute of changed — a second `<body>`'s
    *  on the first — whose own boxes can differ: no tail of theirs. */
   altered?: Set<Element>;
+  /** What a record of the list says was after each node it took out
+   *  (`HtmlChange`'s `nextSibling`), for one taken out before it whose
+   *  record names it there (`followersOf`). */
+  gone?: Map<AnyNode, AnyNode | null>;
 }
 
 /** The elements whose changes are changes to the cascade: a sheet's, what
@@ -16072,6 +16122,48 @@ function outOfFlow(style: ComputedStyle): boolean {
 }
 
 /** What a change of children put in and took out: none, for any other. */
+/**
+ * The first of a holder's children after where a change of what it holds
+ * came or went, as the record says (`HtmlChange`'s `nextSibling`), and
+ * before it, what came: null for none, where it was at the end, and
+ * undefined where the record does not say, or the tree since moved what it
+ * names out of the holder. What it names that the list took out since is
+ * followed to what that one's record says was after it (`gone`): a page
+ * that takes out its popups one after another names each the next.
+ */
+function followersOf(
+  change: HtmlChange,
+  parent: ParentNode,
+  gone?: ReadonlyMap<AnyNode, AnyNode | null>,
+): AnyNode | null | undefined {
+  if (change.type !== 'childList') return undefined;
+  let first: AnyNode | null = null;
+  let at = Infinity;
+  const consider = (node: AnyNode): boolean => {
+    if (node.parent !== parent) return false;
+    const index = parent.children.indexOf(node as ChildNode);
+    if (index < at) {
+      at = index;
+      first = node;
+    }
+    return true;
+  };
+  for (const node of change.addedNodes) consider(node);
+  if (change.removedNodes.length) {
+    let next = change.nextSibling;
+    if (next === undefined) return undefined;
+    // each at most once, which a list that put one back between ends
+    const seen = new Set<AnyNode>();
+    while (next && next.parent !== parent && gone?.has(next)) {
+      if (seen.has(next)) return undefined;
+      seen.add(next);
+      next = gone.get(next)!;
+    }
+    if (next !== null && !consider(next)) return undefined;
+  }
+  return first;
+}
+
 function changedNodes(change: HtmlChange): readonly AnyNode[] {
   if (change.type !== 'childList') return [];
   if (!change.removedNodes.length) return change.addedNodes;

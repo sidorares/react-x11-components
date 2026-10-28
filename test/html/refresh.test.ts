@@ -790,6 +790,184 @@ test('a change inside a drawing restyles what a :has() asking it can answer othe
   assert.equal(el.computedStyle(card)?.['font-weight'], '700');
 });
 
+test('a child coming or going reaches what a test of where its siblings sit can answer otherwise for, and not all its holder holds', async () => {
+  // A webmail page hides a split button's separator by where the button
+  // sits, `.btn:not(:last-child) .label`, and has a `+` in its sheets:
+  // each popup it put at the end of its <body> restyled all 13,000 of its
+  // elements, a hidden strip of senders among them
+  const strip = Array.from(
+    { length: 40 },
+    (_, i) => `<span class="label" id="s${i}">${i}</span>`,
+  ).join('');
+  const { node } = await render(
+    '<style>body{margin:0} .btn:not(:last-child) .label{color:#ff0000}' +
+      ' .a + .b{color:#00aa00} li:last-child{font-weight:bold}</style>' +
+      '<main id="page"><div id="bar"><span class="btn" id="b1"><i class="label" id="l1">x' +
+      '</i></span><span class="btn" id="b2"><i class="label" id="l2">y</i>' +
+      '</span></div>' +
+      '<div id="list"><p class="a" id="pa">a</p><p class="b" id="pb">b</p>' +
+      '<p id="pc">c</p></div><ul id="ul"><li id="li1">1</li></ul>' +
+      `<div id="strip">${strip}</div></main>`,
+    300,
+  );
+  const el = view(node);
+  await act();
+  const bodyEl = byId(el, 'page');
+  const red = 'rgb(255, 0, 0)';
+  // at the end of what holds the page: what came, and none of what was
+  // there
+  const popup = createElement('div', { class: 'popup' });
+  appendChild(bodyEl, popup);
+  const put: HtmlChange = {
+    type: 'childList',
+    target: bodyEl,
+    addedNodes: [popup],
+    removedNodes: [],
+    previousSibling: popup.prev,
+    nextSibling: null,
+  };
+  const end = scopeOf(el, [put]);
+  assert.ok(end, 'a refresh of everything');
+  assert.ok(end.has(popup), 'what came is not styled');
+  for (const id of ['l1', 'l2', 'pb', 's0', 's39']) {
+    assert.ok(!end.has(byId(el, id)), `${id} restyled`);
+  }
+  el.touchDocument([put]);
+  await act();
+  // and two taken out at once, the first's record naming the second as
+  // what was after it, which is gone too as the list is read
+  const popup2 = createElement('div', { class: 'popup' });
+  appendChild(bodyEl, popup2);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: bodyEl,
+      addedNodes: [popup2],
+      removedNodes: [],
+      previousSibling: popup,
+      nextSibling: null,
+    },
+  ]);
+  await act();
+  removeNode(popup as never);
+  removeNode(popup2 as never);
+  const both: HtmlChange[] = [
+    {
+      type: 'childList',
+      target: bodyEl,
+      addedNodes: [],
+      removedNodes: [popup],
+      previousSibling: byId(el, 'strip'),
+      nextSibling: popup2,
+    },
+    {
+      type: 'childList',
+      target: bodyEl,
+      addedNodes: [],
+      removedNodes: [popup2],
+      previousSibling: byId(el, 'strip'),
+      nextSibling: null,
+    },
+  ];
+  const gone = scopeOf(el, both);
+  assert.ok(gone, 'a refresh of everything');
+  for (const id of ['l1', 'pb', 's0']) {
+    assert.ok(!gone.has(byId(el, id)), `${id} restyled as they went`);
+  }
+  el.touchDocument(both);
+  await act();
+  // a button after the last: the last's label is under one that is not
+  // last now, which nothing after it reaches — and what is in the strip is
+  // not
+  const bar = byId(el, 'bar');
+  const b3 = createElement('span', { class: 'btn' }, [
+    createElement('i', { class: 'label' }),
+  ]);
+  appendChild(bar, b3);
+  const after3: HtmlChange = {
+    type: 'childList',
+    target: bar,
+    addedNodes: [b3],
+    removedNodes: [],
+    previousSibling: byId(el, 'b2'),
+    nextSibling: null,
+  };
+  const moved = scopeOf(el, [after3]);
+  assert.ok(moved, 'a refresh of everything');
+  assert.ok(moved.has(byId(el, 'l2')), 'the label under it is not restyled');
+  assert.ok(!moved.has(byId(el, 's0')), 'the strip is restyled');
+  assert.notEqual(el.computedStyle(byId(el, 'l2'))?.color, red);
+  el.touchDocument([after3]);
+  await act();
+  assert.equal(el.computedStyle(byId(el, 'l2'))?.color, red);
+  // the `.a` before a `.b` taken out: what was after it
+  const pa = byId(el, 'pa');
+  const list = byId(el, 'list');
+  removeNode(pa as never);
+  const out: HtmlChange = {
+    type: 'childList',
+    target: list,
+    addedNodes: [],
+    removedNodes: [pa],
+    previousSibling: null,
+    nextSibling: byId(el, 'pb'),
+  };
+  const after = scopeOf(el, [out]);
+  assert.ok(after, 'a refresh of everything');
+  assert.ok(after.has(byId(el, 'pb')), 'what followed it is not restyled');
+  assert.ok(!after.has(byId(el, 'l2')));
+  el.touchDocument([out]);
+  await act();
+  assert.notEqual(el.computedStyle(byId(el, 'pb'))?.color, 'rgb(0, 170, 0)');
+  // and an <li> after the last: the last is last no longer
+  const ul = byId(el, 'ul');
+  const li2 = createElement('li', {}, [createText('2')]);
+  appendChild(ul, li2);
+  const grown: HtmlChange = {
+    type: 'childList',
+    target: ul,
+    addedNodes: [li2],
+    removedNodes: [],
+    previousSibling: byId(el, 'li1'),
+    nextSibling: null,
+  };
+  const last = scopeOf(el, [grown]);
+  assert.ok(last?.has(byId(el, 'li1')), 'the last <li> is not restyled');
+  el.touchDocument([grown]);
+  await act();
+  assert.equal(el.computedStyle(byId(el, 'li1'))?.['font-weight'], '400');
+  assert.equal(el.computedStyle(li2)?.['font-weight'], '700');
+});
+
+test('below a child whose place changed, what a test of the place reaches is its rule’s subject', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .row:last-child .cell{color:#ff0000}</style>' +
+      '<div id="rows"><div class="row" id="r1"><span class="cell" id="c1">' +
+      'a</span><span id="n1">b</span></div></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const rows = byId(el, 'rows');
+  const r2 = createElement('div', { class: 'row' });
+  appendChild(rows, r2);
+  const put: HtmlChange = {
+    type: 'childList',
+    target: rows,
+    addedNodes: [r2],
+    removedNodes: [],
+    previousSibling: byId(el, 'r1'),
+    nextSibling: null,
+  };
+  const own = scopeOf(el, [put]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(own.has(byId(el, 'c1')), 'the cell is not restyled');
+  assert.ok(!own.has(byId(el, 'n1')), 'what is beside it is restyled');
+  el.touchDocument([put]);
+  await act();
+  assert.notEqual(el.computedStyle(byId(el, 'c1'))?.color, 'rgb(255, 0, 0)');
+});
+
 /** What a refresh told of `changes` would restyle by itself, or null where
  *  it would restyle everything. */
 function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {
@@ -1427,6 +1605,12 @@ function rulesFor(
     () => `.${c()}:empty ~ *`,
     () => `:not(:empty) + .${c()}`,
     () => `.${c()}:nth-child(2n+1)`,
+    // where an element sits, tested above a subject and of one, with
+    // what else its compound asks
+    () => `.${c()}:not(:first-child) .${c()}`,
+    () => `.${c()}:last-child > .${c()}`,
+    () => `${pick(TAGS)}:nth-child(2) .${c()}`,
+    () => `.${c()}:not(:last-child)`,
     () => `[data-x] .${c()}`,
     () => `[data-x=y]`,
     () => `#e${Math.floor(next() * 6)} .${c()}`,
@@ -1697,6 +1881,16 @@ function stylesOf(el: HtmlViewNode, body: Element): string[] {
   });
 }
 
+/** Where a node is among its siblings, as a record says, half the time:
+ *  a host that keeps a `MutationObserver`'s records hands them on. */
+function sidesOf(
+  next: () => number,
+  node: Element,
+): { previousSibling?: ChildNode | null; nextSibling?: ChildNode | null } {
+  if (next() < 0.5) return {};
+  return { previousSibling: node.prev, nextSibling: node.next };
+}
+
 /** A change a script might make, done, and its records. */
 function changeOne(
   next: () => number,
@@ -1808,6 +2002,7 @@ function changeOne(
         target: parent,
         addedNodes: [child],
         removedNodes: [],
+        ...sidesOf(next, child),
       },
     ];
   }
@@ -1815,6 +2010,7 @@ function changeOne(
     // one taken out
     const target = pick(inside);
     const parent = target.parent as unknown as Element;
+    const sides = sidesOf(next, target);
     removeNode(target as unknown as ChildNode);
     return [
       {
@@ -1822,6 +2018,7 @@ function changeOne(
         target: parent,
         addedNodes: [],
         removedNodes: [target],
+        ...sides,
       },
     ];
   }
@@ -1830,6 +2027,7 @@ function changeOne(
     const target = pick(inside);
     const into = pick(all.filter((e) => !elementsIn(target).includes(e)));
     const from = target.parent as unknown as Element;
+    const sides = sidesOf(next, target);
     const before = into.children.filter((n) => (n as Element).attribs);
     if (before.length && next() < 0.5) {
       removeNode(target as unknown as ChildNode);
@@ -1841,12 +2039,14 @@ function changeOne(
         target: from,
         addedNodes: [],
         removedNodes: [target],
+        ...sides,
       },
       {
         type: 'childList',
         target: into,
         addedNodes: [target],
         removedNodes: [],
+        ...sidesOf(next, target),
       },
     ];
   }

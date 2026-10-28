@@ -443,7 +443,9 @@ export function mutationGeneration(): number {
  *    `id` is taken for one of every class or id a selector tests.
  *  - `childList`: nodes were added to `target`, or taken out of it — every
  *    one of them, which is how a `<style>` or a `<link>` coming or going
- *    is found.
+ *    is found. `previousSibling` and `nextSibling` are the nodes either
+ *    side of where they were, as a record has them; left out, the change
+ *    is taken for one anywhere among `target`'s children.
  *  - `characterData`: a text's or a comment's data changed.
  */
 export type HtmlChange =
@@ -458,6 +460,8 @@ export type HtmlChange =
       target: ParentNode;
       addedNodes: readonly AnyNode[];
       removedNodes: readonly AnyNode[];
+      previousSibling?: AnyNode | null;
+      nextSibling?: AnyNode | null;
     }
   | { type: 'characterData'; target: AnyNode };
 
