@@ -120,6 +120,16 @@ function elementsUnder(root: Element): Element[] {
   return out;
 }
 
+/** Where a node is among its siblings, as a record says, half the time:
+ *  a host that keeps a `MutationObserver`'s records hands them on. */
+function sidesOf(
+  next: () => number,
+  node: Element,
+): { previousSibling?: ChildNode | null; nextSibling?: ChildNode | null } {
+  if (next() < 0.5) return {};
+  return { previousSibling: node.prev, nextSibling: node.next };
+}
+
 /** A change a page's scripts might make, done, and its records. */
 function change(next: () => number, body: Element): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
@@ -140,6 +150,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
     if (undrawn.length && next() < 0.4) {
       const target = pick(undrawn);
       const parent = target.parent as unknown as Element;
+      const sides = sidesOf(next, target);
       removeNode(target as unknown as ChildNode);
       return [
         {
@@ -147,6 +158,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
           target: parent,
           addedNodes: [],
           removedNodes: [target],
+          ...sides,
         },
       ];
     }
@@ -163,6 +175,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
         target: parent,
         addedNodes: [child],
         removedNodes: [],
+        ...sidesOf(next, child),
       },
     ];
   }
@@ -178,12 +191,14 @@ function change(next: () => number, body: Element): HtmlChange[] {
         target: parent,
         addedNodes: [child],
         removedNodes: [],
+        ...sidesOf(next, child),
       },
     ];
   }
   if (kind === 1) {
     const target = pick(inside);
     const parent = target.parent as unknown as Element;
+    const sides = sidesOf(next, target);
     removeNode(target as unknown as ChildNode);
     return [
       {
@@ -191,6 +206,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
         target: parent,
         addedNodes: [],
         removedNodes: [target],
+        ...sides,
       },
     ];
   }
@@ -220,6 +236,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
     const into = pick(all.filter((e) => !elementsUnder(target).includes(e)));
     if (into !== target) {
       const from = target.parent as unknown as Element;
+      const sides = sidesOf(next, target);
       appendChild(into, target as unknown as ChildNode);
       return [
         {
@@ -227,12 +244,14 @@ function change(next: () => number, body: Element): HtmlChange[] {
           target: from,
           addedNodes: [],
           removedNodes: [target],
+          ...sides,
         },
         {
           type: 'childList',
           target: into,
           addedNodes: [target],
           removedNodes: [],
+          ...sidesOf(next, target),
         },
       ];
     }
@@ -689,6 +708,94 @@ metric(
     // and most of them spliced where the document ends
     const ends = buildsAtEnd() - endsAtStart;
     assert.ok(ends > subtrees / 2, `${ends} of them at the document's end`);
+  },
+);
+
+metric(
+  'a script’s child put in or taken out at the end of what holds it builds that end, and keeps the boxes before it',
+  async () => {
+    // A webmail page puts its popups at the end of its `<body>`, a flex
+    // column, and takes them out again: each built the whole document. The
+    // end of a flex box, whose children are each an item, and of a block,
+    // where its build noted what came before, is built as a stream's is.
+    for (const holder of ['flex', 'block']) {
+      const { node, result } = await render(
+        '<!doctype html><html><head><style>body { margin: 0;' +
+          ` font-size: 14px; display: ${holder}; flex-direction: column }` +
+          '.pop { position: absolute; top: 0; left: 0; width: 20px }' +
+          `</style></head><body><main id="app"><p id="p">the page</p>` +
+          '<section id="s"><p>more of it</p></section></main>' +
+          '<div id="cover">cover</div></body></html>',
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+        _invalidate(stale: number): void;
+      };
+      const all = () => elementsUnder(el.document as unknown as Element);
+      const byId = (id: string): Element =>
+        all().find((e) => e.attribs.id === id)!;
+      const boxOf = (id: string) =>
+        internals._firstBoxesOf(internals._tree).get(byId(id));
+      const body = all().find((e) => e.name === 'body')!;
+      const app = boxOf('app');
+      const p = boxOf('p');
+      const pop = createElement('div', { class: 'pop' }, [createText('hi')]);
+      appendChild(body, pop);
+      const put: HtmlChange = {
+        type: 'childList',
+        target: body,
+        addedNodes: [pop],
+        removedNodes: [],
+        previousSibling: byId('cover'),
+        nextSibling: null,
+      };
+      el.touchDocument([put]);
+      await act();
+      assert.ok(
+        boxOf('app') === app && boxOf('p') === p,
+        `${holder}: what was before it built again as one was put in`,
+      );
+      let lines = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      let whole = treeLines(internals._tree);
+      let at = lines.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        at < 0 && lines.length === whole.length,
+        `${holder}, put in: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+      );
+      // and taken out, with the cover before it, which ends the line
+      const before = { app: boxOf('app'), p: boxOf('p') };
+      removeNode(pop as unknown as ChildNode);
+      const out: HtmlChange = {
+        type: 'childList',
+        target: body,
+        addedNodes: [],
+        removedNodes: [pop],
+        previousSibling: byId('cover'),
+        nextSibling: null,
+      };
+      el.touchDocument([out]);
+      await act();
+      assert.ok(
+        boxOf('app') === before.app && boxOf('p') === before.p,
+        `${holder}: what was before it built again as one was taken out`,
+      );
+      lines = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      whole = treeLines(internals._tree);
+      at = lines.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        at < 0 && lines.length === whole.length,
+        `${holder}, taken out: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+      );
+      result.unmount();
+    }
   },
 );
 

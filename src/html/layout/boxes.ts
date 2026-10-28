@@ -925,14 +925,19 @@ interface RanFrom {
 /** What the fix-up saw before `block` among `holder`'s children, as
  *  `RAN_INLINE` and `RAN_OUT`; -1 where `block`, or a box `RAN_FROM` names,
  *  is no longer among them. */
-function ranBefore(block: Box, holder: Box): number {
+function ranBefore(block: Box, holder: Box, noted = true): number {
   const kids = holder.children;
   const at = kids.indexOf(block);
   if (at < 0) return -1;
   const from = RAN_FROM.get(holder);
   if (!from) {
     for (let i = 0; i < at; i += 1) {
-      if (kids[i].outOfFlow || kids[i].isFloat) return RAN_OUT;
+      // a wrap a build that noted none made says nothing of what ran
+      // (`notesWrapped`): what a script changed in a document handed over
+      // whole
+      const kid = kids[i];
+      if (!noted && !kid.el && !kid.pseudo && kid.kind === 'block') return -1;
+      if (kid.outOfFlow || kid.isFloat) return RAN_OUT;
     }
     return 0;
   }
@@ -1490,7 +1495,14 @@ export function buildSubtrees(
     olds.push(old);
   }
   for (const { node, from } of tails) {
-    const old = tailRoot(node, from, tree, document, firstBoxes);
+    const old = tailRoot(
+      node,
+      from,
+      tree,
+      document,
+      firstBoxes,
+      !!found.appendOnly,
+    );
     if (!old) return null;
     olds.push(old);
   }
@@ -1684,10 +1696,13 @@ export function buildSubtrees(
 
   // the styles, in the order a build sets them, which is the tree's: a
   // root's where its element's was, and a tail's before the first style
-  // of what it held, or else of what comes after what holds it
+  // of what it held, or else of what comes after what holds it — that
+  // alone where a script's change is built, whose tail may hold what it
+  // moved there from before, styled where it was (`placed`)
   const tailStyles: {
     at: number;
     els: Set<Element>;
+    placed: ReadonlySet<Element>;
     next: Element | null;
   }[] = [];
   olds.forEach((o, i) => {
@@ -1706,7 +1721,12 @@ export function buildSubtrees(
     const next = o.el
       ? styledAfter(o.el, (at) => tree.styles.has(at) && !els.has(at))
       : null;
-    tailStyles.push({ at: i, els, next });
+    tailStyles.push({
+      at: i,
+      els,
+      placed: found.appendOnly ? els : new Set(),
+      next,
+    });
   });
   // where a boxless element's style goes there too, which of the two is
   // first is more than can be said here
@@ -2112,7 +2132,7 @@ export function buildSubtrees(
     while (
       nextTail < tailStyles.length &&
       (el === null ||
-        tailStyles[nextTail].els.has(el) ||
+        tailStyles[nextTail].placed.has(el) ||
         tailStyles[nextTail].next === el)
     ) {
       for (const [k, v] of built[tailStyles[nextTail].at].styles) {
@@ -2532,6 +2552,9 @@ function tailRoot(
   tree: BoxTree,
   document: { children: unknown },
   firstBoxes: ReadonlyMap<Element, Box>,
+  /** Whether a stream's chunks are all it builds, in a build that noted
+   *  what its wraps ran from (`notesWrapped`). */
+  noted = true,
 ): SubtreeRoot | null {
   const kids = node.children;
   if (from <= 0 || from >= kids.length) return null;
@@ -2555,7 +2578,13 @@ function tailRoot(
     if (node !== document) return null;
     box = tree.root;
   }
-  if (box.kind !== 'block' || box.style.contentVisibility === 'hidden') {
+  // a block's, or a flex or grid box's, whose children are each an item of
+  // their own, with nothing before one that its fix-up carries to it
+  const items = box.kind === 'flex';
+  if (
+    (box.kind !== 'block' && !items) ||
+    box.style.contentVisibility === 'hidden'
+  ) {
     return null;
   }
   const before = kids[from - 1];
@@ -2563,7 +2592,7 @@ function tailRoot(
   if (!after || !endsLine(after, before as Element, box)) return null;
   const index = box.children.indexOf(after);
   if (index < 0) return null;
-  const ran = ranBefore(after, box);
+  const ran = items ? 0 : ranBefore(after, box, noted);
   if (ran < 0) return null;
   // where only floats and boxes out of the flow came before, whether they
   // are wrapped, which a whole build wraps as the tail has it
@@ -2640,7 +2669,9 @@ export function tailFrom(
   tree: BoxTree,
 ): number {
   const holder = isElement(node) ? firstBoxes.get(node) : tree.root;
-  if (!holder || holder.kind !== 'block') return -1;
+  if (!holder || (holder.kind !== 'block' && holder.kind !== 'flex')) {
+    return -1;
+  }
   const kids = node.children;
   for (let i = kids.lastIndexOf(touched) - 1; i >= 0; i -= 1) {
     const kid = kids[i];
