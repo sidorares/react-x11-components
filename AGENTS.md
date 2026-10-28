@@ -3197,7 +3197,11 @@ not before. Three things are load-bearing:
   of its own.
 - **A change is told to the `<Html>` that draws its document, whichever
   realm made it** (`_tell`, `DomShared.changes`). What a realm's
-  `MutationObserver` sees is still only what that realm changed.
+  `MutationObserver` sees is still only what that realm changed. A change
+  to a node in no document is told to none: the change that puts it in is
+  told with all it holds. Told, the records of a webmail page building
+  thirty messages apart passed what a change is told as (`CHANGES_TOLD`),
+  and every page of messages styled the whole document again.
 
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
