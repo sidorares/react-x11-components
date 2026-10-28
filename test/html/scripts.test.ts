@@ -2098,6 +2098,48 @@ test('XMLHttpRequest is fetch with its states, its events and its headers', asyn
   );
 });
 
+test('an XMLHttpRequest aborted while its body arrives fires abort, one whose body is lost fires error, and neither leaves a rejection', async () => {
+  // Google's sign-in page aborts a request whose body is on the way, and
+  // the body's read rejected with nothing to catch it
+  const doc = await hosted(
+    '<p id="out"></p><script>var r = [];' +
+      'function watch(x, name) {' +
+      '  x.onreadystatechange = function () { r.push(name + x.readyState); };' +
+      '  ["abort", "error", "load", "loadend"].forEach(function (t) { x.addEventListener(t, function () { r.push(name + ":" + t); }); });' +
+      '}' +
+      'var a = new XMLHttpRequest(); a.open("GET", "held.txt"); watch(a, "a");' +
+      'a.addEventListener("readystatechange", function () { if (a.readyState === 2) setTimeout(function () {' +
+      '  a.abort(); r.push("a:" + a.readyState + ":" + a.status);' +
+      '  var b = new XMLHttpRequest(); b.open("GET", "lost.txt"); watch(b, "b");' +
+      '  b.addEventListener("loadend", function () { setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 20); });' +
+      '  b.send(); }); });' +
+      'a.send();' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'text/plain']],
+        body: '',
+        chunks: (async function* () {
+          yield new TextEncoder().encode('part');
+          if (request.url.endsWith('lost.txt')) throw new Error('reset');
+          await new Promise(() => {});
+        })(),
+      }),
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'a2|a4|a:abort|a:loadend|a:0:0|b2|b4|b:error|b:loadend');
+  assert.deepEqual(
+    doc.logs.filter((l) => l.includes('Uncaught')),
+    [],
+    doc.logs.join('\n'),
+  );
+});
+
 test('module scripts run in order with the classic ones, their imports linked, and a nomodule script does not', async () => {
   const doc = await hosted(
     '<p id="out"></p>' +

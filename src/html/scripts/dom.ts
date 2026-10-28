@@ -17229,22 +17229,34 @@ export function installDom(
           this.statusText = response.statusText;
           this.responseURL = response.url;
           this._state(2);
-          return response.bytes().then((bytes: Uint8Array) => {
-            if (attempt !== this._attempt) return;
-            this._raw = bytes;
-            this._text = this._decode(bytes);
-            this._state(3);
-            const size = {
-              lengthComputable: true,
-              loaded: bytes.length,
-              total: bytes.length,
-            };
-            this._progress('progress', size);
-            clearTimer(timer);
-            this._state(4);
-            this._progress('load', size);
-            this._progress('loadend', size);
-          });
+          // a body an `abort()` cut off, or the network lost, rejects: the
+          // abort has said so already, and a lost one is an `error` (XHR
+          // 3.6.6, "process response end-of-body"). Left unhandled, a
+          // request Google's sign-in page aborts while its body is on the
+          // way was an uncaught `AbortError`.
+          return response.bytes().then(
+            (bytes: Uint8Array) => {
+              if (attempt !== this._attempt) return;
+              this._raw = bytes;
+              this._text = this._decode(bytes);
+              this._state(3);
+              const size = {
+                lengthComputable: true,
+                loaded: bytes.length,
+                total: bytes.length,
+              };
+              this._progress('progress', size);
+              clearTimer(timer);
+              this._state(4);
+              this._progress('load', size);
+              this._progress('loadend', size);
+            },
+            () => {
+              if (attempt !== this._attempt) return;
+              clearTimer(timer);
+              this._fail('error');
+            },
+          );
         },
         () => {
           if (attempt !== this._attempt) return;
