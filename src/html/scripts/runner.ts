@@ -109,6 +109,13 @@ interface Queued {
   module: boolean;
 }
 
+/** A script in the in-order list, and its source once it is here. */
+interface InOrder {
+  queued: Queued;
+  code: string | null;
+  ready: boolean;
+}
+
 /**
  * Where a frame's document runs, for the runner of a frame of a page's: the
  * runner of the document the frame is in, and the frame's element there.
@@ -193,6 +200,7 @@ export class ScriptRunner {
       overflow: () => queueMicrotask(() => this.dispose()),
     });
     this.host.entries = this.engine;
+    this.host.scriptConnected = (request) => this.add(request);
     if (arrival) {
       // told once the page's code is done, where it is running: the host
       // may ask from one of the seams the page's code reached
@@ -368,8 +376,9 @@ export class ScriptRunner {
     return this._link!.parent.host.idOf(this._link!.frame);
   }
 
-  /** `<Html>` met a `<script>`. Queued, never run here: this is called while
-   *  the element reads its props. */
+  /** `<Html>` met a `<script>`, or the host met one a page's script put in
+   *  (`DomHost.scriptConnected`). Queued, never run here: this is called
+   *  while the element reads its props, and from inside an op. */
   add(request: ScriptRequest): void {
     if (this._disposed || this.host.inert.has(request.element)) return;
     // a script runs once (HTML's "already started"): a second view of a
@@ -395,8 +404,46 @@ export class ScriptRunner {
       ? this._options.load(request.src, request.element).catch(() => null)
       : Promise.resolve(request.text);
     const queued = { request, source, module };
+    // one a page's script put in and set `async` false on runs in the order
+    // it went in, each once all before it have (`DomHost.inOrder`), and
+    // waits for no parse
+    if (
+      (request.src !== null || module) &&
+      this.host.inOrder(request.element)
+    ) {
+      const step: InOrder = { queued, code: null, ready: false };
+      this._inOrder.push(step);
+      void source.then((code) => {
+        step.code = code;
+        step.ready = true;
+        void this._runInOrder();
+      });
+      return;
+    }
     if (!this._parsed && !this._soon(queued)) this._queue.push(queued);
     else void source.then((code) => this._run(queued, code));
+  }
+
+  /** The scripts that run in the order they went in (HTML 4.12.1.1, "the
+   *  list of scripts that will execute in order as soon as possible"),
+   *  each with its source once it is here. */
+  private _inOrder: InOrder[] = [];
+  private _ordering = false;
+
+  /** Run the scripts at the head of the in-order list whose sources are
+   *  here, one after another: one that came before those ahead of it
+   *  waits for them. */
+  private async _runInOrder(): Promise<void> {
+    if (this._ordering) return;
+    this._ordering = true;
+    try {
+      while (!this._disposed && this._inOrder[0]?.ready) {
+        const { queued, code } = this._inOrder.shift()!;
+        await this._run(queued, code);
+      }
+    } finally {
+      this._ordering = false;
+    }
   }
 
   /**

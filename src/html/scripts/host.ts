@@ -43,6 +43,7 @@ import type {
   CssTransitionInfo,
   CssEventInfo,
   ElementIntersections,
+  ScriptRequest,
 } from '../node.js';
 import type { MarginLength } from '../paint.js';
 import type { MediaEventKind } from '../media.js';
@@ -1244,6 +1245,11 @@ export interface Entries {
  */
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** The `<script>`s a page's script made, and whether each still has its
+   *  `async` forced on (HTML 4.12.1, "force async"): true until a script
+   *  sets `async` or adds the attribute. A script the parser made has
+   *  none. */
+  readonly forceAsync = new WeakMap<Element, boolean>();
   readonly frames = new WeakMap<Element, Document>();
   readonly frameOf = new WeakMap<Document, Element>();
   readonly frameStyles = new WeakMap<
@@ -1334,6 +1340,9 @@ export class DomHost {
   /** Scripts that are never run: what `innerHTML` and
    *  `insertAdjacentHTML` put in, which HTML does not run either. */
   readonly inert: WeakSet<Element>;
+  /** Whether a script a page's script made has `async` forced on
+   *  (`DomShared.forceAsync`). */
+  private readonly _forceAsync: WeakMap<Element, boolean>;
   /** A frame's document — an `<iframe>`'s, an `<object>`'s — and the frame
    *  each document is, and the cascade its styles were last worked out
    *  with, by its sheets' texts (`_frameStyle`). */
@@ -1413,6 +1422,10 @@ export class DomHost {
   private _foreignSeen = -1;
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
+  /** Where a script with a source, or a module, that a page's script put
+   *  in is handed as it goes in (`ScriptRunner.add`), so the scripts that
+   *  run in order run in the order they went in (`_prepareScript`). */
+  scriptConnected: ((request: ScriptRequest) => void) | null = null;
   /** Where this page's workers run, where it may start them. */
   workers: PageWorkersLike | null = null;
   /** The page this realm is the worker of, where it is one. */
@@ -1447,6 +1460,7 @@ export class DomHost {
     this._nodes.set(1, document);
     this._s = shared;
     this.inert = shared.inert;
+    this._forceAsync = shared.forceAsync;
     this._frames = shared.frames;
     this._frameOf = shared.frameOf;
     this._frameStyles = shared.frameStyles;
@@ -2025,7 +2039,7 @@ export class DomHost {
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
     this._cloneShadows(node, clone, deep);
-    this._keepStarted(node, clone, deep);
+    this._copiedScripts(node, clone, deep);
     const owner = this._ownerOf(node);
     if (owner !== this.document) this._owners.set(clone, owner);
     if (isDoctype(node)) this._doctypes.set(clone, this._doctypeOf(node));
@@ -2043,29 +2057,39 @@ export class DomHost {
     if (!every) return this._clone(child, true);
     const copy = child.cloneNode(true) as ChildNode;
     this._cloneShadows(child, copy, true, true);
-    this._keepStarted(child, copy, true);
+    this._copiedScripts(child, copy, true);
     return copy;
   }
 
-  /** A copy's scripts started where the scripts it copies are (HTML
-   *  4.12.1, the script element's cloning steps), so a script `innerHTML`
-   *  made, copied into the document, runs no more than it would have
-   *  (`_prepareScript`). The two trees are alike, so their scripts are
+  /** A copy's scripts, which a script made, so `async` is forced on in
+   *  each (`forceAsync`), and which have started where the scripts they
+   *  copy have (HTML 4.12.1, the script element's cloning steps): a script
+   *  `innerHTML` made, copied into the document, runs no more than it would
+   *  have (`_prepareScript`). The two trees are alike, so their scripts are
    *  found in the same order. */
-  private _keepStarted(node: AnyNode, copy: AnyNode, deep: boolean): void {
-    if (!deep) {
-      if (node instanceof Element && this.inert.has(node)) {
-        this.inert.add(copy as Element);
-      }
-      return;
-    }
+  private _copiedScripts(node: AnyNode, copy: AnyNode, deep: boolean): void {
     const isScript = (el: Element): boolean => el.name === 'script';
-    const from = DomUtils.findAll(isScript, [node]);
-    if (!from.some((el) => this.inert.has(el))) return;
-    const to = DomUtils.findAll(isScript, [copy]);
+    const from = deep
+      ? DomUtils.findAll(isScript, [node])
+      : node instanceof Element && isScript(node)
+        ? [node]
+        : [];
+    if (!from.length) return;
+    const to = deep ? DomUtils.findAll(isScript, [copy]) : [copy as Element];
     for (let i = 0; i < from.length && i < to.length; i++) {
+      this._forceAsync.set(to[i], true);
       if (this.inert.has(from[i])) this.inert.add(to[i]);
     }
+  }
+
+  /** Whether a script a page's script put in runs in the order it went in
+   *  (HTML 4.12.1.1, "the list of scripts that will execute in order as
+   *  soon as possible"): one a script made and set `async` false on, with
+   *  no `async` attribute. Google's module loader sets it on every module
+   *  it puts in, since a module needs the ones put in before it to have
+   *  run. */
+  inOrder(el: Element): boolean {
+    return this._forceAsync.get(el) === false && el.attribs.async === undefined;
   }
 
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
@@ -2318,6 +2342,7 @@ export class DomHost {
         if (a === 'element') {
           const el = new Element(text(b), {}, []);
           if (typeof d === 'string' && d) el.namespace = d === '~' ? '' : d;
+          if (el.name === 'script') this._forceAsync.set(el, true);
           node = el;
         } else if (a === 'text') node = new Text(text(b));
         else if (a === 'comment') node = new Comment(text(b));
@@ -2575,6 +2600,15 @@ export class DomHost {
         if (node.parent) this._take(node);
         return null;
       }
+      // `script.async`: forced on in a script a script made, until it is
+      // set (HTML 4.12.1)
+      case 'scriptForceAsync':
+        return this._forceAsync.get(this._element(a)) === true;
+      case 'scriptAsyncSet': {
+        const el = this._element(a);
+        if (this._forceAsync.has(el)) this._forceAsync.set(el, false);
+        return null;
+      }
       case 'clone': {
         const node = this._node(a);
         const clone = this._clone(node, !!b);
@@ -2609,6 +2643,9 @@ export class DomHost {
         }
         const oldValue = el.attribs[name] ?? null;
         el.attribs[name] = text(c);
+        if (name === 'async' && this._forceAsync.has(el)) {
+          this._forceAsync.set(el, false);
+        }
         this._changed(el, 'attributes', name, oldValue);
         // a frame given another address, or another `srcdoc`, goes there
         if (this._sendsFrame(el, name, true)) {
@@ -5595,25 +5632,45 @@ export class DomHost {
    * sign-in page puts its BotGuard program in a `<script>`, takes it out
    * again at once and reads the global the program made, as jQuery's
    * `globalEval` does; met as `<Html>` next read the tree, it ran a task
-   * late, or, taken out by then, never, and the page threw. One with a
-   * `src`, a module and an empty one are met as `<Html>` reads the tree,
-   * as before. On Node the context runs the microtasks queued so far as
-   * the script ends (`microtaskMode: 'afterEvaluate'`), where HTML leaves
-   * them for the end of the outer script, as it does for a worker's
-   * `importScripts` (`ScriptEngine.runNested`).
+   * late, or, taken out by then, never, and the page threw. On Node the
+   * context runs the microtasks queued so far as the script ends
+   * (`microtaskMode: 'afterEvaluate'`), where HTML leaves them for the end
+   * of the outer script, as it does for a worker's `importScripts`
+   * (`ScriptEngine.runNested`).
+   *
+   * One with a `src`, and a module, is handed to the runner now
+   * (`scriptConnected`), which fetches it and runs it when HTML would.
+   * Met as `<Html>` next read the tree, they were met in the document's
+   * order, and Google's module loader puts each module it loads at the top
+   * of the `<head>`, so the modules it needs run in the order it put them
+   * in (`inOrder`) were met backwards: on Google Photos' shared albums a
+   * module ran before the one defining a class it needs. An empty one is
+   * still met as `<Html>` reads the tree.
    */
   private _prepareScript(el: Element): void {
     const exec = this.entries?.exec;
     if (!exec || this.inert.has(el) || el.namespace) return;
-    const { attribs } = el;
-    if (attribs.src !== undefined || attribs.nomodule !== undefined) return;
-    if (!isClassicScriptType(attribs.type ?? '')) return;
     if (!this._inDocument(el)) return;
+    const { attribs } = el;
+    const type = attribs.type ?? '';
+    const classic = isClassicScriptType(type);
+    const module = type.split(';')[0].trim().toLowerCase() === 'module';
+    if (!classic && !module) return;
     // its child text content: the text of its children, and not of what
     // they hold
     let code = '';
     for (const kid of el.children) if (kid instanceof Text) code += kid.data;
-    if (!code) return;
+    if (attribs.src !== undefined || module) {
+      const src = attribs.src;
+      this.scriptConnected?.({
+        type: (type || 'text/javascript').toLowerCase(),
+        src: src === undefined ? null : src && this._resolve(src),
+        text: code,
+        element: el,
+      });
+      return;
+    }
+    if (attribs.nomodule !== undefined || !code) return;
     this.inert.add(el);
     exec.call(this.entries, code, this.url, this.idOf(el));
   }

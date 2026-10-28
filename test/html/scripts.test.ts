@@ -130,7 +130,7 @@ interface ScrollPane {
 async function hosted(
   source: string,
   options: {
-    scripts?: Record<string, string>;
+    scripts?: Record<string, string | Promise<string>>;
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
     held?: HeldSheets;
@@ -1099,6 +1099,40 @@ test('a script innerHTML puts in never runs, and one a script appends does', asy
   );
   await settle();
   assert.equal(doc.text('out'), '-appended');
+});
+
+test('scripts a script puts in with async set false run in the order they went in, wherever they went', async () => {
+  // Google's module loader puts each module at the top of the <head>, and
+  // a module needs the ones put in before it to have run
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var made = document.createElement("script"); r.push(made.async);' +
+      'made.async = false; r.push(made.async, made.hasAttribute("async"));' +
+      'function put(name) { var s = document.createElement("script"); s.src = name + ".js"; s.async = false;' +
+      '  document.body.insertBefore(s, document.body.firstChild); return s; }' +
+      // after the parse, which runs what a script put in before its end in
+      // order anyway
+      'addEventListener("load", function () {' +
+      '  put("one"); put("two"); put("three");' +
+      // one taken out as it went in still runs, in its turn
+      '  var four = put("four"); four.remove(); });' +
+      '</script>',
+    {
+      scripts: {
+        // the first to go in comes in last, and the rest wait for it
+        'https://example.test/dir/one.js': new Promise((resolve) =>
+          setTimeout(() => resolve('r.push("one");'), 150),
+        ),
+        'https://example.test/dir/two.js': 'r.push("two");',
+        'https://example.test/dir/three.js': 'r.push("three");',
+        'https://example.test/dir/four.js':
+          'r.push("four"); document.getElementById("out").textContent = r.join("|");',
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'true|false|false|one|two|three|four');
 });
 
 test('an inline script a script puts in runs as it goes in, as a script of its own', async () => {
