@@ -70,9 +70,9 @@ import {
   contentCorners,
   coverersOver,
   drawnAtViewport,
-  drawsNothing,
   evenScaleOf,
   FIXED_BOXES,
+  inkMeets,
   NO_ZOOM,
   paintedAfter,
   paintOrderOf,
@@ -674,7 +674,12 @@ function pixelsAround(rect: Rect): Rect {
  * bottom or a side, or `hidden` where one reaches into it in a way that
  * leaves no rectangle. `fixed` is those the document paints after the
  * rect's element (`fixedOver`), and only one painted over the document's
- * flow is asked about — one at a negative `z-index` is under it.
+ * flow is asked about — one at a negative `z-index` is under it. And only
+ * one that draws something where it reaches the rect (`inkMeets`): a fixed
+ * box's ink is the union of all it holds, and joshwcomeau.com keeps a
+ * popup fixed over its article, a wrapper with nothing of its own around a
+ * card at an opacity of 0, whose ink a playground's frame reached once its
+ * divider was dragged. The frame was hidden whole for it.
  */
 export function cutByFixed(
   rect: Rect,
@@ -689,7 +694,6 @@ export function cutByFixed(
   const dy = shift?.y ?? 0;
   for (const box of fixed) {
     if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
-    if (drawsNothing(box)) continue;
     const z = box.style.zIndex;
     if (typeof z === 'number' && z < 0) continue;
     const bx0 = box.boundsX + dx;
@@ -697,6 +701,9 @@ export function cutByFixed(
     const bx1 = bx0 + box.boundsWidth;
     const by1 = by0 + box.boundsHeight;
     if (bx1 <= x0 || bx0 >= x1 || by1 <= y0 || by0 >= y1) continue;
+    // where it was laid out, at the document's top
+    const within = { x: x0 - dx, y: y0 - dy, width: x1 - x0, height: y1 - y0 };
+    if (!inkMeets(box, within)) continue;
     const across = bx0 <= x0 && bx1 >= x1;
     const down = by0 <= y0 && by1 >= y1;
     if (across && by0 <= y0) y0 = Math.min(y1, by1);
