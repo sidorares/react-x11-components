@@ -688,6 +688,74 @@ test('a sticky header the viewport holds cuts a frame where it draws over it, ho
   }
 });
 
+test('a sticky header cuts a frame where its mask shows it, not as far as the masked box reaches', async () => {
+  // joshwcomeau.com's frosted header: a layer of glass in the bar that
+  // reaches past it, for its blur to catch what comes up under it, masked
+  // to the bar. Cut as far as the glass reached, the frame under it was
+  // blank for the 40px below the bar it draws nothing in
+  const source =
+    '<style>body{margin:0}iframe{border:0;display:block}' +
+    '.bar{position:sticky;top:0;z-index:2;height:30px}' +
+    '.glass{position:absolute;inset:0;bottom:-40px;background:#fff;' +
+    'mask-image:linear-gradient(to bottom,#000 0,#000 calc(100% - 40px),' +
+    'transparent calc(100% - 40px))}</style>' +
+    '<div class="bar"><div class="glass"></div></div>' +
+    '<div style="height:100px"></div>' +
+    '<iframe id="f" width="120" height="100"></iframe>' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    const asked: EmbeddedRect[] = [];
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const result = await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 300, height: 200, overflow: 'scroll' },
+        },
+        h(Html, {
+          source,
+          partial: false,
+          renderEmbedded: (rect: EmbeddedRect) => {
+            asked.push(rect);
+            return h('box', {
+              'data-testname': 'in-f',
+              style: { flexGrow: 1, backgroundColor: '#ff0000' },
+            });
+          },
+        }),
+      ),
+      { width: 340, height: 240, scale, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    // the bar over the frame's top 20px; and then over 30px of its middle,
+    // its top 50px scrolled away above it
+    for (const [y, clip] of [
+      [120, [150, 80]],
+      [180, [210, 20]],
+    ] as const) {
+      await act(async () => pane!.scrollTo(y));
+      await act();
+      const rect = asked.at(-1);
+      assert.ok(rect && !rect.hidden, `shown, ${y}, ${scale}x`);
+      assert.deepStrictEqual(
+        rect.clip && [rect.clip.y, rect.clip.height],
+        clip,
+        `cut at the bar, scrolled to ${y}, ${scale}x`,
+      );
+    }
+    await expectPixel(result.ctx, 10 * scale, 20 * scale, '#ffffff', {
+      message: `the glass, in the bar, ${scale}x`,
+    });
+    await expectPixel(result.ctx, 10 * scale, 40 * scale, '#ff0000', {
+      message: `the frame, where the mask leaves the glass out, ${scale}x`,
+    });
+    cleanup();
+  }
+});
+
 test('a mount stays the same node as a layout moves its element', async () => {
   // a new node would be a new document in an iframe, its scripts started
   // again; a new source is a new document, and a new node is right there

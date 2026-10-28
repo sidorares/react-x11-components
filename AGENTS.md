@@ -4603,6 +4603,18 @@ the pane shows** (`cutByFixed`'s `viewport`): a frame scrolled half away
 above its pane has the header across its middle, and hiding it for that hid
 the half that shows, under a fixed header as much as a held one.
 
+**What a mask makes transparent is no ink** (`maskShows`, in `walkInk` and
+`drawnInk`). A masked box shows itself and what it holds only in its
+border box, and only where some layer of its mask is not transparent: a
+gradient straight down or across reaches as far along it as its stops show,
+and an image all of its painting area. The site's frosted header in its
+dark scheme is a layer of glass that reaches 100px past the bar, for its
+blur to catch what comes up under it, masked to the bar, and a frame under
+it was cut 100px below the bar, more of it blank the further it scrolled
+up. **Anything new that reads what a box draws asks `maskShows` where the
+box is masked**, or takes the box for its bounds; it answers for the box in
+its own plane, so one drawn through a matrix is taken at its bounds still.
+
 **A scale the same both ways is a rectangle a mount can stand for, and
 the mount is drawn at it** (`zoomBetween`, `evenScaleOf` in `paint.ts`). A
 slide deck fits its stage to the window with `scale()`, and an `<iframe>`
