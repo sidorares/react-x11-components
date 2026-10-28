@@ -890,6 +890,8 @@ export function installDom(
 
   /** Where `on<type>` handlers are compiled from attributes, by text. */
   const compiled = new Map<string, Any>();
+  /** And a `<body onerror>`'s, which take the window's five arguments. */
+  const compiledGlobalErrors = new Map<string, Any>();
 
   class EventTarget {
     _listeners: Record<string, Listener[]> = Object.create(null);
@@ -974,25 +976,35 @@ export function installDom(
     if (target === windowTarget && WINDOW_REFLECTING.has(type)) {
       const body = document.body;
       return body instanceof HTMLBodyElement
-        ? attributeHandler(body, type)
+        ? attributeHandler(body, type, type === 'error')
         : null;
     }
     if (!(target instanceof Element)) return null;
     return attributeHandler(target, type);
   };
-  /** An element's `on<type>` attribute, compiled once for its text. */
-  const attributeHandler = (target: Any, type: string): Any => {
+  /** An element's `on<type>` attribute, compiled once for its text: a
+   *  `<body onerror>`, which is the window's, with the five arguments the
+   *  window's `onerror` is handed (HTML 8.1.8.1, "getting the current
+   *  value of the event handler"). */
+  const attributeHandler = (
+    target: Any,
+    type: string,
+    globalError = false,
+  ): Any => {
     const text = target.getAttribute(`on${type}`);
     if (text === null) return null;
-    let fn = compiled.get(text);
+    const cache = globalError ? compiledGlobalErrors : compiled;
+    let fn = cache.get(text);
     if (!fn) {
       try {
-        fn = new Function('event', text);
+        fn = globalError
+          ? new Function('event', 'source', 'lineno', 'colno', 'error', text)
+          : new Function('event', text);
       } catch (error) {
         report(error);
         fn = () => {};
       }
-      compiled.set(text, fn);
+      cache.set(text, fn);
     }
     return fn;
   };
@@ -1003,6 +1015,12 @@ export function installDom(
   /** What a target's listeners hear it as. */
   const listenedAs = (target: Any): Any =>
     target === windowTarget ? G : (targetWindows.get(target) ?? target);
+  /** Whether an event is an `error` event at a global, whose `onerror`
+   *  takes its fields rather than the event (HTML 8.1.8.1). */
+  const globalError = (target: Any, event: Any): boolean =>
+    event instanceof ErrorEvent &&
+    event._type === 'error' &&
+    (target === windowTarget || targetWindows.has(target));
 
   const invoke = (target: Any, event: Any, phase: number): void => {
     // the window's listeners are kept on a target of their own, and hear
@@ -1014,20 +1032,36 @@ export function installDom(
       const handler = handlerOf(target, event._type);
       if (typeof handler === 'function') {
         try {
-          const result = handler.call(self, event);
-          // `onbeforeunload` answers a string, which asks to be confirmed
-          // (HTML 8.1.8.1, "the event handler processing algorithm")
-          if (
-            event instanceof BeforeUnloadEvent &&
-            event._type === 'beforeunload'
-          ) {
-            if (result !== undefined && result !== null) {
-              event._canceled = true;
-              if (event._returnValue === '') {
-                event._returnValue = String(result);
+          // a global's `onerror` is handed an `error` event's five fields
+          // rather than the event, and `true` cancels it (HTML 8.1.8.1,
+          // "the event handler processing algorithm"): Closure's handler
+          // reads its first argument as the message's string
+          if (globalError(target, event)) {
+            const result = handler.call(
+              self,
+              event.message,
+              event.filename,
+              event.lineno,
+              event.colno,
+              event.error,
+            );
+            if (result === true) event.preventDefault();
+          } else {
+            const result = handler.call(self, event);
+            // `onbeforeunload` answers a string, which asks to be confirmed
+            // (HTML 8.1.8.1, "the event handler processing algorithm")
+            if (
+              event instanceof BeforeUnloadEvent &&
+              event._type === 'beforeunload'
+            ) {
+              if (result !== undefined && result !== null) {
+                event._canceled = true;
+                if (event._returnValue === '') {
+                  event._returnValue = String(result);
+                }
               }
-            }
-          } else if (result === false) event.preventDefault();
+            } else if (result === false) event.preventDefault();
+          }
         } catch (error) {
           report(error);
         }

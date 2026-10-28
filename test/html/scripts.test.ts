@@ -1101,6 +1101,35 @@ test('a script innerHTML puts in never runs, and one a script appends does', asy
   assert.equal(doc.text('out'), '-appended');
 });
 
+test("a global's onerror is handed the error's message, file, line, column and error, and true cancels it", async () => {
+  // Closure's handler reads its first argument as the message's string
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onerror = function (message, source, line, column, error) {' +
+      '  r.push(typeof message, message, source === location.href, line > 0, column > 0, error.message, this === window);' +
+      '  return true; };' +
+      'addEventListener("error", function (e) { r.push(e.defaultPrevented);' +
+      '  document.getElementById("out").textContent = r.join("|"); });' +
+      'setTimeout(function () { throw new Error("boom"); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    'string|Uncaught Error: boom|true|true|true|boom|true|true',
+  );
+});
+
+test("a <body onerror> is the window's, and takes the same five arguments", async () => {
+  const doc = await hosted(
+    "<body onerror=\"document.getElementById('out').textContent = [typeof event, event, typeof source, lineno > 0, error.message].join('|')\">" +
+      '<p id="out"></p><script>setTimeout(function () { throw new Error("boom"); });</script></body>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'string|Uncaught Error: boom|string|true|boom');
+});
+
 test("an iframe's sandbox is a token list of the tokens HTML has", async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

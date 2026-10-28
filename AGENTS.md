@@ -2736,14 +2736,19 @@ closes a way out a DOM binding opens by accident:
   instance: GitHub's delegated-events takes `currentTarget`'s descriptor
   off `Event.prototype` to shadow it on the event, and found none. And a
   reflected attribute the facade leaves out is an expando that changes
-  nothing: github.blog's menus open by `ariaHidden`. Listing the
-  getter-only accessors on the facade's interfaces, and checking each
-  against the IDL, is a quick way to find the next one. When a stand-in
-  hands its callback what it has counts as well: an observer hands every
-  entry it has in one call. Wikipedia's contents pick the heading above the
-  top out of all their entries, and an `IntersectionObserver` that called
-  back once a target had them mark every section in turn, with a layout
-  each, five times a second while the article scrolled. A library's
+  nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
+  page sandboxes a frame through `sandbox.supports()`. How a callback is
+  called is the IDL's too: a global's `onerror` is handed an error's
+  message, file, line, column and error rather than the event
+  (`globalError`), and Closure's handler read the event as the message's
+  string. Listing the getter-only accessors on the facade's interfaces,
+  and checking each against the IDL, is a quick way to find the next one.
+  When a stand-in hands its callback what it has counts as well: an
+  observer hands every entry it has in one call. Wikipedia's contents pick
+  the heading above the top out of all their entries, and an
+  `IntersectionObserver` that called back once a target had them mark
+  every section in turn, with a layout each, five times a second while the
+  article scrolled. A library's
   reading of a standard counts too: css-select reads a query from an
   element as jQuery does, `:scope .a .b`, where the DOM matches the
   selector against the whole document, so `el.querySelectorAll('.a .b')`
