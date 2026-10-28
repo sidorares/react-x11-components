@@ -424,6 +424,7 @@ import {
   cutByFixed,
   embeddedRectsOf,
   FIXED_OVER,
+  HELD_OVER,
   mediaRectsOf,
   sameSounds,
   videoCandidates,
@@ -4237,7 +4238,11 @@ export class HtmlViewNode extends Node {
     const report = this._props().onEmbedded;
     if (!tree || !report) return;
     const rects = this._embeddedLaid.map((laid) =>
-      this._viewportRect(laid, FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree)),
+      this._viewportRect(
+        laid,
+        FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree),
+        HELD_OVER.get(laid),
+      ),
     );
     if (sameEmbedded(rects, this._embedded)) return;
     this._embedded = rects;
@@ -4245,17 +4250,29 @@ export class HtmlViewNode extends Node {
   }
 
   /** A mounted rect as it shows now: cut by the boxes fixed to the
-   *  viewport where the scroll has them, and in logical pixels. */
+   *  viewport where the scroll has them, and by the sticky boxes it holds
+   *  where the scroll has put them (`held`, an embedded element's), and in
+   *  logical pixels. */
   private _viewportRect<R extends EmbeddedRect | MediaRect>(
     laid: R,
     fixed: readonly Box[] | undefined,
+    held: readonly Box[] = NO_BOXES,
   ): R {
     let r = laid;
     // one in a box fixed to the viewport goes where the viewport is, with
     // the boxes fixed there, which the scroll moves no closer to it
-    if (fixed && !('atViewport' in laid && laid.atViewport)) {
+    if (
+      (fixed?.length || held.length) &&
+      !('atViewport' in laid && laid.atViewport)
+    ) {
       const shows = laid.clip ?? laid;
-      const cut = cutByFixed(shows, fixed, this._fixedShift());
+      const cut = cutByFixed(
+        shows,
+        fixed ?? NO_BOXES,
+        this._fixedShift(),
+        held,
+        this._viewportInDocument(),
+      );
       if (cut === 'hidden') r = { ...laid, hidden: true };
       else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
     }
@@ -11640,9 +11657,11 @@ export class HtmlViewNode extends Node {
     // another width to keep it there (`_anchorFrame`)
     this._noteShown(tree);
     // a scroll moves the boxes fixed to the viewport over the players and
-    // lays nothing out: where they are is asked as it is painted
-    if (this._mediaLaid.length && FIXED_BOXES.has(tree)) this._publishMedia();
-    if (this._embeddedLaid.length && FIXED_BOXES.has(tree)) {
+    // lays nothing out, and the sticky ones it holds over the frames: where
+    // they are, and what of each the pane shows, is asked as it is painted
+    const fixed = FIXED_BOXES.has(tree);
+    if (this._mediaLaid.length && fixed) this._publishMedia();
+    if (this._embeddedLaid.length && (fixed || VIEWPORT_STICKY.has(tree))) {
       this._publishEmbedded();
     }
     // and over the controls, whose widgets they cut where they come over

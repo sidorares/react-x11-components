@@ -4530,6 +4530,24 @@ past its end to the widget. An embedded element in a box fixed to the
 viewport is mounted in the same box (`EmbeddedRect.atViewport`), and the
 fixed boxes the scroll moves the others under do not cut it.
 
+**A sticky box the viewport holds cuts a mount as a fixed box does, and
+refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's
+scroll moves it over the document without a layout, so `placementOf` passes
+it over for an embedded element, and the mount is cut where it is held at
+each paint. joshwcomeau.com's header is one, a white bar and its links over
+it, and a playground's frame scrolled up under it was refused its mount
+and was blank. A player keeps its covers instead, which paint a held box
+over it where it is (`coversOf`); a frame has none. Three things are
+load-bearing. **A box cuts by where it draws in the rect** (`inkWithin`),
+not by its bounds: the links' bounds reach past the bar for their icons'
+labels, and would cut a strip off the frame that nothing covers. **A box
+that leaves no rectangle is asked again after the others have cut**, so the
+order they are listed in does not matter: the links come first in the tree
+and only the bar under them takes a band. And **the band is taken off what
+the pane shows** (`cutByFixed`'s `viewport`): a frame scrolled half away
+above its pane has the header across its middle, and hiding it for that hid
+the half that shows, under a fixed header as much as a held one.
+
 **A scale the same both ways is a rectangle a mount can stand for, and
 the mount is drawn at it** (`zoomBetween`, `evenScaleOf` in `paint.ts`). A
 slide deck fits its stage to the window with `scale()`, and an `<iframe>`
