@@ -2624,6 +2624,18 @@ closes a way out a DOM binding opens by accident:
   dirty; the outermost entry's end refreshes (`settled`), and an op that
   asks the layout anything flushes first, since it has to answer from the
   change.
+- **But an inline script a page's script puts in runs inside the op that
+  puts it in** (`_prepareScript`, from `_connected`), as a script of its
+  own (`exec`), `inert` from then on, with `currentScript` the outer
+  script's again once it ends (`outerScripts`). Google's sign-in page puts
+  its BotGuard program in a `<script>`, takes it out at once and reads the
+  global it made, as jQuery's `globalEval` does: met at `<Html>`'s next
+  read of the tree, it never ran. So **anything new that puts nodes into a
+  document goes through `_put` or `_replaceAll`**, and **anything new that
+  copies a script carries `inert` over** (`_keepStarted`, HTML's cloning
+  steps), or a copy of what `innerHTML` made runs. On Node the context
+  runs the microtasks queued so far as the inner script ends, as it does
+  for a worker's `importScripts`.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the

@@ -27346,13 +27346,19 @@ export function installDom(
   // is put back by the entry after (`__ran`): HTML runs the microtask
   // checkpoint inside running the script, before it puts `currentScript`
   // back (8.1.4.6). Turbopack's chunks read it from a promise's callback.
+  // One that runs inside another — a script the other put in, which runs
+  // as it goes in — puts the other's back as it ends; one that runs on
+  // its own starts the list again, so what a cut left in it goes.
+  const outerScripts: Any[] = [];
   entry('__exec', () => {
-    const [script] = input();
+    const [script, nested] = input();
+    if (nested) outerScripts.push(document._current);
+    else outerScripts.length = 0;
     document._current = script ? wrap(script) : null;
     return true;
   });
   entry('__ran', () => {
-    document._current = null;
+    document._current = outerScripts.length ? outerScripts.pop() : null;
     return true;
   });
   // the parser put nodes in the document since a script ran — the host

@@ -79,6 +79,7 @@ import {
   topLayerOf,
   treeGeneration,
   treesChanged,
+  isClassicScriptType,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -1226,6 +1227,10 @@ export interface Entries {
    *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
    *  `__thrown`. */
   runNested?(code: string, url: string): 'ran' | 'threw' | null;
+  /** A page's classic script, run as a script of its own with the element
+   *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
+   *  it ran to its end. */
+  exec?(code: string, url: string, script: number): boolean;
 }
 
 /**
@@ -2020,6 +2025,7 @@ export class DomHost {
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
     this._cloneShadows(node, clone, deep);
+    this._keepStarted(node, clone, deep);
     const owner = this._ownerOf(node);
     if (owner !== this.document) this._owners.set(clone, owner);
     if (isDoctype(node)) this._doctypes.set(clone, this._doctypeOf(node));
@@ -2037,7 +2043,29 @@ export class DomHost {
     if (!every) return this._clone(child, true);
     const copy = child.cloneNode(true) as ChildNode;
     this._cloneShadows(child, copy, true, true);
+    this._keepStarted(child, copy, true);
     return copy;
+  }
+
+  /** A copy's scripts started where the scripts it copies are (HTML
+   *  4.12.1, the script element's cloning steps), so a script `innerHTML`
+   *  made, copied into the document, runs no more than it would have
+   *  (`_prepareScript`). The two trees are alike, so their scripts are
+   *  found in the same order. */
+  private _keepStarted(node: AnyNode, copy: AnyNode, deep: boolean): void {
+    if (!deep) {
+      if (node instanceof Element && this.inert.has(node)) {
+        this.inert.add(copy as Element);
+      }
+      return;
+    }
+    const isScript = (el: Element): boolean => el.name === 'script';
+    const from = DomUtils.findAll(isScript, [node]);
+    if (!from.some((el) => this.inert.has(el))) return;
+    const to = DomUtils.findAll(isScript, [copy]);
+    for (let i = 0; i < from.length && i < to.length; i++) {
+      if (this.inert.has(from[i])) this.inert.add(to[i]);
+    }
   }
 
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
@@ -4492,7 +4520,7 @@ export class DomHost {
     }
     this._ranges.inserted(parent, index, nodes.length);
     this._childList(parent, nodes, [], previous, before);
-    this._framesIn(nodes);
+    this._connected(nodes);
   }
 
   /** A node taken out of its parent, recorded. */
@@ -4543,6 +4571,7 @@ export class DomHost {
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
+    this._connected(nodes, false);
   }
 
   private _childList(
@@ -5525,17 +5554,68 @@ export class DomHost {
   /** The frames in what went into the document, each given its document
    *  — and so loaded — as a browser loads a frame as it is put in. */
   private _framesIn(nodes: readonly AnyNode[]): void {
-    for (const node of nodes) {
-      if (!(node instanceof Element)) continue;
-      const frames = DomUtils.findAll((el) => FRAME_TAGS.has(el.name), [node]);
-      if (FRAME_TAGS.has(node.name)) frames.unshift(node);
-      for (const frame of frames) {
-        if (frame.name === 'object' && !frame.attribs.data) continue;
-        if (!this._frames.has(frame) && this._inDocument(frame)) {
-          this._frameDocument(frame);
-        }
-      }
+    for (const frame of DomUtils.findAll(
+      (el) => FRAME_TAGS.has(el.name),
+      nodes as AnyNode[],
+    )) {
+      this._frameIn(frame);
     }
+  }
+
+  /** A frame put in, loaded where it is in the document and has no
+   *  document yet. */
+  private _frameIn(frame: Element): void {
+    if (frame.name === 'object' && !frame.attribs.data) return;
+    if (!this._frames.has(frame) && this._inDocument(frame)) {
+      this._frameDocument(frame);
+    }
+  }
+
+  /** What a page's script put into its tree, as HTML's post-connection
+   *  steps take it (DOM 4.2.3, "insert"), in tree order once all of it is
+   *  in: a frame loaded, a script prepared. What replaces all a parent
+   *  holds loads no frame here (`frames`), as it never has. */
+  private _connected(nodes: readonly AnyNode[], frames = true): void {
+    const found = DomUtils.findAll(
+      (el) => el.name === 'script' || (frames && FRAME_TAGS.has(el.name)),
+      nodes as AnyNode[],
+    );
+    for (const el of found) {
+      if (this._disposed) return;
+      if (el.name === 'script') this._prepareScript(el);
+      else this._frameIn(el);
+    }
+  }
+
+  /**
+   * A script a page's script put into its document, prepared as HTML
+   * prepares one that becomes connected (4.12.1.1): an inline classic one
+   * runs now, inside the insertion, as a script of its own
+   * (`ScriptEngine.exec`), and is started for good (`inert`). Google's
+   * sign-in page puts its BotGuard program in a `<script>`, takes it out
+   * again at once and reads the global the program made, as jQuery's
+   * `globalEval` does; met as `<Html>` next read the tree, it ran a task
+   * late, or, taken out by then, never, and the page threw. One with a
+   * `src`, a module and an empty one are met as `<Html>` reads the tree,
+   * as before. On Node the context runs the microtasks queued so far as
+   * the script ends (`microtaskMode: 'afterEvaluate'`), where HTML leaves
+   * them for the end of the outer script, as it does for a worker's
+   * `importScripts` (`ScriptEngine.runNested`).
+   */
+  private _prepareScript(el: Element): void {
+    const exec = this.entries?.exec;
+    if (!exec || this.inert.has(el) || el.namespace) return;
+    const { attribs } = el;
+    if (attribs.src !== undefined || attribs.nomodule !== undefined) return;
+    if (!isClassicScriptType(attribs.type ?? '')) return;
+    if (!this._inDocument(el)) return;
+    // its child text content: the text of its children, and not of what
+    // they hold
+    let code = '';
+    for (const kid of el.children) if (kid instanceof Text) code += kid.data;
+    if (!code) return;
+    this.inert.add(el);
+    exec.call(this.entries, code, this.url, this.idOf(el));
   }
 
   /** Whether a node is in the document drawn, or in a shadow tree that is:

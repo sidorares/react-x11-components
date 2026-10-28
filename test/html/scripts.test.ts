@@ -1101,6 +1101,47 @@ test('a script innerHTML puts in never runs, and one a script appends does', asy
   assert.equal(doc.text('out'), '-appended');
 });
 
+test('an inline script a script puts in runs as it goes in, as a script of its own', async () => {
+  // Google's sign-in page puts its BotGuard program in a script, takes it
+  // out at once and reads the global it made, as jQuery's `globalEval`
+  const doc = await hosted(
+    '<p id="out"></p><template id="tpl"><script>r.push("template")</script></template>' +
+      '<script id="outer">' +
+      'var r = [];' +
+      'var s = document.createElement("SCRIPT"); s.id = "inner";' +
+      's.textContent = "var made = 1; let lexical = 2; r.push(document.currentScript.id);";' +
+      'document.body.appendChild(s); document.body.removeChild(s);' +
+      'r.push(typeof made, typeof lexical, document.currentScript.id);' +
+      // started for good: put in again, it runs nothing
+      'document.body.appendChild(s);' +
+      // what `innerHTML` made runs nowhere, and nor does a copy of it
+      'var d = document.createElement("div"); d.innerHTML = "<script>r.push(\'html\')</" + "script>";' +
+      'document.body.appendChild(d.cloneNode(true)); document.body.appendChild(d);' +
+      // a template's copy does, as it goes in
+      'document.body.appendChild(document.importNode(document.getElementById("tpl").content, true));' +
+      // a fragment's, in tree order, once all of it is in
+      'var f = document.createDocumentFragment();' +
+      'var a = document.createElement("script"); a.textContent = "r.push(\'a\', !!document.getElementById(\'b\'))";' +
+      'var b = document.createElement("script"); b.id = "b"; b.textContent = "r.push(\'b\')";' +
+      'f.appendChild(a); f.appendChild(b); r.push("in"); document.body.appendChild(f);' +
+      // one that throws is reported, and the insertion returns
+      'window.onerror = function (m) { r.push(m); return true; };' +
+      'var t = document.createElement("script"); t.textContent = "throw new Error(\'x\')";' +
+      'document.body.appendChild(t); r.push("after");' +
+      // an empty one, and one of another type, run nothing
+      'document.body.appendChild(document.createElement("script"));' +
+      'var j = document.createElement("script"); j.type = "text/plain"; j.textContent = "r.push(\'plain\')";' +
+      'document.body.appendChild(j);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    'inner|number|number|outer|template|in|a|true|b|Uncaught Error: x|after',
+  );
+});
+
 test("a global's onerror is handed the error's message, file, line, column and error, and true cancels it", async () => {
   // Closure's handler reads its first argument as the message's string
   const doc = await hosted(
@@ -5731,7 +5772,7 @@ test('markup set inside a script, a style or a textarea is its text, as HTML par
       'var t = document.getElementById("t"); t.innerHTML = "x &amp; <b>y</b>"; r.push(t.textContent);' +
       'var d = document.createElement("div"); d.innerHTML = "a<b>b</b>"; r.push(d.childNodes.length);' +
       'var s2 = document.createElement("script"); s2.textContent = "x"; s2.insertAdjacentHTML("beforeend", "<i>"); r.push(s2.textContent);' +
-      // an appended script runs a turn after the append, here
+      // an appended script runs as it goes in, and this reads it a turn on
       "setTimeout(function () { r.push(window.ran); document.getElementById('out').textContent = r.join('|'); }, 0);" +
       '</script>',
   );
