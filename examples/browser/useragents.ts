@@ -1,4 +1,4 @@
-// The User-Agent presets the toolbar's menu offers. One is the browser's
+// The User-Agent presets Develop › User Agent offers. One is the browser's
 // own (react-x11-components); the rest name a browser a server is likely to
 // know, so a page that sniffs for one sends the markup it sends that
 // browser rather than the stripped-down page it sends an unknown client.

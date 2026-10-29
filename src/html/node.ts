@@ -54,6 +54,7 @@ import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element, ParentNode } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
 import type { HighlightRanges } from './scripts/host.js';
+import type { ConsoleResult } from './scripts/scripted.js';
 import {
   findTextDirective,
   parseTextDirectives,
@@ -838,6 +839,9 @@ export class HtmlViewNode extends Node {
   /** Whether the document may be left, as its scripts answer: the
    *  handle's `beforeUnload`. */
   unloadCheck: (() => boolean) | null = null;
+  /** What a console typed, run by the document's scripts: the handle's
+   *  `evaluate`. */
+  evaluate: ((code: string) => ConsoleResult | null) | null = null;
   private _source = new HtmlSource();
   /** Where the document's relative URLs resolve: its `<base href>` against
    *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
@@ -5682,6 +5686,13 @@ export class HtmlViewNode extends Node {
    * element the document has not styled — not in it, or in a
    * `<template>`.
    */
+  /** The classes or ids some rule of the document's would style `element`
+   *  with, were it to carry them (`Cascade.namesThatStyle`). */
+  namesThatStyle(element: Element, attribute: 'class' | 'id'): string[] {
+    this._prepare(this.abs.width || 1);
+    return this._cascade?.namesThatStyle(element, attribute) ?? [];
+  }
+
   computedStyle(
     element: Element,
     pseudo: string | null = null,

@@ -8,6 +8,12 @@
 // and passes them back, and a chord works wherever the pointer is. Where a
 // pane is not a window of its own — Cocoa, Windows, or a page run inline —
 // the browser sees every key first, and the page passes nothing back.
+//
+// The developer tools' chords are the menu bar's (`DEVELOP`): a `MenuBar`
+// binds the chords of its items, and on macOS the system's menu bar runs
+// them itself, so the window's handler leaves them alone or they would run
+// twice. The page still passes them back, since on X11 the menu bar's
+// binding hears no key the page's window was sent.
 import type { MenuShortcut } from 'react-x11';
 
 export type Command =
@@ -24,6 +30,10 @@ export type Command =
   | 'zoomOut'
   | 'zoomReset'
   | 'stop'
+  | 'devtools'
+  | 'console'
+  | 'pick'
+  | 'viewSource'
   | 'tab1'
   | 'tab2'
   | 'tab3'
@@ -87,9 +97,31 @@ export function shortcuts(mod: 'Super' | 'Control'): [Command, MenuShortcut][] {
     ['zoomOut', [[mod, 'minus']]],
     ['zoomReset', [[mod, '0']]],
     ['stop', [['Escape']]],
+    ...developShortcuts(mod),
     ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n): [Command, MenuShortcut] => [
       `tab${n}` as Command,
       [[mod, `${n}`]],
     ]),
+  ];
+}
+
+/** The Develop menu's commands, which its items run. */
+export const DEVELOP: ReadonlySet<Command> = new Set<Command>([
+  'devtools',
+  'console',
+  'pick',
+  'viewSource',
+]);
+
+/** Their chords: Safari's and Chrome's on a Mac, and Chrome's elsewhere. */
+export function developShortcuts(
+  mod: 'Super' | 'Control',
+): [Command, MenuShortcut][] {
+  const mac = mod === 'Super';
+  return [
+    ['devtools', [mac ? [mod, 'Alt', 'I'] : [mod, 'Shift', 'I'], ['F12']]],
+    ['console', [mac ? [mod, 'Alt', 'J'] : [mod, 'Shift', 'J']]],
+    ['pick', [[mod, 'Shift', 'C']]],
+    ['viewSource', [mac ? [mod, 'Alt', 'U'] : [mod, 'U']]],
   ];
 }

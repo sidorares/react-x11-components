@@ -139,6 +139,11 @@ export interface Preferences {
   /** The chosen User-Agent preset, by id (see `useragents.ts`); absent
    *  means the browser's own default. */
   userAgent?: string;
+  /** Whether a site nobody switched either way runs its scripts; absent
+   *  means it does not. */
+  scriptsByDefault?: boolean;
+  /** The side the developer tools dock on; absent means the bottom. */
+  devtoolsDock?: 'bottom' | 'right' | 'left';
 }
 
 const SESSION = 'session.json';

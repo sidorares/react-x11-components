@@ -1014,6 +1014,35 @@ export interface PointerCompounds {
 const MATCHES_ANY = /^(?:is|where|not|matches|any|-webkit-any|-moz-any)$/i;
 
 /** The compounds of a complex selector, each with the combinator after it. */
+/**
+ * The classes, or the ids, a selector's subject asks for: the names in its
+ * last compound, escapes resolved, and none inside a functional
+ * pseudo-class, which may ask for them only in part (`:not(.x)`, `:is(.a,
+ * .b)`).
+ */
+function subjectNames(selector: string, attribute: 'class' | 'id'): string[] {
+  const parts = compoundsOf(selector);
+  const compound = parts[parts.length - 1]?.text ?? '';
+  const mark = attribute === 'class' ? '.' : '#';
+  const out: string[] = [];
+  let i = 0;
+  while (i < compound.length) {
+    const c = compound[i];
+    if (c === '.' || c === '#') {
+      const name = readIdent(compound, i + 1);
+      if (c === mark && name.value) out.push(name.value);
+      i = Math.max(name.end, i + 1);
+    } else if (c === '[') {
+      i = balancedEnd(compound, i, '[', ']');
+    } else if (c === '(') {
+      i = balancedEnd(compound, i, '(', ')');
+    } else if (c === '\\') {
+      i = escapeEnd(compound, i);
+    } else i += 1;
+  }
+  return out;
+}
+
 function compoundsOf(selector: string): { text: string; next: string }[] {
   const parts: { text: string; next: string }[] = [];
   let start = 0;
@@ -4692,6 +4721,96 @@ export class Cascade {
       this._subjects.set(key, match);
     }
     return match;
+  }
+
+  /**
+   * The classes, or the ids, that would bring one more of the author's
+   * rules onto `el` were it to carry them, besides what it has: each name a
+   * rule's subject asks for, where the rule's selector matches the element
+   * as though it had that name too — a class added to its classes, an id
+   * in place of its own — under the media as they hold now, with the
+   * pointer and the focus taken to be wherever the rule wants them. What a
+   * developer's tools offer as a class or an id is typed: only a name some
+   * style would answer (`HtmlHandle.namesThatStyle`).
+   *
+   * Each rule is matched through an adapter of its own, which answers the
+   * element's attribute with the name in it, compiled for the question and
+   * keeping no answer: no matcher of the cascade's is asked, nothing it
+   * keeps is touched, and the element is not changed.
+   */
+  namesThatStyle(el: Element, attribute: 'class' | 'id'): string[] {
+    const own = (el.attribs[attribute] ?? '').split(/\s+/).filter(Boolean);
+    const have = new Set(own);
+    const scope = (this._scoped ? this._treeInfo(el) : this._docInfo).rules.id;
+    // the rules whose subject asks for a name the element does not have
+    const asking = new Map<string, StyleRule[]>();
+    for (const indexed of this._index.all()) {
+      if (indexed.scope === UA_SCOPE) continue;
+      if (this._scoped && indexed.scope !== scope) continue;
+      for (const name of subjectNames(indexed.rule.selector, attribute)) {
+        if (have.has(name)) continue;
+        let rules = asking.get(name);
+        if (!rules) asking.set(name, (rules = []));
+        rules.push(indexed.rule);
+      }
+    }
+    if (!asking.size) return [];
+    let trying = '';
+    const value = (): string =>
+      attribute === 'class' ? [...own, trying].join(' ') : trying;
+    const base = this._adapter;
+    const adapter: CssSelectAdapter = {
+      ...base,
+      getAttributeValue: (e: Element, name: string) =>
+        e === el && name === attribute
+          ? value()
+          : base.getAttributeValue(e, name),
+      hasAttrib: (e: Element, name: string) =>
+        (e === el && name === attribute) || base.hasAttrib(e, name),
+    };
+    const width = this.viewportWidth / this.scale;
+    const height = this.viewportHeight / this.scale;
+    const matchers = new Map<StyleRule, ((e: Element) => boolean) | null>();
+    const matcherOf = (rule: StyleRule) => {
+      if (matchers.has(rule)) return matchers.get(rule)!;
+      let match: ((e: Element) => boolean) | null = null;
+      try {
+        // a state the user can put an element in is one it can be in
+        const stateless = rule.selector.replace(
+          /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/gi,
+          ':is(*)',
+        );
+        match = compileSelector(stateless, adapter, this._pseudos, false);
+      } catch {
+        match = null;
+      }
+      matchers.set(rule, match);
+      return match;
+    };
+    const out: string[] = [];
+    for (const [name, rules] of asking) {
+      trying = name;
+      for (const rule of rules) {
+        if (
+          !mediaMatches(
+            rule.media,
+            width,
+            this.look.colorScheme,
+            height,
+            this.scale,
+            this.reducedMotion,
+            this.scripting,
+          )
+        ) {
+          continue;
+        }
+        if (matcherOf(rule)?.(el)) {
+          out.push(name);
+          break;
+        }
+      }
+    }
+    return out.sort();
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses

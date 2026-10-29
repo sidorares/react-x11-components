@@ -47,7 +47,16 @@
 // submitted — which is a link with, for a POST, a body — and a document to
 // load again. The documents are this process's, kept by the id the browser
 // gave the navigation that loaded each one.
+//
+// So are the tab's developer tools (`devtools/`), docked under its
+// documents, since this is where the document is: the browser says whether
+// they are open and which panel it asked for, and hears when the page's
+// own menu opens them or their own button closes them. What the tab's
+// pages write to their console is kept here from the start, so tools
+// opened later show it.
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -77,6 +86,7 @@ import type {
 import {
   XK_DOWN,
   XK_END,
+  XK_ESCAPE,
   XK_HOME,
   XK_PAGE_DOWN,
   XK_PAGE_UP,
@@ -121,6 +131,9 @@ import { openProfile } from './profile.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
+import { Dock, Highlight } from './devtools/dock.js';
+import { ConsoleLog, Inspection, levelOf } from './devtools/model.js';
+import type { DevtoolsPanel, DockSide } from './devtools/model.js';
 import {
   BLANK,
   HOME,
@@ -144,6 +157,26 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
   XK_END,
   XK_SPACE,
 ]);
+
+/** The developer tools' panels, loaded the first time a tab opens them:
+ *  a tab that never does loads none of what they are made of. */
+const DevTools = lazy(() => import('./devtools/index.js'));
+
+/** What a secondary press was on, which the page's menu is about. */
+interface MenuTarget {
+  /** The link under it. */
+  href: string | null;
+  /** The element under it, which Inspect opens the tools on. */
+  element: Element | null;
+  /** The document's selected text, which Copy copies. */
+  selected: string;
+  /** The document's node, which Select All selects all of. */
+  surface: DrawnNode | null;
+}
+
+/** The kinds of node a field's widget is, whose own menu a press on one
+ *  opens. */
+const FIELDS = new Set(['textinput', 'textarea']);
 
 /** The schemes a link may take this browser to. */
 const OPENS = /^(?:https?|file|data|about|view-source):/i;
@@ -181,8 +214,8 @@ void publicSuffixList().then((list) => {
  *  and what came of it — `cached` for one the cache answered, `revalidated`
  *  for a 304. */
 const network = new HtmlNetwork({
-  // the default; the component sets it from `props.userAgent` (the toolbar's
-  // menu) before each load, so a switch takes on the next navigation
+  // the default; the component sets it from `props.userAgent`, Develop ›
+  // User Agent, before each load, so a switch takes on the next navigation
   userAgent: DEFAULT_USER_AGENT,
   cookies,
   httpCache: profile?.httpCache ?? undefined,
@@ -262,11 +295,25 @@ export interface PageProps {
    *  the page is from. Read as a document is made; the browser reloads the
    *  page when it changes. */
   scripts: boolean;
-  /** The User-Agent to send and to name as `navigator.userAgent`, from the
-   *  toolbar's menu, or `null`/absent for the default. The network takes it
+  /** The User-Agent to send and to name as `navigator.userAgent`, from
+   *  Develop › User Agent, or `null`/absent for the default. The network takes it
    *  for its next request and `navigator` as the next document's scripts
    *  start, so the browser reloads the page when it changes. */
   userAgent?: string | null;
+  /** The developer tools: whether they are open under the page, the panel
+   *  the browser asked for last, whether that ask was to choose an element
+   *  in the page, and a count of its asks — each new one shows its panel. */
+  devtools: boolean;
+  devtoolsPanel: DevtoolsPanel;
+  devtoolsPick: boolean;
+  devtoolsAsk: number;
+  /** The side of the page they are docked on: the browser's, for every
+   *  tab. */
+  devtoolsDock: DockSide;
+  /** The page's Inspect opened the tools, or their own button closed them. */
+  onDevtools(open: boolean): void;
+  /** Their strip moved them to another side. */
+  onDevtoolsDock(side: DockSide): void;
   /** A navigation's document started to arrive. `posted` when it is the
    *  answer to a POST — not to the GET a redirect after one turned it into
    *  — so a reload sends the POST again. */
@@ -604,9 +651,13 @@ export default function Page(props: PageProps): ReactElement {
   const scroller = useRef<ScrollableNode | null>(null);
   const [hoverLink, setHoverLink] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // the link a secondary press was on, which the context menu is about
-  const [menuLink, setMenuLink] = useState<string | null>(null);
+  // what a secondary press was on, which the context menu is about
+  const [menuAt, setMenuAt] = useState<MenuTarget | null>(null);
   const clipboard = useClipboard();
+  // the tab's developer tools: what they inspect, and what its pages wrote
+  // to their console, kept from the start
+  const [inspection] = useState(() => new Inspection());
+  const [consoleLog] = useState(() => new ConsoleLog());
   // what the document shown has asked for and not had
   const [pending, setPending] = useState(0);
   /** Each document's requests, by its view, held while it is kept. */
@@ -743,7 +794,7 @@ export default function Page(props: PageProps): ReactElement {
     return { entry: current?.id ?? null, again: current?.document };
   };
 
-  // The User-Agent the toolbar's menu chose, onto this process's network —
+  // The User-Agent the Develop menu chose, onto this process's network —
   // before the load effect below, so a navigation it starts in the same
   // commit (the reload the browser dispatches when the agent changes) goes
   // out with the new agent. `navigator.userAgent` follows through
@@ -1098,7 +1149,7 @@ export default function Page(props: PageProps): ReactElement {
       setNotice(
         props.scripts
           ? 'javascript: links are not run by this browser.'
-          : 'Scripts do not run on this site; the toolbar’s JS switch turns them on.',
+          : 'Scripts do not run on this site; Develop › JavaScript turns them on.',
       );
       return;
     }
@@ -1189,6 +1240,7 @@ export default function Page(props: PageProps): ReactElement {
       // document's: the history planned the step, which is taken here
       go: (delta) => goBy(delta),
       log: (level, text) => {
+        consoleLog.write(levelOf(level), text);
         if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
       },
       title: (title) => live.current.onMeta(view.seq, title, undefined),
@@ -1217,33 +1269,92 @@ export default function Page(props: PageProps): ReactElement {
         (event.type === 'keydown' || event.type === 'keyup') &&
         ((cocoa ? event.metaKey : event.ctrlKey) ||
           (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
-          /^F[56]$/.test(event.key ?? '')),
+          /^F(?:5|6|12)$/.test(event.key ?? '')),
     };
 
-  // A link's menu, where the press was on one, and nothing where it was
-  // not: `<ContextMenu>` opens no menu for no items, and the document's own
-  // Copy and Select all are what a press on its text gets.
-  const linkMenu = useMemo<MenuItem[]>(
-    () =>
-      menuLink
-        ? [
-            {
-              key: 'open-tab',
-              label: 'Open Link in New Tab',
-              enabled: OPENS.test(menuLink),
-              onSelect: () => live.current.onLink(menuLink, 'background', null),
-            },
-            {
-              key: 'copy-link',
-              label: 'Copy Link Address',
-              onSelect: () => {
-                clipboard.write(menuLink).catch(() => {});
-              },
-            },
-          ]
-        : [],
-    [menuLink, clipboard],
-  );
+  // The page's menu: a link's items where the press was on one, Copy where
+  // something is selected, the history, and the tools — Inspect opens them
+  // on the element under the press. Nothing where the press was on a
+  // field, whose own edit menu is what it gets.
+  const pageMenu = useMemo<MenuItem[]>(() => {
+    if (!menuAt) return [];
+    const { href, element, selected, surface } = menuAt;
+    const items: MenuItem[] = [];
+    if (href) {
+      items.push(
+        {
+          key: 'open-tab',
+          label: 'Open Link in New Tab',
+          enabled: OPENS.test(href),
+          onSelect: () => live.current.onLink(href, 'background', null),
+        },
+        {
+          key: 'copy-link',
+          label: 'Copy Link Address',
+          onSelect: () => {
+            clipboard.write(href).catch(() => {});
+          },
+        },
+        { key: 'link-rule', type: 'separator' },
+      );
+    }
+    if (selected) {
+      items.push(
+        {
+          key: 'copy',
+          label: 'Copy',
+          onSelect: () => {
+            clipboard.write(selected).catch(() => {});
+          },
+        },
+        { key: 'copy-rule', type: 'separator' },
+      );
+    }
+    items.push(
+      {
+        key: 'back',
+        label: 'Back',
+        enabled: session.index > 0,
+        onSelect: () => live.current.onCommand('back'),
+      },
+      {
+        key: 'forward',
+        label: 'Forward',
+        enabled: session.index < session.entries.length - 1,
+        onSelect: () => live.current.onCommand('forward'),
+      },
+      {
+        key: 'reload',
+        label: 'Reload',
+        onSelect: () => live.current.onCommand('reload'),
+      },
+      { key: 'history-rule', type: 'separator' },
+      {
+        key: 'select-all',
+        label: 'Select All',
+        enabled: !!surface,
+        onSelect: () => surface?.selectAll(),
+      },
+      {
+        key: 'source',
+        label: 'View Page Source',
+        enabled: /^(?:https?|file):/.test(url),
+        onSelect: () =>
+          live.current.onLink(`view-source:${withoutHash(url)}`, 'tab', null),
+      },
+      { key: 'tools-rule', type: 'separator' },
+      {
+        key: 'inspect',
+        label: 'Inspect',
+        enabled: !!element,
+        onSelect: () => {
+          inspection.reveal(element);
+          live.current.onDevtools(true);
+        },
+      },
+    );
+    return items;
+  }, [menuAt, clipboard, url]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1252,6 +1363,30 @@ export default function Page(props: PageProps): ReactElement {
   }, [notice]);
   // the link under the pointer was the last document's
   useEffect(() => setHoverLink(null), [shownN]);
+
+  // the tools: a document shown anew is said so in the console, and what
+  // was inspected was the last document's
+  useEffect(() => {
+    inspection.selected.set(null);
+    inspection.hovered.set(null);
+    if (url) consoleLog.write('navigation', `Navigated to ${url}`);
+  }, [shownN]);
+  // the browser asked to choose an element in the page; and tools closed
+  // choose nothing
+  const { devtools, devtoolsAsk } = props;
+  useEffect(() => {
+    if (devtools && props.devtoolsPick) inspection.picking.set(true);
+  }, [devtoolsAsk]);
+  useEffect(() => {
+    if (devtools) return;
+    inspection.picking.set(false);
+    inspection.hovered.set(null);
+  }, [devtools]);
+  /** While choosing, the press that chose: its release and its click are
+   *  the page's no more than the press was. */
+  const picked = useRef(false);
+  const elementOfPress = (ev: X11MouseEvent<DrawnNode>) =>
+    handle.elementAt(ev.x, ev.y);
 
   const busy = !!loadSeq || !!page?.partial;
   const status =
@@ -1263,7 +1398,7 @@ export default function Page(props: PageProps): ReactElement {
         ? `Loading ${pending} resource${pending === 1 ? '' : 's'}…`
         : null);
 
-  return (
+  const pageBox = (
     <box
       style={{
         flexGrow: 1,
@@ -1272,19 +1407,40 @@ export default function Page(props: PageProps): ReactElement {
         position: 'relative',
         backgroundColor: '$background',
       }}
+      onKeyDownCapture={(ev: X11KeyboardEvent<DrawnNode>) => {
+        // Escape stops choosing an element
+        if (ev.keysym !== XK_ESCAPE || !inspection.picking.value) return;
+        inspection.picking.set(false);
+        inspection.hovered.set(null);
+        ev.preventDefault();
+        ev.stopPropagation();
+      }}
     >
       <ContextMenu
-        items={linkMenu}
+        items={pageMenu}
         // the menu's wrapper takes the focus while a menu is open, for its
         // keys, and is no stop of the Tab order between toolbar and page
         tabIndex={-1}
         style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
         onContextMenuCapture={(ev: X11MouseEvent<DrawnNode>) => {
-          const href = handle.hrefAt(ev.x, ev.y);
-          setMenuLink(href);
-          // and on a link, the link's menu stands in for the document's
-          // edit menu, which a cancelled press does not open
-          if (href) ev.preventDefault();
+          // a field's own edit menu is what a press on one gets
+          let surface: DrawnNode | null = null;
+          for (let n: DrawnNode | null = ev.target; n; n = n.parent) {
+            if (FIELDS.has(n.kind)) return setMenuAt(null);
+            if (n.kind === 'htmlview') {
+              surface = n;
+              break;
+            }
+          }
+          setMenuAt({
+            href: handle.hrefAt(ev.x, ev.y),
+            element: handle.elementAt(ev.x, ev.y),
+            selected: surface?.selectedText() ?? '',
+            surface,
+          });
+          // and the page's menu stands in for the document's edit menu,
+          // which a cancelled press does not open
+          ev.preventDefault();
         }}
       >
         <box
@@ -1334,8 +1490,37 @@ export default function Page(props: PageProps): ReactElement {
           onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
             const href = handle.hrefAt(ev.x, ev.y);
             if (href !== hoverLink) setHoverLink(href);
+            if (inspection.picking.value) {
+              inspection.hovered.set(elementOfPress(ev));
+            }
           }}
-          onMouseLeave={() => setHoverLink(null)}
+          onMouseLeave={() => {
+            setHoverLink(null);
+            if (inspection.picking.value) inspection.hovered.set(null);
+          }}
+          // While choosing an element, a press chooses the one under it and
+          // goes no further: the page never hears it, nor its release and
+          // its click, so a link chosen is not followed.
+          onMouseDownCapture={(ev: X11MouseEvent<DrawnNode>) => {
+            if (!inspection.picking.value) return;
+            picked.current = true;
+            inspection.picking.set(false);
+            inspection.hovered.set(null);
+            inspection.reveal(elementOfPress(ev));
+            ev.preventDefault();
+            ev.stopPropagation();
+          }}
+          onMouseUpCapture={(ev: X11MouseEvent<DrawnNode>) => {
+            if (!picked.current) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+          }}
+          onClickCapture={(ev: X11MouseEvent<DrawnNode>) => {
+            if (!picked.current) return;
+            picked.current = false;
+            ev.preventDefault();
+            ev.stopPropagation();
+          }}
           onMouseDown={(ev: X11MouseEvent<DrawnNode>) => {
             // a middle click opens the link in a tab behind this one
             if (ev.button !== 2) return;
@@ -1408,6 +1593,8 @@ export default function Page(props: PageProps): ReactElement {
               </box>
             );
           })}
+          {/* over the document, in the pane that scrolls it */}
+          <Highlight handle={handle} inspection={inspection} />
         </box>
       </ContextMenu>
       {status ? (
@@ -1440,6 +1627,30 @@ export default function Page(props: PageProps): ReactElement {
         </box>
       ) : null}
     </box>
+  );
+
+  return (
+    <Dock
+      page={pageBox}
+      side={props.devtoolsDock}
+      tools={
+        devtools ? (
+          <Suspense fallback={null}>
+            <DevTools
+              handle={handle}
+              docKey={shownN}
+              inspection={inspection}
+              log={consoleLog}
+              panel={props.devtoolsPanel}
+              ask={devtoolsAsk}
+              dock={props.devtoolsDock}
+              onDock={(side) => live.current.onDevtoolsDock(side)}
+              onClose={() => live.current.onDevtools(false)}
+            />
+          </Suspense>
+        ) : null
+      }
+    />
   );
 }
 
