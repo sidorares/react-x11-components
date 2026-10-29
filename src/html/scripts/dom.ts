@@ -82,6 +82,11 @@ export function installDom(
   'use strict';
   type Any = any;
   const G: Any = globalThis;
+  /** How a page's callback is called with the `this` its specification
+   *  gives, taken before any page code runs: a call as a method of what
+   *  holds it hands the page the holder, and `fn.call` and a spread are
+   *  the page's to replace. */
+  const reflectApply: Any = Reflect.apply;
 
   // The context's own `FinalizationRegistry`, kept for this facade's own
   // registries (whose cleanup only calls the bridge) and wrapped for the
@@ -15074,7 +15079,11 @@ export function installDom(
     if (vt._phase !== 'done') vt._phase = 'update-callback-called';
     let promise: Any;
     try {
-      promise = Promise.resolve(vt._callback ? vt._callback() : undefined);
+      // invoked with no `this` (Web IDL, "invoke a callback
+      // function"), not as a method of the transition
+      promise = Promise.resolve(
+        vt._callback ? reflectApply(vt._callback, undefined, []) : undefined,
+      );
     } catch (error) {
       promise = Promise.reject(error);
     }
@@ -28041,7 +28050,9 @@ export function installDom(
     const timer = timers.get(id);
     if (!timer) return false;
     if (!timer.repeat) timers.delete(id);
-    if (typeof timer.fn === 'function') timer.fn(...timer.args);
+    // with the window as `this`, strict or not (HTML 8.6, the timer
+    // initialization steps' thisArg), never the record it is kept in
+    if (typeof timer.fn === 'function') reflectApply(timer.fn, G, timer.args);
     else (0, eval)(str(timer.fn));
     return true;
   });
