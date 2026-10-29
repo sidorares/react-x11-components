@@ -28,6 +28,8 @@ import { bestFace, refusal } from '../src/html/fonts.js';
 import { GifCanvas, decodeGif, readGif } from '../src/html/gif.js';
 import { AnimatedImage, gifAnimation } from '../src/html/animated.js';
 import { WebPCanvas, readAnimatedWebP } from '../src/html/webp.js';
+import { headerSize } from '../src/html/image-header.js';
+import * as ntk from 'react-x11/ntk';
 import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
 import { gifBytes } from './gif-fixture.js';
 import { fontAxes } from '../src/html/layout/axes.js';
@@ -880,6 +882,129 @@ test("an animated WebP's frames blend, replace and are disposed of as their flag
     "a lossy frame's alpha is its ALPH chunk's",
   );
   assert.ok(lossy[2] > 200 && lossy[0] < 60, 'and its colour its own');
+});
+
+// --- an image's size, from its header ----------------------------------------
+
+// Each made with ImageMagick (and libwebp's cwebp for the WebPs), 5 by 3 but
+// the progressive JPEG, 7 by 2: sides that differ, so a swap shows.
+const HEADER_FIXTURES: Record<string, string> = {
+  png:
+    'iVBORw0KGgoAAAANSUhEUgAAAAUAAAADAQMAAABh+Fe7AAAAA1BMVEUAgACc+aWRAAAAC0lE' +
+    'QVQI12NgAAEAAAYAAWb0yWwAAAAASUVORK5CYII=',
+  // SOF0, red
+  jpeg:
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9' +
+    'PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhC' +
+    'Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAAR' +
+    'CAADAAUDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAA' +
+    'AAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABQb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oA' +
+    'DAMBAAIRAxEAPwCKALXj/9k=',
+  // SOF2, its frame header after Huffman tables
+  progressive:
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9' +
+    'PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhC' +
+    'Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wgAR' +
+    'CAACAAcDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAVAQEBAAAAAAAAAAAA' +
+    'AAAAAAADBf/aAAwDAQACEAMQAAABjC8X/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAB' +
+    'BQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAA' +
+    'AAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBAB' +
+    'AAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAD/8QAFBEBAAAAAAAA' +
+    'AAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB/' +
+    '/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=',
+  lossy:
+    'UklGRjYAAABXRUJQVlA4ICoAAACQAQCdASoFAAMAAsBMJaACdLoAA5gA/u52f/FtI6FMh/8K' +
+    '1zD8w9hQAAA=',
+  lossless: 'UklGRhwAAABXRUJQVlA4TA8AAAAvBIAAAAdQwIj+ByKi/wEA',
+  // VP8X, for its ALPH chunk, then VP8
+  extended:
+    'UklGRlwAAABXRUJQVlA4WAoAAAAQAAAABAAAAgAAQUxQSAoAAAARB1DAiAhERP8DVlA4ICwA' +
+    'AACQAQCdASoFAAMAAsBMJaACdLoAA5gA/u5DH+5sc4twV/9tD/9aH/60P+lAAA==',
+  gif: 'R0lGODlhBQADAPAAAP8AAAAAACH5BAAAAAAALAAAAAAFAAMAAAIDhI9ZADs=',
+};
+
+/** A JPEG with an Exif segment after its SOI whose IFD0 holds only an
+ *  Orientation: a little-endian TIFF header, one entry, no next IFD. */
+const withOrientation = (jpeg: Uint8Array, orientation: number): Uint8Array => {
+  const tiff = [
+    ...[0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00],
+    ...[0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00],
+    ...[orientation, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+  ];
+  const exif = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...tiff];
+  const segment = [0xff, 0xe1, 0x00, exif.length + 2, ...exif];
+  return new Uint8Array([
+    ...jpeg.subarray(0, 2),
+    ...segment,
+    ...jpeg.subarray(2),
+  ]);
+};
+
+/** What core's ladder, or `gif.ts`, decodes bytes to. */
+const decodedSize = async (bytes: Uint8Array) => {
+  const gif = readGif(bytes);
+  if (gif) return { width: gif.width, height: gif.height };
+  const { width, height } = await ntk.decodeImageBytes(bytes);
+  return { width, height };
+};
+
+/** ntk's reading of the Orientation, which its decoder turns by; not on
+ *  react-x11's declared list (`resources.ts`). */
+const orientation = (
+  ntk as unknown as { exifOrientation: (bytes: Uint8Array) => number }
+).exifOrientation;
+
+test("an image's header says the size it decodes to, before it is decoded", async () => {
+  // what `ResourceStore._decoding` lays an image out at while its pixels
+  // are on a worker thread: it has to be the decoded size, or the boxes
+  // are built again when they land
+  const expected: Record<string, [number, number]> = {
+    png: [5, 3],
+    jpeg: [5, 3],
+    progressive: [7, 2],
+    lossy: [5, 3],
+    lossless: [5, 3],
+    extended: [5, 3],
+    gif: [5, 3],
+  };
+  for (const [name, base64] of Object.entries(HEADER_FIXTURES)) {
+    const bytes = bytesOf(base64);
+    const header = headerSize(bytes, orientation);
+    assert.deepStrictEqual(
+      header && [header.width, header.height],
+      expected[name],
+      name,
+    );
+    assert.deepStrictEqual(header, await decodedSize(bytes), `${name} decoded`);
+  }
+  // a quarter turn swaps the sides, as the decoder turns the pixels; a half
+  // turn and a mirror keep them; and without the reader a JPEG is as stored
+  const jpeg = bytesOf(HEADER_FIXTURES.jpeg);
+  for (const [turn, size] of [
+    [6, { width: 3, height: 5 }],
+    [8, { width: 3, height: 5 }],
+    [5, { width: 3, height: 5 }],
+    [3, { width: 5, height: 3 }],
+    [2, { width: 5, height: 3 }],
+  ] as const) {
+    const turned = withOrientation(jpeg, turn);
+    assert.deepStrictEqual(headerSize(turned, orientation), size, `${turn}`);
+    assert.deepStrictEqual(
+      await decodedSize(turned),
+      size,
+      `${turn}, as decoded`,
+    );
+  }
+  assert.deepStrictEqual(headerSize(withOrientation(jpeg, 6)), {
+    width: 5,
+    height: 3,
+  });
+  // cut short of its size, or not an image, says nothing
+  for (const bytes of Object.values(HEADER_FIXTURES).map(bytesOf)) {
+    assert.strictEqual(headerSize(bytes.subarray(0, 8)), null);
+  }
+  assert.strictEqual(headerSize(new TextEncoder().encode('<svg/>')), null);
+  assert.strictEqual(headerSize(new Uint8Array(0)), null);
 });
 
 test('a GIF handed over as bytes reaches the box as an image', async () => {

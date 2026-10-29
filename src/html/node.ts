@@ -1248,11 +1248,15 @@ export class HtmlViewNode extends Node {
         // the box tree is what has to be rebuilt — not merely repainted —
         // where anything its size lays out asked for it; one only a
         // background, a border image or a mask paints changes no box, and
-        // is painted (`_imagePainted`). Either arriving after first paint
-        // is the ordinary case, not an error path: a host on a network
-        // answers every request that way. A video's source changes no box:
-        // a player goes over one. A sheet declined that late changes no
-        // style either, but the first rendering may be held for it.
+        // is painted (`_imagePainted`). An image's size can come before its
+        // pixels, read from its header while they decode, and is laid out
+        // then with nothing new to paint; a decode that came to another
+        // size, or to none, builds the boxes again around kept styles.
+        // Either arriving after first paint is the ordinary case, not an
+        // error path: a host on a network answers every request that way.
+        // A video's source changes no box: a player goes over one. A sheet
+        // declined that late changes no style either, but the first
+        // rendering may be held for it.
         if (what === 'video') this._reportMedia();
         else if (what === 'audio') this._publishSounds();
         // a sheet only a `<link rel=preload>` asked for: nothing reads it
@@ -1261,8 +1265,11 @@ export class HtmlViewNode extends Node {
         else if (what === 'declined') {
           // nothing to restyle, but a first rendering may have waited on it
           if (!this._tree) this._invalidate(Stale.Style);
-        } else if (what === 'image' && !layout) this._imagePainted();
-        else if (what === 'image') this._imageArrived();
+        } else if ((what === 'image' || what === 'resized') && !layout) {
+          this._imagePainted();
+        } else if (what === 'image') this._imageArrived();
+        else if (what === 'sized') this._imageArrived(false);
+        else if (what === 'resized') this._invalidate(Stale.Boxes, EMPTY_SET);
         else if (what === 'stylesheet' && this._tree && this._cascade) {
           // a sheet as one more of the document's, whose rules style what
           // they can style (`_sheetsAdded`)
@@ -1281,6 +1288,7 @@ export class HtmlViewNode extends Node {
       request: (url, element) =>
         this._resources.request({ url, kind: 'image', element }),
       state: (url) => this._resources.state(url),
+      sized: (url) => this._resources.imageSize(url) !== null,
     });
     this._webFonts = new WebFonts(
       app,
@@ -1900,8 +1908,12 @@ export class HtmlViewNode extends Node {
    * built again. Wikipedia says how big each image of an article is, and
    * its article on the X Window System was built and laid out again eleven
    * times as they came in, at some 180 ms a time on a Mac.
+   *
+   * `painted` is false where only the size arrived, read from the image's
+   * header while its pixels decode: nothing draws it yet, so nothing is
+   * painted but what a layout moves.
    */
-  private _imageArrived(): void {
+  private _imageArrived(painted = true): void {
     const tree = this._tree;
     if (
       !tree ||
@@ -1927,7 +1939,7 @@ export class HtmlViewNode extends Node {
     const take = (box: Box): boolean => {
       const el = box.el!;
       const size = this._imageSize(el);
-      if (!size || this._imagePending(el)) return false;
+      if (!size || this._sizePending(el)) return false;
       const next = intrinsicsOf(size, s * box.style.effectiveZoom);
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
         moves = true;
@@ -1955,16 +1967,25 @@ export class HtmlViewNode extends Node {
         if (box && !tree.awaiting.includes(box)) take(box);
       }
     }
-    this._imagePainted();
+    if (painted) this._imagePainted();
     if (moves) this._invalidate(Stale.Layout);
   }
 
-  /** Whether the image an element shows is still to come: its own, or the
-   *  one it chose, which it shows the one before in place of until then. */
-  private _imagePending(el: Element): boolean {
-    return choosesSource(el)
-      ? this._images.pending(el)
-      : this._resources.state(imageUrlOf(el) ?? '') === 'pending';
+  /**
+   * Whether the size an element's box takes is still to come: its own
+   * image's, until its header or its decode has said it, or that of the
+   * one it chose, which it shows the one before in place of until the
+   * chosen one's pixels are in (`ImageSources.sizePending`). Not whether
+   * its pixels are: an image laid out at the size its header said is still
+   * drawn only once `ResourceStore.image` has them.
+   */
+  private _sizePending(el: Element): boolean {
+    if (choosesSource(el)) return this._images.sizePending(el);
+    const url = imageUrlOf(el) ?? '';
+    return (
+      this._resources.state(url) === 'pending' &&
+      !this._resources.imageSize(url)
+    );
   }
 
   /** Whether an image generated content names arrived as it was asked for,
@@ -3388,7 +3409,7 @@ export class HtmlViewNode extends Node {
           imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
           holdsDocument: (el) =>
             this._resources.holdsDocument(imageUrlOf(el) ?? ''),
-          imagePending: (el) => this._imagePending(el),
+          sizePending: (el) => this._sizePending(el),
           urlSize: (url) => this._resources.imageSize(url),
           faceAscent: (style) => {
             const fonts = this._fonts();
@@ -4025,7 +4046,7 @@ export class HtmlViewNode extends Node {
         ? intrinsicsOf(size, scale)
         : awaitedIntrinsics(this._dimensionSource(el), scale);
       // and it waits for what it chose, as a box built now would
-      if ((!size || this._imagePending(el)) && !tree.awaiting.includes(box)) {
+      if ((!size || this._sizePending(el)) && !tree.awaiting.includes(box)) {
         tree.awaiting.push(box);
       }
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {

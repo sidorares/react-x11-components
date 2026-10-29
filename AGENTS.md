@@ -1960,6 +1960,30 @@ host refuses, and the bench's harness measured it a viewport tall until a
 query built it; anything new that holds the first rendering has to be told
 when what it waits on will never come.
 
+**An image's size is its header's until its pixels are in**
+(`image-header.ts`, `ResourceStore._decoding`). A PNG, a JPEG or a WebP of
+8 KB or more decodes on a worker thread, and a page of photographs queues
+them, so the store reads the size from the head of the file as the bytes
+arrive — PNG's IHDR, a JPEG's frame header turned by its EXIF orientation
+as ntk's decoder turns the pixels, WebP's first chunk, GIF's logical
+screen — and the image is laid out at it while it decodes, as a browser
+lays one out. On Apple's MacBook Pro page an `<img>` answered from the
+cache was still decoding 2.5 s after the network went quiet, and the boxes
+under it sat 284px too high until it landed. Three things are
+load-bearing. **"Pending" is two questions, and each reader asks one**:
+`ResourceStore.state` is `'pending'` until the pixels are in, which is what
+paint (`image`), the document's `load` (`pending`) and the picture a source
+swap keeps showing (`ImageSources.shown`) ask; `imageSize` answers from the
+header as well, and a box waits on `_sizePending` and
+`ImageSources.sizePending` (`awaiting`). Anything new that reads an image's
+state says which it means, or an image is drawn before it has pixels or
+laid out before it has a size. **The header is believed until the decode
+says otherwise**: a decode that comes to another size, or fails, is told as
+`'resized'`, and the boxes are built again around kept styles. And **a size
+from the header is told as `'sized'`**, which takes sizes in place and
+paints nothing; the pixels' arrival is the `'image'` it always was. A test
+holds the decode through `imageDecoder`, as it holds a clock.
+
 **A cache kept by an element is dropped by what can make it stale.** A
 `refresh()` is an application saying it changed the tree — anything in it,
 an attribute or the middle of a drawing — and a stream's chunk is the

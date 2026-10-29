@@ -1154,10 +1154,11 @@ export interface BoxTree {
    *  pseudo-element names it, for the host to be asked for, and whether its
    *  size was known when the box was built. */
   contentImages: { url: string; element: Element; sized: boolean }[];
-  /** Every `<img>` box built before its image arrived — at the size its
-   *  element's attributes say, or the image it showed before — and what an
-   *  image arriving is checked against, since one that sizes nothing anew
-   *  changes no box (`HtmlViewNode._imageArrived`). */
+  /** Every `<img>` box built before its image's size was known — at the
+   *  size its element's attributes say, or the image it showed before —
+   *  and what an image arriving is checked against, since one that sizes
+   *  nothing anew changes no box (`HtmlViewNode._imageArrived`). One its
+   *  header sized while its pixels decode waits for none. */
   awaiting: Box[];
   /** Every image's box, in document order, laid out or set aside: what an
    *  image that shows another source takes its size into
@@ -1292,16 +1293,19 @@ export interface BuildOptions {
    *  on the way in. Default 1. */
   scale?: number;
   /** Intrinsic size for an image the host has already loaded, in the
-   *  image's own pixels. `null` when it has not: the box takes the attribute
-   *  size, or a placeholder. */
+   *  image's own pixels — or whose header has said it, while its pixels
+   *  decode. `null` when neither: the box takes the attribute size, or a
+   *  placeholder. */
   imageSize(el: Element): IntrinsicSize | null;
   /** Whether what an `<object>` or an `<embed>` names is a document, which
    *  it shows as a frame, rather than its fallback content. */
   holdsDocument?(el: Element): boolean;
-  /** Whether the image an element chose is still on its way, whatever it
-   *  shows meanwhile — the one it chose before, where that is in: the box
-   *  it is built with waits for it (`BoxTree.awaiting`). */
-  imagePending?(el: Element): boolean;
+  /** Whether the size an element's box takes is still to come, whatever
+   *  it shows meanwhile — the one it chose before, where that is in: the
+   *  box it is built with waits for it (`BoxTree.awaiting`). Not whether
+   *  its pixels are: `imageSize` may answer from an image's header while
+   *  they decode, and such a box waits for nothing. */
+  sizePending?(el: Element): boolean;
   /** The same for an image named by url — generated content's. */
   urlSize?(url: string): IntrinsicSize | null;
   /** How far a style's first face reaches above its baseline, in device
@@ -4180,7 +4184,7 @@ class Builder {
       const loaded = this._options.imageSize(el);
       if (loaded) {
         setIntrinsics(box, loaded, scale);
-        if (this._options.imagePending?.(el)) this._awaiting.push(box);
+        if (this._options.sizePending?.(el)) this._awaiting.push(box);
       } else {
         // An image that has not arrived still needs a box, or the document
         // reflows under the reader when it does. The attributes are the

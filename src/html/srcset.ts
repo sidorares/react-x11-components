@@ -402,10 +402,13 @@ function dimensionsOf(img: Element, source: Element | null): Element {
     : img;
 }
 
-/** The store a choice asks for its URLs through, and asks the state of. */
+/** The store a choice asks for its URLs through, and asks the state of:
+ *  `'pending'` until an image's pixels are in, and whether its size is
+ *  known, which its header may say before them (`ResourceStore`). */
 export interface SourceStore {
   request(url: string, element: Element): void;
   state(url: string): 'pending' | 'ready' | 'failed' | null;
+  sized(url: string): boolean;
 }
 
 /** What a round of choices changed (`ImageSources.choose`). */
@@ -562,7 +565,9 @@ export class ImageSources {
    * failed, and until then what it showed before, where that had arrived.
    * Null for an element that chose nothing: no candidate anywhere, which
    * is an `<img>` with no image at all, or one whose `sizes` waits on a
-   * layout it has not had.
+   * layout it has not had. Arrived is its pixels, not its size: a choice
+   * whose header said its size is not shown over a picture that is in,
+   * since it has nothing to draw yet.
    */
   shown(el: Element): ImageSource | null {
     const choice = this._choices.get(el);
@@ -577,11 +582,14 @@ export class ImageSources {
     return choice.chosen;
   }
 
-  /** Whether the image an element chose is on its way: what it shows
-   *  meanwhile, if anything, is the one it chose before. */
-  pending(el: Element): boolean {
+  /** Whether the size an element's box takes is still to come: the image
+   *  it chose is on its way, and either it shows the one it chose before
+   *  meanwhile, or it shows the one it chose and that one's header has not
+   *  said its size. */
+  sizePending(el: Element): boolean {
     const chosen = this._choices.get(el)?.chosen;
-    return !!chosen && this._store.state(chosen.url) === 'pending';
+    if (!chosen || this._store.state(chosen.url) !== 'pending') return false;
+    return this.shown(el) !== chosen || !this._store.sized(chosen.url);
   }
 
   /**
