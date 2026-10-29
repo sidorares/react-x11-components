@@ -54,7 +54,7 @@ import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element, ParentNode } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
 import type { HighlightRanges } from './scripts/host.js';
-import type { ConsoleResult } from './scripts/scripted.js';
+import type { ConsoleProperty, ConsoleResult } from './scripts/scripted.js';
 import {
   findTextDirective,
   parseTextDirectives,
@@ -119,6 +119,7 @@ import type {
   HighlightPseudoStyle,
   HoverTouch,
   KeptStyles,
+  MatchedRule,
   MetricFace,
   ShadowSheets,
   SiblingPair,
@@ -844,6 +845,10 @@ export class HtmlViewNode extends Node {
   /** What a console typed, run by the document's scripts: the handle's
    *  `evaluate`. */
   evaluate: ((code: string) => ConsoleResult | null) | null = null;
+  /** …a level of a value it kept, and every value let go: the handle's
+   *  `inspectValue` and `releaseValues`. */
+  inspectValue: ((id: number) => ConsoleProperty[] | null) | null = null;
+  releaseValues: (() => void) | null = null;
   private _source = new HtmlSource();
   /** Where the document's relative URLs resolve: its `<base href>` against
    *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
@@ -5733,6 +5738,13 @@ export class HtmlViewNode extends Node {
    * element the document has not styled — not in it, or in a
    * `<template>`.
    */
+  /** The rules that match `element`, in the order they win
+   *  (`Cascade.matchedRules`). */
+  matchedRules(element: Element): MatchedRule[] {
+    this._prepare(this.abs.width || 1);
+    return this._cascade?.matchedRules(element) ?? [];
+  }
+
   /** The classes or ids some rule of the document's would style `element`
    *  with, were it to carry them (`Cascade.namesThatStyle`). */
   namesThatStyle(element: Element, attribute: 'class' | 'id'): string[] {

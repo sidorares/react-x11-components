@@ -11,6 +11,7 @@ import {
   resourceResult,
 } from '../../src/html/network.js';
 import { CookieJar } from '../../src/html/cookies.js';
+import type { HtmlNetworkActivity } from '../../src/html/network.js';
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
@@ -744,3 +745,103 @@ test('the User-Agent can be set, and the next request carries the new one', asyn
     'each request carried the agent set at the time',
   );
 });
+
+test('an observer is told of each request as it goes: a resource, the same from memory, a document and a page fetch', async () => {
+  const page = 'https://example.test/page.html';
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    fetch: async (url, init) => {
+      if (url.endsWith('/style.css')) {
+        return new Response('p { color: red }', {
+          status: 200,
+          headers: {
+            'content-type': 'text/css',
+            'cache-control': 'max-age=60',
+          },
+        });
+      }
+      if (url.endsWith('/api')) {
+        return new Response(JSON.stringify({ method: init.method }), {
+          status: 201,
+          statusText: 'Created',
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('<p>hi</p>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    },
+  });
+  const told: HtmlNetworkActivity[] = [];
+  const stop = network.observe((activity) => told.push(activity));
+  const of = (id: number) => told.filter((a) => a.id === id).map((a) => a.type);
+  const body = (id: number) =>
+    new TextDecoder().decode(
+      concatBytes(
+        told.flatMap((a) =>
+          a.id === id && a.type === 'data' ? [a.chunk] : [],
+        ),
+      ),
+    );
+
+  await network.resource(`https://example.test/style.css`, 'stylesheet', page);
+  const css = told.find((a) => a.type === 'request')!;
+  assert.equal(css.type === 'request' && css.kind, 'stylesheet');
+  assert.deepEqual(of(css.id), ['request', 'sent', 'response', 'data', 'end']);
+  assert.equal(body(css.id), 'p { color: red }');
+
+  // asked again, it is answered from memory with nothing sent
+  await network.resource(`https://example.test/style.css`, 'stylesheet', page);
+  await new Promise((r) => setTimeout(r, 0));
+  const again = told.filter((a) => a.type === 'request')[1];
+  assert.deepEqual(of(again.id), ['request', 'response', 'data', 'end']);
+  const cached = told.find((a) => a.id === again.id && a.type === 'response');
+  assert.equal(cached?.type === 'response' && cached.cache, 'memory');
+
+  // a document is told as its body is read, and ends when it is
+  const doc = await network.document(page, new AbortController().signal);
+  let text = '';
+  for await (const chunk of doc.body) text += new TextDecoder().decode(chunk);
+  const nav = told.filter((a) => a.type === 'request')[2];
+  assert.equal(nav.type === 'request' && nav.kind, 'document');
+  assert.deepEqual(of(nav.id), ['request', 'sent', 'response', 'data', 'end']);
+  assert.equal(body(nav.id), text);
+
+  // and a page's fetch, its method, body and status
+  await network.fetcher(page)(
+    {
+      url: 'https://example.test/api',
+      method: 'POST',
+      headers: [['content-type', 'text/plain']],
+      body: 'ping',
+    },
+    new AbortController().signal,
+  );
+  const api = told.filter((a) => a.type === 'request')[3];
+  assert.ok(api.type === 'request');
+  assert.equal(api.kind, 'fetch');
+  assert.equal(api.method, 'POST');
+  assert.equal(api.body, 'ping');
+  const answer = told.find((a) => a.id === api.id && a.type === 'response');
+  assert.ok(answer?.type === 'response');
+  assert.equal(answer.status, 201);
+  assert.equal(answer.statusText, 'Created');
+  assert.equal(body(api.id), '{"method":"POST"}');
+
+  // stopped, it is told nothing more
+  stop();
+  const before = told.length;
+  await network.resource(`https://example.test/style.css`, 'stylesheet', page);
+  assert.equal(told.length, before);
+});
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+}

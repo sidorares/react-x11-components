@@ -27656,10 +27656,97 @@ export function installDom(
   // own code at the global scope — the realm's indirect `eval`, taken
   // before any page code could replace it — and what it came to, or threw,
   // written out here as `console.log` writes a value, so that only a string
-  // crosses: `=` and the value, or `!` and the error. `{ a: 1 }` typed
+  // crosses: `=` and the value's description (`previewOf`), or `!` and the
+  // error. `{ a: 1 }` typed
   // alone is an object, as a browser's console reads it, and not a block.
   const realmEval: (code: string) => Any = G.eval;
   const RealmSyntaxError = SyntaxError;
+  const stringify: (value: Any) => string = JSON.stringify;
+  // What the console kept of its results, by an id the host asks for an
+  // object's properties with (`__consoleProps`), as a browser's tools keep
+  // a remote object: the newest MOST_INSPECTED, let go oldest first, and
+  // all at once by `__consoleRelease`. Only a description crosses: a type,
+  // a line of text and the id.
+  const inspected = new Map<number, Any>();
+  let inspectedNext = 0;
+  const MOST_INSPECTED = 500;
+  const previewOf = (v: Any): Any => {
+    if (v === null) return { t: 'null', s: 'null' };
+    const type = typeof v;
+    if (type === 'string') return { t: 'string', s: stringify(v) };
+    if (type !== 'object' && type !== 'function') {
+      return { t: type, s: show(v) };
+    }
+    const id = ++inspectedNext;
+    inspected.set(id, v);
+    if (inspected.size > MOST_INSPECTED) {
+      inspected.delete(inspected.keys().next().value as number);
+    }
+    let t = type === 'function' ? 'function' : 'object';
+    let s = '[Object]';
+    try {
+      if (Array.isArray(v)) t = 'array';
+      else if (v instanceof Node) t = 'node';
+      else if (v instanceof Error) t = 'error';
+      if (t === 'array') s = `(${v.length}) ${show(v)}`;
+      else if (t === 'object') {
+        // named by its constructor, as a browser's console names it: a
+        // prototype, or an instance with nothing of its own, by that alone
+        const name = Object.getPrototypeOf(v)?.constructor?.name;
+        const own = Object.keys(v).length > 0;
+        s = own
+          ? `${name && name !== 'Object' ? `${name} ` : ''}${show(v)}`
+          : typeof v.constructor === 'function' && v.constructor.prototype === v
+            ? String(v.constructor.name || 'Object')
+            : `${name || 'Object'} {}`;
+      } else s = show(v);
+    } catch {
+      // a proxy that throws is described as nothing more
+    }
+    return { t, s, id };
+  };
+  // an object the console kept, a level of it: its own properties, a
+  // getter's left unread, as `(…)`, since reading it runs the page's code;
+  // a map's and a set's entries; and its prototype
+  entry('__consoleProps', () => {
+    const v = inspected.get(Number(input()));
+    if (v === undefined) return '';
+    const out: Any[] = [];
+    try {
+      if (v instanceof Map || v instanceof Set) {
+        out.push({ k: '[[Entries]]', v: previewOf(Array.from(v)), e: false });
+      }
+      const names = Object.getOwnPropertyNames(v);
+      const most = 300;
+      for (const name of names.slice(0, most)) {
+        const d = Object.getOwnPropertyDescriptor(v, name);
+        if (!d) continue;
+        out.push(
+          'value' in d
+            ? { k: name, v: previewOf(d.value), e: !!d.enumerable }
+            : { k: name, v: { t: 'accessor', s: '(…)' }, e: !!d.enumerable },
+        );
+      }
+      if (names.length > most) {
+        out.push({
+          k: '…',
+          v: { t: 'more', s: `${names.length - most} more` },
+          e: false,
+        });
+      }
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== null) {
+        out.push({ k: '[[Prototype]]', v: previewOf(proto), e: false });
+      }
+    } catch (error) {
+      out.push({ k: '!', v: { t: 'error', s: show(error) }, e: false });
+    }
+    return stringify(out);
+  });
+  entry('__consoleRelease', () => {
+    inspected.clear();
+    return true;
+  });
   // what it threw, its stack cut where the line typed was run, as a
   // browser's console cuts it: the frames past that are this facade's and
   // the host's, which ran it, and so is any frame of the facade's above it
@@ -27700,7 +27787,7 @@ export function installDom(
     } catch (error) {
       return `!${typedStack(error)}`;
     }
-    return `=${typeof value === 'string' ? JSON.stringify(value) : show(value)}`;
+    return `=${stringify(previewOf(value))}`;
   });
 
   // an event `<Html>` was told of, dispatched as the browser would, and
