@@ -80,6 +80,7 @@ import {
   ShadowRoot,
   shadowRootOf,
   tagOf,
+  treeGeneration,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
 import type { FieldSelection } from './form.js';
@@ -1665,7 +1666,7 @@ export class HtmlViewNode extends Node {
     if (this.destroyed) return false;
     const before = this._source.revision;
     if (!this._source.write(script, markup)) return false;
-    if (this._source.revision !== before) this._invalidate(Stale.Style);
+    if (this._source.revision !== before) this._parsedOnTo();
     return true;
   }
 
@@ -1673,8 +1674,18 @@ export class HtmlViewNode extends Node {
    *  script it waits at, or to its end (`HtmlSource.resume`). */
   parserResume(script: Element): void {
     if (this.destroyed || this._source.held !== script) return;
-    if (this._source.resume(script)) this._invalidate(Stale.Style);
+    if (this._source.resume(script)) this._parsedOnTo();
     this._parsedOn();
+  }
+
+  /** What the parse read on to past a script, or what a script wrote,
+   *  restyled and built as a stream's chunk is, where that can be said
+   *  (`_parsedChanges`); every element styled again where it cannot. */
+  private _parsedOnTo(): void {
+    const appended = this._source.takeAppended();
+    if (!appended || !this._parsedChanges(appended)) {
+      this._invalidate(Stale.Style);
+    }
   }
 
   /** What the parser has put in the tree since this was last asked, from
@@ -3331,8 +3342,14 @@ export class HtmlViewNode extends Node {
       const inPlace =
         readers.size > 0 &&
         !rootReads &&
-        !cascade.pseudoReadsViewport(sides) &&
         !(rootFont && cascade.pseudoReadsRoot(rootFont));
+      // and a `::before` or an `::after` that reads it is made again with
+      // its element, which is among the readers (`viewportReaders`): Apple's
+      // product pages draw a stripe `width: 100vw` from one, and every step
+      // of a drag built all of the page for it
+      const pseudo = cascade.pseudoReadsViewport(sides)
+        ? HOVER_PSEUDO_GENERATED
+        : HOVER_PSEUDO_NONE;
       // what holds it and all that holds, or where that is more than a
       // restyle in place takes, followed down from them (`from`)
       const reach = inPlace ? withDescendants(readers, limit) : null;
@@ -3342,7 +3359,7 @@ export class HtmlViewNode extends Node {
         this._restyleInPlace(
           reach ?? EMPTY_SET,
           (el) => readers.has(el),
-          HOVER_PSEUDO_NONE,
+          pseudo,
           limit,
           reach ? null : readers,
           BOX_LENGTHS | FONT_LENGTHS,
@@ -5570,7 +5587,7 @@ export class HtmlViewNode extends Node {
   atViewport(element: Element): boolean {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
-    const box = tree ? boxOf(tree, element) : null;
+    const box = tree ? this._boxOf(tree, element) : null;
     return !!box && drawnAtViewport(box);
   }
 
@@ -5708,7 +5725,7 @@ export class HtmlViewNode extends Node {
       return own ? cssomStyle(own, this._scale, null) : null;
     }
     if (pseudo) return null;
-    const box = boxFor(tree.root, element);
+    const box = this._boxOf(tree, element);
     if (!box) return cssomStyle(style, this._scale, null);
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own));
@@ -5939,22 +5956,63 @@ export class HtmlViewNode extends Node {
     if (!tree || !cascade) return null;
     const known = tree.styles.get(element)?.style;
     if (known) return known;
+    const unboxed = this._unboxedStyles(tree, cascade);
+    const kept = unboxed.get(element);
+    if (kept) return kept;
     const chain: Element[] = [];
     let style: ComputedStyle | undefined;
     for (let at: Element | null = element; at;) {
       chain.push(at);
       const parent = flatParentOf(at);
       if (!parent) return null;
-      style = tree.styles.get(parent)?.style;
+      style = tree.styles.get(parent)?.style ?? unboxed.get(parent);
       if (style) break;
       at = parent;
     }
     if (!style) return null;
     for (let i = chain.length - 1; i >= 0; i -= 1) {
       style = cascade.styleFor(chain[i], style, false);
+      unboxed.set(chain[i], style);
     }
     return style;
   }
+
+  /**
+   * The styles `_styleOf` worked out for elements the tree has none for,
+   * kept for as long as nothing they are worked out from can have moved:
+   * the tree, the cascade, the document's nodes (`treeGeneration`, which a
+   * change under `display: none` moves, and restyles nothing) and what the
+   * boxes were styled and laid out as (`_geometry`). Apple's product pages
+   * read `getComputedStyle` of their closed dialogs' contents a property at
+   * a time, and each read styled the chain down from the nearest box
+   * again: three and a half seconds of a load.
+   */
+  private _unboxedStyles(
+    tree: BoxTree,
+    cascade: Cascade,
+  ): Map<Element, ComputedStyle> {
+    const at = treeGeneration();
+    const kept = this._unboxed;
+    if (
+      kept?.tree === tree &&
+      kept.cascade === cascade &&
+      kept.at === at &&
+      kept.geometry === this._geometry
+    ) {
+      return kept.styles;
+    }
+    const styles = new Map<Element, ComputedStyle>();
+    this._unboxed = { tree, cascade, at, geometry: this._geometry, styles };
+    return styles;
+  }
+
+  private _unboxed: {
+    tree: BoxTree;
+    cascade: Cascade;
+    at: number;
+    geometry: number;
+    styles: Map<Element, ComputedStyle>;
+  } | null = null;
 
   /**
    * Where a focusable area is as the document was last laid out, as
@@ -5977,13 +6035,11 @@ export class HtmlViewNode extends Node {
    *  sideways into nothing to reach it. */
   private _stopRectOf(element: Element): Rect | null {
     const tree = this._tree;
-    const at = tree ? boxOf(tree, element) : null;
+    const at = tree ? this._boxOf(tree, element) : null;
     const drawn = tree && at ? this._drawnRect(tree, at, false) : null;
     if (!tree || !at || !drawn) return null;
     const rect = this._moveToViewport(at, drawn);
-    const box =
-      CANDIDATES.get(tree)?.byElement.get(element) ??
-      boxFor(tree.root, element);
+    const box = this._boxOf(tree, element);
     const cut = box && clipFor(box, drawn, this._scale);
     if (!cut) return rect;
     return shownBy(this._moveToViewport(at, cut.rect), rect);
@@ -6016,7 +6072,7 @@ export class HtmlViewNode extends Node {
   /** `elementRect`, in the layout there is — or its first fragment's. */
   private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
-    const box = tree ? boxOf(tree, element) : null;
+    const box = tree ? this._boxOf(tree, element) : null;
     const rect = tree && box ? this._drawnRect(tree, box, first) : null;
     return rect && this._moveToViewport(box!, rect);
   }
@@ -6156,7 +6212,7 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     this._followViewport();
     const tree = this._tree;
-    const box = tree ? boxOf(tree, element) : null;
+    const box = tree ? this._boxOf(tree, element) : null;
     const own = tree && box ? this._laidOutAt(tree, box) : null;
     if (!tree || !box || !own) return null;
     const s = this._scale;
@@ -7082,12 +7138,17 @@ export class HtmlViewNode extends Node {
         const diff = hoverChange(box.style, made);
         if (diff === false) {
           // the size its element's text came to, which its runs are set at
-          // in the layout that follows
+          // in the layout that follows — or, of a block or a flex box, its
+          // lengths, as an element's are taken (`resizeAs`)
+          const change = lengths ? lengthChange(box.style, made) : 0;
           if (
-            !lengths ||
-            box.kind !== 'inline' ||
-            tree.firstLine ||
-            lengthChange(box.style, made) !== FONT_LENGTHS
+            !change ||
+            change & ~lengths ||
+            box.replaced !== 'none' ||
+            (change & FONT_LENGTHS && tree.firstLine) ||
+            (box.kind === 'inline'
+              ? change !== FONT_LENGTHS
+              : box.kind !== 'block' && box.kind !== 'flex')
           ) {
             return false;
           }
@@ -7685,6 +7746,22 @@ export class HtmlViewNode extends Node {
     if (!dx && !dy) return false;
     this._scrolledLast.set(root, scrolledTowards(dx, dy));
     return true;
+  }
+
+  /**
+   * An element's first box, as a walk of the tree from its root finds it
+   * (`boxFor`), by the tree's index of first boxes (`_firstBoxesOf`): the
+   * walk, a read, was a fifth of what `getComputedStyle` and `offsetTop`
+   * cost on Apple's product pages, whose scripts read them in a loop. A
+   * box a drag's layout set aside is in the index and in no walk
+   * (`heldBack`), so one is looked for as before.
+   */
+  private _boxOf(tree: BoxTree, element: Element): Box | null {
+    const found = CANDIDATES.get(tree)?.byElement.get(element);
+    if (found) return found;
+    const first = this._firstBoxesOf(tree).get(element);
+    if (!first) return null;
+    return heldBack(tree, first) ? boxFor(tree.root, element) : first;
   }
 
   private _firstBoxesOf(tree: BoxTree): Map<Element, Box> {
@@ -10432,7 +10509,7 @@ export class HtmlViewNode extends Node {
   ): { width: number; height: number; top: number; left: number } | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
-    const box = tree ? boxOf(tree, element) : null;
+    const box = tree ? this._boxOf(tree, element) : null;
     if (!box || box.kind === 'inline') return null;
     const s = this._scale;
     return {
@@ -10463,7 +10540,7 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     const port = this._scrollerOf(scroller);
-    const box = tree ? boxOf(tree, element) : null;
+    const box = tree ? this._boxOf(tree, element) : null;
     return !!port && !!box && scrollMoves(port, box);
   }
 
@@ -13087,12 +13164,6 @@ function inBody(element: Element): boolean {
 
 /** The first box an element made: a focusable area's without a walk of
  *  the tree. */
-function boxOf(tree: BoxTree, element: Element): Box | null {
-  return (
-    CANDIDATES.get(tree)?.byElement.get(element) ?? boxFor(tree.root, element)
-  );
-}
-
 /**
  * An element's `offsetParent` (CSSOM View 7), by its first box: up the
  * boxes around it, as Blink walks its layout objects, so a box with no

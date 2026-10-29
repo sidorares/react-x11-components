@@ -1284,6 +1284,62 @@ metric(
 );
 
 metric(
+  'a parse that waits at a script goes on after it as a stream does: what it reads on to is styled and built, and the rest kept, as a build of the whole makes it',
+  async (t) => {
+    // Apple's product pages wait at six scripts in their `<body>`, and the
+    // parse going on after each styled all of the page again
+    const paragraphs = (from: number) =>
+      Array.from(
+        { length: 40 },
+        (_, i) => `<p id="p${from + i}">Paragraph ${from + i}</p>`,
+      ).join('');
+    const held: Element[] = [];
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        ' p { margin: 2px } p:last-child { color: #aa0000 }' +
+        ' .x + p { font-weight: bold }</style></head><body>' +
+        `<main>${paragraphs(0)}</main><script id="s1"></script>` +
+        `<div class="x">x</div>${paragraphs(40)}<script id="s2"></script>` +
+        `<section>${paragraphs(80)}</section><script id="s3"></script>` +
+        `<footer>${paragraphs(120)}</footer></body></html>`,
+      320,
+      { scripting: true, _onParserBlocked: (s: Element) => held.push(s) },
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _restyle(...a: unknown[]): void;
+      _invalidate(stale: number): void;
+      parserResume(script: Element): void;
+    };
+    for (const id of ['s1', 's2', 's3']) {
+      const script = held.at(-1)!;
+      assert.strictEqual(script?.attribs.id, id, `the parse waits at #${id}`);
+      const restyled = t.mock.method(internals, '_restyle');
+      internals.parserResume(script);
+      el.layoutNow();
+      assert.strictEqual(
+        restyled.mock.callCount(),
+        0,
+        `after #${id} every element was styled again`,
+      );
+      restyled.mock.restore();
+      await act();
+      const kept = treeLines(internals._tree);
+      internals._invalidate(3);
+      el.layoutNow();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `after #${id}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
+
+metric(
   'a change before a list that makes its own counter builds only the subtree it reached, and one before what counts a counter of the document’s builds the whole, where a build of all new boxes puts it',
   async (t) => {
     // Apple's product pages hold a `<ul>` in every section, which makes a

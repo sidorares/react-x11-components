@@ -1521,7 +1521,9 @@ export class HtmlSource {
       ahead.slice(0, this._insertion) + markup + ahead.slice(this._insertion);
     this._insertion += markup.length;
     if (this._pending) return true;
-    const at = this._feed(this._ahead, 0, this._insertion, true);
+    const at = this._recorded(() =>
+      this._feed(this._ahead, 0, this._insertion, true),
+    );
     if (this._stopped) {
       this._pending = this._stopped;
       this._stopped = null;
@@ -1550,9 +1552,23 @@ export class HtmlSource {
       this._insertion = 0;
       return false;
     }
-    const read = this._readOn();
+    const read = this._recorded(() => this._readOn());
     if (read) this._changed();
     return read;
+  }
+
+  /** What the parse puts in the tree while `read` runs, recorded as a
+   *  stream's chunk is (`takeAppended`): a parse that waits at a script
+   *  goes on after it at the ends of what is open, and what it reads on
+   *  to restyles and builds what it reaches. Apple's product pages wait
+   *  at six scripts, and each styled the whole page again. */
+  private _recorded<T>(read: () => T): T {
+    this._recordInto();
+    try {
+      return read();
+    } finally {
+      this._handler.recording = null;
+    }
   }
 
   /** The nodes the parser has put in the tree since this was last asked,
