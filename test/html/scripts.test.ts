@@ -407,7 +407,8 @@ test('nothing of the host is reachable from a page', async () => {
       'undefined',
       'SyntaxError',
       'undefined',
-      'undefined',
+      // the engine's, which the page's did not replace (`lockStacks`)
+      'function prepareStackTrace() { [native code] }',
       'undefined',
       'undefined',
       'undefined',
@@ -700,7 +701,8 @@ for (const global of ['own', 'object'] as const) {
       "error: WebSocket connection to 'wss://ws.test/' failed: there is no network.",
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
-        'undefined,undefined,string,null,undefinedundefinedundefined ' +
+        // the engine's `prepareStackTrace`, which the page's did not replace
+        'function prepareStackTrace() { [native code] },undefined,string,null,undefinedundefinedundefined ' +
         'offer=undefinedundefinedundefined:NotSupportedError,' +
         'session=undefinedundefinedundefined:WebTransportError,' +
         'socketError=undefinedundefinedundefined:error,' +
@@ -2416,6 +2418,102 @@ test("an error a classic script throws reaches the page with the stack it was th
     doc.text('out'),
     "TypeError: Cannot read properties of undefined (reading 'field')|true|true",
   );
+});
+
+test("a page's stacks hold its own frames, and none of the facade's or the host's", async () => {
+  // Every task a page runs is entered from the host, and Node wrote every
+  // frame on the stack into an error's `stack`: a page read the user's home
+  // directory and the install's layout off any error it made, and an error
+  // logger sent them home with it.
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<button id="b" onclick="note(\'attribute\', new Error().stack)">b</button>' +
+      '<script>' +
+      'var stacks = {};' +
+      'function note(k, s) { stacks[k] = s }' +
+      "note('script', new Error().stack);" +
+      "function inTimer() { note('timer', new Error().stack) }" +
+      'setTimeout(inTimer, 0);' +
+      'setTimeout("note(\'string timer\', new Error().stack)", 0);' +
+      "document.body.addEventListener('x', function listener() { note('listener', new Error().stack) });" +
+      "document.body.dispatchEvent(new Event('x'));" +
+      "Promise.resolve().then(function reaction() { note('reaction', new Error().stack) });" +
+      "try { document.querySelector('[[[') } catch (e) { note('selector', e.stack) }" +
+      "try { null.x } catch (e) { note('null', e.stack) }" +
+      "var held = {}; Error.captureStackTrace(held); note('captured', held.stack);" +
+      "document.getElementById('b').click();" +
+      // and a page that points the runtime at a formatter of its own, as
+      // Node asks the global's `Error` for one
+      "try { Error.prepareStackTrace = function () { return 'mine' } } catch (e) {}" +
+      "try { window.Error = { prepareStackTrace: function () { return 'mine' } } } catch (e) {}" +
+      "note('replaced', new TypeError().stack);" +
+      "setTimeout(function () { document.getElementById('out').textContent = JSON.stringify(stacks) }, 20);" +
+      '</script>' +
+      '<script src="ext.js"></script>',
+    {
+      scripts: {
+        'https://example.test/dir/ext.js':
+          'function external() { return new Error().stack }' +
+          "note('external', external());",
+      },
+    },
+  );
+  const stacks: Record<string, string> = JSON.parse(
+    await settled(doc, 'out', (t) => t !== ''),
+  );
+  const all = Object.entries(stacks)
+    .map(([k, s]) => `${k}:\n${s}`)
+    .join('\n\n');
+  assert.equal(Object.keys(stacks).length, 11, all);
+  for (const stack of Object.values(stacks)) {
+    assert.doesNotMatch(
+      stack,
+      /node:|engine:|evalmachine|runInContext|file:|[(@ ]\/|[A-Z]:\\/,
+      all,
+    );
+    assert.ok(!stack.includes(process.cwd()), all);
+  }
+  // the frames, under the message line Node writes; Bun's
+  // `captureStackTrace` writes its own lines, and none
+  const frames = (k: string): string[] => stacks[k].split('\n').slice(1);
+  const at = (line: string | undefined, url = PAGE): void =>
+    assert.ok(line?.startsWith('    at ') && line.includes(`${url}:`), all);
+  // a classic script's, its last frame the script's own
+  assert.equal(frames('script').length, 1, all);
+  at(frames('script')[0]);
+  const ext = 'https://example.test/dir/ext.js';
+  assert.equal(frames('external').length, 2, all);
+  assert.match(frames('external')[0], /external/);
+  at(frames('external')[0], ext);
+  at(frames('external')[1], ext);
+  // a timer's and a promise reaction's: the callback, and nothing under it
+  assert.equal(frames('timer').length, 1, all);
+  assert.match(frames('timer')[0], /inTimer/);
+  at(frames('timer')[0]);
+  assert.equal(frames('reaction').length, 1, all);
+  at(frames('reaction')[0]);
+  // a listener's: the listener, then the script that dispatched to it, and
+  // none of the dispatch between them
+  assert.equal(frames('listener').length, 2, all);
+  assert.match(frames('listener')[0], /listener/);
+  at(frames('listener')[0]);
+  at(frames('listener')[1]);
+  // what the facade evaluated for the page is the page's, at no file
+  assert.equal(frames('string timer').length, 1, all);
+  assert.match(frames('string timer')[0], /<anonymous>:1:\d+\)?$/);
+  assert.equal(frames('attribute').length, 2, all);
+  assert.match(frames('attribute')[0], /<anonymous>:\d+:\d+\)?$/);
+  at(frames('attribute')[1]);
+  // a DOM method that threw, and a built-in: the page's call is the first
+  assert.equal(frames('selector').length, 1, all);
+  at(frames('selector')[0]);
+  at(frames('null')[0]);
+  // a stack captured onto an object of the page's
+  assert.ok(stacks.captured.includes(`${PAGE}:`), all);
+  // and neither a formatter of the page's nor a global Error of its own
+  // turns any of it off
+  assert.equal(frames('replaced').length, 1, all);
+  at(frames('replaced')[0]);
 });
 
 test('a module that throws, runs away or does not parse is reported, and the page goes on', async () => {
