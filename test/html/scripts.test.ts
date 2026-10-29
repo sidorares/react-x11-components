@@ -1090,6 +1090,77 @@ test("PageSwapEvent and PageRevealEvent construct, and a link's, a script's and 
   ]);
 });
 
+test("a link reflects its hreflang and the rest of HTMLLinkElement's attributes, and crossOrigin is a CORS setting", async () => {
+  // Apple's locale switcher splits the `hreflang` of every `[hreflang]`
+  const doc = await hosted(
+    '<head><link rel="alternate" hreflang="en-AU" href="/au/">' +
+      '<link rel="icon" sizes="16x16 32x32" crossorigin="USE-Credentials" imagesrcset="a.png 2x" disabled>' +
+      '</head><p id="out">-</p><script>' +
+      'var r = [], links = document.querySelectorAll("link");' +
+      'document.querySelectorAll("[hreflang]").forEach(function (n) { r.push(n.hreflang.split("-")[1]); });' +
+      'var icon = links[1];' +
+      'r.push(links[0].crossOrigin, icon.crossOrigin, icon.sizes.length, icon.sizes === icon.sizes,' +
+      '  icon.imageSrcset, icon.imageSizes, icon.integrity, icon.referrerPolicy, icon.disabled, links[0].disabled);' +
+      'try { icon.sizes.supports("16x16"); r.push("no throw"); } catch (e) { r.push(e.name); }' +
+      'icon.crossOrigin = "bogus"; r.push(icon.getAttribute("crossorigin"), icon.crossOrigin);' +
+      'icon.crossOrigin = null; r.push(icon.hasAttribute("crossorigin"));' +
+      'icon.hreflang = "fr-CA"; icon.sizes = "any"; r.push(icon.getAttribute("hreflang"), icon.getAttribute("sizes"));' +
+      'var script = document.createElement("script"), video = document.createElement("video");' +
+      'script.setAttribute("crossorigin", ""); r.push(script.crossOrigin, video.crossOrigin);' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    'AU',
+    null,
+    'use-credentials',
+    2,
+    true,
+    'a.png 2x',
+    '',
+    '',
+    '',
+    true,
+    false,
+    'TypeError',
+    'bogus',
+    'anonymous',
+    false,
+    'fr-CA',
+    'any',
+    'anonymous',
+    null,
+  ]);
+});
+
+test("screen.orientation is a landscape display's, which never turns and refuses a lock", async () => {
+  // Apple's product pages listen to it unguarded
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      'var r = [], o = screen.orientation, out = document.getElementById("out");' +
+      'o.addEventListener("change", function () {}); o.onchange = function () {};' +
+      'r.push(o instanceof ScreenOrientation, o instanceof EventTarget, o === screen.orientation,' +
+      '  o.type, o.angle, typeof o.onchange, Object.prototype.toString.call(o));' +
+      'try { new ScreenOrientation(); r.push("constructed"); } catch (e) { r.push(e.name); }' +
+      'o.unlock();' +
+      'o.lock("sideways").catch(function (e) { r.push(e.name);' +
+      '  return o.lock("portrait"); }).catch(function (e) { r.push(e.name);' +
+      '  out.textContent = JSON.stringify(r); });</script>',
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    true,
+    true,
+    'landscape-primary',
+    0,
+    'function',
+    '[object ScreenOrientation]',
+    'TypeError',
+    'TypeError',
+    'NotSupportedError',
+  ]);
+});
+
 test('a script innerHTML puts in never runs, and one a script appends does', async () => {
   const doc = await hosted(
     '<html><body><p id="out">-</p><div id="box"></div><script>' +

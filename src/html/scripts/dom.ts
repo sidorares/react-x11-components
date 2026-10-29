@@ -6648,6 +6648,23 @@ export function installDom(
     },
     configurable: true,
   });
+  /** `crossOrigin`, a CORS settings attribute (HTML 2.5.4): null where
+   *  there is none, `use-credentials` for that, and `anonymous` for any
+   *  other value; set null, the attribute goes. */
+  const corsSetting = {
+    get(this: Any): string | null {
+      const raw = this.getAttribute('crossorigin');
+      if (raw === null) return null;
+      return raw.toLowerCase() === 'use-credentials'
+        ? 'use-credentials'
+        : 'anonymous';
+    },
+    set(this: Any, v: Any) {
+      if (v === null) this.removeAttribute('crossorigin');
+      else this.setAttribute('crossorigin', v);
+    },
+    configurable: true,
+  };
 
   /** The form a control is in: the one its `form` attribute names, or the
    *  one around it. */
@@ -6772,9 +6789,14 @@ export function installDom(
     }
   }
   Object.defineProperty(HTMLScriptElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['type', 'charset', 'crossOrigin', 'integrity']) {
+  for (const name of ['type', 'charset', 'integrity']) {
     Object.defineProperty(HTMLScriptElement.prototype, name, reflect(name));
   }
+  Object.defineProperty(
+    HTMLScriptElement.prototype,
+    'crossOrigin',
+    corsSetting,
+  );
   for (const name of ['defer', 'noModule']) {
     Object.defineProperty(
       HTMLScriptElement.prototype,
@@ -6802,12 +6824,38 @@ export function installDom(
 
   class HTMLLinkElement extends HTMLElement {}
   Object.defineProperty(HTMLLinkElement.prototype, 'href', urlProperty('href'));
-  for (const name of ['rel', 'media', 'type', 'as']) {
-    Object.defineProperty(HTMLLinkElement.prototype, name, reflect(name));
+  // the strings HTMLLinkElement reflects (HTML 4.2.4, and the obsolete
+  // `charset`, `rev` and `target`): Apple's locale switcher reads the
+  // `hreflang` of every `[hreflang]` in the document, its alternate links
+  for (const [name, attr] of [
+    ['rel', 'rel'],
+    ['media', 'media'],
+    ['type', 'type'],
+    ['as', 'as'],
+    ['hreflang', 'hreflang'],
+    ['integrity', 'integrity'],
+    ['imageSrcset', 'imagesrcset'],
+    ['imageSizes', 'imagesizes'],
+    ['referrerPolicy', 'referrerpolicy'],
+    ['charset', 'charset'],
+    ['rev', 'rev'],
+    ['target', 'target'],
+  ]) {
+    Object.defineProperty(HTMLLinkElement.prototype, name, reflect(attr));
   }
+  Object.defineProperty(HTMLLinkElement.prototype, 'crossOrigin', corsSetting);
+  Object.defineProperty(
+    HTMLLinkElement.prototype,
+    'disabled',
+    flag('disabled'),
+  );
   /** A `[SameObject, PutForwards=value]` `DOMTokenList` over an
-   *  attribute, with the tokens it supports: `relList` and `blocking`. */
-  const tokenList = (attr: string, supported: readonly string[]): Any => ({
+   *  attribute, with the tokens it supports, or none to ask about:
+   *  `relList`, `blocking` and `sizes`. */
+  const tokenList = (
+    attr: string,
+    supported: readonly string[] | null,
+  ): Any => ({
     get(this: Any): Any {
       const lists = (this._tokenLists ??= new Map<string, Any>());
       let list = lists.get(attr);
@@ -6842,6 +6890,11 @@ export function installDom(
     HTMLLinkElement.prototype,
     'relList',
     tokenList('rel', LINK_TYPES),
+  );
+  Object.defineProperty(
+    HTMLLinkElement.prototype,
+    'sizes',
+    tokenList('sizes', null),
   );
   // what a hyperlink's `rel` does something with (HTML 4.6.6), on an
   // `<a>` and on an `<area>`, which is one here
@@ -11792,13 +11845,12 @@ export function installDom(
     'defaultMuted',
     flag('muted'),
   );
-  for (const name of ['preload', 'crossOrigin']) {
-    Object.defineProperty(
-      HTMLMediaElement.prototype,
-      name,
-      reflect(name.toLowerCase()),
-    );
-  }
+  Object.defineProperty(
+    HTMLMediaElement.prototype,
+    'preload',
+    reflect('preload'),
+  );
+  Object.defineProperty(HTMLMediaElement.prototype, 'crossOrigin', corsSetting);
   Object.defineProperty(HTMLMediaElement.prototype, 'src', urlProperty('src'));
   class HTMLVideoElement extends HTMLMediaElement {
     /** Its source's size, as its container says it, once that is read. */
@@ -26351,6 +26403,58 @@ export function installDom(
     return ev;
   };
 
+  /** What `screen.orientation.lock()` takes (Screen Orientation, 6). */
+  const ORIENTATION_LOCKS = [
+    'any',
+    'natural',
+    'landscape',
+    'portrait',
+    'portrait-primary',
+    'portrait-secondary',
+    'landscape-primary',
+    'landscape-secondary',
+  ];
+  let orientationMade = false;
+  /**
+   * `screen.orientation` (Screen Orientation, 5): a desktop's display, as
+   * Chrome answers on one — landscape at its natural angle, never turned,
+   * so `change` never fires, and a lock refused. `screen` measures the pane
+   * here, and a narrow pane is still a window on a landscape display, not
+   * a phone turned on its side. Apple's product pages listen to it
+   * unguarded, and threw where it was missing.
+   */
+  class ScreenOrientation extends EventTarget {
+    constructor() {
+      super();
+      if (orientationMade) throw new TypeError('Illegal constructor');
+      orientationMade = true;
+    }
+    get type(): string {
+      return 'landscape-primary';
+    }
+    get angle(): number {
+      return 0;
+    }
+    lock(orientation: Any): Promise<void> {
+      if (!ORIENTATION_LOCKS.includes(str(orientation))) {
+        return Promise.reject(
+          new TypeError(
+            `'${str(orientation)}' is not a valid OrientationLockType.`,
+          ),
+        );
+      }
+      return Promise.reject(
+        new DOMException(
+          'screen.orientation.lock() is not available on this device.',
+          'NotSupportedError',
+        ),
+      );
+    }
+    unlock(): void {}
+  }
+  handlers(ScreenOrientation, ['change']);
+  const screenOrientation = new ScreenOrientation();
+
   // --- the global ------------------------------------------------------------------
 
   const define = (name: string, value: Any): void => {
@@ -26569,6 +26673,7 @@ export function installDom(
     TextEncoder,
     TextDecoder,
     VisualViewport,
+    ScreenOrientation,
     FragmentDirective,
     MediaQueryList,
     MediaQueryListEvent,
@@ -26910,6 +27015,9 @@ export function installDom(
     },
     colorDepth: 24,
     pixelDepth: 24,
+    get orientation() {
+      return screenOrientation;
+    },
   });
   // The interfaces of the window's own objects, which a page asks
   // `instanceof` of and reads prototypes from — mazda.com.au's scripts ask
