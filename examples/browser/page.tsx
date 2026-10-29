@@ -1647,6 +1647,15 @@ export default function Page(props: PageProps): ReactElement {
               inspection={inspection}
               log={consoleLog}
               network={networkLog}
+              loadSource={(source, kind) =>
+                network
+                  .resource(source, kind, withoutHash(url))
+                  .then((f) =>
+                    f
+                      ? decode(f.bytes, f.charset ?? sniffCharset(f.bytes))
+                      : null,
+                  )
+              }
               url={url}
               cookies={cookies}
               storage={profile?.storage ?? null}
