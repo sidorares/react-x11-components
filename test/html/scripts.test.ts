@@ -4023,6 +4023,45 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test("getComputedStyle answers the flow-relative properties with their physical sides', as the writing mode and direction map them", async () => {
+  // CSS Logical 1, 4: Apple's galleries read
+  // `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll
+  // keyframe of NaN from what nothing answered
+  const box =
+    'margin: 1px 2px 3px 4px; padding: 5px 6px 7px 8px; width: 30px; height: 20px; ' +
+    'border-style: solid; border-width: 9px 10px 11px 12px; position: relative; ' +
+    'top: 13px; left: 14px; min-width: 15px; max-height: 40px';
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      `<div id="h" style="${box}"></div>` +
+      `<div id="rtl" dir="rtl" style="${box}"></div>` +
+      `<div id="v" style="${box}; writing-mode: vertical-rl"></div>` +
+      `<div id="s" style="${box}; writing-mode: sideways-lr"></div>` +
+      '<button id="b">play</button>' +
+      '<script>' +
+      'var r = [], cs = function (id) { return getComputedStyle(document.getElementById(id)); };' +
+      'var all = function (id) { var s = cs(id); return [s.marginBlockStart, s.marginBlockEnd, s.marginInlineStart, s.marginInlineEnd,' +
+      '  s.paddingInlineStart, s.borderInlineEndWidth, s.borderBlockStartStyle, s.insetBlockStart, s.insetInlineStart,' +
+      '  s.inlineSize, s.blockSize, s.minInlineSize, s.maxBlockSize].join(" "); };' +
+      'r.push(all("h"), all("rtl"), all("v"), all("s"));' +
+      'r.push(parseInt(cs("b").marginInlineEnd), cs("h").getPropertyValue("margin-inline-end"));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.deepStrictEqual(doc.text('out').split('|'), [
+    '1px 3px 4px 2px 8px 10px solid 13px 14px 30px 20px 15px 40px',
+    // right to left, the inline sides turned over, and a relative box's
+    // right the negated left
+    '1px 3px 2px 4px 6px 12px solid 13px -14px 30px 20px 15px 40px',
+    // top to bottom, from the right: the block runs leftwards, a line down
+    '2px 4px 1px 3px 5px 11px solid -14px 13px 20px 30px auto none',
+    // sideways-lr: the block from the left, a line from the bottom up
+    '4px 2px 3px 1px 7px 9px solid 14px -13px 20px 30px auto none',
+    '0',
+    '2px',
+  ]);
+});
+
 test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
   // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
   // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),

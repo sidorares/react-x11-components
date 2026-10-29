@@ -945,5 +945,57 @@ function cssomAt(
     out.width = len(style.width, scale);
     out.height = len(style.height, scale);
   }
+  logicalProperties(out, style);
   return out;
+}
+
+/**
+ * The flow-relative properties, each its physical side's resolved value
+ * (CSSOM 9, CSS Logical 1, 4), as the element's writing mode and
+ * direction map them. Apple's galleries read
+ * `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll
+ * keyframe of the NaN that nothing answered.
+ */
+function logicalProperties(
+  out: Record<string, string>,
+  style: ComputedStyle,
+): void {
+  const mode = style.writingMode;
+  const vertical = mode !== 'horizontal-tb';
+  const ltr = style.direction !== 'rtl';
+  const [blockStart, blockEnd] =
+    mode === 'vertical-rl' || mode === 'sideways-rl'
+      ? ['right', 'left']
+      : vertical
+        ? ['left', 'right']
+        : ['top', 'bottom'];
+  // a sideways-lr line runs from the bottom up
+  const [inlineStart, inlineEnd] = !vertical
+    ? ltr
+      ? ['left', 'right']
+      : ['right', 'left']
+    : ltr !== (mode === 'sideways-lr')
+      ? ['top', 'bottom']
+      : ['bottom', 'top'];
+  const sides: [string, string][] = [
+    ['block-start', blockStart],
+    ['block-end', blockEnd],
+    ['inline-start', inlineStart],
+    ['inline-end', inlineEnd],
+  ];
+  for (const [logical, physical] of sides) {
+    out[`margin-${logical}`] = out[`margin-${physical}`];
+    out[`padding-${logical}`] = out[`padding-${physical}`];
+    out[`inset-${logical}`] = out[physical];
+    for (const part of ['width', 'style', 'color']) {
+      out[`border-${logical}-${part}`] = out[`border-${physical}-${part}`];
+    }
+  }
+  const [inline, block] = vertical ? ['height', 'width'] : ['width', 'height'];
+  out['inline-size'] = out[inline];
+  out['block-size'] = out[block];
+  out['min-inline-size'] = out[`min-${inline}`];
+  out['min-block-size'] = out[`min-${block}`];
+  out['max-inline-size'] = out[`max-${inline}`];
+  out['max-block-size'] = out[`max-${block}`];
 }
