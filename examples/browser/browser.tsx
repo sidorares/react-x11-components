@@ -23,8 +23,10 @@
 //
 // Nothing a page contains runs unless you say so. `<Html>` runs a page's
 // scripts only with `scripts` (`src/html/scripts/`, docs/prd-html-scripts.md),
-// and this browser turns it on only on a site whose JS switch, in the
-// toolbar, is on — every site with `BROWSER_SCRIPTS=1`. The
+// and this browser turns it on only where Develop › JavaScript says so:
+// for a site switched on there, or for every site not switched either way
+// while Run Scripts by Default is on — which `BROWSER_SCRIPTS=1` turns on
+// for a run. The
 // engine keeps a page's scripts in a `vm` context of their own and stops
 // one that runs away, but it is no boundary against a page that sets out
 // to attack the machine: the tab's process is, and it is a weak one. A page
@@ -52,7 +54,9 @@
 // tools (`devtools/`), docked under its page: ⌥⌘I or Ctrl+Shift+I (and
 // F12) for the tools, ⌥⌘J or Ctrl+Shift+J for the console, ⇧⌘C or
 // Ctrl+Shift+C to choose an element in the page. Inspect, in the page's own
-// menu, opens them on the element under the pointer.
+// menu, opens them on the element under the pointer. The same menu docks
+// them on any side but the top, and holds the browser's two settings for a
+// page: whether a site's scripts run, and the User-Agent every tab sends.
 //
 // Full screen — the green button on a Mac, the window manager's on X11 —
 // gives the page the whole screen: the strip and the toolbar come back while
@@ -91,7 +95,7 @@ import type {
   NtkWindow,
   TextInputNode,
 } from 'react-x11';
-import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
+import { XK_ESCAPE } from 'react-x11/keysyms';
 
 import {
   Tabs,
@@ -101,7 +105,6 @@ import {
 } from '../../src/tabs/index.js';
 import { displayUrl, urlFromInput } from './address.js';
 import { presetFor, userAgentPresets } from './useragents.js';
-import type { UserAgentPreset } from './useragents.js';
 import type { TabIcon } from './favicon.js';
 import Page from './page.js';
 import type {
@@ -114,7 +117,8 @@ import type {
 import type { PostData } from '../../src/html/index.js';
 import { DEVELOP, developShortcuts, shortcuts } from './keys.js';
 import type { Command } from './keys.js';
-import type { DevtoolsPanel } from './devtools/model.js';
+import { DOCK_SIDES } from './devtools/model.js';
+import type { DevtoolsPanel, DockSide } from './devtools/model.js';
 import { HOME, fileName } from './pages.js';
 import {
   openProfile,
@@ -124,7 +128,7 @@ import {
   saveSession,
   tabKey,
 } from './profile.js';
-import type { SavedSession } from './profile.js';
+import type { Preferences, SavedSession } from './profile.js';
 
 /** The pane each tab's page runs in: `page.tsx`'s default export. */
 const PAGE = new URL('./page.tsx', import.meta.url);
@@ -787,175 +791,6 @@ function TabLabel({
   );
 }
 
-// --- the User-Agent menu -------------------------------------------------------
-
-/** How wide the User-Agent menu's sheet is: a full agent string is long, so
- *  the rows show the preset's name, not the string itself. */
-const UA_MENU_WIDTH = 200;
-
-/**
- * The toolbar's User-Agent menu — a button that names the agent in force and
- * a `<popup>` of the presets (`useragents.ts`). The choice is the browser's,
- * not one tab's, so picking one here changes `BROWSER_USER_AGENT` for every
- * pane; a change of that environment respawns each pane (`<Frame env>`), so
- * the tabs reload under the new agent, the way a browser's UA override
- * applies on the next load.
- *
- * Shaped like `examples/terminal-vt.tsx`' frame-rate menu: the popup grabs
- * the pointer so a press anywhere else dismisses it, and the button keeps
- * the keyboard while it is open — Down/Up walk, Enter commits, Escape shuts
- * — rather than handing focus to a window the next click destroys.
- */
-function UserAgentMenu({
-  presets,
-  current,
-  onChoose,
-}: {
-  presets: readonly UserAgentPreset[];
-  /** The id of the preset in force. */
-  current: string;
-  onChoose: (id: string) => void;
-}): ReactElement {
-  const theme = useTheme();
-  const trigger = useRef<DrawnNode>(null);
-  const [open, setOpen] = useState(false);
-  // -1 is "nothing yet": a menu dropped with the mouse lights no row until
-  // the pointer or the arrows have said which, so Enter cannot commit a row
-  // nobody chose.
-  const [active, setActive] = useState(-1);
-
-  const chosen = presets.findIndex((p) => p.id === current);
-  const label = presets[chosen]?.short ?? 'UA';
-  const close = (): void => setOpen(false);
-
-  const commit = (index: number): void => {
-    const preset = presets[index];
-    if (!preset) return;
-    close();
-    onChoose(preset.id);
-  };
-
-  const onKeyDown = (ev: X11KeyboardEvent): void => {
-    if (ev.keysym === XK_ESCAPE) {
-      if (!open) return;
-      close();
-    } else if (ev.keysym === XK_DOWN || ev.keysym === XK_UP) {
-      const step = ev.keysym === XK_DOWN ? 1 : -1;
-      if (!open) {
-        // opened from the keyboard, so it opens on the row that is current
-        setActive(chosen);
-        setOpen(true);
-      } else {
-        setActive((at) => {
-          const from = at < 0 ? chosen : at;
-          const n = presets.length;
-          return (((from + step) % n) + n) % n;
-        });
-      }
-    } else if (ev.keysym === XK_RETURN || ev.codepoint === 32) {
-      if (!open) {
-        setActive(chosen);
-        setOpen(true);
-      } else commit(active < 0 ? chosen : active);
-    } else return;
-    ev.preventDefault();
-    ev.stopPropagation();
-  };
-
-  return (
-    <box
-      ref={trigger}
-      role="button"
-      aria-haspopup="menu"
-      aria-expanded={open}
-      aria-label={`User agent: ${presets[chosen]?.label ?? 'default'}`}
-      focusable
-      tabIndex={0}
-      onMouseDown={() => {
-        setActive(-1);
-        setOpen((was) => !was);
-      }}
-      onKeyDown={onKeyDown}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 3,
-        height: 24,
-        paddingLeft: 8,
-        paddingRight: 6,
-        borderRadius: 6,
-        backgroundColor: open ? '$surfaceHover' : 'transparent',
-        cursor: 'pointer',
-      }}
-    >
-      <text style={{ fontSize: 12, color: '$text' }}>{label}</text>
-      <Icon name="chevronDown" size={8} />
-
-      {open && (
-        <popup
-          // A popup is a window of its own and inherits no palette, so the
-          // `$token` values in its subtree need the theme handed over.
-          theme={theme as Record<string, string | number>}
-          width={UA_MENU_WIDTH}
-          anchor={{ to: trigger, placement: 'bottom', align: 'end' }}
-          grab
-          onDismiss={close}
-          style={{ backgroundColor: '$background' }}
-        >
-          <box
-            role="menu"
-            style={{
-              flexGrow: 1,
-              padding: 4,
-              gap: 2,
-              borderWidth: 1,
-              borderColor: '$border',
-              backgroundColor: '$background',
-            }}
-          >
-            {presets.map((preset, index) => (
-              <box
-                key={preset.id}
-                role="menuitemradio"
-                aria-checked={index === chosen}
-                onMouseEnter={() => setActive(index)}
-                onClick={() => commit(index)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                  paddingLeft: 8,
-                  paddingRight: 8,
-                  paddingTop: 5,
-                  paddingBottom: 5,
-                  borderRadius: 5,
-                  cursor: 'pointer',
-                  ...(index === active && { backgroundColor: '$surfaceHover' }),
-                }}
-              >
-                {/* a fixed-width slot so the labels line up whether or not a
-                    row carries the check */}
-                <box style={{ width: 12, alignItems: 'center' }}>
-                  {index === chosen ? <Icon name="check" size={10} /> : null}
-                </box>
-                <text
-                  style={{
-                    fontSize: 13,
-                    color: '$text',
-                    fontWeight: index === chosen ? 'bold' : 'normal',
-                  }}
-                >
-                  {preset.label}
-                </text>
-              </box>
-            ))}
-          </box>
-        </popup>
-      )}
-    </box>
-  );
-}
-
 // --- one tab's toolbar ---------------------------------------------------------
 
 interface ToolbarProps {
@@ -963,14 +798,6 @@ interface ToolbarProps {
   active: boolean;
   dispatch: (action: Action) => void;
   register: (id: string, input: TextInputNode | null) => void;
-  /** Whether the page's site runs its scripts, and a flip of that. */
-  scripts: boolean;
-  onScripts: (on: boolean) => void;
-  /** The User-Agent presets, the id in force, and a change of it — the
-   *  browser's one setting, shown in every tab's toolbar. */
-  userAgents: readonly UserAgentPreset[];
-  userAgentId: string;
-  onUserAgent: (id: string) => void;
   /** The address bar took the focus, or gave it up. */
   onAddressFocus: (focused: boolean) => void;
 }
@@ -980,11 +807,6 @@ function Toolbar({
   active,
   dispatch,
   register,
-  scripts,
-  onScripts,
-  userAgents,
-  userAgentId,
-  onUserAgent,
   onAddressFocus,
 }: ToolbarProps): ReactElement {
   const entry = tab.entries[tab.index] ?? null;
@@ -1098,26 +920,6 @@ function Toolbar({
           {`${Math.round(tab.zoom * 100)}%`}
         </Button>
       ) : null}
-      {entry && /^(https?|file):/.test(entry.url) ? (
-        // the site's switch: its scripts run where it is on
-        <Button
-          variant={scripts ? 'solid' : 'ghost'}
-          size="small"
-          aria-label={
-            scripts
-              ? 'Scripts run on this site: turn them off'
-              : 'Scripts do not run on this site: turn them on'
-          }
-          onPress={() => onScripts(!scripts)}
-        >
-          JS
-        </Button>
-      ) : null}
-      <UserAgentMenu
-        presets={userAgents}
-        current={userAgentId}
-        onChoose={onUserAgent}
-      />
     </box>
   );
 }
@@ -1130,6 +932,23 @@ function siteOf(url: string): string {
     return url;
   }
 }
+
+/** A site as a menu names it: its host, and local files as one. */
+function siteLabel(url: string): string {
+  try {
+    const { protocol, host } = new URL(url);
+    return protocol === 'file:' ? 'Local Files' : host;
+  } catch {
+    return url;
+  }
+}
+
+/** The Dock Side submenu's rows. */
+const DOCK_LABELS: Record<DockSide, string> = {
+  left: 'Left',
+  bottom: 'Bottom',
+  right: 'Right',
+};
 
 // --- one tab's page ------------------------------------------------------------
 
@@ -1144,6 +963,10 @@ interface TabPageProps {
   /** The User-Agent the pane sends and names, or `null` for the default.
    *  A change respawns the pane, so the tab reloads under the new agent. */
   userAgent: string | null;
+  /** The side of the page the developer tools dock on, and a move of it
+   *  from their strip, which every tab shares. */
+  dock: DockSide;
+  onDock: (side: DockSide) => void;
   /** Run the page in this process rather than a pane of its own. */
   inline: boolean;
   transport?: PaneTransport;
@@ -1164,6 +987,8 @@ function TabPage({
   active,
   scripts,
   userAgent,
+  dock,
+  onDock,
   inline,
   transport,
   dispatch,
@@ -1254,7 +1079,9 @@ function TabPage({
     devtoolsPanel: tab.devtools.panel,
     devtoolsPick: tab.devtools.pick,
     devtoolsAsk: tab.devtools.ask,
+    devtoolsDock: dock,
     onDevtools,
+    onDevtoolsDock: onDock,
     onCommit,
     onFinish,
     onHistory,
@@ -1392,8 +1219,11 @@ export interface BrowserProps {
    *  runs panes through without forking. */
   paneTransport?: PaneTransport;
   /** Whether a site's scripts run where nobody switched them on or off for
-   *  it. Default: `BROWSER_SCRIPTS=1`. */
+   *  it, at the start: Develop › JavaScript › Run Scripts by Default
+   *  changes it. Default: `BROWSER_SCRIPTS=1`. */
   scripts?: boolean;
+  /** Told when that default changes, to keep for the next run. */
+  onScriptsByDefault?: (on: boolean) => void;
   /** The last session's tabs, to open again in place of `start`'s alone:
    *  `start`, where given, opens beside them. */
   restore?: SavedSession | null;
@@ -1410,6 +1240,11 @@ export interface BrowserProps {
   userAgent?: string;
   /** Told when the chosen User-Agent preset changes, to keep for next run. */
   onUserAgent?: (id: string) => void;
+  /** The side the developer tools dock on, as last kept. Default:
+   *  `'bottom'`. */
+  devtoolsDock?: DockSide;
+  /** Told when they move to another side. */
+  onDevtoolsDock?: (side: DockSide) => void;
 }
 
 /**
@@ -1465,6 +1300,9 @@ export function Browser({
   onSites,
   userAgent: keptUserAgent,
   onUserAgent,
+  onScriptsByDefault,
+  devtoolsDock: keptDock = 'bottom',
+  onDevtoolsDock,
 }: BrowserProps): ReactElement {
   const [state, dispatch] = useReducer(reducer, start, (url) => {
     if (restore?.tabs.length) {
@@ -1522,8 +1360,38 @@ export function Browser({
     sitesTold.current = sites;
     onSites?.([...sites]);
   }, [sites]);
+  // and the default for the rest, which the Develop menu turns on and off
+  const [byDefault, setByDefault] = useState(scripts);
   const scriptsFor = (url: string): boolean =>
-    sites.get(siteOf(url)) ?? scripts;
+    sites.get(siteOf(url)) ?? byDefault;
+  /** The page shown in `tab` loaded again where what its scripts do moved:
+   *  a document's scripts are run or not as it is made. */
+  const reloadFor = (tab: Tab, was: boolean, now: boolean) => {
+    const nav = was !== now && reloadOf(tab);
+    if (nav) dispatch({ type: 'navigate', id: tab.id, nav });
+  };
+  /** A site's switch: on, off, or `null` to go back to the default. */
+  const switchSite = (tab: Tab, on: boolean | null) => {
+    const url = tab.entries[tab.index]?.url;
+    if (!url) return;
+    const was = scriptsFor(url);
+    const site = siteOf(url);
+    setSites((all) => {
+      const next = new Map(all);
+      if (on === null) next.delete(site);
+      else next.set(site, on);
+      return next;
+    });
+    reloadFor(tab, was, on ?? byDefault);
+  };
+  const switchDefault = (on: boolean) => {
+    const url = entry?.url;
+    const was = url ? scriptsFor(url) : byDefault;
+    setByDefault(on);
+    onScriptsByDefault?.(on);
+    // the page in view follows where its site has no switch of its own
+    if (url && !sites.has(siteOf(url))) reloadFor(active, was, on);
+  };
 
   // The User-Agent every tab sends and names: the browser's one setting,
   // not a tab's. The presets name the host's OS, so they are worked out
@@ -1544,6 +1412,20 @@ export function Browser({
     const nav = reloadOf(active);
     if (nav) dispatch({ type: 'navigate', id: active.id, nav });
   };
+
+  // The side the developer tools dock on: the browser's, as a browser
+  // keeps it, so every tab's tools open where the last were put. A page
+  // hears of a move from its tools' strip through a callback that keeps its
+  // identity, as every callback a pane is handed does.
+  const [dock, setDock] = useState<DockSide>(keptDock);
+  const chooseDock = (side: DockSide) => {
+    if (side === dock) return;
+    setDock(side);
+    onDevtoolsDock?.(side);
+  };
+  const latestDock = useRef(chooseDock);
+  latestDock.current = chooseDock;
+  const onDock = useCallback((side: DockSide) => latestDock.current(side), []);
 
   const open = useCallback(
     (url: string, background: boolean, post: PostData | null = null) => {
@@ -1668,6 +1550,8 @@ export function Browser({
   // answered by the system's menu bar — so the window's `onKeyDown` above
   // leaves them out (`DEVELOP`).
   const develop = new Map(developShortcuts(mod));
+  // a page whose site has a switch: what the web and local files load
+  const scriptable = !!entry && /^(https?|file):/.test(entry.url);
   const menus: MenuBarMenu[] = [
     {
       label: 'Develop',
@@ -1692,13 +1576,66 @@ export function Browser({
           shortcut: develop.get('pick'),
           onSelect: () => run('pick'),
         },
+        {
+          key: 'dock',
+          label: 'Dock Side',
+          items: DOCK_SIDES.map((side) => ({
+            key: `dock-${side}`,
+            label: DOCK_LABELS[side],
+            toggleType: 'radio',
+            toggleState: side === dock ? 1 : 0,
+            onSelect: () => chooseDock(side),
+          })),
+        },
         { key: 'rule', type: 'separator' },
         {
           key: 'source',
           label: 'View Page Source',
-          enabled: !!entry && /^(https?|file):/.test(entry.url),
+          enabled: scriptable,
           shortcut: develop.get('viewSource'),
           onSelect: () => run('viewSource'),
+        },
+        { key: 'rule-2', type: 'separator' },
+        {
+          key: 'javascript',
+          label: 'JavaScript',
+          items: [
+            {
+              key: 'js-site',
+              label: scriptable
+                ? `Run Scripts on ${siteLabel(entry.url)}`
+                : 'Run Scripts on This Site',
+              enabled: scriptable,
+              toggleType: 'checkmark',
+              toggleState: scriptable && scriptsFor(entry.url) ? 1 : 0,
+              onSelect: () => switchSite(active, !scriptsFor(entry!.url)),
+            },
+            {
+              key: 'js-forget',
+              label: 'Use the Default for This Site',
+              visible: scriptable && sites.has(siteOf(entry.url)),
+              onSelect: () => switchSite(active, null),
+            },
+            { key: 'js-rule', type: 'separator' },
+            {
+              key: 'js-default',
+              label: 'Run Scripts by Default',
+              toggleType: 'checkmark',
+              toggleState: byDefault ? 1 : 0,
+              onSelect: () => switchDefault(!byDefault),
+            },
+          ],
+        },
+        {
+          key: 'user-agent',
+          label: 'User Agent',
+          items: userAgents.map((preset) => ({
+            key: `ua-${preset.id}`,
+            label: preset.label,
+            toggleType: 'radio',
+            toggleState: preset.id === userAgentId ? 1 : 0,
+            onSelect: () => chooseUserAgent(preset.id),
+          })),
         },
       ],
     },
@@ -1775,18 +1712,6 @@ export function Browser({
                   active={tab.id === active.id}
                   dispatch={dispatch}
                   register={register}
-                  scripts={scriptsFor(tab.entries[tab.index]?.url ?? '')}
-                  onScripts={(on) => {
-                    const nav = reloadOf(tab);
-                    if (!nav) return;
-                    setSites((all) => new Map(all).set(siteOf(nav.url), on));
-                    // a document's scripts are run or not as it is made: the
-                    // switch takes on the page loaded again
-                    dispatch({ type: 'navigate', id: tab.id, nav });
-                  }}
-                  userAgents={userAgents}
-                  userAgentId={userAgentId}
-                  onUserAgent={chooseUserAgent}
                   onAddressFocus={chrome.setTyping}
                 />
               </TabsContent>
@@ -1826,6 +1751,8 @@ export function Browser({
                   tab.loading?.url ?? tab.entries[tab.index]?.url ?? '',
                 )}
                 userAgent={userAgentValue}
+                dock={dock}
+                onDock={onDock}
                 inline={inline}
                 transport={paneTransport}
                 dispatch={dispatch}
@@ -1857,6 +1784,15 @@ if (!process.env.REACT_X11_NO_AUTORUN) {
     keepSessionCookies: !!restore,
   });
   const root = await createRoot();
+  const kept = readPreferences();
+  /** One preference changed: the rest kept as they are on disk. */
+  const keep = (change: Partial<Preferences>) =>
+    savePreferences({
+      version: 1,
+      scripts: [],
+      ...readPreferences(),
+      ...change,
+    });
   root.render(
     <Browser
       start={start}
@@ -1864,22 +1800,19 @@ if (!process.env.REACT_X11_NO_AUTORUN) {
       restore={restore}
       onSession={saveSession}
       onTabClosed={(key) => profile?.forgetTab(key)}
-      sites={readPreferences()?.scripts}
-      onSites={(scripts) =>
-        savePreferences({
-          version: 1,
-          scripts,
-          userAgent: readPreferences()?.userAgent,
-        })
+      // `BROWSER_SCRIPTS` says for this run, where it is set
+      scripts={
+        process.env.BROWSER_SCRIPTS
+          ? process.env.BROWSER_SCRIPTS === '1'
+          : (kept?.scriptsByDefault ?? false)
       }
-      userAgent={readPreferences()?.userAgent}
-      onUserAgent={(userAgent) =>
-        savePreferences({
-          version: 1,
-          scripts: readPreferences()?.scripts ?? [],
-          userAgent,
-        })
-      }
+      onScriptsByDefault={(scriptsByDefault) => keep({ scriptsByDefault })}
+      sites={kept?.scripts}
+      onSites={(scripts) => keep({ scripts })}
+      userAgent={kept?.userAgent}
+      onUserAgent={(userAgent) => keep({ userAgent })}
+      devtoolsDock={kept?.devtoolsDock}
+      onDevtoolsDock={(devtoolsDock) => keep({ devtoolsDock })}
     />,
   );
 }

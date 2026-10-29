@@ -28,10 +28,15 @@ import {
 import type { HtmlHandle } from '../../../src/html/index.js';
 import { ConsolePanel } from './console.js';
 import { ElementsPanel, PANEL_CONTENT } from './elements.js';
-import { useStore } from './model.js';
-import type { ConsoleLog, DevtoolsPanel, Inspection } from './model.js';
+import { DOCK_SIDES, useStore } from './model.js';
+import type {
+  ConsoleLog,
+  DevtoolsPanel,
+  DockSide,
+  Inspection,
+} from './model.js';
 
-export type { DevtoolsPanel } from './model.js';
+export type { DevtoolsPanel, DockSide } from './model.js';
 
 export interface DevToolsProps {
   /** The handle of the document the tab shows. */
@@ -44,6 +49,9 @@ export interface DevToolsProps {
    *  new one shows that panel. */
   panel: DevtoolsPanel;
   ask: number;
+  /** The side of the page they are docked on, and a move to another. */
+  dock: DockSide;
+  onDock: (side: DockSide) => void;
   onClose: () => void;
 }
 
@@ -54,6 +62,8 @@ export function DevTools({
   log,
   panel,
   ask,
+  dock,
+  onDock,
   onClose,
 }: DevToolsProps): ReactElement {
   const [tab, setTab] = useState<string>(panel);
@@ -94,6 +104,7 @@ export function DevTools({
         <TabsTrigger value="elements">Elements</TabsTrigger>
         <TabsTrigger value="console">Console</TabsTrigger>
         <box style={{ flexGrow: 1 }} />
+        <DockSideControl side={dock} onChange={onDock} />
         <Button
           variant="ghost"
           size="small"
@@ -120,6 +131,85 @@ export function DevTools({
         />
       </TabsContent>
     </Tabs>
+  );
+}
+
+const SIDE_NAMES: Record<DockSide, string> = {
+  left: 'left',
+  bottom: 'bottom',
+  right: 'right',
+};
+
+/**
+ * Where the tools are docked, as three buttons each drawing a window with
+ * its panel on that side, the side in force lit: a choice the strip shows
+ * rather than hides in a menu, since it is the one setting that changes
+ * how the page itself is laid out, and it is one press. The Develop menu
+ * has the same choice, under Dock Side.
+ */
+function DockSideControl({
+  side,
+  onChange,
+}: {
+  side: DockSide;
+  onChange: (side: DockSide) => void;
+}): ReactElement {
+  return (
+    <box
+      role="group"
+      aria-label="Dock side"
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 1,
+        marginRight: 4,
+      }}
+    >
+      {DOCK_SIDES.map((each) => (
+        <Button
+          key={each}
+          variant={each === side ? 'solid' : 'ghost'}
+          size="small"
+          aria-pressed={each === side}
+          aria-label={`Dock to the ${SIDE_NAMES[each]}`}
+          onPress={() => onChange(each)}
+        >
+          <DockGlyph side={each} active={each === side} />
+        </Button>
+      ))}
+    </box>
+  );
+}
+
+/** A window, its panel shaded on one side. */
+function DockGlyph({
+  side,
+  active,
+}: {
+  side: DockSide;
+  active: boolean;
+}): ReactElement {
+  const theme = useTheme();
+  const ink = active ? theme.accent : theme.textMuted;
+  return (
+    <canvas
+      style={{ width: 16, height: 13 }}
+      onDraw={(ctx, info) => {
+        const s = info.width / 16;
+        const line = info.scale;
+        const x0 = 1 * s;
+        const y0 = 1 * s;
+        const w = 14 * s;
+        const h = 11 * s;
+        ctx.fillStyle = ink;
+        if (side === 'left') ctx.fillRect(x0, y0, 5 * s, h);
+        else if (side === 'right') ctx.fillRect(x0 + w - 5 * s, y0, 5 * s, h);
+        else ctx.fillRect(x0, y0 + h - 4.5 * s, w, 4.5 * s);
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = line;
+        ctx.strokeRect(x0 + line / 2, y0 + line / 2, w - line, h - line);
+      }}
+    />
   );
 }
 

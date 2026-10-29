@@ -724,23 +724,36 @@ export function ElementsPanel({
   shown: boolean;
 }): ReactElement {
   const tick = useTicks(shown);
-  const [width, setWidth] = useState(0);
-  // the sidebar keeps its width as the tools grow, and the tree takes the
+  const [room, setRoom] = useState({ width: 0, height: 0 });
+  // Narrower than this — the tools docked at a side — the sidebar goes
+  // under the tree rather than beside it, as a browser's does.
+  const stacked = room.width > 0 && room.width < STACK_BELOW;
+  // The sidebar keeps its size as the tools grow, and the tree takes the
   // rest: `<SplitPane>` sizes its first pane, so that is worked out from
-  // the panel's width
-  const [sidebar, setSidebar] = useState(320);
-  const size = Math.max(160, width - DIVIDER - sidebar);
+  // the panel's size, along whichever way it is split. Each way keeps its
+  // own size, so a move to a side and back finds the one it left.
+  const [sidebar, setSidebar] = useState({ width: 320, height: 240 });
+  const along = stacked ? room.height : room.width;
+  const kept = stacked ? sidebar.height : sidebar.width;
+  const least = stacked ? 80 : 160;
+  const leastSecond = stacked ? 100 : 200;
+  const size = Math.max(least, along - DIVIDER - kept);
   return (
     <box
       style={{ flexGrow: 1, minHeight: 0 }}
-      onLayout={(ev) => setWidth(ev.width)}
+      onLayout={(ev) => setRoom({ width: ev.width, height: ev.height })}
     >
       <SplitPane
-        direction="row"
+        direction={stacked ? 'column' : 'row'}
         size={size}
-        min={160}
-        minSecond={200}
-        onResize={(first) => setSidebar(Math.max(200, width - DIVIDER - first))}
+        min={least}
+        minSecond={leastSecond}
+        onResize={(first) => {
+          const second = Math.max(leastSecond, along - DIVIDER - first);
+          setSidebar((was) =>
+            stacked ? { ...was, height: second } : { ...was, width: second },
+          );
+        }}
       >
         <box style={{ flexGrow: 1, minHeight: 0, minWidth: 0 }}>
           <DomTree
@@ -756,8 +769,8 @@ export function ElementsPanel({
             flexGrow: 1,
             minHeight: 0,
             minWidth: 0,
-            borderLeftWidth: 1,
             borderColor: '$border',
+            ...(stacked ? { borderTopWidth: 1 } : { borderLeftWidth: 1 }),
           }}
         >
           <Sidebar handle={handle} inspection={inspection} tick={tick} />
@@ -766,6 +779,9 @@ export function ElementsPanel({
     </box>
   );
 }
+
+/** How narrow the panel is before its sidebar goes under the tree. */
+const STACK_BELOW = 620;
 
 /** `<SplitPane>`'s divider, which its first pane's size leaves room for. */
 const DIVIDER = 6;

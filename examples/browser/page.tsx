@@ -133,7 +133,7 @@ import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
 import { Dock, Highlight } from './devtools/dock.js';
 import { ConsoleLog, Inspection, levelOf } from './devtools/model.js';
-import type { DevtoolsPanel } from './devtools/model.js';
+import type { DevtoolsPanel, DockSide } from './devtools/model.js';
 import {
   BLANK,
   HOME,
@@ -214,8 +214,8 @@ void publicSuffixList().then((list) => {
  *  and what came of it — `cached` for one the cache answered, `revalidated`
  *  for a 304. */
 const network = new HtmlNetwork({
-  // the default; the component sets it from `props.userAgent` (the toolbar's
-  // menu) before each load, so a switch takes on the next navigation
+  // the default; the component sets it from `props.userAgent`, Develop ›
+  // User Agent, before each load, so a switch takes on the next navigation
   userAgent: DEFAULT_USER_AGENT,
   cookies,
   httpCache: profile?.httpCache ?? undefined,
@@ -295,8 +295,8 @@ export interface PageProps {
    *  the page is from. Read as a document is made; the browser reloads the
    *  page when it changes. */
   scripts: boolean;
-  /** The User-Agent to send and to name as `navigator.userAgent`, from the
-   *  toolbar's menu, or `null`/absent for the default. The network takes it
+  /** The User-Agent to send and to name as `navigator.userAgent`, from
+   *  Develop › User Agent, or `null`/absent for the default. The network takes it
    *  for its next request and `navigator` as the next document's scripts
    *  start, so the browser reloads the page when it changes. */
   userAgent?: string | null;
@@ -307,8 +307,13 @@ export interface PageProps {
   devtoolsPanel: DevtoolsPanel;
   devtoolsPick: boolean;
   devtoolsAsk: number;
+  /** The side of the page they are docked on: the browser's, for every
+   *  tab. */
+  devtoolsDock: DockSide;
   /** The page's Inspect opened the tools, or their own button closed them. */
   onDevtools(open: boolean): void;
+  /** Their strip moved them to another side. */
+  onDevtoolsDock(side: DockSide): void;
   /** A navigation's document started to arrive. `posted` when it is the
    *  answer to a POST — not to the GET a redirect after one turned it into
    *  — so a reload sends the POST again. */
@@ -789,7 +794,7 @@ export default function Page(props: PageProps): ReactElement {
     return { entry: current?.id ?? null, again: current?.document };
   };
 
-  // The User-Agent the toolbar's menu chose, onto this process's network —
+  // The User-Agent the Develop menu chose, onto this process's network —
   // before the load effect below, so a navigation it starts in the same
   // commit (the reload the browser dispatches when the agent changes) goes
   // out with the new agent. `navigator.userAgent` follows through
@@ -1144,7 +1149,7 @@ export default function Page(props: PageProps): ReactElement {
       setNotice(
         props.scripts
           ? 'javascript: links are not run by this browser.'
-          : 'Scripts do not run on this site; the toolbar’s JS switch turns them on.',
+          : 'Scripts do not run on this site; Develop › JavaScript turns them on.',
       );
       return;
     }
@@ -1627,6 +1632,7 @@ export default function Page(props: PageProps): ReactElement {
   return (
     <Dock
       page={pageBox}
+      side={props.devtoolsDock}
       tools={
         devtools ? (
           <Suspense fallback={null}>
@@ -1637,6 +1643,8 @@ export default function Page(props: PageProps): ReactElement {
               log={consoleLog}
               panel={props.devtoolsPanel}
               ask={devtoolsAsk}
+              dock={props.devtoolsDock}
+              onDock={(side) => live.current.onDevtoolsDock(side)}
               onClose={() => live.current.onDevtools(false)}
             />
           </Suspense>

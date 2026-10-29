@@ -14,9 +14,20 @@ shaped it, what using it found, and what comes next.
   macOS menu bar or the desktop's panel, and is drawn over the tab strip
   everywhere else (core's `MenuBar`). It holds Developer Tools (⌥⌘I or
   Ctrl+Shift+I, and F12), JavaScript Console (⌥⌘J or Ctrl+Shift+J), Select
-  an Element in the Page (⇧⌘C or Ctrl+Shift+C) and View Page Source.
+  an Element in the Page (⇧⌘C or Ctrl+Shift+C), Dock Side and View Page
+  Source. It also holds the browser's two settings for a page, which were
+  buttons in the toolbar before: **JavaScript**, with Run Scripts on the
+  site shown, Use the Default for This Site, and Run Scripts by Default;
+  and **User Agent**, the presets as radio items.
   **Inspect**, at the end of the page's own context menu, opens them on
   the element under the pointer.
+- **Docking.** The tools dock at the bottom, the right or the left. Three
+  buttons at the end of their strip each draw a window with its panel on
+  that side, and the side in use is lit. The Develop menu has the same
+  choice under Dock Side. The side is the browser's and is kept in its
+  preferences, so every tab's tools open where the last were put. The bar
+  between the page and the tools resizes them, and each axis keeps its
+  own size, so tools moved back to the bottom are as tall as they were.
 - **Elements.** The document as a `<Tree>`: tags, attributes and text in a
   browser's colours. An element whose only content is one short line of
   text shows it on its own row. Under the tree is a breadcrumb of the
@@ -24,7 +35,8 @@ shaped it, what using it found, and what comes next.
   margin, border, padding and content over the page, with a caption. The
   picker does the same for the element under the pointer, and a press
   chooses it without the page hearing the press. Beside the tree is a
-  sidebar with two tabs. **Styles** shows the `style` attribute and the
+  sidebar with two tabs, which moves under the tree when the panel is
+  narrower than 620 pixels, as it is docked at a side. **Styles** shows the `style` attribute and the
   computed style as a filterable `<Table>`, with a swatch beside each
   colour. **Layout** shows the box model diagram, the element's rect and
   offset, and the layout properties that apply to it.
@@ -77,6 +89,14 @@ the dock's first child. Opening the tools adds siblings after it, so each
 `<Html>` keeps its node, its scripts and its scroll position. A
 `<SplitPane>` that appears only while the tools are open would wrap the
 page in a new pane, and React would remount every document in it.
+
+**The dock side is a row of buttons, not a menu item alone.** It is the
+one setting of the tools that changes how the page is laid out, and it is
+one press, so the strip shows it, in the same lit-when-on style as the
+picker. Chrome keeps it in a kebab menu, and the Develop menu keeps it
+too for whoever looks there. The page stays the dock's first child on
+every side, and the left is a row the other way round, so a move remounts
+no document.
 
 **The Develop menu owns its chords.** A `MenuBar` binds its items'
 shortcuts, and on macOS the system menu bar also runs them itself. So the

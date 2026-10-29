@@ -5,7 +5,7 @@
 // `evaluate` — the page's scripts' engine, at the page's global scope, under
 // the timeout every script of the page's runs under — and what comes back
 // is a string the realm wrote, never a page's object. So the prompt answers
-// only where the page's scripts run, which the toolbar's JS switch decides
+// only where the page's scripts run, which Develop › JavaScript decides
 // for its site: a console with nothing to run in says so rather than
 // pretending to evaluate.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -268,7 +268,7 @@ export function ConsolePanel({
       log.write(
         'error',
         handle.document
-          ? 'Scripts do not run on this page, so there is nothing to run this in: the toolbar’s JS switch turns them on for its site.'
+          ? 'Scripts do not run on this page, so there is nothing to run this in: Develop › JavaScript turns them on for its site.'
           : 'There is no page to run this in.',
       );
     } else log.write(answer.threw ? 'error' : 'result', answer.text);

@@ -15,7 +15,7 @@ import {
   selectorOf,
   useStore,
 } from './model.js';
-import type { Inspection } from './model.js';
+import type { DockSide, Inspection } from './model.js';
 
 // --- the highlight over the page ---------------------------------------------
 
@@ -119,32 +119,59 @@ export function Highlight({
  *  moves. */
 const DOCK_BAR = 5;
 
+/** How small a drag may make either side. */
+const LEAST = 120;
+
+/** How the dock lays its children out for each side: the page always
+ *  first, so the tools on the left are a row the other way round. */
+const DIRECTION = {
+  bottom: 'column',
+  right: 'row',
+  left: 'row-reverse',
+} as const;
+
 /**
- * The page and, under it, the tools at a height the bar between them sets.
- * The page is the first child whether or not the tools are open, so opening
- * them mounts nothing new above the page's documents: each `<Html>` keeps
- * its node, its scripts and where it was scrolled. `<SplitPane>` would wrap
- * the page in a pane only while the tools are there, which is a new parent,
- * and so a new document, at every open.
+ * The page and, beside it, the tools — under it, or to its right or left —
+ * at a size the bar between them sets, kept for each axis, so the tools
+ * moved back to the bottom are as tall as they were there. The page is the
+ * first child whether or not the tools are open and whichever side they
+ * are on, so opening them or moving them mounts nothing new above the
+ * page's documents: each `<Html>` keeps its node, its scripts and where it
+ * was scrolled. `<SplitPane>` would wrap the page in a pane only while the
+ * tools are there, which is a new parent, and so a new document, at every
+ * open.
  */
 export function Dock({
   page,
   tools,
+  side,
 }: {
   page: ReactElement;
   tools: ReactElement | null;
+  side: DockSide;
 }): ReactElement {
-  const [height, setHeight] = useState(300);
-  const [total, setTotal] = useState(0);
+  const [sizes, setSizes] = useState({ height: 300, width: 460 });
+  const [room, setRoom] = useState({ width: 0, height: 0 });
   const [dragging, setDragging] = useState(false);
   // the drag as it goes, which the moves after a press read before React
   // has rendered the press
   const held = useRef(false);
-  const shown = total ? Math.min(height, Math.max(120, total - 120)) : height;
+  const across = side !== 'bottom';
+  const wanted = across ? sizes.width : sizes.height;
+  const total = across ? room.width : room.height;
+  const shown = total
+    ? Math.min(wanted, Math.max(LEAST, total - LEAST))
+    : wanted;
   return (
     <box
-      style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
-      onLayout={(ev) => setTotal(ev.height)}
+      style={{
+        flexGrow: 1,
+        flexShrink: 1,
+        minHeight: 0,
+        minWidth: 0,
+        flexDirection: DIRECTION[side],
+      }}
+      onLayout={(ev) => setRoom({ width: ev.width, height: ev.height })}
     >
       {page}
       {tools ? (
@@ -160,25 +187,48 @@ export function Dock({
             if (!held.current) return;
             const box = ev.currentTarget?.parent?.getClientRects?.()[0];
             if (!box) return;
-            const next = box.y + box.height - ev.y - DOCK_BAR / 2;
-            setHeight(Math.max(120, Math.min(box.height - 120, next)));
+            // from the edge the tools are against to the pointer
+            const along =
+              side === 'bottom'
+                ? box.y + box.height - ev.y
+                : side === 'right'
+                  ? box.x + box.width - ev.x
+                  : ev.x - box.x;
+            const most = (across ? box.width : box.height) - LEAST;
+            const next = Math.max(LEAST, Math.min(most, along - DOCK_BAR / 2));
+            setSizes((was) =>
+              across ? { ...was, width: next } : { ...was, height: next },
+            );
           }}
           onMouseUp={() => {
             held.current = false;
             setDragging(false);
           }}
           style={{
-            height: DOCK_BAR,
             flexShrink: 0,
-            cursor: 'ns-resize',
-            borderTopWidth: 1,
             borderColor: '$border',
             backgroundColor: dragging ? '$accent' : '$surface',
+            ...(side === 'bottom'
+              ? { height: DOCK_BAR, cursor: 'ns-resize', borderTopWidth: 1 }
+              : {
+                  width: DOCK_BAR,
+                  cursor: 'ew-resize',
+                  ...(side === 'right'
+                    ? { borderLeftWidth: 1 }
+                    : { borderRightWidth: 1 }),
+                }),
           }}
         />
       ) : null}
       {tools ? (
-        <box style={{ height: shown, flexShrink: 0, minHeight: 0 }}>
+        <box
+          style={{
+            flexShrink: 0,
+            minHeight: 0,
+            minWidth: 0,
+            ...(across ? { width: shown } : { height: shown }),
+          }}
+        >
           {tools}
         </box>
       ) : null}

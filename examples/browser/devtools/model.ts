@@ -14,6 +14,11 @@ import type { AnyNode, Document, Element } from '../../../src/html/index.js';
 /** The panels the tools open on. */
 export type DevtoolsPanel = 'elements' | 'console';
 
+/** The side of the page the tools are docked on. */
+export type DockSide = 'bottom' | 'right' | 'left';
+
+export const DOCK_SIDES: readonly DockSide[] = ['left', 'bottom', 'right'];
+
 // --- a store ----------------------------------------------------------------
 
 /** One value, and who to tell when it changes. */
