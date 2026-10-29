@@ -11,8 +11,11 @@
 //      it is in the facade's closure and nowhere a page can reach; what goes
 //      in is strings, through `__in`, a data property the facade defines
 //      and a page cannot turn into a setter; what comes back is primitives.
-//   3. `Error.prepareStackTrace` is locked before any page code runs, so no
-//      call site hands a page a function of the host's.
+//   3. `Error.prepareStackTrace` is locked before any page code runs, and
+//      so is the global's `Error`, which Node asks for it, so no call site
+//      hands a page a function of the host's. What it is locked to writes
+//      the page's own frames and stops at the host's (`stacks.ts`): every
+//      task is entered from the host, and a stack named the host's files.
 //   4. Every function of the host's that calls into the context is strict
 //      ESM, and it calls only through a `vm.Script`, never a page function
 //      directly, so no `caller` leads out.
@@ -60,6 +63,7 @@ import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
 import { installGeometry } from './geometry.js';
+import { FACADE, lockStacks } from './stacks.js';
 import type { Bridge, Primitive } from './dom.js';
 
 declare const setTimeout: SetTimeout;
@@ -259,6 +263,7 @@ const INSTALL = `(function () {
     try { Object.defineProperty(target, 'name', { value, configurable: true }); } catch {}
     return target;
   };
+  (${lockStacks.toString()})(${JSON.stringify(FACADE)});
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
@@ -611,22 +616,21 @@ export class ScriptEngine {
     );
     // the facade is compiled with the callback too: a page's `eval`, `new
     // Function` and string timers run from inside it, and are found from it
-    const run = (code: string): unknown =>
+    const run = (code: string, filename?: string): unknown =>
       new vm.Script(code, {
+        filename,
         importModuleDynamically: this._importer as never,
       }).runInContext(this._context, {
         timeout: this._ceiling,
       });
-    run(
-      `Object.defineProperty(Error, 'prepareStackTrace', ` +
-        `{ value: undefined, writable: false, configurable: false });`,
-    );
     // the one host object that ever goes in, taken out of the global by
     // the facade before any page code runs, with whether the window can
     // have its named properties
     (this._context as Record<string, unknown>).__bridge = this._bridge(bridge);
     (this._context as Record<string, unknown>).__named = namedAccessWorks();
-    run(INSTALL);
+    // under a name of its own, which the page's stacks leave out
+    // (`lockStacks`)
+    run(INSTALL, FACADE);
     this._promises = run('Promise.prototype') as object;
     this._global = run('globalThis') as object;
     this._TypeError = run('TypeError') as new (message: string) => object;

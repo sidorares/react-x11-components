@@ -2781,6 +2781,21 @@ closes a way out a DOM binding opens by accident:
   runs nothing there either (`importStaysInPage`). **An escape test reads
   what a refusal hands the page**, and what `import()` hands it, not only
   that it was refused.
+- **A page's stacks are its own frames** (`stacks.ts`). Every task is
+  entered from the host, and the runtime wrote every frame into an error's
+  `stack`: any page read the user's home directory and the install's
+  layout off an error it made, and an error logger sent them home. The
+  context's `Error.prepareStackTrace` is locked to a formatter that keeps
+  the page's frames, drops the facade's and stops at the host's — a
+  `node:` module, an entry (`engine:__timer`), a file by its path. Node
+  asks the error's global for its `Error`, and a page that replaced
+  `window.Error` was handed the call sites, so that binding is locked too;
+  Bun's `captureStackTrace` asks no formatter, so it is wrapped there. A
+  page sees a native `Error.prepareStackTrace` and a `window.Error` it
+  cannot replace, where Chrome has neither. **Code the engine compiles
+  into the context is named**: the facade's as `FACADE`, which a stack
+  passes over, and an entry as `engine:…`, where the page's stack ends. A
+  script with no name is `file:///` on Bun, which reads as the page's.
 - **The process's `unhandledRejection` is the engine's** (`watchRejections`).
   Every listener hears every rejection, and core's pane registers one that
   ends the process before the page's module loads, so a page's uncaught
