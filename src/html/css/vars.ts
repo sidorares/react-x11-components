@@ -26,6 +26,7 @@
 // sent anywhere by a style sheet (`substituteIn`).
 
 import { evaluateCondition, styleQuery } from './conditions.js';
+import { environmentValue } from './environment.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
 
 /**
@@ -330,9 +331,11 @@ const SUBSTITUTED = new WeakMap<CustomProps, Map<string, string | null>>();
 
 const MEDIA = /(?:^|[^\w-])media\(/i;
 
-/** Whether a value has a `var()`, an `if()`, an `inherit()` or a custom
- *  function's call in it: whether it is read only once the element's
- *  custom properties are known. */
+/** Whether a value has a `var()`, an `env()`, an `if()`, an `inherit()`
+ *  or a custom function's call in it: whether it is read only once the
+ *  element's custom properties are known. An `env()` reads none, but it is
+ *  substituted as a `var()` is, at computed-value time (CSS Environment
+ *  Variables 1, 3), and with them. */
 export function hasVar(value: string): boolean {
   return VAR.test(value) || (value.includes('--') && DASHED_CALL.test(value));
 }
@@ -471,8 +474,12 @@ export function validVars(value: string): boolean {
     }
     const comma = topLevelComma(inner);
     const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
-    // an `inherit()` may name a property, or nothing: the one declared
-    const named = kind === 'inherit' ? !name || INHERIT_NAME.test(name) : false;
+    // an `inherit()` may name a property, or nothing: the one declared;
+    // an `env()` names a variable, and its indices if it is an array
+    const named =
+      kind === 'inherit'
+        ? !name || INHERIT_NAME.test(name)
+        : kind === 'env' && ENV_HEAD.test(name);
     if (!named && !NAME.test(name)) return false;
     if (comma >= 0) {
       const fallback = inner.slice(comma + 1);
@@ -507,7 +514,13 @@ function unescapeName(name: string): string {
   );
 }
 
-const VAR = /(?:^|[^\w-])(?:var|if|inherit|attr)\(/i;
+const VAR = /(?:^|[^\w-])(?:var|env|if|inherit|attr)\(/i;
+
+/** What an `env()` names before its fallback (CSS Environment Variables 1,
+ *  3): a `<custom-ident>`, and the indices into it where the variable is an
+ *  array, each an `<integer [0,∞]>`. */
+const ENV_HEAD =
+  /^(?:--|-?(?:[a-z_]|[^\x00-\x7f]|\\[^\n\r\f]))(?:[\w-]|[^\x00-\x7f]|\\[^\n\r\f])*(?:\s+\d+)*$/i;
 
 /** An `attr()`, which reads the element and not its custom properties. */
 const ATTR_CALL = /(?:^|[^\w-])attr\(/i;
@@ -580,6 +593,15 @@ export function substitute(
         if (name && !NAME.test(name) && !INHERIT_NAME.test(name)) return null;
         const of = name ? unescapeName(name) : env?.property;
         replacement = of ? env?.inherited?.(of) : undefined;
+      } else if (kind === 'env') {
+        // the user agent's variable, at its indices; one it does not
+        // define falls back as an undefined custom property does
+        if (!ENV_HEAD.test(name)) return null;
+        const [ident, ...indices] = name.split(/\s+/);
+        replacement = environmentValue(
+          unescapeName(ident),
+          indices.map(Number),
+        );
       } else {
         if (!NAME.test(name)) return null;
         replacement = get(unescapeName(name));
@@ -1028,7 +1050,7 @@ function topLevelSplit(value: string, sep: string): string[] {
 interface Found {
   at: number;
   open: number;
-  kind: 'var' | 'if' | 'inherit' | 'fn' | 'attr';
+  kind: 'var' | 'env' | 'if' | 'inherit' | 'fn' | 'attr';
 }
 
 /** The next `var(`, `if(`, `inherit(` or `--name(` from `from` that is a
@@ -1062,6 +1084,10 @@ function findVar(value: string, from: number): Found | null {
     } else if (c === 'a' || c === 'A') {
       if (value.slice(i, i + 5).toLowerCase() === 'attr(') {
         return { at: i, open: i + 5, kind: 'attr' };
+      }
+    } else if (c === 'e' || c === 'E') {
+      if (value.slice(i, i + 4).toLowerCase() === 'env(') {
+        return { at: i, open: i + 4, kind: 'env' };
       }
     } else if (c === '-' && value[i + 1] === '-') {
       let end = i + 2;
