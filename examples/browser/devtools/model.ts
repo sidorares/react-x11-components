@@ -9,10 +9,15 @@
 // every document of the tab, and a render of it is a render of each
 // `<Html>` in it.
 import { useSyncExternalStore } from 'react';
-import type { AnyNode, Document, Element } from '../../../src/html/index.js';
+import type {
+  AnyNode,
+  ConsoleValue,
+  Document,
+  Element,
+} from '../../../src/html/index.js';
 
 /** The panels the tools open on. */
-export type DevtoolsPanel = 'elements' | 'console';
+export type DevtoolsPanel = 'elements' | 'console' | 'network' | 'storage';
 
 /** The side of the page the tools are docked on. */
 export type DockSide = 'bottom' | 'right' | 'left';
@@ -104,6 +109,9 @@ export interface ConsoleEntry {
   /** How many times in a row it was written: a console shows a message
    *  written again as one with a count. */
   count: number;
+  /** What a result came to, where the page's realm keeps it: an object a
+   *  console draws as a tree. */
+  value?: ConsoleValue;
 }
 
 /** How many messages a tab keeps: the oldest go past it. */
@@ -121,7 +129,7 @@ export class ConsoleLog extends Store<readonly ConsoleEntry[]> {
     super([]);
   }
 
-  write(level: ConsoleLevel, text: string): void {
+  write(level: ConsoleLevel, text: string, value?: ConsoleValue): void {
     const all = this.value;
     const last = all[all.length - 1];
     if (
@@ -134,7 +142,13 @@ export class ConsoleLog extends Store<readonly ConsoleEntry[]> {
       this.set([...all.slice(0, -1), { ...last, count: last.count + 1 }]);
       return;
     }
-    const entry = { id: ++nextEntry, level, text, count: 1 };
+    const entry: ConsoleEntry = {
+      id: ++nextEntry,
+      level,
+      text,
+      count: 1,
+      ...(value && { value }),
+    };
     const kept = all.length >= MOST_MESSAGES ? all.slice(1) : all;
     this.set([...kept, entry]);
   }

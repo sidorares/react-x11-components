@@ -26,6 +26,7 @@ import {
 import type { Element, HtmlHandle } from '../../../src/html/index.js';
 import { syntaxColours } from './colours.js';
 import { AttributesPane } from './attributes.js';
+import { StylesPane } from './styles.js';
 import {
   BOX_COLOURS,
   boxModelOf,
@@ -321,6 +322,7 @@ function Sidebar({
       <TabsList style={{ paddingLeft: 6, backgroundColor: '$surface' }}>
         <TabsTrigger value="attributes">Attributes</TabsTrigger>
         <TabsTrigger value="styles">Styles</TabsTrigger>
+        <TabsTrigger value="computed">Computed</TabsTrigger>
         <TabsTrigger value="layout">Layout</TabsTrigger>
       </TabsList>
       <TabsContent value="attributes" style={PANEL_CONTENT}>
@@ -335,7 +337,19 @@ function Sidebar({
         )}
       </TabsContent>
       <TabsContent value="styles" style={PANEL_CONTENT}>
-        {read ? <StylesPane read={read} /> : <Nothing />}
+        {element ? (
+          <StylesPane
+            handle={handle}
+            inspection={inspection}
+            element={element}
+            version={tick + edited}
+          />
+        ) : (
+          <Nothing />
+        )}
+      </TabsContent>
+      <TabsContent value="computed" style={PANEL_CONTENT}>
+        {read ? <ComputedPane read={read} /> : <Nothing />}
       </TabsContent>
       <TabsContent value="layout" style={PANEL_CONTENT}>
         {read ? <LayoutPane read={read} /> : <Nothing />}
@@ -362,7 +376,7 @@ function Nothing(): ReactElement {
   );
 }
 
-// --- Styles ---------------------------------------------------------------------
+// --- Computed ---------------------------------------------------------------------
 
 interface StyleRow {
   id: string;
@@ -372,12 +386,8 @@ interface StyleRow {
 /** A computed value that is a colour, which the table draws a swatch for. */
 const COLOUR = /^(?:#[0-9a-f]{3,8}|rgba?\(|hsla?\(|oklch\(|color\()/i;
 
-function StylesPane({ read }: { read: Inspected }): ReactElement {
+function ComputedPane({ read }: { read: Inspected }): ReactElement {
   const [filter, setFilter] = useState('');
-  const inline = useMemo(
-    () => declarationsOf(read.element.attribs.style ?? ''),
-    [read.element.attribs.style],
-  );
   const rows = useMemo(() => {
     const all = Object.entries(read.style ?? {})
       .filter(([name]) => !name.startsWith('--'))
@@ -441,28 +451,6 @@ function StylesPane({ read }: { read: Inspected }): ReactElement {
           }}
         />
       </box>
-      {inline.length ? (
-        <box
-          style={{
-            flexShrink: 0,
-            paddingLeft: 10,
-            paddingRight: 10,
-            paddingBottom: 6,
-            gap: 1,
-          }}
-        >
-          <text style={{ ...MONO, color: '$textMuted' }}>
-            {'element.style {'}
-          </text>
-          {inline.map(([name, value], i) => (
-            <text key={i} style={MONO}>
-              <text style={{ color: '#c80000' }}>{`  ${name}`}</text>
-              <text style={{ color: '$text' }}>{`: ${value};`}</text>
-            </text>
-          ))}
-          <text style={{ ...MONO, color: '$textMuted' }}>{'}'}</text>
-        </box>
-      ) : null}
       <Table<StyleRow>
         rows={rows}
         columns={columns}
@@ -511,18 +499,6 @@ function StyleValue({ value }: { value: string }): ReactElement {
       </text>
     </box>
   );
-}
-
-/** A `style` attribute's declarations, as written. */
-function declarationsOf(style: string): [string, string][] {
-  return style
-    .split(';')
-    .map((d) => d.trim())
-    .filter(Boolean)
-    .map((d) => {
-      const at = d.indexOf(':');
-      return at < 0 ? [d, ''] : [d.slice(0, at).trim(), d.slice(at + 1).trim()];
-    });
 }
 
 // --- Layout ---------------------------------------------------------------------

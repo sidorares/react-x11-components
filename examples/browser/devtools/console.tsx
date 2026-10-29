@@ -10,7 +10,7 @@
 // pretending to evaluate.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { Button, Icon, useTheme } from 'react-x11';
+import { Button, Icon, useClipboard, useTheme } from 'react-x11';
 import type {
   KeyboardEvent as X11KeyboardEvent,
   ScrollableNode,
@@ -27,6 +27,8 @@ import { autoTokenStyles, codeRuns } from '../../../src/code-language/index.js';
 import type { HtmlHandle } from '../../../src/html/index.js';
 import { useStore } from './model.js';
 import type { ConsoleEntry, ConsoleLevel, ConsoleLog } from './model.js';
+import { CopyGlyph } from './glyphs.js';
+import { ValueTree, remoteValue } from './value-tree.js';
 
 const MONO = { fontFamily: '$monoFamily', fontSize: 12 } as const;
 
@@ -78,13 +80,26 @@ function lookOf(level: ConsoleLevel): {
 function Message({
   entry,
   styles,
+  handle,
 }: {
   entry: ConsoleEntry;
   styles: ReturnType<typeof autoTokenStyles>;
+  handle: HtmlHandle;
 }): ReactElement {
   const theme = useTheme();
+  const clipboard = useClipboard();
+  const [hover, setHover] = useState(false);
   const look = lookOf(entry.level);
   const code = entry.level === 'input' || entry.level === 'result';
+  // an object or an array the page's realm keeps, drawn as a tree that
+  // reads its levels as they open
+  const tree = useMemo(
+    () =>
+      entry.value?.id !== undefined && entry.value.type !== 'function'
+        ? remoteValue(handle, entry.value)
+        : null,
+    [entry.value, handle],
+  );
   // what was typed, and what it came to, highlighted as the prompt is
   const runs = useMemo(
     () =>
@@ -99,12 +114,14 @@ function Message({
   );
   return (
     <box
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         flexDirection: 'row',
         flexShrink: 0,
         gap: 6,
         paddingLeft: 8,
-        paddingRight: 8,
+        paddingRight: 4,
         paddingTop: 3,
         paddingBottom: 3,
         borderBottomWidth: 1,
@@ -126,32 +143,38 @@ function Message({
           {look.mark}
         </text>
       )}
-      <text
-        selectable
-        style={{
-          ...MONO,
-          flexGrow: 1,
-          flexShrink: 1,
-          color: look.ink,
-          ...(entry.level === 'navigation' && { fontStyle: 'italic' }),
-        }}
-      >
-        {runs
-          ? runs.map((run, i) => (
-              <text
-                key={i}
-                style={{
-                  color: run.color ?? theme.text,
-                  ...(run.weight &&
-                    run.weight >= 600 && { fontWeight: 'bold' }),
-                  ...(run.style === 'italic' && { fontStyle: 'italic' }),
-                }}
-              >
-                {run.text}
-              </text>
-            ))
-          : entry.text}
-      </text>
+      {tree ? (
+        <box style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
+          <ValueTree root={tree} />
+        </box>
+      ) : (
+        <text
+          selectable
+          style={{
+            ...MONO,
+            flexGrow: 1,
+            flexShrink: 1,
+            color: look.ink,
+            ...(entry.level === 'navigation' && { fontStyle: 'italic' }),
+          }}
+        >
+          {runs
+            ? runs.map((run, i) => (
+                <text
+                  key={i}
+                  style={{
+                    color: run.color ?? theme.text,
+                    ...(run.weight &&
+                      run.weight >= 600 && { fontWeight: 'bold' }),
+                    ...(run.style === 'italic' && { fontStyle: 'italic' }),
+                  }}
+                >
+                  {run.text}
+                </text>
+              ))
+            : entry.text}
+        </text>
+      )}
       {entry.count > 1 ? (
         <box
           style={{
@@ -168,6 +191,22 @@ function Message({
           </text>
         </box>
       ) : null}
+      {/* the line's text, copied: held in place so a line does not move as
+          the pointer comes and goes */}
+      <box style={{ width: 24, flexShrink: 0, alignItems: 'flex-end' }}>
+        {hover && entry.level !== 'navigation' ? (
+          <Button
+            variant="ghost"
+            size="small"
+            aria-label="Copy this line"
+            onPress={() => {
+              clipboard.write(entry.text).catch(() => {});
+            }}
+          >
+            <CopyGlyph />
+          </Button>
+        ) : null}
+      </box>
     </box>
   );
 }
@@ -271,7 +310,9 @@ export function ConsolePanel({
           ? 'Scripts do not run on this page, so there is nothing to run this in: Develop › JavaScript turns them on for its site.'
           : 'There is no page to run this in.',
       );
-    } else log.write(answer.threw ? 'error' : 'result', answer.text);
+    } else {
+      log.write(answer.threw ? 'error' : 'result', answer.text, answer.value);
+    }
     following.current = true;
     setCode('');
   };
@@ -339,7 +380,11 @@ export function ConsolePanel({
           variant="ghost"
           size="small"
           aria-label="Clear the console"
-          onPress={() => log.clear()}
+          onPress={() => {
+            log.clear();
+            // and what the page's realm kept for its trees
+            handle.releaseValues();
+          }}
         >
           <Icon name="close" size={8} />
         </Button>
@@ -356,7 +401,12 @@ export function ConsolePanel({
         }}
       >
         {entries.map((entry) => (
-          <Message key={entry.id} entry={entry} styles={styles} />
+          <Message
+            key={entry.id}
+            entry={entry}
+            styles={styles}
+            handle={handle}
+          />
         ))}
       </box>
       <box
