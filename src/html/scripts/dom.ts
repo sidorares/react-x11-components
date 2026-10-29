@@ -24253,6 +24253,64 @@ export function installDom(
     mine: !e.other,
   });
 
+  /** Each window's `history`, by the session it is of (`History`). */
+  const historySessions = new WeakMap<object, Session>();
+  /** The session of the `history` a member of `History` is called on —
+   *  never of the window the member was read from. YouTube takes
+   *  `replaceState` off a hidden `about:blank` frame's `history`, for one
+   *  no extension has wrapped, and binds it to the page's: a method that
+   *  kept its own window's session refused the page's URL for the
+   *  frame's `about:blank`. */
+  const historyOf = (h: Any): Session => {
+    const s = historySessions.get(h);
+    if (!s) throw new TypeError('Illegal invocation');
+    return s;
+  };
+  /** `History` (HTML 7.4.3), its attributes and methods on its prototype,
+   *  as an interface's are. */
+  class History {
+    constructor(token?: Any, session?: Session) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      historySessions.set(this, session!);
+    }
+    get length(): number {
+      return historyOf(this).entries.length;
+    }
+    get state(): Any {
+      return historyStateOf(currentOf(historyOf(this)));
+    }
+    get scrollRestoration(): string {
+      return historyOf(this).restoration;
+    }
+    set scrollRestoration(value: Any) {
+      const s = historyOf(this);
+      const v = str(value);
+      if (v === 'auto' || v === 'manual') s.restoration = v;
+    }
+    back(): void {
+      traverseBy(historyOf(this), -1);
+    }
+    forward(): void {
+      traverseBy(historyOf(this), 1);
+    }
+    go(n: Any = 0): void {
+      const s = historyOf(this);
+      const delta = Number(n) || 0;
+      if (delta) traverseBy(s, delta);
+      else s.ctx.reload();
+    }
+    pushState(state: Any, _title: Any, url?: Any): void {
+      updateHistory(historyOf(this), state, url, 'push', 'pushState');
+    }
+    replaceState(state: Any, _title: Any, url?: Any): void {
+      updateHistory(historyOf(this), state, url, 'replace', 'replaceState');
+    }
+  }
+  Object.defineProperty(History.prototype, Symbol.toStringTag, {
+    value: 'History',
+    configurable: true,
+  });
+
   /** A window's session history, and its `history` and `navigation`. */
   const makeSession = (
     ctx: SessionContext,
@@ -24291,34 +24349,7 @@ export function installDom(
       persist(s);
     }
     s.navigation = new Navigation(TOKEN, s);
-    const history = {
-      get length(): number {
-        return s.entries.length;
-      },
-      get state(): Any {
-        return historyStateOf(currentOf(s));
-      },
-      get scrollRestoration(): string {
-        return s.restoration;
-      },
-      set scrollRestoration(value: Any) {
-        const v = str(value);
-        if (v === 'auto' || v === 'manual') s.restoration = v;
-      },
-      back: () => traverseBy(s, -1),
-      forward: () => traverseBy(s, 1),
-      go: (n: Any = 0) => {
-        const delta = Number(n) || 0;
-        if (delta) traverseBy(s, delta);
-        else ctx.reload();
-      },
-      pushState(state: Any, _title: Any, url?: Any) {
-        updateHistory(s, state, url, 'push', 'pushState');
-      },
-      replaceState(state: Any, _title: Any, url?: Any) {
-        updateHistory(s, state, url, 'replace', 'replaceState');
-      },
-    };
+    const history = new History(TOKEN, s);
     return { session: s, history, navigation: s.navigation };
   };
 
@@ -26883,9 +26914,11 @@ export function installDom(
   // The interfaces of the window's own objects, which a page asks
   // `instanceof` of and reads prototypes from — mazda.com.au's scripts ask
   // for `Location` — each object made the one instance of its own.
+  // `History` is an interface of its own (`makeSession`), since a frame's
+  // `history` is one as well.
+  define('History', History);
   for (const [name, object] of [
     ['Location', location],
-    ['History', history],
     ['Navigator', navigator],
     ['Screen', G.screen],
   ] as [string, Any][]) {
