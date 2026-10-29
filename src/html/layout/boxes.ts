@@ -1441,6 +1441,13 @@ export interface SubtreeRoots {
   hidden: Element[];
   /** Elements out of the document, whose styles go. */
   gone: Element[];
+  /** Where roots or tails came out as no subtree of their own, the
+   *  elements a build around them would start from — a root's parent, a
+   *  tail's holder — set by `buildSubtrees` as it gives up: a caption a
+   *  class makes absolute is a box its parent's flow places otherwise
+   *  (`HtmlViewNode._subtreeBuild`). All of them, so that a gallery whose
+   *  every caption moved is built again once from around them. */
+  wider?: Element[];
   /** Whether all that changed is what a stream's chunks put in, which
    *  moves and takes away nothing (`HtmlViewNode._buildParsed`). */
   appendOnly?: boolean;
@@ -1592,7 +1599,15 @@ export function buildSubtrees(
           tree.anonymous,
         );
       }
-      if (!made) return null;
+      if (!made) {
+        const wider = old.tail ? old.el : old.el && flatParentOf(old.el);
+        if (!wider) {
+          found.wider = undefined;
+          return null;
+        }
+        (found.wider ??= []).push(wider);
+        continue;
+      }
       // As many list items as it had, numbering nothing, and nothing else
       // done to a counter or a quote, before or after: what follows it
       // counts as it did. Or else nothing kept after it reads a counter or
@@ -1619,6 +1634,7 @@ export function buildSubtrees(
     cascade.endSharing();
     cascade.stylesOf = outer;
   }
+  if (found.wider) return null;
   if (counting) {
     // where a counter a box after them reads is made: before the roots,
     // or in what they are in, it counts what they hold
@@ -2755,9 +2771,10 @@ export function tailFrom(
 /** The elements whose children no tail is built of: what holds them is
  *  laid out or drawn otherwise than its children are in a block — a
  *  `<details>`'s content in a `::details-content`, a fieldset's legend on
- *  its border, a control's — or is the root element. */
+ *  its border, a control's. The root element's are built as a block's
+ *  are: Apple's scripts put a probe of the viewport after the `<body>` at
+ *  every step of a drag, and take it out, and each built the document. */
 const TAILS_REFUSED = new Set([
-  'html',
   'details',
   'summary',
   'fieldset',

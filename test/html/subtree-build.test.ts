@@ -23,6 +23,8 @@ import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { shadowRootOf } from '../../src/html/dom.js';
 import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
+import { resizeClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
@@ -179,12 +181,23 @@ function change(next: () => number, body: Element): HtmlChange[] {
       },
     ];
   }
+  // and the root element past the body, where a page's script puts what it
+  // measures the viewport with: Apple's puts a probe there at every step of
+  // a drag, and takes it out
+  const root = body.parent as unknown as Element | null;
+  const pastBody = root
+    ? (root.children
+        .slice(root.children.indexOf(body) + 1)
+        .filter((n) => (n as Element).attribs) as Element[])
+    : [];
   if (kind === 0 || !inside.length) {
-    const parent = pick(all);
+    const atRoot = !!root && next() < 0.15;
+    const parent = atRoot ? root : pick(all);
     const child = element(next, 2);
     const kids = parent.children.filter((n) => (n as Element).attribs);
-    if (kids.length && next() < 0.5) DomUtils.prepend(pick(kids), child);
-    else appendChild(parent, child);
+    if (!atRoot && kids.length && next() < 0.5) {
+      DomUtils.prepend(pick(kids), child);
+    } else appendChild(parent, child);
     return [
       {
         type: 'childList',
@@ -196,7 +209,8 @@ function change(next: () => number, body: Element): HtmlChange[] {
     ];
   }
   if (kind === 1) {
-    const target = pick(inside);
+    const target =
+      pastBody.length && next() < 0.3 ? pick(pastBody) : pick(inside);
     const parent = target.parent as unknown as Element;
     const sides = sidesOf(next, target);
     removeNode(target as unknown as ChildNode);
@@ -394,6 +408,7 @@ metric(
   async () => {
     let subtrees = 0;
     let wholes = 0;
+    let widened = 0;
     const keptAtStart = blocksKept();
     let shadowed = 0;
     // SUBTREE_SEEDS sweeps more of them, for a change to the splice, and
@@ -423,11 +438,21 @@ metric(
       )!;
       if (elementsUnder(bodyEl).some((e) => shadowRootOf(e))) shadowed += 1;
       const subtreeBuild = internals._subtreeBuild;
+      const subtreeRoots = internals._subtreeRoots;
+      let tries = 0;
+      internals._subtreeRoots = function (this: unknown, ...a: unknown[]) {
+        tries += 1;
+        return subtreeRoots.apply(this, a);
+      };
       for (let step = 0; step < 10; step += 1) {
         const changes = change(next, bodyEl);
         let built: unknown = undefined;
         internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+          tries = 0;
           built = subtreeBuild.apply(this, a);
+          // a root that came out as no block in the flow, built again
+          // from the root around it (`wider`)
+          if (built && tries > 1) widened += 1;
           return built;
         };
         el.touchDocument(changes);
@@ -451,11 +476,155 @@ metric(
       result.unmount();
     }
     assert.ok(subtrees > 60, `${subtrees} changes built only their subtrees`);
+    assert.ok(widened > 5, `${widened} built from a root around one refused`);
     assert.ok(wholes > 10, `${wholes} changes built the whole document`);
     assert.ok(shadowed > 5, `${shadowed} documents with a shadow tree`);
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** What a long page holds besides: lengths in `vw`, which a drag's steps
+ *  restyle, in place or by a build, over what the drag set aside, and
+ *  breakpoints the drag crosses, which turn on what lays a box out
+ *  otherwise and what draws one or none. */
+const DRAG_SHEET = `${SHEET}
+.v { margin-left: 3vw; padding-right: 1vw }
+.w { font-size: calc(10px + 1vw) }
+.x::before { content: ""; display: block; width: 50vw; height: 2px }
+.y { width: 40vw; transform: translateX(2vw) }
+.y::after { content: "~"; position: absolute; width: 10vw; transform: translateX(1vw) }
+@media (max-width: 355px) {
+  .a { flex-direction: column }
+  .h { padding: 8px }
+  .c { width: 20vw }
+  .b { display: block }
+}
+@media (min-width: 362px) {
+  .l { margin: 4px 0 }
+  .g { display: block }
+  .k { position: absolute; left: 2vw }
+}`;
+
+metric(
+  'a page that writes while a window edge is dragged comes to rest as a build of the whole document makes it',
+  async (t) => {
+    // A drag lays out down to a viewport past what can be seen at each
+    // step, and sets the rest aside (`_stopAt`). A page's resize handlers
+    // write at every step, and a layout at the width the step is at stops
+    // where the step's did; a build of the subtrees a write reached puts
+    // back what was set aside to splice them in (`_subtreeBuild`), and what
+    // a restyle in place left owed is built at rest (`_asideOwed`). What a
+    // step restyles itself — a breakpoint's rules, a `vw` — builds its own
+    // subtrees (`seedWith`). Held to a restyle, build and layout of the
+    // whole document once it rests.
+    const clock = holdClock(t, resizeClock);
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    let again = 0;
+    let apart = 0;
+    let stepApart = 0;
+    let stepped = 0;
+    const seeds = Number(env.DRAG_SEEDS ?? 24);
+    for (let seed = Number(env.DRAG_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 15485863);
+      const pick = <T>(list: readonly T[]): T =>
+        list[Math.floor(next() * list.length)];
+      const body = createElement('body', {});
+      const blocks = 18 + Math.floor(next() * 8);
+      for (let i = 0; i < blocks; i += 1) {
+        const block = element(next, 0);
+        if (next() < 0.3) {
+          const was = block.attribs.class ? `${block.attribs.class} ` : '';
+          block.attribs.class = was + pick(['v', 'w', 'x', 'y']);
+        }
+        // in a section of its own, as a page's parts are: an inline box
+        // the body holds is in no element a build can make apart
+        appendChild(body, createElement('section', {}, [block]));
+        appendChild(
+          body,
+          createElement('div', { style: 'height: 40px' }, [createText('·')]),
+        );
+      }
+      const markup = DomUtils.getOuterHTML(body as never);
+      const { el, resize, result } = await renderScrolled(
+        `<!doctype html><html><head><style>${DRAG_SHEET}</style></head>${markup}</html>`,
+        160,
+        400,
+      );
+      const internals = el as unknown as Record<
+        string,
+        (...a: unknown[]) => unknown
+      > & {
+        _tree: BoxTree;
+        _partial: boolean;
+        _widthLaid: number;
+        _cascade: { viewportWidth: number };
+        _invalidate(stale: number): void;
+      };
+      const stopAt = internals._stopAt;
+      internals._stopAt = function (this: typeof internals, ...a: unknown[]) {
+        const stop = stopAt.apply(this, a);
+        if (stop && this._widthLaid === a[0]) again += 1;
+        return stop;
+      };
+      const subtreeBuild = internals._subtreeBuild;
+      internals._subtreeBuild = function (
+        this: typeof internals,
+        ...a: unknown[]
+      ) {
+        const partial = this._partial;
+        const built = subtreeBuild.apply(this, a);
+        if (built && partial) apart += 1;
+        // at a step's width, for what a breakpoint or a `vw` restyled
+        if (built && this._cascade.viewportWidth !== this._widthLaid) {
+          stepApart += 1;
+        }
+        return built;
+      };
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      await act(async () => movingPane(el).scrollTo(Math.floor(next() * 400)));
+      // a jump, laid out whole, then a drag of small steps
+      let width = 360;
+      await resize(160, width);
+      const log: string[] = [];
+      for (let step = 0; step < 12; step += 1) {
+        width += pick([-14, -8, -4, 6, 10]);
+        await resize(160, width);
+        if (internals._partial) stepped += 1;
+        log.push(`width ${width}`);
+        // what the page's handlers write at that step, read back at once
+        const writes = Math.floor(next() * 3);
+        for (let i = 0; i < writes; i += 1) {
+          const changes = change(next, bodyEl);
+          log.push(changes.map((c) => c.type).join('+'));
+          el.touchDocument(changes);
+          await act();
+        }
+      }
+      await clock.finish();
+      assert.ok(!internals._partial, `seed ${seed}: rested`);
+      const rested = treeLines(internals._tree);
+      // the whole document styled, built and laid out again at that width
+      internals._invalidate(3);
+      await act();
+      const whole = treeLines(internals._tree);
+      const at = rested.findIndex((line, i) => line !== whole[i]);
+      assert.ok(
+        at < 0 && rested.length === whole.length,
+        `seed ${seed}: line ${at}\nrested ${rested[at]}\nwhole  ${whole[at]}\n` +
+          `${log.join(', ')}\n${markup}`,
+      );
+      result.unmount();
+    }
+    assert.ok(stepped > 100, `${stepped} steps stopped`);
+    assert.ok(again > 30, `${again} layouts at a step's width stopped`);
+    assert.ok(apart > 20, `${apart} subtrees built during a drag`);
+    assert.ok(stepApart > 20, `${stepApart} subtrees built at a step's width`);
   },
 );
 
