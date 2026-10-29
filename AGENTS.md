@@ -2797,7 +2797,12 @@ closes a way out a DOM binding opens by accident:
   page builds on it: `cssText +=` needs the trailing `;`. An attribute is
   an accessor on its interface's prototype, never a field of the
   instance: GitHub's delegated-events takes `currentTarget`'s descriptor
-  off `Event.prototype` to shadow it on the event, and found none. And a
+  off `Event.prototype` to shadow it on the event, and found none. The
+  global's methods are its interfaces' as well: Shady DOM, which YouTube
+  forces, copies `addEventListener` off `EventTarget.prototype` and calls
+  the copy on the window, which had its own and inherited none, so the
+  global inherits from `Window.prototype` and `EventTarget`'s methods
+  know a window when they are called on one (`windowMethods`). And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
   page sandboxes a frame through `sandbox.supports()`. How a callback is

@@ -3058,10 +3058,16 @@ export class DomHost {
         let fragment = this._contents.get(id);
         if (fragment === undefined) {
           const template = this._element(a);
-          const holder = new Document(
-            template.children.map((kid) => this._copyOf(kid, true)),
-          );
-          for (const kid of holder.children) kid.parent = holder;
+          const kids = template.children.map((kid) => this._copyOf(kid, true));
+          const holder = new Document(kids);
+          // a copy is linked to no sibling, and `nextSibling` reads the
+          // links: Polymer walks a template's content by them, and found
+          // only its first child
+          kids.forEach((kid, i) => {
+            kid.parent = holder;
+            kid.prev = kids[i - 1] ?? null;
+            kid.next = kids[i + 1] ?? null;
+          });
           this._templateContents.add(holder);
           fragment = this.idOf(holder);
           this._contents.set(id, fragment);
