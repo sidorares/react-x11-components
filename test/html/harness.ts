@@ -1051,6 +1051,8 @@ export async function render2x(
 
 export interface LaidBox {
   el: { attribs: Record<string, string> } | null;
+  /** A `::before`'s or an `::after`'s, which has no element of its own. */
+  pseudo?: string | null;
   x: number;
   y: number;
   width: number;

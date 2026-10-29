@@ -1650,7 +1650,9 @@ the change is, since no box shows it. Node's API pages hold a hidden picker
 boxes for it. And since a layout follows, a change of a block's lengths
 alone is taken in place too (`lengths`, `lengthChange`): its width and its
 limits, its margins, paddings, offsets and gaps, on a block or a flex or
-grid box that is not replaced — and its text's size, its lines' height and
+grid box that is not replaced, an element's or a `::before`'s or an
+`::after`'s — Apple's product pages draw a stripe `width: 100vw` from one,
+and every step of a drag built all the page for it — and its text's size, its lines' height and
 its indent (`FONT_FIELDS`), on such a box, on an inline box in one, on a
 `::before` or an `::after`, and on the anonymous boxes that inherit them,
 since `collect` sets a paragraph's runs from each box's style as the block
@@ -2577,7 +2579,11 @@ once the parse has ended, and an `async` one as soon as its source is here
 (`_soon`). It yields only where `useScripts` hands `<Html>` its
 `_onParserBlocked`, so a document with scripts off, or a host with an
 engine of its own, is parsed whole as it always was, and so is one with no
-script that blocks it. Six things are load-bearing:
+script that blocks it. What the parse reads on to after a script, and what
+a script writes, is recorded as a stream's chunk is (`HtmlSource._recorded`)
+and restyles and builds what it reaches (`_parsedOnTo`): Apple's product
+pages wait at six scripts in their `<body>`, and the parse going on after
+each styled all of the page again. Six things are load-bearing:
 
 - **The parser is handed a piece at a time, each ending with the `>` of a
   `</script`** (`pieceEnd`), and stops after a piece whose end tag closed a
@@ -4629,6 +4635,19 @@ place asks, so one that tests the pointer or the focus builds the boxes
 again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
+
+**A read of an element's style or box from a page's script costs a
+lookup.** `_boxOf` finds an element's first box by the tree's index of
+first boxes (`_firstBoxesOf`), and a box a drag set aside, which the index
+holds and no walk from the root reaches, by the walk; and `_styleOf` keeps
+the style it works out for an element nothing draws (`_unboxedStyles`)
+until the tree, the cascade, the document's nodes (`treeGeneration`) or
+what the boxes were styled and laid out as (`_geometry`) moves. Apple's
+product pages read `getComputedStyle` and `offsetTop` tens of thousands of
+times a load, of their closed dialogs' contents a property at a time, and
+the walk and the styling were a third of what their script took.
+**Anything new that changes the style of what nothing draws without moving
+one of those drops `_unboxed`.**
 
 **A video is core's `<video>`, mounted over the box, and never drawn
 here** (`media.ts`, `videos.ts`; core's `docs/architecture/video.md`, 8.2).

@@ -119,6 +119,33 @@ metric(
   },
 );
 
+test('getComputedStyle of what nothing draws works its style out once, and again once a change can have moved it', async () => {
+  // Apple's product pages read the styles of their closed dialogs a
+  // property at a time, and each read styled the chain down from the
+  // nearest box again: three and a half seconds of a load
+  const { node } = await render(
+    '<style>body{margin:0} #d{display:none} .on{color:#ff0000}' +
+      ' .big{font-size:30px}</style><body><div id="d"><section id="s">' +
+      '<p id="p">p</p></section></div><p id="q">q</p></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const p = byId(el, 'p');
+  assert.strictEqual(el.computedStyle(p)?.display, 'block');
+  const read = await stylesComputed(el, () => {
+    for (let i = 0; i < 5; i += 1) el.computedStyle(p);
+  });
+  assert.strictEqual(read, 0, `${read} styles worked out again`);
+  // a class set under `display: none` restyles nothing the tree holds,
+  // and is read
+  el.touchDocument([setClass(p, 'on')]);
+  assert.strictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
+  // and so is one on what it inherits from
+  el.touchDocument([setClass(byId(el, 's'), 'big')]);
+  assert.strictEqual(el.computedStyle(p)?.['font-size'], '30px');
+});
+
 metric(
   "a class changed in a foreignObject's HTML builds the boxes, and is drawn",
   async (t) => {

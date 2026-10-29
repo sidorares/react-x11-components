@@ -1556,6 +1556,44 @@ test('a vw through a custom property, or on a pseudo-element, follows the width'
   assert.strictEqual(before()?.width, 80);
 });
 
+test('a ::before or an ::after whose lengths are in vw is taken in place with its element at a new width, and lays out as a build does', async () => {
+  // Apple's product pages draw a stripe the window wide from a `::before`,
+  // `left: calc(-50vw - -50%); width: 100vw`, and every step of a drag of
+  // the window's edge built all of the page for it
+  const source =
+    '<style>body{margin:0}.g{position:relative;margin:0 40px;height:20px}' +
+    '.g::before{content:"";position:absolute;top:0;height:4px;' +
+    'left:calc(-50vw - -50%);width:100vw}' +
+    '#b::after{content:"";display:block;width:10vw;height:5px}' +
+    '#c::before{content:"x";font-size:4vw}</style>' +
+    '<div class="g" id="g"></div><div id="b">b</div><p id="c">c</p>';
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const laid = () =>
+    ['g', 'b', 'c'].map((id) => {
+      const box = boxOf(el, id);
+      return [
+        id,
+        box.x,
+        box.y,
+        box.width,
+        box.height,
+        ...box.children.map((k) => [k.pseudo ?? '', k.x, k.width, k.height]),
+      ];
+    });
+  const tree = treeOf(el);
+  await resize(300, 360);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  const stripe = boxOf(el, 'g').children[0];
+  assert.strictEqual(stripe.pseudo, 'before');
+  assert.strictEqual(stripe.width, 360, 'the stripe is the window wide');
+  assert.strictEqual(stripe.x, 0, 'from its edge');
+  const inPlace = laid();
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+  el.layoutNow();
+  assert.ok(treeOf(el) !== tree);
+  assert.deepStrictEqual(inPlace, laid());
+});
+
 test('a resize styles again the elements that hold a vw, and what inherits from them, and keeps the rest', async () => {
   // Every page of python.org's documentation, GitHub and Bootstrap sets a
   // `vw` or a `vh` on a few elements, and each pixel of a drag styled every
