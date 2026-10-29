@@ -13758,6 +13758,18 @@ export function installDom(
     get documentElement(): Any {
       return wrap(Number(call('root', this._id)));
     }
+    /** HTML's `all` is the one object a script reads as undefined
+     *  (`[[IsHTMLDDA]]`), which no script can make: falsy, as an IE sniff
+     *  wants, and equal to nothing but itself. NaN is the falsy value equal
+     *  to nothing. As `undefined`, `x === document.all` held for every
+     *  undefined `x`, and polymer-resin, which YouTube sanitizes its
+     *  bindings with, passes a falsy value through only where that fails:
+     *  each binding to `undefined` came out "zClosurez", and every guide
+     *  icon `hidden`. What it costs is `typeof`, "number" where a browser
+     *  answers "undefined". */
+    get all(): number {
+      return NaN;
+    }
     get head(): Any {
       return this.querySelector('head');
     }
@@ -14170,6 +14182,28 @@ export function installDom(
   /** A document made of XML's rules: `createDocument`'s. */
   class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));
+
+  // ParentNode is a mixin (Web IDL 2.5), so what it has is each
+  // interface's own, and they inherit from `Node`. Shady DOM, which
+  // YouTube forces, copies `children` and its kin off `Element.prototype`
+  // and found none there, so its stamper never saw what it had stamped,
+  // and stamped it again. `getElementsByTagName` and
+  // `getElementsByClassName` are Element's and Document's alone
+  for (const Kind of [Element, Document, DocumentFragment]) {
+    for (const name of Object.getOwnPropertyNames(ParentNode.prototype)) {
+      if (
+        name === 'constructor' ||
+        Object.prototype.hasOwnProperty.call(Kind.prototype, name) ||
+        (Kind === DocumentFragment && name.startsWith('getElementsBy'))
+      ) {
+        continue;
+      }
+      const d = Object.getOwnPropertyDescriptor(ParentNode.prototype, name)!;
+      Object.defineProperty(Kind.prototype, name, d);
+    }
+    Object.setPrototypeOf(Kind.prototype, Node.prototype);
+    Object.setPrototypeOf(Kind, Node);
+  }
 
   // --- ranges -------------------------------------------------------------------
   //

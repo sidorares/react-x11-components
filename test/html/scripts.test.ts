@@ -2482,6 +2482,54 @@ test("the window inherits EventTarget's methods, and they are its own however th
   );
 });
 
+test("ParentNode's members are Element's, Document's and DocumentFragment's own", async () => {
+  // Shady DOM, which YouTube forces, copies `children` and its kin off
+  // `Element.prototype` and reads an element's children through the copy:
+  // they were a class's in between, the copy was nothing, and YouTube's
+  // stamper stamped its masthead's buttons a second time beside the first
+  const doc = await hosted(
+    '<p id="out"></p><div id="d"><b></b>text<i></i></div><script>' +
+      'var r = [], names = ["children", "firstElementChild", "lastElementChild",' +
+      '  "childElementCount", "querySelector", "append"];' +
+      '[Element, Document, DocumentFragment].forEach(function (Kind) {' +
+      '  r.push(Object.getPrototypeOf(Kind.prototype) === Node.prototype &&' +
+      '    names.every(function (n) {' +
+      '      return Object.prototype.hasOwnProperty.call(Kind.prototype, n); }));' +
+      '  var d = Object.getOwnPropertyDescriptor(Kind.prototype, "lastElementChild");' +
+      '  Object.defineProperty(Kind.prototype, "__native_last", d); });' +
+      'var f = document.createDocumentFragment(); f.append(document.createElement("u"));' +
+      'r.push(document.getElementById("d").__native_last.localName, f.__native_last.localName,' +
+      '  document.__native_last !== null && document.__native_last === document.lastElementChild,' +
+      '  typeof f.getElementsByTagName, typeof document.getElementsByTagName);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|i|u|true|undefined|function',
+    doc.logs.join('\n'),
+  );
+});
+
+test('document.all is falsy and equal to no value, as polymer-resin compares it', async () => {
+  // polymer-resin, which sanitizes YouTube's bindings, passes a falsy
+  // value through where it is not `document.all`: as `undefined` it was
+  // every undefined value, and each was bound as "zClosurez"
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'function resin(p) { return !p && p !== document.all ? p : "zClosurez"; }' +
+      'var r = ["all" in document, !document.all, resin(undefined), resin(null),' +
+      '  resin(false), resin(""), undefined === document.all, null === document.all];' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|||false||false|false',
+    doc.logs.join('\n'),
+  );
+});
+
 test('URL.parse is the constructor answering null where it would throw, as URL.canParse says', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

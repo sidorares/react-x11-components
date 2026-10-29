@@ -2802,7 +2802,16 @@ closes a way out a DOM binding opens by accident:
   forces, copies `addEventListener` off `EventTarget.prototype` and calls
   the copy on the window, which had its own and inherited none, so the
   global inherits from `Window.prototype` and `EventTarget`'s methods
-  know a window when they are called on one (`windowMethods`). And a
+  know a window when they are called on one (`windowMethods`). A mixin's
+  members are each interface's own, never a class's between it and its
+  parent: ParentNode's `children` was, Shady DOM's copy off
+  `Element.prototype` was nothing, and YouTube's stamper stamped its
+  masthead twice. **A new mixin is copied onto its interfaces**, as
+  ParentNode is after `XMLDocument`. And what no script can make is
+  stood in for by what keeps the comparisons a page makes: `document.all`
+  is `NaN`, falsy and equal to nothing, since polymer-resin passes a falsy
+  value through only where it is not `document.all`, and as `undefined`
+  every binding to `undefined` came out "zClosurez". And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
   page sandboxes a frame through `sandbox.supports()`. How a callback is
