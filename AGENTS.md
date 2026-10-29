@@ -2802,7 +2802,11 @@ closes a way out a DOM binding opens by accident:
   forces, copies `addEventListener` off `EventTarget.prototype` and calls
   the copy on the window, which had its own and inherited none, so the
   global inherits from `Window.prototype` and `EventTarget`'s methods
-  know a window when they are called on one (`windowMethods`). And a
+  know a window when they are called on one (`windowMethods`). A method
+  acts on what it is called on, never on the window it was read from:
+  YouTube binds a hidden `about:blank` frame's `history.replaceState` to
+  the page's `history`, and one that kept its frame's session refused the
+  page's URL (`historyOf`). And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
   page sandboxes a frame through `sandbox.supports()`. How a callback is
