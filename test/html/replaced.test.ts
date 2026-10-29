@@ -1234,6 +1234,28 @@ metric(
 );
 
 metric(
+  "an SVG's currentcolor and none are paint keywords in any case",
+  async () => {
+    // CSS Values 4, 2.5: Apple's tab strips draw their arrows with
+    // `fill="currentcolor"`, as CSS Color 4 writes the keyword, and drew
+    // none, since ntk took it for a colour nobody knows (sidorares/ntk#554)
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        '<div style="color:#ff00ff"><svg width="10" height="10">' +
+        '<rect width="10" height="10" fill="currentcolor"/></svg></div>' +
+        '<div style="color:#00ff00"><svg width="10" height="10">' +
+        '<rect width="10" height="10" fill="CURRENTCOLOR"/></svg></div>' +
+        '<svg width="10" height="10"><rect width="10" height="10" fill="NONE"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 5, '#ff00ff', { message: 'currentcolor' });
+    await expectPixel(ctx, 5, 15, '#00ff00', { message: 'CURRENTCOLOR' });
+    await expectPixel(ctx, 5, 25, '#ffffff', { message: 'NONE fills nothing' });
+  },
+);
+
+metric(
   'an SVG geometry attribute that is a math function is of the viewport, as a percentage is',
   async () => {
     // SVG 2's geometry properties take a <length-percentage>, and a
