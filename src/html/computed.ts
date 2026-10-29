@@ -858,6 +858,13 @@ function cssomAt(
       color,
       style.colorSource,
     ),
+    // `auto` resolves to the text's colour, as Chrome answers it
+    'caret-color': cssomColor(
+      style.caretColor ?? 'currentColor',
+      null,
+      color,
+      style.colorSource,
+    ),
   };
   // a transform resolves to the matrix its list comes to for the box
   // (CSSOM 9, "resolved value"), and with no box is the list it computes

@@ -71,9 +71,9 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
-import { animationClock } from '../../src/html/node.js';
+import { animationClock, caretClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
-import { holdClock } from '../held-clock.js';
+import { FRAME_MS, holdClock } from '../held-clock.js';
 import type { HeldClock } from '../held-clock.js';
 
 afterEach(cleanup);
@@ -8109,7 +8109,11 @@ test('a key typed in an editing host the page focused is an edit of it at the se
   await typed(() => fireEvent.key(XK_DELETE));
   assert.equal(doc.text('ed'), 'a');
   await typed(() => fireEvent.key(XK_RETURN));
-  assert.equal(doc.text('ed'), 'a\n', 'pre keeps a line feed for Enter');
+  assert.equal(
+    doc.text('ed'),
+    'a\n\n',
+    'pre keeps a line feed for Enter, and a second for the line the caret goes to where the first ends the block',
+  );
   doc.run(
     'var s = getSelection(); s.setBaseAndExtent(ed.firstChild, 2, ed.firstChild, 0);' +
       'log([s.type, s.direction, s.anchorOffset, s.focusOffset, s.toString().length].join(":"));',
@@ -8187,6 +8191,323 @@ metric(
     assert.equal(doc.text('ed'), 'abcdXef');
   },
 );
+
+/** The pixels of a window region that are the colour `rgb`, near enough. */
+async function pixelsOfColour(
+  doc: Hosted,
+  region: { x: number; y: number; width: number; height: number },
+  rgb: [number, number, number],
+): Promise<{
+  count: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}> {
+  await act();
+  const data = await pixelsIn(doc.result.ctx, region);
+  let count = 0;
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (let i = 0; i < data.length; i += 4) {
+    if (
+      Math.abs(data[i] - rgb[0]) > 60 ||
+      Math.abs(data[i + 1] - rgb[1]) > 60 ||
+      Math.abs(data[i + 2] - rgb[2]) > 60
+    ) {
+      continue;
+    }
+    const x = region.x + ((i / 4) % region.width);
+    const y = region.y + Math.floor(i / 4 / region.width);
+    count += 1;
+    left = Math.min(left, x);
+    right = Math.max(right, x);
+    top = Math.min(top, y);
+    bottom = Math.max(bottom, y);
+  }
+  return { count, left, right, top, bottom };
+}
+
+metric(
+  'an editing host with the focus draws a caret where the selection is collapsed, in its caret-color, blinking, and none once the host or the window has lost the focus',
+  async (t) => {
+    const clock = holdClock(t, caretClock);
+    const doc = await hosted(
+      '<div id="ed" contenteditable style="font: 20px monospace; white-space: pre; margin: 0;' +
+        ' color: black; caret-color: rgb(255, 0, 0)">abcdef</div>' +
+        '<button id="b">b</button><p id="m"></p><script>' +
+        'var ed = document.getElementById("ed");' +
+        'function caret(at) { var r = document.createRange(); r.setStart(ed.firstChild, at); r.collapse(true);' +
+        '  var q = r.getClientRects()[0]; return [q.left, q.top, q.height].map(Math.round).join(","); }' +
+        '</script>',
+    );
+    const node = doc.view as unknown as DrawnNode;
+    const box = doc.view.elementRect(doc.byId('ed'))!;
+    const row = {
+      x: Math.floor(node.abs.x + box.x),
+      y: Math.floor(node.abs.y + box.y),
+      width: Math.ceil(box.width),
+      height: Math.ceil(box.height),
+    };
+    const red = () => pixelsOfColour(doc, row, [255, 0, 0]);
+    const caretAt = (at: number) => {
+      doc.run(`document.getElementById("m").textContent = caret(${at})`);
+      return doc.text('m').split(',').map(Number);
+    };
+    assert.equal((await red()).count, 0, 'no caret in a host nothing focused');
+    doc.run('ed.focus(); getSelection().collapse(ed.firstChild, 2);');
+    await settle();
+    assert.equal(doc.view.focusedElement, doc.byId('ed'));
+    let drawn = await red();
+    let [x, , height] = caretAt(2);
+    assert.ok(
+      drawn.count >= height - 2,
+      `a caret ${height} tall: ${drawn.count}`,
+    );
+    assert.ok(
+      drawn.left >= node.abs.x + x - 1 && drawn.right <= node.abs.x + x + 2,
+      `the caret at ${x}, drawn ${drawn.left}..${drawn.right}`,
+    );
+    // in the computed style as Chrome answers it
+    doc.run(
+      'document.getElementById("m").textContent = getComputedStyle(ed).caretColor',
+    );
+    assert.equal(doc.text('m'), 'rgb(255, 0, 0)');
+
+    // a blink, and back
+    const blink = async () => {
+      const was = (await red()).count > 0;
+      for (let i = 0; i < 2000 / FRAME_MS; i += 1) {
+        await clock.frame();
+        if ((await red()).count > 0 !== was) return;
+      }
+      assert.fail('the caret did not blink');
+    };
+    await blink();
+    assert.equal((await red()).count, 0, 'the caret blinked off');
+    await blink();
+    assert.ok((await red()).count > 0, 'and on again');
+
+    // a key moves it on, and shows it at once, mid-blink
+    await blink();
+    await act(async () => fireEvent.char('X'));
+    await settle();
+    assert.equal(doc.text('ed'), 'abXcdef');
+    drawn = await red();
+    [x, , height] = caretAt(3);
+    assert.ok(drawn.count >= height - 2, `shown after the key: ${drawn.count}`);
+    assert.ok(
+      drawn.left >= node.abs.x + x - 1 && drawn.right <= node.abs.x + x + 2,
+      `moved to ${x}, drawn ${drawn.left}..${drawn.right}`,
+    );
+
+    // the window losing the keyboard hides it, and its coming back shows it
+    const window = doc.result.window as unknown as {
+      emit(name: string, ev?: unknown): void;
+    };
+    await act(async () => window.emit('blur', {}));
+    await settle();
+    assert.equal((await red()).count, 0, 'none while the window is away');
+    await act(async () => window.emit('focus', {}));
+    await settle();
+    assert.ok((await red()).count > 0, 'back with the window');
+
+    // and the focus going elsewhere in the document hides it
+    doc.run('document.getElementById("b").focus()');
+    await settle();
+    assert.equal((await red()).count, 0, 'none once the host lost the focus');
+    assert.equal(clock.pending, false, 'and no blink waits');
+  },
+);
+
+metric(
+  'an element a script made editable with contentEditable = true draws its caret where a press puts it',
+  async () => {
+    const doc = await hosted(
+      '<div id="ed" style="font: 20px monospace; white-space: pre; margin: 0; color: rgb(0, 0, 255)">abcdef</div>' +
+        '<p id="m"></p><script>' +
+        'var ed = document.getElementById("ed"); ed.contentEditable = true;' +
+        'function caret(at) { var r = document.createRange(); r.setStart(ed.firstChild, at); r.collapse(true);' +
+        '  var q = r.getClientRects()[0]; return [q.left, q.top, q.height].map(Math.round).join(","); }' +
+        '</script>',
+    );
+    const node = doc.view as unknown as DrawnNode;
+    doc.run('document.getElementById("m").textContent = caret(4)');
+    const [x, y, height] = doc.text('m').split(',').map(Number);
+    // the column the caret stands in, a pixel either side, which the
+    // letters either side of it reach into too
+    const column = {
+      x: Math.floor(node.abs.x + x) - 1,
+      y: Math.floor(node.abs.y + y),
+      width: 4,
+      height: Math.ceil(height),
+    };
+    const before = await pixelsOfColour(doc, column, [0, 0, 255]);
+    // a press between the fourth letter and the fifth
+    await act(async () => {
+      const at = {
+        dx: x - node.abs.width / 2,
+        dy: y + height / 2 - node.abs.height / 2,
+      };
+      fireEvent.mouseDown(node, at);
+      fireEvent.mouseUp(node, at);
+    });
+    await settle();
+    assert.equal(doc.view.focusedElement, doc.byId('ed'), doc.logs.join('\n'));
+    const drawn = await pixelsOfColour(doc, column, [0, 0, 255]);
+    assert.ok(
+      drawn.count - before.count >= height - 2,
+      `a caret ${height} tall: ${before.count} to ${drawn.count}`,
+    );
+  },
+);
+
+metric(
+  'Enter at the end of a plain editing host puts a placeholder after its line break, which the caret stands on and typing takes, and Backspace takes both again',
+  async (t) => {
+    holdClock(t, caretClock);
+    const doc = await hosted(
+      '<div id="ed" contenteditable style="font: 20px monospace; margin: 0; caret-color: rgb(255, 0, 0)">ab</div>' +
+        '<p id="m"></p><script>var ed = document.getElementById("ed");</script>',
+    );
+    const html = () => {
+      doc.run('document.getElementById("m").textContent = ed.innerHTML');
+      return doc.text('m');
+    };
+    const typed = async (fire: () => void) => {
+      await act(async () => fire());
+      await settle();
+    };
+    const caret = () =>
+      pixelsOfColour(doc, { x: 0, y: 0, width: 400, height: 150 }, [255, 0, 0]);
+    doc.run('ed.focus(); getSelection().collapse(ed.firstChild, 2);');
+    await settle();
+    const first = await caret();
+    assert.ok(first.count > 10, `a caret on the first line: ${first.count}`);
+    const line = first.bottom - first.top + 1;
+
+    await typed(() => fireEvent.key(XK_RETURN));
+    assert.equal(html(), 'ab<br><br>', 'a line break and its placeholder');
+    let now = await caret();
+    assert.ok(
+      Math.abs(now.top - (first.top + line)) <= 2,
+      `the caret a line down, at ${now.top} from ${first.top}`,
+    );
+    assert.ok(now.left < first.left, 'at the line start');
+
+    await typed(() => fireEvent.char('c'));
+    assert.equal(html(), 'ab<br>c', 'what is typed takes the placeholder');
+    now = await caret();
+    assert.ok(Math.abs(now.top - (first.top + line)) <= 2, `${now.top}`);
+
+    await typed(() => fireEvent.key(XK_BACKSPACE));
+    assert.equal(html(), 'ab<br><br>', 'a line emptied keeps one');
+    now = await caret();
+    assert.ok(Math.abs(now.top - (first.top + line)) <= 2, `${now.top}`);
+
+    await typed(() => fireEvent.key(XK_BACKSPACE));
+    assert.equal(html(), 'ab', 'the line break, and its placeholder with it');
+    now = await caret();
+    assert.equal(now.top, first.top, 'the caret back on the first line');
+    assert.equal(now.left, first.left, 'after the b');
+
+    // with a line after, no placeholder: the caret is on the empty line
+    // the break made, before the break that ends it, and not on the next
+    doc.run(
+      'ed.innerHTML = "ab<br>cd"; getSelection().collapse(ed.firstChild, 2);',
+    );
+    await settle();
+    await typed(() => fireEvent.key(XK_RETURN));
+    assert.equal(html(), 'ab<br><br>cd');
+    now = await caret();
+    assert.ok(
+      Math.abs(now.top - (first.top + line)) <= 2,
+      `the caret on the second line of three, at ${now.top} from ${first.top}`,
+    );
+  },
+);
+
+test('a delete beside a line break takes the break, Delete on an empty last line takes nothing, and a host a delete empties keeps a line', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab<br>cd</div>' +
+      '<p id="m"></p><script>var ed = document.getElementById("ed");' +
+      'function html() { document.getElementById("m").textContent = ed.innerHTML; }</script>',
+  );
+  const typed = async (fire: () => void) => {
+    await act(async () => fire());
+    await settle();
+  };
+  const at = async (markup: string, caret: string) => {
+    doc.run(
+      `ed.innerHTML = ${JSON.stringify(markup)}; ed.focus(); getSelection().collapse(${caret});`,
+    );
+    await settle();
+  };
+  const html = () => {
+    doc.run('html()');
+    return doc.text('m');
+  };
+  // Backspace at the start of a line joins it to the one before, rather
+  // than taking the letter before the break
+  await at('ab<br>cd', 'ed.lastChild, 0');
+  await typed(() => fireEvent.key(XK_BACKSPACE));
+  assert.equal(html(), 'abcd');
+  await at('ab<br>cd', 'ed.firstChild, 2');
+  await typed(() => fireEvent.key(XK_DELETE));
+  assert.equal(html(), 'abcd');
+  // the line a placeholder holds is the host's last: nothing after it
+  await at('ab<br><br>', 'ed, 2');
+  await typed(() => fireEvent.key(XK_DELETE));
+  assert.equal(html(), 'ab<br><br>');
+  // and Delete at the end of the line before it takes the break, and the
+  // placeholder that held a line after it
+  await at('ab<br><br>', 'ed.firstChild, 2');
+  await typed(() => fireEvent.key(XK_DELETE));
+  assert.equal(html(), 'ab');
+  // a host emptied holds a placeholder, which what is typed takes
+  await at('a', 'ed.firstChild, 1');
+  await typed(() => fireEvent.key(XK_BACKSPACE));
+  assert.equal(html(), '<br>');
+  await typed(() => fireEvent.char('b'));
+  assert.equal(html(), 'b');
+});
+
+for (const scale of [1, 2]) {
+  metric(
+    `an empty editing host draws its caret at the start of its content, in its text colour where its caret-color is auto, at ${scale}x`,
+    async () => {
+      const doc = await hosted(
+        '<div id="ed" contenteditable style="font: 20px monospace; margin: 0;' +
+          ' padding: 10px 30px; height: 40px; color: rgb(0, 0, 255)"></div>' +
+          '<script>var ed = document.getElementById("ed");</script>',
+        { scale },
+      );
+      const node = doc.view as unknown as DrawnNode;
+      // logical, as the page measures it, and the window's pixels device
+      const box = doc.view.elementRect(doc.byId('ed'))!;
+      const region = {
+        x: Math.floor(node.abs.x + box.x * scale),
+        y: Math.floor(node.abs.y + box.y * scale),
+        width: Math.ceil(box.width * scale),
+        height: Math.ceil(box.height * scale),
+      };
+      doc.run('ed.focus(); getSelection().collapse(ed, 0);');
+      await settle();
+      const drawn = await pixelsOfColour(doc, region, [0, 0, 255]);
+      assert.ok(
+        drawn.count >= 15 * scale * scale,
+        `a line tall: ${drawn.count}`,
+      );
+      const at = region.x + 30 * scale;
+      assert.ok(
+        drawn.left >= at - 1 && drawn.right <= at + 2 * scale,
+        `inside the padding, at ${at}: ${drawn.left}..${drawn.right}`,
+      );
+    },
+  );
+}
 
 test('what the DOM lets a page assign, a strict script assigns without a throw', async () => {
   // CodeMirror sets `contentEditable` on every widget it draws, as strict

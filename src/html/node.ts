@@ -43,7 +43,7 @@ import {
   registerPosition,
 } from 'react-x11/host';
 import type { PositionContext } from 'react-x11/host';
-import { Node } from 'react-x11/node';
+import { CARET_BLINK_MS, Node } from 'react-x11/node';
 import type {
   Context2D,
   MeasureConstraints,
@@ -343,6 +343,7 @@ import {
   faceLineHeight,
   fadeRun,
   inlineDecoration,
+  lineHeightOf,
   runFor,
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
@@ -360,6 +361,7 @@ import {
   clipFor,
   clipsOverflow,
   computePaintBounds,
+  contentClipFor,
   containingBlockOf,
   coverersAfter,
   drawnAtViewport,
@@ -410,7 +412,7 @@ import {
   shownBy,
   styledField,
 } from './controls.js';
-import { isInert, isTabbable } from './focus.js';
+import { isEditable, isEditingHost, isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
 import { inReadingOrder } from './reading.js';
 import type { BareField, ControlRect, CoverAnswer } from './controls.js';
@@ -573,6 +575,15 @@ export interface HtmlViewProps {
   /** Whether the desktop has asked for less motion: what
    *  `prefers-reduced-motion` is answered from. Default false. */
   reducedMotion?: boolean;
+  /** Whether an editing host's caret blinks, and how long it stays in each
+   *  state: the desktop's (`useDesktopSettings()`), and false — the desktop
+   *  asking for a still caret — draws it solid. */
+  caretBlink?: boolean;
+  caretBlinkMs?: number;
+  /** Whether the window has the keyboard (`useWindowState().focused`): a
+   *  caret is drawn only where it does, as a browser draws one. Default
+   *  true. */
+  windowFocused?: boolean;
   /** Whether the host runs the document's scripts: a `<noscript>` is then
    *  drawn as nothing and nothing in it is asked for, and `@media
    *  (scripting: enabled)` holds. This runs none. Default false. */
@@ -710,6 +721,10 @@ export function registerHtmlView(): void {
       'onViewportScroll',
       'onPaint',
       'onCssEvents',
+      // what the caret is drawn by, which repaints the caret alone
+      'caretBlink',
+      'caretBlinkMs',
+      'windowFocused',
     ],
     childrenAllowed: false,
   });
@@ -4920,6 +4935,13 @@ export class HtmlViewNode extends Node {
       this._updateBase();
       this._sweep();
     }
+    if (
+      next.caretBlink !== prev.caretBlink ||
+      next.caretBlinkMs !== prev.caretBlinkMs ||
+      (next.windowFocused ?? true) !== (prev.windowFocused ?? true)
+    ) {
+      this._caretMoved();
+    }
     if (next.watchStops !== prev.watchStops) {
       // the rectangles watched from now on are the ones as they stand
       this._watchedRects = new Map(
@@ -4932,6 +4954,8 @@ export class HtmlViewNode extends Node {
   }
 
   override destroySubtree(): void {
+    caretClock.disarm(this._caretTimer);
+    this._caretTimer = null;
     this._dropHeldHover();
     this._disarmGif();
     this._gifs.clear();
@@ -5258,6 +5282,232 @@ export class HtmlViewNode extends Node {
       while (word(next()) && step());
     }
     return pointOfUnit(tree, at, !back);
+  }
+
+  // --- the caret ------------------------------------------------------------
+  //
+  // An editing host's caret: where the page's selection is collapsed — the
+  // point the page's realm edits at (`scripts/dom.ts`, `edit`) — drawn while
+  // the host it is in has the focus and the window the keyboard, blinking
+  // at the desktop's rate, as a browser draws it. It is drawn over all the
+  // document paints, after it, and not by the box whose line it is on, so a
+  // blink repaints the caret's rectangle and no surface or layer kept for a
+  // box holds it.
+
+  /** Where the page's selection is collapsed (`setCaret`). */
+  private _caretPoint: { node: AnyNode; offset: number } | null = null;
+  /** Whether the blink has the caret drawn. */
+  private _caretOn = true;
+  private _caretTimer: unknown = null;
+  /** Where the caret was drawn, or would have been in the blink's other
+   *  half, in window pixels: what its next change repaints. */
+  private _caretDrawn: Rect | null = null;
+
+  /** Where the page's selection is collapsed, or null where it is not: a
+   *  caret, where an editing host that holds it has the focus. */
+  setCaret(point: { node: AnyNode; offset: number } | null): void {
+    const was = this._caretPoint;
+    if (was?.node === point?.node && was?.offset === point?.offset) return;
+    this._caretPoint = point;
+    this._caretMoved();
+  }
+
+  /** The caret moved, or what shows it changed — the focus, the window's,
+   *  the blink's rate: drawn at once, the blink starting again from there,
+   *  as a browser's starts again at every key. */
+  private _caretMoved(): void {
+    this._caretOn = true;
+    caretClock.disarm(this._caretTimer);
+    this._caretTimer = null;
+    const props = this._props();
+    if (this._caretShown() && props.caretBlink !== false) {
+      const rate = props.caretBlinkMs;
+      const ms = typeof rate === 'number' && rate > 0 ? rate : CARET_BLINK_MS;
+      const blink = (): void => {
+        this._caretTimer = caretClock.arm(blink, ms);
+        this._caretOn = !this._caretOn;
+        this._repaintCaret();
+      };
+      this._caretTimer = caretClock.arm(blink, ms);
+    }
+    this._repaintCaret();
+  }
+
+  /**
+   * Whether the caret is drawn, blink apart: the window has the keyboard,
+   * the focus is on an editing host (HTML 6.8.1), and the selection is
+   * collapsed in it, where its content is editable — not in a part of it
+   * `contenteditable="false"` takes out.
+   */
+  private _caretShown(): boolean {
+    const point = this._caretPoint;
+    const host = this._focus.element;
+    if (!point || !host || this._props().windowFocused === false) return false;
+    if (!isEditingHost(host)) return false;
+    const el = caretElement(point);
+    if (!el || !isEditable(el)) return false;
+    for (let at: Element | null = el; at;) {
+      if (at === host) return true;
+      const up: ParentNode | null = at.parent;
+      at = isElement(up) ? up : null;
+    }
+    return false;
+  }
+
+  /**
+   * Repaint where the caret was drawn and where it is drawn now. Asked
+   * between paints — a focus moving, a blink, a page's edit — so it lays
+   * nothing out: where the document waits for a build or a layout, the
+   * whole element is repainted for it already, and the paint finds the
+   * caret then.
+   */
+  private _repaintCaret(): void {
+    const was = this._caretDrawn;
+    const now =
+      this._caretShown() && this._stale === Stale.Nothing
+        ? (this._caretPlace()?.rect ?? null)
+        : null;
+    this._caretDrawn = now;
+    for (const r of was && now && sameRect(was, now) ? [now] : [was, now]) {
+      if (!r) continue;
+      this.invalidate(
+        false,
+        {
+          x: Math.floor(r.x),
+          y: Math.floor(r.y),
+          width: Math.ceil(r.width) + 1,
+          height: Math.ceil(r.height) + 1,
+        },
+        'caret',
+      );
+    }
+  }
+
+  /**
+   * Where the caret is drawn, in window pixels, and in what colour: the
+   * `caret-color` of the element it is in, its text's colour for `auto`.
+   * On the line of the block that holds it, as `textCaretRect` finds a
+   * caret; at the start of the block's content where it holds no text —
+   * an empty editing host, a paragraph emptied — which no line is. Cut
+   * where the boxes around it cut what they hold. Null where it is drawn
+   * nowhere, or in a colour that shows nothing. Of the document as it was
+   * last laid out.
+   */
+  private _caretPlace(): { rect: Rect; color: string } | null {
+    const point = this._caretPoint;
+    if (!point) return null;
+    const tree = this._tree;
+    const el = caretElement(point);
+    if (!tree || !el) return null;
+    const style = this._styleOf(el);
+    if (!style) return null;
+    const color = inkColor(style.caretColor ?? 'currentColor', style.color);
+    if (isTransparent(color)) return null;
+    // the nearest box of the element or of one around it, and the block
+    // whose lines hold its text
+    let box: Box | null = null;
+    for (let at: Element | null = el; at && !box;) {
+      box = this._boxOf(tree, at);
+      const up: ParentNode | null = at.parent;
+      at = isElement(up) ? up : null;
+    }
+    let block = box;
+    while (block && !block.lines && block.parent && block.kind === 'inline') {
+      block = block.parent;
+    }
+    if (!block) return null;
+    const shift = this._fixedShift();
+    const s = this._scale;
+    let found: { x: number; y: number; height: number } | null = null;
+    if (block.subtreeTextEnd > block.subtreeTextStart) {
+      // before a `<br>`, the caret is on the line the break ends, where
+      // the text after the break would put it on the next
+      const at = unitOfPoint(tree, point.node, point.offset, (br) => {
+        const box = this._boxOf(tree, br);
+        return box?.kind === 'break' ? box.textStart : null;
+      });
+      const units = Math.min(
+        Math.max(at, block.subtreeTextStart),
+        block.subtreeTextEnd,
+      );
+      // where the block is in a box fixed to the viewport, the shift its
+      // line is drawn at is its own and not a child's
+      const fixed = drawnAtViewport(block);
+      found = caretAt(block, units, fixed ? null : shift);
+      if (found && fixed && shift) {
+        found = { ...found, x: found.x + shift.x, y: found.y + shift.y };
+      }
+    }
+    if (!found) {
+      const fonts = this._fonts();
+      const bs = block.style;
+      const height = fonts ? lineHeightOf(fonts, bs) : bs.fontSize * 1.2;
+      const left = block.x + block.borderLeft + block.padLeft;
+      const right = block.x + block.width - block.borderRight - block.padRight;
+      const align = bs.textAlign;
+      const rtl = bs.direction === 'rtl';
+      const x =
+        align === 'center'
+          ? (left + right) / 2
+          : align === 'right' ||
+              (align === 'end' && !rtl) ||
+              ((align === 'start' || align === 'justify') && rtl)
+            ? right
+            : left;
+      const at = throughTransforms(
+        { x, y: block.y + block.borderTop + block.padTop, width: 0, height },
+        block,
+      );
+      const by = drawnAtViewport(block) ? shift : null;
+      found = {
+        x: at.x + (by?.x ?? 0),
+        y: at.y + (by?.y ?? 0),
+        height: at.height,
+      };
+    }
+    let rect: Rect = {
+      x: found.x,
+      y: found.y,
+      width: CARET_WIDTH * s,
+      height: found.height,
+    };
+    // what the boxes around it cut it to, as they cut the line it is on
+    const cut = contentClipFor(block, rect, s);
+    if (cut) {
+      const x = Math.max(rect.x, cut.x);
+      const y = Math.max(rect.y, cut.y);
+      const right = Math.min(rect.x + rect.width, cut.x + cut.width);
+      const bottom = Math.min(rect.y + rect.height, cut.y + cut.height);
+      if (right <= x || bottom <= y) return null;
+      rect = { x, y, width: right - x, height: bottom - y };
+    }
+    return {
+      rect: {
+        x: this.abs.x + rect.x,
+        y: this.abs.y + rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+      color,
+    };
+  }
+
+  /** The caret, over the document as it was painted (`_paintContent`). */
+  private _paintCaret(ctx: Context2D): void {
+    if (!this._caretShown()) {
+      this._caretDrawn = null;
+      return;
+    }
+    const place = this._caretPlace();
+    this._caretDrawn = place?.rect ?? null;
+    if (!place || !this._caretOn) return;
+    ctx.fillStyle = place.color;
+    ctx.fillRect(
+      place.rect.x,
+      place.rect.y,
+      place.rect.width,
+      place.rect.height,
+    );
   }
 
   /** A page's custom highlights changed: drawn again with the new ones. */
@@ -6630,6 +6880,8 @@ export class HtmlViewNode extends Node {
     }
     const now: FocusState = element ? { element, visible, within } : NO_FOCUS;
     this._focus = now;
+    // an editing host's caret shows while it has the focus
+    if (this._caretPoint) this._caretMoved();
     const cascade = this._cascade;
     cascade?.setFocus(now);
     if (!cascade || !cascade.focusSensitive) return false;
@@ -11983,6 +12235,7 @@ export class HtmlViewNode extends Node {
     this._promisedOpaque = false;
     try {
       this._paint(ctx, tree, range, damage);
+      this._paintCaret(ctx);
     } catch (error) {
       this._fail(error, this._laidOutWidth);
       // nothing under the element was filled: what it promised is the
@@ -14289,6 +14542,17 @@ function nearestText(
   return best;
 }
 
+/** The element a caret at a DOM boundary point is in: a text node's
+ *  parent, or the element the point is between the children of. */
+function caretElement(point: {
+  node: AnyNode;
+  offset: number;
+}): Element | null {
+  if (isElement(point.node)) return point.node;
+  const parent = point.node.parent;
+  return isElement(parent) ? parent : null;
+}
+
 /** Where a caret at a code-unit offset stands, in document coordinates.
  *  Subtrees whose text range cannot hold the offset are skipped whole, so
  *  the walk is the path to one paragraph, not the document. */
@@ -15774,6 +16038,27 @@ export const resizeClock = {
 };
 
 /**
+ * The clock an editing host's caret blinks on (`_caretMoved`), as
+ * `hoverClock` is a held hover's: through `globalThis`, unref'd, and
+ * exported for a test to hold — on the real clock, a runner slow enough to
+ * spend a blink between two reads of the screen finds the caret turned.
+ */
+export const caretClock = {
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
+/** How wide a caret is, in logical pixels: what core's `<textinput>`
+ *  draws its at, so the two agree on one screen. */
+const CARET_WIDTH = 1.5;
+
+/**
  * The clock the wheel rests on before a snap container snaps
  * (`_snapUserScroll`), as `hoverClock` is a held hover's: through
  * `globalThis`, unref'd, and exported for a test to hold.
@@ -15842,6 +16127,8 @@ const PAINT_ONLY = new Set([
   'borderBottomColor',
   'borderLeftColor',
   'outlineColor',
+  // drawn only where an editing host's caret is (`_paintCaret`)
+  'caretColor',
   // what `getComputedStyle` reads a colour field in, which draws nothing
   ...COLOR_SOURCE_FIELDS,
   // and the images as written, whose drawing is the fields beside it

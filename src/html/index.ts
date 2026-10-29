@@ -17,7 +17,12 @@
 // of the design rather than a setting.
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { useSystemAppearance, useTheme } from 'react-x11';
+import {
+  useDesktopSettings,
+  useSystemAppearance,
+  useTheme,
+  useWindowState,
+} from 'react-x11';
 import type {
   DrawnNode,
   KeyboardEvent as X11KeyboardEvent,
@@ -1034,6 +1039,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // render or never
   const desktop = useSystemAppearance();
   const reducedMotion = props.reducedMotion ?? desktop.reducedMotion;
+  // an editing host's caret blinks as the desktop says, or not at all, and
+  // is drawn while the window has the keyboard
+  const { caretBlink, caretBlinkMs } = useDesktopSettings();
+  const windowFocused = useWindowState().focused;
   const links = useLinkClicks(onLink);
   const menu = useSelectionMenu(selectable);
 
@@ -1191,6 +1200,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     domRevision,
     animate,
     reducedMotion,
+    caretBlink,
+    caretBlinkMs,
+    windowFocused,
     scripting: props.scripting ?? false,
     onParsed: lifecycle.onParsed,
     onLoaded: lifecycle.onLoaded,
@@ -1403,6 +1415,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       transitionEnd: () => nodeRef.current?.transitionEnd(),
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
+      setCaret: (point) => nodeRef.current?.setCaret(point),
       movedPoint: (node, offset, granularity, back) =>
         nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
       scrollState: (element: Element) =>

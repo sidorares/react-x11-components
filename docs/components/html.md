@@ -1553,10 +1553,19 @@ reader selects in the document — a press and a drag, a double click, Ctrl+A
 — is what `getSelection()` answers the next time the page reads it, as a
 range between the text nodes it covers; and a range the page selects
 (`addRange`, `setBaseAndExtent`, `selectAllChildren`) is drawn and copied
-as the reader's is. A caret the page puts somewhere draws nothing, and
-leaves the reader's selection none; and the reader's going away — at a
+as the reader's is. A caret the page puts somewhere is no selection of
+the reader's, and leaves theirs none; and the reader's going away — at a
 press, at a key — leaves the page's as it was, so an edit at a caret is
-made where the page has it. A selection's direction is not the reader's to
+made where the page has it. In an editing host that has the focus, the
+caret is drawn, as a browser draws it: a line as tall as the line it is
+on, or at the start of the content of a block with no text, in the
+element's `caret-color` (its text's colour for `auto`, nothing for
+`transparent`, which is how CodeMirror hides it to draw its own),
+blinking at the desktop's rate (`useDesktopSettings()`, solid where it
+asks for a still caret), while the window has the keyboard. It is drawn
+over the document after everything else, so a blink repaints its
+rectangle and nothing more, and something the page draws over the host
+does not cover it. A selection's direction is not the reader's to
 tell: one read back is forward. `modify()` moves or extends the focus by a
 character or a word through the text the document draws, past white space
 it collapses and on from one element's text into the next's, as an arrow
