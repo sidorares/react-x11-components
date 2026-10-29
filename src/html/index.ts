@@ -799,6 +799,16 @@ export interface HtmlHandle {
    */
   evaluate(code: string): ConsoleResult | null;
   /**
+   * The classes, or the ids, that would bring one more of the document's
+   * rules onto an element were it to carry them, besides those it has: a
+   * name a rule's subject asks for, where the rule's whole selector matches
+   * the element with it — under the media as they hold now, and with the
+   * pointer and the focus wherever the rule wants them. What a developer's
+   * tools offer as a class or an id is typed. The element is not changed,
+   * and nothing the document keeps is. Sorted; empty with no document.
+   */
+  namesThatStyle(element: Element, attribute: 'class' | 'id'): string[];
+  /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
    * shows, whether a checkbox or a radio is checked. Null for what is no
@@ -1406,6 +1416,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
       evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
+      namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
+        nodeRef.current?.namesThatStyle(element, attribute) ?? [],
       parserWrite: (script: Element, markup: string) =>
         nodeRef.current?.parserWrite(script, markup) ?? false,
       parserResume: (script: Element) => nodeRef.current?.parserResume(script),

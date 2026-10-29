@@ -5686,6 +5686,13 @@ export class HtmlViewNode extends Node {
    * element the document has not styled — not in it, or in a
    * `<template>`.
    */
+  /** The classes or ids some rule of the document's would style `element`
+   *  with, were it to carry them (`Cascade.namesThatStyle`). */
+  namesThatStyle(element: Element, attribute: 'class' | 'id'): string[] {
+    this._prepare(this.abs.width || 1);
+    return this._cascade?.namesThatStyle(element, attribute) ?? [];
+  }
+
   computedStyle(
     element: Element,
     pseudo: string | null = null,

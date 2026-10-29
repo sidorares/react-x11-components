@@ -29,6 +29,7 @@ import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import {
   boxOf,
   edgesOf,
+  findById,
   h,
   metric,
   render,
@@ -873,4 +874,37 @@ test('a @supports test of subgrid is answered', () => {
   }
   // and a template it does not name is entered as before
   assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), null);
+});
+
+test('the names that would style an element are the ones some rule would match it with', async () => {
+  const { node } = await render(
+    '<style>' +
+      '.card { color: red } .card.wide { width: 10px }' +
+      '.nav .link { color: blue } .menu > .item { color: green }' +
+      'li.only-li { color: red } p.on-p { color: red }' +
+      '.hover\\:bold:hover { font-weight: bold }' +
+      '@media (max-width: 10px) { .tiny { color: red } }' +
+      '.box:not(.skipped) { color: red }' +
+      '#main { color: red } div#side { color: red } #other p { color: red }' +
+      '</style>' +
+      '<div class="nav"><p id="t" class="card">text</p></div>',
+  );
+  const el = view(node);
+  const p = findById(el.document, 't')!;
+  // a class its own rule asks for alone; one that needs another it has; one
+  // whose ancestor it has; one asked only of another tag, or under another
+  // parent, or in media that do not hold, is not
+  assert.deepStrictEqual(el.namesThatStyle(p, 'class'), [
+    'box',
+    'hover:bold',
+    'link',
+    'on-p',
+    'wide',
+  ]);
+  // what it has is not offered again, and nothing about it changed
+  assert.strictEqual(p.attribs.class, 'card');
+  // an id is in place of its own: one a rule asks of a `<p>`, not a `<div>`
+  assert.deepStrictEqual(el.namesThatStyle(p, 'id'), ['main']);
+  // the element styles as it did
+  assert.strictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
 });
