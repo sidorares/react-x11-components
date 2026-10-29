@@ -47,6 +47,13 @@
 // A middle click, or a click with the modifier held, opens a link in a new
 // tab behind this one; a middle click on a tab closes it.
 //
+// The Develop menu — in the macOS menu bar, the desktop's panel where it
+// has one, and drawn over the tab strip elsewhere — opens a tab's developer
+// tools (`devtools/`), docked under its page: ⌥⌘I or Ctrl+Shift+I (and
+// F12) for the tools, ⌥⌘J or Ctrl+Shift+J for the console, ⇧⌘C or
+// Ctrl+Shift+C to choose an element in the page. Inspect, in the page's own
+// menu, opens them on the element under the pointer.
+//
 // Full screen — the green button on a Mac, the window manager's on X11 —
 // gives the page the whole screen: the strip and the toolbar come back while
 // the pointer is at the top edge or over them, and while the address bar has
@@ -64,6 +71,7 @@ import {
   Button,
   Frame,
   Icon,
+  MenuBar,
   ThemeProvider,
   createRoot,
   matchesShortcut,
@@ -78,6 +86,7 @@ import type {
   FrameProps,
   KeyboardEvent as X11KeyboardEvent,
   LayoutEvent,
+  MenuBarMenu,
   MouseEvent as X11MouseEvent,
   NtkWindow,
   TextInputNode,
@@ -103,8 +112,9 @@ import type {
   PageProps,
 } from './page.js';
 import type { PostData } from '../../src/html/index.js';
-import { shortcuts } from './keys.js';
+import { DEVELOP, developShortcuts, shortcuts } from './keys.js';
 import type { Command } from './keys.js';
+import type { DevtoolsPanel } from './devtools/model.js';
 import { HOME, fileName } from './pages.js';
 import {
   openProfile,
@@ -237,7 +247,26 @@ interface Tab {
   zoom: number;
   /** Put the caret in the address bar when the tab first shows. */
   focusAddress: boolean;
+  devtools: Devtools;
 }
+
+/** A tab's developer tools, which its page draws under itself. */
+interface Devtools {
+  open: boolean;
+  /** The panel last asked for, and whether that ask was to choose an
+   *  element in the page. */
+  panel: DevtoolsPanel;
+  pick: boolean;
+  /** Counts the asks: each new one shows its panel. */
+  ask: number;
+}
+
+const DEVTOOLS_CLOSED: Devtools = {
+  open: false,
+  panel: 'elements',
+  pick: false,
+  ask: 0,
+};
 
 interface State {
   tabs: Tab[];
@@ -268,7 +297,15 @@ type Action =
       icon?: TabIcon | null;
     }
   | { type: 'zoom'; id: string; zoom: number }
-  | { type: 'focused'; id: string };
+  | { type: 'focused'; id: string }
+  | {
+      type: 'devtools';
+      id: string;
+      /** Open them, close them, or flip them. */
+      open: boolean | 'toggle';
+      panel?: DevtoolsPanel;
+      pick?: boolean;
+    };
 
 let counter = 0;
 const nextId = (): number => ++counter;
@@ -300,6 +337,7 @@ function emptyTab(
     step: null,
     zoom: 1,
     focusAddress,
+    devtools: DEVTOOLS_CLOSED,
   };
 }
 
@@ -482,6 +520,21 @@ function reducer(state: State, action: Action): State {
         ...tab,
         focusAddress: false,
       }));
+    case 'devtools':
+      return update(state, action.id, (tab) => {
+        const was = tab.devtools;
+        const open = action.open === 'toggle' ? !was.open : action.open;
+        if (!open) return { ...tab, devtools: { ...was, open, pick: false } };
+        return {
+          ...tab,
+          devtools: {
+            open,
+            panel: action.panel ?? was.panel,
+            pick: !!action.pick,
+            ask: was.ask + 1,
+          },
+        };
+      });
   }
 }
 
@@ -1176,6 +1229,12 @@ function TabPage({
     },
     [id, dispatch],
   );
+  // the page's Inspect opened its tools, or their own button closed them
+  const onDevtools = useCallback(
+    (open: boolean) =>
+      dispatch({ type: 'devtools', id, open, panel: 'elements' }),
+    [id, dispatch],
+  );
 
   const props: PageProps = {
     loadSeq: tab.loading?.seq ?? 0,
@@ -1191,6 +1250,11 @@ function TabPage({
     zoom: tab.zoom,
     scripts,
     userAgent,
+    devtools: tab.devtools.open,
+    devtoolsPanel: tab.devtools.panel,
+    devtoolsPick: tab.devtools.pick,
+    devtoolsAsk: tab.devtools.ask,
+    onDevtools,
     onCommit,
     onFinish,
     onHistory,
@@ -1544,6 +1608,28 @@ export function Browser({
         return zoom(1);
       case 'stop':
         return dispatch({ type: 'stop', id: active.id });
+      case 'devtools':
+        return dispatch({ type: 'devtools', id: active.id, open: 'toggle' });
+      case 'console':
+        return dispatch({
+          type: 'devtools',
+          id: active.id,
+          open: true,
+          panel: 'console',
+        });
+      case 'pick':
+        return dispatch({
+          type: 'devtools',
+          id: active.id,
+          open: true,
+          panel: 'elements',
+          pick: true,
+        });
+      case 'viewSource':
+        if (entry && /^(https?|file):/.test(entry.url)) {
+          open(`view-source:${entry.url}`, false);
+        }
+        return;
       default:
         return selectAt(Number(command.slice(3)));
     }
@@ -1555,7 +1641,7 @@ export function Browser({
   // handler on the window sees every key first, and a key it takes
   // (`preventDefault`) goes no further. A page the pointer rests on is sent
   // keys past all of this on X11, and passes the chords back (`keys.ts`).
-  const chords = shortcuts(mod);
+  const chords = shortcuts(mod).filter(([command]) => !DEVELOP.has(command));
   const onKeyDown = (ev: X11KeyboardEvent) => {
     for (const [command, shortcut] of chords) {
       if (!matchesShortcut(ev, shortcut)) continue;
@@ -1577,6 +1663,46 @@ export function Browser({
 
   const title =
     infoOf(active, entry)?.title ?? (entry ? fileName(entry.url) : 'New Tab');
+
+  // The Develop menu. Its items' chords are bound by the bar — and on macOS
+  // answered by the system's menu bar — so the window's `onKeyDown` above
+  // leaves them out (`DEVELOP`).
+  const develop = new Map(developShortcuts(mod));
+  const menus: MenuBarMenu[] = [
+    {
+      label: 'Develop',
+      items: [
+        {
+          key: 'devtools',
+          label: 'Developer Tools',
+          toggleType: 'checkmark',
+          toggleState: active.devtools.open ? 1 : 0,
+          shortcut: develop.get('devtools'),
+          onSelect: () => run('devtools'),
+        },
+        {
+          key: 'console',
+          label: 'JavaScript Console',
+          shortcut: develop.get('console'),
+          onSelect: () => run('console'),
+        },
+        {
+          key: 'pick',
+          label: 'Select an Element in the Page',
+          shortcut: develop.get('pick'),
+          onSelect: () => run('pick'),
+        },
+        { key: 'rule', type: 'separator' },
+        {
+          key: 'source',
+          label: 'View Page Source',
+          enabled: !!entry && /^(https?|file):/.test(entry.url),
+          shortcut: develop.get('viewSource'),
+          onSelect: () => run('viewSource'),
+        },
+      ],
+    },
+  ];
 
   return (
     <window
@@ -1605,6 +1731,8 @@ export function Browser({
           onMouseEnter={chrome.enter}
           onMouseLeave={chrome.leave}
         >
+          {/* in the window only where no menu bar outside it takes it */}
+          <MenuBar menus={menus} />
           <Tabs
             value={active.id}
             onValueChange={(e) => dispatch({ type: 'select', id: e.value })}
