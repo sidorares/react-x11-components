@@ -17,6 +17,7 @@ import {
   supportsCondition,
 } from '../../src/html/css/parse.js';
 import { parseShapeFunction } from '../../src/html/css/shape-function.js';
+import { parseAngle } from '../../src/html/css/transform.js';
 import {
   composeShorthand,
   expandShorthand,
@@ -1165,6 +1166,61 @@ test("calc()'s constants: infinity, NaN, pi and e", () => {
   assert.strictEqual(len('calc(ex * 1px)'), null);
   assert.strictEqual(len('calc(infinityx * 1px)'), null);
   assert.strictEqual(parseNumber('calc(infinity)'), 33554428);
+});
+
+test('the stepped, trigonometric, exponential and sign functions come to a value where no percentage is in them', async () => {
+  // CSS Values 4, 10.4–10.8. Apple's hero is as wide as its height times
+  // `tan(atan2(var(--p-width), 1px)) / tan(atan2(var(--p-height), 1px))`,
+  // a length turned into a number, and was 0px wide
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  const len = (v: string) => parseLength(v, ctx);
+  const near = (a: number | null | unknown, b: number, what: string) =>
+    assert.ok(typeof a === 'number' && Math.abs(a - b) < 1e-9, `${what}: ${a}`);
+  near(len('calc(100px * sin(30deg))'), 50, 'sin');
+  near(len('calc(100px * cos(0.5turn))'), -100, 'cos');
+  near(len('calc(100px * tan(atan(1)))'), 100, 'tan of an atan');
+  near(len('calc(1px * tan(atan2(30px, 1px)))'), 30, 'a length made a number');
+  near(len('calc(1px * tan(atan2(3em, 4px)))'), 15, 'of two units');
+  near(
+    parseNumber('calc(tan(atan2(1440px, 1px)) / tan(atan2(546px, 1px)))'),
+    1440 / 546,
+    'a ratio',
+  );
+  assert.strictEqual(len('hypot(30px, 40px)'), 50);
+  assert.strictEqual(len('abs(-12px)'), 12);
+  assert.strictEqual(len('calc(10px * sign(3em))'), 10);
+  assert.strictEqual(len('calc(100px * pow(2, 3) / sqrt(4))'), 400);
+  near(len('calc(10px * log(8, 2))'), 30, 'log');
+  near(len('calc(10px * exp(0))'), 10, 'exp');
+  // a step: nearest by default, the tie going up; and the four strategies
+  assert.strictEqual(len('round(7.5px, 5px)'), 10);
+  assert.strictEqual(len('round(up, 10.2px, 5px)'), 15);
+  assert.strictEqual(len('round(down, 14px, 5px)'), 10);
+  assert.strictEqual(len('round(to-zero, -14px, 5px)'), -10);
+  assert.strictEqual(len('calc(10px * round(2.5))'), 30, 'a number steps by 1');
+  assert.strictEqual(len('round(12px)'), null, 'a length says its step');
+  assert.strictEqual(len('mod(-7px, 5px)'), 3, 'mod takes the sign of B');
+  assert.strictEqual(len('rem(-7px, 5px)'), -2, 'rem the sign of A');
+  // an angle is no length, a length times one is no value, and a
+  // percentage is a different value at every width
+  assert.strictEqual(len('atan2(1px, 1px)'), null);
+  assert.strictEqual(len('calc(1px * atan(1))'), null);
+  assert.strictEqual(len('abs(-10%)'), null);
+  assert.strictEqual(len('hypot(3px, 4)'), null, 'of two types');
+  assert.strictEqual(len('round(nearest 1px, 2px)'), null);
+  // an angle where the caller reads angles: a transform's turn
+  near(parseAngle('atan2(1, 1)'), 45, 'atan2 as an angle');
+  near(parseAngle('calc(asin(1) / 2)'), 45, 'half of asin');
+  near(parseAngle('calc(90deg * sin(30deg))'), 45, 'its own angle taken');
+  // and a page's chain of custom properties, as Apple writes it
+  const { node } = await render(
+    '<body style="margin:0"><style>#m{height:5px;--p-width:1440px;' +
+      '--p-height:546px;--hu:tan(atan2(var(--p-height),1px));' +
+      '--wu:tan(atan2(var(--p-width),1px));--ar:calc(var(--wu)/var(--hu));' +
+      'width:calc(var(--p-height)*var(--ar))}</style><div id="m"></div></body>',
+    2000,
+  );
+  near(boxOf(view(node), 'm').width, 1440, "Apple's hero");
 });
 
 test('attr() reads an attribute into any property: as a string, a number with a unit, or a value of a type, with its fallback', async () => {

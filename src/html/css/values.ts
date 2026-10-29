@@ -204,8 +204,11 @@ export function viewportUnit(
 
 const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
 
-/** A math function: `calc()`, `min()`, `max()` or `clamp()`. */
-const MATH = /^(?:-webkit-)?calc\(|^(?:min|max|clamp)\(/i;
+/** A math function (CSS Values 4, 10): `calc()`, the comparisons, the
+ *  stepped values, the trigonometric and exponential functions, and the
+ *  signs. */
+const MATH =
+  /^(?:-webkit-)?calc\(|^(?:min|max|clamp|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp|abs|sign)\(/i;
 
 /**
  * Parse a length. Returns `null` for anything that is not one, which is how
