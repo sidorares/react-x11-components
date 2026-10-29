@@ -277,10 +277,15 @@ export function parseAngle(value: string, bare = true): number | null {
   if (m) return Number(m[1]) * DEGREES[m[2]];
   if (bare && /^[+-]?0*\.?0+$/.test(v)) return 0;
   if (!v.includes('(')) return null;
-  const sum = parseMath(v, (token) => {
-    const unit = ANGLE.exec(token);
-    return unit ? Number(unit[1]) * DEGREES[unit[2]] : null;
-  });
+  const sum = parseMath(
+    v,
+    (token) => {
+      const unit = ANGLE.exec(token);
+      return unit ? Number(unit[1]) * DEGREES[unit[2]] : null;
+    },
+    // a trigonometric function's angle is in degrees, as this reads one
+    1,
+  );
   return typeof sum === 'number' ? sum : null;
 }
 
