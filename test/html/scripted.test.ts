@@ -325,26 +325,30 @@ test('the handle runs what a console typed in the page, and hands back only what
     { scripts: {} },
   );
   await until(page, 'out', (s) => s === 'ready');
+  const said = (r: ReturnType<HtmlHandle['evaluate']>) =>
+    r && { text: r.text, threw: r.threw };
   // the page's own globals, and a string quoted as a console shows one
-  assert.deepEqual(page.handle.evaluate('greeting + "!"'), {
+  assert.deepEqual(said(page.handle.evaluate('greeting + "!"')), {
     text: '"hi!"',
     threw: false,
   });
   // `{ … }` typed alone is an object, not a block
-  assert.deepEqual(page.handle.evaluate('{ a: 1, b: [2, 3] }'), {
+  assert.deepEqual(said(page.handle.evaluate('{ a: 1, b: [2, 3] }')), {
     text: '{ a: 1, b: [2, 3] }',
     threw: false,
   });
   // what it declares is the window's, for the next line to read
   page.handle.evaluate('var counted = 41');
-  assert.deepEqual(page.handle.evaluate('counted + 1'), {
+  assert.deepEqual(said(page.handle.evaluate('counted + 1')), {
     text: '42',
     threw: false,
   });
   // an element is its tag, and what it changes is drawn
   assert.deepEqual(
-    page.handle.evaluate(
-      'var p = document.getElementById("out"); p.textContent = "changed"; p',
+    said(
+      page.handle.evaluate(
+        'var p = document.getElementById("out"); p.textContent = "changed"; p',
+      ),
     ),
     { text: '<p>', threw: false },
   );
@@ -365,13 +369,52 @@ test('the handle runs what a console typed in the page, and hands back only what
   assert.match(unparsed!.text, /SyntaxError/);
   // a page that replaced its own `eval` is still run as typed
   page.handle.evaluate('window.eval = function () { return "fake"; }');
-  assert.deepEqual(page.handle.evaluate('6 * 7'), {
+  assert.deepEqual(said(page.handle.evaluate('6 * 7')), {
     text: '42',
     threw: false,
   });
   // and a document with no scripts has nothing to run it in
   const still = await shown('<p>no scripts</p>');
   assert.equal(still.handle.evaluate('1'), null);
+});
+
+test('an object the console came to is read a level at a time, and let go', async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  const page = await shown(
+    '<p id="out"></p><script>' +
+      'var shared = { n: 1, list: [10, "x"], get later() { throw new Error("read"); } };' +
+      'document.getElementById("out").textContent = "ready";' +
+      '</script>',
+    { scripts: {} },
+  );
+  await until(page, 'out', (s) => s === 'ready');
+  const result = page.handle.evaluate('shared');
+  assert.equal(result?.value?.type, 'object');
+  const id = result!.value!.id!;
+  assert.equal(typeof id, 'number');
+  const props = page.handle.inspectValue(id)!;
+  const byName = new Map(props.map((p) => [p.name, p]));
+  assert.deepEqual(byName.get('n')?.value, { type: 'number', text: '1' });
+  // a getter is not read, which would run the page's code
+  assert.equal(byName.get('later')?.value.type, 'accessor');
+  assert.equal(byName.get('[[Prototype]]')?.enumerable, false);
+  const list = byName.get('list')!.value;
+  assert.equal(list.type, 'array');
+  assert.match(list.text, /^\(2\) /);
+  const items = page.handle.inspectValue(list.id!)!;
+  assert.deepEqual(
+    items.filter((p) => p.enumerable).map((p) => [p.name, p.value.text]),
+    [
+      ['0', '10'],
+      ['1', '"x"'],
+    ],
+  );
+  // a primitive has no id; an element is a node
+  assert.equal(page.handle.evaluate('42')?.value?.id, undefined);
+  assert.equal(page.handle.evaluate('document.body')?.value?.type, 'node');
+  // let go, an object is no longer there to read
+  page.handle.releaseValues();
+  assert.equal(page.handle.inspectValue(id), null);
 });
 
 test('workers are on unless they are turned off', async (t) => {

@@ -256,6 +256,31 @@ export interface ConsoleResult {
   text: string;
   /** It threw, and `text` is the error. */
   threw: boolean;
+  /** What it came to, where it did not throw: a description a console can
+   *  draw an object as a tree from (`HtmlHandle.inspectValue`). */
+  value?: ConsoleValue;
+}
+
+/**
+ * A value of the page's as a console is handed it: its type —
+ * `string`, `number`, `boolean`, `undefined`, `null`, `bigint`, `symbol`,
+ * `function`, `object`, `array`, `node`, `error`, and for a property
+ * `accessor` — and a line of text, written as `console.log` writes it. An
+ * object, an array or a function also has the `id` the page's realm keeps
+ * it by, which `inspectValue` reads a level of.
+ */
+export interface ConsoleValue {
+  type: string;
+  text: string;
+  id?: number;
+}
+
+/** One of an object's properties, as `inspectValue` hands them: a getter
+ *  is not read, and is an `accessor`. */
+export interface ConsoleProperty {
+  name: string;
+  value: ConsoleValue;
+  enumerable: boolean;
 }
 
 export interface InternalHtmlProps extends HtmlProps {
@@ -277,6 +302,10 @@ export interface InternalHtmlProps extends HtmlProps {
   /** What a host's console typed, run in the document's realm: what the
    *  handle's `evaluate` asks. */
   _evaluate?: (code: string) => ConsoleResult | null;
+  /** A level of a value it kept, and every value let go: the handle's
+   *  `inspectValue` and `releaseValues`. */
+  _inspectValue?: (id: number) => ConsoleProperty[] | null;
+  _releaseValues?: () => void;
   /** The parse waits at a script that blocks it, which the engine runs
    *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
    *  page's scripts. */
@@ -482,6 +511,14 @@ export function useScriptedHtml(
     (code: string) => scripts.runner?.()?.evaluate(code) ?? null,
     [scripts.runner],
   );
+  const inspectValue = useCallback(
+    (id: number) => scripts.runner?.()?.inspectValue(id) ?? null,
+    [scripts.runner],
+  );
+  const releaseValues = useCallback(
+    () => scripts.runner?.()?.releaseValues(),
+    [scripts.runner],
+  );
 
   // a link or a form whose target names one of the page's frames loads it
   // there; anything else is the application's, as it is with scripts off
@@ -610,6 +647,8 @@ export function useScriptedHtml(
     _onMediaEvent: scripts.mediaEvent,
     _unloadCheck: unloadCheck,
     _evaluate: evaluate,
+    _inspectValue: inspectValue,
+    _releaseValues: releaseValues,
     _onParserBlocked: scripts._onParserBlocked,
     _frames:
       holderContext && engine

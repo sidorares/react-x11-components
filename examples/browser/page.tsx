@@ -133,6 +133,7 @@ import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
 import { Dock, Highlight } from './devtools/dock.js';
 import { ConsoleLog, Inspection, levelOf } from './devtools/model.js';
+import { NetworkLog } from './devtools/network-log.js';
 import type { DevtoolsPanel, DockSide } from './devtools/model.js';
 import {
   BLANK,
@@ -658,6 +659,9 @@ export default function Page(props: PageProps): ReactElement {
   // to their console, kept from the start
   const [inspection] = useState(() => new Inspection());
   const [consoleLog] = useState(() => new ConsoleLog());
+  // and what its network does while they are open, as a browser's tools
+  // log it: what was asked before they opened is not there
+  const [networkLog] = useState(() => new NetworkLog());
   // what the document shown has asked for and not had
   const [pending, setPending] = useState(0);
   /** Each document's requests, by its view, held while it is kept. */
@@ -1378,7 +1382,8 @@ export default function Page(props: PageProps): ReactElement {
     if (devtools && props.devtoolsPick) inspection.picking.set(true);
   }, [devtoolsAsk]);
   useEffect(() => {
-    if (devtools) return;
+    if (devtools)
+      return network.observe((activity) => networkLog.take(activity));
     inspection.picking.set(false);
     inspection.hovered.set(null);
   }, [devtools]);
@@ -1641,6 +1646,10 @@ export default function Page(props: PageProps): ReactElement {
               docKey={shownN}
               inspection={inspection}
               log={consoleLog}
+              network={networkLog}
+              url={url}
+              cookies={cookies}
+              storage={profile?.storage ?? null}
               panel={props.devtoolsPanel}
               ask={devtoolsAsk}
               dock={props.devtoolsDock}

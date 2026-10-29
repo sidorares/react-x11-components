@@ -27,6 +27,11 @@
 // engine is made on has modules: the flag that makes Node keep a page's
 // `import()` in its context is the one that makes `vm.SourceTextModule`
 // (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
+import type {
+  ConsoleProperty,
+  ConsoleResult,
+  ConsoleValue,
+} from './scripted.js';
 import type { Element } from 'domhandler';
 
 import type {
@@ -660,11 +665,39 @@ export class ScriptRunner {
    * as `console.log` writes it, so nothing of the page's crosses but the
    * string. Null where the document runs nothing any more.
    */
-  evaluate(code: string): { text: string; threw: boolean } | null {
+  evaluate(code: string): ConsoleResult | null {
     if (this._disposed) return null;
     const out = this.engine.call('__console', code);
     if (typeof out !== 'string' || !out) return null;
-    return { text: out.slice(1), threw: out[0] === '!' };
+    if (out[0] === '!') return { text: out.slice(1), threw: true };
+    const value = consoleValue(out.slice(1));
+    return value
+      ? { text: value.text, threw: false, value }
+      : { text: out.slice(1), threw: false };
+  }
+
+  /** A level of an object the console kept (`ConsoleValue.id`): its own
+   *  properties, described as its result was. Null where it is no longer
+   *  kept, or the document runs nothing. */
+  inspectValue(id: number): ConsoleProperty[] | null {
+    if (this._disposed) return null;
+    const out = this.engine.call('__consoleProps', id);
+    if (typeof out !== 'string' || !out) return null;
+    try {
+      const props = JSON.parse(out) as { k: string; v: unknown; e: boolean }[];
+      return props.map((p) => ({
+        name: String(p.k),
+        value: valueOf(p.v),
+        enumerable: !!p.e,
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Let go of every object the console kept. */
+  releaseValues(): void {
+    if (!this._disposed) this.engine.call('__consoleRelease', null);
   }
 
   beforeUnload(): boolean {
@@ -869,3 +902,22 @@ function originOf(url: string): string {
 /** No sheet adopted: one array, so that a page that adopts none renders
  *  nothing again. */
 export const NO_SHEETS: string[] = [];
+
+/** A result's description, as the page's realm wrote it (`previewOf`):
+ *  only a type, a line and an id are read, and nothing else of it. */
+function valueOf(raw: unknown): ConsoleValue {
+  const p = (raw ?? {}) as { t?: unknown; s?: unknown; id?: unknown };
+  return {
+    type: String(p.t ?? 'undefined'),
+    text: String(p.s ?? ''),
+    ...(typeof p.id === 'number' && { id: p.id }),
+  };
+}
+
+function consoleValue(json: string): ConsoleValue | null {
+  try {
+    return valueOf(JSON.parse(json));
+  } catch {
+    return null;
+  }
+}

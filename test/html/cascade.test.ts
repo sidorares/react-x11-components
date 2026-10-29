@@ -908,3 +908,51 @@ test('the names that would style an element are the ones some rule would match i
   // the element styles as it did
   assert.strictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
 });
+
+test('the rules that match an element are listed in the order they win, with their declarations as written', async () => {
+  const { node } = await render(
+    '<style>' +
+      'p { color: blue; margin: 0 }' +
+      '#t { color: green }' +
+      '.a { color: red !important }' +
+      '.b { padding: 2px } .a { padding: 3px }' +
+      '@media (min-width: 100px) { .a { font-weight: bold } }' +
+      '@media (max-width: 10px) { .a { font-style: italic } }' +
+      '.nope { color: black }' +
+      '</style>' +
+      '<p id="t" class="a b" style="border: 1px solid" align="center">x</p>',
+  );
+  const el = view(node);
+  const p = findById(el.document, 't')!;
+  const rules = el.matchedRules(p);
+  const shown = rules.map((r) => r.selector ?? r.origin);
+  // its own style first; then the author's, the most specific first and, of
+  // two alike, the later; the hints; the user agent's last. A rule that
+  // does not match, or whose media do not hold, is not there.
+  assert.deepStrictEqual(shown.slice(0, 6), [
+    'inline',
+    '#t',
+    '.a',
+    '.a',
+    '.b',
+    '.a',
+  ]);
+  // of the three `.a`, the one in media came last in the sheet, so first
+  assert.strictEqual(rules[2].media, '(min-width: 100px)');
+  assert.ok(!shown.includes('.nope'));
+  assert.ok(shown.indexOf('p') > shown.indexOf('.b'));
+  assert.ok(shown.indexOf('presentation') > shown.indexOf('p'));
+  assert.strictEqual(rules[rules.length - 1].origin, 'user-agent');
+  assert.deepStrictEqual(rules[0].declarations, [
+    { property: 'border', value: '1px solid', important: false },
+  ]);
+  const media = rules.find((r) => r.media !== null)!;
+  assert.strictEqual(media.media, '(min-width: 100px)');
+  assert.deepStrictEqual(media.declarations, [
+    { property: 'font-weight', value: 'bold', important: false },
+  ]);
+  const important = rules.find((r) => r.declarations.some((d) => d.important))!;
+  assert.strictEqual(important.selector, '.a');
+  assert.deepStrictEqual(important.specificity, [0, 1, 0]);
+  assert.deepStrictEqual(rules[1].specificity, [1, 0, 0]);
+});

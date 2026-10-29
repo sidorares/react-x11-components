@@ -72,7 +72,10 @@ import type {
 } from './dom-events.js';
 import { inputType, isDisabled } from './form.js';
 import type { RootLook } from './css/style.js';
-import type { ViewportOverflow } from './css/cascade.js';
+import type {
+  MatchedRule as HtmlMatchedRule,
+  ViewportOverflow,
+} from './css/cascade.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
@@ -85,6 +88,7 @@ import type { Embedded, RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
+  ConsoleProperty,
   ConsoleResult,
   HtmlScripts,
   InternalHtmlProps,
@@ -134,7 +138,9 @@ export type {
 } from './form.js';
 export { formSubmission } from './form.js';
 export type {
+  ConsoleProperty,
   ConsoleResult,
+  ConsoleValue,
   HtmlScripts,
   ScriptViewport,
 } from './scripts/scripted.js';
@@ -243,8 +249,10 @@ export type { ThreadTransportOptions } from './thread-transport.js';
 export type {
   DocumentResponse,
   Fetched,
+  HtmlNetworkActivity,
   HtmlNetworkOptions,
   HtmlNetworkSeams,
+  HtmlRequestKind,
   HtmlTransport,
   Loaded,
   PostData,
@@ -299,6 +307,7 @@ export type {
   HtmlHttpCacheStore,
 } from './http-cache.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
+export type { MatchedRule as HtmlMatchedRule } from './css/cascade.js';
 export type { ViewportOverflow } from './css/cascade.js';
 export type {
   AnyNode,
@@ -799,6 +808,18 @@ export interface HtmlHandle {
    */
   evaluate(code: string): ConsoleResult | null;
   /**
+   * A level of an object `evaluate` came to (`ConsoleValue.id`): its own
+   * properties, each described as a result is — a getter left unread, as
+   * an `accessor` — a map's and a set's entries as `[[Entries]]`, and its
+   * prototype as `[[Prototype]]`, each an object of its own to read a
+   * level of. The page's realm keeps the newest five hundred such objects;
+   * null for one it no longer keeps, or with no scripts.
+   */
+  inspectValue(id: number): ConsoleProperty[] | null;
+  /** Let go of every object the page's realm kept for `inspectValue`: a
+   *  console cleared. */
+  releaseValues(): void;
+  /**
    * The classes, or the ids, that would bring one more of the document's
    * rules onto an element were it to carry them, besides those it has: a
    * name a rule's subject asks for, where the rule's whole selector matches
@@ -808,6 +829,17 @@ export interface HtmlHandle {
    * and nothing the document keeps is. Sorted; empty with no document.
    */
   namesThatStyle(element: Element, attribute: 'class' | 'id'): string[];
+  /**
+   * The rules that match an element, as a developer's tools list them: its
+   * own `style` first, then its tree's rules in the order they win — the
+   * author's before the user agent's, a later layer before an earlier, the
+   * more specific first and of two alike the later — and HTML's
+   * presentational hints, each with its declarations as written and the
+   * media it is under. Under the media as they hold, the pointer and the
+   * focus where they are. Which declaration wins a property is the
+   * reader's to work out from the order, `!important` turning it round.
+   */
+  matchedRules(element: Element): HtmlMatchedRule[];
   /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
@@ -1023,6 +1055,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // and what its `evaluate` runs them with (`_evaluate`)
   const evaluate = React.useRef(props._evaluate);
   evaluate.current = props._evaluate;
+  const inspectValue = React.useRef(props._inspectValue);
+  inspectValue.current = props._inspectValue;
+  const releaseValues = React.useRef(props._releaseValues);
+  releaseValues.current = props._releaseValues;
   const viewRef = React.useCallback(
     (node: HtmlViewNode | null) => {
       viewNode.current = node;
@@ -1030,6 +1066,8 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         node.interactive = interactive;
         node.unloadCheck = () => unloadCheck.current?.() ?? true;
         node.evaluate = (code) => evaluate.current?.(code) ?? null;
+        node.inspectValue = (id) => inspectValue.current?.(id) ?? null;
+        node.releaseValues = () => releaseValues.current?.();
       }
       if (typeof outerRef === 'function') outerRef(node);
       else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
@@ -1416,8 +1454,12 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
       evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
+      inspectValue: (id: number) => nodeRef.current?.inspectValue?.(id) ?? null,
+      releaseValues: () => nodeRef.current?.releaseValues?.(),
       namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
         nodeRef.current?.namesThatStyle(element, attribute) ?? [],
+      matchedRules: (element: Element) =>
+        nodeRef.current?.matchedRules(element) ?? [],
       parserWrite: (script: Element, markup: string) =>
         nodeRef.current?.parserWrite(script, markup) ?? false,
       parserResume: (script: Element) => nodeRef.current?.parserResume(script),

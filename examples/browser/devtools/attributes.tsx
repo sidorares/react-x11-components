@@ -35,13 +35,14 @@ import {
 } from './suggest.js';
 import type { Completion, Suggestion } from './suggest.js';
 import { syntaxColours } from './colours.js';
+import { CopyGlyph, TrashGlyph } from './glyphs.js';
 import type { Inspection } from './model.js';
 
 const MONO = { fontFamily: '$monoFamily', fontSize: 12 } as const;
 
 // --- changing the document ------------------------------------------------------
 
-function setAttribute(
+export function setAttribute(
   handle: HtmlHandle,
   inspection: Inspection,
   el: Element,
@@ -57,7 +58,7 @@ function setAttribute(
   inspection.touch();
 }
 
-function removeAttribute(
+export function removeAttribute(
   handle: HtmlHandle,
   inspection: Inspection,
   el: Element,
@@ -88,7 +89,7 @@ function onlyText(el: Element): { data: string } | null {
  * gives the edit up. Enter with none lit is the edit's commit. The list is
  * a `<popup>` placed under the field, which leaves the keyboard with it.
  */
-function SuggestField({
+export function SuggestField({
   value,
   onChange,
   onCommit,
@@ -639,57 +640,5 @@ export function AttributesPane({
         <TextChild handle={handle} inspection={inspection} element={element} />
       </box>
     </box>
-  );
-}
-
-// --- glyphs ---------------------------------------------------------------------------
-
-/** Two sheets, one over the other. */
-function CopyGlyph(): ReactElement {
-  const theme = useTheme();
-  return (
-    <canvas
-      style={{ width: 12, height: 12 }}
-      onDraw={(ctx, info) => {
-        const s = info.width / 12;
-        ctx.strokeStyle = theme.textMuted;
-        ctx.lineWidth = info.scale;
-        ctx.strokeRect(3.5 * s, 0.5 * s, 8 * s, 8.5 * s);
-        ctx.fillStyle = theme.background;
-        ctx.fillRect(0.5 * s, 3 * s, 8 * s, 8.5 * s);
-        ctx.strokeRect(0.5 * s, 3 * s, 8 * s, 8.5 * s);
-      }}
-    />
-  );
-}
-
-/** A bin with a lid. */
-function TrashGlyph(): ReactElement {
-  const theme = useTheme();
-  return (
-    <canvas
-      style={{ width: 12, height: 12 }}
-      onDraw={(ctx, info) => {
-        const s = info.width / 12;
-        ctx.strokeStyle = theme.textMuted;
-        ctx.lineWidth = info.scale;
-        ctx.beginPath();
-        ctx.moveTo(1 * s, 2.5 * s);
-        ctx.lineTo(11 * s, 2.5 * s);
-        ctx.moveTo(4.5 * s, 2.5 * s);
-        ctx.lineTo(4.5 * s, 0.8 * s);
-        ctx.lineTo(7.5 * s, 0.8 * s);
-        ctx.lineTo(7.5 * s, 2.5 * s);
-        ctx.moveTo(2.5 * s, 2.5 * s);
-        ctx.lineTo(3.2 * s, 11.2 * s);
-        ctx.lineTo(8.8 * s, 11.2 * s);
-        ctx.lineTo(9.5 * s, 2.5 * s);
-        ctx.moveTo(5 * s, 5 * s);
-        ctx.lineTo(5 * s, 9 * s);
-        ctx.moveTo(7 * s, 5 * s);
-        ctx.lineTo(7 * s, 9 * s);
-        ctx.stroke();
-      }}
-    />
   );
 }

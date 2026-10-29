@@ -110,9 +110,10 @@ parts.
   SQLite database every tab's process shares, and the tabs back after a
   restart.
 - [Developer tools for the example browser](prd-browser-devtools.md) —
-  scaffolded: an Elements panel and a Console docked under a tab's page,
-  why they live in the page's process, the console's one seam into the
-  page's realm, what building them found, and the panels to come.
+  Elements, Console, Network and Storage panels docked beside a tab's
+  page: why they live in the page's process, the seams they read `<Html>`
+  and its network through, what building them found, and what comes
+  next.
 - [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,

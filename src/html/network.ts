@@ -259,6 +259,56 @@ const ACCEPT = {
  *  connection, as a stylesheet is. */
 export type ResourceKind = 'image' | 'stylesheet' | 'font' | 'script';
 
+/** What a request is for, as an observer of a network is told: a
+ *  document, what a document asked for, or a page's own fetch. */
+export type HtmlRequestKind = 'document' | ResourceKind | 'fetch';
+
+/**
+ * What an observer of a network is told (`HtmlNetwork.observe`): each
+ * request it makes — a document, a resource a document asked for, a page's
+ * own fetch — as it goes, by an `id` the request keeps from its first event
+ * to its last, with the time of each in milliseconds since the epoch.
+ *
+ * - `request`: asked for, with the header fields known then — those the
+ *   network adds on the wire, a cookie, are not among them — and a body.
+ *   `page` is the document it is for, null for a navigation.
+ * - `sent`: on its way, once the network's pacing let it go: a request
+ *   that waits for a connection to a busy host is `request` long before.
+ *   Absent for one the cache answers.
+ * - `response`: its status and header fields, where it was answered from
+ *   — `memory` or `disk` where a cache answered with nothing sent — and
+ *   whether a redirect led there.
+ * - `data`, a chunk of the body as it arrives; then `end`, or `failed`
+ *   where it did not come, or the one who asked stopped reading.
+ */
+export type HtmlNetworkActivity =
+  | {
+      type: 'request';
+      id: number;
+      kind: HtmlRequestKind;
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body: string | Uint8Array | null;
+      page: string | null;
+      time: number;
+    }
+  | { type: 'sent'; id: number; time: number }
+  | {
+      type: 'response';
+      id: number;
+      url: string;
+      status: number;
+      statusText: string;
+      headers: [string, string][];
+      redirected: boolean;
+      cache?: 'memory' | 'disk';
+      time: number;
+    }
+  | { type: 'data'; id: number; chunk: Uint8Array; time: number }
+  | { type: 'end'; id: number; time: number }
+  | { type: 'failed'; id: number; error: string; time: number };
+
 /** A response's body, and what the server said about it. */
 export interface Fetched {
   /** Where it came from in the end, after redirects. */
@@ -413,6 +463,11 @@ export class HtmlNetwork {
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
   private readonly _cookies: CookieJar | null;
+  /** Who is told of each request (`observe`), and the last id handed out. */
+  private readonly _observers = new Set<
+    (activity: HtmlNetworkActivity) => void
+  >();
+  private _activities = 0;
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
@@ -706,6 +761,173 @@ export class HtmlNetwork {
   }
 
   /**
+   * Be told of each request this network makes from now on, as it goes
+   * (`HtmlNetworkActivity`): what a developer's tools draw a network log
+   * from. Answers what stops it. With no observer, nothing is told and
+   * nothing is kept; a body is handed over a chunk at a time as it
+   * arrives, and kept by none of this.
+   */
+  observe(listener: (activity: HtmlNetworkActivity) => void): () => void {
+    this._observers.add(listener);
+    return () => {
+      this._observers.delete(listener);
+    };
+  }
+
+  /** Tell every observer: one that throws is its own trouble. */
+  private _tell(activity: HtmlNetworkActivity): void {
+    for (const listener of this._observers) {
+      try {
+        listener(activity);
+      } catch {
+        // nothing of the request's depends on it
+      }
+    }
+  }
+
+  /** A request begun, told to the observers: its id, or 0 where nothing
+   *  observes, which every later event of it then skips. */
+  private _begin(
+    kind: HtmlRequestKind,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | Uint8Array | null,
+    page: string | null,
+  ): number {
+    if (!this._observers.size) return 0;
+    const id = ++this._activities;
+    this._tell({
+      type: 'request',
+      id,
+      kind,
+      url,
+      method,
+      headers: { ...headers },
+      body,
+      page,
+      time: Date.now(),
+    });
+    return id;
+  }
+
+  private _sent(id: number): void {
+    if (id) this._tell({ type: 'sent', id, time: Date.now() });
+  }
+
+  private _responded(
+    id: number,
+    response: ResponseLike,
+    url: string,
+    redirected = response.redirected,
+  ): void {
+    if (!id) return;
+    this._tell({
+      type: 'response',
+      id,
+      url: response.url || url,
+      status: response.status,
+      statusText: response.statusText ?? '',
+      headers: [...response.headers.entries()],
+      redirected,
+      time: Date.now(),
+    });
+  }
+
+  private _failed(id: number, error: unknown): void {
+    if (!id) return;
+    this._tell({
+      type: 'failed',
+      id,
+      error: String((error as Error)?.message ?? error),
+      time: Date.now(),
+    });
+  }
+
+  /** A whole answer known at once — one a cache had, a `data:` URL, a
+   *  local file — told as a response, its body and its end. */
+  private _whole(
+    id: number,
+    fetched: Fetched,
+    headers: [string, string][],
+    cache?: 'memory' | 'disk',
+  ): void {
+    if (!id) return;
+    const time = Date.now();
+    this._tell({
+      type: 'response',
+      id,
+      url: fetched.url,
+      status: fetched.status,
+      statusText: '',
+      headers,
+      redirected: false,
+      ...(cache && { cache }),
+      time,
+    });
+    if (fetched.bytes.length) {
+      this._tell({ type: 'data', id, chunk: fetched.bytes, time });
+    }
+    this._tell({ type: 'end', id, time });
+  }
+
+  /**
+   * A body handed on as it arrives, each chunk told to the observers and
+   * its end, or why it stopped. Its `return()` is the body's own, called as
+   * soon as it is: a body a caller lets go unread still lets its
+   * connection go (`bodyChunks`).
+   */
+  private _observed(
+    id: number,
+    body: AsyncIterable<Uint8Array>,
+  ): AsyncIterable<Uint8Array> {
+    if (!id) return body;
+    const network = this;
+    let over = false;
+    const finish = (error?: unknown): void => {
+      if (over) return;
+      over = true;
+      if (error === undefined)
+        network._tell({ type: 'end', id, time: Date.now() });
+      else network._failed(id, error);
+    };
+    return {
+      [Symbol.asyncIterator]() {
+        const inner = body[Symbol.asyncIterator]();
+        return {
+          async next() {
+            try {
+              const read = await inner.next();
+              if (read.done) finish();
+              else {
+                network._tell({
+                  type: 'data',
+                  id,
+                  chunk: read.value,
+                  time: Date.now(),
+                });
+              }
+              return read;
+            } catch (error) {
+              finish(error);
+              throw error;
+            }
+          },
+          async return(value?: unknown) {
+            finish('canceled');
+            return (
+              (await inner.return?.(value)) ?? {
+                done: true as const,
+                value: undefined,
+              }
+            );
+          },
+        };
+      },
+    };
+  }
+
+  /**
    * Forget everything cached: a hard reload. What the store kept from
    * before is not used by this network again: the next time a page asks
    * for one it goes past every cache (Fetch's cache mode `reload`), and
@@ -755,11 +977,25 @@ export class HtmlNetwork {
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
     const headers = http ? this._headers(kind, url, page) : null;
+    const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
     if (kept && this._answers(kept, headers)) {
       // most recently used goes to the end, oldest is evicted first
       this._cache.delete(key);
       this._cache.set(key, kept);
+      if (id) {
+        void kept.loaded.then((loaded) => {
+          if ('fetched' in loaded) {
+            this._whole(
+              id,
+              loaded.fetched,
+              kept.response?.headers ?? [],
+              'memory',
+            );
+          } else
+            this._failed(id, 'status' in loaded ? loaded.status : 'refused');
+        });
+      }
       return kept.loaded;
     }
     // a `data:` URL is its own body, read here rather than asked of a
@@ -778,6 +1014,7 @@ export class HtmlNetwork {
               headers!,
               signal,
               kept?.response ?? null,
+              id,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -785,6 +1022,12 @@ export class HtmlNetwork {
     const mine = {} as Kept;
     mine.loaded = made.then(
       ({ fetched, response = null, via }): Loaded => {
+        // what went to no server is told here, whole; what did, as it went
+        if (!http) {
+          if (fetched) {
+            this._whole(id, fetched, [['content-type', fetched.type]]);
+          } else this._failed(id, 'nothing to read');
+        }
         if (!fetched || fetched.status < 200 || fetched.status >= 300) {
           this._log(kind, fetched ? fetched.status : 'nothing to read', url);
           this._forget(key, mine);
@@ -807,6 +1050,7 @@ export class HtmlNetwork {
         return { fetched };
       },
       (error): Loaded => {
+        this._failed(id, error);
         this._log(
           kind,
           'failed',
@@ -903,6 +1147,8 @@ export class HtmlNetwork {
     headers: Record<string, string>,
     signal: AbortSignalLike | undefined,
     candidate: HtmlCachedResponse | null,
+    /** Its observers' id for it (`observe`), 0 for none. */
+    id = 0,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -910,11 +1156,9 @@ export class HtmlNetwork {
     const reload = !!had && had.requestTime < this._clearedAt;
     const stored = had && !reload && varyMatches(had, headers) ? had : null;
     if (stored && isFresh(stored, Date.now())) {
-      return {
-        fetched: fetchedOf(url, stored),
-        response: stored,
-        via: 'cached',
-      };
+      const fetched = fetchedOf(url, stored);
+      this._whole(id, fetched, stored.headers, 'disk');
+      return { fetched, response: stored, via: 'cached' };
     }
     const validators = stored && conditionalHeaders(stored);
     const answer = await this._paced(url, signal, () =>
@@ -922,6 +1166,7 @@ export class HtmlNetwork {
         headers: { ...headers, ...validators, ...(reload ? RELOAD : null) },
         limit: MAX_RESOURCE,
         page,
+        id,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1055,6 +1300,15 @@ export class HtmlNetwork {
       if (referrer) headers.referer = referrer;
       this._log('POST', url, post.contentType, post.body.length);
     }
+    const id = this._begin(
+      'document',
+      url,
+      posting ? 'POST' : 'GET',
+      headers,
+      posting ? post.body : null,
+      null,
+    );
+    this._sent(id);
     let response: ResponseLike;
     try {
       response = await this._exchange(
@@ -1080,9 +1334,11 @@ export class HtmlNetwork {
       );
     } catch (error) {
       stall.stop();
+      this._failed(id, error);
       if (signal.aborted) throw error;
       throw networkError(error, stall.signal.aborted);
     }
+    this._responded(id, response, url);
     stall.progress();
     const { type, charset } = contentType(response.headers.get('content-type'));
     return {
@@ -1091,7 +1347,7 @@ export class HtmlNetwork {
       status: response.status,
       type,
       charset,
-      body: arriving(bodyOf(response, MAX_DOCUMENT), stall),
+      body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
     };
   }
 
@@ -1177,10 +1433,19 @@ export class HtmlNetwork {
       method === 'GET' || method === 'HEAD'
         ? undefined
         : (request.bytes ?? request.body ?? undefined);
+    const id = this._begin(
+      'fetch',
+      request.url,
+      method,
+      headers,
+      body ?? null,
+      client,
+    );
     let response: ResponseLike;
     try {
-      response = await this._paced(request.url, signal, () =>
-        this._exchange(
+      response = await this._paced(request.url, signal, () => {
+        this._sent(id);
+        return this._exchange(
           request.url,
           {
             method,
@@ -1199,11 +1464,15 @@ export class HtmlNetwork {
             topLevel: false,
             initiator: null,
           },
-        ),
-      );
+        );
+      });
+    } catch (error) {
+      this._failed(id, error);
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
+    this._responded(id, response, request.url);
     const { charset } = contentType(response.headers.get('content-type'));
     const answer = {
       url: response.url || request.url,
@@ -1217,12 +1486,16 @@ export class HtmlNetwork {
       return {
         ...answer,
         bytes: new Uint8Array(0),
-        chunks: bodyChunks(response, MAX_RESOURCE),
+        chunks: this._observed(id, bodyChunks(response, MAX_RESOURCE)),
       };
     }
     const chunks: Uint8Array[] = [];
-    for await (const chunk of bodyOf(response, MAX_RESOURCE))
+    for await (const chunk of this._observed(
+      id,
+      bodyOf(response, MAX_RESOURCE),
+    )) {
       chunks.push(chunk);
+    }
     return { ...answer, bytes: concat(chunks) };
   }
 
@@ -1380,6 +1653,7 @@ export class HtmlNetwork {
       headers: Record<string, string>;
       limit: number;
       page: string;
+      id: number;
     },
   ): Promise<Answer> {
     try {
@@ -1398,11 +1672,14 @@ export class HtmlNetwork {
       headers: Record<string, string>;
       limit: number;
       page: string;
+      id: number;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
+    const id = options.id;
     try {
       const requestTime = Date.now();
+      this._sent(id);
       // a page's subresource carries its cookies, as a browser's `no-cors`
       // request does (credentials mode `include`)
       const response = await this._exchange(
@@ -1417,6 +1694,7 @@ export class HtmlNetwork {
         },
       );
       const responseTime = Date.now();
+      this._responded(id, response, url);
       stall.progress();
       const { type, charset } = contentType(
         response.headers.get('content-type'),
@@ -1425,7 +1703,9 @@ export class HtmlNetwork {
       for await (const chunk of bodyOf(response, options.limit)) {
         stall.progress();
         chunks.push(chunk);
+        if (id) this._tell({ type: 'data', id, chunk, time: Date.now() });
       }
+      if (id) this._tell({ type: 'end', id, time: Date.now() });
       return {
         fetched: {
           url: response.url || url,

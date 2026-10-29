@@ -1,7 +1,7 @@
 # Developer tools for the example browser
 
-The example browser (`examples/browser/`) has developer tools: an Elements
-panel and a Console, docked under a tab's page. They are made of react-x11's
+The example browser (`examples/browser/`) has developer tools: Elements,
+Console, Network and Storage panels, docked beside a tab's page. They are made of react-x11's
 widgets and this package's components, with no HTML drawn by `<Html>`.
 They have two jobs. One is to show where `<Html>` gets a page wrong, from
 inside the page. The other is to use the components here in an app the
@@ -35,22 +35,54 @@ shaped it, what using it found, and what comes next.
   margin, border, padding and content over the page, with a caption. The
   picker does the same for the element under the pointer, and a press
   chooses it without the page hearing the press. Beside the tree is a
-  sidebar with three tabs, which moves under the tree when the panel is
+  sidebar with four tabs, which moves under the tree when the panel is
   narrower than 620 pixels, as it is docked at a side. **Attributes**,
   first, lists the element's attributes: a click on a value edits it in
   place, a row shows copy and remove icons while the pointer is on it, and
   a row at the end adds one, its name and then its value completed. Where
   the element's only child is text, the text is under them in a field,
-  applied when the field lets the focus go or on Ctrl+Enter. **Styles** shows the `style` attribute and the
-  computed style as a filterable `<Table>`, with a swatch beside each
-  colour. **Layout** shows the box model diagram, the element's rect and
-  offset, and the layout properties that apply to it.
+  applied when the field lets the focus go or on Ctrl+Enter. **Styles**
+  starts with the element's own style, edited: each declaration a row
+  with a box that switches it off and on — kept in the attribute as a
+  comment while it is off — its name and value edited in place, a value of
+  a few keywords a drop-down, and a value that is hard to write by hand
+  given an editor under its row: a shadow's offsets, blur, spread, colour
+  and inset; `flex`'s grow, shrink and basis; grid tracks, with a strip
+  that draws their shares; a border's width, style and colour; a
+  background's colour, image, position, size and repeat; and a colour
+  picker for any colour. Under it are the rules that match the element,
+  in the order they win, each declaration that loses to another struck
+  through, with each rule's media, specificity and whether it is the user
+  agent's. **Computed** is the computed style as a filterable `<Table>`,
+  with a swatch beside each colour. **Layout** shows the box model
+  diagram, the element's rect and offset, and the layout properties that
+  apply to it.
 - **Console.** It shows what the tab's pages logged, kept from the start
   of the tab's process, so tools opened later still show it. Repeated
   messages fold into one with a count. The prompt is a `<CodeEditor>` with
   JavaScript highlighting. Enter runs a line and Shift+Enter adds a new
   one. Up and Down step through the history. Input and results are
-  highlighted with the same tokenizer as the prompt.
+  highlighted with the same tokenizer as the prompt. A result that is an
+  object or an array is a tree that opens a level at a time, each level
+  read from the page's realm as it opens, a getter left unread. A line
+  shows a copy icon while the pointer is on it.
+- **Network.** Every request the tab's network makes while the tools are
+  open — a document, a stylesheet, a script, an image, a font, a page's
+  fetch — in a `<Table>` with its status, type, size, time and a
+  waterfall, filtered by its address or its type. A request chosen opens
+  a pane beside the table: **Headers**, **Payload** with the query and the
+  body sent, **Preview**, which draws an image, an SVG, JSON as a tree and
+  an HTML response in an `<Html>` of its own with nothing it asks for
+  fetched and no script run, **Response** as text, and **Timing**: the
+  wait in the network's queue, the wait for the server, and the download.
+  A request the cache answered says which cache.
+- **Storage.** The page origin's local storage, session storage,
+  IndexedDB databases and their stores, and cookies, in a tree. What the
+  one chosen holds is a table, and the entry chosen is under it: a value
+  of local or session storage edited in place, JSON drawn as a tree, an
+  IndexedDB record decoded from the realm's encoding into the value it
+  was. An entry is deleted, and a store or the site's cookies cleared,
+  from the toolbar.
 
 ## The decisions
 
@@ -124,6 +156,29 @@ only what a selector testing it reaches is styled again. A page's own
 not run; making the edit through the page's realm would, and is a step for
 when the tools can name an element to it.
 
+**The network tells, the tools keep.** `HtmlNetwork.observe` reports each
+request from the network itself, not from the transport, because only the
+network knows what a request is for and whether its cache answered it.
+The tab's log subscribes while the tools are open, as a browser's tools
+record only then, and keeps the bodies only so far: eight megabytes a
+body, sixty-four in all, the oldest let go first. It tells the panel at
+most ten times a second, since a busy page reports hundreds of chunks a
+second.
+
+**What the console came to stays in the page.** A result is described
+across the bridge as a type, a line and an id, and the page's realm keeps
+the object under the id, the newest five hundred, until the console is
+cleared. Opening a level of the tree asks the realm for that level alone,
+so nothing of the page's ever reaches the host, and a getter is never run
+behind the reader's back.
+
+**The matched rules are listed by `<Html>`, and which declaration loses
+is worked out here.** The cascade knows the rules that match and their
+order; which declaration a property's value came from would need the
+cascade to record it as it applies them, so the tools work it out from
+the order with a table of the shorthands' longhands. A shorthand the
+table does not have is taken as its own longhand.
+
 **The Develop menu owns its chords.** A `MenuBar` binds its items'
 shortcuts, and on macOS the system menu bar also runs them itself. So the
 window's `onKeyDown` skips these commands (`DEVELOP` in `keys.ts`), or
@@ -152,23 +207,25 @@ document is.
   callback shows `ScriptEngine.call (/Users/…/src/html/scripts/engine.ts…)`.
   The console cuts its own stacks, but a page's stacks are not cut. That
   belongs to the engine, not to the tools.
-- **There are no matched rules.** The handle answers a computed style but
-  not the rules that produced it, so Styles cannot show a browser's
-  cascade view: which rule set what, and what it overrode. The cascade
-  already has the matching rules for each element, so a
-  `handle.matchedRules(el)` is the seam to add.
+- **`<text>` draws no line through.** Core's text has no decorations, so
+  a declaration that loses is struck through with a `<richtext>` run's
+  `strike`, the one place this package draws one.
+- **A rule at a shadow tree's edge is not listed.** `:host` and
+  `::slotted()` rules are kept apart from the indexes under ids of their
+  own, so `matchedRules` leaves them out rather than risk naming another
+  rule.
 
 ## Next
 
-- A network log: the tab's `HtmlNetwork` already logs each request and
-  its outcome (`BROWSER_DEBUG`). As a panel it needs a store like the
-  console's, fed from the network's `log` seam.
-- Storage: the profile's cookies, `localStorage`, `sessionStorage` and
-  IndexedDB, read from the database every tab shares
-  (`examples/browser/profile.ts`).
-- Matched rules in Styles, through the seam above, and editing a value in
-  place through `refresh(changes)`.
+- `console.log`'s objects as trees: the page's `log` seam hands over a
+  line of text, and would have to hand over values the way `evaluate` does.
+- Inherited styles in Styles, as a browser lists the rules of the
+  element's ancestors that set an inherited property.
+- Editing a matched rule's declarations, which means writing the page's
+  style sheet rather than an attribute.
 - Live DOM updates: a change notification from `<Html>` would replace the
   once-a-second read.
-- The tools in a window of their own. That needs the remote protocol
+- Request headers as sent, the cookie included, from inside the network's
+  redirect loop.
+- The tools in a window of their own, which needs the remote protocol
   described above.

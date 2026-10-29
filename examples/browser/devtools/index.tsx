@@ -27,6 +27,10 @@ import {
 } from '../../../src/tabs/index.js';
 import type { HtmlHandle } from '../../../src/html/index.js';
 import { ConsolePanel } from './console.js';
+import { NetworkPanel } from './network.js';
+import { StoragePanel } from './storage.js';
+import type { NetworkLog } from './network-log.js';
+import type { CookieJar, HtmlStorage } from '../../../src/html/index.js';
 import { ElementsPanel, PANEL_CONTENT } from './elements.js';
 import { DOCK_SIDES, useStore } from './model.js';
 import type {
@@ -45,6 +49,13 @@ export interface DevToolsProps {
   docKey: number;
   inspection: Inspection;
   log: ConsoleLog;
+  /** What the tab's network did while the tools were open. */
+  network: NetworkLog;
+  /** The address of the document shown, and where its origin's cookies and
+   *  storage are kept — none where the tab has no profile. */
+  url: string;
+  cookies: CookieJar;
+  storage: HtmlStorage | null;
   /** The panel the browser asked for last, and a count of its asks: each
    *  new one shows that panel. */
   panel: DevtoolsPanel;
@@ -60,6 +71,10 @@ export function DevTools({
   docKey,
   inspection,
   log,
+  network,
+  url,
+  cookies,
+  storage,
   panel,
   ask,
   dock,
@@ -103,6 +118,8 @@ export function DevTools({
         </Button>
         <TabsTrigger value="elements">Elements</TabsTrigger>
         <TabsTrigger value="console">Console</TabsTrigger>
+        <TabsTrigger value="network">Network</TabsTrigger>
+        <TabsTrigger value="storage">Storage</TabsTrigger>
         <box style={{ flexGrow: 1 }} />
         <DockSideControl side={dock} onChange={onDock} />
         <Button
@@ -128,6 +145,17 @@ export function DevTools({
           log={log}
           shown={tab === 'console'}
           focusSeq={panel === 'console' ? ask : 0}
+        />
+      </TabsContent>
+      <TabsContent value="network" style={PANEL_CONTENT}>
+        <NetworkPanel log={network} />
+      </TabsContent>
+      <TabsContent value="storage" style={PANEL_CONTENT}>
+        <StoragePanel
+          url={url}
+          cookies={cookies}
+          storage={storage}
+          shown={tab === 'storage'}
         />
       </TabsContent>
     </Tabs>

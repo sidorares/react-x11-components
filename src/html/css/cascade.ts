@@ -210,6 +210,41 @@ interface Candidate {
   only: number;
 }
 
+/** A rule that matches an element, as `Cascade.matchedRules` lists it. */
+export interface MatchedRule {
+  /** As written, or null for the element's own `style` and for HTML's
+   *  presentational hints. */
+  selector: string | null;
+  origin: 'inline' | 'author' | 'presentation' | 'user-agent';
+  /** Its ids, classes and types. */
+  specificity: [number, number, number];
+  /** The media it is under, in words, or null for none. */
+  media: string | null;
+  declarations: { property: string; value: string; important: boolean }[];
+}
+
+/** A rule's media, as a developer's tools print them: each block's
+ *  conditions joined by `and`, the blocks by `and`, a block's list by
+ *  `,`. What a condition does not keep in words is said as `(…)`. */
+function mediaText(media: readonly (readonly MediaCondition[])[]): string {
+  const one = (c: MediaCondition): string => {
+    const parts: string[] = [];
+    if (c.min !== undefined) parts.push(`(min-width: ${c.min}px)`);
+    if (c.max !== undefined) parts.push(`(max-width: ${c.max}px)`);
+    if (c.minHeight !== undefined) parts.push(`(min-height: ${c.minHeight}px)`);
+    if (c.maxHeight !== undefined) parts.push(`(max-height: ${c.maxHeight}px)`);
+    if (c.minResolution !== undefined)
+      parts.push(`(min-resolution: ${c.minResolution}dppx)`);
+    if (c.maxResolution !== undefined)
+      parts.push(`(max-resolution: ${c.maxResolution}dppx)`);
+    if (c.scheme) parts.push(`(prefers-color-scheme: ${c.scheme})`);
+    if (c.motion) parts.push(`(prefers-reduced-motion: ${c.motion})`);
+    if (c.scripting) parts.push(`(scripting: ${c.scripting})`);
+    return parts.join(' and ') || '(…)';
+  };
+  return media.map((block) => block.map(one).join(', ')).join(' and ');
+}
+
 /** What `css-select` is handed. Its `Adapter` is generic over the node type
  *  and this only ever passes domhandler's, so the shape is spelled out
  *  rather than threaded through two type parameters at every call. */
@@ -3495,6 +3530,8 @@ export class Cascade {
   private _shapes = new RuleIndex();
   private _shapeNeeds: ShapeNeeds | null = null;
   private _adapter: CssSelectAdapter;
+  /** The rules of the indexes by id, for `matchedRules`, made once asked. */
+  private _rulesById: Map<number, IndexedRule> | null = null;
   /**
    * The tree a `<use>`'s copy is in, for `_copyAdapter`: the element it is
    * a copy of, which is its top (`ShapeStyles.used`). A copy is its own
@@ -4721,6 +4758,92 @@ export class Cascade {
       this._subjects.set(key, match);
     }
     return match;
+  }
+
+  /**
+   * The rules that match `el`, as a developer's tools list them: the
+   * element's own `style` first, then the rules of its tree in the order
+   * they win — the author's before the user agent's, a later layer before
+   * an earlier, the more specific first and, of two alike, the later — and
+   * HTML's presentational hints, each with its declarations as written and
+   * whether it is under media. Under the media as they hold now, and with
+   * the pointer and the focus where they are (`HtmlHandle.matchedRules`).
+   * Which declaration wins a property is the reader's to work out from the
+   * order: `!important` turns it round, as it does in the cascade.
+   */
+  matchedRules(el: Element): MatchedRule[] {
+    // the rules at a shadow tree's edge — `:host`, `::slotted()` — are
+    // kept apart from the indexes, under ids of their own, and not listed
+    const ids: number[] = [];
+    this._matchInto(this._index, el, null, ids);
+    // made again where the index has grown since
+    let byId = this._rulesById;
+    if (!byId || byId.size !== this._index.size) {
+      byId = new Map();
+      for (const indexed of this._index.all()) byId.set(indexed.id, indexed);
+      this._rulesById = byId;
+    }
+    const seen = new Set<number>();
+    const rules: StyleRule[] = [];
+    for (const id of ids) {
+      const indexed = byId.get(id);
+      if (!indexed || seen.has(id)) continue;
+      seen.add(id);
+      rules.push(indexed.rule);
+    }
+    rules.sort(
+      (a, b) =>
+        Number(a.order < 0) - Number(b.order < 0) ||
+        compareLayers(b.layer, a.layer) ||
+        b.specificity - a.specificity ||
+        b.order - a.order,
+    );
+    const written = (declarations: readonly Declaration[]) =>
+      declarations
+        .filter((d) => !d.computed)
+        .map((d) => ({
+          property: d.prop,
+          value: d.value,
+          important: d.important,
+        }));
+    const out: MatchedRule[] = [];
+    const inline = attr(el, 'style');
+    if (inline) {
+      out.push({
+        selector: null,
+        origin: 'inline',
+        specificity: [1, 0, 0],
+        media: null,
+        declarations: written(parseDeclarations(inline)),
+      });
+    }
+    for (const rule of rules) {
+      const spec = rule.specificity;
+      out.push({
+        selector: rule.selector,
+        origin: rule.order < 0 ? 'user-agent' : 'author',
+        specificity: [
+          Math.floor(spec / 1_000_000),
+          Math.floor(spec / 1_000) % 1_000,
+          spec % 1_000,
+        ],
+        media: rule.media ? mediaText(rule.media) : null,
+        declarations: written(rule.declarations),
+      });
+    }
+    const hints = presentationHints(el, this.dimensionSource);
+    if (hints.length) {
+      // above the user agent's rules, as the cascade has them
+      const ua = out.findIndex((r) => r.origin === 'user-agent');
+      out.splice(ua < 0 ? out.length : ua, 0, {
+        selector: null,
+        origin: 'presentation',
+        specificity: [0, 0, 0],
+        media: null,
+        declarations: written(hints),
+      });
+    }
+    return out;
   }
 
   /**
