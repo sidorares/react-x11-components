@@ -11,6 +11,7 @@ export { glsl } from './languages/glsl.js';
 export { javascript } from './languages/javascript.js';
 export type { JavascriptOptions } from './languages/javascript.js';
 export { json } from './languages/json.js';
+export { css } from './languages/css.js';
 export { shell } from './languages/shell.js';
 export { sql } from './languages/sql.js';
 export type { SqlOptions } from './languages/sql.js';

@@ -63,6 +63,7 @@ shell();
 glsl();
 javascript(options?); // JavascriptOptions — { typescript: true } for TS
 json();
+css(); // nesting and custom properties included
 ```
 
 ## Writing one

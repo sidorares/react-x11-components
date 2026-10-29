@@ -1,7 +1,8 @@
 # Developer tools for the example browser
 
 The example browser (`examples/browser/`) has developer tools: Elements,
-Console, Network and Storage panels, docked beside a tab's page. They are made of react-x11's
+Console, Sources, Network and Storage panels, docked beside a tab's
+page. They are made of react-x11's
 widgets and this package's components, with no HTML drawn by `<Html>`.
 They have two jobs. One is to show where `<Html>` gets a page wrong, from
 inside the page. The other is to use the components here in an app the
@@ -66,6 +67,14 @@ shaped it, what using it found, and what comes next.
   object or an array is a tree that opens a level at a time, each level
   read from the page's realm as it opens, a getter left unread. A line
   shows a copy icon while the pointer is on it.
+- **Sources.** The page's scripts and style sheets in a tree by where
+  they came from: an origin, its folders, and the page's own file, which
+  holds what is written in it as `<script>` and `<style>` elements, each
+  numbered in the order the page has it. A file chosen is shown read-only
+  in a `<CodeEditor>`, highlighted as JavaScript or as CSS, with its line
+  numbers. A bar over it gives its address, its lines and its size, and a
+  `{ }` button that sets it out a line at a time, on by itself where a
+  line of the file is longer than 400 characters.
 - **Network.** Every request the tab's network makes while the tools are
   open — a document, a stylesheet, a script, an image, a font, a page's
   fetch — in a `<Table>` with its status, type, size, time and a
@@ -185,6 +194,31 @@ window's `onKeyDown` skips these commands (`DEVELOP` in `keys.ts`), or
 they would run twice. The page still relays them on X11, since a key sent
 straight to the page's window never reaches the bar's binding.
 
+**A source is read from the tab's network, not fetched again.** The
+network keeps what a page loaded, so the panel asks it for the file with
+the page's address, and the cache answers; the server hears of it only
+where the cache let the file go. The read is a request like any other,
+so it is in the Network panel, answered from memory. What is written in
+the page is the element's text as the document has it now, a script's
+change to it included, which is why the panel reads it again each second
+with the rest. The blank lines around it, and the indentation it has from
+where it sits in the markup, are left out.
+
+**Setting a minified file out is a formatter, not a parser.** It breaks
+lines after `{`, `;` and `}`, indents by the braces, and keeps a string,
+a template, a comment and a regular expression whole, telling a regular
+expression from a division by what comes before it. A line the source
+already broke stays broken, so a file that is set out already comes back
+as it was. A source map is not read.
+
+**CSS is a language of `code-language`'s.** No `@lezer/css` is
+installed, so a style sheet would have had nothing to be highlighted
+with. The stream mode follows where a line is — in a selector, in a
+block's declarations, or in a value after its colon — and reads a run in
+a block that reaches a `{` before a `;` as a nested rule's selector, as
+CSS Nesting's parser does. It is a built-in like `javascript()`, so
+`<Code>`, `<CodeEditor>` and `<Markdown>`'s fences have it too.
+
 **The panels read the document again once a second while they show.**
 Nothing tells the host that a page's script changed the DOM. Each second,
 the tree reads its open branches again and the sidebar reads the element
@@ -204,9 +238,8 @@ document is.
   runs a timer, a listener or a script through host frames, and V8 puts
   those frames, with absolute paths on the machine, into the stack of any
   error the page creates there. `new Error().stack` in a `setTimeout`
-  callback shows `ScriptEngine.call (/Users/…/src/html/scripts/engine.ts…)`.
-  The console cuts its own stacks, but a page's stacks are not cut. That
-  belongs to the engine, not to the tools.
+  callback showed `ScriptEngine.call (/Users/…/src/html/scripts/engine.ts…)`.
+  The engine now leaves its own frames out of a page's stacks (#1117).
 - **`<text>` draws no line through.** Core's text has no decorations, so
   a declaration that loses is struck through with a `<richtext>` run's
   `strike`, the one place this package draws one.
@@ -227,5 +260,8 @@ document is.
   once-a-second read.
 - Request headers as sent, the cookie included, from inside the network's
   redirect loop.
+- Source maps in Sources, and a search across the files.
+- Breakpoints, which need the engine to stop a page's script where it
+  runs, through `node:inspector` or an instrumented copy of the source.
 - The tools in a window of their own, which needs the remote protocol
   described above.

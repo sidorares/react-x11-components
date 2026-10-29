@@ -9,6 +9,7 @@ import {
   glsl,
   javascript,
   json,
+  css,
   lezerLanguage,
   lineModeLanguage,
   rankCompletions,
@@ -233,6 +234,44 @@ test('json: keys vs values', () => {
   assert.equal(typeAt(t, 0, 18), 'number');
   assert.equal(typeAt(t, 0, 22), 'bool');
   assert.equal(typeAt(t, 0, 28), 'atom');
+});
+
+// --- css -------------------------------------------------------------------
+
+test('css: selectors, declarations, values and at-rules', () => {
+  const t = tokenize(
+    css(),
+    [
+      '@media (min-width: 600px) {',
+      '  nav a.link:hover, #main > p { color: #fff !important; --gap: 4px }',
+      '}',
+      '.card { padding: calc(1rem + 2px); & .title { font-weight: 600 } }',
+      '/* a comment',
+      '   over two lines */ b { content: "}" }',
+    ].join('\n'),
+  );
+  assert.equal(typeAt(t, 0, 0), 'keyword'); // @media
+  assert.equal(typeAt(t, 0, 8), 'propertyName'); // min-width, in the prelude
+  assert.equal(typeAt(t, 0, 19), 'number'); // 600px
+  assert.equal(typeAt(t, 1, 2), 'typeName'); // nav
+  assert.equal(typeAt(t, 1, 7), 'className'); // .link
+  assert.equal(typeAt(t, 1, 13), 'meta'); // :hover
+  assert.equal(typeAt(t, 1, 21), 'atom'); // #main
+  assert.equal(typeAt(t, 1, 33), 'propertyName'); // color
+  assert.equal(typeAt(t, 1, 40), 'number'); // #fff
+  assert.equal(typeAt(t, 1, 45), 'keyword'); // !important
+  assert.equal(typeAt(t, 1, 57), 'variableName'); // --gap
+  assert.equal(typeAt(t, 3, 9), 'propertyName'); // padding
+  assert.equal(typeAt(t, 3, 18), 'function'); // calc
+  // a nested rule's selector in a block is a selector, not a declaration
+  assert.equal(typeAt(t, 3, 35), 'keyword'); // &
+  assert.equal(typeAt(t, 3, 39), 'className'); // .title
+  assert.equal(typeAt(t, 3, 48), 'propertyName'); // font-weight
+  // a comment goes on across a line, and a brace in a string is no block
+  assert.equal(typeAt(t, 5, 3), 'comment');
+  assert.equal(typeAt(t, 5, 21), 'typeName'); // b
+  assert.equal(typeAt(t, 5, 35), 'string');
+  assert.strictEqual(css(), css());
 });
 
 // --- tabs ------------------------------------------------------------------

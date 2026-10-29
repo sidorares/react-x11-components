@@ -28,6 +28,8 @@ import {
 import type { HtmlHandle } from '../../../src/html/index.js';
 import { ConsolePanel } from './console.js';
 import { NetworkPanel } from './network.js';
+import { SourcesPanel } from './sources.js';
+import type { SourceLoader } from './sources.js';
 import { StoragePanel } from './storage.js';
 import type { NetworkLog } from './network-log.js';
 import type { CookieJar, HtmlStorage } from '../../../src/html/index.js';
@@ -49,8 +51,10 @@ export interface DevToolsProps {
   docKey: number;
   inspection: Inspection;
   log: ConsoleLog;
-  /** What the tab's network did while the tools were open. */
+  /** What the tab's network did while the tools were open, and a file the
+   *  page loaded, read again from it. */
   network: NetworkLog;
+  loadSource: SourceLoader;
   /** The address of the document shown, and where its origin's cookies and
    *  storage are kept — none where the tab has no profile. */
   url: string;
@@ -72,6 +76,7 @@ export function DevTools({
   inspection,
   log,
   network,
+  loadSource,
   url,
   cookies,
   storage,
@@ -118,6 +123,7 @@ export function DevTools({
         </Button>
         <TabsTrigger value="elements">Elements</TabsTrigger>
         <TabsTrigger value="console">Console</TabsTrigger>
+        <TabsTrigger value="sources">Sources</TabsTrigger>
         <TabsTrigger value="network">Network</TabsTrigger>
         <TabsTrigger value="storage">Storage</TabsTrigger>
         <box style={{ flexGrow: 1 }} />
@@ -145,6 +151,14 @@ export function DevTools({
           log={log}
           shown={tab === 'console'}
           focusSeq={panel === 'console' ? ask : 0}
+        />
+      </TabsContent>
+      <TabsContent value="sources" style={PANEL_CONTENT}>
+        <SourcesPanel
+          handle={handle}
+          docKey={docKey}
+          load={loadSource}
+          shown={tab === 'sources'}
         />
       </TabsContent>
       <TabsContent value="network" style={PANEL_CONTENT}>

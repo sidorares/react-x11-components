@@ -7,6 +7,7 @@ import type { Language } from './types.js';
 import { glsl } from './languages/glsl.js';
 import { javascript } from './languages/javascript.js';
 import { json } from './languages/json.js';
+import { css } from './languages/css.js';
 import { shell } from './languages/shell.js';
 import { sql } from './languages/sql.js';
 
@@ -33,6 +34,8 @@ export function languageForTag(tag: string): Language | null {
     case 'json':
     case 'jsonc':
       return json();
+    case 'css':
+      return css();
     case 'sh':
     case 'bash':
     case 'zsh':

@@ -17,7 +17,8 @@ import type {
 } from '../../../src/html/index.js';
 
 /** The panels the tools open on. */
-export type DevtoolsPanel = 'elements' | 'console' | 'network' | 'storage';
+export type DevtoolsPanel =
+  'elements' | 'console' | 'sources' | 'network' | 'storage';
 
 /** The side of the page the tools are docked on. */
 export type DockSide = 'bottom' | 'right' | 'left';
