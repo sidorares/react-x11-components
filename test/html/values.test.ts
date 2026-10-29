@@ -1199,6 +1199,53 @@ test('attr() reads an attribute into any property: as a string, a number with a 
   assert.match(drawnText(el), /\(hi\)/, 'a string in content');
 });
 
+test("env() is the user agent's variable, its fallback where there is none, and invalid at computed-value time with neither", async () => {
+  // CSS Environment Variables 1: a substitution as var() is, of what the
+  // user agent defines — a safe area's inset, nothing on a desktop's
+  // screen. Apple's header pads its content by `max(22px, var(--sk, env(
+  // safe-area-inset-left)))`, and the whole declaration was dropped
+  const { node } = await render(
+    '<body style="margin:0"><style>div{height:5px}' +
+      ' #pad{padding-left:max(22px, env(safe-area-inset-left))}' +
+      ' #apple{--inset:var(--sk-inset, env(safe-area-inset-left));padding-left:max(22px, var(--inset))}' +
+      ' #zero{width:30px;width:env(safe-area-inset-left, 50px)}' +
+      ' #fallback{width:env(unknown, 30px)}' +
+      ' #nested{width:env(unknown, env(other, var(--w)));--w:31px}' +
+      ' #indexed{width:env(safe-area-inset-left 0, 12px)}' +
+      ' #custom{--w:env(test, 100px);width:var(--w)}' +
+      ' #none{width:40px;width:env(unknown)}' +
+      ' #bad{width:15px;width:env(10px)}' +
+      ' #bad2{width:16px;width:env(test -1, 5px)}' +
+      ' #invalid{--v:env(nonexistent)}' +
+      '</style><div id="pad"></div><div id="apple"></div><div id="zero"></div>' +
+      '<div id="fallback"></div><div id="nested"></div><div id="indexed"></div>' +
+      '<div id="custom"></div><div id="none"></div><div id="bad"></div>' +
+      '<div id="bad2"></div><div id="invalid"></div></body>',
+  );
+  const el = view(node);
+  const style = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.strictEqual(style('pad')['padding-left'], '22px');
+  assert.strictEqual(style('apple')['padding-left'], '22px', "Apple's header");
+  assert.strictEqual(boxOf(el, 'zero').width, 0, 'a safe area is 0px');
+  assert.strictEqual(boxOf(el, 'fallback').width, 30, 'no such variable');
+  assert.strictEqual(boxOf(el, 'nested').width, 31, 'a fallback substituted');
+  assert.strictEqual(boxOf(el, 'indexed').width, 12, 'indices it has none of');
+  assert.strictEqual(boxOf(el, 'custom').width, 100, 'in a custom property');
+  assert.strictEqual(boxOf(el, 'none').width, 400, 'neither: unset');
+  assert.strictEqual(boxOf(el, 'bad').width, 15, 'no name: never parsed');
+  assert.strictEqual(boxOf(el, 'bad2').width, 16, 'a negative index');
+  assert.strictEqual(style('invalid')['--v'] ?? '', '', 'guaranteed-invalid');
+  // what WPT's css-env/at-supports and supports-script ask: a value with an
+  // env() in it is not parsed until it is substituted, and is supported
+  // where its env()s are well formed (null, which an @supports enters)
+  assert.notStrictEqual(supportsCondition('(color: env(test))'), false);
+  assert.notStrictEqual(supportsCondition('(top: env(test 0 1, 1px))'), false);
+  assert.notStrictEqual(supportsCondition('(top: env(test,))'), false);
+  assert.strictEqual(supportsCondition('(top: env())'), false);
+  assert.strictEqual(supportsCondition('(top: env(test1 test2))'), false);
+  assert.strictEqual(supportsCondition('(top: env(test 0.1))'), false);
+});
+
 test("a typed attr()'s units are lowercase, and an attr() in a container's style() query reads the container", async () => {
   // a value parsed as a type is serialized as it was parsed: `3EM` is
   // `3em`; and what a `style()` feature compares with is the container's,

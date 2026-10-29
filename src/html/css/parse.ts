@@ -3251,6 +3251,10 @@ export function supportsCondition(prelude: string): boolean | null {
   const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
   if (!declaration) return null;
   const property = declaration[1].toLowerCase();
+  // a value read only once it is substituted is not parsed until then,
+  // and a declaration whose `var()`s and `env()`s are not well formed is
+  // never one (CSS Conditional 3, 6.1)
+  if (hasVar(declaration[2]) && !validVars(declaration[2])) return false;
   // a property whose grammar is read answers by it
   const specified = specifiedValue(property, declaration[2].trim());
   if (specified !== undefined) return specified !== null;

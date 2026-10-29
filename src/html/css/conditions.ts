@@ -8,6 +8,7 @@
 // unknown too, and an unknown condition holds nowhere.
 
 import { parseMath, parseMathNumber } from './calc.js';
+import { environmentValue } from './environment.js';
 
 /** True, false, or unknown: a test nothing here can answer. */
 export type Kleene = boolean | undefined;
@@ -383,13 +384,13 @@ function typedOf(
   return px === null ? null : { type: 'length', n: px };
 }
 
-/** `env()`'s value where a range compares one: a safe area's inset is
- *  none on a screen with no notch, and any other is its fallback. */
+/** `env()`'s value where a range compares one: the user agent's variable
+ *  (`environmentValue`), and any other is its fallback. */
 function substituteEnv(text: string): string {
   return text.replace(
     /env\(\s*([\w-]+)\s*(?:,\s*([^)]*))?\)/gi,
     (all, name: string, fallback?: string) =>
-      /^safe-area-(?:max-)?inset-/i.test(name) ? '0px' : (fallback ?? all),
+      environmentValue(name) ?? fallback ?? all,
   );
 }
 
