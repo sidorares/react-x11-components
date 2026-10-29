@@ -4727,6 +4727,49 @@ test('a frame’s initial about:blank has no entries and tells no navigation, an
   );
 });
 
+test('a History method acts on the history it is called on, whichever window it was read from', async () => {
+  // YouTube binds a hidden about:blank frame's `history.replaceState`, or
+  // its prototype's, to `window.history`, for one no extension wrapped
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var i = document.createElement("iframe"); i.src = "about:blank";' +
+      'i.style.display = "none"; document.body.appendChild(i);' +
+      'var h = i.contentWindow.history, r = [];' +
+      'var replace = h.replaceState.bind(window.history);' +
+      'var push = Object.getPrototypeOf(h).pushState.bind(window.history);' +
+      'replace({ a: 1 }, "", "?themeRefresh=1");' +
+      'r.push(location.search, JSON.stringify(history.state), String(h.state), history.length);' +
+      'push({ a: 2 }, "", "#two"); r.push(location.hash, history.length, h.length);' +
+      'r.push(Object.getOwnPropertyNames(history).length, h instanceof History,' +
+      '  Object.prototype.toString.call(history));' +
+      'try { History.prototype.pushState.call({}, null, ""); } catch (e) { r.push(e.name); }' +
+      'try { new History(); } catch (e) { r.push(e.name); }' +
+      'try { h.replaceState(null, "", location.href); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      '?themeRefresh=1',
+      '{"a":1}',
+      'null',
+      '1',
+      '#two',
+      '2',
+      '1',
+      // attributes and methods are the interface's, not the object's
+      '0',
+      'true',
+      '[object History]',
+      'TypeError',
+      'TypeError',
+      // the frame's own still has its own about:blank's URL
+      'SecurityError',
+    ].join('|'),
+  );
+});
+
 test('navigateerror says where a handler threw, pushState is no hash change, and a navigation started from navigateerror is aborted in turn', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
