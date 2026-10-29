@@ -595,6 +595,7 @@ export { glsl } from '../code-language/languages/glsl.js';
 export { javascript } from '../code-language/languages/javascript.js';
 export type { JavascriptOptions } from '../code-language/languages/javascript.js';
 export { json } from '../code-language/languages/json.js';
+export { css } from '../code-language/languages/css.js';
 export {
   keywordCompletionSource,
   rankCompletions,
