@@ -315,6 +315,65 @@ test('the handle asks the document whether it may be left: its beforeunload, and
   assert.equal(still.handle.beforeUnload(), true);
 });
 
+test('the handle runs what a console typed in the page, and hands back only what it came to, written out', async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  const page = await shown(
+    '<p id="out"></p><script>' +
+      'var greeting = "hi";' +
+      'document.getElementById("out").textContent = "ready";' +
+      '</script>',
+    { scripts: {} },
+  );
+  await until(page, 'out', (s) => s === 'ready');
+  // the page's own globals, and a string quoted as a console shows one
+  assert.deepEqual(page.handle.evaluate('greeting + "!"'), {
+    text: '"hi!"',
+    threw: false,
+  });
+  // `{ … }` typed alone is an object, not a block
+  assert.deepEqual(page.handle.evaluate('{ a: 1, b: [2, 3] }'), {
+    text: '{ a: 1, b: [2, 3] }',
+    threw: false,
+  });
+  // what it declares is the window's, for the next line to read
+  page.handle.evaluate('var counted = 41');
+  assert.deepEqual(page.handle.evaluate('counted + 1'), {
+    text: '42',
+    threw: false,
+  });
+  // an element is its tag, and what it changes is drawn
+  assert.deepEqual(
+    page.handle.evaluate(
+      'var p = document.getElementById("out"); p.textContent = "changed"; p',
+    ),
+    { text: '<p>', threw: false },
+  );
+  await until(page, 'out', (s) => s === 'changed');
+  // what it throws, and what does not parse, comes back as the error
+  const thrown = page.handle.evaluate('nope.at.all');
+  assert.equal(thrown?.threw, true);
+  assert.match(thrown!.text, /ReferenceError/);
+  // its stack stops at the line typed: the frames that ran it are the host's
+  assert.doesNotMatch(thrown!.text, /ScriptEngine|evalmachine|node:vm/);
+  // and a function of the page's it went through is still in it
+  page.handle.evaluate('function broken() { throw new TypeError("deep"); }');
+  const deep = page.handle.evaluate('broken()');
+  assert.match(deep!.text, /TypeError: deep\n\s+at broken/);
+  assert.doesNotMatch(deep!.text, /ScriptEngine|evalmachine|node:vm/);
+  const unparsed = page.handle.evaluate('1 +');
+  assert.equal(unparsed?.threw, true);
+  assert.match(unparsed!.text, /SyntaxError/);
+  // a page that replaced its own `eval` is still run as typed
+  page.handle.evaluate('window.eval = function () { return "fake"; }');
+  assert.deepEqual(page.handle.evaluate('6 * 7'), {
+    text: '42',
+    threw: false,
+  });
+  // and a document with no scripts has nothing to run it in
+  const still = await shown('<p>no scripts</p>');
+  assert.equal(still.handle.evaluate('1'), null);
+});
+
 test('workers are on unless they are turned off', async (t) => {
   if (!(await preloadHtmlScripts())) return t.skip();
   const page = await shown(

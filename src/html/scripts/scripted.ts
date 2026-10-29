@@ -246,6 +246,18 @@ export interface HtmlScripts {
 
 /** `<Html>`'s props as the element takes them: the public ones, and what
  *  `useScriptedHtml` adds that no application passes. */
+/**
+ * What a host's console got back for what it typed (`HtmlHandle.evaluate`):
+ * the value it came to, or what it threw, written out in the page's realm
+ * as its `console.log` writes a value — a string is quoted, an element is
+ * its tag.
+ */
+export interface ConsoleResult {
+  text: string;
+  /** It threw, and `text` is the error. */
+  threw: boolean;
+}
+
 export interface InternalHtmlProps extends HtmlProps {
   /** Mounted inside `<Html>`'s root, after the document: the frames the
    *  page lays out no box for (`FrameHolder`). */
@@ -262,6 +274,9 @@ export interface InternalHtmlProps extends HtmlProps {
   /** Whether the document may be left, as its scripts answer: what the
    *  handle's `beforeUnload` asks. */
   _unloadCheck?: () => boolean;
+  /** What a host's console typed, run in the document's realm: what the
+   *  handle's `evaluate` asks. */
+  _evaluate?: (code: string) => ConsoleResult | null;
   /** The parse waits at a script that blocks it, which the engine runs
    *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
    *  page's scripts. */
@@ -462,6 +477,11 @@ export function useScriptedHtml(
     () => scripts.runner?.()?.beforeUnload() ?? true,
     [scripts.runner],
   );
+  // and what a host's console typed, run there
+  const evaluate = useCallback(
+    (code: string) => scripts.runner?.()?.evaluate(code) ?? null,
+    [scripts.runner],
+  );
 
   // a link or a form whose target names one of the page's frames loads it
   // there; anything else is the application's, as it is with scripts off
@@ -589,6 +609,7 @@ export function useScriptedHtml(
     _onCssEvents: scripts.cssEvents,
     _onMediaEvent: scripts.mediaEvent,
     _unloadCheck: unloadCheck,
+    _evaluate: evaluate,
     _onParserBlocked: scripts._onParserBlocked,
     _frames:
       holderContext && engine

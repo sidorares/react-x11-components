@@ -654,6 +654,19 @@ export class ScriptRunner {
    * stays only where it asks to be confirmed, the page has been used, and
    * `promptToUnload` says to stay. True to leave it.
    */
+  /**
+   * Run what a host's console typed in the document's realm, as the page's
+   * own code at its global scope (`__console`): what it came to, or threw,
+   * as `console.log` writes it, so nothing of the page's crosses but the
+   * string. Null where the document runs nothing any more.
+   */
+  evaluate(code: string): { text: string; threw: boolean } | null {
+    if (this._disposed) return null;
+    const out = this.engine.call('__console', code);
+    if (typeof out !== 'string' || !out) return null;
+    return { text: out.slice(1), threw: out[0] === '!' };
+  }
+
   beforeUnload(): boolean {
     if (this._disposed) return true;
     if (this.engine.call('__beforeUnload', null) === 'stay') return false;

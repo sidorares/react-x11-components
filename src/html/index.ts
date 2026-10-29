@@ -84,7 +84,11 @@ import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
-import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
+import type {
+  ConsoleResult,
+  HtmlScripts,
+  InternalHtmlProps,
+} from './scripts/scripted.js';
 import type { HandleInternals } from './scripts/host.js';
 import type { MarginLength } from './paint.js';
 import { useParsedOnceLaidOut } from './parsed.js';
@@ -129,7 +133,11 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
-export type { HtmlScripts, ScriptViewport } from './scripts/scripted.js';
+export type {
+  ConsoleResult,
+  HtmlScripts,
+  ScriptViewport,
+} from './scripts/scripted.js';
 export type { FetchRequest, FetchResponse } from './scripts/host.js';
 export type { AbortSignalLike } from './scripts/platform.js';
 export { preloadHtmlScripts } from './scripts/hook.js';
@@ -782,6 +790,15 @@ export interface HtmlHandle {
    */
   beforeUnload(): boolean;
   /**
+   * Run what a console typed in the document's realm, as the page's own
+   * code at its global scope — `var`s and functions it declares are the
+   * window's — and answer what it came to, or threw, written out as the
+   * page's `console.log` writes a value. Only the string crosses: nothing
+   * of the page's is handed to the host. Null where the document runs no
+   * scripts (`scripts` off, or its engine not loaded yet).
+   */
+  evaluate(code: string): ConsoleResult | null;
+  /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
    * shows, whether a checkbox or a radio is checked. Null for what is no
@@ -993,12 +1010,16 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // they run (`_unloadCheck`)
   const unloadCheck = React.useRef(props._unloadCheck);
   unloadCheck.current = props._unloadCheck;
+  // and what its `evaluate` runs them with (`_evaluate`)
+  const evaluate = React.useRef(props._evaluate);
+  evaluate.current = props._evaluate;
   const viewRef = React.useCallback(
     (node: HtmlViewNode | null) => {
       viewNode.current = node;
       if (node) {
         node.interactive = interactive;
         node.unloadCheck = () => unloadCheck.current?.() ?? true;
+        node.evaluate = (code) => evaluate.current?.(code) ?? null;
       }
       if (typeof outerRef === 'function') outerRef(node);
       else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
@@ -1384,6 +1405,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
+      evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
       parserWrite: (script: Element, markup: string) =>
         nodeRef.current?.parserWrite(script, markup) ?? false,
       parserResume: (script: Element) => nodeRef.current?.parserResume(script),

@@ -27643,6 +27643,57 @@ export function installDom(
     return true;
   });
 
+  // what a host's console typed (`HtmlHandle.evaluate`), run as the page's
+  // own code at the global scope — the realm's indirect `eval`, taken
+  // before any page code could replace it — and what it came to, or threw,
+  // written out here as `console.log` writes a value, so that only a string
+  // crosses: `=` and the value, or `!` and the error. `{ a: 1 }` typed
+  // alone is an object, as a browser's console reads it, and not a block.
+  const realmEval: (code: string) => Any = G.eval;
+  const RealmSyntaxError = SyntaxError;
+  // what it threw, its stack cut where the line typed was run, as a
+  // browser's console cuts it: the frames past that are this facade's and
+  // the host's, which ran it, and so is any frame of the facade's above it
+  // — a DOM method that threw — none of them the page's. What `eval` ran
+  // is named as Chrome names it, `<anonymous>:1:1`.
+  const typedStack = (error: Any): string => {
+    const out: string[] = [];
+    for (const line of show(error).split('\n')) {
+      if (!/^\s+at /.test(line)) {
+        out.push(line);
+        continue;
+      }
+      const ran =
+        /^(\s+at )(?:(\S+) )?\(eval at .*, (<anonymous>:\d+:\d+)\)$/.exec(line);
+      if (ran) {
+        const [, at, name, where] = ran;
+        if (name === 'eval') {
+          out.push(`${at}${where}`);
+          break;
+        }
+        out.push(name ? `${at}${name} (${where})` : `${at}${where}`);
+      } else if (!/evalmachine\.|engine:|\(node:/.test(line)) out.push(line);
+    }
+    return out.join('\n');
+  };
+  entry('__console', () => {
+    const code = String(input() ?? '');
+    let value: Any;
+    try {
+      if (/^\s*\{[\s\S]*\}\s*$/.test(code)) {
+        try {
+          value = realmEval(`(${code}\n)`);
+        } catch (error) {
+          if (!(error instanceof RealmSyntaxError)) throw error;
+          value = realmEval(code);
+        }
+      } else value = realmEval(code);
+    } catch (error) {
+      return `!${typedStack(error)}`;
+    }
+    return `=${typeof value === 'string' ? JSON.stringify(value) : show(value)}`;
+  });
+
   // an event `<Html>` was told of, dispatched as the browser would, and
   // whether its default goes on
   /** The element the pointer is over, as its moves were told: what it
