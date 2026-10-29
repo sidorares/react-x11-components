@@ -921,13 +921,17 @@ metric(
     // A webmail page puts its popups at the end of its `<body>`, a flex
     // column, and takes them out again: each built the whole document. The
     // end of a flex box, whose children are each an item, and of a block,
-    // where its build noted what came before, is built as a stream's is.
-    for (const holder of ['flex', 'block']) {
+    // whose build noted what its wraps ran from, is built as a stream's is
+    // — Apple's `<body>` holds a line of text before its blocks, and every
+    // dialog its script put at the end built the whole page.
+    for (const holder of ['flex', 'block', 'wrapped']) {
+      const display = holder === 'flex' ? 'flex' : 'block';
       const { node, result } = await render(
         '<!doctype html><html><head><style>body { margin: 0;' +
-          ` font-size: 14px; display: ${holder}; flex-direction: column }` +
+          ` font-size: 14px; display: ${display}; flex-direction: column }` +
           '.pop { position: absolute; top: 0; left: 0; width: 20px }' +
-          `</style></head><body><main id="app"><p id="p">the page</p>` +
+          `</style></head><body>${holder === 'wrapped' ? '<span>skip</span> to it' : ''}` +
+          '<main id="app"><p id="p">the page</p>' +
           '<section id="s"><p>more of it</p></section></main>' +
           '<div id="cover">cover</div></body></html>',
         320,
@@ -1275,6 +1279,84 @@ metric(
         line < 0 && kept.length === whole.length,
         `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
       );
+    }
+  },
+);
+
+metric(
+  'a change before a list that makes its own counter builds only the subtree it reached, and one before what counts a counter of the document’s builds the whole, where a build of all new boxes puts it',
+  async (t) => {
+    // Apple's product pages hold a `<ul>` in every section, which makes a
+    // `list-item` counter, and end in footnotes, an `<ol>` whose numbers
+    // read one: a change in a section counted, a box after it read a
+    // counter, and every write of the page's script built all of it. The
+    // `<ol>` makes its own, which nothing before it changes; a counter the
+    // `<body>` makes is another matter.
+    const head =
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+      ' .doc { counter-reset: fig } .tick { counter-increment: fig }' +
+      ' .fig::before { counter-increment: fig; content: "Fig. " counter(fig) " " }' +
+      ' p { margin: 2px }</style></head>';
+    for (const [body, apart] of [
+      [
+        '<body><section id="s"><ul><li>one</li><li>two</li></ul>' +
+          '<p>a section</p></section><p>more</p>' +
+          '<ol><li>a note</li><li>another</li></ol></body>',
+        true,
+      ],
+      [
+        '<body class="doc"><section id="s"><p class="fig">first</p>' +
+          '<p>here</p></section><p class="fig">second</p></body>',
+        false,
+      ],
+    ] as const) {
+      const { node, result: rendered } = await render(
+        `${head}${body}</html>`,
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _subtreeBuild(...a: unknown[]): BoxTree | null;
+        _invalidate(stale: number): void;
+      };
+      const section = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === 's',
+      )!;
+      const built = t.mock.method(internals, '_subtreeBuild');
+      const first = section.children[0] as ChildNode;
+      // one that counts, and reads nothing it did not make
+      const p = createElement('p', { class: 'tick' }, [createText('put in')]);
+      DomUtils.prependChild(section as never, p as never);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: section,
+          addedNodes: [p],
+          removedNodes: [],
+          previousSibling: null,
+          nextSibling: first,
+        },
+      ]);
+      await act();
+      const result = built.mock.calls.at(-1)?.result;
+      built.mock.restore();
+      assert.strictEqual(
+        result !== null && result !== undefined,
+        apart,
+        `built ${result ? 'the subtree' : 'the whole document'}`,
+      );
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+      rendered.unmount();
     }
   },
 );
