@@ -2191,6 +2191,13 @@ old one was, with the document's text, every box's place in it, the
 lists and the styles spliced to say what a whole build says. A seed with
 no box, new or `display: none` before, is styled where it is and its
 style put in, and where it comes out drawn the whole document is built.
+A root whose element comes out as no block in the flow of its own — a
+caption a class makes absolute, a block turned inline — is placed by its
+parent's flow: the build gives up at every such root before it changes
+the tree, and starts again from the elements around them all
+(`SubtreeRoots.wider`), a few times over (`SUBTREE_WIDENINGS`). Apple's
+script makes each slide's caption of a gallery absolute at every step of a
+drag, and each built the whole document.
 The layout after it keeps a block an earlier layout laid out where
 nothing it was laid out from changed (`Laid`), moving it to where the
 flow puts it now, with the offsets the passes after the flow put on what
@@ -2388,7 +2395,11 @@ for every child put in a `<body>` with a wrap in it, which is Apple's. And
 styles go before what follows its holder** (`placed`): a script's tail may
 hold what it moved there from before, styled where it was, where a
 stream's held only what came. The subtree fuzz hands on where its
-children came and went half the time, and builds such tails.
+children came and went half the time, and builds such tails. The root
+element's end is built as a block's is, and the fuzz puts children after
+the `<body>` and takes them out: Apple's scripts put a probe of the
+viewport there at every step of a drag, and `TAILS_REFUSED` had named
+`html`, so each built the whole document.
 
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
@@ -4051,6 +4062,34 @@ built at every step, such a tree was laid out twice a step, once stopped
 and once whole. **Anything new that builds the boxes while the width moves
 says whether its tree may stop**, through `crossing` in `_update`, or a
 long page is laid out whole at every step of the drag.
+
+**A page that writes while the width is dragged is laid out and built as
+the step is.** A page's resize handlers write at every step and read back
+at once: Apple's set classes on a gallery's slides and put a probe of the
+viewport after the `<body>`. A layout at the width the drag is on, while
+the rest the step armed waits (`_stopAt`'s `again`), stops where the
+step's did, and arms no rest of its own, or a page writing at every frame
+would put off the layout at rest for good. A build of subtrees puts back
+what the drag set aside before it splices (`putBack` in `_subtreeBuild`),
+leaves what a restyle in place owed it owed (`_asideOwed`), and its tree
+stops where a breakpoint's does (`crossing`). And what a step restyles
+itself — what a breakpoint turns rules on or off for, the elements that
+read a `vw`, an image that shows another source — is the build's seeds
+(`seedWith`), so that only their subtrees are built. Each had laid out,
+and built, the whole of Apple's page: a drag of 80 steps over it in the
+harness went from 113 builds of the whole document to 10, and from 47 s of
+processor time to 27, and in a window on a Mac from 264 to 6, and from 87
+seconds to 14. Two things are load-bearing. **Anything new that
+builds the boxes for what a step changed hands its elements to
+`seedWith`**, or the step builds the whole document. And **every path of a
+restyle in place that passes what is set aside sets `_asideOwed`**, the
+one that restyles no box as much as the rest: a write that changed only
+the lengths of a box below the fold left it in its old style once the drag
+rested. `a page that writes while a window edge is dragged comes to rest…`
+in `test/html/subtree-build.test.ts` found that, and holds the rest to a
+restyle, a build and a layout of the whole document, over generated pages,
+writes and breakpoints; `DRAG_SEEDS` sweeps more of them, and `DRAG_FROM`
+starts at the one that failed.
 
 **A grid stops at a row, where its rows' sizes are their own.** A layout
 that stops keeps the rows of a grid whose last layout started below where

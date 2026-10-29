@@ -412,8 +412,10 @@ export function laidWhole(tree: BoxTree): boolean {
 /** Every out-of-flow box in a tree, found once (`escapes`). */
 const OUT_OF_FLOW = new WeakMap<BoxTree, Box[]>();
 
-/** Put back what the last layout of a tree set aside. */
-function putBack(tree: BoxTree): void {
+/** Put back what the last layout of a tree set aside: before the next
+ *  layout of it, or a build of some of its subtrees, which splices them
+ *  into the boxes' whole lists (`HtmlViewNode._subtreeBuild`). */
+export function putBack(tree: BoxTree): void {
   const aside = SET_ASIDE.get(tree);
   if (!aside) return;
   SET_ASIDE.delete(tree);

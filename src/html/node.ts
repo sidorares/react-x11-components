@@ -215,6 +215,7 @@ import type {
   BuildOptions,
   ForeignObject,
   SubtreeRoots,
+  SubtreesBuilt,
   LineBox,
   LineText,
   ReplacedKind,
@@ -235,6 +236,7 @@ import {
   noteMoving,
   placedMatrix,
   asideIn,
+  putBack,
   setAsideHere,
   setAsideIn,
   asideOf,
@@ -3196,18 +3198,37 @@ export class HtmlViewNode extends Node {
     // and the elements whose boxes it can make otherwise, where every change
     // said which — for as long as nothing below asks for more than they
     // did, which gives `restyleOnly` another set (`_subtreeBuild`)
-    const seeds = restyleOnly ? this._buildSeeds : null;
+    let seeds = restyleOnly ? this._buildSeeds : null;
     const tails = seeds ? this._buildTails : null;
     const parsed = !!seeds && this._buildParsed;
     this._buildSeeds = null;
     this._buildTails = null;
     this._buildParsed = false;
-    const seededWith = restyleOnly;
+    let seededWith = restyleOnly;
     // whether `restyleOnly` names only what a crossing or a change to the
     // tree reached, and whether a crossing is what restyles (`_stopAt`)
     let follow = restyleOnly !== null && this._restyleFollows;
     this._restyleFollows = false;
     let crossing = false;
+    /** What a crossing, a `vw` or an image's new source restyles, added to
+     *  what a change asked for, as `_sheetsAdded` adds what its rules
+     *  reach: each its own subtree's to build (`seeds`) where the change
+     *  named its own, or all there is to build where none asked. */
+    const seedWith = (reached: Set<Element>): void => {
+      if (this._stale < Stale.Boxes) {
+        this._stale = Stale.Boxes;
+        restyleOnly = seededWith = reached;
+        seeds = new Set(reached);
+      } else if (restyleOnly && seeds && restyleOnly === seededWith) {
+        for (const el of reached) {
+          restyleOnly.add(el);
+          seeds.add(el);
+        }
+      } else if (restyleOnly && reached.size) {
+        restyleOnly = new Set([...restyleOnly, ...reached]);
+      }
+      follow = true;
+    };
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
@@ -3244,14 +3265,10 @@ export class HtmlViewNode extends Node {
         restyleOnly = null;
       } else {
         this._mediaBand = this._cascade.mediaBand(target, viewport);
-        if (reached.size && this._stale < Stale.Boxes) {
-          this._stale = Stale.Boxes;
-          restyleOnly = reached;
-          follow = true;
-        } else if (reached.size && restyleOnly) {
-          restyleOnly = new Set([...restyleOnly, ...reached]);
-          follow = true;
-        }
+        // and only their boxes built again, as a change's are: what a
+        // breakpoint turns on lays out otherwise what it matches, and
+        // nothing a build makes of what is around them
+        if (reached.size) seedWith(reached);
       }
     }
 
@@ -3286,11 +3303,13 @@ export class HtmlViewNode extends Node {
       // (`_stopAt`): a stale layout is laid out whole
       relayout = this._laidOutWidth === target && !viewportMoved;
     } else if (chose && (chose.shown.length || chose.restyle.length)) {
-      if (this._stale < Stale.Boxes) {
-        this._stale = Stale.Boxes;
-        restyleOnly = new Set(chose.restyle);
-      } else if (restyleOnly) {
-        restyleOnly = new Set([...restyleOnly, ...chose.restyle]);
+      // each image's subtree built again, restyled where another
+      // `<source>` sizes it — and a set of what to restyle made again only
+      // where it adds to it: made again for nothing, a crossing's own
+      // subtrees were the whole document's
+      seedWith(new Set(chose.restyle));
+      if (seeds && restyleOnly === seededWith) {
+        for (const el of chose.shown) seeds.add(el);
       }
     }
     // A `vw` or a `vh` is a number by the time a style holds it, so the
@@ -3368,13 +3387,19 @@ export class HtmlViewNode extends Node {
         this._styledWidth = target;
         this._styledHeight = viewport;
       } else if (readers.size || rootReads) {
-        if (this._stale < Stale.Boxes) {
+        // their subtrees built again, where the root box, which no subtree
+        // is, holds none: Apple's gallery draws a slide's `::after` in `vw`
+        // turned by a `translate` in `vw`, an image `width` in `vw` beside
+        // it, and every step of a drag built all of the page for them
+        if (!rootReads) seedWith(readers);
+        else if (this._stale < Stale.Boxes) {
           this._stale = Stale.Boxes;
           restyleOnly = readers;
+          follow = true;
         } else if (restyleOnly) {
           restyleOnly = new Set([...restyleOnly, ...readers]);
+          follow = true;
         }
-        follow = true;
         // and the tree it builds is laid out as a crossing's is while the
         // width moves (`_stopAt`): down to what can be seen, measured from
         // all it holds. Python's sidebar is a quarter of the viewport wide,
@@ -3450,13 +3475,15 @@ export class HtmlViewNode extends Node {
             : null;
         // a build that styles every element ends the animations of the ones
         // it does not reach: under `display: none`, or out of the document
+        let apart = false;
         const build = (first = false) => {
           timeline?.beginPass(!kept);
-          const tree =
-            (first &&
-              subtrees &&
-              this._subtreeBuild(subtrees, options(), tails, parsed)) ||
-            boxes();
+          const built =
+            first &&
+            subtrees &&
+            this._subtreeBuild(subtrees, options(), tails, parsed);
+          apart = !!built;
+          const tree = built || boxes();
           timeline?.endPass();
           // and one that keeps styles ends the transitions of the elements
           // it left out, taken out of the document
@@ -3464,7 +3491,14 @@ export class HtmlViewNode extends Node {
           return tree;
         };
         this._tree = build(true);
-        this._asideOwed = false;
+        // A build of some subtrees during a drag leaves what a restyle in
+        // place owed what the drag set aside owed, and its tree stops where
+        // a step's would, as a breakpoint's does (`_stopAt`): every write of
+        // Apple's resize handlers during a drag built and laid out all of
+        // their page.
+        if (apart) {
+          if (this._partial) crossing = true;
+        } else this._asideOwed = false;
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
         this._styledWith = cascade;
@@ -3555,8 +3589,11 @@ export class HtmlViewNode extends Node {
         const fresh = result.partial && this._wholeTree !== this._tree;
         if (fresh) result.height = Math.max(result.height, wasHeight);
         this._partial = result.partial;
-        if (result.partial) this._armSettle();
-        else this._wholeTree = this._tree;
+        // a layout at the width the drag is on waits for the rest the step
+        // armed, and arms none: a page writing at every frame would put
+        // off the whole layout for good
+        if (result.partial && this._widthLaid !== target) this._armSettle();
+        else if (!result.partial) this._wholeTree = this._tree;
         // from when the layout is done: one that took long is no rest
         if (this._widthLaid !== -1 && this._widthLaid !== target) {
           this._widthMovedAt = resizeClock.now();
@@ -3690,18 +3727,28 @@ export class HtmlViewNode extends Node {
       }
     | undefined {
     const was = this._widthLaid;
-    if (was === -1 || was === target) return undefined;
-    // a drag's first move is as small as the rest: the edge goes a few
-    // pixels an event, and the layout of the whole document it waited for
-    // was the drag catching at its start — where a width set once, a
-    // window maximized or a sidebar shown, jumps, and is exact at once
-    const small = Math.abs(target - was) <= DRAG_STEP_CSS_PX * this._scale;
-    if (
-      (!small && resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS) ||
-      viewportMoved ||
-      this._lifted.size > 0
-    ) {
-      return undefined;
+    if (was === -1 || viewportMoved || this._lifted.size > 0) return undefined;
+    // A layout at the width a drag is on, while the drag holds the rest of
+    // the document aside and has not rested (`_partial`, `_armSettle`):
+    // what a page's resize handler changed at that step, which stops where
+    // the step's layout did. Laid out whole, every write of Apple's handlers
+    // laid out all of their page, and built all of it for what the drag's
+    // restyles in place owed what was set aside (`_asideOwed`).
+    const again =
+      was === target &&
+      this._partial &&
+      this._settleTimer !== null &&
+      this._widthMovedAt > -Infinity;
+    if (!again) {
+      if (was === target) return undefined;
+      // a drag's first move is as small as the rest: the edge goes a few
+      // pixels an event, and the layout of the whole document it waited
+      // for was the drag catching at its start — where a width set once, a
+      // window maximized or a sidebar shown, jumps, and is exact at once
+      const small = Math.abs(target - was) <= DRAG_STEP_CSS_PX * this._scale;
+      if (!small && resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS) {
+        return undefined;
+      }
     }
     // Anything else stale lays out whole, and so does a tree no layout has
     // laid out whole — but for the band a drag crossed, and the tree it
@@ -3709,7 +3756,7 @@ export class HtmlViewNode extends Node {
     // (`probeWhole`), so it needs none of a whole layout's sizes.
     if (
       !crossing &&
-      (this._stale >= Stale.Layout ||
+      ((!again && this._stale >= Stale.Layout) ||
         (this._wholeTree !== this._tree && this._crossedTree !== this._tree))
     ) {
       return undefined;
@@ -7299,6 +7346,11 @@ export class HtmlViewNode extends Node {
       for (const [el, style] of changed) {
         tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
       }
+      // and one a drag's layout set aside is owed its build as surely as
+      // one beside a box restyled here: a page's handler that changed the
+      // lengths of a box below the fold during a drag left it in its old
+      // style once the drag rested
+      if (passedAside) this._asideOwed = true;
       this._repaintInk(redraw());
       return true;
     }
@@ -10000,10 +10052,10 @@ export class HtmlViewNode extends Node {
    * The tree a build of only the subtrees `seeds` can change makes
    * (`buildSubtrees`), with every other box the tree's own, kept with what
    * its layouts learnt — or null where it cannot be told, and the whole
-   * document is built. Not where a drag's layout set boxes aside, whose
-   * styles a build puts right (`_asideOwed`). A root in a shadow tree, or
-   * one holding one, is no root (`inLightTree`, `holdsShadow`): a flat
-   * tree's order is not the document's there.
+   * document is built. A root whose element came out as no block in the
+   * flow is built from the root around it, a few times over (`wider`). A
+   * root in a shadow tree, or one holding one, is no root (`inLightTree`,
+   * `holdsShadow`): a flat tree's order is not the document's there.
    */
   private _subtreeBuild(
     seeds: ReadonlySet<Element>,
@@ -10013,25 +10065,35 @@ export class HtmlViewNode extends Node {
     parsed = false,
   ): BoxTree | null {
     const tree = this._tree;
-    if (!tree || asideIn(tree)) return null;
-    const found = this._subtreeRoots(
-      tree,
-      seeds,
-      options.kept?.restyle,
-      tails,
-      parsed,
-    );
-    if (!found) return null;
-    found.appendOnly = parsed;
+    if (!tree) return null;
+    // what a drag's layout set aside is put back, as it was, for the
+    // build to splice the subtrees into the whole lists: what a restyle in
+    // place owed it stays owed (`_asideOwed`), and the next layout sets it
+    // aside again where it stops
+    if (asideIn(tree)) putBack(tree);
     const first = this._firstBoxesOf(tree);
-    const built = buildSubtrees(
-      tree,
-      this._source.document,
-      found,
-      options,
-      first,
-    );
-    if (!built) return null;
+    let built: SubtreesBuilt | null = null;
+    for (let tries = 0; !built; tries += 1) {
+      const found = this._subtreeRoots(
+        tree,
+        seeds,
+        options.kept?.restyle,
+        tails,
+        parsed,
+      );
+      if (!found) return null;
+      found.appendOnly = parsed;
+      built = buildSubtrees(tree, this._source.document, found, options, first);
+      // A root that came out as no block in the flow of its own — Apple's
+      // gallery caption, made absolute by a class its script sets at every
+      // step of a drag — is what its parent's flow places otherwise, and
+      // is built with the root around it, which the build gives up at
+      // without a change to the tree: it had built the whole document.
+      if (!built) {
+        if (!found.wider || tries >= SUBTREE_WIDENINGS) return null;
+        seeds = new Set([...seeds, ...found.wider]);
+      }
+    }
     // what the boxes around each new one measured of the old, for their
     // lives, is measured again
     for (const box of built.made) forgetSizes(box);
@@ -14985,6 +15047,11 @@ interface StateReach {
  *  is built again instead: a link's subtree is a handful, and a compound
  *  that matches a container reaches everything in it. */
 const HOVER_RESTYLE_LIMIT = 300;
+
+/** How many times a build of subtrees starts again from the root around
+ *  one that came out as no block in the flow (`_subtreeBuild`), before the
+ *  whole document is built: each is a build of what the last one was. */
+const SUBTREE_WIDENINGS = 3;
 
 /**
  * Whether two `stylesheet` props hold the same sheets in the same order. An
