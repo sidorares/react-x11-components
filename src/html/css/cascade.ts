@@ -2269,11 +2269,18 @@ export const CHANGES_ANYWHERE = 64;
  * changed matches it before the change and after, and it is asked after.
  * Where one of those is what changed, the element's own test of it
  * reaches as far as the anchor would (`CHANGES_*` on its key).
+ *
+ * Where its argument goes down child combinators alone, and tests nothing
+ * of an element but the element (`childLevels`), the element whose answer
+ * changed is at most `levels` above the one a key is tested of, and no
+ * ancestor further up: `:has(> .caption)` asks only of an element's
+ * children, so a change to a `.caption` reaches its parent's answer.
  */
 export interface HasAnchor {
   readonly compound: string;
   readonly at: number;
   readonly siblings: boolean;
+  readonly levels?: number;
 }
 
 /** A `:has()` somewhere a change reaches elements no compound names —
@@ -2297,15 +2304,55 @@ const HELD_WALK = 512;
 
 /** The anchor of a `:has()` in a compound at `at` whose element matches
  *  `stable` (`stableCompound`), its argument starting at a sibling where
- *  `siblings` says. */
-function anchorOf(stable: string, at: number, siblings: boolean): HasAnchor {
+ *  `siblings` says, and asking only so many levels down where `levels`
+ *  says (`childLevels`). */
+function anchorOf(
+  stable: string,
+  at: number,
+  siblings: boolean,
+  levels?: number,
+): HasAnchor {
   if (at & CHANGES_ANYWHERE) return ANYWHERE_ANCHOR;
   const compound = stable || '*';
-  // every element's answer, past which what changes is everything
-  if (compound === '*' && at & (CHANGES_BELOW | CHANGES_LATER)) {
+  // every element's answer, past which what changes is everything — but
+  // for one that asks only a few levels down, whose answer changes only
+  // for the few elements that far above what changed: Apple's product
+  // pages style `:has(>.caption-primary) .caption`, and every change to
+  // their tree restyled, built and laid out all of it
+  if (
+    compound === '*' &&
+    levels === undefined &&
+    at & (CHANGES_BELOW | CHANGES_LATER)
+  ) {
     return ANYWHERE_ANCHOR;
   }
-  return { compound, at, siblings };
+  return levels === undefined
+    ? { compound, at, siblings }
+    : { compound, at, siblings, levels };
+}
+
+/** The pseudo-classes an element's answer to is read from elements above
+ *  it (`PSEUDO_INHERITED`, `READS_AROUND`'s `:lang()` and `:dir()`). */
+const READS_ABOVE = /:(?:disabled|enabled|read-only|read-write|dir|lang)\b/i;
+
+/**
+ * How many levels below a `:has()`'s element the elements its argument
+ * `entry` tests are, at most (`HasAnchor.levels`): where it starts with a
+ * child combinator, goes on with child combinators alone and tests nothing
+ * of an element but the element — no functional pseudo-class, whose
+ * argument can read anything above (`:is(.a .b)`), and none an element
+ * takes from its ancestors. Undefined for any other.
+ */
+function childLevels(entry: string): number | undefined {
+  if (!/^\s*>/.test(entry)) return undefined;
+  const parts = compoundsOf(entry.replace(/^\s*>\s*/, ''));
+  if (!parts.length) return undefined;
+  for (let i = 0; i < parts.length; i += 1) {
+    const { text, next } = parts[i];
+    if (i < parts.length - 1 && next !== '>') return undefined;
+    if (text.includes('(') || READS_ABOVE.test(text)) return undefined;
+  }
+  return parts.length;
 }
 
 /** An anchor whose argument starts at a sibling: its own, or a `:has()`'s
@@ -2494,13 +2541,16 @@ type NoteChange = (
   anchor: HasAnchor | null,
   /** For a key tested above its rule's subject, what of that subject no
    *  change to the tree can change (`stableCompound`): the elements below
-   *  the one changed that the rule can style. Absent, or '', for any. */
+   *  the one changed that the rule can style. Absent, or '', for any. For
+   *  a sibling combinator (`'+'`, `'~'`), that of the compound it leads
+   *  to. */
   subject?: string | null,
   /** For a key a pseudo-class tests, what of the compound it is in no
    *  change to the tree can change, the elements around it in an `:is()`
    *  or a `:not()` with it: what the element whose answer to it changes
    *  has to match for the compound to (`MutationRules.tested`). Absent, or
-   *  '', for any. */
+   *  '', for any. For a sibling combinator, that of the compound it
+   *  follows. */
   where?: string | null,
   /** And what the pseudo-class tests of that element: what it holds
    *  (`:empty`), or where it sits among its siblings (`:first-child`);
@@ -2557,7 +2607,14 @@ function scanChanges(
       : next === '+' || next === '~'
         ? CHANGES_LATER
         : CHANGES_BELOW;
-    if (has === null && (next === '+' || next === '~')) note('+', bits, null);
+    // a sibling combinator, with what it follows and what it leads to
+    if (has === null && (next === '+' || next === '~')) {
+      const trail = bothOf(
+        i + 1 === parts.length - 1 ? outer : '',
+        stableCompound(parts[i + 1].text),
+      );
+      note(next, bits, null, trail || '*', stableCompound(text) || '*');
+    }
     // what a child combinator leads to a rule's own subject from
     const parent =
       last && subject !== null && i > 0 && parts[i - 1].next === '>'
@@ -2674,10 +2731,10 @@ function scanFunctionChanges(
   if (name === 'has') {
     // a `:has()` inside another's argument: the outer one's element is the
     // one whose answer changes with the inner one's, and is around it
-    const anchored = has ?? anchorOf(stable, bits, false);
     for (const entry of selectorsOf(arg)) {
       // one that starts at a sibling asks what is after its element
       const sibling = /^\s*[+~]/.test(entry);
+      const anchored = has ?? anchorOf(stable, bits, false, childLevels(entry));
       const at = sibling ? withSiblings(anchored) : anchored;
       const relative = entry.replace(/^\s*[>+~]\s*/, '');
       const parts = compoundsOf(relative);
@@ -2846,6 +2903,13 @@ class MutationRules {
   /** Whether a sibling combinator is in a selector outside a `:has()`: a
    *  child added or taken away is another element's earlier sibling. */
   siblings = false;
+  /** What of the compounds a `~` follows, and of those it leads to from
+   *  each, no change to the tree can change (`stableCompound`): what a
+   *  child whose answer changed has to be, and what a later sibling of it,
+   *  for that sibling's answer to change with it; `'*'` and null for any
+   *  element. And the same of a `+`, whose later sibling is the next. */
+  readonly tilde = new Map<string, Set<string> | null>();
+  readonly plus = new Map<string, Set<string> | null>();
   /** Whether a rule reaches across a shadow tree's edge (`noteEdge`), so
    *  that what a change reaches below an element is what is below it in
    *  its shadow tree and in its slots too (`HtmlViewNode._scopeOf`). */
@@ -2910,8 +2974,15 @@ class MutationRules {
       tests,
       parent,
     ) => {
-      if (key === '+') {
+      if (key === '+' || key === '~') {
         this.siblings = true;
+        const pairs = key === '~' ? this.tilde : this.plus;
+        const lead = wider || !where ? '*' : where;
+        const trail = wider || !subject || subject === '*' ? null : subject;
+        const trails = pairs.get(lead);
+        if (trail === null) pairs.set(lead, null);
+        else if (trails === undefined) pairs.set(lead, new Set([trail]));
+        else trails?.add(trail);
         return;
       }
       // a rule at a tree's edge reaches past what its selector says, and
@@ -3009,6 +3080,7 @@ class MutationRules {
     for (const [bit, at] of [
       [CHANGES_SELF, 'self'],
       [CHANGES_BELOW, 'below'],
+      [CHANGES_LATER, 'later'],
     ] as const) {
       if (!(bits & bit)) continue;
       if (!tests || wider) {
@@ -3038,7 +3110,7 @@ class MutationRules {
   /** The one anchor like `anchor`, its place widened by `wider`. */
   private _intern(anchor: HasAnchor, wider: number): HasAnchor {
     const at = anchor.at | wider;
-    const id = `${at} ${+anchor.siblings} ${anchor.compound}`;
+    const id = `${at} ${+anchor.siblings} ${anchor.levels ?? ''} ${anchor.compound}`;
     let one = this._interned.get(id);
     if (!one) {
       one = { ...anchor, at };
@@ -3060,14 +3132,14 @@ class MutationRules {
 
   /**
    * Which elements a test of what an element holds or where it sits can
-   * change the answer of, to their own style (`self`) or to what is below
-   * them (`below`): of the holder of what came or went (`holder`), or of
-   * its children (`kid`). Stable compounds, a child's with the one its
-   * parent is to match before it; null for any element, and undefined for
-   * none.
+   * change the answer of, to their own style (`self`), to what is below
+   * them (`below`) or to their later siblings (`later`): of the holder of
+   * what came or went (`holder`), or of its children (`kid`). Stable
+   * compounds, a child's with the one its parent is to match before it;
+   * null for any element, and undefined for none.
    */
   tested(
-    at: 'self' | 'below',
+    at: 'self' | 'below' | 'later',
     who: 'holder' | 'kid',
   ): ReadonlySet<string> | null | undefined {
     return this._tested.get(`${at} ${who}`);
@@ -3112,6 +3184,10 @@ class MutationRules {
  */
 export class ChangeAnchors {
   readonly siblings: boolean;
+  /** How far above what changed the elements whose answers it changed can
+   *  be: the most of the anchors' `levels`, or Infinity where one has
+   *  none. */
+  readonly levels: number;
   /** Each anchor's matcher and place, by the id or the class an element
    *  has to have to match it, compiled when an element is first asked
    *  about; null where one cannot be. */
@@ -3125,19 +3201,23 @@ export class ChangeAnchors {
     ) => ((el: Element) => boolean) | null,
   ) {
     this.siblings = _anchors.some((a) => a.siblings);
+    this.levels = Math.max(..._anchors.map((a) => a.levels ?? Infinity));
   }
 
-  /** The places (`CHANGES_*`) of the anchors whose compound `el` matches:
-   *  0 for none, null where a compound cannot be asked. */
-  at(el: Element): number | null {
+  /** The places (`CHANGES_*`) of the anchors whose compound `el` matches,
+   *  `distance` levels above what changed, or fewer: 0 for none, null
+   *  where a compound cannot be asked. */
+  at(el: Element, distance = 0): number | null {
     if (this._byKey === undefined) this._prepare();
     const byKey = this._byKey;
     if (!byKey) return null;
     let bits = 0;
     const ask = (list: readonly AnchorMatcher[] | undefined): void => {
       if (!list) return;
-      for (const { match, at } of list) {
-        if ((bits | at) !== bits && match(el)) bits |= at;
+      for (const { match, at, levels } of list) {
+        if ((bits | at) !== bits && distance <= levels && match(el)) {
+          bits |= at;
+        }
       }
     };
     const id = el.attribs.id;
@@ -3158,7 +3238,7 @@ export class ChangeAnchors {
         return;
       }
       const key = anchorKey(anchor.compound);
-      const one = { match, at: anchor.at };
+      const one = { match, at: anchor.at, levels: anchor.levels ?? Infinity };
       if (!key) {
         this._rest.push(one);
         continue;
@@ -3174,6 +3254,7 @@ export class ChangeAnchors {
 interface AnchorMatcher {
   match: (el: Element) => boolean;
   at: number;
+  levels: number;
 }
 
 /** What a change to an element's attribute reaches, from the element
@@ -3200,6 +3281,11 @@ export interface TreeReach {
    *  is in them: a sibling combinator, which reads an element's earlier
    *  siblings and no later one. */
   followers: boolean;
+  /** Which of the children after where it came or went `followers` and
+   *  `kidsLater` reach, by what the sibling combinators follow and lead to
+   *  (`MutationRules.tilde`, `plus`); null for every one of them, with
+   *  what is in them. */
+  siblings: SiblingReach | null;
   /** Where `bits` reach the holder and its children themselves, which of
    *  them a test of what an element holds or where it sits in a rule's
    *  subject can change; null for every one. */
@@ -3208,12 +3294,38 @@ export interface TreeReach {
    *  subject reaches, and what there it can restyle (`subjects`, null for
    *  anything); null for everything in the holder. */
   below: TreeBelow | null;
+  /** Where `kidsLater` reaches from: the children a test of where an
+   *  element sits before a sibling combinator is of, by the compound it is
+   *  in, whose later siblings are what it reaches — `.card:first-child:
+   *  nth-last-child(2) ~ .card` changes nothing in a holder of no `.card`.
+   *  True for any child. */
+  later: Tested;
   anchors: ChangeAnchors | null;
 }
 
 /** Which elements a test reaches (`TreeTested`): those a matcher takes,
  *  every one, or none. */
 export type Tested = ((el: Element) => boolean) | boolean;
+
+/**
+ * `TreeReach.siblings`: what of the compounds the sibling combinators
+ * follow (`lead`) and lead to from them (`trail`) no change to the tree
+ * can change (`MutationRules.tilde`, `plus`). A `~` reaches the children
+ * after one it follows whose answer changed that it leads to from it; a
+ * `+`, the child after it, where it leads to that. Apple's forms style
+ * `:checked ~ .form-label`, its cards `.headline + *` and its page
+ * `#ac-ln-menustate:checked ~ #main`, and a banner put in at the top of a
+ * `<body>` restyled all of it.
+ */
+export interface SiblingReach {
+  tilde: readonly SiblingPair[];
+  plus: readonly SiblingPair[];
+}
+
+export interface SiblingPair {
+  lead: Tested;
+  trail: Tested;
+}
 
 /** `TreeReach.self`: of the holder of what came or went, and of each of its
  *  children, which a test can change the answer for. */
@@ -3423,6 +3535,7 @@ export class Cascade {
    *  element is in, for a build (`_treeInfo`). */
   private _roots = new Map<ShadowRoot, TreeInfo>();
   private _trees = new WeakMap<Element, TreeInfo>();
+  private _treesAt = -1;
   /** Whether there is a shadow tree to tell an element's from the
    *  document's: where there is none, nothing asks which tree an element
    *  is in, and a document styles as it did before there were any. */
@@ -4361,8 +4474,10 @@ export class Cascade {
       bits,
       kidsLater,
       followers: !text && rules.siblings,
+      siblings: rules.siblings ? this._siblingReach() : null,
       below,
       self,
+      later: kidsLater ? this._treeLater() : false,
       anchors: this._changeAnchors([
         text ? asked : this._heldReached(asked, nodes),
       ]),
@@ -4377,7 +4492,12 @@ export class Cascade {
    * elements their subject can be (`MutationRules.held`) whose subjects an
    * element in `nodes`, or in what they hold, matches: as one set, the same
    * set for the same anchors, which `_changeAnchors` keeps as one. Past
-   * `HELD_WALK` elements, every one of them, as though each matched.
+   * `HELD_WALK` elements, every one of them, as though each matched. One
+   * that asks only so many levels down (`HasAnchor.levels`) is reached
+   * only by what is no further into what came than that: the rest of it
+   * came with it, and is styled whole. A dialog Apple's pages move into the
+   * `<body>` holds a `.caption-primary`, which `:has(>.caption-primary)`
+   * asks of the `<body>`'s children alone.
    */
   private _heldReached(
     sits: ReadonlySet<HasAnchor>,
@@ -4396,19 +4516,28 @@ export class Cascade {
     };
     // what css-select refuses is reached by anything
     for (const [anchor, match] of pending) if (!match) reach(anchor);
-    const stack = [...nodes];
+    const stack: [AnyNode, number][] = nodes.map((node) => [node, 1]);
     let walked = 0;
     while (stack.length && pending.size) {
-      const node = stack.pop()!;
+      const [node, depth] = stack.pop()!;
       if (!isTag(node)) continue;
       if ((walked += 1) > HELD_WALK) {
-        for (const anchor of [...pending.keys()]) reach(anchor);
+        // what is left to walk is no shallower than what the stack holds
+        let left = depth;
+        for (const [, at] of stack) if (at < left) left = at;
+        for (const anchor of [...pending.keys()]) {
+          if ((anchor.levels ?? Infinity) >= left) reach(anchor);
+        }
         break;
       }
+      let deeper = false;
       for (const [anchor, match] of pending) {
-        if (match!(node)) reach(anchor);
+        const levels = anchor.levels ?? Infinity;
+        if (depth <= levels && match!(node)) reach(anchor);
+        else if (depth < levels) deeper = true;
       }
-      for (const child of node.children) stack.push(child);
+      if (!deeper) continue;
+      for (const child of node.children) stack.push([child, depth + 1]);
     }
     if (!reached.length) return sits;
     for (const anchor of reached) {
@@ -4501,10 +4630,45 @@ export class Cascade {
 
   private _treeSelfKept: TreeTested | null | undefined = undefined;
 
+  /** `TreeReach.later` for this cascade's rules: any child, where a
+   *  compound could not be compiled. */
+  private _treeLater(): Tested {
+    if (this._treeLaterKept === undefined) {
+      this._treeLaterKept = this._treeTested('later')?.kids ?? true;
+    }
+    return this._treeLaterKept;
+  }
+
+  private _treeLaterKept: Tested | undefined = undefined;
+
+  /** `TreeReach.siblings` for this cascade's rules: any element, where a
+   *  compound could not be compiled. */
+  private _siblingReach(): SiblingReach {
+    if (this._siblingReachKept) return this._siblingReachKept;
+    const rules = this._changeRules;
+    const pairsOf = (
+      pairs: ReadonlyMap<string, ReadonlySet<string> | null>,
+    ): SiblingPair[] =>
+      [...pairs].map(([lead, trails]) => ({
+        lead:
+          lead === '*'
+            ? true
+            : (this._subjectsMatcher(new Set([lead])) ?? true),
+        trail: trails === null ? true : (this._subjectsMatcher(trails) ?? true),
+      }));
+    this._siblingReachKept = {
+      tilde: pairsOf(rules.tilde),
+      plus: pairsOf(rules.plus),
+    };
+    return this._siblingReachKept;
+  }
+
+  private _siblingReachKept: SiblingReach | null = null;
+
   /** What the tests of what an element holds and where it sits are of,
    *  where they reach (`MutationRules.tested`), as matchers; null where
    *  one could not be compiled. */
-  private _treeTested(at: 'self' | 'below'): TreeTested | null {
+  private _treeTested(at: 'self' | 'below' | 'later'): TreeTested | null {
     const rules = this._changeRules;
     const one = (set: ReadonlySet<string> | null | undefined): Tested | null =>
       set === undefined
@@ -5066,9 +5230,18 @@ export class Cascade {
     return info;
   }
 
-  /** The tree an element is in, found once a build. */
+  /** The tree an element is in, found once a build, and again once the
+   *  tree has changed (`treeGeneration`): a refresh that builds nothing —
+   *  one in place, or of what no box draws — styles an element a script
+   *  moved into a shadow tree by that tree's rules, where it took the
+   *  document's. */
   private _treeInfo(el: Element): TreeInfo {
     if (!this._scoped) return this._docInfo;
+    const at = treeGeneration();
+    if (at !== this._treesAt) {
+      this._trees = new WeakMap();
+      this._treesAt = at;
+    }
     let info = this._trees.get(el);
     if (info) return info;
     const root = shadowRootAround(el);

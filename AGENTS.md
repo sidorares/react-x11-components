@@ -2124,6 +2124,36 @@ random documents, rules and changes, and fails if none of them went in
 place, through a frame or through a build; every way a reach was dropped
 on purpose was caught by it or by a test beside it.
 
+**A `:has()` that asks only of its element's children is asked only so
+many levels up, and a sibling combinator reaches what it leads to from
+what it follows.** A `:has()` whose argument goes down child combinators
+alone and tests nothing of an element but the element (`childLevels`) has
+its anchor bounded (`HasAnchor.levels`): `spreadAnchors` asks no element
+further above what changed than that, and `_heldReached` looks no further
+into what came. So a compound that names nothing is no longer an anchor
+every element is, `CHANGES_ANYWHERE`: Apple's product pages style
+`:has(>.caption-primary) .caption`, which made every change to their tree
+a restyle, a build and a layout of all of it, some 400 ms each forced read
+of their script's, and ran it into its time. A sibling combinator notes
+the stable part of the compound it follows and of the one it leads to,
+paired (`MutationRules.tilde`, `plus`), and `siblingsReached` walks a
+holder's children once, in order: what came, what went, a child whose
+place a test before a combinator reads (`TreeReach.later`) and a child
+reached are each a source, a `~` reaches what it leads to after one it
+follows, a `+` the next. That is what follows a chain, `A + B ~ C`, and
+`:checked ~ .form-label` beside `#menu:checked ~ #main` reaches labels
+from a banner put in at the top of a `<body>`, and not `#main`. Three
+things are load-bearing. **An argument that can read above the elements
+it tests — a functional pseudo-class, `:lang()`, `:disabled` — gets no
+levels**, so anything new a compound in one can read is checked in
+`childLevels`. **Anything new that walks from a change to the elements
+whose answers changed counts its levels**, or a bounded anchor matches
+where its `:has()` cannot. And **the tree an element is in is found again
+once the tree changes** (`Cascade._treeInfo`, by `treeGeneration`), not
+only at a build: a refresh that builds nothing styled an element a script
+moved into a shadow tree by the document's rules, which this change's
+reach was the first to leave to a refresh of that kind.
+
 **A build for such a change builds the subtrees it reached, and the
 layout after it keeps the blocks it did not** (`buildSubtrees`,
 `reuseLaid`, docs/prd-subtree-build.md). Where every change said which
@@ -2277,8 +2307,12 @@ from the first blocks `RAN_FROM` keeps by the holder), from where that box's
 line ended in the text (`textAfterBox`: the text ranges, and past them what
 the fix-up dropped from the box). A build apart counts no counter it did not
 make (`CounterScopes.detach`), and counts otherwise than it did only where
-nothing kept after it reads a counter or a quote — at the document's end,
-nothing does. Where every root and tail ends the document, what the build
+nothing kept after it reads a quote, or a counter made before it or around
+it (`countsAcross`, by the nearest reset of its name) — at the document's
+end, nothing does, and an `<ol>` after it makes its own `list-item`: Apple's
+footnotes, after a section with a `<ul>` in it, made every change to a
+section a build of the whole page. **Anything new a box reads of a counter
+joins `countersOf`.** Where every root and tail ends the document, what the build
 lists, its text and its styles are spliced at their ends (`atEnd`), the
 element keeps its index of first boxes and its reuse blockers
 (`carryBlockers`), and the layout after it walks no kept block to take its
@@ -2318,11 +2352,13 @@ the end of its `<body>` and takes them out, and each built the whole
 document: 1.1 seconds in the harness where it is 0.1. Three things are
 load-bearing. **The end of a flex or grid box is built as a block's is**
 (`tailRoot`'s `items`): each of its children is an item of its own, and
-nothing of one before a tail is carried to it. **A block's is built only
-where the build noted what came before** (`ranBefore`'s `noted`): a build
-of a document handed over whole notes no wrap (`notesWrapped`), so an
-anonymous block before the tail is a wrap of what ran that nothing says,
-and a box out of the flow after it was left unwrapped. And **a tail's
+nothing of one before a tail is carried to it. **A block's is built from
+what every build notes of its wraps** (`RAN_FROM`, `ranBefore`): what ran
+before a block, inline-level content and white space a wrap dropped, is
+what a tail is fixed up after, and a wrap says it of no box. Noted for a
+stream's builds alone, a document handed over whole built the whole page
+for every child put in a `<body>` with a wrap in it, which is Apple's. And
+**a tail's
 styles go before what follows its holder** (`placed`): a script's tail may
 hold what it moved there from before, styled where it was, where a
 stream's held only what came. The subtree fuzz hands on where its

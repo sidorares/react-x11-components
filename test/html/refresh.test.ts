@@ -1436,6 +1436,171 @@ test('a node put in or taken out restyles a :has() that asks only of its subject
   assert.equal(el.computedStyle(list)?.color, ink);
 });
 
+metric(
+  'a node put into a long document restyles what a :has() asking only of its children, on a compound that names nothing, answers otherwise for, and not the document',
+  async () => {
+    // Apple's product pages style `:has(>.caption-primary) .caption`: an
+    // anchor every element is, which made every change to their tree a
+    // restyle, a build and a layout of all of it — 400 ms each forced read
+    // of their script's took, which ran it into its time
+    const paragraphs = Array.from(
+      { length: 400 },
+      (_, i) => `<p id="p${i}" class="caption">Paragraph ${i}</p>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0}' +
+        ' :has(> .primary) .caption{color:#ff0000}</style><body>' +
+        `<div id="box"><p id="cap" class="caption">caption</p></div>${paragraphs}</body>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const box = byId(el, 'box');
+    const body = box.parent as Element;
+    const put = (into: Element, child: ChildNode): HtmlChange => {
+      appendChild(into, child);
+      return {
+        type: 'childList',
+        target: into,
+        addedNodes: [child],
+        removedNodes: [],
+      };
+    };
+    // what holds a `.primary` below its own children changes the answer of
+    // no element but its own, which comes with it
+    const deep = put(
+      body,
+      createElement('div', {}, [createElement('span', { class: 'primary' })]),
+    );
+    const own = scopeOf(el, [deep]);
+    assert.ok(own, 'a refresh of everything');
+    assert.ok(!own.has(byId(el, 'p7')), 'the document was reached');
+    const computed = await stylesComputed(el, async () => {
+      el.touchDocument([deep]);
+      await snapshot(result, el);
+    });
+    assert.ok(computed < 10, `${computed} styles worked out`);
+    assert.notStrictEqual(
+      el.computedStyle(byId(el, 'p7'))?.color,
+      'rgb(255, 0, 0)',
+    );
+    // a `.primary` put in the box: the box's answer, and what it holds
+    const primary = put(box, createElement('span', { class: 'primary' }));
+    const reached = scopeOf(el, [primary]);
+    assert.ok(reached?.has(byId(el, 'cap')), 'the box’s caption missed');
+    assert.ok(!reached?.has(byId(el, 'p7')), 'the document was reached');
+    el.touchDocument([primary]);
+    await act();
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'cap'))?.color,
+      'rgb(255, 0, 0)',
+    );
+    // and a child of the body's made one: the body's, and all it holds
+    const made = setClass(byId(el, 'p3'), 'caption primary');
+    assert.ok(scopeOf(el, [made])?.has(byId(el, 'p7')), 'the body missed');
+    el.touchDocument([made]);
+    await act();
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'p7'))?.color,
+      'rgb(255, 0, 0)',
+    );
+  },
+);
+
+test('a child put in reaches the later siblings its sibling combinators lead to from it, through one another, and not the rest', async () => {
+  // Apple's pages put a banner in at the top of their <body>, whose sheets
+  // style `:checked ~ .form-label`, `#ac-ln-menustate:checked ~ #main` and
+  // `.headline + *`: with a `~` anywhere each restyled all the <body> held
+  const paragraphs = Array.from(
+    { length: 50 },
+    (_, i) => `<p id="p${i}">p${i}</p>`,
+  ).join('');
+  const { node } = await render(
+    '<style>body{margin:0} :checked ~ .label{color:#ff0000}' +
+      ' #toggle:checked ~ #main p{color:#00aa00}' +
+      ' .head + *{font-weight:bold} .a ~ .b + .c{color:#0000ff}' +
+      ' .card:first-child:nth-last-child(2) ~ .card{color:#aa00aa}</style>' +
+      '<body><input id="toggle" type="checkbox" checked>' +
+      `<span class="label" id="label">l</span><main id="main">${paragraphs}</main>` +
+      '<div id="row"><i class="b" id="b">b</i><i class="c" id="c">c</i></div>' +
+      '<div id="cards"><i class="card" id="card1">1</i>' +
+      '<i class="card" id="card2">2</i></div></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const p7 = byId(el, 'p7');
+  assert.strictEqual(el.computedStyle(p7)?.color, 'rgb(0, 170, 0)');
+  const card2 = byId(el, 'card2');
+  assert.strictEqual(el.computedStyle(card2)?.color, 'rgb(170, 0, 170)');
+  const body = byId(el, 'main').parent as Element;
+  // a banner at the top: what `:checked ~` leads to, and not #main's
+  const banner = createElement('aside', {}, [createText('banner')]);
+  DomUtils.prependChild(body as never, banner as never);
+  const top: HtmlChange = {
+    type: 'childList',
+    target: body,
+    addedNodes: [banner],
+    removedNodes: [],
+    previousSibling: null,
+    nextSibling: byId(el, 'toggle'),
+  };
+  const own = scopeOf(el, [top]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(own.has(byId(el, 'label')), 'what `~` leads to missed');
+  assert.ok(!own.has(p7), '#main was reached');
+  el.touchDocument([top]);
+  await act();
+  assert.strictEqual(el.computedStyle(p7)?.color, 'rgb(0, 170, 0)');
+  // an `.a` before the row's `.b`: the `.c` the `.b` it reaches leads to
+  const row = byId(el, 'row');
+  const a = createElement('i', { class: 'a' });
+  DomUtils.prependChild(row as never, a as never);
+  const led: HtmlChange = {
+    type: 'childList',
+    target: row,
+    addedNodes: [a],
+    removedNodes: [],
+    previousSibling: null,
+    nextSibling: byId(el, 'b'),
+  };
+  assert.ok(scopeOf(el, [led])?.has(byId(el, 'c')), 'the chain’s `.c` missed');
+  el.touchDocument([led]);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 'c'))?.color, 'rgb(0, 0, 255)');
+  // a third card counts the first otherwise from the end: the second,
+  // before what came, is reached through the first
+  const cards = byId(el, 'cards');
+  const third = createElement('i', {});
+  appendChild(cards, third);
+  const counted: HtmlChange = {
+    type: 'childList',
+    target: cards,
+    addedNodes: [third],
+    removedNodes: [],
+    previousSibling: card2,
+    nextSibling: null,
+  };
+  assert.ok(scopeOf(el, [counted])?.has(card2), 'the second card missed');
+  el.touchDocument([counted]);
+  await act();
+  assert.notStrictEqual(el.computedStyle(card2)?.color, 'rgb(170, 0, 170)');
+  // and in a holder of no card, none of its children
+  const span = createElement('span', {});
+  appendChild(row, span);
+  const plain = scopeOf(el, [
+    {
+      type: 'childList',
+      target: row,
+      addedNodes: [span],
+      removedNodes: [],
+      previousSibling: byId(el, 'c'),
+      nextSibling: null,
+    },
+  ]);
+  assert.ok(plain && !plain.has(byId(el, 'b')), 'the row’s children reached');
+});
+
 test('a class that an attribute selector answers alike for before and after restyles nothing it tests, and one it answers otherwise for restyles what it reaches', async () => {
   // Primer's pricing rules: a `[class*=]` in a `:has()` that starts at a
   // sibling made every class change on github.com/features a refresh of
@@ -1741,6 +1906,53 @@ function rulesFor(
       selector = pick(next() < anchoredShare ? anchored : shapes)();
     }
     rules.push(`${selector} { ${pick(declarations)()} }`);
+  }
+  if (next() < 0.5) {
+    rules.push(`.${c()}::before { content: "*"; color: ${pick(INKS)} }`);
+  }
+  return rules.join('\n');
+}
+
+/**
+ * Rules whose reach a change finds by levels and by sibling: a `:has()`
+ * that asks only of its element's children, on a compound that names
+ * nothing (`HasAnchor.levels`) — Apple's `:has(>.caption-primary)
+ * .caption` — and sibling combinators that lead from what names nothing,
+ * to anything, or to one another, and after where an element sits counted
+ * from the end (`siblingsReached`), beside the plain shapes they meet.
+ */
+function reachRulesFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  const shapes: (() => string)[] = [
+    () => `:has(> .${c()}) .${c()}`,
+    () => `:has(> .${c()} > .${c()}) + .${c()}`,
+    () => `:has(> .${c()}) > *`,
+    () => `.${c()}:has(> .${c()})`,
+    () => `:not(.${c()}) ~ .${c()}`,
+    () => `.${c()} + *`,
+    () => `.${c()} ~ .${c()}`,
+    () => `.${c()} ~ .${c()} + .${c()}`,
+    () => `.${c()} + .${c()} ~ .${c()} .${c()}`,
+    () => `:is(.${c()} + .${c()}) ~ .${c()}`,
+    () => `.${c()}:first-child:nth-last-child(2) ~ .${c()}`,
+    () => `.${c()}:last-child + *`,
+    () => `.${c()}:empty ~ *`,
+    () => `.${c()} .${c()}`,
+    () => `.${c()}`,
+  ];
+  const declarations: (() => string)[] = [
+    () => `color: ${pick(INKS)}`,
+    () => 'font-weight: bold',
+    () => `display: ${pick(['none', 'block', 'inline-block'])}`,
+    () => `padding-left: ${Math.floor(next() * 20)}px`,
+    () => 'position: absolute',
+  ];
+  const rules: string[] = [];
+  const count = 6 + Math.floor(next() * 8);
+  for (let i = 0; i < count; i += 1) {
+    rules.push(`${pick(shapes)()} { ${pick(declarations)()} }`);
   }
   if (next() < 0.5) {
     rules.push(`.${c()}::before { content: "*"; color: ${pick(INKS)} }`);
@@ -2400,6 +2612,22 @@ test('a refresh whose reach below what changed is narrowed to its rules’ subje
   }
 });
 
+test('in a document of :has()s that ask only of their children and of sibling combinators, a refresh told what changed comes to the same styles', async () => {
+  const ways = await refreshesAgree(
+    30,
+    false,
+    false,
+    undefined,
+    1,
+    reachRulesFor,
+  );
+  const scoped = ways.inPlace + ways.frame + ways.build;
+  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
+  // and with shadow trees, and rules across their edges: an element a
+  // script moves into a tree is styled by that tree's rules
+  await refreshesAgree(20, true, true, undefined, 1, reachRulesFor);
+});
+
 test('in a document with shadow trees whose rules stay inside them, a refresh told what changed comes to the same styles', async () => {
   const ways = await refreshesAgree(30, true);
   const scoped = ways.inPlace + ways.frame + ways.build;
@@ -2414,8 +2642,11 @@ test('in a document of :has() and attribute selectors, a refresh told what chang
   // how many elements a set of anchors found to be one's
   const at = ChangeAnchors.prototype.at;
   let found = 0;
-  ChangeAnchors.prototype.at = function (this: ChangeAnchors, el: Element) {
-    const bits = at.call(this, el);
+  ChangeAnchors.prototype.at = function (
+    this: ChangeAnchors,
+    ...args: Parameters<ChangeAnchors['at']>
+  ) {
+    const bits = at.apply(this, args);
     if (bits) found += 1;
     return bits;
   };

@@ -895,8 +895,7 @@ const RAN_INLINE = 1;
 const RAN_OUT = 2;
 
 /**
- * For a box whose children the fix-up wrapped (`fixUpOwn`) in a build a
- * chunk may follow (`notesWrapped`), where it holds
+ * For a box whose children the fix-up wrapped (`fixUpOwn`), where it holds
  * blocks and inline-level content both: the first block in the flow among
  * them with inline-level content before it, as they were built — white
  * space the wrap then dropped among it — and the first with a float or a
@@ -907,15 +906,13 @@ const RAN_OUT = 2;
  * built, none of them inline-level where one is a block. Noted in the
  * wrap's own loop, and not on every box or in the loop every box's
  * children go through: two fields more on a box were a fiftieth of a
- * document's first paint.
+ * document's first paint. Noted in every build, a stream's chunk's or
+ * not: a script's child put in or taken out builds a tail too
+ * (`ChangeScope.ends`), and where a build of a document handed over whole
+ * had noted nothing, Apple's pages, which put their dialogs at the end of
+ * a `<body>` with a wrap in it, built the whole page for each.
  */
 const RAN_FROM = new WeakMap<Box, RanFrom>();
-
-/** Whether the fix-up notes `RAN_FROM`: in a build of a source the parser
- *  has not been told is all in (`BuildOptions.streaming`), which a chunk,
- *  and a tail of what it touched, may follow. A document handed over whole
- *  is built again whole, and its many wrapped boxes noted nothing. */
-let notesWrapped = false;
 
 interface RanFrom {
   inline: Box | null;
@@ -925,18 +922,14 @@ interface RanFrom {
 /** What the fix-up saw before `block` among `holder`'s children, as
  *  `RAN_INLINE` and `RAN_OUT`; -1 where `block`, or a box `RAN_FROM` names,
  *  is no longer among them. */
-function ranBefore(block: Box, holder: Box, noted = true): number {
+function ranBefore(block: Box, holder: Box): number {
   const kids = holder.children;
   const at = kids.indexOf(block);
   if (at < 0) return -1;
   const from = RAN_FROM.get(holder);
   if (!from) {
     for (let i = 0; i < at; i += 1) {
-      // a wrap a build that noted none made says nothing of what ran
-      // (`notesWrapped`): what a script changed in a document handed over
-      // whole
       const kid = kids[i];
-      if (!noted && !kid.el && !kid.pseudo && kid.kind === 'block') return -1;
       if (kid.outOfFlow || kid.isFloat) return RAN_OUT;
     }
     return 0;
@@ -1287,9 +1280,6 @@ export interface ForeignObject {
 
 export interface BuildOptions {
   cascade: Cascade;
-  /** Whether the source is not all in yet: a chunk may follow, whose
-   *  tails read what the fix-up wrapped (`RAN_FROM`). */
-  streaming?: boolean;
   /** A view transition's tree, where one is under way: what hangs off the
    *  root element in the top layer (`TransitionTree`). */
   transition?:
@@ -1495,14 +1485,7 @@ export function buildSubtrees(
     olds.push(old);
   }
   for (const { node, from } of tails) {
-    const old = tailRoot(
-      node,
-      from,
-      tree,
-      document,
-      firstBoxes,
-      !!found.appendOnly,
-    );
+    const old = tailRoot(node, from, tree, document, firstBoxes);
     if (!old) return null;
     olds.push(old);
   }
@@ -1632,7 +1615,25 @@ export function buildSubtrees(
     cascade.endSharing();
     cascade.stylesOf = outer;
   }
-  if (counting && boxesAfter(counting, olds, readsCounter)) return null;
+  if (counting) {
+    // where a counter a box after them reads is made: before the roots,
+    // or in what they are in, it counts what they hold
+    const around = new Set<Box>();
+    for (const o of olds) {
+      for (let at: Box | null = o.parent; at; at = at.parent) around.add(at);
+    }
+    const before = (box: Box): boolean =>
+      around.has(box) || olds.some((o) => o.boxes.has(box));
+    if (
+      boxesAfter(
+        counting,
+        olds,
+        (box) => readsCounter(box) && countsAcross(box, before),
+      )
+    ) {
+      return null;
+    }
+  }
   // A stream's chunk at the document's end: what it builds replaces all
   // there is after the first thing it touched, but the boxes around it, so
   // every list, the text and the styles end with what it builds, and what
@@ -2435,6 +2436,74 @@ function readsCounter(box: Box): boolean {
   );
 }
 
+/**
+ * Whether what a box after roots built again reads of a counter can be
+ * what they counted (`readsCounter`, `buildSubtrees`): a quote's depth, or
+ * every instance of a name in `counters()`; or a counter whose instance —
+ * made by the nearest reset of its name on the box, on a box before it
+ * among its siblings, or on a box around it and those before it (CSS
+ * Lists 3, 4.4) — is made by a box `before` says is a root's or holds one,
+ * or before such a box. One made after the roots counts from there,
+ * whatever they did: Apple's footnotes are an `<ol>`, which makes its own
+ * `list-item`, and every section built again before them was a build of
+ * the whole page.
+ */
+function countsAcross(box: Box, before: (box: Box) => boolean): boolean {
+  const names = countersOf(box);
+  if (!names) return true;
+  for (const name of names) {
+    for (let at: Box | null = box; ; at = at.parent) {
+      if (!at || before(at)) return true;
+      if (resets(at, name)) break;
+      const siblings = at.parent?.children ?? [];
+      let made = false;
+      for (let k = siblings.indexOf(at) - 1; k >= 0 && !made; k -= 1) {
+        if (before(siblings[k])) return true;
+        made = resets(siblings[k], name);
+      }
+      if (made) break;
+    }
+  }
+  return false;
+}
+
+/** The names of the counters a box reads (`readsCounter`), each the one
+ *  instance in scope; null where it reads a quote's depth, or every
+ *  instance of a name. */
+function countersOf(box: Box): string[] | null {
+  const names: string[] = [];
+  const style = box.style;
+  if (
+    style.display === 'list-item' &&
+    (box.el || box.pseudo) &&
+    numberedMarker(style)
+  ) {
+    names.push('list-item');
+  }
+  for (const content of [
+    box.marker?.style?.content,
+    box.pseudo ? style.content : null,
+  ]) {
+    if (!Array.isArray(content)) continue;
+    for (const item of content as ContentItem[]) {
+      if (item.kind === 'counter') names.push(item.name);
+      else if (
+        item.kind !== 'string' &&
+        item.kind !== 'url' &&
+        item.kind !== 'attr'
+      ) {
+        return null;
+      }
+    }
+  }
+  return names;
+}
+
+/** Whether a box makes a counter of `name` (`counter-reset`). */
+function resets(box: Box, name: string): boolean {
+  return !!box.style.counterReset?.some((c) => c.name === name);
+}
+
 /** Whether generated content has a counter or a quote in it. */
 function contentReads(items: readonly ContentItem[]): boolean {
   for (const item of items) {
@@ -2552,9 +2621,6 @@ function tailRoot(
   tree: BoxTree,
   document: { children: unknown },
   firstBoxes: ReadonlyMap<Element, Box>,
-  /** Whether a stream's chunks are all it builds, in a build that noted
-   *  what its wraps ran from (`notesWrapped`). */
-  noted = true,
 ): SubtreeRoot | null {
   const kids = node.children;
   if (from <= 0 || from >= kids.length) return null;
@@ -2592,7 +2658,7 @@ function tailRoot(
   if (!after || !endsLine(after, before as Element, box)) return null;
   const index = box.children.indexOf(after);
   if (index < 0) return null;
-  const ran = items ? 0 : ranBefore(after, box, noted);
+  const ran = items ? 0 : ranBefore(after, box);
   if (ran < 0) return null;
   // where only floats and boxes out of the flow came before, whether they
   // are wrapped, which a whole build wraps as the tail has it
@@ -3281,7 +3347,7 @@ class Builder {
       return null;
     }
     box.parent = null;
-    this._fixUp(box, anonymous);
+    fixUp(box, anonymous);
     return this._subtree([box]);
   }
 
@@ -3374,7 +3440,7 @@ class Builder {
       held.parent = into;
       into.children.unshift(held);
     }
-    this._fixUp(into, anonymous);
+    fixUp(into, anonymous);
     if (into.children[0] !== before) return null;
     into.children.shift();
     const boxes = into.children;
@@ -3382,17 +3448,6 @@ class Builder {
     const built = this._subtree(boxes);
     built.ranFrom = ranFrom;
     return built;
-  }
-
-  /** `fixUp`, noting what it wraps where a chunk may follow
-   *  (`notesWrapped`). */
-  private _fixUp(box: Box, anonymous: AnonymousStyle): void {
-    notesWrapped = this._options.streaming === true;
-    try {
-      fixUp(box, anonymous);
-    } finally {
-      notesWrapped = false;
-    }
   }
 
   /** Whether what was just built can be built apart from what is around it
@@ -3490,7 +3545,7 @@ class Builder {
   ): BoxTree {
     const cascade = this._options.cascade;
     const anonymous = anonymousStyles(cascade.initial);
-    this._fixUp(rootBox, anonymous);
+    fixUp(rootBox, anonymous);
     for (const box of this._orthogonal) {
       makeFrame(box, anonymous(box.style, 'block'));
     }
@@ -5973,7 +6028,7 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
     if (!run && child.kind === 'text' && isBlank(child.text)) continue;
     (run ??= []).push(child);
   }
-  if (notesWrapped && !wrapAllInline) {
+  if (!wrapAllInline) {
     RAN_FROM.set(box, { inline: inlineFrom, out: outFrom });
   }
   if (run) {

@@ -119,6 +119,8 @@ import type {
   KeptStyles,
   MetricFace,
   ShadowSheets,
+  SiblingPair,
+  SiblingReach,
   Tested,
   TransitionPart,
   ViewportOverflow,
@@ -3380,7 +3382,6 @@ export class HtmlViewNode extends Node {
         const timeline = this._clockIn(cascade);
         const options = (): BuildOptions => ({
           cascade,
-          streaming: !this._source.complete,
           kept,
           transition: this._vt?.phase === 'live' ? this._transitionTree : null,
           scale: this._scale,
@@ -9677,7 +9678,8 @@ export class HtmlViewNode extends Node {
       changedNodes(change),
     );
     if (!reach) return false;
-    const { kidsLater, followers, below, self, anchors } = reach;
+    const { kidsLater, followers, siblings, below, self, later, anchors } =
+      reach;
     let bits = reach.bits;
     if (!drawn && !bits && !kidsLater && !followers && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
@@ -9761,24 +9763,33 @@ export class HtmlViewNode extends Node {
       }
       // A sibling combinator reads an element's earlier siblings, so what
       // came or went reaches the children after where it did and what is
-      // in them (`followersOf`), or all of them where the change does not
-      // say where.
-      const from =
-        followers && !kidsLater
-          ? followersOf(change, parent, scope.gone)
-          : null;
+      // in them (`followersOf`) — those its sibling combinators lead to
+      // (`siblingsReached`) — or all of them where the change does not say
+      // where. A test of where a child sits before one reaches the
+      // children after each child it is of, from the first its compound
+      // names (`TreeReach.later`): Apple's pages count their cards,
+      // `.card:first-child:nth-last-child(2) ~ .card`, and every dialog
+      // their script put in the `<body>` restyled all of it.
+      const from = followers ? followersOf(change, parent, scope.gone) : null;
       spreadChange(
         parent as Element,
         bits,
         true,
         scope.own,
         crossing,
-        kidsLater || (followers && from === undefined),
+        from === undefined,
       );
-      if (from && !(bits & CHANGES_BELOW)) {
-        for (let s: AnyNode | null = from; s; s = s.next) {
-          if (isElement(s)) addSubtree(s, scope.own, crossing);
-        }
+      if (from !== undefined && !(bits & CHANGES_BELOW)) {
+        const reached: Element[] = [];
+        siblingsReached(
+          change,
+          parent,
+          from,
+          siblings,
+          kidsLater ? later : false,
+          reached,
+        );
+        for (const el of reached) addSubtree(el, scope.own, crossing);
       }
     }
     return (
@@ -14911,8 +14922,9 @@ interface ChangeScope {
   drawings: Set<Element>;
   pseudo: 0 | 1 | 2;
   /** The elements each set of anchors has been asked about, which one
-   *  answers alike for every change of a list (`spreadAnchors`). */
-  anchored: Map<ChangeAnchors, Set<Element>>;
+   *  answers alike for every change of a list (`spreadAnchors`), each by
+   *  the fewest levels above what changed it was asked at. */
+  anchored: Map<ChangeAnchors, Map<Element, number>>;
   /** Whether the document's sheets read as the cascade's were, asked once
    *  a list where a change is a sheet's element's (`_sheetsAsRead`). */
   sheetsAsRead?: boolean;
@@ -15428,8 +15440,13 @@ function spreadRootChange(
  * is style-only. False where a compound cannot be asked.
  *
  * A `:has()` asks what is in its element's tree, so the walk up stops at
- * the top of one. Each element is asked once a list of changes for each
- * set of anchors (`scope.anchored`), which answers it alike every time.
+ * the top of one — and one that asks only a few levels down
+ * (`HasAnchor.levels`) is asked only of the elements that far above what
+ * changed: the holder is one above what came or went, an element none
+ * above its own attribute, and a drawing at least none above what changed
+ * inside it. Each element is asked once a list of changes for each set of
+ * anchors (`scope.anchored`), which answers it alike every time it is
+ * asked from as far or further.
  */
 function spreadAnchors(
   el: Element | ShadowRoot,
@@ -15439,26 +15456,32 @@ function spreadAnchors(
   crossing: boolean,
 ): boolean {
   let asked = scope.anchored.get(anchors);
-  if (!asked) scope.anchored.set(anchors, (asked = new Set()));
-  const from = (at: Element): boolean => {
-    if (asked.has(at)) return true;
-    asked.add(at);
-    const bits = anchors.at(at);
+  if (!asked) scope.anchored.set(anchors, (asked = new Map()));
+  const from = (at: Element, distance: number): boolean => {
+    const was = asked.get(at);
+    if (was !== undefined && was <= distance) return true;
+    asked.set(at, distance);
+    const bits = anchors.at(at, distance);
     if (bits === null) return false;
     if (bits) spreadChange(at, bits, false, scope.own, crossing);
     return true;
   };
   const top = el instanceof ShadowRoot ? null : el;
-  for (let at: AnyNode | null = top; at && isElement(at); at = at.parent) {
-    if (!from(at)) return false;
+  let distance = holder ? 1 : 0;
+  for (
+    let at: AnyNode | null = top;
+    at && isElement(at) && distance <= anchors.levels;
+    at = at.parent, distance += 1
+  ) {
+    if (!from(at, distance)) return false;
     if (!anchors.siblings) continue;
     for (let s = at.prev; s; s = s.prev) {
-      if (isElement(s) && !from(s)) return false;
+      if (isElement(s) && !from(s, distance)) return false;
     }
   }
   if (holder && anchors.siblings) {
     for (const child of el.children) {
-      if (isElement(child) && !from(child)) return false;
+      if (isElement(child) && !from(child, 0)) return false;
     }
   }
   return true;
@@ -16252,6 +16275,94 @@ function changedFrom(
  *  (`TreeTested`). */
 function testedOf(tested: Tested, el: Element): boolean {
   return tested === true || (tested !== false && tested(el));
+}
+
+/**
+ * The children a change of what `parent` holds reaches through the sibling
+ * combinators (`TreeReach.siblings`), into `out`, walking them in order
+ * from where it was, `from` (`followersOf`) — or from the first, where
+ * where a child sits is read before one (`kidsLater`). A child whose
+ * answer changed is a source: what came, what went, one whose place a
+ * compound in `later` tests, and one reached. A `~` reaches each child
+ * after a source it follows that it leads to from that; a `+`, the child
+ * just after one, where it leads to that — and the child after where the
+ * change was, where it follows the one before it, whose next that one
+ * was. So `A + B ~ C` is followed through the `B` it reaches. Every child
+ * after `from` where the rules say nothing.
+ */
+function siblingsReached(
+  change: HtmlChange,
+  parent: ParentNode,
+  from: AnyNode | null,
+  siblings: SiblingReach | null,
+  later: Tested,
+  out: Element[],
+): void {
+  if (!siblings) {
+    for (let s = from; s; s = s.next) if (isElement(s)) out.push(s);
+    return;
+  }
+  const trailsOf = (
+    pairs: readonly SiblingPair[],
+    el: Element,
+    into: Set<Tested>,
+  ): Set<Tested> => {
+    for (const { lead, trail } of pairs) {
+      if (testedOf(lead, el)) into.add(trail);
+    }
+    return into;
+  };
+  const ledTo = (trails: ReadonlySet<Tested>, el: Element): boolean => {
+    for (const trail of trails) if (testedOf(trail, el)) return true;
+    return false;
+  };
+  const added = new Set<AnyNode>(
+    change.type === 'childList' ? change.addedNodes : [],
+  );
+  // what went, at `from`, and the child before where it was, whose next
+  // it was
+  const tildeFrom = new Set<Tested>();
+  const plusFrom = new Set<Tested>();
+  if (change.type === 'childList') {
+    for (const node of change.removedNodes) {
+      if (!isElement(node)) continue;
+      trailsOf(siblings.tilde, node, tildeFrom);
+      trailsOf(siblings.plus, node, plusFrom);
+    }
+  }
+  if (from) {
+    let before: AnyNode | null = from.prev;
+    while (before && (added.has(before) || !isElement(before))) {
+      before = before.prev;
+    }
+    if (before) trailsOf(siblings.plus, before as Element, plusFrom);
+  }
+  const tilde = new Set<Tested>();
+  let plus = new Set<Tested>();
+  let edge: Set<Tested> | null = null;
+  for (
+    let s: AnyNode | null = later === false ? from : parent.children[0];
+    s;
+    s = s.next
+  ) {
+    if (s === from) {
+      for (const trail of tildeFrom) tilde.add(trail);
+      edge = plusFrom;
+    }
+    if (!isElement(s)) continue;
+    if (added.has(s)) {
+      trailsOf(siblings.tilde, s, tilde);
+      plus = trailsOf(siblings.plus, s, new Set());
+      continue;
+    }
+    const reached: boolean =
+      ledTo(tilde, s) || ledTo(plus, s) || (!!edge && ledTo(edge, s));
+    edge = null;
+    if (reached) out.push(s);
+    const source: boolean = reached || (later !== false && testedOf(later, s));
+    if (source) trailsOf(siblings.tilde, s, tilde);
+    plus = source ? trailsOf(siblings.plus, s, new Set()) : new Set();
+  }
 }
 
 /**
