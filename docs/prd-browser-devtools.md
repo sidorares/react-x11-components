@@ -35,8 +35,13 @@ shaped it, what using it found, and what comes next.
   margin, border, padding and content over the page, with a caption. The
   picker does the same for the element under the pointer, and a press
   chooses it without the page hearing the press. Beside the tree is a
-  sidebar with two tabs, which moves under the tree when the panel is
-  narrower than 620 pixels, as it is docked at a side. **Styles** shows the `style` attribute and the
+  sidebar with three tabs, which moves under the tree when the panel is
+  narrower than 620 pixels, as it is docked at a side. **Attributes**,
+  first, lists the element's attributes: a click on a value edits it in
+  place, a row shows copy and remove icons while the pointer is on it, and
+  a row at the end adds one, its name and then its value completed. Where
+  the element's only child is text, the text is under them in a field,
+  applied when the field lets the focus go or on Ctrl+Enter. **Styles** shows the `style` attribute and the
   computed style as a filterable `<Table>`, with a swatch beside each
   colour. **Layout** shows the box model diagram, the element's rect and
   offset, and the layout properties that apply to it.
@@ -97,6 +102,27 @@ picker. Chrome keeps it in a kebab menu, and the Develop menu keeps it
 too for whoever looks there. The page stays the dock's first child on
 every side, and the left is a row the other way round, so a move remounts
 no document.
+
+**An attribute's value is completed from what it can mean here**
+(`devtools/suggest.ts`). A class is offered only where some rule of the
+page's would match the element with it: `HtmlHandle.namesThatStyle` reads
+the classes each rule's subject asks for and matches the rule as though the
+element carried the class, through an adapter of its own, so nothing the
+cascade keeps is touched. A class whose rule needs an ancestor the element
+lacks, or another tag, is left out, and a rule's `:hover` counts as a state
+the element can be put in. An `id` is offered from the rules that would
+style it and the ids other elements name that no element has. An attribute
+that names elements by id offers those it may name: a label's `for` the
+controls', `aria-labelledby` the elements with text, each with its tag and
+text as a hint. `href` offers the document's fragments, `style` the
+properties, and the rest what HTML and ARIA enumerate.
+
+**An edit is the host's, not a script's.** It changes the attribute or the
+text node where `<Html>` holds it and tells the handle what changed, so
+only what a selector testing it reaches is styled again. A page's own
+`MutationObserver`s do not hear it, and its custom elements' reactions do
+not run; making the edit through the page's realm would, and is a step for
+when the tools can name an element to it.
 
 **The Develop menu owns its chords.** A `MenuBar` binds its items'
 shortcuts, and on macOS the system menu bar also runs them itself. So the

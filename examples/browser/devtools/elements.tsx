@@ -12,7 +12,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { SplitPane, useTheme } from 'react-x11';
-import type { Theme } from 'react-x11';
 
 import { Tree } from '../../../src/tree/index.js';
 import type { TreeHandle, TreeRowState } from '../../../src/tree/index.js';
@@ -24,8 +23,9 @@ import {
   TabsList,
   TabsTrigger,
 } from '../../../src/tabs/index.js';
-import { isDarkBackground } from '../../../src/code-language/index.js';
 import type { Element, HtmlHandle } from '../../../src/html/index.js';
+import { syntaxColours } from './colours.js';
+import { AttributesPane } from './attributes.js';
 import {
   BOX_COLOURS,
   boxModelOf,
@@ -65,28 +65,6 @@ export function useTicks(on: boolean, ms = TICK_MS): number {
   return ticks;
 }
 
-/** The colours a row's tags, attributes and text are in, as a browser's
- *  tools colour them, in either scheme. */
-function syntaxColours(theme: Theme): Record<LabelPart['kind'], string> {
-  return isDarkBackground(theme.background)
-    ? {
-        punct: '#9aa0a6',
-        tag: '#5db0d7',
-        attr: '#9bbbdc',
-        value: '#f29766',
-        text: theme.text,
-        comment: '#898989',
-      }
-    : {
-        punct: '#a8459f',
-        tag: '#881280',
-        attr: '#994500',
-        value: '#1a1aa6',
-        text: theme.text,
-        comment: '#236e25',
-      };
-}
-
 // --- the tree -----------------------------------------------------------------
 
 // the accessors, once: the tree flattens again when one is new
@@ -110,6 +88,7 @@ function DomTree({
   const doc = handle.document;
   const selected = useStore(inspection.selected);
   const revealed = useStore(inspection.revealed);
+  const edited = useStore(inspection.edited);
 
   // a document the tab shows anew opens on its `<html>` and `<body>`
   const [expanded, setExpanded] = useState<readonly number[]>([]);
@@ -135,7 +114,7 @@ function DomTree({
   // the roots read again at every tick, which reads every open branch again
   const items = useMemo(
     () => (doc ? (childrenOf(doc) ?? []) : []),
-    [doc, docKey, tick],
+    [doc, docKey, tick, edited],
   );
 
   return (
@@ -325,10 +304,11 @@ function Sidebar({
       selected.type === 'style')
       ? (selected as Element)
       : null;
-  const [tab, setTab] = useState('styles');
+  const [tab, setTab] = useState('attributes');
+  const edited = useStore(inspection.edited);
   const read = useMemo(
     () => (element && handle.document ? inspect(handle, element) : null),
-    [element, tick],
+    [element, tick, edited],
   );
   return (
     <Tabs
@@ -339,9 +319,21 @@ function Sidebar({
       style={{ flexGrow: 1, minHeight: 0, minWidth: 0 }}
     >
       <TabsList style={{ paddingLeft: 6, backgroundColor: '$surface' }}>
+        <TabsTrigger value="attributes">Attributes</TabsTrigger>
         <TabsTrigger value="styles">Styles</TabsTrigger>
         <TabsTrigger value="layout">Layout</TabsTrigger>
       </TabsList>
+      <TabsContent value="attributes" style={PANEL_CONTENT}>
+        {element ? (
+          <AttributesPane
+            handle={handle}
+            inspection={inspection}
+            element={element}
+          />
+        ) : (
+          <Nothing />
+        )}
+      </TabsContent>
       <TabsContent value="styles" style={PANEL_CONTENT}>
         {read ? <StylesPane read={read} /> : <Nothing />}
       </TabsContent>

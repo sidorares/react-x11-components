@@ -68,6 +68,13 @@ export class Inspection {
   /** Bumped when something outside asks the tree to show `selected`: an
    *  Inspect from the page's menu, a pick. */
   readonly revealed = new Store(0);
+  /** Bumped when the tools changed the document: what reads it reads it
+   *  again now, rather than at its next tick. */
+  readonly edited = new Store(0);
+
+  touch(): void {
+    this.edited.set(this.edited.value + 1);
+  }
 
   /** Choose an element from outside the tree, and have the tree show it. */
   reveal(element: DomNode | null): void {
