@@ -2806,7 +2806,15 @@ closes a way out a DOM binding opens by accident:
   acts on what it is called on, never on the window it was read from:
   YouTube binds a hidden `about:blank` frame's `history.replaceState` to
   the page's `history`, and one that kept its frame's session refused the
-  page's URL (`historyOf`). And a
+  page's URL (`historyOf`). A mixin's members are each interface's own,
+  never a class's between it and its parent: ParentNode's `children` was,
+  Shady DOM's copy off `Element.prototype` was nothing, and YouTube's
+  stamper stamped its masthead twice. **A new mixin is copied onto its
+  interfaces**, as ParentNode is after `XMLDocument`. And what no script
+  can make is stood in for by what keeps the comparisons a page makes:
+  `document.all` is `NaN`, falsy and equal to nothing, since polymer-resin
+  passes a falsy value through only where it is not `document.all`, and
+  as `undefined` every binding to `undefined` came out "zClosurez". And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
   page sandboxes a frame through `sandbox.supports()`. How a callback is
