@@ -1901,6 +1901,54 @@ test('timers run, and a cleared one does not', async () => {
   );
 });
 
+test("a timer's callback has the window for its this, strict or not, and nothing it writes through this changes the timer", async () => {
+  // HTML 8.6: the timer initialization steps invoke the callback with the
+  // global's WindowProxy as its this, which a strict callback is handed
+  // too, where the facade called it as a method of the record it keeps
+  // the timer in; the callbacks Web IDL invokes with none have none
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = { interval: [] }, out = document.getElementById("out");' +
+      'function show() { out.textContent = JSON.stringify(r); }' +
+      'setTimeout(function (a, b) { r.sloppy = [this === window, a + b]; show(); }, 0, 1, 2);' +
+      'setTimeout(function () { "use strict"; r.strict = this === window; show(); }, 0);' +
+      // what the record held, written over through this
+      'var every = setInterval(function (a) {' +
+      '  "use strict"; r.interval.push([a, this === window]);' +
+      '  this.fn = null; this.args = ["x"]; this.repeat = false;' +
+      '  if (r.interval.length === 3) { clearInterval(every); r.repeat = window.repeat; }' +
+      '  show();' +
+      '}, 5, "i");' +
+      'requestAnimationFrame(function () { "use strict"; r.frame = this === undefined; show(); });' +
+      'requestIdleCallback(function () { "use strict"; r.idle = this === undefined; show(); });' +
+      'queueMicrotask(function () { "use strict"; r.microtask = this === undefined; show(); });' +
+      '</script>',
+  );
+  const seen = JSON.parse(
+    await settled(doc, 'out', (t) => {
+      const r = t ? JSON.parse(t) : {};
+      return r.interval?.length === 3 && 'frame' in r && 'idle' in r;
+    }),
+  );
+  assert.deepEqual(
+    seen,
+    {
+      interval: [
+        ['i', true],
+        ['i', true],
+        ['i', true],
+      ],
+      microtask: true,
+      sloppy: [true, 3],
+      strict: true,
+      repeat: false,
+      frame: true,
+      idle: true,
+    },
+    doc.logs.join('\n'),
+  );
+});
+
 test('fetch is the page’s own origin’s, and answers as the network does', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -8942,6 +8990,24 @@ test('document.startViewTransition calls its update at the next frame, and settl
       // skipped before its update ran: the update still runs
       'r5:AbortError|cb5|f5:ok',
     ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test("a view transition's update has no this: a sloppy one's is the window, a strict one's undefined, and never the transition", async () => {
+  // invoked as Web IDL invokes a callback function, with no this value
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var t1 = document.startViewTransition(function () { r.push(this === window, this === t1); });' +
+      't1.finished.then(function () {' +
+      '  return document.startViewTransition({ update: function () { "use strict"; r.push(this === undefined); } }).finished;' +
+      '}).then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|false|true',
     doc.logs.join('\n'),
   );
 });
