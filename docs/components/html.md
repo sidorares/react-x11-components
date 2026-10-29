@@ -137,7 +137,11 @@ decoder core's `<image>` uses (react-x11's `decodeImageBytes`), so an
 image shows in a document exactly where it would show in an `<image>`: a
 WebP lands a moment after the first frame under Node, where its decoder is
 loaded on the first one, and every format does under Bun, decoded off the
-JavaScript thread. Bytes nothing decodes are drawn as a declined image is.
+JavaScript thread. A PNG, a JPEG or a WebP of 8 KB or more is decoded on a
+worker thread under Node too, and is laid out meanwhile at the size its
+file's header says, as a browser lays out an image whose bytes are in:
+what follows it is where it will be, and the picture is drawn when it has
+been decoded. Bytes nothing decodes are drawn as a declined image is.
 Return `{ kind: 'image', image, width, height }` instead to hand over an
 image the host decoded itself, and `{ kind: 'document' }` where what an
 `<object>`'s `data` holds is a page or some other document rather than an

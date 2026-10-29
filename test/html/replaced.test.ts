@@ -50,6 +50,7 @@ import {
 } from './harness.js';
 import type { LaidBox, PaintOp, ReplacedBox } from './harness.js';
 import { animationClock } from '../../src/html/node.js';
+import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
 import { gifBytes } from '../gif-fixture.js';
 
@@ -499,6 +500,133 @@ test('an image its own size lays out lays the document out again where it arrive
   );
   assert.strictEqual(treeOf(doc.el()), tree, 'the same boxes');
   assert.strictEqual(boxOf(doc.el(), 'p').y, before + 20 - 10, 'what follows');
+});
+
+/** Hold every decode `resources.ts` hands core's ladder, for the rest of
+ *  `t`: each lands, as `pixels` says, only when the test lets it go. */
+function holdDecodes(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  pixels: (bytes: Uint8Array) => Uint8Array | null = (bytes) => bytes,
+): { held: () => number; release: (count?: number) => Promise<void> } {
+  const waiting: Array<() => void> = [];
+  t.mock.method(
+    imageDecoder,
+    'decode',
+    (bytes: Uint8Array) =>
+      new Promise<{ width: number; height: number }>((resolve, reject) => {
+        waiting.push(() => {
+          const decoded = pixels(bytes);
+          if (decoded) resolve(ntk.decodeImageBytes(decoded) as never);
+          else reject(new Error('not an image'));
+        });
+      }),
+  );
+  return {
+    held: () => waiting.length,
+    /** The first `count` held, in the order asked; all of them by default. */
+    release: async (count = waiting.length) => {
+      for (const go of waiting.splice(0, count)) go();
+      await act();
+    },
+  };
+}
+
+/** How many images `el` draws, by its own idea of which it has. */
+async function imagesDrawn(el: HtmlViewNode): Promise<number> {
+  const ops: PaintOp[] = [];
+  const { imageFor } = (
+    el as unknown as {
+      _paintOptions(r: null, d: null): { imageFor(box: unknown): unknown };
+    }
+  )._paintOptions(null, null);
+  await fillsOf(el, ops, { imageFor: imageFor as () => unknown });
+  return ops.filter((op) => op.op === 'image').length;
+}
+
+test('an image is laid out at the size its header says before its decode lands, and drawn only once it has', async (t) => {
+  // Apple's MacBook Pro page: an `<img>` only its image sizes, answered
+  // from the host's cache, was still decoding on a worker 2.5 s later, and
+  // everything under it was laid out 284px too high until it landed. A
+  // browser lays it out from the bytes that say its size.
+  const decodes = holdDecodes(t);
+  for (const later of [false, true]) {
+    const doc = await choosing(
+      '<style>p{margin:0}</style><img id="a" src="large.png">' +
+        '<img id="s" srcset="dense.png 2x"><p id="p">after</p>',
+      { 'large.png': LARGE, 'dense.png': LARGE },
+      { later },
+    );
+    if (later) {
+      assert.deepStrictEqual(doc.size('a'), [0, 0], 'nothing has said yet');
+      await doc.release();
+    }
+    await waitFor(() => assert.strictEqual(decodes.held(), 2));
+    assert.deepStrictEqual(doc.size('a'), [40, 20], `at its size (${later})`);
+    assert.deepStrictEqual(doc.size('s'), [20, 10], 'a choice at its density');
+    assert.strictEqual(boxOf(doc.el(), 'p').y, 30, 'and what follows under');
+    assert.strictEqual(await imagesDrawn(doc.el()), 0, 'with nothing drawn');
+    const tree = treeOf(doc.el());
+    await decodes.release();
+    await waitFor(async () =>
+      assert.strictEqual(await imagesDrawn(doc.el()), 2, 'drawn'),
+    );
+    assert.strictEqual(treeOf(doc.el()), tree, 'the same boxes');
+    assert.deepStrictEqual(doc.size('a'), [40, 20]);
+    assert.strictEqual(boxOf(doc.el(), 'p').y, 30, 'nothing moved');
+    cleanup();
+  }
+});
+
+test('a decode that comes to another size than its header said lays out at that one, and one that fails at none', async (t) => {
+  // the header is believed only until the pixels are in: a file whose
+  // header lies, or that does not decode, is laid out as it decodes
+  const decodes = holdDecodes(t, (bytes) =>
+    bytes === LARGE ? SMALL : bytes === SMALL ? null : bytes,
+  );
+  const doc = await choosing(
+    '<style>p{margin:0}</style><img id="a" src="large.png">' +
+      '<img id="b" src="small.png"><p id="p">after</p>',
+    { 'small.png': SMALL, 'large.png': LARGE },
+  );
+  await waitFor(() => assert.strictEqual(decodes.held(), 2));
+  assert.deepStrictEqual(doc.size('a'), [40, 20], "the header's");
+  assert.deepStrictEqual(doc.size('b'), [20, 10]);
+  assert.strictEqual(boxOf(doc.el(), 'p').y, 30);
+  await decodes.release(1);
+  await waitFor(() => assert.deepStrictEqual(doc.size('a'), [20, 10]));
+  assert.deepStrictEqual(doc.size('b'), [20, 10], 'still its header');
+  assert.strictEqual(boxOf(doc.el(), 'p').y, 20, 'what follows moved up');
+  await decodes.release();
+  await waitFor(() => assert.deepStrictEqual(doc.size('b'), [0, 0]));
+  assert.strictEqual(boxOf(doc.el(), 'p').y, 10, 'and up again');
+  assert.strictEqual(await imagesDrawn(doc.el()), 1, 'only what decoded');
+});
+
+test('a chosen source is laid out at the size its header says, and one chosen in place of a picture shows that picture until its pixels are in', async (t) => {
+  // `ImageSources.sizePending`: the first choice has nothing to show
+  // meanwhile, and takes its header's size at its density; a later one
+  // keeps the picture on screen, at that picture's size, rather than a
+  // frame the size of one not decoded yet
+  const decodes = holdDecodes(t);
+  const doc = await choosing(
+    '<img id="s" srcset="large.png 2x"><picture>' +
+      '<source media="(min-width: 300px)" srcset="wide.png">' +
+      '<img id="p" src="small.png"></picture>',
+    { 'small.png': SMALL, 'large.png': LARGE, 'wide.png': LARGE },
+    { width: 200 },
+  );
+  await waitFor(() => assert.strictEqual(decodes.held(), 2));
+  assert.deepStrictEqual(doc.size('s'), [20, 10], 'over its density');
+  assert.deepStrictEqual(doc.size('p'), [20, 10]);
+  await decodes.release();
+  await waitFor(async () => assert.strictEqual(await imagesDrawn(doc.el()), 2));
+  await doc.resize(400);
+  await waitFor(() => assert.strictEqual(decodes.held(), 1));
+  assert.ok(doc.asked.includes('wide.png'));
+  assert.deepStrictEqual(doc.size('p'), [20, 10], 'the picture it has');
+  assert.strictEqual(await imagesDrawn(doc.el()), 2, 'drawn meanwhile');
+  await decodes.release();
+  await waitFor(() => assert.deepStrictEqual(doc.size('p'), [40, 20]));
 });
 
 test('an image that arrives after the first layout widens the boxes that shrink to it, as one there from the start does', async () => {

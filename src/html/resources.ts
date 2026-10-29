@@ -23,6 +23,8 @@ import { GifCanvas, readGif } from './gif.js';
 import { AnimatedImage, gifAnimation, webpAnimation } from './animated.js';
 import { readAnimatedWebP } from './webp.js';
 import type { DecodeStill } from './webp.js';
+import { headerSize } from './image-header.js';
+import type { HeaderSize } from './image-header.js';
 import type { UrlResolver } from './url.js';
 import type { Element } from 'domhandler';
 
@@ -116,9 +118,12 @@ export type PlayerKind = 'video' | 'audio';
 
 /** What `ResourceStore` tells its owner arrived late: a stylesheet, an
  *  image, a video or an audio, or a stylesheet that was declined or
- *  failed. */
+ *  failed. And two of an image whose pixels are decoded apart from its
+ *  bytes (`_decoding`): its size, read from its header while its pixels
+ *  are still on their way (`'sized'`), and a decode that came to another
+ *  size than that, or to none (`'resized'`). */
 export type ResourceChange =
-  'stylesheet' | 'image' | 'video' | 'audio' | 'declined';
+  'stylesheet' | 'image' | 'sized' | 'resized' | 'video' | 'audio' | 'declined';
 
 /** Where a video or an audio request is: answered with what plays, still
  *  being answered, or declined — by the host, or by the player it was
@@ -143,6 +148,8 @@ interface Entry {
   image?: unknown;
   /** A GIF of more than one frame: `image` is its first. */
   animation?: AnimatedImage;
+  /** An image's size: once it is decoded, and while it still is where its
+   *  header said (`_decoding`) — so an entry `'pending'` may have one. */
   size?: IntrinsicSize;
   /** Whether the host said what the URL holds is a document. */
   document?: boolean;
@@ -345,36 +352,17 @@ export class ResourceStore {
         if (!synchronous) this._changed('image', entry.layout !== false);
         return;
       }
-      animation.then(
-        (animation) => {
-          if (this._destroyed) return;
-          take(animation);
-          this._changed('image', entry.layout !== false);
-          this._done();
-        },
-        () => {
-          entry.state = 'failed';
-          this._done();
-        },
-      );
+      this._decoding(entry, result.bytes, animation, take, synchronous);
       return;
     }
     const decoded = decodeImage(result.bytes);
     if (isPromise(decoded)) {
-      decoded.then(
-        (image) => {
-          if (this._destroyed) return;
-          entry.image = image;
-          entry.size = rasterSize(image.width, image.height);
-          entry.state = 'ready';
-          this._changed('image', entry.layout !== false);
-          this._done();
-        },
-        () => {
-          entry.state = 'failed';
-          this._done();
-        },
-      );
+      const take = (image: ImageLike): void => {
+        entry.image = image;
+        entry.size = rasterSize(image.width, image.height);
+        entry.state = 'ready';
+      };
+      this._decoding(entry, result.bytes, decoded, take, synchronous);
       return;
     }
     if (!decoded) {
@@ -385,6 +373,51 @@ export class ResourceStore {
     entry.size = rasterSize(decoded.width, decoded.height);
     entry.state = 'ready';
     if (!synchronous) this._changed('image', entry.layout !== false);
+  }
+
+  /**
+   * Wait for an image's pixels, decoded on a worker thread or by a decoder
+   * still loading, and give it meanwhile the size its file's header says
+   * (`image-header.ts`): an `<img>` that only its image sizes is laid out at
+   * its size while the pixels are on their way, as a browser lays one out.
+   * Its `state` stays `'pending'` until they are in, so nothing draws it and
+   * the document's `load` waits; `imageSize` answers. Told as `'sized'`
+   * where the boxes were built before — where the host answered at once,
+   * the build after this reads the size — and only where something its
+   * size lays out asked for it. A decode that comes to another size than
+   * the header said, or fails, is told as `'resized'`: what was laid out
+   * from the header is built again.
+   */
+  private _decoding<T>(
+    entry: Entry,
+    bytes: Uint8Array,
+    decoding: Promise<T>,
+    take: (decoded: T) => void,
+    synchronous: boolean,
+  ): void {
+    const header = headerSize(bytes, exifOrientation);
+    if (header) {
+      entry.size = rasterSize(header.width, header.height);
+      if (!synchronous && entry.layout !== false) this._changed('sized', true);
+    }
+    decoding.then(
+      (decoded) => {
+        if (this._destroyed) return;
+        take(decoded);
+        this._changed(
+          header && !sameSize(header, entry.size) ? 'resized' : 'image',
+          entry.layout !== false,
+        );
+        this._done();
+      },
+      () => {
+        if (this._destroyed) return;
+        entry.state = 'failed';
+        entry.size = undefined;
+        if (header) this._changed('resized', entry.layout !== false);
+        this._done();
+      },
+    );
   }
 
   /** A loaded stylesheet, as text, or null while it has not arrived.
@@ -448,15 +481,22 @@ export class ResourceStore {
     return entry?.state === 'ready' && entry.document === true;
   }
 
-  /** A loaded image's intrinsic size, for the box builder. */
+  /**
+   * An image's intrinsic size, for the box builder, once it is known: when
+   * it is decoded, or before, from its header (`_decoding`), while its
+   * pixels are still on their way and `image` answers null. Null while
+   * neither has said, and for one that failed.
+   */
   imageSize(url: string): IntrinsicSize | null {
     if (!url) return null;
     const entry = this._entries.get(this._key(url));
-    return entry?.state === 'ready' ? (entry.size ?? null) : null;
+    return entry && entry.state !== 'failed' ? (entry.size ?? null) : null;
   }
 
   /** Where a resource is: asked for and on its way, arrived, failed — a
-   *  host's decline among them — or never asked for, null. */
+   *  host's decline among them — or never asked for, null. An image is
+   *  `'pending'` until its pixels are in, whether or not its size is
+   *  (`imageSize`): `'ready'` is what can be drawn. */
   state(url: string): 'pending' | 'ready' | 'failed' | null {
     if (!url) return null;
     return this._entries.get(this._key(url))?.state ?? null;
@@ -536,6 +576,14 @@ export class ResourceStore {
     this._players.video.clear();
     this._players.audio.clear();
   }
+}
+
+/** Whether a header's size is the one the pixels came to. */
+function sameSize(
+  header: HeaderSize,
+  size: IntrinsicSize | undefined,
+): boolean {
+  return size?.width === header.width && size.height === header.height;
 }
 
 /** A raster image's size: both dimensions, and their ratio. */
@@ -655,14 +703,35 @@ function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
         data: canvas.at(0),
       });
     }
-    // off the JavaScript thread (react-x11#1004): a document waits for a
-    // promise anyway, and its photographs held the thread for half of the
-    // Guardian's load
-    return ntk.decodeImageBytes(bytes, { offThread: true });
+    return imageDecoder.decode(bytes);
   } catch {
     return null;
   }
 }
+
+/**
+ * What decodes an image's bytes that are not a GIF: core's ladder, off the
+ * JavaScript thread (react-x11#1004) — a document waits for a promise
+ * anyway, and its photographs held the thread for half of the Guardian's
+ * load. An object of its own, as the clocks are, so that a test can hold a
+ * decode and see what is laid out and drawn before it lands.
+ */
+export const imageDecoder = {
+  decode(bytes: Uint8Array): ImageLike | Promise<ImageLike> {
+    return ntk.decodeImageBytes(bytes, { offThread: true });
+  },
+};
+
+/**
+ * ntk's reading of a JPEG's EXIF Orientation, which its decoder turns the
+ * pixels by, so that a size read from the header is the decoded one. ntk
+ * exports it and `react-x11/ntk` carries it (`export *`), but core's
+ * `ntk.d.ts` does not declare it, so it is read structurally; absent, a
+ * JPEG's header size is as stored, and a decode that turned it relays out.
+ */
+const exifOrientation = (
+  ntk as unknown as { exifOrientation?: (bytes: Uint8Array) => number }
+).exifOrientation;
 
 /** A URL's fragment, decoded, or '' where it has none. */
 function fragmentOf(url: string): string {
