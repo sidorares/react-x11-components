@@ -6929,6 +6929,36 @@ test('checkVisibility asks whether an element has a box, and where told to, its 
   );
 });
 
+test('a display: contents element measures as no box, though the text it holds is drawn under its name', async () => {
+  // as Chrome measures one: every rect zero, and its used size its own
+  const doc = await hosted(
+    whole(
+      '',
+      '<div id="c" style="display: contents; width: 50px; padding: 3px; overflow: auto">text<span id="in">in</span></div>' +
+        '<p id="out"></p><script>' +
+        'var c = document.getElementById("c"), r = c.getBoundingClientRect(), cs = getComputedStyle(c);' +
+        'document.getElementById("out").textContent = JSON.stringify([r.width, r.height, c.getClientRects().length,' +
+        '  c.clientWidth, c.clientHeight, c.scrollWidth, c.offsetWidth, c.offsetParent, cs.width, cs.height, cs.paddingTop,' +
+        '  document.getElementById("in").getBoundingClientRect().width > 0]);' +
+        '</script>',
+    ),
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    null,
+    '50px',
+    'auto',
+    '3px',
+    true,
+  ]);
+});
+
 metric(
   'the offsets are where layout put a box, before a transform turned, scaled or moved it or a scroll moved it',
   async () => {
@@ -7072,6 +7102,173 @@ test("an element's style is a CSSStyleDeclaration whose members are its prototyp
     true,
     true,
   ]);
+});
+
+test("a computed style and a rule's style are CSSStyleDeclarations, the one read only and the other written back to its sheet", async () => {
+  // what Chrome answers of each, but that it sets a shorthand's longhand
+  // by recomposing the shorthand where this declares the longhand after it
+  const doc = await hosted(
+    '<style>.r { color: red; margin: 1px 2px }</style><div id="e" style="color: red; margin-top: 1px"></div>' +
+      '<p id="out"></p><script>' +
+      "var e = document.getElementById('e'), cs = getComputedStyle(e), r = [];" +
+      'r.push(cs instanceof CSSStyleDeclaration, cs.parentRule, cs.cssText, cs.length > 100, cs.item(0) === cs[0], "color" in cs);' +
+      // as in Chrome: setProperty on one changes nothing and throws nothing
+      "cs.setProperty('color', 'blue'); cs.removeProperty('color'); r.push(cs.color);" +
+      "try { cs.color = 'blue'; } catch (x) { r.push(x.name); }" +
+      "try { cs.cssText = 'color: blue'; } catch (x) { r.push(x.name); }" +
+      'var sheet = document.styleSheets[0], rule = sheet.cssRules[0], st = rule.style;' +
+      'r.push(st instanceof CSSStyleDeclaration, st === rule.style, st.parentRule === rule, st.cssText, st[0], st.getPropertyValue("margin"));' +
+      // set where it stood, and a property it did not declare at the end
+      "st.setProperty('color', 'green', 'important'); st.marginTop = '5px';" +
+      'r.push(rule.cssText, sheet.cssRules[0] === rule, st.getPropertyPriority("color"));' +
+      "e.className = 'r'; e.removeAttribute('style'); r.push(getComputedStyle(e).color, getComputedStyle(e).marginTop);" +
+      "st.cssText = 'color: blue'; r.push(rule.cssText, getComputedStyle(e).color);" +
+      // an element's own style is set where it stood too
+      "e.setAttribute('style', 'color: red; margin-top: 1px'); e.style.setProperty('color', 'blue'); r.push(e.style.cssText);" +
+      "document.getElementById('out').textContent = JSON.stringify(r);" +
+      '</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    null,
+    '',
+    true,
+    true,
+    true,
+    'rgb(255, 0, 0)',
+    'NoModificationAllowedError',
+    'NoModificationAllowedError',
+    true,
+    true,
+    true,
+    'color: red; margin: 1px 2px;',
+    'color',
+    '1px 2px',
+    '.r { color: green !important; margin: 1px 2px; margin-top: 5px; }',
+    true,
+    'important',
+    'rgb(0, 128, 0)',
+    '5px',
+    '.r { color: blue; }',
+    'rgb(0, 0, 255)',
+    'color: blue; margin-top: 1px;',
+  ]);
+});
+
+test("a rule's, an import's and a sheet's media are MediaLists, a change written back to what holds them", async () => {
+  // what Chrome answers, but for how the rule's text is set out
+  const doc = await hosted(
+    '<style media="screen">@media screen and (min-width: 1px), print { #e { color: red } }</style>' +
+      '<div id="e"></div><p id="out"></p><script>' +
+      'var sheet = document.styleSheets[0], rule = sheet.cssRules[0], m = rule.media, r = [];' +
+      "var red = function () { return getComputedStyle(document.getElementById('e')).color === 'rgb(255, 0, 0)'; };" +
+      'r.push(m instanceof MediaList, m === rule.media, m.mediaText, m.length, m[1], m.item(0), m.item(5), String(m), Object.keys(m).join(","), Array.from(m).length);' +
+      "m.appendMedium('tv'); m.appendMedium('tv'); r.push(m.mediaText, rule.conditionText);" +
+      "m.deleteMedium('print'); r.push(rule.cssText.replace(/\\s+/g, ' '));" +
+      "try { m.deleteMedium('nope'); } catch (x) { r.push(x.name); }" +
+      "r.push(red()); m.mediaText = 'print'; r.push(rule.conditionText, sheet.cssRules[0] === rule, red());" +
+      "r.push(sheet.media instanceof MediaList, sheet.media.mediaText); sheet.media.mediaText = 'print';" +
+      "r.push(sheet.ownerNode.getAttribute('media'));" +
+      'try { new MediaList(); } catch (x) { r.push(x.name); }' +
+      "document.getElementById('out').textContent = JSON.stringify(r);" +
+      '</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    true,
+    'screen and (min-width: 1px), print',
+    2,
+    'print',
+    'screen and (min-width: 1px)',
+    null,
+    'screen and (min-width: 1px), print',
+    '0,1',
+    2,
+    'screen and (min-width: 1px), print, tv',
+    'screen and (min-width: 1px), print, tv',
+    '@media screen and (min-width: 1px), tv { #e { color: red } }',
+    'NotFoundError',
+    // the rule held on screen, and holds only for print now
+    true,
+    'print',
+    true,
+    false,
+    true,
+    'screen',
+    'print',
+    'TypeError',
+  ]);
+});
+
+test('a FileReader reads a blob in a later task, as text, a data URL, a binary string or bytes, and tells it as Chrome does', async () => {
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      'var read = function (method, blob, label) { return new Promise(function (ok) {' +
+      '  var fr = new FileReader(), seen = [];' +
+      "  ['loadstart', 'progress', 'load', 'abort', 'error', 'loadend'].forEach(function (t) {" +
+      "    fr.addEventListener(t, function (e) { seen.push(t + ':' + fr.readyState + ':' + (e.lengthComputable ? e.loaded + '/' + e.total : '-'));" +
+      "      if (t === 'loadend') ok([fr.result instanceof ArrayBuffer ? 'bytes ' + fr.result.byteLength : fr.result, seen.join(' '), sync].join('|')); });" +
+      '  });' +
+      '  fr[method](blob, label); var sync = fr.readyState + "," + fr.result;' +
+      '}); };' +
+      "var b = new Blob(['h\u00e9llo'], { type: 'Text/Plain' }), r = [];" +
+      "read('readAsText', b).then(function (x) { r.push(x); return read('readAsText', new Blob([new Uint8Array([0xe9, 0x41])]), 'latin1'); })" +
+      ".then(function (x) { r.push(x); return read('readAsText', new Blob([new Uint8Array([0xe9])]), 'no-such-label'); })" +
+      ".then(function (x) { r.push(x); return read('readAsDataURL', b); })" +
+      ".then(function (x) { r.push(x); return read('readAsDataURL', new Blob([])); })" +
+      ".then(function (x) { r.push(x); return read('readAsBinaryString', b); })" +
+      ".then(function (x) { r.push(x); return read('readAsArrayBuffer', b); })" +
+      '.then(function (x) { r.push(x);' +
+      '  var busy = new FileReader(); busy.readAsText(b);' +
+      '  try { busy.readAsText(b); } catch (e) { r.push(e.name); }' +
+      "  var gone = new FileReader(), told = []; ['loadstart', 'load', 'abort', 'loadend'].forEach(function (t) { gone.addEventListener(t, function () { told.push(t + ':' + gone.readyState); }); });" +
+      '  gone.readAsText(b); gone.abort(); r.push(gone.readyState + "," + gone.result + "," + told.join(" "));' +
+      "  try { new FileReader().readAsText('x'); } catch (e) { r.push(e.name); }" +
+      '  var idle = new FileReader(); idle.abort(); r.push([idle.readyState, FileReader.LOADING, idle.DONE, idle.onload].join(","));' +
+      '  setTimeout(function () { r.push(told.join(" ")); document.getElementById("out").textContent = JSON.stringify(r); }, 20);' +
+      '});' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '-');
+  assert.deepEqual(JSON.parse(text), [
+    'h\u00e9llo|loadstart:1:0/6 progress:1:6/6 load:2:6/6 loadend:2:6/6|1,null',
+    '\u00e9A|loadstart:1:0/2 progress:1:2/2 load:2:2/2 loadend:2:2/2|1,null',
+    '\ufffd|loadstart:1:0/1 progress:1:1/1 load:2:1/1 loadend:2:1/1|1,null',
+    'data:text/plain;base64,aMOpbGxv|loadstart:1:0/6 progress:1:6/6 load:2:6/6 loadend:2:6/6|1,null',
+    // an empty blob has no progress to tell
+    'data:application/octet-stream;base64,|loadstart:1:0/0 load:2:0/0 loadend:2:0/0|1,null',
+    'h\u00c3\u00a9llo|loadstart:1:0/6 progress:1:6/6 load:2:6/6 loadend:2:6/6|1,null',
+    'bytes 6|loadstart:1:0/6 progress:1:6/6 load:2:6/6 loadend:2:6/6|1,null',
+    'InvalidStateError',
+    // abort and loadend at once, and nothing of the read after
+    '2,null,abort:2 loadend:2',
+    'TypeError',
+    '0,1,2,',
+    'abort:2 loadend:2',
+  ]);
+});
+
+test("a script whose src is a blob URL runs the blob's text, though the URL is revoked once it is in", async () => {
+  // as in Chrome: ZoomInfo's tag fetches its next script and runs it so
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      'window.ran = [];' +
+      'var add = function (code, revoke) { return new Promise(function (ok) {' +
+      "  var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));" +
+      "  var s = document.createElement('script');" +
+      "  if (revoke === 'before') URL.revokeObjectURL(url);" +
+      "  s.src = url; s.onload = function () { ok('load'); }; s.onerror = function () { ok('error'); };" +
+      "  document.body.appendChild(s); if (revoke === 'after') URL.revokeObjectURL(url);" +
+      '}); };' +
+      "var r = []; add('ran.push(1)').then(function (x) { r.push(x); return add('ran.push(2)', 'after'); })" +
+      ".then(function (x) { r.push(x); return add('ran.push(3)', 'before'); })" +
+      ".then(function (x) { r.push(x, ran.join(',')); document.getElementById('out').textContent = r.join('|'); });" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '-'),
+    'load|load|error|1,2',
+  );
 });
 
 metric(

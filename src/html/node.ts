@@ -5567,7 +5567,10 @@ export class HtmlViewNode extends Node {
       rootRect = this._moveToViewport(rootBox, r, shift);
     }
     const targets = elements.map((element) => {
-      const box = element ? first.get(element) : undefined;
+      const box =
+        element && !this._boxedAsContents(element)
+          ? first.get(element)
+          : undefined;
       const drawn = box ? this._drawnRect(tree, box, false) : null;
       const clips =
         box && drawn && intersectionClips(box, rootBox, this._scale, margin);
@@ -5795,7 +5798,7 @@ export class HtmlViewNode extends Node {
       return own ? cssomStyle(own, this._scale, null) : null;
     }
     if (pseudo) return null;
-    const box = this._boxOf(tree, element);
+    const box = this._ownBoxOf(tree, element);
     if (!box) return cssomStyle(style, this._scale, null);
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own));
@@ -6142,7 +6145,7 @@ export class HtmlViewNode extends Node {
   /** `elementRect`, in the layout there is — or its first fragment's. */
   private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
-    const box = tree ? this._boxOf(tree, element) : null;
+    const box = tree ? this._ownBoxOf(tree, element) : null;
     const rect = tree && box ? this._drawnRect(tree, box, first) : null;
     return rect && this._moveToViewport(box!, rect);
   }
@@ -6282,7 +6285,7 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     this._followViewport();
     const tree = this._tree;
-    const box = tree ? this._boxOf(tree, element) : null;
+    const box = tree ? this._ownBoxOf(tree, element) : null;
     const own = tree && box ? this._laidOutAt(tree, box) : null;
     if (!tree || !box || !own) return null;
     const s = this._scale;
@@ -7831,6 +7834,24 @@ export class HtmlViewNode extends Node {
    * box a drag's layout set aside is in the index and in no walk
    * (`heldBack`), so one is looked for as before.
    */
+  /**
+   * The box an element is, where `_boxOf` may find one that is not: the
+   * text a `display: contents` element holds is boxed under its name, and
+   * its `::before`, but the element is no box (CSS Display 3, 2.5). What
+   * measures an element — its rect, its offsets, its client box, its used
+   * size, `checkVisibility` — measures nothing of one, as Chrome's does:
+   * every rect zero, every check false.
+   */
+  private _ownBoxOf(tree: BoxTree, element: Element): Box | null {
+    return this._boxedAsContents(element) ? null : this._boxOf(tree, element);
+  }
+
+  /** Whether an element is `display: contents`, and so no box of its own,
+   *  whatever is boxed under its name (`_ownBoxOf`). */
+  private _boxedAsContents(element: Element): boolean {
+    return this._styleOf(element)?.display === 'contents';
+  }
+
   private _boxOf(tree: BoxTree, element: Element): Box | null {
     const found = CANDIDATES.get(tree)?.byElement.get(element);
     if (found) return found;
@@ -10594,7 +10615,7 @@ export class HtmlViewNode extends Node {
   ): { width: number; height: number; top: number; left: number } | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
-    const box = tree ? this._boxOf(tree, element) : null;
+    const box = tree ? this._ownBoxOf(tree, element) : null;
     if (!box || box.kind === 'inline') return null;
     const s = this._scale;
     return {
@@ -10631,10 +10652,7 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     const style = this._styledNow(element);
-    // the text a `display: contents` element holds is boxed under the
-    // element's name, which `_boxOf` finds, but it has no box of its own
-    if (!tree || !style || style.display === 'contents') return false;
-    if (!this._boxOf(tree, element)) return false;
+    if (!tree || !style || !this._ownBoxOf(tree, element)) return false;
     if (asks.visibility && style.visibility !== 'visible') return false;
     if (asks.opacity) {
       for (let at: Element | null = element; at; at = flatParentOf(at)) {

@@ -406,7 +406,9 @@ export class ScriptRunner {
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)
     if (!module && request.element.attribs.nomodule !== undefined) return;
     const source = request.src
-      ? this._options.load(request.src, request.element).catch(() => null)
+      ? request.src.startsWith('blob:')
+        ? Promise.resolve(this._blobSource(request.src))
+        : this._options.load(request.src, request.element).catch(() => null)
       : Promise.resolve(request.text);
     const queued = { request, source, module };
     // one a page's script put in and set `async` false on runs in the order
@@ -826,6 +828,16 @@ export class ScriptRunner {
     return this._options.handle.scriptsUnblocked(
       deferred ? null : request.element,
     );
+  }
+
+  /** The script a blob URL names, read from the realm that made it
+   *  (`__blobText`) as the element is connected, since no network has the
+   *  URL and a page may revoke it as soon as it has set it: ZoomInfo's tag
+   *  fetches its next script, and runs it from a blob. Null for a URL the
+   *  realm did not make, or let go. */
+  private _blobSource(url: string): string | null {
+    const text = this.engine.call('__blobText', [url]);
+    return typeof text === 'string' ? text : null;
   }
 
   /** A script run: `parser` where the parse met it, which is a script

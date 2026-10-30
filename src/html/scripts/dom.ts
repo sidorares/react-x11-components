@@ -114,8 +114,9 @@ export function installDom(
     d?: Primitive,
   ): Any => {
     // anything but reading a computed style, a frame's document or a
-    // field's selection may change one, and encoding a bitmap reads only
-    // what it is handed
+    // field's selection may change one, and encoding a bitmap, like
+    // reading or setting a property in a rule's block, works only on what
+    // it is handed
     if (
       op !== 'computed' &&
       op !== 'customProperty' &&
@@ -123,7 +124,8 @@ export function installDom(
       op !== 'selection' &&
       op !== 'fontFaces' &&
       op !== 'fontMatch' &&
-      op !== 'encodeImage'
+      op !== 'encodeImage' &&
+      !op.startsWith('block')
     ) {
       opEpoch += 1;
     }
@@ -5419,97 +5421,150 @@ export function installDom(
     const n = str(name);
     return n.startsWith('--') ? n : n.toLowerCase();
   };
-  /** The element each inline declaration block is the `style` of, by
-   *  the block and by the proxy a page holds of it, which either may be
-   *  the `this` a member is called with. */
-  const inlineStyles = new WeakMap<object, Any>();
-  const inlineOf = (self: Any): Any => {
-    const el = inlineStyles.get(self);
-    if (!el) throw new TypeError('Illegal invocation');
-    return el;
+  /**
+   * What a declaration block's members read and write, by the kind of
+   * block it is (`declarationBlocks`): an element's `style`, a rule's, or
+   * a computed style. Names are as `cssName` keeps them. `set` with an
+   * empty value removes the property.
+   */
+  interface DeclarationBlock {
+    value(name: string): string;
+    priority(name: string): string;
+    set(name: string, value: string, priority: string): void;
+    names(): string[];
+    text(): string;
+    setText(text: string): void;
+    readonly rule: Any;
+  }
+  /** Each declaration block's members, by the block and by the proxy a
+   *  page holds of it, either of which may be the `this` a member of the
+   *  prototype is called with. */
+  const declarationBlocks = new WeakMap<object, DeclarationBlock>();
+  const declarationBlockOf = (self: Any): DeclarationBlock => {
+    const block = declarationBlocks.get(self);
+    if (!block) throw new TypeError('Illegal invocation');
+    return block;
   };
-  const inlineValue = (el: Any, name: Any): string =>
-    String(call('style', el._id, cssName(name)) ?? '');
-  const setInline = (el: Any, name: Any, value: Any, priority: Any): void =>
-    void call(
-      'setStyle',
-      el._id,
-      cssName(name),
-      value === null || value === undefined ? '' : str(value),
-      str(priority),
-    );
-  const inlineNames = (el: Any): string[] =>
-    String(call('styleNames', el._id) ?? '')
-      .split(',')
-      .filter(Boolean);
-  /** What an element's `style` is an instance of (CSSOM 6.7), its members
-   *  on the prototype, where a page that watches styles change puts its
-   *  hand: rrweb, in Amplitude's session replay, wraps `setProperty` and
-   *  `removeProperty` there, and threw where there was no such interface.
-   *  A rule's style and a computed style are blocks of their own here,
-   *  and not its instances. */
+  /** What an element's `style`, a rule's `style` and a computed style are
+   *  instances of (CSSOM 6.7), its members on the prototype, where a page
+   *  that watches styles change puts its hand: rrweb, in Amplitude's
+   *  session replay, wraps `setProperty` and `removeProperty` there, and
+   *  threw where there was no such interface. */
   class CSSStyleDeclaration {
     constructor() {
       throw new TypeError('Illegal constructor');
     }
     getPropertyValue(name: Any): string {
-      return inlineValue(inlineOf(this), name);
+      return declarationBlockOf(this).value(cssName(name));
     }
     getPropertyPriority(name: Any): string {
-      return String(
-        call('stylePriority', inlineOf(this)._id, cssName(name)) ?? '',
-      );
+      return declarationBlockOf(this).priority(cssName(name));
     }
     setProperty(name: Any, value: Any, priority: Any = ''): void {
-      setInline(inlineOf(this), name, value, priority);
+      declarationBlockOf(this).set(
+        cssName(name),
+        value === null || value === undefined ? '' : str(value),
+        str(priority),
+      );
     }
     removeProperty(name: Any): string {
-      const el = inlineOf(this);
-      const was = inlineValue(el, name);
-      setInline(el, name, '', '');
+      const block = declarationBlockOf(this);
+      const was = block.value(cssName(name));
+      block.set(cssName(name), '', '');
       return was;
     }
     item(i: Any): string {
-      return inlineNames(inlineOf(this))[Number(i)] ?? '';
+      return declarationBlockOf(this).names()[Number(i)] ?? '';
     }
     get length(): number {
-      return inlineNames(inlineOf(this)).length;
+      return declarationBlockOf(this).names().length;
     }
     get cssText(): string {
-      return String(call('styleText', inlineOf(this)._id) ?? '');
+      return declarationBlockOf(this).text();
     }
     set cssText(v: Any) {
-      inlineOf(this).setAttribute('style', str(v));
+      declarationBlockOf(this).setText(
+        v === null || v === undefined ? '' : str(v),
+      );
     }
-    get parentRule(): null {
-      return null;
+    get parentRule(): Any {
+      return declarationBlockOf(this).rule;
+    }
+    // its names in order, as an indexed list's are
+    [Symbol.iterator](): Iterator<string> {
+      return declarationBlockOf(this).names().slice()[Symbol.iterator]();
     }
   }
-  const styleOf = (el: Any): Any => {
+  /** A property's name as an attribute of a block names it: `cssFloat` is
+   *  `float`, a word JavaScript once kept for itself. */
+  const blockProperty = (key: string): string =>
+    key === 'cssFloat' ? 'float' : cssName(kebab(key));
+  /**
+   * A declaration block a page may write, an element's or a rule's: its
+   * names by index, and each property read and set as an attribute of its
+   * own, not through the prototype's members, which a page may have
+   * wrapped — `style.color = …` is no `setProperty` call in a browser
+   * either.
+   */
+  const writableStyle = (block: DeclarationBlock): Any => {
     const target = Object.create(CSSStyleDeclaration.prototype);
-    // `cssFloat` is `float`, a word JavaScript once kept for itself
-    const property = (key: string): string =>
-      key === 'cssFloat' ? 'float' : kebab(key);
-    // a property is read and set as itself, not through the prototype's
-    // members, which a page may have wrapped: `style.color = …` is no
-    // `setProperty` call in a browser either
+    const index = (key: Any): number =>
+      typeof key === 'string' && /^(?:0|[1-9]\d*)$/.test(key) ? +key : -1;
     const style = new Proxy(target, {
       get(t, key) {
         if (typeof key !== 'string' || key in t) return t[key as Any];
-        return inlineValue(el, property(key));
+        const at = index(key);
+        if (at >= 0) return block.names()[at];
+        return block.value(blockProperty(key));
       },
       set(t, key, value) {
-        if (typeof key !== 'string' || key in t) {
+        if (typeof key !== 'string' || key in t || index(key) >= 0) {
           return Reflect.set(t, key, value);
         }
-        setInline(el, property(key), value, '');
+        block.set(
+          blockProperty(key),
+          value === null || value === undefined ? '' : str(value),
+          '',
+        );
         return true;
       },
+      ownKeys(t) {
+        return [
+          ...block.names().map((_, i) => String(i)),
+          ...Reflect.ownKeys(t),
+        ];
+      },
+      getOwnPropertyDescriptor(t, key) {
+        const at = index(key);
+        const name = at >= 0 ? block.names()[at] : undefined;
+        return name === undefined
+          ? Reflect.getOwnPropertyDescriptor(t, key)
+          : {
+              value: name,
+              writable: false,
+              enumerable: true,
+              configurable: true,
+            };
+      },
     });
-    inlineStyles.set(target, el);
-    inlineStyles.set(style, el);
+    declarationBlocks.set(target, block);
+    declarationBlocks.set(style, block);
     return style;
   };
+  const styleOf = (el: Any): Any =>
+    writableStyle({
+      value: (name) => String(call('style', el._id, name) ?? ''),
+      priority: (name) => String(call('stylePriority', el._id, name) ?? ''),
+      set: (name, value, priority) =>
+        void call('setStyle', el._id, name, value, priority),
+      names: () =>
+        String(call('styleNames', el._id) ?? '')
+          .split(',')
+          .filter(Boolean),
+      text: () => String(call('styleText', el._id) ?? ''),
+      setText: (text) => el.setAttribute('style', text),
+      rule: null,
+    });
 
   /** What `el.dataset` is an instance of (HTML 3.2.6.6), which a page may
    *  test a dataset against: Facebook's asks `e.dataset instanceof
@@ -12340,53 +12395,131 @@ export function installDom(
     const close = text.lastIndexOf('}');
     return text.slice(open + 1, close > open ? close : text.length);
   };
-  /** A media query list, as `MediaList` reads one. */
-  const mediaList = (text: string): Any => {
-    const items = text
+  /** The queries a media query list's text holds, each as written. */
+  const mediaItems = (text: string): string[] =>
+    text
       .split(',')
       .map((m) => m.trim())
       .filter(Boolean);
-    const list: Any = {
-      mediaText: items.join(', '),
-      length: items.length,
-      item: (i: Any) => items[Number(i)] ?? null,
-      toString: () => items.join(', '),
-    };
-    items.forEach((m, i) => (list[i] = m));
+  /** What each media query list reads its queries from and writes them
+   *  back to, by the list and by the proxy a page holds of it. */
+  const mediaSources = new WeakMap<
+    object,
+    { read(): string; write(text: string): void }
+  >();
+  const mediaItemsOf = (self: Any): string[] => {
+    const source = mediaSources.get(self);
+    if (!source) throw new TypeError('Illegal invocation');
+    return mediaItems(source.read());
+  };
+  const writeMedia = (self: Any, items: string[]): void =>
+    mediaSources.get(self)!.write(items.join(', '));
+  /** A media query list (CSSOM 4.1): what a `@media` rule, an `@import`
+   *  or a sheet holds its rules under, a change written back to it. */
+  class MediaList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get mediaText(): string {
+      return mediaItemsOf(this).join(', ');
+    }
+    set mediaText(v: Any) {
+      mediaItemsOf(this);
+      writeMedia(this, mediaItems(v === null ? '' : str(v)));
+    }
+    get length(): number {
+      return mediaItemsOf(this).length;
+    }
+    item(i: Any): string | null {
+      return mediaItemsOf(this)[Number(i)] ?? null;
+    }
+    appendMedium(medium: Any): void {
+      const items = mediaItemsOf(this);
+      const m = str(medium).trim();
+      if (!m || m.includes(',') || items.includes(m)) return;
+      writeMedia(this, [...items, m]);
+    }
+    deleteMedium(medium: Any): void {
+      const items = mediaItemsOf(this);
+      const m = str(medium).trim();
+      const kept = items.filter((item) => item !== m);
+      if (kept.length === items.length) {
+        throw new DOMException(
+          `Failed to execute 'deleteMedium' on 'MediaList': Failed to delete '${m}'.`,
+          'NotFoundError',
+        );
+      }
+      writeMedia(this, kept);
+    }
+    toString(): string {
+      return this.mediaText;
+    }
+    [Symbol.iterator](): Iterator<string> {
+      return mediaItemsOf(this)[Symbol.iterator]();
+    }
+  }
+  /** A `MediaList` over what `read` answers, its queries by index. */
+  const mediaList = (
+    read: () => string,
+    write: (text: string) => void,
+  ): Any => {
+    const target = Object.create(MediaList.prototype);
+    const index = (key: Any): number =>
+      typeof key === 'string' && /^(?:0|[1-9]\d*)$/.test(key) ? +key : -1;
+    const list = new Proxy(target, {
+      get(t, key) {
+        const at = index(key);
+        return at >= 0 ? mediaItems(read())[at] : t[key as Any];
+      },
+      ownKeys(t) {
+        return [
+          ...mediaItems(read()).map((_, i) => String(i)),
+          ...Reflect.ownKeys(t),
+        ];
+      },
+      getOwnPropertyDescriptor(t, key) {
+        const at = index(key);
+        const item = at >= 0 ? mediaItems(read())[at] : undefined;
+        return item === undefined
+          ? Reflect.getOwnPropertyDescriptor(t, key)
+          : {
+              value: item,
+              writable: false,
+              enumerable: true,
+              configurable: true,
+            };
+      },
+    });
+    mediaSources.set(target, { read, write });
+    mediaSources.set(list, { read, write });
     return list;
   };
-  /** A block's declarations, as a rule's `style` reads them: by name, by
-   *  index and camel-cased. Read only. */
-  const declarationsOf = (block: string): Any => {
-    const values = new Map<string, string>();
-    for (const part of block.split(/;(?![^(]*\))/)) {
-      const colon = part.indexOf(':');
-      if (colon < 0) continue;
-      const name = part.slice(0, colon).trim();
-      if (!name) continue;
-      values.set(cssName(name), part.slice(colon + 1).trim());
-    }
-    const names = [...values.keys()];
-    const plain = (name: string): string =>
-      (values.get(name) ?? '').replace(/\s*!\s*important$/i, '');
-    const style: Any = {
-      cssText: block.trim(),
-      length: names.length,
-      item: (i: Any) => names[Number(i)] ?? '',
-      getPropertyValue: (name: Any) => plain(cssName(name)),
-      getPropertyPriority: (name: Any) =>
-        /!\s*important$/i.test(values.get(cssName(name)) ?? '')
-          ? 'important'
-          : '',
-    };
-    names.forEach((name, i) => {
-      style[i] = name;
-      if (!name.startsWith('--')) {
-        style[name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] =
-          plain(name);
-      }
+  /** A rule's declarations (CSSOM 6.4.3, its declaration block), read
+   *  from its text and written back as they change, which edits the rule
+   *  in its sheet (`replaceRule`). A rule inside another, whose sheet that
+   *  does not edit, changes only its own text. */
+  const ruleStyleOf = (rule: Any): Any => {
+    const block = (): string => blockOf(rule._text);
+    const write = (body: string): void =>
+      replaceRule(
+        rule,
+        `${preludeOf(rule._text)} { ${body ? `${body} ` : ''}}`,
+      );
+    return writableStyle({
+      value: (name) => String(call('blockValue', block(), name) ?? ''),
+      priority: (name) => String(call('blockPriority', block(), name) ?? ''),
+      set: (name, value, priority) => {
+        const next = call('blockSet', block(), name, value, priority);
+        if (typeof next === 'string') write(next);
+      },
+      names: () =>
+        String(call('blockNames', block()) ?? '')
+          .split(',')
+          .filter(Boolean),
+      text: () => String(call('blockText', block()) ?? ''),
+      setText: (text) => write(String(call('blockText', text) ?? '')),
+      rule,
     });
-    return style;
   };
 
   class CSSRule {
@@ -12422,8 +12555,9 @@ export function installDom(
     get selectorText(): string {
       return preludeOf(this._text);
     }
+    _style: Any = null;
     get style(): Any {
-      return declarationsOf(blockOf(this._text));
+      return (this._style ??= ruleStyleOf(this));
     }
     set style(v: Any) {
       this.style.cssText = v;
@@ -12460,8 +12594,19 @@ export function installDom(
   }
   class CSSMediaRule extends CSSConditionRule {
     override _type = 4;
+    _mediaList: Any = null;
     get media(): Any {
-      return mediaList(conditionOf(this._text));
+      return (this._mediaList ??= mediaList(
+        () => conditionOf(this._text),
+        (text) =>
+          replaceRule(
+            this,
+            `@media ${text ? `${text} ` : ''}{${blockOf(this._text)}}`,
+          ),
+      ));
+    }
+    set media(v: Any) {
+      this.media.mediaText = v;
     }
   }
   class CSSSupportsRule extends CSSConditionRule {
@@ -12476,19 +12621,30 @@ export function installDom(
       );
       return m ? m[2] : '';
     }
+    _mediaList: Any = null;
     get media(): Any {
-      return mediaList(
-        conditionOf(this._text).replace(
-          /^(?:url\([^)]*\)|"[^"]*"|'[^']*')/i,
-          '',
-        ),
-      );
+      const at = (): string =>
+        /^(?:url\([^)]*\)|"[^"]*"|'[^']*')/i.exec(
+          conditionOf(this._text),
+        )?.[0] ?? '';
+      // a change is the rule's own text: an `@import` deleted from a sheet
+      // and inserted again may be refused where it stood
+      return (this._mediaList ??= mediaList(
+        () => conditionOf(this._text).slice(at().length),
+        (text) => {
+          this._text = `@import ${at()}${text ? ` ${text}` : ''};`;
+        },
+      ));
+    }
+    set media(v: Any) {
+      this.media.mediaText = v;
     }
   }
   class CSSFontFaceRule extends CSSRule {
     override _type = 5;
+    _style: Any = null;
     get style(): Any {
-      return declarationsOf(blockOf(this._text));
+      return (this._style ??= ruleStyleOf(this));
     }
     set style(v: Any) {
       this.style.cssText = v;
@@ -13020,10 +13176,20 @@ export function installDom(
     get title(): Any {
       return this._owner?.getAttribute('title') ?? null;
     }
+    _mediaList: Any = null;
     get media(): Any {
-      return mediaList(
-        this._owner ? (this._owner.getAttribute('media') ?? '') : this._media,
-      );
+      // an owner's is its `media` attribute, which the document reads
+      return (this._mediaList ??= mediaList(
+        () =>
+          this._owner ? (this._owner.getAttribute('media') ?? '') : this._media,
+        (text) => {
+          if (this._owner) this._owner.setAttribute('media', text);
+          else this._media = text;
+        },
+      ));
+    }
+    set media(v: Any) {
+      this.media.mediaText = v;
     }
     get cssRules(): Any {
       const owner = this._owner;
@@ -19876,6 +20042,136 @@ export function installDom(
     }
   }
 
+  /** A blob's bytes as text in the encoding a label names, else its
+   *  type's charset, else UTF-8 (File API 6.6, "package data"). */
+  const blobText = (blob: Any, label: Any): string => {
+    const charset = /;\s*charset=([^;]+)/i.exec(blob.type)?.[1];
+    for (const name of [label, charset]) {
+      if (name === undefined || name === null) continue;
+      try {
+        return new TextDecoder(str(name)).decode(blob._bytes);
+      } catch {
+        // a label no encoding has: the next
+      }
+    }
+    return new TextDecoder().decode(blob._bytes);
+  };
+  /**
+   * `FileReader` (File API 6): a blob read in a task after the call, as a
+   * string, a data URL, a binary string or an `ArrayBuffer`, told by
+   * `loadstart`, `progress` — none for an empty blob, as in Chrome — then
+   * `load` and `loadend`. An `abort()` while it reads tells `abort` and
+   * `loadend` at once, and the read's tasks after it tell nothing.
+   */
+  class FileReader extends EventTarget {
+    static readonly EMPTY = 0;
+    static readonly LOADING = 1;
+    static readonly DONE = 2;
+    readonly EMPTY = 0;
+    readonly LOADING = 1;
+    readonly DONE = 2;
+    readyState = 0;
+    result: Any = null;
+    error: Any = null;
+    /** Which read is under way: one an `abort()` left behind tells
+     *  nothing. */
+    _read = 0;
+    readAsText(blob: Any, label?: Any): void {
+      this._start('readAsText', blob, () => blobText(blob, label));
+    }
+    readAsDataURL(blob: Any): void {
+      this._start(
+        'readAsDataURL',
+        blob,
+        () =>
+          `data:${blob.type || 'application/octet-stream'};base64,${base64OfBytes(blob._bytes)}`,
+      );
+    }
+    readAsBinaryString(blob: Any): void {
+      this._start('readAsBinaryString', blob, () => {
+        const bytes: Uint8Array = blob._bytes;
+        let out = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          out += String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, i + 0x8000) as Any,
+          );
+        }
+        return out;
+      });
+    }
+    readAsArrayBuffer(blob: Any): void {
+      this._start('readAsArrayBuffer', blob, () => blob._bytes.slice().buffer);
+    }
+    abort(): void {
+      if (this.readyState !== 1) {
+        this.result = null;
+        return;
+      }
+      this._read += 1;
+      this.readyState = 2;
+      this.result = null;
+      this._progress('abort', null);
+      if (this.readyState !== 1) this._progress('loadend', null);
+    }
+    _start(method: string, blob: Any, result: () => Any): void {
+      if (!(blob instanceof Blob)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'FileReader': parameter 1 is not of type 'Blob'.`,
+        );
+      }
+      if (this.readyState === 1) {
+        throw new DOMException(
+          `Failed to execute '${method}' on 'FileReader': The object is already busy reading Blobs.`,
+          'InvalidStateError',
+        );
+      }
+      const read = (this._read += 1);
+      this.readyState = 1;
+      this.result = null;
+      this.error = null;
+      const size = blob.size;
+      const step = (fn: () => void): void =>
+        void setTimer(() => this._read === read && fn(), 0, [], false);
+      step(() => this._progress('loadstart', 0, size));
+      step(() => {
+        if (size) this._progress('progress', size, size);
+      });
+      step(() => {
+        this.readyState = 2;
+        this.result = result();
+        this._progress('load', size, size);
+        if (this.readyState !== 1) this._progress('loadend', size, size);
+      });
+    }
+    _progress(type: string, loaded: number | null, total = 0): void {
+      const ev = new ProgressEvent(
+        type,
+        loaded === null ? {} : { lengthComputable: true, loaded, total },
+      );
+      ev.isTrusted = true;
+      dispatch(this, ev);
+    }
+  }
+  for (const type of [
+    'loadstart',
+    'progress',
+    'load',
+    'abort',
+    'error',
+    'loadend',
+  ]) {
+    Object.defineProperty(FileReader.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
+  }
+
   /** `FormData` (XHR 4): name and value pairs, in order; made from a form,
    *  what the form would submit of its text, its ticked boxes and its
    *  chosen options — its files, of which there are none here, aside. */
@@ -22062,6 +22358,85 @@ export function installDom(
   /** The empty declaration `getComputedStyle` answers where its argument
    *  names no pseudo-element: no properties, and each one the element's
    *  style has reads as '' rather than as nothing. */
+  /** A computed style's members (CSSOM 9): read only, though a page's
+   *  `setProperty` and `removeProperty` on one change nothing and throw
+   *  nothing, as in Chrome, where its `cssText` and a property set as an
+   *  attribute throw (`readOnlyStyle`). */
+  const computedBlock = (
+    value: (name: string) => string,
+    names: () => string[],
+  ): DeclarationBlock => ({
+    value,
+    priority: () => '',
+    set: () => {},
+    names,
+    text: () => '',
+    setText: () => {
+      throw new DOMException(
+        "Failed to set the 'cssText' property on 'CSSStyleDeclaration': These styles are computed, and therefore read-only.",
+        'NoModificationAllowedError',
+      );
+    },
+    rule: null,
+  });
+  /** A computed style as a page holds it: a `CSSStyleDeclaration` over
+   *  `block`, whose properties are what `own` answers — by index, by name
+   *  and in camel case — each read only. */
+  const readOnlyStyle = (
+    block: DeclarationBlock,
+    own: (key: string) => Any,
+    read: () => void,
+    keys: () => string[],
+  ): Any => {
+    const target = Object.create(CSSStyleDeclaration.prototype);
+    const style = new Proxy(target, {
+      get(t, key) {
+        if (typeof key === 'string' && !(key in t)) {
+          read();
+          return own(key);
+        }
+        return t[key as Any];
+      },
+      set(t, key, value) {
+        if (typeof key === 'string' && !(key in t)) {
+          read();
+          if (own(key) !== undefined) {
+            throw new DOMException(
+              `Failed to set the '${key}' property on 'CSSStyleDeclaration': These styles are computed, and therefore the '${key}' property is read-only.`,
+              'NoModificationAllowedError',
+            );
+          }
+        }
+        return Reflect.set(t, key, value);
+      },
+      has(t, key) {
+        if (key in t) return true;
+        read();
+        return typeof key === 'string' && own(key) !== undefined;
+      },
+      ownKeys(t) {
+        read();
+        return [...keys(), ...Reflect.ownKeys(t)];
+      },
+      getOwnPropertyDescriptor(t, key) {
+        if (typeof key !== 'string' || key in t) {
+          return Reflect.getOwnPropertyDescriptor(t, key);
+        }
+        read();
+        const value = own(key);
+        return value === undefined
+          ? undefined
+          : { value, writable: false, enumerable: true, configurable: true };
+      },
+    });
+    declarationBlocks.set(target, block);
+    declarationBlocks.set(style, block);
+    return style;
+  };
+
+  /** The empty declaration `getComputedStyle` answers where its argument
+   *  names no pseudo-element: no properties, and each one the element's
+   *  style has reads as '' rather than as nothing. */
   const emptyComputedStyle = (id: number): Any => {
     let known: Set<string> | null = null;
     const names = (): Set<string> => {
@@ -22076,23 +22451,15 @@ export function installDom(
       }
       return known;
     };
-    const methods: Any = {
-      getPropertyValue: () => '',
-      getPropertyPriority: () => '',
-      item: () => '',
-      cssText: '',
-      length: 0,
-      [Symbol.iterator]: () => [][Symbol.iterator](),
-    };
-    return new Proxy(methods, {
-      get(target, key) {
-        if (key in target) return target[key as Any];
-        return typeof key === 'string' && names().has(key) ? '' : undefined;
-      },
-      has(target, key) {
-        return key in target || (typeof key === 'string' && names().has(key));
-      },
-    });
+    return readOnlyStyle(
+      computedBlock(
+        () => '',
+        () => [],
+      ),
+      (key) => (names().has(key) ? '' : undefined),
+      () => {},
+      () => [],
+    );
   };
 
   /** A computed style, which is live (CSSOM 9): read again after an op
@@ -22128,62 +22495,24 @@ export function installDom(
       readIn = taskEpoch;
     };
     read();
-    const methods: Any = {
-      getPropertyValue: (name: Any) => {
+    const block = computedBlock(
+      (n) => {
         read();
-        const n = cssName(name);
         if (!n.startsWith('--')) return values[n] ?? '';
         if (!json) return '';
         return String(call('customProperty', id, which, n) ?? '');
       },
-      getPropertyPriority: () => '',
-      item: (i: number) => {
+      () => {
         read();
-        return names[i] ?? '';
+        return names;
       },
-      cssText: '',
-      // its names in order, as a declaration's are
-      [Symbol.iterator]: () => {
-        read();
-        return names.slice()[Symbol.iterator]();
-      },
-    };
-    const own = (key: string | symbol): Any => {
-      if (typeof key !== 'string') return undefined;
-      if (key === 'length') return names.length;
-      if (/^\d+$/.test(key)) return names[Number(key)];
-      return byName.get(key);
-    };
-    return new Proxy(methods, {
-      get(target, key) {
-        if (typeof key === 'string' && !(key in target)) {
-          read();
-          return own(key);
-        }
-        return target[key as Any];
-      },
-      has(target, key) {
-        if (key in target) return true;
-        read();
-        return own(key) !== undefined;
-      },
-      ownKeys(target) {
-        read();
-        return [
-          ...names.map((_, i) => String(i)),
-          ...byName.keys(),
-          ...Reflect.ownKeys(target),
-        ];
-      },
-      getOwnPropertyDescriptor(target, key) {
-        if (key in target) return Reflect.getOwnPropertyDescriptor(target, key);
-        read();
-        const value = own(key);
-        return value === undefined
-          ? undefined
-          : { value, writable: false, enumerable: true, configurable: true };
-      },
-    });
+    );
+    return readOnlyStyle(
+      block,
+      (key) => (/^\d+$/.test(key) ? names[Number(key)] : byName.get(key)),
+      read,
+      () => [...names.map((_, i) => String(i)), ...byName.keys()],
+    );
   };
 
   const base64 =
@@ -26737,6 +27066,7 @@ export function installDom(
     MutationRecord,
     XMLHttpRequest,
     ProgressEvent,
+    FileReader,
     TextEncoder,
     TextDecoder,
     VisualViewport,
@@ -26797,6 +27127,7 @@ export function installDom(
     CSSRule,
     CSSStyleRule,
     CSSStyleDeclaration,
+    MediaList,
     CSSGroupingRule,
     CSSConditionRule,
     CSSMediaRule,
@@ -29164,6 +29495,15 @@ export function installDom(
     writable: false,
     configurable: false,
     enumerable: false,
+  });
+
+  // the text a blob URL this realm made holds, for a `<script>` whose `src`
+  // names one, which the host has no network to fetch from; null for one
+  // it did not make, or revoked
+  entry('__blobText', () => {
+    const [url] = input();
+    const blob = blobUrls.get(str(url));
+    return blob instanceof Blob ? blobText(blob, null) : null;
   });
 
   // a plain event at an element: a script's `load` or `error`
