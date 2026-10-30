@@ -1158,8 +1158,8 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     setControls(rects);
   }, []);
 
-  // a `<link>`'s sheet applied, or not to be had: told as the page's
-  // `load` or `error` at the element, after the fact
+  // a `<link>`'s sheet applied, or not to be had, and what an `<img>` came
+  // to: told as the page's `load` or `error` at the element, after the fact
   const handleSheet = React.useCallback(
     (element: Element, outcome: 'load' | 'error') =>
       void fireDomEvent(onDomEvent, outcome, element),
@@ -1196,6 +1196,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
     onCssEvents: props._onCssEvents,
+    onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
     domRevision,
     animate,
@@ -1366,6 +1367,15 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
       offsetRect: (element: Element) =>
         nodeRef.current?.offsetRect(element) ?? null,
+      askImage: (element) => nodeRef.current?.askImage(element),
+      imageState: (element) =>
+        nodeRef.current?.imageState(element) ?? {
+          complete: true,
+          available: false,
+          width: 0,
+          height: 0,
+          src: '',
+        },
       clientBox: (element: Element) =>
         nodeRef.current?.clientBoxOf(element) ?? null,
       checkVisibility: (element, asks) =>

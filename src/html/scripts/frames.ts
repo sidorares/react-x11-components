@@ -315,6 +315,7 @@ function FrameDocument({
       ...({
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
+        _onImage: scripts.imageSettled,
         _onMediaEvent: scripts.mediaEvent,
       } as object),
     }),

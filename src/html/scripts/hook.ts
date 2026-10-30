@@ -31,6 +31,7 @@ import type {
 } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
 import { arriveAt } from './session.js';
+import { fireDomEvent } from '../dom-events.js';
 
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
@@ -73,6 +74,9 @@ interface Early {
   loaded: boolean;
   /** The CSS events the document owed before the engine was here. */
   css: CssEventInfo[];
+  /** What the document's images came to before the engine was here, which
+   *  an `onload` in their markup is still to hear. */
+  images: [Element, 'load' | 'error'][];
 }
 
 /** What `useScripts` hands back: `<Html>`'s props, and a few that are the
@@ -103,6 +107,9 @@ export interface ScriptProps {
   onElementScroll?: (element: Element) => void;
   /** The document's CSS transition events, which the page hears. */
   cssEvents?: (events: CssEventInfo[]) => void;
+  /** What an `<img>` came to, which the page hears at the element.
+   *  `<Html>`'s `onImage`. */
+  imageSettled?: (element: Element, outcome: 'load' | 'error') => void;
   /** What a player with no picture said, which the page's media element
    *  hears (`HtmlViewProps.onMediaEvent`). */
   mediaEvent?: MediaEventHandler;
@@ -151,6 +158,7 @@ export function useScripts(
     parsed: false,
     loaded: false,
     css: [],
+    images: [],
   });
 
   // the seams the host is made with read the latest options, so a render
@@ -308,6 +316,7 @@ export function useScripts(
         parsed: false,
         loaded: false,
         css: [],
+        images: [],
       };
     }
   }, []);
@@ -346,6 +355,15 @@ export function useScripts(
     if (runner.current) runner.current.cssEvents(events);
     else if (early.current.document) early.current.css.push(...events);
   }, []);
+  const imageSettled = useCallback(
+    (element: Element, outcome: 'load' | 'error') => {
+      if (runner.current) void fireDomEvent(onDomEvent, outcome, element);
+      else if (early.current.document) {
+        early.current.images.push([element, outcome]);
+      }
+    },
+    [],
+  );
   // what a sound's player says before the engine is here is nothing the
   // page could hear: it has played nothing yet
   const mediaEvent = useCallback<MediaEventHandler>(
@@ -372,11 +390,15 @@ export function useScripts(
           parsed: false,
           loaded: false,
           css: [],
+          images: [],
         };
         if (!loaded.SCRIPTS_CONTAINED || !kept.document) return;
         start(loaded, kept.document);
         for (const request of kept.scripts) runner.current?.add(request);
         if (kept.css.length) runner.current?.cssEvents(kept.css);
+        for (const [element, outcome] of kept.images) {
+          imageSettled(element, outcome);
+        }
         if (kept.blocked) void runner.current?.blocked(kept.blocked);
         if (kept.parsed) void runner.current?.parsed();
         if (kept.loaded) runner.current?.loaded();
@@ -425,6 +447,7 @@ export function useScripts(
     painted,
     onElementScroll,
     cssEvents,
+    imageSettled,
     mediaEvent,
     canvasImage,
     runner: getRunner,

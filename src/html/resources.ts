@@ -212,8 +212,9 @@ export class ResourceStore {
 
   /** Told when a request that was on its way is not any more: arrived,
    *  declined, failed, or decoded — whatever it came to, and whether or
-   *  not it changed anything (`HtmlViewNode`'s `onLoaded`). */
-  settled: (() => void) | null = null;
+   *  not it changed anything (`HtmlViewNode`'s `onLoaded`) — with where it
+   *  is kept (`keyOf`). */
+  settled: ((key: string) => void) | null = null;
 
   /** How many of the requests are on their way: asked for, and neither
    *  answered nor failed, an image's decode included. */
@@ -225,8 +226,8 @@ export class ResourceStore {
     return n;
   }
 
-  private _done(): void {
-    if (!this._destroyed) this.settled?.();
+  private _done(key: string): void {
+    if (!this._destroyed) this.settled?.(key);
   }
 
   /** A URL as the document wrote it, as the store keys it. */
@@ -264,11 +265,11 @@ export class ResourceStore {
       answer.then(
         (result) => {
           this._settle(url, entry, result, false, request.kind);
-          if (entry.state !== 'pending') this._done();
+          if (entry.state !== 'pending') this._done(url);
         },
         () => {
           this._settle(url, entry, null, false, request.kind);
-          this._done();
+          this._done(url);
         },
       );
       return;
@@ -352,7 +353,7 @@ export class ResourceStore {
         if (!synchronous) this._changed('image', entry.layout !== false);
         return;
       }
-      this._decoding(entry, result.bytes, animation, take, synchronous);
+      this._decoding(url, entry, result.bytes, animation, take, synchronous);
       return;
     }
     const decoded = decodeImage(result.bytes);
@@ -362,7 +363,7 @@ export class ResourceStore {
         entry.size = rasterSize(image.width, image.height);
         entry.state = 'ready';
       };
-      this._decoding(entry, result.bytes, decoded, take, synchronous);
+      this._decoding(url, entry, result.bytes, decoded, take, synchronous);
       return;
     }
     if (!decoded) {
@@ -389,6 +390,7 @@ export class ResourceStore {
    * from the header is built again.
    */
   private _decoding<T>(
+    key: string,
     entry: Entry,
     bytes: Uint8Array,
     decoding: Promise<T>,
@@ -408,14 +410,14 @@ export class ResourceStore {
           header && !sameSize(header, entry.size) ? 'resized' : 'image',
           entry.layout !== false,
         );
-        this._done();
+        this._done(key);
       },
       () => {
         if (this._destroyed) return;
         entry.state = 'failed';
         entry.size = undefined;
         if (header) this._changed('resized', entry.layout !== false);
-        this._done();
+        this._done(key);
       },
     );
   }
