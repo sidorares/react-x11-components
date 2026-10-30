@@ -30,6 +30,9 @@ export interface WebAudioDeps {
   call(op: string, a?: unknown, b?: unknown, c?: unknown, d?: unknown): unknown;
   DOMException: unknown;
   EventTarget: unknown;
+  /** Sets a target's `on<type>` handler, which takes its place among
+   *  its listeners as it is first set (HTML 8.1.8.1). */
+  setHandler(target: unknown, type: string, value: unknown): void;
   Event: unknown;
   /** Dispatches an event the user agent fires. */
   fire(target: unknown, event: unknown): void;
@@ -57,6 +60,7 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
   const call: Any = D.call;
   const DOMException: Any = D.DOMException;
   const EventTarget: Any = D.EventTarget;
+  const setHandler: Any = D.setHandler;
   const Event: Any = D.Event;
   const fire: Any = D.fire;
   const setTimer: Any = D.setTimer;
@@ -102,8 +106,11 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
       return this._handlers[name] ?? null;
     };
     const set = function (this: Any, fn: Any) {
-      this._handlers[name] =
-        typeof fn === 'function' || (typeof fn === 'object' && fn) ? fn : null;
+      setHandler(
+        this,
+        name,
+        typeof fn === 'function' || (typeof fn === 'object' && fn) ? fn : null,
+      );
     };
     Object.defineProperty(get, 'name', { value: `get on${name}` });
     Object.defineProperty(set, 'name', { value: `set on${name}` });

@@ -26,6 +26,9 @@ export interface MediaStreamsDeps {
   input(): unknown;
   DOMException: unknown;
   EventTarget: unknown;
+  /** Sets a target's `on<type>` handler, which takes its place among
+   *  its listeners as it is first set (HTML 8.1.8.1). */
+  setHandler(target: unknown, type: string, value: unknown): void;
   Event: unknown;
   /** Dispatches an event the user agent fires. */
   fire(target: unknown, event: unknown): void;
@@ -85,6 +88,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
   const input: Any = D.input;
   const DOMException: Any = D.DOMException;
   const EventTarget: Any = D.EventTarget;
+  const setHandler: Any = D.setHandler;
   const Event: Any = D.Event;
   const fire: Any = D.fire;
 
@@ -129,8 +133,11 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       return this._handlers[name] ?? null;
     };
     const set = function (this: Any, fn: Any) {
-      this._handlers[name] =
-        typeof fn === 'function' || (typeof fn === 'object' && fn) ? fn : null;
+      setHandler(
+        this,
+        name,
+        typeof fn === 'function' || (typeof fn === 'object' && fn) ? fn : null,
+      );
     };
     Object.defineProperty(get, 'name', { value: `get on${name}` });
     Object.defineProperty(set, 'name', { value: `set on${name}` });

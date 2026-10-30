@@ -1787,17 +1787,29 @@ export class DomHost {
    * location"): a record of each node, which the parser appended to a
    * parent already in the tree, for the page's mutation observers, and
    * each custom element connected, with what it holds, once. Not to
-   * `<Html>`, whose parser made it. True where there was anything, which
-   * the facade is then told of (`__mutated`) — but for what the op that
-   * wrote it made, which the op's own return tells.
+   * `<Html>`, whose parser made it. Null where there was nothing; where
+   * there was, what the facade is told of it (`__mutated`) — but for what
+   * the op that wrote it made, which the op's own return tells: whether the
+   * document's `<body>` was among it, whose `on…` attributes the window's
+   * handlers come to be as the parser sets them, after a head's scripts
+   * listened (HTML 8.1.8.1).
    */
-  parserInserted(): boolean {
+  parserInserted(): { body: boolean } | null {
     const made = this._seams.handle.parserMade?.();
-    if (!made?.length || this._disposed) return false;
+    if (!made?.length || this._disposed) return null;
     const fresh = this._custom || this._scoped ? new Set<AnyNode>(made) : null;
+    let body = false;
     for (const node of made) {
       const parent = node.parent;
       if (!parent) continue;
+      if (
+        node instanceof Element &&
+        node.name === 'body' &&
+        parent instanceof Element &&
+        parent.parent === this.document
+      ) {
+        body = true;
+      }
       if (this._observers.size) {
         this._queue(parent, {
           type: 'childList',
@@ -1819,7 +1831,7 @@ export class DomHost {
         }
       }
     }
-    return true;
+    return { body };
   }
 
   /** Load the frames the document has, as a browser loads a frame as the

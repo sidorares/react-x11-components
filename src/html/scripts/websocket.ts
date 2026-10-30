@@ -22,6 +22,9 @@ export interface WebSocketDeps {
   input(): unknown;
   DOMException: unknown;
   EventTarget: unknown;
+  /** Sets a target's `on<type>` handler, which takes its place among
+   *  its listeners as it is first set (HTML 8.1.8.1). */
+  setHandler(target: unknown, type: string, value: unknown): void;
   Event: unknown;
   MessageEvent: unknown;
   Blob: unknown;
@@ -44,6 +47,7 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
   const input: Any = D.input;
   const DOMException: Any = D.DOMException;
   const EventTarget: Any = D.EventTarget;
+  const setHandler: Any = D.setHandler;
   const Event: Any = D.Event;
   const MessageEvent: Any = D.MessageEvent;
   const Blob: Any = D.Blob;
@@ -391,7 +395,7 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     };
     const set = function (this: Any, fn: Any) {
       slotOf(this, 'socket');
-      this._handlers[name] = isObject(fn) ? fn : null;
+      setHandler(this, name, isObject(fn) ? fn : null);
     };
     Object.defineProperty(get, 'name', { value: `get on${name}` });
     Object.defineProperty(set, 'name', { value: `set on${name}` });

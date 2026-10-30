@@ -2699,6 +2699,231 @@ test("the window inherits EventTarget's methods, and they are its own however th
   );
 });
 
+/** A page's `order(setup)`: what a `click` set up by `setup(div, log)`
+ *  runs, in order. Every order in these tests is Chrome's. */
+const ORDER =
+  'function order(setup, target) {' +
+  '  var t = target || document.createElement("div"), log = [];' +
+  '  setup(t, log);' +
+  '  var e = new Event("click", { cancelable: true });' +
+  '  t.dispatchEvent(e); if (e.defaultPrevented) log.push("prevented");' +
+  '  return log.join(","); }' +
+  'function push(log, s) { return function () { log.push(s); }; }';
+
+test('an on… handler runs where it was first set among the listeners, keeps the place when set again, and goes to the end once it was null', async () => {
+  // HTML 8.1.8.1: a handler is a listener of its own, added as it is
+  // first set to something, and taken out as it is set to null
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      ORDER +
+      'var r = [];' +
+      'r.push(order(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.onclick = push(log, "h"); t.addEventListener("click", push(log, "b")); }));' +
+      'r.push(order(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.onclick = push(log, "h1"); t.addEventListener("click", push(log, "b"));' +
+      '  t.onclick = push(log, "h2"); }));' +
+      'r.push(order(function (t, log) { t.onclick = push(log, "h1");' +
+      '  t.addEventListener("click", push(log, "a")); t.onclick = null;' +
+      '  t.onclick = push(log, "h2"); t.addEventListener("click", push(log, "b")); }));' +
+      // what is no function is null, and takes the handler out
+      'r.push(order(function (t, log) { t.onclick = push(log, "h1");' +
+      '  t.addEventListener("click", push(log, "a")); t.onclick = "no function";' +
+      '  log.push(String(t.onclick)); t.onclick = push(log, "h2"); }));' +
+      // a listener before it sets it: what it set runs, in its place
+      'r.push(order(function (t, log) { t.addEventListener("click", function () {' +
+      '  log.push("a"); t.onclick = push(log, "h2"); }); t.onclick = push(log, "h1"); }));' +
+      // and one set or set again during the event is not heard in it
+      'r.push(order(function (t, log) { t.addEventListener("click", function () {' +
+      '  log.push("a"); t.onclick = push(log, "h"); }); }));' +
+      'r.push(order(function (t, log) { t.addEventListener("click", function () {' +
+      '  log.push("a"); t.onclick = null; t.onclick = push(log, "h2"); });' +
+      '  t.onclick = push(log, "h1"); }));' +
+      // `return false` cancels, and stopping stops what comes after it
+      'r.push(order(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.onclick = function (e) { log.push("h"); e.stopImmediatePropagation(); return false; };' +
+      '  t.addEventListener("click", push(log, "b")); }));' +
+      // a handler of another interface, the document's
+      'r.push(order(function (t, log) { t.addEventListener("visibilitychange", push(log, "a"));' +
+      '  t.onvisibilitychange = push(log, "h");' +
+      '  t.addEventListener("visibilitychange", push(log, "b"));' +
+      '  t.dispatchEvent(new Event("visibilitychange")); t.onvisibilitychange = null; },' +
+      '  document));' +
+      // and a port's, whose `onmessage` starts it
+      'var port = new MessageChannel(), heard = [];' +
+      'port.port1.addEventListener("message", push(heard, "a"));' +
+      'port.port1.onmessage = push(heard, "h");' +
+      'port.port1.addEventListener("message", push(heard, "b"));' +
+      'port.port2.postMessage(1);' +
+      'setTimeout(function () { r.push(heard.join(","));' +
+      "  document.getElementById('out').textContent = r.join('|'); }, 50);" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'a,h,b',
+      'a,h2,b',
+      'a,h2,b',
+      'null,a,h2',
+      'a,h2',
+      'a',
+      'a',
+      'a,h,prevented',
+      'a,h,b',
+      'a,h,b',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('an on… attribute a script sets takes its place as it is set, and one the parser set has the first', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<div id="p1" onclick="L.push(\'attr\')"></div>' +
+      '<div id="p2" onclick="L.push(\'attr1\')"></div>' +
+      '<div id="p3" onclick="L.push(\'attr\')"></div>' +
+      '<script>' +
+      ORDER +
+      'var L, r = [];' +
+      'function attr(setup, target) { return order(function (t, log) { L = log; setup(t, log); },' +
+      '  target); }' +
+      'r.push(attr(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.setAttribute("onclick", "L.push(\'attr\')");' +
+      '  t.addEventListener("click", push(log, "b")); }));' +
+      'r.push(attr(function (t, log) { t.setAttribute("onclick", "L.push(\'attr\')");' +
+      '  t.addEventListener("click", push(log, "a")); }));' +
+      // the property and the attribute are one handler, in one place
+      'r.push(attr(function (t, log) { t.setAttribute("onclick", "L.push(\'attr\')");' +
+      '  t.addEventListener("click", push(log, "a")); t.onclick = push(log, "idl"); }));' +
+      'r.push(attr(function (t, log) { t.onclick = push(log, "idl");' +
+      '  t.addEventListener("click", push(log, "a"));' +
+      '  t.setAttribute("onclick", "L.push(\'attr\')"); }));' +
+      'r.push(attr(function (t, log) { t.setAttribute("onclick", "L.push(\'attr1\')");' +
+      '  t.addEventListener("click", push(log, "a"));' +
+      '  t.setAttribute("onclick", "L.push(\'attr2\')"); }));' +
+      'r.push(attr(function (t, log) { t.setAttribute("onclick", "L.push(\'attr1\')");' +
+      '  t.addEventListener("click", push(log, "a")); t.removeAttribute("onclick");' +
+      '  t.setAttribute("onclick", "L.push(\'attr2\')"); }));' +
+      'r.push(attr(function (t, log) { t.setAttribute("onclick", "L.push(\'attr1\')");' +
+      '  t.addEventListener("click", push(log, "a")); t.onclick = null;' +
+      '  log.push(String(t.onclick)); t.addEventListener("click", push(log, "b"));' +
+      '  t.setAttribute("onclick", "L.push(\'attr2\')"); }));' +
+      // parsed, it was there before anything listened
+      'r.push(attr(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.onclick = push(log, "h"); t.addEventListener("click", push(log, "b")); },' +
+      '  document.getElementById("p1")));' +
+      'r.push(attr(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.setAttribute("onclick", "L.push(\'attr2\')"); }, document.getElementById("p2")));' +
+      'r.push(attr(function (t, log) { t.addEventListener("click", push(log, "a"));' +
+      '  t.removeAttribute("onclick"); t.onclick = push(log, "h"); },' +
+      '  document.getElementById("p3")));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'a,attr,b',
+      'attr,a',
+      'idl,a',
+      'attr,a',
+      'attr2,a',
+      'a,attr2',
+      'null,a,b,attr2',
+      'h,a,b',
+      'attr2,a',
+      'a,h',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test("the window's onload runs in its place among the load listeners, the <body>'s attribute where the parser or a script set it", async () => {
+  const loaded = async (source: string): Promise<string> =>
+    rootLog(
+      await hosted(
+        source.replace(
+          '</body>',
+          '<script>addEventListener("load", function () {' +
+            ' setTimeout(function () { note("done"); }); });</script></body>',
+        ),
+      ),
+      (t) => t.includes('done'),
+    );
+  const head = (script: string, body: string) =>
+    `<!doctype html><html id="root"><head><script>${ROOT_NOTE}${script}</script></head>${body}</html>`;
+  // a head's listener was there before the parser set the body's
+  assert.equal(
+    await loaded(
+      head(
+        'addEventListener("load", function () { note("a"); });',
+        '<body onload="note(\'attr\')"><script>' +
+          'addEventListener("load", function () { note("b"); });</script></body>',
+      ),
+    ),
+    'a attr b done',
+  );
+  // and the body's takes the place the head's handler had
+  assert.equal(
+    await loaded(
+      head(
+        'onload = function () { note("h"); };' +
+          'addEventListener("load", function () { note("a"); });',
+        '<body onload="note(\'attr\')"></body>',
+      ),
+    ),
+    'attr a done',
+  );
+  // with nothing before it, the body's is first, and the window's takes
+  // its place
+  assert.equal(
+    await loaded(
+      '<!doctype html><html id="root"><body onload="note(\'attr\')"><script>' +
+        ROOT_NOTE +
+        'addEventListener("load", function () { note("a"); });' +
+        'onload = function () { note("h"); };</script></body></html>',
+    ),
+    'h a done',
+  );
+  assert.equal(
+    await loaded(
+      head(
+        'addEventListener("load", function () { note("a"); });' +
+          'onload = function () { note("h"); };' +
+          'addEventListener("load", function () { note("b"); });',
+        '<body></body>',
+      ),
+    ),
+    'a h b done',
+  );
+  // the body's property and a script's attribute are the window's too
+  assert.equal(
+    await loaded(
+      head(
+        '',
+        '<body ononline="note(\'parsed\')"><script>' +
+          'addEventListener("load", function () { note("a"); });' +
+          'document.body.onload = function () { note("h"); };' +
+          'addEventListener("load", function () { note("b"); });' +
+          'addEventListener("hashchange", function () { note("c"); });' +
+          'document.body.setAttribute("onhashchange", "note(\'attr\')");' +
+          'addEventListener("hashchange", function () { note("d"); });' +
+          'onpopstate = function () { note("idl"); };' +
+          'addEventListener("popstate", function () { note("e"); });' +
+          'document.body.setAttribute("onpopstate", "note(\'attr\')");' +
+          'addEventListener("online", function () { note("f"); });' +
+          'ononline = null;' +
+          'addEventListener("online", function () { note("g"); });' +
+          'document.body.setAttribute("ononline", "note(\'again\')");' +
+          '["hashchange", "popstate", "online"].forEach(function (type) {' +
+          '  dispatchEvent(new Event(type)); });' +
+          '</script></body>',
+      ),
+    ),
+    'c attr d attr e f g again a h b done',
+  );
+});
+
 test("ParentNode's members are Element's, Document's and DocumentFragment's own", async () => {
   // Shady DOM, which YouTube forces, copies `children` and its kin off
   // `Element.prototype` and reads an element's children through the copy:
