@@ -136,15 +136,16 @@ import {
 } from './css/parse.js';
 import type {
   Declaration,
+  KeyframesRule,
   MediaCondition,
-  StyleRule,
   SheetSource,
+  StyleRule,
   Stylesheet,
 } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
-import { easingText, timingAt } from './css/animation.js';
+import { NO_ANIMATIONS, easingText, timingAt } from './css/animation.js';
 import type { CssEventRecord, ScrollProgress } from './css/timeline.js';
 import {
   RANGE_END,
@@ -11060,12 +11061,17 @@ export class HtmlViewNode extends Node {
     }
     const added = addedRules(was, now);
     if (!added) return null;
+    // the boxes it looks in for who runs a name
+    if (added.keyframes.size && asideIn(tree)) return null;
     const reached = this._cascade!.addedReach(
-      added,
+      added.rules,
       this._source.document,
       !!tree.impliedHtml,
     );
-    if (reached) this._keptFor = this._cascade;
+    if (reached) {
+      this._keptFor = this._cascade;
+      if (added.keyframes.size) runningAny(tree, added.keyframes, reached);
+    }
     return reached;
   }
 
@@ -13797,12 +13803,16 @@ interface ParsedSheet {
  * `<style>` written to — and every other sheet is new; neither is in a
  * shadow tree, and the host's sheets are as they were. And nothing added
  * reaches past what its selectors name: no `@import`, `@font-face`,
- * `@keyframes`, `@property`, `@function`, `@position-try`, `@counter-style`
- * or cascade layer, no `@scope`, `@starting-style` or `@namespace`, and no
- * selector at a shadow tree's edge or for a highlight or a view
- * transition. Null otherwise.
+ * `@property`, `@function`, `@position-try`, `@counter-style` or cascade
+ * layer, no `@scope`, `@starting-style` or `@namespace`, and no selector at
+ * a shadow tree's edge or for a highlight or a view transition. A
+ * `@keyframes` reaches what runs its name, which is said beside the rules
+ * (`runningAny`). Null otherwise.
  */
-function addedRules(was: SheetsRead, now: SheetsRead): StyleRule[] | null {
+function addedRules(
+  was: SheetsRead,
+  now: SheetsRead,
+): { rules: StyleRule[]; keyframes: Set<string> } | null {
   if (
     now.look !== was.look ||
     now.scale !== was.scale ||
@@ -13815,6 +13825,7 @@ function addedRules(was: SheetsRead, now: SheetsRead): StyleRule[] | null {
     return null;
   }
   const added: StyleRule[] = [];
+  const keyframes = new Set<string>();
   let j = 0;
   for (let i = 0; i < now.texts.length; i += 1) {
     const sheet = now.sheets[i];
@@ -13836,8 +13847,10 @@ function addedRules(was: SheetsRead, now: SheetsRead): StyleRule[] | null {
         !sheet.layered || (i === now.texts.length - 1 && !now.extras.length)
           ? rulesAfter(was.sheets[j], sheet)
           : null;
-      if (tail && !ADDS_REACH.test(text)) {
+      const frames = tail && keyframesAfter(was.sheets[j], sheet);
+      if (tail && frames && !ADDS_REACH.test(text)) {
         added.push(...tail);
+        for (const rule of frames) keyframes.add(rule.name);
         j += 1;
         continue;
       }
@@ -13855,11 +13868,54 @@ function addedRules(was: SheetsRead, now: SheetsRead): StyleRule[] | null {
       return null;
     }
     added.push(...sheet.rules);
+    for (const rule of sheet.keyframes ?? []) keyframes.add(rule.name);
   }
   if (j !== was.texts.length) return null;
   for (const rule of added)
     if (EDGE_OR_HIGHLIGHT.test(rule.selector)) return null;
-  return added;
+  return { rules: added, keyframes };
+}
+
+/** The `@keyframes` `now` has after those `was` has, as `rulesAfter` has
+ *  its rules: a CSS-in-JS library writes one as a component first renders.
+ *  Null where it does not hold `was`'s as they were. */
+function keyframesAfter(
+  was: Stylesheet,
+  now: Stylesheet,
+): readonly KeyframesRule[] | null {
+  const had = was.keyframes ?? [];
+  const has = now.keyframes ?? [];
+  if (has.length < had.length) return null;
+  for (let i = 0; i < had.length; i += 1) {
+    if (!sameValue(had[i], has[i])) return null;
+  }
+  return has.slice(had.length);
+}
+
+/**
+ * The elements that run an animation of one of `names`, or whose `::before`
+ * or `::after` does, into `into`: a `@keyframes` that comes reaches those
+ * and no others (CSS Animations 1, 3). Wikipedia's chunks of CSS each bring
+ * one, and each styled all 18,000 elements of an article again.
+ */
+function runningAny(
+  tree: BoxTree,
+  names: ReadonlySet<string>,
+  into: Set<Element>,
+): void {
+  const runs = (style: ComputedStyle): boolean =>
+    style.animations !== NO_ANIMATIONS &&
+    style.animations.names.some((name) => name !== null && names.has(name));
+  for (const [el, { style }] of tree.styles) if (runs(style)) into.add(el);
+  const stack: Box[] = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.pseudo && runs(box.style)) {
+      const from = GENERATED_FROM.get(box);
+      if (from) into.add(from);
+    }
+    for (const child of box.children) stack.push(child);
+  }
 }
 
 /** The at-rules whose reach no selector says. */
@@ -13879,7 +13935,6 @@ function onlyRules(sheet: Stylesheet, layers = false): boolean {
     !sheet.imports.length &&
     (layers || !sheet.layered) &&
     !sheet.fontFaces.length &&
-    !sheet.keyframes?.length &&
     !sheet.properties?.length &&
     !sheet.functions?.length &&
     !sheet.positionTries?.length &&
@@ -13904,7 +13959,6 @@ function rulesAfter(was: Stylesheet, now: Stylesheet): StyleRule[] | null {
     !sameValue(now.imports, was.imports) ||
     !sameValue(now.importConditions, was.importConditions) ||
     !sameValue(now.fontFaces, was.fontFaces) ||
-    !sameValue(now.keyframes ?? null, was.keyframes ?? null) ||
     !sameValue(now.properties ?? null, was.properties ?? null) ||
     !sameValue(now.functions ?? null, was.functions ?? null) ||
     !sameValue(now.positionTries ?? null, was.positionTries ?? null) ||
