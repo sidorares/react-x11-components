@@ -2926,6 +2926,18 @@ closes a way out a DOM binding opens by accident:
   selector against the whole document, so `el.querySelectorAll('.a .b')`
   found nothing whose `.a` was above `el`. **A page's selector goes
   through `_query`**, which compiles it as the DOM does and keeps it.
+- **An `on…` handler is a listener in the place it was first set in**
+  (HTML 8.1.8.1): `activateHandler` puts a slot in the target's
+  `_listeners` as it comes to be something, `invoke` runs it there, and
+  null takes it out, so a listener added before `onload = f` runs before
+  `f`. Run before every listener, an `onloadend` set after a page's
+  `addEventListener('loadend', …)` ran first. A content attribute set or
+  taken out moves it the same way, and one the parser set has the first
+  place, but for a `<body>`'s window-reflecting one made after a head's
+  scripts listened, which `__mutated` places as the host says it was
+  made. **Anything new that sets a handler goes through `setHandler`**,
+  never `_handlers` itself: written there, the handler has no slot and
+  runs before every listener, as it used to.
 - **What HTML gates on the user's gesture reads the realm's activation.**
   `__event` notes an activation-triggering press or key (`lastActivation`),
   `hasTransientActivation` holds for five seconds after, and

@@ -333,7 +333,11 @@ export function installDom(
     once: boolean;
     passive: boolean;
     signal?: Any;
+    /** The place of the target's `on<type>` handler, which runs where it
+     *  is in the list (`activateHandler`). */
+    handler?: true;
   }
+  const NO_LISTENERS: readonly Listener[] = [];
 
   const NONE = 0;
   const CAPTURING_PHASE = 1;
@@ -963,7 +967,9 @@ export function installDom(
         typeof options === 'boolean' ? options : !!options?.capture;
       const list = this._listeners[type];
       if (!list) return;
-      const at = list.findIndex((l) => l.fn === fn && l.capture === capture);
+      const at = list.findIndex(
+        (l) => l.fn === fn && l.capture === capture && !l.handler,
+      );
       if (at >= 0) list.splice(at, 1);
     }
     dispatchEvent(event: Any): boolean {
@@ -1017,18 +1023,22 @@ export function installDom(
     'unhandledrejection',
     'unload',
   ]);
+  /** The element whose `on<type>` attribute is a target's handler where no
+   *  property set one: the target, or the `<body>` for the window's. */
+  const handlerElement = (target: Any, type: string): Any => {
+    if (target === windowTarget && WINDOW_REFLECTING.has(type)) {
+      const body = document.body;
+      return body instanceof HTMLBodyElement ? body : null;
+    }
+    return target instanceof Element ? target : null;
+  };
   /** The `on<type>` handler of a target, a property's or its attribute's. */
   const handlerOf = (target: Any, type: string): Any => {
     const own = target._handlers[type];
     if (own !== undefined) return own;
-    if (target === windowTarget && WINDOW_REFLECTING.has(type)) {
-      const body = document.body;
-      return body instanceof HTMLBodyElement
-        ? attributeHandler(body, type, type === 'error')
-        : null;
-    }
-    if (!(target instanceof Element)) return null;
-    return attributeHandler(target, type);
+    const el = handlerElement(target, type);
+    if (!el) return null;
+    return attributeHandler(el, type, el !== target && type === 'error');
   };
   /** An element's `on<type>` attribute, compiled once for its text: a
    *  `<body onerror>`, which is the window's, with the five arguments the
@@ -1057,6 +1067,70 @@ export function installDom(
     return fn;
   };
 
+  /** Gives a target's `on<type>` handler its place among the target's
+   *  listeners, where it has none, as it comes to be something other than
+   *  null (HTML 8.1.8.1, "activate an event handler"): the end of the
+   *  list, so a listener added before `onload = f` runs before `f` and one
+   *  added after it runs after. It keeps the place while it is set to
+   *  something else. An attribute the parser set has had it from before any
+   *  listener — the front — unless `now` says the parser set it just now.
+   *  Called before the value is set, so that it reads the one before. */
+  const activateHandler = (target: Any, type: string, now = false): void => {
+    const list: Listener[] = ((target._listeners ??= Object.create(null))[
+      type
+    ] ??= []);
+    if (list.some((l) => l.handler)) return;
+    const slot: Listener = {
+      fn: null,
+      capture: false,
+      once: false,
+      passive: false,
+      handler: true,
+    };
+    if (
+      !now &&
+      target._handlers?.[type] === undefined &&
+      handlerElement(target, type)?.getAttribute(`on${type}`) != null
+    ) {
+      list.unshift(slot);
+    } else list.push(slot);
+  };
+  /** Takes the handler's place out of the list, as it is set to null
+   *  ("deactivate an event handler"): set again, it goes at the end. */
+  const deactivateHandler = (target: Any, type: string): void => {
+    const list: Listener[] | undefined = target._listeners?.[type];
+    const at = list ? list.findIndex((l) => l.handler) : -1;
+    if (at >= 0) list!.splice(at, 1);
+  };
+  /** A target's `on<type>` IDL attribute set to `value`: null, or what its
+   *  getter answers from now on. */
+  const setHandler = (target: Any, type: string, value: Any): void => {
+    if (value !== null) activateHandler(target, type);
+    else deactivateHandler(target, type);
+    (target._handlers ??= Object.create(null))[type] = value;
+  };
+  /** An `on<type>` content attribute set or taken out (HTML 8.1.8.1, the
+   *  attribute change steps): set, the handler is the attribute's, in the
+   *  place it had or at the end; taken out, it is null and has none. A
+   *  `<body>`'s window-reflecting one is the window's. */
+  const handlerAttributeChanged = (
+    el: Any,
+    type: string,
+    set: boolean,
+    now = false,
+  ): void => {
+    const target =
+      WINDOW_REFLECTING.has(type) &&
+      el instanceof HTMLBodyElement &&
+      el === document.body
+        ? windowTarget
+        : el;
+    if (set) {
+      activateHandler(target, type, now);
+      target._handlers[type] = undefined;
+    } else setHandler(target, type, null);
+  };
+
   /** The window each frame window's own target is for (`frameWindowOf`),
    *  which its listeners hear as what they are on, as the page's do G. */
   const targetWindows = new WeakMap<object, Any>();
@@ -1070,69 +1144,81 @@ export function installDom(
     event._type === 'error' &&
     (target === windowTarget || targetWindows.has(target));
 
+  /** A target's `on<type>` handler run for an event, as it is now: one a
+   *  listener before it set runs in its place. */
+  const runHandler = (target: Any, self: Any, event: Any): void => {
+    const handler = handlerOf(target, event._type);
+    if (typeof handler !== 'function') return;
+    try {
+      // a global's `onerror` is handed an `error` event's five fields
+      // rather than the event, and `true` cancels it (HTML 8.1.8.1,
+      // "the event handler processing algorithm"): Closure's handler
+      // reads its first argument as the message's string
+      if (globalError(target, event)) {
+        const result = handler.call(
+          self,
+          event.message,
+          event.filename,
+          event.lineno,
+          event.colno,
+          event.error,
+        );
+        if (result === true) event.preventDefault();
+      } else {
+        const result = handler.call(self, event);
+        // `onbeforeunload` answers a string, which asks to be confirmed
+        // (HTML 8.1.8.1, "the event handler processing algorithm")
+        if (
+          event instanceof BeforeUnloadEvent &&
+          event._type === 'beforeunload'
+        ) {
+          if (result !== undefined && result !== null) {
+            event._canceled = true;
+            if (event._returnValue === '') {
+              event._returnValue = String(result);
+            }
+          }
+        } else if (result === false) event.preventDefault();
+      }
+    } catch (error) {
+      report(error);
+    }
+  };
+
   const invoke = (target: Any, event: Any, phase: number): void => {
     // the window's listeners are kept on a target of their own, and hear
     // the window as what they are on, as `this` and `currentTarget`
     const self = listenedAs(target);
     event._currentTarget = self;
     event._phase = phase;
-    if (phase !== CAPTURING_PHASE) {
-      const handler = handlerOf(target, event._type);
-      if (typeof handler === 'function') {
+    const list: Listener[] | undefined = target._listeners[event._type];
+    // what runs is the list as it was: one a listener adds is not heard
+    const listeners = list?.length ? list.slice() : NO_LISTENERS;
+    // a handler is a listener in the place it was first set in
+    // (`activateHandler`), but for an `on…` attribute the parser set, which
+    // has had the first place since before anything could listen
+    if (phase !== CAPTURING_PHASE && !listeners.some((l) => l.handler)) {
+      runHandler(target, self, event);
+      if (event._stopNow) return;
+    }
+    for (const l of listeners) {
+      if (phase === CAPTURING_PHASE && !l.capture) continue;
+      if (phase === BUBBLING_PHASE && l.capture) continue;
+      if (!list!.includes(l)) continue;
+      if (l.handler) runHandler(target, self, event);
+      else {
+        if (l.once) list!.splice(list!.indexOf(l), 1);
+        event._passive = l.passive;
         try {
-          // a global's `onerror` is handed an `error` event's five fields
-          // rather than the event, and `true` cancels it (HTML 8.1.8.1,
-          // "the event handler processing algorithm"): Closure's handler
-          // reads its first argument as the message's string
-          if (globalError(target, event)) {
-            const result = handler.call(
-              self,
-              event.message,
-              event.filename,
-              event.lineno,
-              event.colno,
-              event.error,
-            );
-            if (result === true) event.preventDefault();
-          } else {
-            const result = handler.call(self, event);
-            // `onbeforeunload` answers a string, which asks to be confirmed
-            // (HTML 8.1.8.1, "the event handler processing algorithm")
-            if (
-              event instanceof BeforeUnloadEvent &&
-              event._type === 'beforeunload'
-            ) {
-              if (result !== undefined && result !== null) {
-                event._canceled = true;
-                if (event._returnValue === '') {
-                  event._returnValue = String(result);
-                }
-              }
-            } else if (result === false) event.preventDefault();
+          if (typeof l.fn === 'function') l.fn.call(self, event);
+          else if (typeof l.fn?.handleEvent === 'function') {
+            l.fn.handleEvent(event);
           }
         } catch (error) {
           report(error);
         }
-        if (event._stopNow) return;
+        event._passive = false;
       }
-    }
-    const list = target._listeners[event._type];
-    if (!list?.length) return;
-    for (const l of list.slice()) {
-      if (phase === CAPTURING_PHASE && !l.capture) continue;
-      if (phase === BUBBLING_PHASE && l.capture) continue;
-      if (!list.includes(l)) continue;
-      if (l.once) list.splice(list.indexOf(l), 1);
-      event._passive = l.passive;
-      try {
-        if (typeof l.fn === 'function') l.fn.call(self, event);
-        else if (typeof l.fn?.handleEvent === 'function') {
-          l.fn.handleEvent(event);
-        }
-      } catch (error) {
-        report(error);
-      }
-      event._passive = false;
       if (event._stopNow) return;
     }
   };
@@ -4336,7 +4422,7 @@ export function installDom(
         return this._handlers[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -5929,6 +6015,8 @@ export function installDom(
           'InvalidCharacterError',
         );
       }
+      // before it is set, so that a handler finds the attribute it replaces
+      if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
       call('setAttr', this._id, n, str(value));
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
       if (n === 'src' && this instanceof HTMLMediaElement && mediaLoads()) {
@@ -5942,6 +6030,9 @@ export function installDom(
       const n = str(name).toLowerCase();
       const attr = attrNodes.get(this)?.get(n);
       if (attr) detachAttr(attr);
+      if (n.startsWith('on') && this.getAttribute(n) !== null) {
+        handlerAttributeChanged(this, n.slice(2), false);
+      }
       call('delAttr', this._id, n);
     }
     removeAttributeNS(_ns: Any, name: Any): void {
@@ -8891,7 +8982,7 @@ export function installDom(
       Object.defineProperty(win, `on${type}`, {
         get: () => target._handlers[type] ?? null,
         set: (fn: Any) => {
-          target._handlers[type] = typeof fn === 'function' ? fn : null;
+          setHandler(target, type, typeof fn === 'function' ? fn : null);
           if (type === 'resize' && typeof fn === 'function') {
             watchViewport(view);
           }
@@ -10628,8 +10719,7 @@ export function installDom(
         return this._handlers?.[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers ??= {};
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
       enumerable: true,
@@ -12042,7 +12132,7 @@ export function installDom(
     Object.defineProperty(HTMLBodyElement.prototype, `on${type}`, {
       get: () => handlerOf(windowTarget, type),
       set: (fn: Any) => {
-        windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -15536,7 +15626,7 @@ export function installDom(
         return this._handlers[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     };
@@ -15548,7 +15638,11 @@ export function installDom(
       return this._handlers.visibilitychange ?? null;
     },
     set(this: Any, fn: Any) {
-      this._handlers.visibilitychange = typeof fn === 'function' ? fn : null;
+      setHandler(
+        this,
+        'visibilitychange',
+        typeof fn === 'function' ? fn : null,
+      );
     },
     configurable: true,
   });
@@ -15941,7 +16035,7 @@ export function installDom(
       return this._handlers.change ?? null;
     }
     set onchange(fn: Any) {
-      this._handlers.change = typeof fn === 'function' ? fn : null;
+      setHandler(this, 'change', typeof fn === 'function' ? fn : null);
       this._heard();
     }
     override addEventListener(type: string, fn: Any, options?: Any): void {
@@ -17601,7 +17695,7 @@ export function installDom(
         return this._handlers[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -18987,7 +19081,7 @@ export function installDom(
       return this._handlers.message ?? null;
     }
     set onmessage(fn: Any) {
-      this._handlers.message = typeof fn === 'function' ? fn : null;
+      setHandler(this, 'message', typeof fn === 'function' ? fn : null);
       this.start();
     }
   }
@@ -19277,8 +19371,7 @@ export function installDom(
         return this._handlers?.[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers ??= {};
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -19358,8 +19451,7 @@ export function installDom(
       return this._handlers?.error ?? null;
     },
     set(this: Any, fn: Any) {
-      this._handlers ??= {};
-      this._handlers.error = typeof fn === 'function' ? fn : null;
+      setHandler(this, 'error', typeof fn === 'function' ? fn : null);
     },
     configurable: true,
   });
@@ -19429,8 +19521,7 @@ export function installDom(
         return this._handlers?.[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers ??= {};
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
       enumerable: true,
@@ -20265,7 +20356,7 @@ export function installDom(
           return this._handlers[type] ?? null;
         },
         set(this: Any, fn: Any) {
-          this._handlers[type] = typeof fn === 'function' ? fn : null;
+          setHandler(this, type, typeof fn === 'function' ? fn : null);
         },
         configurable: true,
       });
@@ -24324,7 +24415,7 @@ export function installDom(
         return this._handlers[type] ?? null;
       },
       set(this: Any, fn: Any) {
-        this._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -24334,7 +24425,7 @@ export function installDom(
       return this._handlers.dispose ?? null;
     },
     set(this: Any, fn: Any) {
-      this._handlers.dispose = typeof fn === 'function' ? fn : null;
+      setHandler(this, 'dispose', typeof fn === 'function' ? fn : null);
     },
     configurable: true,
   });
@@ -27633,7 +27724,7 @@ export function installDom(
     Object.defineProperty(G, `on${type}`, {
       get: () => handlerOf(windowTarget, type),
       set: (fn: Any) => {
-        windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
+        setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
     });
@@ -27744,6 +27835,7 @@ export function installDom(
       input: () => input(),
       DOMException,
       EventTarget,
+      setHandler,
       Event,
       MessageEvent,
       Blob,
@@ -27785,6 +27877,7 @@ export function installDom(
       input: () => input(),
       DOMException,
       EventTarget,
+      setHandler,
       Event,
       fire: trusted,
       secure,
@@ -27794,6 +27887,7 @@ export function installDom(
       call: call as Any,
       DOMException,
       EventTarget,
+      setHandler,
       Event,
       fire: trusted,
       setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
@@ -27813,6 +27907,7 @@ export function installDom(
       input: () => input(),
       DOMException,
       EventTarget,
+      setHandler,
       Event,
       MessageEvent,
       Blob,
@@ -27832,6 +27927,7 @@ export function installDom(
       input: () => input(),
       DOMException,
       EventTarget,
+      setHandler,
       Event,
       fire: trusted,
       setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
@@ -27922,8 +28018,22 @@ export function installDom(
   });
   // the parser put nodes in the document since a script ran — the host
   // has noted them for the page's observers (`parserInserted`), and the
-  // entry has run what its custom elements owe
+  // entry has run what its custom elements owe. A `<body>` among them set
+  // the window's handlers its attributes name as it was made, after what
+  // the scripts before it listened with: `<body onload>` runs after a
+  // head's `addEventListener('load', …)`
   entry('__mutated', () => {
+    if (input() === true) {
+      const body = document.body;
+      if (body instanceof HTMLBodyElement) {
+        for (const name of body.getAttributeNames()) {
+          const type = name.slice(2);
+          if (name.startsWith('on') && WINDOW_REFLECTING.has(type)) {
+            handlerAttributeChanged(body, type, true, true);
+          }
+        }
+      }
+    }
     mutated();
     return true;
   });
@@ -28662,8 +28772,11 @@ export function installDom(
       Object.defineProperty(G, 'onconnect', {
         get: () => windowTarget._handlers?.connect ?? null,
         set: (fn: Any) => {
-          windowTarget._handlers ??= {};
-          windowTarget._handlers.connect = typeof fn === 'function' ? fn : null;
+          setHandler(
+            windowTarget,
+            'connect',
+            typeof fn === 'function' ? fn : null,
+          );
         },
         configurable: true,
       });
@@ -28704,8 +28817,11 @@ export function installDom(
         Object.defineProperty(G, `on${type}`, {
           get: () => windowTarget._handlers?.[type] ?? null,
           set: (fn: Any) => {
-            windowTarget._handlers ??= {};
-            windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
+            setHandler(
+              windowTarget,
+              type,
+              typeof fn === 'function' ? fn : null,
+            );
           },
           configurable: true,
         });

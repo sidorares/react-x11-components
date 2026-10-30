@@ -497,7 +497,8 @@ export class ScriptRunner {
   /** What the parser put in the document since it was last asked, told to
    *  the page: its mutation observers and its custom elements. */
   private _parserInserted(): void {
-    if (this.host.parserInserted()) this.engine.call('__mutated', null);
+    const made = this.host.parserInserted();
+    if (made) this.engine.call('__mutated', made.body);
   }
 
   /** The parse ended: the scripts it met, in order, each once the sheets
