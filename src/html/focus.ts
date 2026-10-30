@@ -110,8 +110,24 @@ export function isEditable(el: Element): boolean {
  * Null where it has none, or one that is not a number.
  */
 export function tabIndexOf(el: Element): number | null {
-  const m = /^[ \t\n\f\r]*([+-]?\d+)/.exec(attr(el, 'tabindex') ?? '');
+  const m = TABINDEX.exec(attr(el, 'tabindex') ?? '');
   return m ? Number(m[1]) : null;
+}
+
+const TABINDEX = /^[ \t\n\f\r]*([+-]?\d+)/;
+
+/**
+ * Whether a change of an element's `tabindex` from `was` leaves it what it
+ * was among the focusable areas: a number before and after, or neither,
+ * where the markup is what says. Not known, as a change that does not say
+ * what it was.
+ */
+export function tabindexStays(
+  el: Element,
+  was: string | null | undefined,
+): boolean {
+  if (was === undefined) return false;
+  return TABINDEX.test(was ?? '') === (tabIndexOf(el) !== null);
 }
 
 /**
