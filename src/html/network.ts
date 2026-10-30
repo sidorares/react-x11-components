@@ -2080,8 +2080,8 @@ const PLAYABLE = new Set([
  * plays what the page's `<video>` asks for (`videoSource`): `'maybe'` for a
  * type it has a reader for — none of a type's codecs is checked, so never
  * `'probably'` — and `''` for the rest. A page asks before it loads a
- * stream: an HLS player with no `MediaSource` to feed sets the playlist as
- * the `src` only where this is not `''`.
+ * stream: an HLS player `MediaSource` supports no type for sets the
+ * playlist as the `src` only where this is not `''`.
  */
 export function canPlayMedia(type: string): '' | 'maybe' {
   const media = type.split(';')[0].trim().toLowerCase();

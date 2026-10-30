@@ -37,6 +37,7 @@ import type { installWebSocket } from './websocket.js';
 import type { installDataChannels } from './datachannel.js';
 import type { installMediaStreams } from './mediastream.js';
 import type { installWebAudio } from './webaudio.js';
+import type { installMse } from './mse.js';
 import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
@@ -74,6 +75,7 @@ export function installDom(
   webrtc: typeof installWebRTC,
   rtcTransports: typeof installRtcTransports,
   webaudio: typeof installWebAudio,
+  mse: typeof installMse,
   geometry: typeof installGeometry,
   namedAccess: boolean,
 ): void {
@@ -6075,7 +6077,11 @@ export function installDom(
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
       call('setAttr', this._id, n, str(value));
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
-      if (n === 'src' && this instanceof HTMLMediaElement && mediaLoads()) {
+      if (
+        n === 'src' &&
+        this instanceof HTMLMediaElement &&
+        (mediaLoads() || askOf(this).source || mediaSourceUrls.has(str(value)))
+      ) {
         mediaLoad(this);
       }
     }
@@ -11318,6 +11324,8 @@ export function installDom(
      *  earlier one finds another and does nothing. */
     load: number;
     abort: (() => void) | null;
+    /** The `MediaSource` it is attached to (`mse.ts`). */
+    source: Any;
     /** When the clock last started, on `now()`, while it runs. */
     since: number | null;
     ticker: number | null;
@@ -11354,6 +11362,7 @@ export function installDom(
         player: false,
         load: 0,
         abort: null,
+        source: null,
         since: null,
         ticker: null,
         stallTimer: null,
@@ -11633,6 +11642,7 @@ export function installDom(
         );
       }
     });
+    mediaDetach(ask);
   };
   /** Three seconds from now, `stalled`, where nothing comes before
    *  (HTML 4.8.11.5, "is currently stalled"). */
@@ -11666,6 +11676,27 @@ export function installDom(
     ask.abort = () => call('mediaAbort', el._id);
     mediaWatch(el);
     call('mediaFetch', el._id, ask.load, url);
+  };
+  /** MSE 3.15.1: its source is the page's, so nothing is fetched and
+   *  nothing stalls, and it stays loading until the stream ends. */
+  const mediaAttach = (el: Any, source: Any): void => {
+    const ask = askOf(el);
+    const load = ask.load;
+    const attached = MSE.attach(source, {
+      durationChanged(duration: number): void {
+        ask.duration = duration;
+        mediaTask(() => {
+          if (ask.load === load) fireMedia(el, 'durationchange');
+        });
+      },
+      failed: () => mediaFailed(el, load),
+    });
+    if (attached) ask.source = source;
+    else mediaFailed(el, load);
+  };
+  const mediaDetach = (ask: MediaAsk): void => {
+    if (ask.source) MSE.detach(ask.source);
+    ask.source = null;
   };
   /** What the host's read of a source came to (`__media`): bytes in, so
    *  `progress` and nothing stalled; its head read, its data past it, or
@@ -11756,7 +11787,9 @@ export function installDom(
       ask.network = 2;
       mediaSync(el);
       fireMedia(el, 'loadstart');
-      mediaFetch(el, url);
+      const source = mediaSourceUrls.get(url);
+      if (source) mediaAttach(el, source);
+      else mediaFetch(el, url);
     });
   };
   /** The types a source is read here for whatever the player says. */
@@ -11779,6 +11812,7 @@ export function installDom(
       });
     }
     if (network !== 0) {
+      mediaDetach(ask);
       mediaTask(() => {
         if (ask.load === load) fireMedia(el, 'emptied');
       });
@@ -12050,7 +12084,7 @@ export function installDom(
     /** HTML 4.8.11.5, the media element load algorithm: whatever it was
      *  doing ends, it is paused, and it loads its source again. */
     load(): void {
-      if (mediaLoads()) {
+      if (mediaLoads() || askOf(this).source) {
         mediaLoad(this);
         return;
       }
@@ -12061,9 +12095,10 @@ export function installDom(
     }
     /** HTML 4.8.11.3: whether what plays the page's media can play the
      *  type — the host's to say, and `''` where it says nothing. A page
-     *  asks before it picks how to load a stream: an HLS player that finds
-     *  no `MediaSource` sets the playlist as the `src` where the answer for
-     *  `application/vnd.apple.mpegurl` is not `''`, as on Safari. */
+     *  asks before it picks how to load a stream: an HLS player that
+     *  `MediaSource` supports no type for (`mse.ts`) sets the playlist as
+     *  the `src` where the answer for `application/vnd.apple.mpegurl` is
+     *  not `''`, as on Safari. */
     canPlayType(type: Any): string {
       return String(call('canPlayType', str(type)));
     }
@@ -16405,20 +16440,23 @@ export function installDom(
       parsed._href = JSON.parse(json).href;
       return parsed;
     }
-    /** A URL for a blob, this realm's (W3C File API 8.3). */
+    /** A URL for a blob, this realm's (W3C File API 8.3), or for a
+     *  `MediaSource` (MSE 7), which only a media element can read. */
     static createObjectURL(blob: Any): string {
-      if (!(blob instanceof Blob)) {
+      const source = MSE.isSource(blob);
+      if (!source && !(blob instanceof Blob)) {
         throw new TypeError(
           "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
         );
       }
       const origin = str(location.origin);
       const url = `blob:${origin === 'null' ? 'null' : origin}/${str(call('uuid'))}`;
-      blobUrls.set(url, blob);
+      (source ? mediaSourceUrls : blobUrls).set(url, blob);
       return url;
     }
     static revokeObjectURL(url: Any): void {
       blobUrls.delete(str(url));
+      mediaSourceUrls.delete(str(url));
     }
     get href(): string {
       return this._href;
@@ -19407,6 +19445,10 @@ export function installDom(
     'InputDeviceInfo',
     'OverconstrainedError',
     'CanvasCaptureMediaStreamTrack',
+    // Media Source Extensions' (`mse.ts`), a window's alone
+    'MediaSource',
+    'SourceBuffer',
+    'SourceBufferList',
     // Web Audio's (`webaudio.ts`), a window's alone
     'BaseAudioContext',
     'AudioContext',
@@ -19481,6 +19523,9 @@ export function installDom(
    *  name: what a worker is started from where a library bundles one, as
    *  Parcel does, and what `fetch` reads. */
   const blobUrls = new Map<string, Any>();
+  /** The `MediaSource`s this realm made URLs for, apart from the blobs:
+   *  a `fetch` or a worker finds nothing behind such a URL. */
+  const mediaSourceUrls = new Map<string, Any>();
 
   /**
    * A dedicated worker (HTML 10.2.6.3): a script in a realm of its own, in
@@ -28210,6 +28255,25 @@ export function installDom(
     for (const name of Object.getOwnPropertyNames(interfaces)) {
       define(name, interfaces[name]);
     }
+  }
+
+  // --- Media Source Extensions ---------------------------------------------------
+  //
+  // `mse.ts`: a `MediaSource` a media element opens, supporting no type.
+  // A window's: a worker's global loses them (`WINDOW_ONLY`).
+  const MSE = mse({
+    DOMException,
+    EventTarget,
+    setHandler,
+    Event,
+    fire: (target: Any, event: Any): void => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    },
+    task: mediaTask,
+  });
+  for (const name of Object.getOwnPropertyNames(MSE.interfaces)) {
+    define(name, MSE.interfaces[name]);
   }
 
   // --- WebRTC and media capture -------------------------------------------------
