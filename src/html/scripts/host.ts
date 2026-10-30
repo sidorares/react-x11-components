@@ -1499,9 +1499,6 @@ export class DomHost {
    *  page changed since the last `flush` (`_writeSheets`). */
   private readonly _sheets: WeakMap<Element, SheetState>;
   private readonly _sheetsChanged: Set<Element>;
-  /** A change no list says the reach of — a shadow tree attached — so
-   *  the next flush refreshes the whole document. */
-  private _refreshAll = false;
   /** The documents a page made of its own (`_documentOf`), which are
    *  documents and not fragments, though the tree has one kind of root. */
   private readonly _documents: WeakSet<Document>;
@@ -1666,7 +1663,6 @@ export class DomHost {
     // a document being left changes nothing anyone sees
     if (this._leaving) {
       this._changes = [];
-      this._refreshAll = false;
       return;
     }
     if (this._sheetsChanged.size) this._writeSheets();
@@ -1688,13 +1684,6 @@ export class DomHost {
           .get(doc)
           ?.refresh(changes.length > CHANGES_TOLD ? undefined : changes);
       }
-    }
-    if (this._refreshAll && !this._disposed) {
-      // a shadow tree came: every element is styled again
-      this._refreshAll = false;
-      this._changes = [];
-      this._seams.handle.refresh();
-      return;
     }
     if (!this._changes.length || this._disposed) return;
     const changes = this._changes;
@@ -2881,7 +2870,7 @@ export class DomHost {
             "Failed to execute 'attachShadow' on 'Element': This element does not support attachShadow",
           );
         }
-        this._refreshAll = true;
+        this._tell(host, { type: 'shadowRoot', target: host });
         return this.idOf(root);
       }
       // an open root, or a closed one where the element's own internals ask

@@ -2169,8 +2169,14 @@ Any other `<meta>` is an element like any, which the Guardian's scripts,
 Next.js's and npm's put in for a page's social cards. And the
 `stylesheet` prop is compared by the sheets it holds: `<Html scripts>`
 merges a page's adopted sheets into it at every render, and github.com
-was styled whole some sixty times a load. A shadow tree attached is one; a rule at a tree's edge
-— `:host()`, `:host-context()`, `::slotted()`, `::part()` — is not: every
+was styled whole some sixty times a load. A shadow tree attached is none:
+no selector outside a host can tell it has one, so its record
+(`type: 'shadowRoot'`) reaches the host and all it holds, across trees, and
+the tree is bound to its rules as the sheets are read (`bindShadows`), as a
+host put in with its tree is (`HELD_TREE`). Every custom element with a
+shadow tree styled and built the whole document, a second of MDN's load.
+Nor is a rule at a tree's edge
+— `:host()`, `:host-context()`, `::slotted()`, `::part()` —: every
 key it tests is read as reaching the element it is tested of and all below
 it (`MutationRules.noteEdge`), and while one is in the cascade a change
 spreads across shadow trees and into slots (`addFlatSubtree`). It had made
@@ -2316,7 +2322,13 @@ the builder carries across siblings is a root's to bring to a known
 value, or a refusal**: a new one goes in the table in the design record.
 **Anything new a `BoxTree` lists in document order is spliced in
 `buildSubtrees`**, or a subtree build leaves an entry of the old
-subtree, or none of the new. **Anything new a block's layout reads from
+subtree, or none of the new. A root is in the document's own tree and in no
+slot (`inLightTree`), so a change in a shadow tree is built with the host
+around it, and a root may hold a host: **anything in the splice that asks
+what a root held, or whether an element is still drawn, asks of the flat
+tree** — through a host (`connected`), into its tree, and past what it
+holds and no slot takes (`outOfFlat`), which keeps a place in the document
+and no boxes. **Anything new a block's layout reads from
 outside it joins `Laid`** — a flex item's `Natural`, a grid item's
 `ItemLaid` — and anything that changes what a box's layout reads calls
 `forgetSizes`, which forgets the records with the sizes. And

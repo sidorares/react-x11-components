@@ -447,6 +447,8 @@ export function mutationGeneration(): number {
  *    side of where they were, as a record has them; left out, the change
  *    is taken for one anywhere among `target`'s children.
  *  - `characterData`: a text's or a comment's data changed.
+ *  - `shadowRoot`: `target` took a shadow tree. No selector outside it can
+ *    tell, so what can differ is the host and all it holds.
  */
 export type HtmlChange =
   | {
@@ -463,7 +465,8 @@ export type HtmlChange =
       previousSibling?: AnyNode | null;
       nextSibling?: AnyNode | null;
     }
-  | { type: 'characterData'; target: AnyNode };
+  | { type: 'characterData'; target: AnyNode }
+  | { type: 'shadowRoot'; target: Element };
 
 /** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
  *  value, or none, is no shadow root, and the template an ordinary one. */
