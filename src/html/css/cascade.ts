@@ -1550,8 +1550,10 @@ function scanCompound(
           // the compound is kept without it: its argument is what the
           // pointer changes, and whatever holds the `:hover` in there, the
           // element it tests is in the anchor's subtree or a later
-          // sibling's
+          // sibling's — but for one a selector in a function there names,
+          // which may be above the anchor or before it (`readsApart`)
           args.push(arg);
+          if (testsApart(arg, kind)) out.nested = true;
         } else if (MATCHES_ANY.test(name)) {
           // Kept as what the entries that test this element's hover ask
           // of it besides — `:where(a:hover)` is a compound of `a`'s, and
@@ -1596,6 +1598,44 @@ function scanCompound(
  *  start of a string. */
 const FUNCTION_AT = /^:([\w-]+)\(/;
 
+/**
+ * Whether `entry`, a selector in a function in a `:has()`'s argument, reads
+ * what no walk from a change finds. It is the document's (`compileHoisted`),
+ * so what a combinator in it climbs to may be above the `:has()`'s element.
+ * What a sibling combinator reaches is beside what it was tested from, which
+ * is inside the `:has()`'s element unless the argument starts at a sibling
+ * (`siblings`), when it may be before the element: Tailwind's `peer` in a
+ * `has-`, `:has(:is(.peer ~ *))`, stays inside it.
+ */
+function readsApart(entry: string, siblings: boolean): boolean {
+  const parts = compoundsOf(entry);
+  if (parts.length < 2) return false;
+  return (
+    siblings ||
+    parts.slice(0, -1).some(({ next }) => next !== '+' && next !== '~')
+  );
+}
+
+/** Whether a `:has()`'s argument has a function in it that holds a selector
+ *  testing `kind`'s state that `readsApart`. */
+function testsApart(arg: string, kind: StateKind): boolean {
+  const siblings = selectorsOf(arg).some((one) => /^\s*[+~]/.test(one));
+  for (let i = arg.indexOf(':'); i >= 0; i = arg.indexOf(':', i + 1)) {
+    const fn = FUNCTION_AT.exec(arg.slice(i));
+    if (!fn || !MATCHES_ANY.test(fn[1])) continue;
+    const open = i + fn[0].length - 1;
+    const entries = selectorsOf(arg.slice(open + 1, closeOf(arg, open)));
+    if (
+      entries.some(
+        (entry) => kind.any.test(entry) && readsApart(entry, siblings),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** `:hover` anywhere in a selector. */
 const HOVER = HOVER_STATE.any;
 
@@ -1616,6 +1656,106 @@ const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
  *  an element, and in a selector with one, what a descendant combinator
  *  found above it. Every other matcher keeps nothing. */
 const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
+
+/** css-select's `aliases`, which it does not export: pseudo-classes it
+ *  compiles as an `:is()` of a selector it holds. */
+const SELECTOR_ALIASES =
+  /^(?:any-link|link|disabled|enabled|checked|required|optional|read-only|read-write|selected|checkbox|file|password|radio|reset|image|submit|parent|header|button|input|text)$/i;
+
+/** Whether a functional pseudo-class compiles a selector of its own: one
+ *  that takes a list, and `:nth-child()` with an `of`. */
+function compilesSelector(name: string, arg: string): boolean {
+  return (
+    MATCHES_ANY.test(name) ||
+    (/^nth-(?:last-)?child$/.test(name) && /\sof\s/i.test(arg))
+  );
+}
+
+/**
+ * `text` with what `compileHoisted` compiles apart taken out of each
+ * `:has()` in it, into `hoisted`, and `:-rx-hoisted(n)` left in its place.
+ * `inHas` says `text` is such a `:has()`'s argument.
+ */
+function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
+  const hoist = (whole: string): string => {
+    hoisted.push(whole);
+    return `:-rx-hoisted(${hoisted.length - 1})`;
+  };
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    let end = i + 1;
+    let piece = '';
+    if (text[i] === '\\') end = escapeEnd(text, i);
+    else if (text[i] === '[') end = bracketEnd(text, i) + 1;
+    else if (text[i] === ':') {
+      const fn = FUNCTION_AT.exec(text.slice(i));
+      if (fn) {
+        const open = i + fn[0].length - 1;
+        const close = closeOf(text, open);
+        const name = fn[1].toLowerCase();
+        const arg = text.slice(open + 1, close);
+        const own = compilesSelector(name, arg);
+        end = close + 1;
+        if (name === 'has' || own) {
+          const whole =
+            text.slice(i, open + 1) +
+            hoistFromHas(arg, hoisted, name === 'has') +
+            text.slice(close, end);
+          piece = own && inHas ? hoist(whole) : whole;
+        }
+      } else if (inHas) {
+        const name = /^:([\w-]+)/.exec(text.slice(i))?.[1];
+        if (name && SELECTOR_ALIASES.test(name)) {
+          end = i + 1 + name.length;
+          piece = hoist(text.slice(i, end));
+        }
+      }
+    }
+    out += piece || text.slice(i, end);
+    i = end;
+  }
+  return out;
+}
+
+/**
+ * A selector compiled by `make`, with what a `:has()` holds compiled apart.
+ *
+ * css-select hands the `:has()`'s element, as a context, to whatever in its
+ * argument compiles a selector of its own, and reads that selector as
+ * relative to the element, where one has a combinator in it: so
+ * `.p:has(+ .a:not(.b))` asked for a `.b` inside the `.p`, which its sibling
+ * never is, and held of every `.a`, and `.p:has(+ :is(.a))` of none. An
+ * `:is()`, a `:where()` and a `:not()` take a selector of the document's
+ * (Selectors 4, 4.2 to 4.4), which reads above the `:has()`'s element as
+ * freely as anywhere: `:has(> .a:is(.x .a))` with the `.x` around it. Apple's
+ * product pages style a section by `:has(+ .section.theme-dark:not(.alt))`.
+ * Each of them is compiled by itself, with no context to read, and
+ * `:nth-child(… of S)` and css-select's `aliases` with it, which are `:is()`s
+ * under other names: `:has(+ input:checked)` matched nothing.
+ *
+ * Only what is compiled changes: what reads a rule for what it reaches reads
+ * it as written, and never sees `-rx-hoisted`.
+ */
+export function compileHoisted<Pseudos extends object>(
+  selector: string,
+  pseudos: Pseudos,
+  make: (selector: string, pseudos: Pseudos) => (el: Element) => boolean,
+): (el: Element) => boolean {
+  if (!/:has\(/i.test(selector)) return make(selector, pseudos);
+  const hoisted: string[] = [];
+  const text = hoistFromHas(selector, hoisted, false);
+  if (!hoisted.length) return make(selector, pseudos);
+  const matchers: ((el: Element) => boolean)[] = [];
+  const own = {
+    ...pseudos,
+    // `?.`: a sheet can write the name too, with any number
+    '-rx-hoisted': (el: Element, at: string | null) =>
+      matchers[Number(at)]?.(el) === true,
+  };
+  for (const one of hoisted) matchers.push(make(one, own));
+  return make(text, own);
+}
 
 /**
  * A selector compiled to a matcher over this adapter. css-select keeps the
@@ -1644,15 +1784,21 @@ function compileSelector(
   // where the siblings are the tree's own: a `<use>`'s copy has its own
   const kept =
     adapter.getSiblings === DomUtils.getSiblings ? nthKept : (s: string) => s;
+  const text = kept(classesBeyondAscii(noEmptyWords(selector)));
   const make = () =>
-    compile(kept(classesBeyondAscii(noEmptyWords(selector))), {
-      adapter,
-      xmlMode: false,
+    compileHoisted(
+      text,
       pseudos,
-      cacheResults: keep,
-    } as unknown as Parameters<typeof compile>[1]) as unknown as (
-      node: Element,
-    ) => boolean;
+      (one, own) =>
+        compile(one, {
+          adapter,
+          xmlMode: false,
+          pseudos: own,
+          cacheResults: keep,
+        } as unknown as Parameters<typeof compile>[1]) as unknown as (
+          node: Element,
+        ) => boolean,
+    );
   // compiled here, so a selector css-select refuses throws to the caller
   let match = make();
   if (!keep || !KEEPS_ANSWERS.test(selector)) return match;
@@ -2849,7 +2995,9 @@ function scanFunctionChanges(
     // element the subject of each entry is, so a `:has()` there is that
     // element's: `.b:not(:has(> .c))`'s is a `.b`
     for (const entry of selectorsOf(arg)) {
-      scanChanges(entry, bits, has, note, stable);
+      if (has && readsApart(entry, has.siblings)) {
+        scanChanges(entry, CHANGES_ANYWHERE, ANYWHERE_ANCHOR, note);
+      } else scanChanges(entry, bits, has, note, stable);
     }
   } else if (name === 'lang' || name === 'dir') {
     // what the nearest element up that says one says: a change to one

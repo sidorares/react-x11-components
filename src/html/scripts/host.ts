@@ -91,7 +91,7 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
-import { Cascade, highlightKey } from '../css/cascade.js';
+import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
@@ -5053,11 +5053,17 @@ export class DomHost {
     const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
     const kept = keeps ? this._queries.get(selector) : undefined;
     if (kept) return kept;
-    const query = compile(
+    const options = this._queryOptions();
+    const query = compileHoisted(
       selector,
-      this._queryOptions() as Parameters<typeof compile>[1],
-      keeps ? undefined : (scope as Element),
-    ) as unknown as (el: Element) => boolean;
+      options.pseudos,
+      (one, pseudos) =>
+        compile(
+          one,
+          { ...options, pseudos } as Parameters<typeof compile>[1],
+          keeps ? undefined : (scope as Element),
+        ) as unknown as (el: Element) => boolean,
+    );
     if (keeps) {
       if (this._queries.size >= KEPT_QUERIES) this._queries.clear();
       this._queries.set(selector, query);

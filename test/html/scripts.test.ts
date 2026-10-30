@@ -62,10 +62,13 @@ import type {
   FetchResponse,
 } from '../../src/html/scripts/host.js';
 import {
-  FONTS,
-  findById,
-  h,
   bytesApart,
+  findById,
+  FONTS,
+  h,
+  HAS_ARGUMENTS,
+  HAS_MATCHED,
+  hasArgumentsDocument,
   metric as fontMetric,
   pixelsIn,
   rebuilt,
@@ -4907,6 +4910,74 @@ test('an element’s querySelectorAll matches its selector against the whole doc
       '</script>',
   );
   assert.equal(doc.text('out'), '2|p1|1|2|2|0|2|a|2|1|SyntaxError');
+});
+
+test('a page’s selector matches what a :has() holds as the document’s, as its style does: Chrome’s answers', async () => {
+  const doc = await hosted(
+    `${hasArgumentsDocument()}<p id="out"></p><script>` +
+      `var rows = ${JSON.stringify(HAS_ARGUMENTS.map(([s]) => s))}, r = [];` +
+      'rows.forEach(function (s, i) {' +
+      '  ["y", "n"].forEach(function (side) {' +
+      '    var box = document.getElementById(side + i);' +
+      '    var t = document.getElementById(side + i + "t");' +
+      '    r.push([t.matches(s), box.querySelector(s) === t,' +
+      '      t.closest(s) === t, box.querySelectorAll(s).length].join());' +
+      '  });' +
+      '});' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    HAS_ARGUMENTS.flatMap(() => [
+      'true,true,true,1',
+      'false,false,false,0',
+    ]).join('|'),
+  );
+});
+
+test('a selector compiled apart from a :has() has the scope of the query it is in', async () => {
+  const doc = await hosted(
+    '<section id="w"><div class="p" id="t"></div><div class="a"></div></section>' +
+      '<p id="out"></p><script>' +
+      'var w = document.getElementById("w"), t = document.getElementById("t"), r = [];' +
+      'r.push(w.querySelector(".p:has(+ .a:is(:scope .a))") === t);' +
+      'r.push(t.matches(".p:has(+ .a:is(:scope + .a))"));' +
+      'r.push(t.matches(".p:has(+ .a:not(:scope + .a))"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), 'true|true|false');
+});
+
+test('a :has() answers again as a script changes what its function reads, in a sibling and above it', async () => {
+  const doc = await hosted(
+    `<style>.p:has(+ .a:not(.b)) { color: ${HAS_MATCHED} }` +
+      `.q:has(+ .a:is(.x .a)) { color: ${HAS_MATCHED} }</style>` +
+      '<div class="p" id="t">t</div><div class="a" id="s">s</div>' +
+      '<section id="x"><div class="q" id="u">u</div><div class="a">a</div></section>',
+  );
+  const colour = (id: string) => doc.view.computedStyle(doc.byId(id))?.color;
+  assert.strictEqual(colour('t'), HAS_MATCHED);
+  assert.notStrictEqual(colour('u'), HAS_MATCHED);
+  await act(() =>
+    doc.run(
+      'document.getElementById("s").classList.add("b");' +
+        'document.getElementById("x").classList.add("x");',
+    ),
+  );
+  await settle();
+  assert.notStrictEqual(colour('t'), HAS_MATCHED, 'the sibling took .b');
+  assert.strictEqual(colour('u'), HAS_MATCHED, 'what is above took .x');
+  await act(() =>
+    doc.run(
+      'document.getElementById("s").classList.remove("b");' +
+        'document.getElementById("x").classList.remove("x");',
+    ),
+  );
+  await settle();
+  assert.strictEqual(colour('t'), HAS_MATCHED, 'the sibling lost .b');
+  assert.notStrictEqual(colour('u'), HAS_MATCHED, 'what is above lost .x');
 });
 
 test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {

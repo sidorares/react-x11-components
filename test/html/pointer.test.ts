@@ -952,6 +952,27 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
   assert.deepStrictEqual(pointerCompounds(':not(:has(a:hover))').has, [
     { anchor: '*', siblings: false },
   ]);
+  // a function in the argument tests what the argument reaches, unless a
+  // selector in it names an element that may be above the anchor
+  assert.strictEqual(pointerCompounds('.p:has(+ :is(a:hover))').nested, false);
+  assert.strictEqual(
+    pointerCompounds('.p:has(.a:is(.x:hover .a))').nested,
+    true,
+  );
+  assert.strictEqual(
+    pointerCompounds('.p:has(.a:is(.x .a):is(a:hover))').nested,
+    false,
+  );
+  // a sibling combinator stays inside an argument that goes down, and may
+  // be before the element in one that starts at a sibling
+  assert.strictEqual(
+    pointerCompounds('.p:has(:is(a:hover ~ *))').nested,
+    false,
+  );
+  assert.strictEqual(
+    pointerCompounds('.p:has(+ :is(a:hover ~ *))').nested,
+    true,
+  );
 });
 
 test('a :hover inside :is(), :where() or :not() names the element it tests', async () => {
@@ -1649,6 +1670,39 @@ metric(
     assert.strictEqual(colour('m'), '#000000');
     assert.strictEqual(colour('t'), '#aa0000');
     assert.deepStrictEqual(after, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a :hover in a function in a :has() restyles what it can change, from a sibling and from above',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} .p{color:#000000} .q{color:#000000}' +
+        ' .p:has(+ .a:is(:hover)){color:#aa0000}' +
+        ' .q:has(.b:is(.x:hover .b)){color:#00aa00}</style>' +
+        '<p class="p" id="p">title</p><p class="a" id="a">next</p>' +
+        '<section class="x" id="x" style="padding:24px 0">' +
+        '<p class="q" id="q"><b class="b">held</b></p></section>' +
+        '<p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const colour = (id: string) =>
+      (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+    el.setHover(...pointIn(el, 'a'));
+    await snapshot(result, el);
+    assert.strictEqual(colour('p'), '#aa0000', 'the sibling hovered');
+    // on the section's own padding, so that the `.q` is no ancestor of
+    // what the pointer is over
+    const section = boxOf(el, 'x');
+    el.setHover(section.x + 2, section.y + 2);
+    await snapshot(result, el);
+    assert.strictEqual(colour('p'), '#000000', 'the sibling left');
+    assert.strictEqual(colour('q'), '#00aa00', 'what is above it hovered');
+    el.setHover(...pointIn(el, 'away'));
+    await snapshot(result, el);
+    assert.strictEqual(colour('q'), '#000000', 'what is above it left');
   },
 );
 

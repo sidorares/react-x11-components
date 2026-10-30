@@ -6207,7 +6207,9 @@ Some changes are refreshes of everything however they are told: a
 stylesheet coming, going or reading otherwise, a `<meta>` or a `<base>`
 changing, and a `:has()` that every element could be the element of and
 that reaches past it — `:has(.x) span`, with nothing else in its
-compound — or one inside `:nth-child(… of …)`. A `<link>` or a `<style>`
+compound — or one inside `:nth-child(… of …)`, and a selector in a function
+in a `:has()` that may read past its element, `:has(.a:is(.x .a))` above it
+and `:has(+ .a:is(.x ~ .a))` before it. A `<link>` or a `<style>`
 is a stylesheet only as far as the cascade reads it: a bundler's `data-`
 mark on a sheet's `<link>`, an icon's `href`, a `<link rel="preload">`, or
 a sheet's `<link>` put in before its sheet is in — which is a change when

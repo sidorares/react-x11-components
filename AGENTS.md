@@ -2154,6 +2154,41 @@ random documents, rules and changes, and fails if none of them went in
 place, through a frame or through a build; every way a reach was dropped
 on purpose was caught by it or by a test beside it.
 
+**What a `:has()` holds that compiles a selector of its own is compiled
+apart from it** (`compileHoisted`). css-select hands the `:has()`'s element
+to whatever is in an argument with a combinator, as a context, and reads the
+selector in it as relative to that element, where Selectors 4 matches it
+against the whole document: `.p:has(+ .a:not(.b))` asked for a `.b` inside
+the `.p`, which its sibling never is, so it held of every `.a`, and Apple's
+sections matched rules a browser's do not; `:has(+ :is(.a))` and
+`:has(+ input:checked)` matched nothing, and `:has(> .a:is(.x .a))` found
+no `.x` around the element. So each `:is()`, `:where()`, `:not()`,
+`:nth-child(… of S)` and alias of css-select's in an argument is compiled by
+itself, with `:-rx-hoisted(n)` left in its place, and only what is compiled
+changes: what reads a rule for what it reaches reads it as written. Four
+things are load-bearing. **Anything new that hands css-select a selector
+goes through `compileHoisted`**, as `compileSelector` and `_query` do, or
+what it answers and what the page is styled by come apart. **`_query` gives
+each piece the context it was asked with**, since `:scope` in such a function
+is the query's. **A pseudo-class css-select adds that compiles a selector
+joins `compilesSelector`, or `SELECTOR_ALIASES`** where it is one of its
+`aliases`, which it does not export. And **a selector in such a function may
+read what no walk from a change finds** (`readsApart`): what a combinator in
+it climbs to may be above the `:has()`'s element, and what a sibling
+combinator reaches may be before it where the argument starts at a sibling.
+`scanFunctionChanges` notes such a selector `CHANGES_ANYWHERE` and `testsApart`
+makes a state it tests no local one, and a change of either styles every
+element, as what `:nth-child(… of S)` counts by does, so the test stays as
+narrow as it can: a sibling combinator in an argument that goes down stays
+inside the `:has()`'s element, and Tailwind's `peer` in a `has-` is one, which
+read as reaching everything would make every change to tailwindcss.com's tree
+a refresh of the whole document. A refresh told what changed and a refresh of
+everything share what the matcher answers, so the fuzz in
+`test/html/refresh.test.ts` sees none of this: `HAS_ARGUMENTS` in
+`test/html/harness.ts` holds the answers to Chrome's. When a release of
+css-select fixes it, delete `compileHoisted`, as "Vendored from core" has it
+for a copy.
+
 **A `:has()` that asks only of its element's children or its siblings is
 asked only so many levels up, and a sibling combinator reaches what it
 leads to from what it follows.** A `:has()` whose argument goes by child

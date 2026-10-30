@@ -71,6 +71,133 @@ export async function render(
 
 export const metric = FONTS ? test : test.skip;
 
+const HAS_P = '<div class="p" id="t"></div>';
+
+/**
+ * `:has()`s with something in their argument that compiles a selector of
+ * its own, each with markup its `#t` is matched in and markup it is not.
+ * Every row is what Chrome 152 answers, by `matches()`, `querySelector()`,
+ * `closest()`, `querySelectorAll()` and a computed style alike. All but
+ * the one with no combinator in its argument failed one side or the other
+ * before `compileHoisted`.
+ */
+export const HAS_ARGUMENTS: readonly (readonly [string, string, string])[] = [
+  ['.p:has(+ .a:not(.b))', '<div class="a"></div>', '<div class="a b"></div>'],
+  [
+    '.p:has(~ .a:not(.b))',
+    '<i></i><div class="a"></div>',
+    '<i></i><div class="a b"></div>',
+  ],
+  ['.p:has(+ :is(.a))', '<div class="a"></div>', '<div class="c"></div>'],
+  [
+    '.p:has(~ :where(.a, .b))',
+    '<i></i><div class="b"></div>',
+    '<i></i><div class="c"></div>',
+  ],
+  [
+    '.p:has(+ .a > .b:not(.c))',
+    '<div class="a"><i class="b"></i></div>',
+    '<div class="a"><i class="b c"></i></div>',
+  ],
+  // css-select's aliases and `of`, which come to the same
+  [
+    '.p:has(+ input:checked)',
+    '<input type="checkbox" checked />',
+    '<input type="checkbox" />',
+  ],
+  ['.p:has(~ :disabled)', '<i></i><input disabled />', '<i></i><input />'],
+  ['.p:has(+ a:any-link)', '<a href="#x">x</a>', '<a>x</a>'],
+  [
+    '.p:has(+ :nth-child(2 of .a))',
+    `<i class="a"></i>${HAS_P}<i class="a"></i>`,
+    `<i class="c"></i>${HAS_P}<i class="a"></i>`,
+  ],
+  // a selector in a function reads above the `:has()`'s element
+  [
+    '.p:has(+ .a:is(.x .a))',
+    `<section class="x">${HAS_P}<div class="a"></div></section>`,
+    `<section>${HAS_P}<div class="a"></div></section>`,
+  ],
+  [
+    '.p:has(+ .a:not(.x .a))',
+    `<section>${HAS_P}<div class="a"></div></section>`,
+    `<section class="x">${HAS_P}<div class="a"></div></section>`,
+  ],
+  [
+    '.p:has(> .a:is(.x .a))',
+    '<section class="x"><div class="p" id="t"><b class="a"></b></div></section>',
+    '<section><div class="p" id="t"><b class="a"></b></div></section>',
+  ],
+  [
+    '.p:has(> .a:not(.x .a))',
+    '<section><div class="p" id="t"><b class="a"></b></div></section>',
+    '<section class="x"><div class="p" id="t"><b class="a"></b></div></section>',
+  ],
+  [
+    '.p:has(.b .a:is(.x .a))',
+    '<section class="x"><div class="p" id="t"><b class="b"><i class="a"></i></b></div></section>',
+    '<section><div class="p" id="t"><b class="b"><i class="a"></i></b></div></section>',
+  ],
+  [
+    '.p:has(.a:is(.x .a))',
+    '<section class="x"><div class="p" id="t"><b class="a"></b></div></section>',
+    '<section><div class="p" id="t"><b class="a"></b></div></section>',
+  ],
+  [
+    '.p:has(+ .a:is(.x ~ .a))',
+    `<i class="x"></i>${HAS_P}<div class="a"></div>`,
+    `<i></i>${HAS_P}<div class="a"></div>`,
+  ],
+  // around it, and written as a selector can be
+  [
+    '.p:not(:has(+ .a:not(.b)))',
+    '<div class="a b"></div>',
+    '<div class="a"></div>',
+  ],
+  [
+    '.p:has(+ .md\\:a:not(.md\\:b))',
+    '<div class="md:a"></div>',
+    '<div class="md:a md:b"></div>',
+  ],
+  [
+    '.p:has(+ [data-x=":not(.b)"]:not(.b))',
+    '<div data-x=":not(.b)"></div>',
+    '<div data-x=":not(.b)" class="b"></div>',
+  ],
+  ['.p:HAS(+ .a:NOT(.b))', '<div class="a"></div>', '<div class="a b"></div>'],
+  [
+    '.p:has(+ .c, ~ .a:not(.b))',
+    '<i></i><div class="a"></div>',
+    '<i></i><div class="a b"></div>',
+  ],
+  [
+    '.p:has(+ :is(.a, .x .b):not(.c))',
+    `<section class="x">${HAS_P}<div class="b"></div></section>`,
+    `<section class="x">${HAS_P}<div class="b c"></div></section>`,
+  ],
+];
+
+/** The colour a row of `HAS_ARGUMENTS` gives what it matches. */
+export const HAS_MATCHED = 'rgb(0, 255, 0)';
+
+/** `HAS_ARGUMENTS` as one document: each side of row `i` in a box of its
+ *  own, `#y<i>` and `#n<i>`, its `#t` being `#y<i>t` and `#n<i>t`, and a rule
+ *  in each box for its row. */
+export function hasArgumentsDocument(): string {
+  const side = (id: string, markup: string): string => {
+    const held = markup.includes('id="t"') ? markup : HAS_P + markup;
+    return `<div id="${id}">${held.replace('id="t"', `id="${id}t"`)}</div>`;
+  };
+  const rules = HAS_ARGUMENTS.map(
+    ([selector], i) =>
+      `#y${i} ${selector}, #n${i} ${selector} { color: ${HAS_MATCHED} }`,
+  );
+  const boxes = HAS_ARGUMENTS.map(
+    ([, yes, no], i) => side(`y${i}`, yes) + side(`n${i}`, no),
+  );
+  return `<style>${rules.join('\n')}</style>${boxes.join('')}`;
+}
+
 /**
  * Mount `content` in a window whose frames are held to four a second, as a
  * display's clock holds one a vertical blank away, straight after a frame

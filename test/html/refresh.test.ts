@@ -1982,6 +1982,63 @@ test('a :has() is restyled from its element, found by its compound: an earlier s
   assert.notStrictEqual(colour('bold'), red);
 });
 
+test('a function in a :has() is restyled from what it reads: the sibling it asks about, and an element no walk from a change finds', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .p:has(+ .a:not(.b)) > i{color:#ff0000}' +
+      ' .q:has(> .a:is(.x .a)) > i{color:#ff0000}</style>' +
+      '<div><p class="p"><i id="i">i</i></p><p class="a" id="s">s</p></div>' +
+      '<section id="x"><p class="q"><b class="a">b</b><i id="j">j</i></p></section>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const red = 'rgb(255, 0, 0)';
+  const colour = (id: string) => el.computedStyle(byId(el, id))?.color;
+  assert.strictEqual(colour('i'), red);
+  assert.notStrictEqual(colour('j'), red);
+  // an element whose answer changed, found from the sibling, and no more
+  const sibling = setClass(byId(el, 's'), 'a b');
+  assert.ok(scopeOf(el, [sibling]), 'the class restyled everything');
+  el.touchDocument([sibling]);
+  assert.notStrictEqual(colour('i'), red);
+  // what is above the `:has()`'s element is no element a walk up from a
+  // change reaches it from
+  const above = setClass(byId(el, 'x'), 'x');
+  assert.strictEqual(scopeOf(el, [above]), null);
+  el.touchDocument([above]);
+  assert.strictEqual(colour('j'), red);
+});
+
+test('a sibling combinator in a function in a :has() that goes down is reached from inside its element, and restyles no more than that', async () => {
+  // Tailwind's `peer` in a `has-`: tailwindcss.com's sheet has one, and read
+  // as reaching everything, every change to its tree would style all of it
+  const { node } = await render(
+    '<style>body{margin:0} .p:has(:is(.peer ~ .on)) > i{color:#ff0000}' +
+      ' .q:has(+ .a:is(.x ~ .a)) > i{color:#ff0000}</style>' +
+      '<div class="p"><b id="b">b</b><b class="on">o</b><i id="i">i</i></div>' +
+      '<p id="other">other</p>' +
+      '<div><b id="x">x</b><p class="q"><i id="j">j</i></p><p class="a">a</p></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const red = 'rgb(255, 0, 0)';
+  const colour = (id: string) => el.computedStyle(byId(el, id))?.color;
+  assert.notStrictEqual(colour('i'), red);
+  const peer = setClass(byId(el, 'b'), 'peer');
+  const own = scopeOf(el, [peer]);
+  assert.ok(own, 'the class restyled everything');
+  assert.ok(!own.has(byId(el, 'other')), 'an element nothing reaches');
+  el.touchDocument([peer]);
+  assert.strictEqual(colour('i'), red);
+  // and before the element, where the argument starts at a sibling, no walk
+  // reaches it
+  const before = setClass(byId(el, 'x'), 'x');
+  assert.strictEqual(scopeOf(el, [before]), null);
+  el.touchDocument([before]);
+  assert.strictEqual(colour('j'), red);
+});
+
 test('a :has() of what an element takes from one around it, :lang(), is restyled when that one changes', async () => {
   // what is inside the element changed answers, and the element whose
   // `:has()` it changes is inside it: no attribute an inherited answer is
@@ -2209,6 +2266,55 @@ function reachRulesFor(next: () => number): string {
   }
   if (next() < 0.5) {
     rules.push(`.${c()}::before { content: "*"; color: ${pick(INKS)} }`);
+  }
+  return rules.join('\n');
+}
+
+/**
+ * Rules with a function in a `:has()`'s argument, which is compiled by
+ * itself (`compileHoisted`): `apart` for those with a selector in it that
+ * has a combinator, which reads elements no walk from a change finds, and
+ * makes a sheet a refresh of everything; those without test what the
+ * argument reaches.
+ */
+function hasFunctionRulesFor(next: () => number, apart: boolean): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  const shapes: (() => string)[] = apart
+    ? [
+        () => `.${c()}:has(> .${c()}:is(.${c()} .${c()}))`,
+        () => `.${c()}:has(.${c()}:not(.${c()} .${c()})) > *`,
+        () => `.${c()}:has(+ .${c()}:is(.${c()} .${c()}))`,
+        () => `.${c()}:has(+ .${c()}:is(.${c()} ~ .${c()}))`,
+        () => `.${c()}:has(~ .${c()}:not(.${c()} > .${c()})) .${c()}`,
+        () => `.${c()}:has(+ :not(.${c()} + *))`,
+      ]
+    : [
+        () => `.${c()}:has(+ .${c()}:not(.${c()}))`,
+        () => `.${c()}:has(~ .${c()}:not(.${c()}))`,
+        () => `.${c()}:has(+ :is(.${c()}, .${c()}))`,
+        () => `.${c()}:has(~ :where(.${c()})) > *`,
+        () => `.${c()}:has(+ .${c()} > .${c()}:not(.${c()}))`,
+        () => `.${c()}:has(~ .${c()}:not(:first-child)) .${c()}`,
+        () => `.${c()}:has(+ :not(:empty))`,
+        () => `:is(.${c()}:has(+ .${c()}:not(.${c()}))) + *`,
+        // a sibling combinator stays inside an argument that goes down:
+        // Tailwind's `peer` in a `has-`
+        () => `.${c()}:has(:is(.${c()} ~ *)) > *`,
+        () => `.${c()}:has(> .${c()}:not(.${c()} + *))`,
+        () => `.${c()}:has(.${c()}:is(.${c()} + .${c()}))`,
+      ];
+  const declarations: (() => string)[] = [
+    () => `color: ${pick(INKS)}`,
+    () => 'font-weight: bold',
+    () => `display: ${pick(['none', 'block', 'inline-block'])}`,
+    () => `padding-left: ${Math.floor(next() * 20)}px`,
+  ];
+  const rules: string[] = [];
+  const count = 6 + Math.floor(next() * 8);
+  for (let i = 0; i < count; i += 1) {
+    rules.push(`${pick(shapes)()} { ${pick(declarations)()} }`);
   }
   return rules.join('\n');
 }
@@ -2879,6 +2985,19 @@ test('in a document of :has()s that ask only of their children and of sibling co
   // and with shadow trees, and rules across their edges: an element a
   // script moves into a tree is styled by that tree's rules
   await refreshesAgree(20, true, true, undefined, 1, reachRulesFor);
+});
+
+test('in a document of functions in :has()s, a refresh told what changed comes to the same styles', async () => {
+  const ways = await refreshesAgree(30, false, false, undefined, 1, (next) =>
+    hasFunctionRulesFor(next, false),
+  );
+  const scoped = ways.inPlace + ways.frame + ways.build;
+  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
+  // and one that reads elements no walk finds, which is every element
+  // styled again
+  await refreshesAgree(120, false, false, undefined, 500, (next) =>
+    hasFunctionRulesFor(next, true),
+  );
 });
 
 test('in a document with shadow trees whose rules stay inside them, a refresh told what changed comes to the same styles', async () => {
