@@ -130,6 +130,31 @@ test('a hover that changes a property a transition names runs it, from the value
   assert.strictEqual(doc.clock.pending, false, 'over');
 });
 
+test('a transition a change starts runs where its element comes out as it was beside what is built', async (t) => {
+  // named in `will-change`, its element's style at the first frame is the
+  // style it has, and no seed: the frames are what carries it on
+  const doc = await holding(
+    t,
+    '<style>#a { height: 20px; will-change: opacity;' +
+      ' transition: opacity 160ms linear } .on #a { opacity: .2 }' +
+      ' .on #b { display: flex }</style><main id="top"><section><div id="a">' +
+      '</div></section><section><p id="b">x</p></section></main>',
+  );
+  const top = findById(doc.el.document, 'top')!;
+  top.attribs.class = 'on';
+  doc.el.touchDocument([
+    { type: 'attributes', target: top, attributeName: 'class', oldValue: null },
+  ]);
+  await act();
+  assert.strictEqual(doc.style('b').display, 'flex', 'nothing was built');
+  assert.strictEqual(doc.style('a').opacity, 1, 'where it starts');
+  await doc.at(80);
+  assert.ok(near(doc.style('a').opacity, 0.6), `${doc.style('a').opacity}`);
+  await doc.at(176);
+  assert.ok(near(doc.style('a').opacity, 0.2));
+  assert.strictEqual(doc.clock.pending, false, 'over');
+});
+
 test('under interpolate-size: allow-keywords a height runs between 0 and auto, and back', async (t) => {
   const sheet = (size: string) =>
     `<style>:root{interpolate-size:${size}}` +

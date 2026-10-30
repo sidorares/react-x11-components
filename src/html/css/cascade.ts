@@ -2491,6 +2491,9 @@ export interface HasAnchor {
   readonly at: number;
   readonly siblings: boolean;
   readonly levels?: number;
+  /** The stable part of the subject of the rule, for a `:has()` above it in
+   *  the rule's own selector: all it can restyle in its element. */
+  readonly subject?: string;
 }
 
 /** A `:has()` somewhere a change reaches elements no compound names —
@@ -2521,6 +2524,7 @@ function anchorOf(
   at: number,
   siblings: boolean,
   levels?: number,
+  subject?: string | null,
 ): HasAnchor {
   if (at & CHANGES_ANYWHERE) return ANYWHERE_ANCHOR;
   const compound = stable || '*';
@@ -2536,9 +2540,13 @@ function anchorOf(
   ) {
     return ANYWHERE_ANCHOR;
   }
-  return levels === undefined
-    ? { compound, at, siblings }
-    : { compound, at, siblings, levels };
+  return {
+    compound,
+    at,
+    siblings,
+    ...(levels !== undefined && { levels }),
+    ...(subject && subject !== '*' && { subject }),
+  };
 }
 
 /** The pseudo-classes an element's answer to is read from elements above
@@ -2904,6 +2912,7 @@ function scanCompoundChanges(
           has,
           note,
           parent,
+          subject,
         );
         i = close + 1;
         continue;
@@ -2954,6 +2963,9 @@ function scanFunctionChanges(
   /** What a child combinator leads to the compound from, in a rule's own
    *  subject (`NoteChange`'s `parent`). */
   parent: string | null = null,
+  /** The stable part of the subject of the rule, where the compound is
+   *  above it in the rule's own selector (`scanChanges`). */
+  subject: string | null = null,
 ): void {
   if (name === 'has') {
     // a `:has()` inside another's argument: the outer one's element is the
@@ -2961,7 +2973,8 @@ function scanFunctionChanges(
     for (const entry of selectorsOf(arg)) {
       // one that starts at a sibling asks what is after its element
       const sibling = /^\s*[+~]/.test(entry);
-      const anchored = has ?? anchorOf(stable, bits, false, childLevels(entry));
+      const anchored =
+        has ?? anchorOf(stable, bits, false, childLevels(entry), subject);
       const at = sibling ? withSiblings(anchored) : anchored;
       const relative = entry.replace(/^\s*[>+~]\s*/, '');
       const parts = compoundsOf(relative);
@@ -3109,6 +3122,10 @@ function noteReach(
   else reach.set(key, new Set([subject!]));
 }
 
+/** The keys a change to the tree reaches (`MutationRules.treePseudo`):
+ *  where an element sits, what it holds, its text, a sibling combinator. */
+const TREE_KEYS = new Set(['s', 'h', 'k', 't', 'e', 'n', 'g', '+', '~']);
+
 class MutationRules {
   private _bits = new Map<string, number>();
   /** What each key tested above a rule's subject can restyle below the
@@ -3138,6 +3155,11 @@ class MutationRules {
   anyClass = 0;
   anyId = 0;
   anyClassPseudo: 0 | 1 | 2 = 0;
+  /** Which pseudo-elements' rules can answer otherwise for a change to the
+   *  tree: those that test what an element holds or where it sits, that
+   *  have a sibling combinator or that have a `:has()`
+   *  (`TreeReach.pseudo`). */
+  treePseudo: 0 | 1 | 2 = 0;
   anyIdPseudo: 0 | 1 | 2 = 0;
   readonly anyClassAnchors = new Set<HasAnchor>();
   readonly anyIdAnchors = new Set<HasAnchor>();
@@ -3222,6 +3244,9 @@ class MutationRules {
       tests,
       parent,
     ) => {
+      if (pseudo > this.treePseudo && (anchor || TREE_KEYS.has(key))) {
+        this.treePseudo = pseudo;
+      }
       if (key === '+' || key === '~') {
         this.siblings = true;
         const pairs = key === '~' ? this.tilde : this.plus;
@@ -3355,10 +3380,12 @@ class MutationRules {
   /** The one anchor like `anchor`, its place widened by `wider`. */
   private _intern(anchor: HasAnchor, wider: number): HasAnchor {
     const at = anchor.at | wider;
-    const id = `${at} ${+anchor.siblings} ${anchor.levels ?? ''} ${anchor.compound}`;
+    // a rule at a tree's edge reaches past what its subject says
+    const subject = wider ? undefined : anchor.subject;
+    const id = `${at} ${+anchor.siblings} ${anchor.levels ?? ''} ${anchor.compound}\u0000${subject ?? ''}`;
     let one = this._interned.get(id);
     if (!one) {
-      one = { ...anchor, at };
+      one = { ...anchor, at, subject };
       this._interned.set(id, one);
     }
     return one;
@@ -3451,6 +3478,9 @@ export class ChangeAnchors {
     private readonly _compile: (
       anchor: HasAnchor,
     ) => ((el: Element) => boolean) | null,
+    private readonly _compileSubject: (
+      subject: string,
+    ) => ((el: Element) => boolean) | null,
   ) {
     this.siblings = _anchors.some((a) => a.siblings);
     this.levels = Math.max(..._anchors.map((a) => a.levels ?? Infinity));
@@ -3463,18 +3493,30 @@ export class ChangeAnchors {
    *  only an anchor that starts at a sibling can answer otherwise for:
    *  Apple's `.section:has(.all-access-pass)` is asked of the sections
    *  around a change for no reason but that a card's `:has(~ .card-control)`
-   *  is among the anchors, and every section was built again for it. */
-  at(el: Element, distance = 0, beside = false): number | null {
+   *  is among the anchors, and every section was built again for it.
+   *  What a `:has()` above its rule's subject reaches in `el` is what that
+   *  subject names, each into `subjects`, and is no bit: Apple's
+   *  `:has(>.caption-primary) .caption` is asked of the `<body>` at every
+   *  change to what it holds, and all that is in it was styled again. */
+  at(
+    el: Element,
+    distance = 0,
+    beside = false,
+    subjects: Set<(el: Element) => boolean> | null = null,
+  ): number | null {
     if (this._byKey === undefined) this._prepare();
     const byKey = this._byKey;
     if (!byKey) return null;
     let bits = 0;
     const ask = (list: readonly AnchorMatcher[] | undefined): void => {
       if (!list) return;
-      for (const { match, at, levels, siblings } of list) {
+      for (const { match, at, levels, siblings, subject } of list) {
         if (beside && !siblings) continue;
-        if ((bits | at) !== bits && distance <= levels && match(el)) {
-          bits |= at;
+        if ((bits | at) === bits || distance > levels) continue;
+        const narrowed = subject && subjects && at === CHANGES_BELOW;
+        if ((!narrowed || !subjects.has(subject)) && match(el)) {
+          if (narrowed) subjects.add(subject);
+          else bits |= at;
         }
       }
     };
@@ -3501,6 +3543,10 @@ export class ChangeAnchors {
         at: anchor.at,
         levels: anchor.levels ?? Infinity,
         siblings: anchor.siblings,
+        subject:
+          anchor.subject !== undefined
+            ? this._compileSubject(anchor.subject)
+            : null,
       };
       if (!key) {
         this._rest.push(one);
@@ -3519,6 +3565,9 @@ interface AnchorMatcher {
   at: number;
   levels: number;
   siblings: boolean;
+  /** What it can restyle in its element (`HasAnchor.subject`); null for
+   *  all that is there. */
+  subject: ((el: Element) => boolean) | null;
 }
 
 /** What a change to an element's attribute reaches, from the element
@@ -3568,6 +3617,9 @@ export interface TreeReach {
    *  True for any child. */
   later: Tested;
   anchors: ChangeAnchors | null;
+  /** Which pseudo-elements' rules it can change the answer to, which a
+   *  restyle compares no style of (`HtmlViewNode._seedsThatMoved`). */
+  pseudo: 0 | 1 | 2;
 }
 
 /** Which elements a test reaches (`TreeTested`): those a matcher takes,
@@ -3615,6 +3667,8 @@ export interface AppendReach {
   last: number;
   every: number;
   anchors: ChangeAnchors | null;
+  /** As `TreeReach.pseudo`. */
+  pseudo: 0 | 1 | 2;
 }
 
 /** An element of one attribute, under each of `names`, or of none, for an
@@ -4677,14 +4731,18 @@ export class Cascade {
     }
     let anchors = this._anchorSets.get(set);
     if (!anchors) {
-      anchors = new ChangeAnchors([...set], (anchor) => {
-        let match = this._anchorMatchers.get(anchor);
-        if (match === undefined) {
-          match = this._compile(anchor.compound);
-          this._anchorMatchers.set(anchor, match);
-        }
-        return match;
-      });
+      anchors = new ChangeAnchors(
+        [...set],
+        (anchor) => {
+          let match = this._anchorMatchers.get(anchor);
+          if (match === undefined) {
+            match = this._compile(anchor.compound);
+            this._anchorMatchers.set(anchor, match);
+          }
+          return match;
+        },
+        (subject) => this._subjectsMatcher(new Set([subject])),
+      );
       this._anchorSets.set(set, anchors);
     }
     return anchors;
@@ -4761,6 +4819,7 @@ export class Cascade {
       anchors: this._changeAnchors([
         text ? asked : this._heldReached(asked, nodes),
       ]),
+      pseudo: rules.treePseudo,
     };
   }
 
@@ -4868,6 +4927,7 @@ export class Cascade {
       last,
       every,
       anchors: this._changeAnchors([rules.everyAnchor]),
+      pseudo: rules.treePseudo,
     };
   }
 

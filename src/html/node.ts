@@ -198,6 +198,7 @@ import {
   COLUMN_ROWS,
   CUT_BLOCKS,
   GENERATED_FROM,
+  GENERATED_ON,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
   PAINT_ORDER,
@@ -1199,6 +1200,12 @@ export class HtmlViewNode extends Node {
    *  what a build of only their subtrees builds (`_subtreeBuild`). Null
    *  where the whole tree is to be built. */
   private _buildSeeds: Set<Element> | null = null;
+  /** Of `_buildSeeds`, those built whatever their styles come to
+   *  (`ChangeScope.always`), and which pseudo-elements' rules read what
+   *  changed: any other seed is built where its style comes out otherwise
+   *  (`_seedsThatMoved`). */
+  private _buildAlways: Set<Element> | null = null;
+  private _buildPseudo: 0 | 1 | 2 = HOVER_PSEUDO_NONE;
   /** And what holds what a stream's chunks touched, by the first child of
    *  it each touched (`ChangeScope.tails`): the ends of what it holds are
    *  all a build of subtrees builds of it. Null where none is said. */
@@ -1461,6 +1468,10 @@ export class HtmlViewNode extends Node {
     tails: ReadonlyMap<ParentNode, ChildNode | null> | null = null,
     /** Whether all of it is a stream's chunks' (`_buildParsed`). */
     parsed = tails !== null,
+    /** Of `seeds`, those built whatever their styles come to, and which
+     *  pseudo-elements' rules read what changed (`_buildAlways`). */
+    always: ReadonlySet<Element> | null = seeds,
+    pseudo: 0 | 1 | 2 = HOVER_PSEUDO_NONE,
   ): void {
     this._geometry += 1;
     if (stale >= Stale.Boxes) {
@@ -1470,6 +1481,8 @@ export class HtmlViewNode extends Node {
         this._restyleOnly = only ? new Set(only) : null;
         this._restyleFollows = follow;
         this._buildSeeds = seeded ? new Set(seeds) : null;
+        this._buildAlways = seeded ? new Set(always) : null;
+        this._buildPseudo = pseudo;
         this._buildTails = seeded && tails ? new Map(tails) : null;
         this._buildParsed = seeded && tails !== null && parsed;
       } else if (this._restyleOnly && only) {
@@ -1486,13 +1499,17 @@ export class HtmlViewNode extends Node {
           );
           if (!tails || !parsed) this._buildParsed = false;
           for (const el of seeds) this._buildSeeds.add(el);
+          for (const el of always ?? seeds) this._buildAlways?.add(el);
+          if (pseudo > this._buildPseudo) this._buildPseudo = pseudo;
         } else {
           this._buildSeeds = null;
+          this._buildAlways = null;
           this._buildTails = null;
         }
       } else {
         this._restyleOnly = null;
         this._buildSeeds = null;
+        this._buildAlways = null;
         this._buildTails = null;
       }
     }
@@ -3411,9 +3428,13 @@ export class HtmlViewNode extends Node {
     // said which — for as long as nothing below asks for more than they
     // did, which gives `restyleOnly` another set (`_subtreeBuild`)
     let seeds = restyleOnly ? this._buildSeeds : null;
+    let always = seeds ? this._buildAlways : null;
+    const pseudoRules = this._buildPseudo;
     const tails = seeds ? this._buildTails : null;
     const parsed = !!seeds && this._buildParsed;
     this._buildSeeds = null;
+    this._buildAlways = null;
+    this._buildPseudo = HOVER_PSEUDO_NONE;
     this._buildTails = null;
     this._buildParsed = false;
     let seededWith = restyleOnly;
@@ -3431,10 +3452,12 @@ export class HtmlViewNode extends Node {
         this._stale = Stale.Boxes;
         restyleOnly = seededWith = reached;
         seeds = new Set(reached);
+        always = seeds;
       } else if (restyleOnly && seeds && restyleOnly === seededWith) {
         for (const el of reached) {
           restyleOnly.add(el);
           seeds.add(el);
+          always?.add(el);
         }
       } else if (restyleOnly && reached.size) {
         restyleOnly = new Set([...restyleOnly, ...reached]);
@@ -3457,6 +3480,7 @@ export class HtmlViewNode extends Node {
         for (const el of reached) {
           restyleOnly.add(el);
           seeds?.add(el);
+          always?.add(el);
         }
         follow = true;
       } else restyleOnly = null;
@@ -3522,7 +3546,10 @@ export class HtmlViewNode extends Node {
       // subtrees were the whole document's
       seedWith(new Set(chose.restyle));
       if (seeds && restyleOnly === seededWith) {
-        for (const el of chose.shown) seeds.add(el);
+        for (const el of chose.shown) {
+          seeds.add(el);
+          always?.add(el);
+        }
       }
     }
     // A `vw` or a `vh` is a number by the time a style holds it, so the
@@ -3702,7 +3729,14 @@ export class HtmlViewNode extends Node {
         // the pass only, whose `restyleOnly` is still theirs.
         const subtrees =
           kept && seeds && restyleOnly === seededWith && pass === 0
-            ? seeds
+            ? this._seedsThatMoved(
+                seeds,
+                always,
+                tails,
+                pseudoRules,
+                cascade,
+                kept!,
+              )
             : null;
         // a build that styles every element ends the animations of the ones
         // it does not reach: under `display: none`, or out of the document
@@ -9851,6 +9885,8 @@ export class HtmlViewNode extends Node {
     this._restyleOnly = new Set(reach);
     this._restyleFollows = follow;
     this._buildSeeds = new Set(reach);
+    this._buildAlways = this._buildSeeds;
+    this._buildPseudo = HOVER_PSEUDO_NONE;
     this._buildTails = null;
     this._buildParsed = false;
     this._carryingFrom = width;
@@ -10186,6 +10222,8 @@ export class HtmlViewNode extends Node {
     const scope: ChangeScope = {
       own: new Set(),
       targets: new Set(),
+      always: new Set(),
+      treePseudo: HOVER_PSEUDO_NONE,
       boxes: false,
       drawings: new Set(),
       pseudo: HOVER_PSEUDO_NONE,
@@ -10281,6 +10319,7 @@ export class HtmlViewNode extends Node {
     const target = changed instanceof ShadowRoot ? changed.host : changed;
     if (target && isElement(target) && change.type !== 'childList') {
       scope.targets.add(target as Element);
+      if (change.type !== 'attributes') scope.always.add(target as Element);
     }
     if (change.type === 'attributes') {
       const el = change.target;
@@ -10313,6 +10352,7 @@ export class HtmlViewNode extends Node {
       // source, a value, a span, a label — or a hint its style takes, or
       // what is in it takes: a table's `cellpadding` is its cells'.
       const quiet = STYLE_ONLY_ATTRIBUTE.test(name);
+      if (!quiet) scope.always.add(el);
       if (!quiet) bits |= CHANGES_SELF | CHANGES_BELOW;
       else if (name === 'style') bits |= CHANGES_SELF;
       if (!bits && !anchors) return true;
@@ -10398,6 +10438,7 @@ export class HtmlViewNode extends Node {
     if (!reach) return false;
     const { kidsLater, followers, siblings, below, self, later, anchors } =
       reach;
+    if (reach.pseudo > scope.treePseudo) scope.treePseudo = reach.pseudo;
     let bits = reach.bits;
     if (!drawn && !bits && !kidsLater && !followers && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
@@ -10416,6 +10457,7 @@ export class HtmlViewNode extends Node {
       // is a seed of its own, whose style goes (`_subtreeRoots`)
       if (drawn) {
         scope.targets.add(holder);
+        scope.always.add(holder);
         // and where among them, so that a build keeps the boxes before it
         // and builds the end of what the holder holds (`_subtreeRoots`):
         // a webmail page puts its popups at the end of its `<body>`, and
@@ -10436,16 +10478,24 @@ export class HtmlViewNode extends Node {
         }
       } else {
         for (const node of change.removedNodes) {
-          if (isElement(node)) scope.targets.add(node);
+          if (isElement(node)) {
+            scope.targets.add(node);
+            scope.always.add(node);
+          }
         }
       }
     }
     const crossing = cascade.changesCrossTrees;
     if (change.type === 'childList') {
       // what came in is styled whole, and so is what moved here from
-      // elsewhere, under parents it was not styled under
+      // elsewhere, under parents it was not styled under, and its boxes are
+      // built whatever its style comes to: a rule of a pseudo-element's may
+      // reach it where it is now
       for (const node of change.addedNodes) {
-        if (isElement(node)) addSubtree(node, scope.own, crossing);
+        if (isElement(node)) {
+          addSubtree(node, scope.own, crossing);
+          addSubtree(node, scope.always, crossing);
+        }
       }
     }
     if (root) {
@@ -10538,6 +10588,7 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade!;
     const reach = cascade.appendChange();
     if (!reach) return false;
+    if (reach.pseudo > scope.treePseudo) scope.treePseudo = reach.pseudo;
     const text = change.type === 'characterData';
     const added = change.type === 'childList' ? change.addedNodes : [];
     const kids = parent.children;
@@ -10592,14 +10643,20 @@ export class HtmlViewNode extends Node {
     }
     if (drawn) {
       scope.boxes = true;
-      if (holder) scope.targets.add(holder);
+      if (holder) {
+        scope.targets.add(holder);
+        scope.always.add(holder);
+      }
       const tails = scope.tails!;
       const had = tails.get(parent);
       if (!had || kids.lastIndexOf(had) > at) tails.set(parent, touched);
     }
     const crossing = cascade.changesCrossTrees;
     for (const node of added) {
-      if (isElement(node)) addSubtree(node, scope.own, crossing);
+      if (isElement(node)) {
+        addSubtree(node, scope.own, crossing);
+        addSubtree(node, scope.always, crossing);
+      }
     }
     if (holder && own) spreadChange(holder, own, false, scope.own, crossing);
     const kin = reach.last | reach.every;
@@ -10684,6 +10741,104 @@ export class HtmlViewNode extends Node {
     this._firstBoxes = { tree: built.tree, of: first };
     carryBlockers(tree, built.tree, built.replaced, built.added);
     return built.tree;
+  }
+
+  /**
+   * The seeds of a build of subtrees (`_subtreeBuild`) it has to build:
+   * those a change can make otherwise whatever their styles come to
+   * (`always`), those whose styles come out other than they are, and any
+   * that has a `::before` or an `::after`, or comes to, where a rule of
+   * theirs read what changed. What a selector can reach is more than it changes: Apple's script
+   * sets a class on each section as it scrolls in, and each of the dozens
+   * of elements a rule of that class can style was built again, styled as
+   * it was. Asked from the top down, each of its parent's style as it
+   * stands, since what is in an element that moved is built with it.
+   */
+  private _seedsThatMoved(
+    seeds: Set<Element>,
+    always: ReadonlySet<Element> | null,
+    tails: ReadonlyMap<ParentNode, ChildNode | null> | null,
+    pseudoRules: 0 | 1 | 2,
+    cascade: Cascade,
+    kept: KeptStyles,
+  ): Set<Element> {
+    const tree = this._tree;
+    if (
+      !tree ||
+      !always ||
+      (always.size >= seeds.size && !tails?.size) ||
+      pseudoRules === HOVER_PSEUDO_OTHER
+    ) {
+      return seeds;
+    }
+    const document = this._source.document;
+    const generates = (el: Element, style: ComputedStyle): boolean => {
+      if (GENERATED_ON.has(el)) return true;
+      for (const [which] of GENERATED_BITS) {
+        const made = cascade.pseudoStyleFor(el, which, style);
+        if (made && made.display !== 'none') return true;
+      }
+      return false;
+    };
+    /** The seeds asked about whose styles are as they were: kept, in what
+     *  is built around them too. */
+    const same = new Set<Element>();
+    const moved = (el: Element): boolean => {
+      const had = tree.styles.get(el);
+      // what holds what came or went is built from there on, where its own
+      // style stands (`_subtreeRoots`): the end of a `<body>` a `:has()` is
+      // anchored at was all of the `<body>`, and the whole document
+      if (
+        (always.has(el) && !tails?.has(el)) ||
+        !had ||
+        !inDocument(el, document)
+      ) {
+        return true;
+      }
+      const parent = flatParentOf(el);
+      const parentStyle = parent
+        ? tree.styles.get(parent)?.style
+        : tree.root.style;
+      if (!parentStyle) return true;
+      const made = cascade.styleFor(el, parentStyle, had.inFlex);
+      if (hoverChange(had.style, made) !== null) return true;
+      if (pseudoRules !== HOVER_PSEUDO_NONE && generates(el, made)) return true;
+      same.add(el);
+      return false;
+    };
+    /** Whether an element is built, or is in what is. */
+    const built = new Map<Element, boolean>();
+    const left = new Set<Element>();
+    const path: Element[] = [];
+    const outer = cascade.stylesOf;
+    cascade.stylesOf = (el) => tree.styles.get(el)?.style;
+    try {
+      for (const seed of seeds) {
+        let inBuilt = false;
+        for (let at: Element | null = seed; at; at = flatParentOf(at)) {
+          const known = built.get(at);
+          if (known !== undefined) {
+            inBuilt = known;
+            break;
+          }
+          path.push(at);
+        }
+        while (path.length) {
+          const el = path.pop()!;
+          inBuilt ||= seeds.has(el) && moved(el);
+          built.set(el, inBuilt);
+        }
+        if (inBuilt || always.has(seed)) left.add(seed);
+      }
+    } finally {
+      cascade.stylesOf = outer;
+    }
+    if (same.size) {
+      const restyle = new Set(kept.restyle);
+      for (const el of same) restyle.delete(el);
+      kept.restyle = restyle;
+    }
+    return left;
   }
 
   /**
@@ -10934,6 +11089,9 @@ export class HtmlViewNode extends Node {
         true,
         seedsOf(scope),
         scope.tails,
+        !!scope.tails,
+        scope.always,
+        Math.max(scope.pseudo, scope.treePseudo) as 0 | 1 | 2,
       );
       return;
     }
@@ -10998,6 +11156,8 @@ export class HtmlViewNode extends Node {
       seedsOf(scope),
       scope.tails ?? endsOf(scope),
       !!scope.tails,
+      scope.always,
+      Math.max(scope.pseudo, scope.treePseudo) as 0 | 1 | 2,
     );
   }
 
@@ -15706,6 +15866,13 @@ interface ChangeScope {
    *  the one whose attribute changed, and what holds what came, went or
    *  changed (`_subtreeRoots`). */
   targets: Set<Element>;
+  /** Of `targets`, those whose boxes can differ whatever their styles come
+   *  to: what holds what came, went or changed, and the element of an
+   *  attribute the boxes read (`_seedsThatMoved`). */
+  always: Set<Element>;
+  /** Which pseudo-elements' rules a change to the tree can change the
+   *  answer to, for `_seedsThatMoved`, as `pseudo` is an attribute's. */
+  treePseudo: 0 | 1 | 2;
   /** For a stream's chunk (`_parsedChanges`): what holds what the parser
    *  put in or wrote on to — an element, or the document — by the first of
    *  its children it touched, from where on its boxes can differ and none
@@ -16250,9 +16417,14 @@ function spreadAnchors(
       if (had !== undefined && had <= distance) return true;
       beside.set(at, distance);
     } else around.set(at, distance);
-    const bits = anchors.at(at, distance, aside);
+    const subjects = new Set<(el: Element) => boolean>();
+    const bits = anchors.at(at, distance, aside, subjects);
     if (bits === null) return false;
     if (bits) spreadChange(at, bits, false, scope.own, crossing);
+    if (subjects.size && !(bits & CHANGES_BELOW)) {
+      const named = [...subjects];
+      addSubjects(at, scope.own, (el) => named.some((one) => one(el)));
+    }
     return true;
   };
   const top = el instanceof ShadowRoot ? null : el;
