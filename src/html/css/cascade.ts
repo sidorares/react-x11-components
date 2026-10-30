@@ -72,7 +72,7 @@ import {
   startsIdent,
   supportsCondition,
 } from './parse.js';
-import type { MediaCondition } from './parse.js';
+import type { MediaCondition, SheetSource } from './parse.js';
 import type {
   Declaration,
   FunctionRule,
@@ -221,6 +221,50 @@ export interface MatchedRule {
   /** The media it is under, in words, or null for none. */
   media: string | null;
   declarations: { property: string; value: string; important: boolean }[];
+  /** Where it was written, or null for what no sheet holds: the element's
+   *  own `style`, HTML's presentational hints and the user agent's rules. */
+  source: RuleSource | null;
+}
+
+/** Where a rule was written. A list of selectors is a rule each, so this is
+ *  where the one that matched starts: `.b` in `.a, .b { … }`. */
+export interface RuleSource {
+  sheet: SheetSource;
+  /** The selector's offset in `sheet.text`. */
+  offset: number;
+  /** The line and the column of that offset, each counted from 1 as an
+   *  editor counts them. */
+  line: number;
+  column: number;
+}
+
+/** Where each line of a sheet's text starts, made once a rule of it is
+ *  placed, and only for a sheet a developer's tools read. */
+const LINE_STARTS = new WeakMap<SheetSource, readonly number[]>();
+
+/** Where a rule stands in its sheet's text. */
+function ruleSource(sheet: SheetSource, offset: number): RuleSource {
+  let starts = LINE_STARTS.get(sheet);
+  if (!starts) {
+    const found = [0];
+    const { text } = sheet;
+    for (
+      let at = text.indexOf('\n');
+      at >= 0;
+      at = text.indexOf('\n', at + 1)
+    ) {
+      found.push(at + 1);
+    }
+    LINE_STARTS.set(sheet, (starts = found));
+  }
+  let lo = 0;
+  let hi = starts.length;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid] <= offset) lo = mid;
+    else hi = mid;
+  }
+  return { sheet, offset, line: lo + 1, column: offset - starts[lo] + 1 };
 }
 
 /** A rule's media, as a developer's tools print them: each block's
@@ -3789,6 +3833,11 @@ export class Cascade {
   private _adapter: CssSelectAdapter;
   /** The rules of the indexes by id, for `matchedRules`, made once asked. */
   private _rulesById: Map<number, IndexedRule> | null = null;
+  /** The sheets it was made from, the document's and the shadow trees',
+   *  for what a developer's tools ask of them… */
+  private readonly _sheets: readonly Stylesheet[];
+  /** …and where each rule of them came from, made once asked. */
+  private _sourceOf: Map<StyleRule, SheetSource> | null = null;
   /**
    * The tree a `<use>`'s copy is in, for `_copyAdapter`: the element it is
    * a copy of, which is its top (`ShapeStyles.used`). A copy is its own
@@ -4214,6 +4263,7 @@ export class Cascade {
      *  styles is in the trees bound to it (`bindShadows`). */
     shadows: readonly ShadowSheets[] = [],
   ) {
+    this._sheets = [...sheets, ...shadows.flatMap((tree) => tree.sheets)];
     // css-select has none of the focus's three, and a pseudo-class is
     // handed only the element, so they are this cascade's own closures
     this._pseudos = {
@@ -5089,10 +5139,20 @@ export class Cascade {
         specificity: [1, 0, 0],
         media: null,
         declarations: written(parseDeclarations(inline)),
+        source: null,
       });
+    }
+    let sources = this._sourceOf;
+    if (!sources) {
+      sources = this._sourceOf = new Map();
+      for (const sheet of this._sheets) {
+        if (!sheet.source) continue;
+        for (const rule of sheet.rules) sources.set(rule, sheet.source);
+      }
     }
     for (const rule of rules) {
       const spec = rule.specificity;
+      const sheet = sources.get(rule);
       out.push({
         selector: rule.selector,
         origin: rule.order < 0 ? 'user-agent' : 'author',
@@ -5103,6 +5163,8 @@ export class Cascade {
         ],
         media: rule.media ? mediaText(rule.media) : null,
         declarations: written(rule.declarations),
+        source:
+          sheet && rule.at !== undefined ? ruleSource(sheet, rule.at) : null,
       });
     }
     const hints = presentationHints(el, this.dimensionSource);
@@ -5115,7 +5177,20 @@ export class Cascade {
         specificity: [0, 0, 0],
         media: null,
         declarations: written(hints),
+        source: null,
       });
+    }
+    return out;
+  }
+
+  /** The sheets the document is styled by, in the cascade's order, each one
+   *  what a rule's `source.sheet` is (`HtmlHandle.styleSheets`): an imported
+   *  sheet before the one importing it, and the shadow trees' after the
+   *  document's. */
+  sheetSources(): SheetSource[] {
+    const out: SheetSource[] = [];
+    for (const sheet of this._sheets) {
+      if (sheet.source) out.push(sheet.source);
     }
     return out;
   }

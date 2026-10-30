@@ -3,6 +3,11 @@
 // loses to another struck through (`HtmlHandle.matchedRules`, and
 // `overridden` for which lose).
 //
+// A rule from a sheet carries a link to where it was written, on the right
+// of its selector, as a browser's tools have it: the Sources panel opens on
+// that place. Ctrl or Cmd and a click on the selector does the same, and on
+// a declaration goes to that declaration.
+//
 // A declaration of the element's own style is a row: a box that switches
 // it off and on — kept in the attribute as a comment while it is off — its
 // name and its value, each edited in place. A value that is one of a few
@@ -11,9 +16,10 @@
 // opens under its row and writes the value back as it changes.
 import { useMemo, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { Button, Checkbox, Icon, Select, useTheme } from 'react-x11';
+import { Button, Checkbox, Icon, Select, Tooltip, useTheme } from 'react-x11';
 import type {
   KeyboardEvent as X11KeyboardEvent,
+  MouseEvent as X11MouseEvent,
   TextInputNode,
 } from 'react-x11';
 import { XK_DOWN, XK_UP } from 'react-x11/keysyms';
@@ -25,6 +31,7 @@ import type {
   Element,
   HtmlHandle,
   HtmlMatchedRule,
+  HtmlRuleSource,
 } from '../../../src/html/index.js';
 import { SuggestField, removeAttribute, setAttribute } from './attributes.js';
 import { syntaxColours } from './colours.js';
@@ -55,7 +62,15 @@ import type {
   Shadow,
 } from './css-values.js';
 import { TrashGlyph } from './glyphs.js';
-import type { Inspection } from './model.js';
+import type { Inspection, SourceTarget } from './model.js';
+import {
+  declarationTarget,
+  placeName,
+  ruleTarget,
+  sheetFile,
+  sourcesOf,
+} from './source-files.js';
+import type { SourceFile } from './source-files.js';
 import type { Completion } from './suggest.js';
 
 const MONO = { fontFamily: '$monoFamily', fontSize: 12 } as const;
@@ -64,11 +79,21 @@ const MONO = { fontFamily: '$monoFamily', fontSize: 12 } as const;
 // for: it is a `<richtext>` run with `strike`
 registerRichText();
 
+/** A handler for a click that means "show me where this was written", which
+ *  Ctrl or Cmd makes of a click on a selector or a declaration. */
+const onOpen =
+  (open: (() => void) | undefined) =>
+  (ev: X11MouseEvent): void => {
+    if (open && (ev.ctrlKey || ev.metaKey)) open();
+  };
+
 /** A line of code in runs, any of them struck through. */
 function Runs({
   parts,
+  onClick,
 }: {
   parts: readonly { text: string; color: string; struck?: boolean }[];
+  onClick?: (ev: X11MouseEvent) => void;
 }): ReactElement {
   const theme = useTheme();
   const runs: TextRun[] = parts.map((p) => ({
@@ -78,7 +103,11 @@ function Runs({
     size: 12,
     ...(p.struck && { strike: p.color }),
   }));
-  return <richtext runs={runs} wrap style={{ flexShrink: 1 }} />;
+  return (
+    <box onClick={onClick} style={{ flexShrink: 1 }}>
+      <richtext runs={runs} wrap />
+    </box>
+  );
 }
 
 /** The element's own style, written back to its attribute — gone where it
@@ -1012,12 +1041,18 @@ function Card({
   note,
   media,
   editable,
+  link,
+  onOpen: open,
   children,
 }: {
   title: string;
   note?: string;
   media?: string | null;
   editable?: boolean;
+  /** Where the rule was written, on the right of its selector. */
+  link?: ReactNode;
+  /** What Ctrl or Cmd and a click on the selector does. */
+  onOpen?: () => void;
   children: ReactNode;
 }): ReactElement {
   const colours = syntaxColours(useTheme());
@@ -1054,6 +1089,7 @@ function Card({
       >
         <text
           selectable
+          onClick={onOpen(open)}
           style={{ ...MONO, color: colours.tag, flexGrow: 1, flexShrink: 1 }}
         >
           {`${title} {`}
@@ -1063,6 +1099,7 @@ function Card({
             {note}
           </text>
         ) : null}
+        {link}
       </box>
       <box
         style={{
@@ -1080,6 +1117,41 @@ function Card({
   );
 }
 
+/** Where a rule was written, as a link to it in the Sources panel. */
+function SourceLink({
+  file,
+  source,
+  onPress,
+}: {
+  file: SourceFile;
+  source: HtmlRuleSource;
+  onPress: () => void;
+}): ReactElement {
+  const theme = useTheme();
+  const { label, title } = placeName(file, source);
+  return (
+    <Tooltip label={title} style={{ flexShrink: 0 }}>
+      <box
+        role="link"
+        aria-label={`Show ${title} in Sources`}
+        onClick={onPress}
+        style={{ cursor: 'pointer' }}
+      >
+        <richtext
+          runs={[
+            {
+              text: label,
+              color: theme.accent,
+              underline: theme.accent,
+              size: 11,
+            },
+          ]}
+        />
+      </box>
+    </Tooltip>
+  );
+}
+
 const ORIGIN_NOTES: Record<HtmlMatchedRule['origin'], string> = {
   inline: 'the element’s own',
   author: '',
@@ -1091,13 +1163,20 @@ function RuleCard({
   rule,
   losing,
   filter,
+  files,
+  onShow,
 }: {
   rule: HtmlMatchedRule;
   losing: readonly boolean[];
   filter: string;
+  /** The page's sources, which the rule's sheet is one of. */
+  files: readonly SourceFile[];
+  onShow: (target: SourceTarget) => void;
 }): ReactElement | null {
   const theme = useTheme();
   const colours = syntaxColours(theme);
+  const source = rule.source;
+  const file = source && sheetFile(files, source.sheet);
   const shown = rule.declarations
     .map((d, i) => ({ d, lost: losing[i] }))
     .filter(
@@ -1112,10 +1191,25 @@ function RuleCard({
         rule.origin === 'author' ? `(${rule.specificity.join(', ')})` : ''
       }`}
       media={rule.media}
+      link={
+        source && file ? (
+          <SourceLink
+            file={file}
+            source={source}
+            onPress={() => onShow(ruleTarget(source))}
+          />
+        ) : null
+      }
+      onOpen={source && file ? () => onShow(ruleTarget(source)) : undefined}
     >
       {shown.map(({ d, lost }, i) => (
         <Runs
           key={i}
+          onClick={onOpen(
+            source && file
+              ? () => onShow(declarationTarget(source, d.property, d.value))
+              : undefined,
+          )}
           parts={[
             {
               text: d.property,
@@ -1154,6 +1248,13 @@ export function StylesPane({
     [element, version],
   );
   const losing = useMemo(() => overridden(rules), [rules]);
+  const files = useMemo(
+    () =>
+      handle.document
+        ? sourcesOf(handle.document, handle.base, handle.styleSheets())
+        : [],
+    [rules],
+  );
   const q = filter.trim().toLowerCase();
   return (
     <box style={{ flexGrow: 1, minHeight: 0 }}>
@@ -1184,7 +1285,14 @@ export function StylesPane({
           />
           {rules.map((rule, i) =>
             rule.origin === 'inline' ? null : (
-              <RuleCard key={i} rule={rule} losing={losing[i]} filter={q} />
+              <RuleCard
+                key={i}
+                rule={rule}
+                losing={losing[i]}
+                filter={q}
+                files={files}
+                onShow={(target) => inspection.source.set(target)}
+              />
             ),
           )}
         </box>

@@ -89,6 +89,10 @@ export function DevTools({
   const [tab, setTab] = useState<string>(panel);
   useEffect(() => setTab(panel), [ask]);
   const picking = useStore(inspection.picking);
+  const source = useStore(inspection.source);
+  useEffect(() => {
+    if (source) setTab('sources');
+  }, [source]);
   return (
     <Tabs
       value={tab}
@@ -157,6 +161,7 @@ export function DevTools({
         <SourcesPanel
           handle={handle}
           docKey={docKey}
+          inspection={inspection}
           load={loadSource}
           shown={tab === 'sources'}
         />

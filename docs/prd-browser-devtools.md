@@ -54,7 +54,10 @@ shaped it, what using it found, and what comes next.
   picker for any colour. Under it are the rules that match the element,
   in the order they win, each declaration that loses to another struck
   through, with each rule's media, specificity and whether it is the user
-  agent's. **Computed** is the computed style as a filterable `<Table>`,
+  agent's. A rule from a sheet has a link on the right of its selector,
+  `theme.css:42`, which opens Sources on it, as Chrome's does; Ctrl or Cmd
+  and a click does the same on the selector, and on a declaration goes to
+  that declaration. **Computed** is the computed style as a filterable `<Table>`,
   with a swatch beside each colour. **Layout** shows the box model
   diagram, the element's rect and offset, and the layout properties that
   apply to it.
@@ -70,7 +73,9 @@ shaped it, what using it found, and what comes next.
 - **Sources.** The page's scripts and style sheets in a tree by where
   they came from: an origin, its folders, and the page's own file, which
   holds what is written in it as `<script>` and `<style>` elements, each
-  numbered in the order the page has it. A file chosen is shown read-only
+  numbered in the order the page has it. A sheet no element in the
+  document is — an `@import`ed one, a shadow tree's, one a page's script
+  made — is listed with the rest. A file chosen is shown read-only
   in a `<CodeEditor>`, highlighted as JavaScript or as CSS, with its line
   numbers. A bar over it gives its address, its lines and its size, and a
   `{ }` button that sets it out a line at a time, on by itself where a
@@ -194,12 +199,45 @@ window's `onKeyDown` skips these commands (`DEVELOP` in `keys.ts`), or
 they would run twice. The page still relays them on X11, since a key sent
 straight to the page's window never reaches the bar's binding.
 
-**A source is read from the tab's network, not fetched again.** The
+**A rule knows where it was written, and the rest is worked out in the
+tools.** `matchedRules` says a rule's sheet and the offset of its own
+selector in the sheet's text, so `.b` in a list `.a, .b` is at `.b`, as
+Chrome's link goes to the first selector that matched. The parser takes
+comments out before it reads a sheet and reads each block as a string of
+its own, so it carries where each started and puts the comments back. That
+one number on a rule costs a page nothing it can measure: a 5.4 MB sheet of
+180,000 rules parsed in 240 ms and 215 ms, where it took 253 and 198.
+Everything else waits for a click. A line is found when a rule is listed
+for a tool that asks, and a declaration's place is read off the text when
+it is clicked, by its property and its value, of two alike the one that
+reads the value: a parsed rule keeps no places of its declarations, and
+keeping one on each would be paid for by every page for a thing the tools
+do rarely.
+
+**A jump lands in what the panel shows.** A rule's place counts in the text
+the sheet was parsed from. What the panel shows of a sheet written in the
+page has its margins taken off, and a minified one is set out a line at a
+time, so a place goes through both (`shownRange`): the formatter is told
+the offsets and says where they came to. A link names the line of the file
+as written, so a minified sheet says `vendor.min.css:1`, as Chrome's does
+until its file is pretty-printed, and lands on the rule however it is
+shown. What was asked for is selected, its caret at its start and a third
+of the way down the pane, once the editor has a height: the panel may only
+be shown by the same click, and a place worked out in a hidden pane has
+nothing to measure.
+
+**A style sheet is shown as the document read it, not read again.** A
+rule's offsets count in that text, and a file read from the network since
+could say anything; an imported sheet has no element to read. The document
+hands the text over with the sheet (`styleSheets`), so no request is made.
+
+**A script is read from the tab's network, not fetched again.** The
 network keeps what a page loaded, so the panel asks it for the file with
 the page's address, and the cache answers; the server hears of it only
 where the cache let the file go. The read is a request like any other,
-so it is in the Network panel, answered from memory. What is written in
-the page is the element's text as the document has it now, a script's
+so it is in the Network panel, answered from memory. A `<link>` the
+document holds no sheet of, one that failed, is read the same way. What is
+written in the page is the element's text as the document has it now, a script's
 change to it included, which is why the panel reads it again each second
 with the rest. The blank lines around it, and the indentation it has from
 where it sits in the markup, are left out.
@@ -256,6 +294,9 @@ document is.
   element's ancestors that set an inherited property.
 - Editing a matched rule's declarations, which means writing the page's
   style sheet rather than an attribute.
+- The same link in the Computed tab, which needs the winning declaration
+  of a property, and jumps from a `var()` or an `animation-name` to what it
+  names, which Styles could find from the matched rules.
 - Live DOM updates: a change notification from `<Html>` would replace the
   once-a-second read.
 - Request headers as sent, the cookie included, from inside the network's

@@ -14,6 +14,8 @@
 // Selector *matching* is still `css-select`'s (see cascade.ts). Parsing a
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
+import type { Element } from 'domhandler';
+
 import { specifiedValue } from './specified.js';
 import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
@@ -98,10 +100,29 @@ export interface StyleRule {
    *  `@media` blocks are: each block's list ORs, and the blocks AND. Absent
    *  for a rule under none — which is every rule of most documents. */
   containers?: ContainerQuery[][];
+  /** Where it was written: the offset of its selector in the text the sheet
+   *  was parsed from, comments and all. Absent for a rule no sheet holds. */
+  at?: number;
+}
+
+/** Where a sheet came from, as a developer's tools name it
+ *  (`HtmlHandle.styleSheets`). */
+export interface SheetSource {
+  /** Its own address: a `<link>`'s, or an `@import`'s. Null for one written
+   *  in a `<style>`, and for one the host or a page's script made. */
+  url: string | null;
+  /** The `<style>` or the `<link>` it is. Null for one an `@import` brought
+   *  in, and for one the host or a page's script made. */
+  element: Element | null;
+  /** Its text as it was parsed, which a rule's offsets count in. */
+  text: string;
 }
 
 export interface Stylesheet {
   rules: StyleRule[];
+  /** Where it came from, set as the document places it: none for the user
+   *  agent's, and for a sheet of a host's with no rules in it. */
+  source?: SheetSource;
   /** `@import` targets, in order — the host fetches them through the
    *  resource seam and splices the result in ahead of this sheet. Absolute
    *  when the sheet was parsed with a base. */
@@ -326,7 +347,8 @@ export function parseStylesheet(
    *  an `@media` block is under the block's. */
   under: MediaCondition[][] | null = null,
 ): Stylesheet {
-  text = withoutComments(text);
+  const cuts: number[] = [];
+  text = withoutComments(text, false, cuts);
   const sheet: Stylesheet = {
     rules: [],
     imports: [],
@@ -393,6 +415,8 @@ export function parseStylesheet(
     layer: readonly number[] | null = null,
     path = '',
     containers: ContainerQuery[][] | null = null,
+    /** Where `source` starts in the sheet's text. */
+    origin = 0,
   ): void => {
     let i = 0;
     const n = source.length;
@@ -446,6 +470,7 @@ export function parseStylesheet(
             layer,
             path,
             containers,
+            origin + at.blockAt,
           );
         } else if (name === 'container' && at.block !== null) {
           // a level of its own, as a nested `@media` is
@@ -458,6 +483,7 @@ export function parseStylesheet(
               layer,
               path,
               containers ? [...containers, queries] : [queries],
+              origin + at.blockAt,
             );
           }
         } else if (name === 'supports' && at.block !== null) {
@@ -466,7 +492,7 @@ export function parseStylesheet(
           // to right than skipping it — but for a condition it can answer
           // false (`supportsCondition`)
           if (supportsCondition(at.prelude) !== false) {
-            walk(at.block, media, layer, path, containers);
+            walk(at.block, media, layer, path, containers, origin + at.blockAt);
           }
         } else if (name === 'layer') {
           // `@layer a, b;` names layers, and so fixes their order, and
@@ -485,7 +511,7 @@ export function parseStylesheet(
               layer,
               path,
             );
-            walk(at.block, media, ranks, full, containers);
+            walk(at.block, media, ranks, full, containers, origin + at.blockAt);
           }
         } else if (name === 'font-face' && at.block !== null) {
           const face = parseFontFace(at.block, base, media);
@@ -539,12 +565,24 @@ export function parseStylesheet(
       if (blockAt >= n) break;
       const prelude = trimSelector(source.slice(i, blockAt));
       const block = readBlock(source, blockAt);
+      const written: number[] = [];
+      const selectors = rawSelectors(prelude, written);
+      for (let k = 0; k < written.length; k += 1) written[k] += origin + i;
       i = block.end;
-      const selectors = rawSelectors(prelude);
       if (!selectors) continue;
       importsAllowed = false;
       namespacesAllowed = false;
-      styleRule(selectors, block.body, media, layer, path, 0, containers);
+      styleRule(
+        selectors,
+        block.body,
+        media,
+        layer,
+        path,
+        0,
+        containers,
+        written,
+        origin + blockAt + 1,
+      );
     }
   };
 
@@ -566,25 +604,56 @@ export function parseStylesheet(
     layer: readonly number[] | null,
     path: string,
     depth: number,
-    containers: ContainerQuery[][] | null = null,
+    containers: ContainerQuery[][] | null,
+    /** Where each selector starts in the sheet's text, or one place for
+     *  them all: a block nested in a rule is where it is, whatever selector
+     *  it is for. */
+    written: readonly number[],
+    /** Where `body` starts in the sheet's text. */
+    bodyAt: number,
   ): void => {
     // the plain case, a block with nothing nested in it
     if (!body.includes('{')) {
-      emit(selectors, parseDeclarations(body), media, layer, containers);
+      emit(
+        selectors,
+        parseDeclarations(body),
+        media,
+        layer,
+        containers,
+        written,
+      );
       return;
     }
     const { declarations, nested } = splitNested(body);
-    emit(selectors, parseDeclarations(declarations), media, layer, containers);
+    emit(
+      selectors,
+      parseDeclarations(declarations),
+      media,
+      layer,
+      containers,
+      written,
+    );
     if (depth >= MAX_NESTING) return;
-    const deeper = (
-      at: string[],
-      block: string,
-      within: MediaCondition[][] | null,
-      ranks: readonly number[] | null,
-      named: string,
-      under: ContainerQuery[][] | null,
-    ): void => styleRule(at, block, within, ranks, named, depth + 1, under);
     for (const item of nested) {
+      const deeper = (
+        at: string[],
+        block: string,
+        within: MediaCondition[][] | null,
+        ranks: readonly number[] | null,
+        named: string,
+        under: ContainerQuery[][] | null,
+      ): void =>
+        styleRule(
+          at,
+          block,
+          within,
+          ranks,
+          named,
+          depth + 1,
+          under,
+          [bodyAt + item.at],
+          bodyAt + item.blockAt,
+        );
       if (item.kind === 'rule') {
         const inner = nestedSelectors(item.prelude, selectors);
         if (inner) deeper(inner, item.body, media, layer, path, containers);
@@ -633,6 +702,7 @@ export function parseStylesheet(
     media: MediaCondition[][] | null,
     layer: readonly number[] | null,
     containers: ContainerQuery[][] | null,
+    written: readonly number[],
   ): void => {
     if (!declarations.length) return;
     if (base !== null) {
@@ -644,7 +714,8 @@ export function parseStylesheet(
           d.value = namespacedAttrs(d.value, namespaces);
       }
     }
-    for (const raw of selectors) {
+    for (let k = 0; k < selectors.length; k += 1) {
+      const raw = selectors[k];
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
       const rule: StyleRule = {
         selector,
@@ -653,6 +724,7 @@ export function parseStylesheet(
         declarations,
         media,
         layer,
+        at: asWritten(written[k] ?? written[0], cuts),
       };
       if (containers) rule.containers = containers;
       sheet.rules.push(rule);
@@ -674,9 +746,11 @@ export function parseStylesheet(
  * it is replaced by a space, since there it still ends the token before it:
  * `1/**\/0px` is two values and no length, and `-/**\/10px` is no
  * negative one. `decls` says the text starts inside a declaration block,
- * which a `style` attribute does.
+ * which a `style` attribute does. `cuts` is handed what a place in what comes
+ * back is short of the same place in `text` (`asWritten`), a pair for each
+ * comment: where the text goes on after it, and by how much.
  */
-function withoutComments(text: string, decls = false): string {
+function withoutComments(text: string, decls = false, cuts?: number[]): string {
   if (!text.includes('/*')) return text;
   let out = '';
   let from = 0;
@@ -729,9 +803,23 @@ function withoutComments(text: string, decls = false): string {
       out += text.slice(from, i) + (inDecls || atRule ? ' ' : '');
       i = close < 0 ? text.length : close + 1;
       from = i + 1;
+      cuts?.push(out.length, from - out.length);
     }
   }
   return out + text.slice(from);
+}
+
+/** A place in a sheet's text with its comments out, as a place in the text
+ *  as it was written: past the last comment cut before it (`cuts`). */
+function asWritten(at: number, cuts: readonly number[]): number {
+  let lo = 0;
+  let hi = cuts.length / 2;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cuts[mid * 2] <= at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo ? at + cuts[lo * 2 - 1] : at;
 }
 
 /** Whether the block a `{` at `end` opens holds rules rather than
@@ -1099,16 +1187,19 @@ export function selectorList(prelude: string): string[] | null {
 
 /** A rule's selectors as written, or null where any of them is not one:
  *  what `selectorList` hands the matcher before its escapes are read, and
- *  what a nested rule's `&` stands for. */
-function rawSelectors(prelude: string): string[] | null {
+ *  what a nested rule's `&` stands for. `starts` is handed where each starts
+ *  in the prelude. */
+function rawSelectors(prelude: string, starts?: number[]): string[] | null {
   if (!prelude) return null;
   const out: string[] = [];
   let start = 0;
   let i = 0;
   const push = (end: number): boolean => {
-    const selector = trimSelector(prelude.slice(start, end));
+    const piece = prelude.slice(start, end);
+    const selector = trimSelector(piece);
     if (!selector || !isSelector(selector)) return false;
     out.push(selector);
+    starts?.push(start + piece.length - piece.trimStart().length);
     return true;
   };
   while (i < prelude.length) {
@@ -1983,6 +2074,8 @@ interface AtRule {
   name: string;
   prelude: string;
   block: string | null;
+  /** Where `block` starts in the text it was read from. */
+  blockAt: number;
   end: number;
 }
 
@@ -1996,12 +2089,19 @@ function readAtRule(text: string, at: number): AtRule {
   const prelude = text.slice(name.end, i).trim();
   if (text[i] === '{') {
     const block = readBlock(text, i);
-    return { name: name.value, prelude, block: block.body, end: block.end };
+    return {
+      name: name.value,
+      prelude,
+      block: block.body,
+      blockAt: i + 1,
+      end: block.end,
+    };
   }
   return {
     name: name.value,
     prelude,
     block: null,
+    blockAt: i,
     end: Math.min(text.length, i + 1),
   };
 }
@@ -2085,9 +2185,12 @@ function widthRange(
  *  generated sheet could make of the stack. */
 const MAX_NESTING = 16;
 
-type Nested =
+/** What a rule's block holds besides declarations, `at` and `blockAt`
+ *  saying where it and its block start in the block. */
+type Nested = { at: number; blockAt: number } & (
   | { kind: 'rule'; prelude: string; body: string }
-  | { kind: 'at'; name: string; prelude: string; block: string | null };
+  | { kind: 'at'; name: string; prelude: string; block: string | null }
+);
 
 /**
  * A style rule's block, parted into its declarations and the rules nested
@@ -2116,6 +2219,8 @@ function splitNested(body: string): {
         name: at.name,
         prelude: at.prelude,
         block: at.block,
+        at: i,
+        blockAt: at.blockAt,
       });
       i = at.end;
       continue;
@@ -2128,6 +2233,8 @@ function splitNested(body: string): {
         kind: 'rule',
         prelude: trimSelector(body.slice(i, brace)),
         body: block.body,
+        at: i,
+        blockAt: brace + 1,
       });
       i = block.end;
       continue;

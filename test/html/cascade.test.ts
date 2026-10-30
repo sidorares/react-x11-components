@@ -998,3 +998,118 @@ test('the rules that match an element are listed in the order they win, with the
   assert.deepStrictEqual(important.specificity, [0, 1, 0]);
   assert.deepStrictEqual(rules[1].specificity, [1, 0, 0]);
 });
+
+test('a rule says where in its sheet it was written, comments and all', () => {
+  const text = [
+    '/* a { first } */',
+    '.a { color: red }',
+    '',
+    '/* between, with a { brace } */',
+    '.b,',
+    '  .c /* in a list */ ,',
+    '  .d:is(.e, .f) { color: red }',
+    '@media (min-width: 1px) {',
+    '  /* in a block */',
+    '  .g { color: red }',
+    '  @supports (display: grid) {',
+    '    .h { color: red }',
+    '  }',
+    '}',
+    '@layer one { .i { color: red } }',
+    '@container (min-width: 1px) { .j { color: red } }',
+    '.k {',
+    '  color: red; /* before what is nested */',
+    '  .l & { color: red }',
+    '  &:hover,',
+    '  &:focus { color: red }',
+    '  @media (min-width: 1px) { color: blue }',
+    '}',
+    '.m { color: red } /* unterminated',
+  ].join('\n');
+  const sheet = parseStylesheet(text);
+  const at = (needle: string, from = 0): number => {
+    const found = text.indexOf(needle, from);
+    assert.ok(found >= 0, needle);
+    return found;
+  };
+  // the first of a selector's rules: `.k` has a second, for its `@media`
+  const seen = new Map(
+    [...sheet.rules].reverse().map((r) => [r.selector, r.at]),
+  );
+  for (const selector of ['.a', '.b', '.c', '.g', '.h', '.i', '.j', '.k']) {
+    assert.strictEqual(seen.get(selector), at(`${selector}`, 18), selector);
+  }
+  assert.strictEqual(seen.get('.d:is(.e, .f)'), at('.d:is'));
+  assert.strictEqual(seen.get('.l :is(.k)'), at('.l &'));
+  // a list of nested selectors, and declarations under a nested `@media`,
+  // are where their block is
+  assert.strictEqual(seen.get('.k:hover'), at('&:hover'));
+  assert.strictEqual(seen.get('.k:focus'), at('&:hover'));
+  assert.strictEqual(
+    sheet.rules.filter((r) => r.selector === '.k').pop()!.at,
+    at('@media (min-width: 1px) { color'),
+  );
+  // the last one is after a comment the end of the sheet closes
+  assert.strictEqual(seen.get('.m'), at('.m'));
+});
+
+test('a matched rule points at where it came from, an import among them', async () => {
+  const main = 'body { margin: 0 }\n\n#t {\n  color: red;\n}\n';
+  const imported = '@import "deep.css";\n/* a comment\n*/\n.a { color: red }\n';
+  const deep = '.b { color: red }';
+  const sheets: Record<string, string> = {
+    'http://x/main.css': main,
+    'http://x/imported.css': imported,
+    'http://x/deep.css': deep,
+  };
+  const { node } = await render(
+    '<link rel="stylesheet" href="main.css">' +
+      '<style>\n  @import "imported.css";\n  .c { color: red }\n</style>' +
+      '<p id="t" class="a b c">x</p>',
+    400,
+    {
+      baseUrl: 'http://x/page.html',
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'stylesheet' && sheets[r.url]
+          ? { kind: 'stylesheet' as const, text: sheets[r.url] }
+          : null,
+    },
+  );
+  const el = view(node);
+  const p = findById(el.document, 't')!;
+  const by = (selector: string) =>
+    el.matchedRules(p).find((r) => r.selector === selector)!.source!;
+
+  const t = by('#t');
+  assert.strictEqual(t.sheet.url, 'http://x/main.css');
+  assert.strictEqual(t.sheet.text, main);
+  assert.strictEqual(t.offset, main.indexOf('#t'));
+  assert.deepStrictEqual([t.line, t.column], [3, 1]);
+
+  const a = by('.a');
+  assert.strictEqual(a.sheet.url, 'http://x/imported.css');
+  assert.strictEqual(a.sheet.element, null);
+  assert.deepStrictEqual([a.line, a.column], [4, 1]);
+
+  const b = by('.b');
+  assert.strictEqual(b.sheet.url, 'http://x/deep.css');
+
+  const c = by('.c');
+  assert.strictEqual(c.sheet.url, null);
+  assert.strictEqual(c.sheet.element?.name, 'style');
+  assert.deepStrictEqual([c.line, c.column], [3, 3]);
+
+  // what the document lists is what a rule names, imports before their
+  // importers; the user agent's has no place, and neither has a hint
+  const listed = el.styleSheets();
+  assert.deepStrictEqual(
+    listed.map((s) => s.url),
+    ['http://x/main.css', 'http://x/deep.css', 'http://x/imported.css', null],
+  );
+  for (const sheet of [t.sheet, a.sheet, b.sheet, c.sheet]) {
+    assert.ok(listed.includes(sheet));
+  }
+  const ua = el.matchedRules(p).filter((r) => r.origin === 'user-agent');
+  assert.ok(ua.length > 0);
+  assert.ok(ua.every((r) => r.source === null));
+});

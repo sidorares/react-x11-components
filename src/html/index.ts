@@ -81,6 +81,7 @@ import type {
   MatchedRule as HtmlMatchedRule,
   ViewportOverflow,
 } from './css/cascade.js';
+import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
@@ -312,7 +313,11 @@ export type {
   HtmlHttpCacheStore,
 } from './http-cache.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
-export type { MatchedRule as HtmlMatchedRule } from './css/cascade.js';
+export type {
+  MatchedRule as HtmlMatchedRule,
+  RuleSource as HtmlRuleSource,
+} from './css/cascade.js';
+export type { SheetSource as HtmlSheetSource } from './css/parse.js';
 export type { ViewportOverflow } from './css/cascade.js';
 export type {
   AnyNode,
@@ -843,8 +848,15 @@ export interface HtmlHandle {
    * media it is under. Under the media as they hold, the pointer and the
    * focus where they are. Which declaration wins a property is the
    * reader's to work out from the order, `!important` turning it round.
+   * A rule from a sheet says where it was written (`source`).
    */
   matchedRules(element: Element): HtmlMatchedRule[];
+  /**
+   * The sheets the document is styled by, a `@import`ed one and a shadow
+   * tree's among them, each with the text it was parsed from: what a
+   * rule's `source.sheet` is, for as long as the sheets read the same.
+   */
+  styleSheets(): HtmlSheetSource[];
   /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
@@ -1492,6 +1504,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.namesThatStyle(element, attribute) ?? [],
       matchedRules: (element: Element) =>
         nodeRef.current?.matchedRules(element) ?? [],
+      styleSheets: () => nodeRef.current?.styleSheets() ?? [],
       parserWrite: (script: Element, markup: string) =>
         nodeRef.current?.parserWrite(script, markup) ?? false,
       parserResume: (script: Element) => nodeRef.current?.parserResume(script),

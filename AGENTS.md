@@ -1549,6 +1549,21 @@ selector; never anything inside `:not()`. Anything new that reads the
 buckets reads `byAttr` and `rootRules` too — `names`, `_matchInto`,
 `_shareable` — or a rule filed there is never asked.
 
+**A rule says where it was written, and the parser is what keeps that
+true.** `StyleRule.at` is the offset of its selector in the text the sheet
+was parsed from, comments and all, for a developer's tools
+(`MatchedRule.source`, `HtmlHandle.styleSheets`). Comments are cut before the
+walk (`withoutComments`, whose `cuts` are what `asWritten` puts back), and a
+block is walked as a string of its own, so **anything new that walks a slice
+of a sheet carries where the slice starts** (`origin`, `bodyAt`), or a rule
+in it points somewhere near the top of its sheet with nothing failing. That
+number is all a page with no tools pays: a line and a column are worked out
+as they are asked for (`ruleSource`), and a declaration's place by the tools
+when one is clicked. And `Stylesheet.source` is set as the document places a
+sheet, never as it is parsed: a parse is kept by its text, so two elements
+that read alike can take one in turn (`_parseSheet`), and a cascade kept
+across a new element has the element put right where it is kept.
+
 **A registered custom property is the root's from the start.** What an
 `@property` rule registers (CSS Properties and Values 1) is kept by the
 cascade (`_registered`), and its initial values are a set of custom
