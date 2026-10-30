@@ -1509,6 +1509,59 @@ metric(
 );
 
 metric(
+  'what counts as it did leaves what reads a counter after it to a build of its own subtree, and what counts otherwise builds the whole',
+  async (t) => {
+    // Wikipedia's articles number their references, and a change to a
+    // section with a list in it built all 18,000 elements for what the
+    // list could have done to them
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0;' +
+        ' counter-reset: fig } .tick { counter-increment: fig }' +
+        ' .read::before { content: "Fig. " counter(fig) " " }' +
+        ' p { margin: 2px }</style></head><body>' +
+        '<p id="t" class="tick">one</p><p class="read">two</p></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const p = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 't',
+    )!;
+    const compare = async (apart: boolean, what: string): Promise<void> => {
+      const result = built.mock.calls.at(-1)?.result;
+      assert.strictEqual(!!result, apart, what);
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      assert.deepStrictEqual(kept, treeLines(internals._tree), what);
+    };
+    const built = t.mock.method(internals, '_subtreeBuild');
+    const text = p.children[0];
+    (text as unknown as { data: string }).data = 'one more';
+    el.touchDocument([{ type: 'characterData', target: text }]);
+    await act();
+    await compare(true, 'a text in what counts');
+    p.attribs.class = '';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: p,
+        attributeName: 'class',
+        oldValue: 'tick',
+      },
+    ]);
+    await act();
+    await compare(false, 'what counts no more');
+    built.mock.restore();
+  },
+);
+
+metric(
   'a change before a list that makes its own counter builds only the subtree it reached, and one before what counts a counter of the document’s builds the whole, where a build of all new boxes puts it',
   async (t) => {
     // Apple's product pages hold a `<ul>` in every section, which makes a
