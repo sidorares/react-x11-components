@@ -3043,9 +3043,9 @@ function changeOne(
 /**
  * A sheet change a CSS-in-JS library, a lazy chunk or a late `<link>` makes,
  * done, and its records: a `<style>` put in, rules written into one, its
- * text extended or replaced, one taken out, and one bringing a `@keyframes`
- * — the last three of which make every element styled again
- * (`addedRules`).
+ * text extended or replaced, one taken out, which the last two of make
+ * every element styled again, and one bringing a `@keyframes`, which styles
+ * what runs its name (`addedRules`).
  */
 function sheetChange(
   next: () => number,
@@ -3157,7 +3157,10 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   let whole = 0;
   for (let seed = 1; seed <= 32; seed += 1) {
     const next = random(seed * 7919);
-    const css = rulesFor(next, true);
+    // what runs a `@keyframes` no sheet has yet, held half way through it
+    const css =
+      `${rulesFor(next, true)}\n.a { animation: k 1s paused -0.5s }\n` +
+      '.b::before { content: "*"; animation: k 1s paused -0.5s }';
     // a document whose markup writes its `<html>`, and one the cascade
     // supplies one for, which a rule for the root reaches otherwise
     const markup = markupFor(next, false, false);
@@ -3211,6 +3214,75 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   assert.ok(added > 20, `${added} sheet changes restyled what they reach`);
   assert.ok(whole > 5, `${whole} sheet changes restyled everything`);
 });
+
+metric(
+  'a sheet that brings a @keyframes styles what runs its name, and nothing else',
+  async () => {
+    // Wikipedia's chunks of CSS each bring one, and each styled all 18,000
+    // elements of an article again
+    const paragraphs = Array.from(
+      { length: 200 },
+      (_, i) => `<p id="p${i}">p${i}</p>`,
+    ).join('');
+    const { node } = await render(
+      '<style id="own">body{margin:0}.runs{animation:late 1s paused -0.5s}' +
+        '.after::before{content:"*";animation:late 1s paused -0.5s}' +
+        '.later{animation:later 1s paused -0.5s}</style>' +
+        `<body><div id="runs" class="runs">r</div>` +
+        `<div id="after" class="after">a</div>` +
+        `<div id="later" class="later">l</div>${paragraphs}</body>`,
+      300,
+    );
+    const el = view(node);
+    await act();
+    const inked = (box: unknown): string =>
+      (box as { style: { color: string } }).style.color;
+    const before = (): unknown =>
+      (
+        boxOf(el, 'after') as unknown as {
+          children: { pseudo?: string | null }[];
+        }
+      ).children.find((kid) => kid.pseudo === 'before');
+    const black = inked(boxOf(el, 'runs'));
+    assert.strictEqual(inked(before()), black);
+    const body = byId(el, 'runs').parent as Element;
+    const sheet = createElement('style', {}, [
+      createText(
+        '@keyframes late { from { color: #000000 } to { color: #ff0000 } }',
+      ),
+    ]);
+    appendChild(body, sheet);
+    const styled = await stylesComputed(el, async () => {
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: body,
+          addedNodes: [sheet],
+          removedNodes: [],
+          previousSibling: null,
+          nextSibling: null,
+        },
+      ]);
+      await act();
+    });
+    assert.ok(styled < 30, `${styled} styles for one animation`);
+    assert.notStrictEqual(inked(boxOf(el, 'runs')), black, 'it does not run');
+    assert.notStrictEqual(inked(before()), black, 'its ::before does not');
+    assert.strictEqual(inked(boxOf(el, 'later')), black, 'nor should this');
+    // and one written at the end of a sheet, as a CSS-in-JS library writes
+    const text = byId(el, 'own').children[0] as unknown as { data: string };
+    text.data +=
+      '@keyframes later { from { color: #000000 } to { color: #00ff00 } }';
+    const more = await stylesComputed(el, async () => {
+      el.touchDocument([
+        { type: 'characterData', target: text as unknown as ChildNode },
+      ]);
+      await act();
+    });
+    assert.ok(more < 30, `${more} styles for one written`);
+    assert.notStrictEqual(inked(boxOf(el, 'later')), black, 'it does not run');
+  },
+);
 
 test('a sheet that names a layer first before others named it restyles everything, since the layers rank otherwise', async () => {
   // `b` ranks before `a`, where the document first names them, so `a`'s
