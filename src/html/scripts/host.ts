@@ -1038,6 +1038,89 @@ function serializeDeclarations(
     .join(' ');
 }
 
+/** A declaration block's declarations, from its text: an element's
+ *  `style` attribute, or what a rule's braces hold. */
+function declarationsIn(block: string | null | undefined) {
+  return block ? parseDeclarations(block) : [];
+}
+
+/** What a block declares a property as, as `getPropertyValue` reads it: a
+ *  shorthand it keeps as its longhands composed from them. */
+function declarationValue(
+  block: string | null | undefined,
+  name: string,
+): string {
+  const decls = declarationsIn(block);
+  const found = decls.filter((d) => d.prop === name).at(-1);
+  if (found) return found.value;
+  const composed = composeShorthand(
+    name,
+    (longhand) =>
+      decls.filter((d) => d.prop === longhand).at(-1)?.value ?? null,
+  );
+  return composed ?? '';
+}
+
+/** `getPropertyPriority`: 'important' where the block's last declaration
+ *  of the property is, '' otherwise. */
+function declarationPriority(
+  block: string | null | undefined,
+  name: string,
+): string {
+  const found = declarationsIn(block)
+    .filter((d) => d.prop === name)
+    .at(-1);
+  return found?.important ? 'important' : '';
+}
+
+/** The properties a block declares, in order, joined by commas. */
+function declarationNames(block: string | null | undefined): string {
+  return declarationsIn(block)
+    .map((d) => d.prop)
+    .join(',');
+}
+
+/** A block as CSSOM serializes it (`serializeDeclarations`). */
+function declarationText(block: string | null | undefined): string {
+  return serializeDeclarations(declarationsIn(block));
+}
+
+/**
+ * A block with a property set as `setProperty` sets it (CSSOM 6.7), and
+ * serialized: a value the property does not take leaves the block as it
+ * was, which is null; one it does is kept in its canonical form, and a
+ * shorthand it expands as its longhands. What the block declared of it is
+ * replaced where it stood, as CSSOM's "set a CSS declaration" has it, and
+ * a property it did not declare goes at the end. An empty value removes
+ * the property.
+ */
+function withDeclaration(
+  block: string | null | undefined,
+  name: string,
+  value: string,
+  priority: Primitive,
+): string | null {
+  const raw = closeBrackets(value);
+  const specified = raw && specifiedValue(name, raw);
+  if (specified === null) return null;
+  const longhands = raw && specified ? expandShorthand(name, specified) : null;
+  const names = new Set([
+    name,
+    ...(expandShorthand(name, 'none') ?? []).map(([n]) => n),
+  ]);
+  const decls = declarationsIn(block);
+  const at = decls.findIndex((x) => names.has(x.prop));
+  const kept = decls.filter((x) => !names.has(x.prop));
+  const important = priority === 'important';
+  const set = longhands
+    ? longhands.map(([prop, v]) => ({ prop, value: v, important }))
+    : raw
+      ? [{ prop: name, value: specified || raw, important }]
+      : [];
+  kept.splice(at < 0 ? kept.length : at, 0, ...set);
+  return serializeDeclarations(kept);
+}
+
 /** An observer's margin as it serializes — four lengths, `px` or `%`,
  *  which the facade checked — or null where it grows nothing. */
 function marginLengths(text: string): MarginLength[] | null {
@@ -2694,64 +2777,37 @@ export class DomHost {
         return null;
       }
       case 'style':
-      case 'stylePriority': {
-        const found = this._declarations(this._element(a))
-          .filter((d) => d.prop === text(b))
-          .at(-1);
-        if (op === 'stylePriority') return found?.important ? 'important' : '';
-        if (!found) {
-          // a shorthand kept as its longhands, read back from them
-          const decls = this._declarations(this._element(a));
-          const composed = composeShorthand(
-            text(b),
-            (name) =>
-              decls.filter((d) => d.prop === name).at(-1)?.value ?? null,
-          );
-          if (composed !== null) return composed;
-        }
-        return found?.value ?? '';
-      }
+        return declarationValue(this._element(a).attribs.style, text(b));
+      case 'stylePriority':
+        return declarationPriority(this._element(a).attribs.style, text(b));
       case 'styleNames':
-        return this._declarations(this._element(a))
-          .map((d) => d.prop)
-          .join(',');
+        return declarationNames(this._element(a).attribs.style);
       // `style.cssText`, serialized as CSSOM serializes a block, each
       // declaration ended: CodeMirror appends `visibility: hidden` to it
       case 'styleText':
-        return serializeDeclarations(this._declarations(this._element(a)));
+        return declarationText(this._element(a).attribs.style);
       case 'setStyle': {
         const el = this._element(a);
-        const name = text(b);
-        // a value the property does not take leaves the declaration as it
-        // was; one it does is kept in its canonical form (CSSOM 6.7)
-        const raw = closeBrackets(text(c));
-        const value = raw && specifiedValue(name, raw);
-        if (value === null) return null;
-        // a shorthand this expands is kept as its longhands
-        const longhands = raw && value ? expandShorthand(name, value) : null;
-        const names = new Set([
-          name,
-          ...(expandShorthand(name, 'none') ?? []).map(([n]) => n),
-        ]);
-        const kept = this._declarations(el).filter((x) => !names.has(x.prop));
-        if (longhands) {
-          for (const [prop, v] of longhands) {
-            kept.push({ prop, value: v, important: d === 'important' });
-          }
-        } else if (raw) {
-          kept.push({
-            prop: name,
-            value: value || raw,
-            important: d === 'important',
-          });
-        }
-        const written = serializeDeclarations(kept);
         const oldValue = el.attribs.style ?? null;
+        const written = withDeclaration(oldValue, text(b), text(c), d);
+        if (written === null) return null;
         if (written) el.attribs.style = written;
         else delete el.attribs.style;
         this._changed(el, 'attributes', 'style', oldValue);
         return null;
       }
+      // the same of a rule's block, handed over as its text, which the
+      // facade writes back to the rule itself (`replaceRule`)
+      case 'blockValue':
+        return declarationValue(text(a), text(b));
+      case 'blockPriority':
+        return declarationPriority(text(a), text(b));
+      case 'blockNames':
+        return declarationNames(text(a));
+      case 'blockText':
+        return declarationText(text(a));
+      case 'blockSet':
+        return withDeclaration(text(a), text(b), text(c), d);
 
       // --- shadow trees, which `<Html>` draws: one attached builds the
       // document again at the next flush, as a new tree to draw
@@ -5928,11 +5984,6 @@ export class DomHost {
       if (kid instanceof Element && kid.name === 'script') this.inert.add(kid);
     }
     return kids;
-  }
-
-  private _declarations(el: Element) {
-    const style = el.attribs.style;
-    return style ? parseDeclarations(style) : [];
   }
 
   private _resolve(url: string): string {
