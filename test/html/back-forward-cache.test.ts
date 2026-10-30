@@ -421,52 +421,69 @@ test('a document with a WebTransport session open unloads, and a step back loads
   assert.deepEqual(doc.session.kept, [doc.session.entries[1].document]);
 });
 
-test('a document with a WebSocket open, or a worker of its with one, unloads; once the socket is closed it is kept', async () => {
-  const sockets = new FakeSockets((c) => setTimeout(() => c.open(), 0));
-  const ws =
-    'window.ws = new WebSocket("wss://ws.test/");' +
-    'ws.onopen = function () { say("connected"); };' +
-    'ws.onclose = function (e) { say("closed " + e.code); };';
-  const worker =
-    'var ws = new WebSocket("wss://ws.test/w"); ws.onopen = function () { postMessage("connected"); };';
-  const doc = await tab(
-    {
-      'a.html': page(
-        'a',
-        ws + 'addEventListener("unload", function () { say("unload"); });',
-      ),
-      'b.html': page('b', ws),
-      'c.html': page(
-        'c',
-        `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(worker)}], { type: "text/javascript" })));` +
-          'w.onmessage = function (e) { say("worker " + e.data); };',
-      ),
-    },
-    `${SITE}a.html`,
-    3,
-    undefined,
-    sockets,
-  );
-  await until(doc, 'a connected');
-  doc.run('location.href = "b.html";');
-  await until(doc, 'b connected');
-  // a socket open keeps it out: it unloads, and the socket goes with it,
-  // going away
-  assert.ok(doc.logs.includes('a pagehide false'), doc.logs.join('\n'));
-  assert.ok(doc.logs.includes('a unload'), doc.logs.join('\n'));
-  assert.deepEqual(doc.session.kept, []);
-  assert.deepEqual(sockets.connections[0].closes, [[1001, '']]);
-  // closed, it is kept
-  doc.run('ws.close();');
-  await until(doc, 'b closed 1005');
-  doc.run('location.href = "c.html";');
-  await until(doc, 'c worker connected');
-  assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
-  // a worker's socket keeps its page out as one of its own does
-  doc.run('history.back();');
-  await until(doc, 'b pageshow true 1');
-  assert.ok(doc.logs.includes('c pagehide false'), doc.logs.join('\n'));
-});
+test(
+  'a document with a WebSocket open, or a worker of its with one, unloads; once the socket is closed it is kept',
+  { timeout: 120_000 },
+  async () => {
+    let workerAsked = () => {};
+    const asked = new Promise<void>((resolve) => {
+      workerAsked = resolve;
+    });
+    const sockets = new FakeSockets((c) => {
+      if (c.request.url === 'wss://ws.test/w') workerAsked();
+      setTimeout(() => c.open(), 0);
+    });
+    const ws =
+      'window.ws = new WebSocket("wss://ws.test/");' +
+      'ws.onopen = function () { say("connected"); };' +
+      'ws.onclose = function (e) { say("closed " + e.code); };';
+    const worker =
+      'var ws = new WebSocket("wss://ws.test/w"); ws.onopen = function () { postMessage("connected"); };';
+    const doc = await tab(
+      {
+        'a.html': page(
+          'a',
+          ws + 'addEventListener("unload", function () { say("unload"); });',
+        ),
+        'b.html': page('b', ws),
+        'c.html': page(
+          'c',
+          `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(worker)}], { type: "text/javascript" })));` +
+            'w.onmessage = function (e) { say("worker " + e.data); };',
+        ),
+      },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      sockets,
+    );
+    await until(doc, 'a connected');
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b connected');
+    // a socket open keeps it out: it unloads, and the socket goes with it,
+    // going away
+    assert.ok(doc.logs.includes('a pagehide false'), doc.logs.join('\n'));
+    assert.ok(doc.logs.includes('a unload'), doc.logs.join('\n'));
+    assert.deepEqual(doc.session.kept, []);
+    assert.deepEqual(sockets.connections[0].closes, [[1001, '']]);
+    // closed, it is kept
+    doc.run('ws.close();');
+    await until(doc, 'b closed 1005');
+    doc.run('location.href = "c.html";');
+    await until(doc, 'c pageshow false 1');
+    // a worker's thread has the whole engine to load before its script runs,
+    // however long the machine takes over that, so this waits for what the
+    // worker asks of the seam and not for a time; the test's `timeout` is
+    // only what ends it if the worker never asks
+    await asked;
+    await until(doc, 'c worker connected');
+    assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
+    // a worker's socket keeps its page out as one of its own does
+    doc.run('history.back();');
+    await until(doc, 'b pageshow true 1');
+    assert.ok(doc.logs.includes('c pagehide false'), doc.logs.join('\n'));
+  },
+);
 
 test('the cache keeps as many documents as it is given, the one left longest ago going first, and one no entry is of any more goes', async () => {
   const pages = {
