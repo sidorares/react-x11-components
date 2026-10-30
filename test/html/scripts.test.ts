@@ -3546,14 +3546,17 @@ test('an attribute map answers an attribute by its name, which it does not enume
       'r.push(map.onfocusin === d.getAttributeNode("onfocusin"), map.onfocusin.expando, "title" in map, map.title.value);' +
       // a member of the map's is the member, and a name with a capital none
       'r.push(map.length, typeof map.item, map.TITLE, "nothing" in map, map.nothing);' +
-      'r.push(Object.keys(map).indexOf("title"), Object.getOwnPropertyNames(map).indexOf("title") >= 0, Object.keys(map).slice(0, 4).join(","));' +
+      'r.push(Object.keys(map).indexOf("title"), Object.getOwnPropertyNames(map).indexOf("title") >= 0, Object.keys(map).join(","));' +
+      // Wistia's player reads its attributes so, each entry's name
+      'r.push(Object.entries(map).map(function (e) { return e[0] + "=" + e[1].name; }).join(","));' +
+      'map.mine = 1; r.push(Object.keys(map).join(","));' +
       'var held = map.title; d.removeAttribute("title"); r.push(map.title, held.ownerElement);' +
       "document.getElementById('out').textContent = r.join('|');" +
       '</script>',
   );
   assert.equal(
     doc.text('out'),
-    'true||true|t|4|function||false||-1|true|0,1,2,3||',
+    'true||true|t|4|function||false||-1|true|0,1,2,3|0=id,1=title,2=length,3=onfocusin|0,1,2,3,mine||',
   );
 });
 
@@ -6905,6 +6908,27 @@ metric(
   },
 );
 
+test('checkVisibility asks whether an element has a box, and where told to, its opacity up the flat tree and its own visibility', async () => {
+  // what Chrome answers of the same elements (CSSOM View 6.1), with no
+  // options, checkOpacity, checkVisibilityCSS, and the newer names of both
+  const doc = await hosted(
+    '<style>#f { opacity: 0 } #v { visibility: hidden } #n { display: none } #c { display: contents } #cv { content-visibility: hidden }</style>' +
+      '<p id="p">p</p><div id="f"><span id="fi">f</span></div><div id="v"><span id="vi">v</span></div>' +
+      '<div id="n"><span id="ni">n</span></div><div id="c"><span id="ci">c</span>text</div>' +
+      '<div id="cv"><span id="cvi">cv</span></div><span id="empty"></span><p id="out"></p><script>' +
+      "document.getElementById('out').textContent = ['p', 'f', 'fi', 'v', 'vi', 'n', 'ni', 'c', 'ci', 'cv', 'cvi', 'empty'].map(function (id) {" +
+      '  var e = document.getElementById(id);' +
+      '  return id + ":" + [e.checkVisibility(), e.checkVisibility({ checkOpacity: true }), e.checkVisibility({ checkVisibilityCSS: true }),' +
+      '    e.checkVisibility({ opacityProperty: true, visibilityProperty: true })].map(Number).join("");' +
+      "}).join(' ');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'p:1111 f:1010 fi:1010 v:1100 vi:1100 n:0000 ni:0000 c:0000 ci:1111 cv:1111 cvi:0000 empty:1111',
+  );
+});
+
 metric(
   'the offsets are where layout put a box, before a transform turned, scaled or moved it or a scroll moved it',
   async () => {
@@ -7005,6 +7029,48 @@ test("a custom property keeps its name's case, in an element's style and in its 
     '5px',
     '',
     null,
+  ]);
+});
+
+test("an element's style is a CSSStyleDeclaration whose members are its prototype's, which a page may wrap", async () => {
+  // rrweb, in Amplitude's session replay, wraps `setProperty` so, and
+  // asks whether a rule's parent is a CSSConditionRule
+  const doc = await hosted(
+    '<style>@media screen { #e { color: red } } @supports (display: grid) {}</style>' +
+      '<div id="e"></div><p id="out"></p><script>' +
+      "var e = document.getElementById('e'), s = e.style, r = [];" +
+      'r.push(s instanceof CSSStyleDeclaration, Object.keys(s).length, s.parentRule);' +
+      'try { new CSSStyleDeclaration(); } catch (x) { r.push(x.name); }' +
+      'var calls = [], set = CSSStyleDeclaration.prototype.setProperty;' +
+      'CSSStyleDeclaration.prototype.setProperty = function (name) { calls.push(name); return set.apply(this, arguments); };' +
+      // a property set as itself is no `setProperty` call
+      "s.setProperty('color', 'red'); s.marginTop = '2px'; s.cssText = s.cssText + ' padding: 1px;';" +
+      "r.push(calls.join(','), e.getAttribute('style'), s.length, s.item(1), s.removeProperty('color'), s.cssText);" +
+      'try { set.call({}, "color", "red"); } catch (x) { r.push(x.name); }' +
+      'var rules = document.styleSheets[0].cssRules;' +
+      'r.push(rules[0] instanceof CSSConditionRule, rules[1] instanceof CSSConditionRule, rules[0].conditionText, rules[1].conditionText);' +
+      'r.push(Object.getPrototypeOf(CSSConditionRule.prototype) === CSSGroupingRule.prototype, rules[0].cssRules[0].parentRule === rules[0]);' +
+      "document.getElementById('out').textContent = JSON.stringify(r);" +
+      '</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    0,
+    null,
+    'TypeError',
+    'color',
+    'color: red; margin-top: 2px; padding: 1px;',
+    3,
+    'margin-top',
+    'red',
+    'margin-top: 2px; padding: 1px;',
+    'TypeError',
+    true,
+    true,
+    'screen',
+    '(display: grid)',
+    true,
+    true,
   ]);
 });
 

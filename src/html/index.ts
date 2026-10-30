@@ -1368,6 +1368,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.offsetRect(element) ?? null,
       clientBox: (element: Element) =>
         nodeRef.current?.clientBoxOf(element) ?? null,
+      checkVisibility: (element, asks) =>
+        nodeRef.current?.checkVisibility(element, asks) ?? false,
       drawnAtViewport: (element: Element) =>
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>

@@ -431,6 +431,13 @@ export interface HandleInternals {
   clientBox(
     element: Element,
   ): { width: number; height: number; top: number; left: number } | null;
+  /** Whether an element is drawn, as `checkVisibility` asks, faded to
+   *  nothing or invisible where `asks` says to look
+   *  (`HtmlViewNode.checkVisibility`). */
+  checkVisibility(
+    element: Element,
+    asks: { opacity: boolean; visibility: boolean },
+  ): boolean;
   /** Whether a scroll container's scroll moves an element: not where the
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
@@ -3826,6 +3833,18 @@ export class DomHost {
         this.flush();
         const r = this._seams.handle.clientBox?.(this._element(a));
         return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
+      }
+      // `checkVisibility`, by whether to ask the opacity and the visibility
+      // (`HtmlViewNode.checkVisibility`); a handle without it answers by
+      // whether the element has a box
+      case 'visible': {
+        this.flush();
+        const el = this._element(a);
+        const asks = { opacity: b === true, visibility: c === true };
+        return (
+          this._seams.handle.checkVisibility?.(el, asks) ??
+          !!this._seams.handle.elementRect(el)
+        );
       }
       // and scrolled, an axis left where it is where it is not a number:
       // by `true` for a relative scroll, or for the element a scroll into

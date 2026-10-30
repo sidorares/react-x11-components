@@ -5419,56 +5419,96 @@ export function installDom(
     const n = str(name);
     return n.startsWith('--') ? n : n.toLowerCase();
   };
+  /** The element each inline declaration block is the `style` of, by
+   *  the block and by the proxy a page holds of it, which either may be
+   *  the `this` a member is called with. */
+  const inlineStyles = new WeakMap<object, Any>();
+  const inlineOf = (self: Any): Any => {
+    const el = inlineStyles.get(self);
+    if (!el) throw new TypeError('Illegal invocation');
+    return el;
+  };
+  const inlineValue = (el: Any, name: Any): string =>
+    String(call('style', el._id, cssName(name)) ?? '');
+  const setInline = (el: Any, name: Any, value: Any, priority: Any): void =>
+    void call(
+      'setStyle',
+      el._id,
+      cssName(name),
+      value === null || value === undefined ? '' : str(value),
+      str(priority),
+    );
+  const inlineNames = (el: Any): string[] =>
+    String(call('styleNames', el._id) ?? '')
+      .split(',')
+      .filter(Boolean);
+  /** What an element's `style` is an instance of (CSSOM 6.7), its members
+   *  on the prototype, where a page that watches styles change puts its
+   *  hand: rrweb, in Amplitude's session replay, wraps `setProperty` and
+   *  `removeProperty` there, and threw where there was no such interface.
+   *  A rule's style and a computed style are blocks of their own here,
+   *  and not its instances. */
+  class CSSStyleDeclaration {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    getPropertyValue(name: Any): string {
+      return inlineValue(inlineOf(this), name);
+    }
+    getPropertyPriority(name: Any): string {
+      return String(
+        call('stylePriority', inlineOf(this)._id, cssName(name)) ?? '',
+      );
+    }
+    setProperty(name: Any, value: Any, priority: Any = ''): void {
+      setInline(inlineOf(this), name, value, priority);
+    }
+    removeProperty(name: Any): string {
+      const el = inlineOf(this);
+      const was = inlineValue(el, name);
+      setInline(el, name, '', '');
+      return was;
+    }
+    item(i: Any): string {
+      return inlineNames(inlineOf(this))[Number(i)] ?? '';
+    }
+    get length(): number {
+      return inlineNames(inlineOf(this)).length;
+    }
+    get cssText(): string {
+      return String(call('styleText', inlineOf(this)._id) ?? '');
+    }
+    set cssText(v: Any) {
+      inlineOf(this).setAttribute('style', str(v));
+    }
+    get parentRule(): null {
+      return null;
+    }
+  }
   const styleOf = (el: Any): Any => {
-    const target = {
-      getPropertyValue: (name: Any) =>
-        String(call('style', el._id, cssName(name)) ?? ''),
-      getPropertyPriority: (name: Any) =>
-        String(call('stylePriority', el._id, cssName(name)) ?? ''),
-      setProperty: (name: Any, value: Any, priority: Any = '') =>
-        void call(
-          'setStyle',
-          el._id,
-          cssName(name),
-          value === null || value === undefined ? '' : str(value),
-          str(priority),
-        ),
-      removeProperty: (name: Any) => {
-        const was = target.getPropertyValue(name);
-        call('setStyle', el._id, cssName(name), '', '');
-        return was;
-      },
-      item: (i: number) =>
-        String(call('styleNames', el._id) ?? '')
-          .split(',')
-          .filter(Boolean)[i] ?? '',
-      get length(): number {
-        return String(call('styleNames', el._id) ?? '')
-          .split(',')
-          .filter(Boolean).length;
-      },
-      get cssText(): string {
-        return String(call('styleText', el._id) ?? '');
-      },
-      set cssText(v: Any) {
-        el.setAttribute('style', str(v));
-      },
-    } as Any;
+    const target = Object.create(CSSStyleDeclaration.prototype);
     // `cssFloat` is `float`, a word JavaScript once kept for itself
     const property = (key: string): string =>
       key === 'cssFloat' ? 'float' : kebab(key);
-    return new Proxy(target, {
+    // a property is read and set as itself, not through the prototype's
+    // members, which a page may have wrapped: `style.color = …` is no
+    // `setProperty` call in a browser either
+    const style = new Proxy(target, {
       get(t, key) {
         if (typeof key !== 'string' || key in t) return t[key as Any];
-        return t.getPropertyValue(property(key));
+        return inlineValue(el, property(key));
       },
       set(t, key, value) {
-        if (typeof key !== 'string') return false;
-        if (key === 'cssText') t.cssText = value;
-        else t.setProperty(property(key), value);
+        if (typeof key !== 'string' || key in t) {
+          return Reflect.set(t, key, value);
+        }
+        setInline(el, property(key), value, '');
         return true;
       },
     });
+    inlineStyles.set(target, el);
+    inlineStyles.set(style, el);
+    return style;
   };
 
   /** What `el.dataset` is an instance of (HTML 3.2.6.6), which a page may
@@ -5740,7 +5780,10 @@ export function installDom(
             .getAttributeNames()
             .map((_: Any, i: number) => String(i)),
           ...namedItems(target).filter((name) => !Reflect.has(target, name)),
-          ...Reflect.ownKeys(target),
+          // what a page put on the map, and never the element it is kept
+          // by: Wistia's player reads `Object.entries(this.attributes)` as
+          // its attributes, and took `_el` for one with no name
+          ...Reflect.ownKeys(target).filter((key) => key !== '_el'),
         ];
       },
       getOwnPropertyDescriptor(target: Any, key: Any): Any {
@@ -5965,6 +6008,19 @@ export function installDom(
     getClientRects(): Any {
       const r = docRect(this);
       return list(r ? [this.getBoundingClientRect()] : []);
+    }
+    // CSSOM View 6.1: whether it has a box, in no `content-visibility:
+    // hidden`, and, where the options ask, is faded to nothing nowhere up
+    // the flat tree and is visible itself. HubSpot's forms hand their
+    // `onFormReady` the form, and cultureamp.com's asks it this.
+    checkVisibility(options?: Any): boolean {
+      const o = options ?? {};
+      return !!call(
+        'visible',
+        this._id,
+        !!(o.checkOpacity || o.opacityProperty),
+        !!(o.checkVisibilityCSS || o.visibilityProperty),
+      );
     }
     // Pointer Events 3, 10.1: the pointer's events go to this element until
     // it lets go or the buttons are released. A pointer with no button held
@@ -12394,20 +12450,22 @@ export function installDom(
   /** An at-rule's prelude with its name left out: a condition. */
   const conditionOf = (text: string): string =>
     preludeOf(text).replace(/^@[\w-]+\s*/, '');
-  class CSSMediaRule extends CSSGroupingRule {
-    override _type = 4;
+  /** A rule that holds its rules under a condition (CSS Conditional 3,
+   *  7.2): `@media`, `@supports` and `@container` are one, which rrweb
+   *  asks of a rule's parent before it looks for the rule in it. */
+  class CSSConditionRule extends CSSGroupingRule {
     get conditionText(): string {
       return conditionOf(this._text);
     }
+  }
+  class CSSMediaRule extends CSSConditionRule {
+    override _type = 4;
     get media(): Any {
       return mediaList(conditionOf(this._text));
     }
   }
-  class CSSSupportsRule extends CSSGroupingRule {
+  class CSSSupportsRule extends CSSConditionRule {
     override _type = 12;
-    get conditionText(): string {
-      return conditionOf(this._text);
-    }
   }
   class CSSImportRule extends CSSRule {
     override _type = 3;
@@ -12748,8 +12806,8 @@ export function installDom(
   };
   /** An `@container` rule: its container's name, if it gives one, and its
    *  query (CSS Conditional 5, 3.3). */
-  class CSSContainerRule extends CSSGroupingRule {
-    get conditionText(): string {
+  class CSSContainerRule extends CSSConditionRule {
+    override get conditionText(): string {
       const name = this.containerName;
       return name ? `${name} ${this.containerQuery}` : this.containerQuery;
     }
@@ -26954,7 +27012,9 @@ export function installDom(
     CSSRuleList,
     CSSRule,
     CSSStyleRule,
+    CSSStyleDeclaration,
     CSSGroupingRule,
+    CSSConditionRule,
     CSSMediaRule,
     CSSSupportsRule,
     CSSContainerRule,
