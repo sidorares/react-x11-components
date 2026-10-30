@@ -12,7 +12,7 @@ import { act, cleanup, renderX11, waitForPixel } from 'react-x11/test';
 import { Html, preloadHtmlScripts } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { encodePng } from '../../src/html/scripts/png.js';
-import { FONTS, h } from './harness.js';
+import { FONTS, RED_PNG, h } from './harness.js';
 
 afterEach(cleanup);
 await preloadHtmlScripts();
@@ -26,6 +26,8 @@ const PAGE = 'https://example.test/page.html';
 async function page(
   body: string,
   ms = 5000,
+  /** What its images answer with, by the URL it asks for. */
+  images: Record<string, Uint8Array> = {},
 ): Promise<{
   logs: string[];
   until(prefix: string): Promise<string>;
@@ -37,6 +39,8 @@ async function page(
       source: `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}</body></html>`,
       partial: false,
       baseUrl: PAGE,
+      onResource: ({ url }: { url: string }) =>
+        images[url] ? { kind: 'image' as const, bytes: images[url] } : null,
       scripts: {
         log: (level: string, text: string) =>
           void logs.push(`${level}: ${text}`),
@@ -217,7 +221,7 @@ test('a bitmap is a PNG: convertToBlob, toBlob and toDataURL, which a decoder re
 
 test('createImageBitmap cuts, resizes and flips what it is given, and refuses what has nothing to give', async () => {
   const p = await page(
-    '<img id="img" width="5" height="3"><script>' +
+    '<script>' +
       LOG +
       // a source: a red left column, a blue right one, a green bottom row
       'var src = new OffscreenCanvas(4, 4); var s = src.getContext("2d");' +
@@ -233,7 +237,6 @@ test('createImageBitmap cuts, resizes and flips what it is given, and refuses wh
       '  createImageBitmap(src, { imageOrientation: "flipY" }),' +
       '  createImageBitmap(s.getImageData(0, 2, 4, 2)),' +
       '  createImageBitmap(src, { resizeWidth: 2, resizeHeight: 2, resizeQuality: "high" }),' +
-      '  createImageBitmap(document.getElementById("img")),' +
       ']).then(function (b) {' +
       '  log("whole", Object.prototype.toString.call(b[0]), b[0].width, b[0].height, px(read(b[0]), 0, 0), px(read(b[0]), 3, 3));' +
       '  log("cut", b[1].width, b[1].height, px(read(b[1]), 0, 0));' +
@@ -243,8 +246,6 @@ test('createImageBitmap cuts, resizes and flips what it is given, and refuses wh
       '  log("flipped", px(read(b[5]), 0, 0), px(read(b[5]), 0, 3));' +
       '  log("imagedata", b[6].width, b[6].height, px(read(b[6]), 0, 1));' +
       '  var hi = read(b[7]); log("smooth", b[7].width, hi.getImageData(0, 0, 1, 1).data[3]);' +
-      '  var img = document.getElementById("img");' +
-      '  log("image", b[8].width === img.naturalWidth, b[8].height === img.naturalHeight, b[8].width > 0, px(read(b[8]), 0, 0));' +
       '});' +
       'function why(p) { return p.then(function () { return "none"; }, function (e) { return e.name + (e instanceof DOMException ? "" : "!"); }); }' +
       'var gone = src.transferToImageBitmap(); gone.close();' +
@@ -273,13 +274,34 @@ test('createImageBitmap cuts, resizes and flips what it is given, and refuses wh
   assert.equal(await p.until('flipped|'), '0,255,0,255|255,0,0,255');
   assert.equal(await p.until('imagedata|'), '4|2|0,255,0,255');
   assert.equal(await p.until('smooth|'), '2|255');
-  // an image's pixels are the host's, which a 2d context draws as nothing:
-  // its bitmap is transparent, at its size
-  assert.equal(await p.until('image|'), 'true|true|true|0,0,0,0');
   assert.equal(
     await p.until('refused|'),
     'RangeError!,InvalidStateError,TypeError!,TypeError!,TypeError!,InvalidStateError,InvalidStateError,InvalidStateError,InvalidStateError,TypeError!',
   );
+});
+
+test('createImageBitmap takes an image once it has come, and refuses one with nothing to give', async () => {
+  const p = await page(
+    '<img id="none" width="5" height="3"><img id="img" src="a.png"><script>' +
+      LOG +
+      'function name(e) { return e.name; }' +
+      'var img = document.getElementById("img");' +
+      'createImageBitmap(document.getElementById("none")).catch(function (e) { log("no image", name(e)); });' +
+      'addEventListener("load", function () {' +
+      '  createImageBitmap(img).then(function (b) {' +
+      '    var c = new OffscreenCanvas(b.width, b.height).getContext("2d");' +
+      '    c.drawImage(b, 0, 0);' +
+      '    log("image", b.width, b.height, b.width === img.naturalWidth, px(c, 0, 0));' +
+      '  });' +
+      '});' +
+      '</script>',
+    5000,
+    { [new URL('a.png', PAGE).href]: RED_PNG },
+  );
+  assert.equal(await p.until('no image|'), 'InvalidStateError');
+  // an image's pixels are the host's, which a 2d context draws as nothing:
+  // its bitmap is transparent, at its size
+  assert.equal(await p.until('image|'), '10|10|true|0,0,0,0');
 });
 
 test('a transfer moves an OffscreenCanvas and leaves the one it moved detached; one with a context does not move', async () => {

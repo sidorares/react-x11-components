@@ -36,6 +36,7 @@ import type {
   HtmlProps,
   ScriptRequest,
 } from '../index.js';
+import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
 import { NO_MEDIA_DEVICES } from '../media-devices.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
@@ -293,6 +294,8 @@ export interface InternalHtmlProps extends HtmlProps {
   _onPaint?: () => void;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
+  /** What an `<img>` came to (`HtmlViewProps`). */
+  _onImage?: (element: Element, outcome: 'load' | 'error') => void;
   /** What a player with no picture said, for the page that played it
    *  (`HtmlViewProps.onMediaEvent`). */
   _onMediaEvent?: MediaEventHandler;
@@ -599,6 +602,13 @@ export function useScriptedHtml(
     },
     [scripts.onElementScroll],
   );
+  const onImage = useCallback(
+    (element: Element, outcome: 'load' | 'error') => {
+      scripts.imageSettled?.(element, outcome);
+      void fireDomEvent(latest.current.props.onDomEvent, outcome, element);
+    },
+    [scripts.imageSettled],
+  );
   const canvasImage = useCallback(
     (element: Element) =>
       scripts.canvasImage?.(element) ??
@@ -644,6 +654,7 @@ export function useScriptedHtml(
     _onViewportScroll: scripts.scrolled,
     _onPaint: scripts.painted,
     _onCssEvents: scripts.cssEvents,
+    ...(scripts.imageSettled && { _onImage: onImage }),
     _onMediaEvent: scripts.mediaEvent,
     _unloadCheck: unloadCheck,
     _evaluate: evaluate,

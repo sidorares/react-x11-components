@@ -650,6 +650,19 @@ function indicesOf(data: Uint8Array): number[] {
   return out;
 }
 
+test('a GIF with no colour table is a transparent image, where a page puts one for a spacer', () => {
+  // the smallest there is, and the one Apple's pages inline
+  for (const data of [
+    'R0lGODlhAQABAHAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+    'R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==',
+  ]) {
+    const gif = decodeGif(new Uint8Array(Buffer.from(data, 'base64')));
+    assert.ok(gif, data);
+    assert.deepEqual([gif.width, gif.height], [1, 1]);
+    assert.deepEqual([...gif.data], [0, 0, 0, 0]);
+  }
+});
+
 test("a GIF's frames are found, each with its delay, and its loop count is its plays", () => {
   const frames = [
     { pixels: [0, 0, 0, 0], delay: 20 },

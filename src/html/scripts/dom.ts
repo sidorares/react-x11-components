@@ -125,6 +125,7 @@ export function installDom(
       op !== 'fontFaces' &&
       op !== 'fontMatch' &&
       op !== 'encodeImage' &&
+      op !== 'image' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
@@ -6951,17 +6952,23 @@ export function installDom(
       const px = /^([\d.]+)px$/.exec(style?.[side] ?? '');
       if (px) return Math.round(Number(px[1]));
     }
-    return Number(img.getAttribute(side)) >>> 0;
+    // rendered nowhere: the attribute, else the image's own size
+    return (
+      Number(img.getAttribute(side)) >>> 0 ||
+      (call('image', img._id, side) as number)
+    );
   };
   class HTMLImageElement extends HTMLElement {
+    // what `<Html>` knows of its image, in the document or out of it
+    // (`HtmlViewNode.imageState`)
     get complete(): boolean {
-      return true;
+      return call('image', this._id, 'complete') === true;
     }
     get naturalWidth(): number {
-      return this.offsetWidth;
+      return call('image', this._id, 'width') as number;
     }
     get naturalHeight(): number {
-      return this.offsetHeight;
+      return call('image', this._id, 'height') as number;
     }
     get width(): number {
       return imageSize(this, 'width');
@@ -6976,10 +6983,33 @@ export function installDom(
       this.setAttribute('height', v);
     }
     get currentSrc(): string {
-      return (this as Any).src;
+      return call('image', this._id, 'src') as string;
     }
     decode(): Promise<void> {
-      return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const settle = () => {
+          if (call('image', this._id, 'available') === true) resolve();
+          else {
+            reject(
+              new DOMException(
+                'The source image cannot be decoded.',
+                'EncodingError',
+              ),
+            );
+          }
+        };
+        if (this.complete) {
+          settle();
+          return;
+        }
+        const done = () => {
+          this.removeEventListener('load', done);
+          this.removeEventListener('error', done);
+          settle();
+        };
+        this.addEventListener('load', done);
+        this.addEventListener('error', done);
+      });
     }
   }
   Object.defineProperty(HTMLImageElement.prototype, 'src', urlProperty('src'));
@@ -28890,7 +28920,8 @@ export function installDom(
         );
       case 'toggle':
         return dispatch(target, trusted(new Event('toggle')));
-      // a `<link>`'s sheet applied, or not to be had: neither bubbles
+      // a `<link>`'s sheet applied, or not to be had, or what an `<img>`
+      // came to: neither bubbles
       case 'load':
       case 'error':
         return dispatch(target, trusted(new Event(e.type)));

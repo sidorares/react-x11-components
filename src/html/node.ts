@@ -427,7 +427,7 @@ import type {
   VideoSource,
 } from './resources.js';
 import { ImageSources } from './srcset.js';
-import type { SourceChanges } from './srcset.js';
+import type { SourceChanges, SourceEnv } from './srcset.js';
 import { atDensity } from './svg.js';
 import {
   askMedia,
@@ -552,6 +552,11 @@ export interface HtmlViewProps {
    *  last were told, in order (`AnimationTimeline.takeCssEvents`):
    *  what a page hears as `transitionrun` and its kin. */
   onCssEvents?: (events: CssEventInfo[]) => void;
+  /** What an `<img>` came to, for the image it asks for now (`askImage`):
+   *  what a page hears as the element's `load` or `error`. An image told
+   *  of is watched, one in no document with the rest, and a host with no
+   *  use for it leaves it out and pays for none of that. */
+  onImage?: (element: Element, outcome: 'load' | 'error') => void;
   /** The pane that scrolls the element — the nearest scroll container
    *  around it, the host's — scrolled: noticed as the element paints, which
    *  a scroll that moves the document under the pane's viewport makes it
@@ -721,6 +726,7 @@ export function registerHtmlView(): void {
       'onViewportScroll',
       'onPaint',
       'onCssEvents',
+      'onImage',
       // what the caret is drawn by, which repaints the caret alone
       'caretBlink',
       'caretBlinkMs',
@@ -1310,7 +1316,10 @@ export class HtmlViewNode extends Node {
     );
     // a request that came to nothing changes nothing the layout reads, and
     // still counts to the document's `load`
-    this._resources.settled = () => this._lifecycle();
+    this._resources.settled = (key) => {
+      this._imageSettled(key);
+      this._lifecycle();
+    };
     this._images = new ImageSources({
       request: (url, element) =>
         this._resources.request({ url, kind: 'image', element }),
@@ -1861,7 +1870,185 @@ export class HtmlViewNode extends Node {
         { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
         isStylePreload(el),
       );
+      // the markup's own, the first time it is seen: what a page's script
+      // changes after that it says (`askImage`)
+      if (tag === 'img' && props.onImage && !this._imageKeys.has(el)) {
+        this._watchImage(el);
+      }
     }
+  }
+
+  // --- what an `<img>` came to --------------------------------------------
+  //
+  // HTML's "update the image data", as far as a page can see it. Which
+  // image an element shows is `_sweep`'s and `_choose`'s; what is watched
+  // here is what that image comes to, for the `load` or `error` the page
+  // hears at the element and for `complete` and its kin until then. An
+  // image in no document is in here as well, where nothing else would ask
+  // for it: `new Image()` is how a page preloads and how it tests for a
+  // format, and Apple's product pages wait up to five seconds on one.
+
+  /** The elements waiting on an image, by where the store keeps it. */
+  private _imagesWaiting = new Map<string, Set<Element>>();
+  /** What each `<img>` last asked for, where the store keeps it, whatever
+   *  that came to; '' for no image. */
+  private _imageKeys = new WeakMap<Element, string>();
+  /** What each `<img>` has shown of what it asked for, as `currentSrc`
+   *  reads it: nothing while it waits, as Chrome has it, and the image
+   *  that came, or the URL that failed to. */
+  private _imageShown = new WeakMap<Element, string>();
+  /** The document the elements waiting are in. */
+  private _imagesOf: Document | null = null;
+  /** The images in the document a page's script changed that choose their
+   *  source, which the next `_update` chooses for (`_imagesChosen`). */
+  private _imagesOwed = new Set<Element>();
+  /** What the next microtask tells: one outcome an element, and none for
+   *  one that asked for something else since. */
+  private _imageTells = new Map<Element, 'load' | 'error'>();
+
+  /**
+   * A page's script changed what an `<img>` shows, or made one: its image
+   * asked for and watched from here on, whether or not it is in the
+   * document, and told again though it is the image it had, as setting a
+   * `src` to what it was loads it again.
+   */
+  askImage(el: Element): void {
+    if (!this._props().onImage) return;
+    const chooses = choosesSource(el);
+    if (chooses && inDocument(el, this._source.document)) {
+      this._imagesOwed.add(el);
+      return;
+    }
+    if (chooses) {
+      this._images.choose(
+        [el],
+        this._sourceEnv(
+          this._laidOutWidth > 0 ? this._laidOutWidth : this.abs.width || 1,
+          this._viewportHeight(),
+        ),
+      );
+    } else {
+      const url = attr(el, 'src');
+      if (url) this._resources.request({ url, kind: 'image', element: el });
+    }
+    this._watchImage(el, true);
+  }
+
+  /** Watch what an `<img>` shows now, unless that is what it was watched
+   *  for: told at once of what is here, or as it settles
+   *  (`_imageSettled`). */
+  private _watchImage(el: Element, again = false): void {
+    const chooses = choosesSource(el);
+    const chosen = chooses ? this._images.chosen(el) : null;
+    if (chosen === undefined) return;
+    const url = chooses ? chosen?.url : attr(el, 'src');
+    const key = url ? this._resources.keyOf(url) : '';
+    const was = this._imageKeys.get(el);
+    if (was === key && !again) return;
+    const doc = this._source.document;
+    if (this._imagesOf !== doc) {
+      this._imagesOf = doc;
+      this._imagesWaiting.clear();
+    }
+    if (was) {
+      const waiting = this._imagesWaiting.get(was);
+      if (waiting?.delete(el) && !waiting.size) {
+        this._imagesWaiting.delete(was);
+      }
+    }
+    this._imageTells.delete(el);
+    this._imageKeys.set(el, key);
+    this._imageShown.delete(el);
+    if (!url) {
+      // nothing to show is news only where something was named
+      if (chooses || attr(el, 'src') !== undefined) {
+        this._tellImage(el, 'error');
+      }
+      return;
+    }
+    const state = this._resources.state(url);
+    if (state === 'ready' || state === 'failed') {
+      this._imageShown.set(el, key);
+      this._tellImage(el, this._resources.image(url) ? 'load' : 'error');
+      return;
+    }
+    const waiting = this._imagesWaiting.get(key);
+    if (waiting) waiting.add(el);
+    else this._imagesWaiting.set(key, new Set([el]));
+  }
+
+  /** What the store keeps at `key` came to something. */
+  private _imageSettled(key: string): void {
+    const waiting = this._imagesWaiting.get(key);
+    if (!waiting) return;
+    this._imagesWaiting.delete(key);
+    if (this._imagesOf !== this._source.document) return;
+    const outcome = this._resources.image(key) ? 'load' : 'error';
+    for (const el of waiting) {
+      this._imageShown.set(el, key);
+      this._tellImage(el, outcome);
+    }
+  }
+
+  /** The images `_choose` chose for: each watched for what it chose, as
+   *  `_sweep` watches the rest, and those a page's script changed told
+   *  again. */
+  private _imagesChosen(): void {
+    if (!this._props().onImage) return;
+    for (const el of this._source.facts().pictures) this._watchImage(el);
+    if (!this._imagesOwed.size) return;
+    const owed = this._imagesOwed;
+    this._imagesOwed = new Set();
+    for (const el of owed) this._watchImage(el, true);
+  }
+
+  /** Tell what an image came to, as a task of its own: never inside the
+   *  script that asked, and before the document's `load`, which `_lifecycle`
+   *  tells a microtask after the one that settled it. */
+  private _tellImage(el: Element, outcome: 'load' | 'error'): void {
+    const owed = this._imageTells.size > 0;
+    this._imageTells.set(el, outcome);
+    if (owed) return;
+    const doc = this._source.document;
+    void Promise.resolve().then(() => {
+      const tells = [...this._imageTells];
+      this._imageTells.clear();
+      if (this._source.document !== doc || this.destroyed) return;
+      for (const [element, told] of tells) {
+        this._props().onImage?.(element, told);
+      }
+    });
+  }
+
+  /**
+   * What a page reads of an `<img>`: whether its image has come to
+   * something (`complete`), its size in CSS pixels at the density it was
+   * chosen at, 0 until that is known and for one that failed, and the URL
+   * it has shown (`_imageShown`). A broken image is complete, and shows
+   * nothing (`available`).
+   */
+  imageState(el: Element): {
+    complete: boolean;
+    available: boolean;
+    width: number;
+    height: number;
+    src: string;
+  } {
+    const chooses = choosesSource(el);
+    const chosen = chooses ? this._images.chosen(el) : null;
+    const url = chooses ? chosen?.url : attr(el, 'src');
+    const state = url ? this._resources.state(url) : null;
+    const size = this._imageSize(el);
+    return {
+      complete:
+        !this._imagesOwed.has(el) &&
+        chosen !== undefined &&
+        (!url || state === 'ready' || state === 'failed'),
+      available: !!url && state === 'ready' && !!this._resources.image(url),
+      width: Math.floor(size?.width ?? 0),
+      height: Math.floor(size?.height ?? 0),
+      src: this._imageShown.get(el) ?? '',
+    };
   }
 
   /**
@@ -3313,6 +3500,7 @@ export class HtmlViewNode extends Node {
     // the sizes other widths came to stand, since what a width chooses is
     // the same each time it is asked.
     const chose = this._choose(target, viewport);
+    if (chose || this._imagesOwed.size) this._imagesChosen();
     let relayout = false;
     if (
       chose &&
@@ -3666,6 +3854,7 @@ export class HtmlViewNode extends Node {
       }
       if (!laysOut || !this._tree) break;
       const chose = pass === 0 && this._chooseLaidOut(this._tree);
+      if (chose) this._imagesChosen();
       // And where the container queries answer otherwise for the sizes the
       // layout gave their containers, built again restyling the elements
       // they answer for, and laid out again — but for a layout that asked
@@ -4095,15 +4284,26 @@ export class HtmlViewNode extends Node {
     const key = `${target}|${viewport}|${s}|${scheme}|${reducedMotion}|${scripting}|${this._source.revision}`;
     if (key === this._choseIn) return null;
     this._choseIn = key;
-    return this._images.choose(facts.pictures, {
+    return this._images.choose(
+      facts.pictures,
+      this._sourceEnv(target, viewport),
+    );
+  }
+
+  /** What a source is chosen in, at `target` and `viewport`, in device
+   *  pixels (`SourceEnv`). */
+  private _sourceEnv(target: number, viewport: number): SourceEnv {
+    const s = this._scale;
+    const props = this._props();
+    return {
       width: target / s,
       height: viewport / s,
       scale: s,
-      scheme,
-      reducedMotion,
-      scripting,
+      scheme: props.look.colorScheme,
+      reducedMotion: props.reducedMotion ?? false,
+      scripting: props.scripting ?? false,
       decodes: decodesImageType,
-    });
+    };
   }
 
   /**

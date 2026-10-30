@@ -1725,6 +1725,21 @@ reads it: `any` is closed by a press outside it, as well as by Escape;
 the default for a dialog `show()` opened, by neither. Escape goes to
 whichever dialog or popover opened last.
 
+**An `<img>` says what its image came to** (HTML 4.8.4.3). A page hears
+`load` once its pixels are in and `error` where the image failed or the
+host declined it, on an image in the document and on one in no document —
+`new Image()`, a copy, what `innerHTML` made on an element of its own — so a
+preload, and the test a page makes for a format, finish. Until then
+`complete` is false; once it has come `naturalWidth` and `naturalHeight` are
+its size at the density it was chosen at, `currentSrc` is the URL it asked
+for, and `decode()` resolves, or rejects with an `EncodingError` where there
+is nothing to show. Which image is `onResource`'s to answer as ever: an
+image out of the document is asked for like any other, with its `<img>` the
+request's `element`, and the document's `load` waits for it, as HTML has
+it. Setting a `src` to what it was loads it again, and of two set in one
+task only the last is told. What is in a `<template>` asks for nothing, nor
+does a document nothing draws.
+
 **A media element is `:muted`** (Selectors 4, 12.3) where its `muted`
 attribute says or a script set `muted`, which holds whatever the attribute
 comes to after; `:volume-locked` matches nothing, since a page cannot lock
@@ -2511,22 +2526,22 @@ no listeners, since nothing runs in it. A host that has some — a script
 engine over the DOM, as the browser example's is, or an application wiring
 behaviour onto a document with `domutils` — dispatches them, and answers.
 
-| `type`                 | When                                                                        | Cancelling it                                    |
-| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------------------ |
-| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element     | a press neither focuses nor starts a selection   |
-| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link   | no link followed, no button pressed, no box kept |
-| `mousemove`            | The pointer moved over the element, with the `buttons` held                 | —                                                |
-| `wheel`                | The wheel turned over the element, its `deltaX` and `deltaY` in pixels      | the pane the document is in does not scroll      |
-| `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press | the press starts nothing                         |
-| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`           | the key is not typed, nor does Tab move          |
-| `input`                | A field typed into, a box ticked, an option chosen                          | —                                                |
-| `select`               | Text the user selected in a field, by a key, a press or a release in it     | —                                                |
-| `change`               | A field left, or submitted from, with another value; a box; an option       | —                                                |
-| `submit`               | A form validated and about to be sent, with its `submitter`                 | nothing is sent                                  |
-| `reset`                | A reset button pressed                                                      | nothing is put back                              |
-| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                  | —                                                |
-| `toggle`               | A `<details>` opened or closed                                              | —                                                |
-| `load`, `error`        | A sheet's `<link>` applied, or its preload's sheet in; or not to be had     | —                                                |
+| `type`                 | When                                                                                                     | Cancelling it                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
+| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link                                | no link followed, no button pressed, no box kept |
+| `mousemove`            | The pointer moved over the element, with the `buttons` held                                              | —                                                |
+| `wheel`                | The wheel turned over the element, its `deltaX` and `deltaY` in pixels                                   | the pane the document is in does not scroll      |
+| `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press                              | the press starts nothing                         |
+| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`                                        | the key is not typed, nor does Tab move          |
+| `input`                | A field typed into, a box ticked, an option chosen                                                       | —                                                |
+| `select`               | Text the user selected in a field, by a key, a press or a release in it                                  | —                                                |
+| `change`               | A field left, or submitted from, with another value; a box; an option                                    | —                                                |
+| `submit`               | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
+| `reset`                | A reset button pressed                                                                                   | nothing is put back                              |
+| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
+| `toggle`               | A `<details>` opened or closed                                                                           | —                                                |
+| `load`, `error`        | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 

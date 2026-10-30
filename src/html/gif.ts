@@ -67,6 +67,9 @@ export interface GifFile {
  *  request for gigabytes, not an image. */
 const MAX_PIXELS = 1 << 25;
 
+/** The palette of a frame that has none (`readGif`). */
+const NO_COLOURS = new Uint8Array(0);
+
 /** The shortest delay a browser keeps (`GifFrame.delay`), and what it shows
  *  a shorter one for instead. */
 const FASTEST_DELAY_MS = 10;
@@ -142,13 +145,15 @@ export function readGif(bytes: Uint8Array): GifFile | null {
     const frameHeight = bytes[at + 6] | (bytes[at + 7] << 8);
     const flags = bytes[at + 8];
     at += 9;
-    let palette = global;
+    // none at all is every pixel transparent, as a browser draws it: the
+    // smallest GIF there is has none, and pages use it as a spacer
+    let palette = global ?? NO_COLOURS;
     if (flags & 0x80) {
       const size = 3 * (1 << ((flags & 7) + 1));
       palette = bytes.subarray(at, at + size);
       at += size;
     }
-    if (!palette || frameWidth * frameHeight > MAX_PIXELS) break;
+    if (frameWidth * frameHeight > MAX_PIXELS) break;
     const minCodeSize = bytes[at++];
     if (!(minCodeSize >= 2 && minCodeSize <= 11)) break;
     frames.push({

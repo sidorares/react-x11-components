@@ -417,6 +417,18 @@ export interface HandleInternals {
   transitionCaptureNew(): string;
   transitionRemaining(): number | null;
   transitionEnd(): void;
+  /** What a page's script changed of an `<img>`, or the one it made, is
+   *  asked for and watched (`HtmlViewNode.askImage`). */
+  askImage(element: Element): void;
+  /** What a page reads of an `<img>`: `complete` and its kin
+   *  (`HtmlViewNode.imageState`). */
+  imageState(element: Element): {
+    complete: boolean;
+    available: boolean;
+    width: number;
+    height: number;
+    src: string;
+  };
   /** What the document's media queries are answered from, as a key that
    *  moves where an answer may (`HtmlViewNode.mediaEnvironment`). */
   mediaEnvironment(): string;
@@ -658,6 +670,21 @@ const KEPT_QUERIES = 1000;
 
 /** The elements that hold a document of their own: a frame's. */
 const FRAME_TAGS = new Set(['iframe', 'frame', 'object']);
+
+/** What says which image an `<img>` shows, or how it is fetched (HTML
+ *  4.8.4.3.8, "relevant mutations"): changing one loads its image again. */
+const IMAGE_ATTRIBUTES = new Set([
+  'src',
+  'srcset',
+  'sizes',
+  'crossorigin',
+  'referrerpolicy',
+]);
+
+/** Whether a node is an HTML `<img>`. */
+function isImage(node: AnyNode): node is Element {
+  return node instanceof Element && node.name === 'img' && !node.namespace;
+}
 
 /** The elements a window is reached by the `name` of, as well as by their
  *  `id` (HTML 7.2.2.3): those four, and a frame, whose name is its child
@@ -2156,6 +2183,7 @@ export class DomHost {
     this._copiedScripts(node, clone, deep);
     const owner = this._ownerOf(node);
     if (owner !== this.document) this._owners.set(clone, owner);
+    this._imagesMade([clone]);
     if (isDoctype(node)) this._doctypes.set(clone, this._doctypeOf(node));
     const type = this._xml.get(node as Document);
     if (this._isDocument(node)) {
@@ -3119,6 +3147,7 @@ export class DomHost {
         // `setHTMLUnsafe` takes declarative shadow roots, as the document's
         // parser does (HTML 8.5.1)
         this._replaceAll(parent, this._parseIn(parent, text(b), c === true));
+        if (!this._inDocument(parent)) this._imagesMade(parent.children);
         return null;
       }
       case 'adjacent': {
@@ -4300,6 +4329,13 @@ export class DomHost {
         return this._seams.network === true;
       case 'serviceWorkers':
         return this._seams.serviceWorkers === true;
+      case 'image': {
+        const el = this._node(a) as Element;
+        const state = this._imageDrawn(el)?.imageState?.(el);
+        // nothing draws it: as it would be with no image to wait for
+        if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
+        return state[text(b) as keyof typeof state];
+      }
       case 'canPlayType': {
         // the three answers HTML has, and none other (4.8.11.3)
         const answer = this._seams.canPlayType?.(text(a)) ?? '';
@@ -4620,6 +4656,9 @@ export class DomHost {
         attributeName: name!,
         oldValue,
       });
+      if (isImage(target) && IMAGE_ATTRIBUTES.has(name!)) {
+        this._imageDrawn(target)?.askImage?.(target);
+      }
       if (this._custom && this._customCandidate(target)) {
         this._custom.log.push([
           't',
@@ -5048,6 +5087,34 @@ export class DomHost {
    *  by the document's id. */
   private _fontsOf(id: Primitive): Partial<HandleInternals> | null {
     return this._drawing(this._node(id)) as Partial<HandleInternals> | null;
+  }
+
+  /** The `<Html>` that draws the document an `<img>` is its node
+   *  document's, in the document or out of it: an image a page made is
+   *  loaded wherever it is. None for what is in a `<template>`, whose
+   *  images load nothing until they are used, nor for a document nothing
+   *  draws, which HTML has no reason to load for. */
+  private _imageDrawn(el: Element): Partial<HandleInternals> | null {
+    if (this._inTemplate(el)) return null;
+    const owner = this._ownerOf(el);
+    return (
+      ((owner === this.document
+        ? this._seams.handle
+        : this._s.drawn.get(owner)) as Partial<HandleInternals> | undefined) ??
+      null
+    );
+  }
+
+  /** The `<img>`s in what a page's script made out of the document, which
+   *  `<Html>` meets in no tree it reads: `innerHTML` on an element of its
+   *  own, and a copy. */
+  private _imagesMade(nodes: readonly AnyNode[]): void {
+    for (const el of DomUtils.findAll(isImage, nodes as AnyNode[])) {
+      if (el.attribs.src === undefined && el.attribs.srcset === undefined) {
+        continue;
+      }
+      this._imageDrawn(el)?.askImage?.(el);
+    }
   }
 
   private _drawing(node: AnyNode): HtmlHandle | null {

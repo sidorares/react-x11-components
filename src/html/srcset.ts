@@ -582,6 +582,19 @@ export class ImageSources {
     return choice.chosen;
   }
 
+  /**
+   * The source an element chose, whether or not it shows it yet: null for
+   * one that chose nothing, and undefined while that is still to say — no
+   * choice made, or a `sizes` of `auto` waiting on a layout it has not had.
+   */
+  chosen(el: Element): ImageSource | null | undefined {
+    const choice = this._choices.get(el);
+    if (!choice || (choice.auto && choice.width === undefined)) {
+      return undefined;
+    }
+    return choice.chosen;
+  }
+
   /** Whether the size an element's box takes is still to come: the image
    *  it chose is on its way, and either it shows the one it chose before
    *  meanwhile, or it shows the one it chose and that one's header has not

@@ -2839,6 +2839,26 @@ closes a way out a DOM binding opens by accident:
   registry's `define()` misses the document. `:defined` is the cascade's
   (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
   attribute no element has.
+- **What an `<img>` came to is `<Html>`'s to tell, in the document and out
+  of it** (`askImage`, `_watchImage`, `imageState`). `new Image()` is how a
+  page preloads and how it tests for a format: Apple's product pages hold
+  their whole setup on a `data:image/avif` probe, and with no `load` and no
+  `error` they waited out a five-second timer. So an image in no document
+  goes through the same `ResourceStore` as one in it, whose `settled` says
+  which URL it was (`_imageSettled`, an index by URL, since `_lifecycle`
+  runs at every layout and a page of images would walk them all). Three
+  things are load-bearing. **Anything new that changes which image an
+  `<img>` shows tells `_changed`, or `_imagesMade` for what no attribute
+  write sets**, or a page waits for a `load` that never comes; a connected
+  `<img>` that chooses its source is chosen in `_update`, so `askImage`
+  leaves it owed and `complete` is false until then (`_imagesOwed`). **What
+  is told goes through one microtask** (`_tellImage`), which is never inside
+  the page's task, keeps the last of two sources set in one task, and runs
+  before the one `_lifecycle` tells the window's `load` in. And **`image`
+  moves no `opEpoch`**: it is a read, and a page reads `complete` in loops
+  between its reads of a computed style. What an image answers before the
+  engine is here is kept (`Early.images`), since an `onload` in the markup
+  is still to hear it.
 - **What a page asks of a media element is the player's, kept by
   element.** `play()`, `pause()`, `muted`, `volume`, `playbackRate` and a
   seek are the facade's state (`mediaAsks`) and one `mediaState` op each;
