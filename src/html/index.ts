@@ -1275,6 +1275,12 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       onMouseMoveCapture: events.onMouseMoveCapture,
       onWheelCapture: events.onWheelCapture,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
+        // a press in an `<iframe>`'s document is that document's, as a key
+        // typed there is: it bubbles out of the frame's own `<Html>`, whose
+        // node answers `elementAtPoint` and `hrefAtPoint` too, and this one
+        // took it a second time — a details toggled back, and a link
+        // followed or a form sent by the page
+        if (embedded.contains(ev.target as DrawnNode)) return;
         if (events.onBar()) return;
         viewNode.current?.pressedAt(ev.x, ev.y);
         links.onMouseDown(ev);
@@ -1314,6 +1320,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         }
       },
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
+        if (embedded.contains(ev.target as DrawnNode)) return;
         if (events.onBar()) return;
         // the click the press and the release made, which the page may
         // cancel: then no link is followed and no button pressed

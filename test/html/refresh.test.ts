@@ -1534,6 +1534,225 @@ metric(
   },
 );
 
+test('a class a sibling combinator tests reaches what its rule styles among what follows, and not all that follows', async () => {
+  // Apple's local nav turns dark with `#ac-localnav.ac-localnav-dark ~
+  // #ac-ln-curtain`, and each turn restyled and built all 5,000 elements
+  // after it, to style one
+  const paragraphs = Array.from(
+    { length: 50 },
+    (_, i) => `<p id="p${i}" class="p">p${i}</p>`,
+  ).join('');
+  const { node } = await render(
+    '<style>body{margin:0} #nav.dark ~ #curtain{color:#ff0000}' +
+      ' #nav.dark ~ main .note{color:#00aa00}' +
+      ' #nav.dark + .next{color:#0000ff}</style>' +
+      '<body><nav id="nav" class="light">n</nav><div id="next" class="next">x</div>' +
+      `<div id="curtain">c</div><main id="main">${paragraphs}<i class="note" id="note">n</i></main></body>`,
+    300,
+  );
+  const el = view(node);
+  await act();
+  const nav = byId(el, 'nav');
+  nav.attribs.class = 'dark';
+  const change: HtmlChange = {
+    type: 'attributes',
+    target: nav,
+    attributeName: 'class',
+    oldValue: 'light',
+  };
+  const own = scopeOf(el, [change]);
+  assert.ok(own, 'a refresh of everything');
+  for (const id of ['curtain', 'next', 'note']) {
+    assert.ok(own.has(byId(el, id)), `${id} missed`);
+  }
+  assert.ok(!own.has(byId(el, 'p7')), 'all that follows was reached');
+  assert.ok(!own.has(byId(el, 'main')));
+  el.touchDocument([change]);
+  await act();
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'curtain'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'note'))?.color,
+    'rgb(0, 170, 0)',
+  );
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'next'))?.color,
+    'rgb(0, 0, 255)',
+  );
+});
+
+test('a rule that says nothing of what it styles among what follows reaches all of it, as a rule whose old value is not known does', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .a ~ *{color:#ff0000} .b ~ .c{color:#00aa00}</style>' +
+      '<body><i id="x">x</i><div id="y"><p id="p">p</p></div><i id="z" class="c">z</i></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const x = byId(el, 'x');
+  x.attribs.class = 'a';
+  const own = scopeOf(el, [
+    { type: 'attributes', target: x, attributeName: 'class', oldValue: null },
+  ]);
+  assert.ok(own?.has(byId(el, 'y')) && own.has(byId(el, 'p')));
+  delete x.attribs.class;
+  x.attribs.class = 'b';
+  const unknown = scopeOf(el, [
+    { type: 'attributes', target: x, attributeName: 'class' },
+  ]);
+  assert.ok(unknown?.has(byId(el, 'p')), 'an unknown old value says nothing');
+});
+
+test('a :has() of what an element holds is not asked of what is beside a change, whatever other :has() is', async () => {
+  // Apple's cards style `.feature-card-content:has(~ .card-control)`, which
+  // starts at a sibling, and their sections `.section:has(.pass)`, which
+  // does not: every section before a dialog taken out of a card was a seed,
+  // each built and laid out again, at 100 ms a read and 26 reads a task
+  const { node } = await render(
+    '<style>body{margin:0} .section:has(.pass){color:#ff0000}' +
+      ' .content:has(~ .control) .caption{color:#00aa00}</style><body>' +
+      '<section class="section" id="s0"><p>one</p></section>' +
+      '<section class="section" id="s1"><p class="pass" id="pass">two</p></section>' +
+      '<section class="section" id="s2"><div class="card" id="card">' +
+      '<div class="content" id="content"><i class="caption" id="caption">c</i></div>' +
+      '<b class="control" id="control">b</b><u id="dialog" class="pass">d</u></div></section></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const card = byId(el, 'card');
+  const dialog = byId(el, 'dialog');
+  const next = dialog.next;
+  const prev = dialog.prev;
+  removeNode(dialog);
+  const change: HtmlChange = {
+    type: 'childList',
+    target: card,
+    addedNodes: [],
+    removedNodes: [dialog],
+    previousSibling: prev,
+    nextSibling: next,
+  };
+  const own = scopeOf(el, [change]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(!own.has(byId(el, 's0')), 'an earlier section was asked');
+  assert.ok(!own.has(byId(el, 's1')), 'an earlier section was asked');
+  assert.ok(own.has(byId(el, 's2')), 'the section around it is not asked');
+  // and one that starts at a sibling still is, of what came before
+  const control = byId(el, 'control');
+  control.attribs.class = 'other';
+  const asked = scopeOf(el, [
+    {
+      type: 'attributes',
+      target: control,
+      attributeName: 'class',
+      oldValue: 'control',
+    },
+  ]);
+  assert.ok(asked?.has(byId(el, 'caption')), 'the caption it styles is missed');
+});
+
+test('a :has() that asks what its element is followed by is asked of what a change can change the answer of', async () => {
+  // Apple's `.section:has(+ .section.theme-dark:not(.background-alt))`
+  // reads the next section's own classes, and every change anywhere inside
+  // a section reached all the sections before it: a dialog moved out of a
+  // card was 14 sections built and laid out again, 26 times in one task
+  const { node } = await render(
+    '<style>body{margin:0} .s:has(+ .s.dark:not(.alt)){color:#ff0000}' +
+      ' .s:has(+ .s > .pin){font-weight:bold}</style><body>' +
+      '<section class="s" id="s0">a</section>' +
+      '<section class="s" id="s1"><div id="deep"><i id="gone">b</i></div></section>' +
+      '<section class="s dark" id="s2"><div><div id="deeper"><i>c</i></div></div></section>' +
+      '</body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 's1'))?.color, 'rgb(255, 0, 0)');
+  // inside a section: no answer can change, where the argument reads no more
+  // than the section's own classes and its children
+  const gone = byId(el, 'gone');
+  const deep = byId(el, 'deep');
+  removeNode(gone);
+  const inside = scopeOf(el, [
+    {
+      type: 'childList',
+      target: deep,
+      addedNodes: [],
+      removedNodes: [gone],
+      previousSibling: null,
+      nextSibling: null,
+    },
+  ]);
+  assert.ok(inside, 'a refresh of everything');
+  for (const id of ['s0', 's1', 's2']) {
+    assert.ok(!inside.has(byId(el, id)), `${id} was reached`);
+  }
+  // the next section's class: the one before it, and that one alone
+  const s2 = byId(el, 's2');
+  s2.attribs.class = 's';
+  const change: HtmlChange = {
+    type: 'attributes',
+    target: s2,
+    attributeName: 'class',
+    oldValue: 's dark',
+  };
+  const own = scopeOf(el, [change]);
+  assert.ok(own?.has(byId(el, 's1')), 'the section it answers for is missed');
+  el.touchDocument([change]);
+  await act();
+  assert.notStrictEqual(
+    el.computedStyle(byId(el, 's1'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  // a child the argument names: one level down from the next section
+  const pin = createElement('i', { class: 'pin' }, [createText('p')]);
+  appendChild(s2, pin);
+  const pinned: HtmlChange = {
+    type: 'childList',
+    target: s2,
+    addedNodes: [pin],
+    removedNodes: [],
+    previousSibling: s2.children[0] as ChildNode,
+    nextSibling: null,
+  };
+  assert.ok(scopeOf(el, [pinned])?.has(byId(el, 's1')), 'a child is missed');
+  el.touchDocument([pinned]);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 's1'))?.['font-weight'], '700');
+});
+
+test('a :has() that reads what an element holds a level down is asked from there', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .e:has(> .a:empty){color:#ff0000}' +
+      ' .f:has(+ .b:empty){color:#00aa00}</style><body>' +
+      '<div class="e" id="e"><p class="a" id="a"><i id="i">i</i></p></div>' +
+      '<div class="f" id="f">f</div><div class="b" id="b"><i id="j">j</i></div></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const take = (id: string, holder: string): HtmlChange => {
+    const node = byId(el, id);
+    removeNode(node);
+    return {
+      type: 'childList',
+      target: byId(el, holder),
+      addedNodes: [],
+      removedNodes: [node],
+      previousSibling: null,
+      nextSibling: null,
+    };
+  };
+  const changes = [take('i', 'a'), take('j', 'b')];
+  el.touchDocument(changes);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 'e'))?.color, 'rgb(255, 0, 0)');
+  assert.strictEqual(el.computedStyle(byId(el, 'f'))?.color, 'rgb(0, 170, 0)');
+});
+
 test('a child put in reaches the later siblings its sibling combinators lead to from it, through one another, and not the rest', async () => {
   // Apple's pages put a banner in at the top of their <body>, whose sheets
   // style `:checked ~ .form-label`, `#ac-ln-menustate:checked ~ #main` and
@@ -1867,6 +2086,13 @@ function rulesFor(
     () => `.${c()}:has(~ .${c()})`,
     () => `${pick(TAGS)}:has(+ ${pick(TAGS)})`,
     () => `.${c()}:has(+ .${c()}) > *`,
+    () => `.${c()}:has(+ .${c()}:not(.${c()}))`,
+    () => `.${c()}:has(+ .${c()} > .${c()})`,
+    () => `.${c()}:has(~ .${c()}:is(p, div)) .${c()}`,
+    () => `.${c()}:has(+ .${c()} + .${c()})`,
+    () => `.${c()}:has(+ .${c()}:empty)`,
+    () => `.${c()}:has(> .${c()}:empty)`,
+    () => `:has(+ .${c()}) .${c()}`,
     () => `.${c()}:has(+ *) > *`,
     () => `${pick(TAGS)}:has(~ ${pick(TAGS)}) .${c()}`,
     () => `:is(p, span):has(~ div > .${c()})`,
