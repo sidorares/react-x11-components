@@ -3372,6 +3372,21 @@ closes a way out a DOM binding opens by accident:
   its track is silent with nothing failing. A node is kept by what it is
   connected to (`inputs`), never by its context, since a page makes one a
   note.
+- **`MediaSource` is the API with no type behind it** (`mse.ts`). What
+  plays a page's media is a player that opens a URL, and nothing hands it
+  bytes a page appended, so `isTypeSupported` says no to every type: hls.js
+  asks it first, and goes on to `canPlayType` and the playlist as the
+  `src`, which the player plays. **Anything that makes it say yes feeds a
+  player first**, or every HLS stream goes from a player that plays it to a
+  buffer nothing reads. The API still has to be there, since Apple's
+  product pages make a `MediaSource` in every browser but Safari without
+  asking: it opens on its element, `addSourceBuffer` throws
+  `NotSupportedError`, and the stream's end fails the element, which is
+  the path such a page has for a type it cannot decode. A `MediaSource`'s
+  URLs are kept apart from the blobs' (`mediaSourceUrls`), since a `fetch`
+  finds nothing behind one, and an element goes through the load algorithm
+  for one with no network, or a page waits for a `sourceopen` that never
+  comes.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells

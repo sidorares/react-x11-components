@@ -3284,19 +3284,23 @@ test('blobs, files, form data and the media a page reads at rest', async () => {
   );
 });
 
-test("a media element's canPlayType is the host's, and an HLS player with no MediaSource hands the playlist to the element's player", async () => {
-  // diabrowser.com's hero: hls.js where `MediaSource` is, the playlist as
-  // the `src` where the element says it plays one, and the poster else
+test("a media element's canPlayType is the host's, and an HLS player MediaSource turns down hands the playlist to the element's player", async () => {
+  // diabrowser.com's hero: hls.js where `MediaSource` takes its types, the
+  // playlist as the `src` where the element says it plays one, and the
+  // poster else. This is `Hls.isSupported` as hls.js 1.6 has it
   const page =
     '<video id="v" muted autoplay ' +
     'style="display:block;width:60px;height:30px"></video>' +
     '<p id="out"></p><script>' +
     'var v = document.getElementById("v");' +
-    'var r = [typeof MediaSource, v.canPlayType("application/vnd.apple.mpegurl"),' +
+    'var mse = typeof SourceBuffer.prototype.appendBuffer === "function" &&' +
+    '  typeof SourceBuffer.prototype.remove === "function" &&' +
+    '  ["avc1.42E01E,mp4a.40.2", "av01.0.01M.08", "vp09.00.50.08"].some(function (c) {' +
+    "    return MediaSource.isTypeSupported('video/mp4;codecs=\"' + c + '\"') });" +
+    'var r = [mse, v.canPlayType("application/vnd.apple.mpegurl"),' +
     '  v.canPlayType("video/webm; codecs=vp9"), v.canPlayType("video/MP4; codecs=avc1"),' +
     '  v.canPlayType("bogus/type")];' +
-    'if (typeof MediaSource === "undefined" &&' +
-    '    v.canPlayType("application/vnd.apple.mpegurl")) {' +
+    'if (!mse && v.canPlayType("application/vnd.apple.mpegurl")) {' +
     '  v.src = "https://stream.example/hero.m3u8";' +
     '}' +
     'document.getElementById("out").textContent = r.join(",");' +
@@ -3309,7 +3313,7 @@ test("a media element's canPlayType is the host's, and an HLS player with no Med
   });
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
-    'undefined,maybe,,maybe,',
+    'false,maybe,,maybe,',
   );
   const end = Date.now() + 3000;
   while (!doc.videos.length && Date.now() < end) await settle();
@@ -3321,9 +3325,285 @@ test("a media element's canPlayType is the host's, and an HLS player with no Med
   cleanup();
   // with no answer from the host, nothing plays anything, as before
   const none = await hosted(page, { videos: true });
-  assert.equal(await settled(none, 'out', (t) => t !== ''), 'undefined,,,,');
+  assert.equal(await settled(none, 'out', (t) => t !== ''), 'false,,,,');
   await settle();
   assert.deepEqual(none.videos, [], 'and the page asks for nothing');
+});
+
+/** Logs what a `MediaSource` and its element fire, as `mediaLog(ms, v, r)`. */
+const MEDIA_LOG =
+  'function mediaLog(ms, v, r) {' +
+  '  ["sourceopen", "sourceended", "sourceclose"].forEach(function (t) {' +
+  '    ms.addEventListener(t, function () { r.push(t + ":" + ms.readyState) }) });' +
+  '  ms.activeSourceBuffers.addEventListener("removesourcebuffer", function () { r.push("active") });' +
+  '  ms.sourceBuffers.addEventListener("removesourcebuffer", function () { r.push("buffers") });' +
+  '  ["loadstart", "durationchange", "abort", "emptied", "error"].forEach(function (t) {' +
+  '    v.addEventListener(t, function () { r.push(t + ":" + v.networkState) }) });' +
+  '}';
+
+for (const network of [true, false]) {
+  test(`a page's MediaSource opens on its element, turns down its type, and the stream's end fails the element as Chrome's does, ${network ? 'with' : 'with no'} network`, async () => {
+    // Apple's product pages, every browser but Safari: no `isTypeSupported`
+    // first, and a `finally` that ends the stream. The order is Chrome 152's
+    const doc = await hosted(
+      '<video id="v" style="display:block;width:60px;height:30px"></video>' +
+        '<p id="out"></p><script>' +
+        MEDIA_LOG +
+        'var r = [], v = document.getElementById("v"), ms = new MediaSource();' +
+        'mediaLog(ms, v, r);' +
+        'ms.addEventListener("sourceopen", function () {' +
+        '  try { ms.addSourceBuffer(\'video/webm;codecs="vp9"\') }' +
+        '  catch (e) { r.push(e.name, e instanceof DOMException, e.message) }' +
+        '  finally { if (ms.readyState === "open") ms.endOfStream() }' +
+        '  r.push(ms.readyState, v.networkState);' +
+        '});' +
+        'ms.addEventListener("sourceclose", function () {' +
+        '  setTimeout(function () {' +
+        '    r.push(v.error.code, v.networkState, v.readyState, ms.readyState);' +
+        '    document.getElementById("out").textContent = JSON.stringify(r);' +
+        '  }, 0) });' +
+        'r.push(ms.readyState);' +
+        'v.src = URL.createObjectURL(ms);' +
+        'r.push(v.networkState, v.src.indexOf("blob:"));' +
+        '</script>',
+      { network },
+    );
+    const text = await settled(doc, 'out', (t) => t !== '');
+    assert.ok(text, doc.logs.join('\n'));
+    assert.deepEqual(JSON.parse(text), [
+      'closed',
+      3,
+      0,
+      'loadstart:2',
+      'sourceopen:open',
+      'NotSupportedError',
+      true,
+      "Failed to execute 'addSourceBuffer' on 'MediaSource': The type provided ('video/webm;codecs=\"vp9\"') is unsupported.",
+      'ended',
+      2,
+      'sourceended:ended',
+      'error:3',
+      'active',
+      'buffers',
+      'sourceclose:closed',
+      4,
+      3,
+      0,
+      'closed',
+    ]);
+    assert.deepEqual(doc.fetched, [], 'nothing asks a network for the blob');
+  });
+}
+
+test("a MediaSource's members answer as Chrome's do, and SourceBuffer is an interface with no instances", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'function t(f) { try { return "ok:" + f() } catch (e) { return e.name + ": " + e.message } }' +
+      'var ms = new MediaSource();' +
+      'var r = [String(ms), String(ms.sourceBuffers), ms.sourceBuffers === ms.sourceBuffers,' +
+      '  ms.sourceBuffers !== ms.activeSourceBuffers, ms.sourceBuffers.length,' +
+      '  Array.from(ms.sourceBuffers).length, ms.duration,' +
+      '  Object.getPrototypeOf(MediaSource) === EventTarget,' +
+      '  Object.getPrototypeOf(SourceBuffer) === EventTarget,' +
+      '  Object.getPrototypeOf(SourceBufferList) === EventTarget,' +
+      '  Object.getOwnPropertyDescriptor(MediaSource.prototype, "readyState").enumerable,' +
+      '  MediaSource.prototype.endOfStream.length, MediaSource.prototype.addSourceBuffer.length,' +
+      '  SourceBuffer.prototype.remove.length, SourceBuffer.length,' +
+      '  MediaSource.isTypeSupported(""), MediaSource.isTypeSupported("video/mp4"),' +
+      '  MediaSource.canConstructInDedicatedWorker,' +
+      '  t(function () { return MediaSource.isTypeSupported() }),' +
+      '  t(function () { ms.addSourceBuffer("") }),' +
+      '  t(function () { ms.addSourceBuffer() }),' +
+      '  t(function () { ms.removeSourceBuffer({}) }),' +
+      '  t(function () { ms.removeSourceBuffer() }),' +
+      '  t(function () { ms.endOfStream() }),' +
+      '  t(function () { ms.endOfStream("nope") }),' +
+      '  t(function () { ms.duration = -1 }),' +
+      '  t(function () { ms.duration = NaN }),' +
+      '  t(function () { ms.duration = 1 }),' +
+      '  t(function () { ms.setLiveSeekableRange(0, 1) }),' +
+      '  t(function () { ms.clearLiveSeekableRange() }),' +
+      '  t(function () { new SourceBuffer() }),' +
+      '  t(function () { new SourceBufferList() }),' +
+      '  t(function () { return SourceBuffer.prototype.mode }),' +
+      '  t(function () { return SourceBufferList.prototype.length }),' +
+      '  t(function () { SourceBuffer.prototype.appendBuffer.call({}, new Uint8Array(1)) }),' +
+      '  t(function () { MediaSource.prototype.endOfStream.call({}) }),' +
+      '  t(function () { URL.createObjectURL({}) })];' +
+      'ms.onsourceopen = function () { r.push("handler") };' +
+      'r.push(typeof ms.onsourceopen, ms.onsourceclose);' +
+      'var url = URL.createObjectURL(ms);' +
+      // a `MediaSource`'s URL is the element's, and a `fetch` finds nothing
+      'fetch(url).then(function () { r.push("fetched") }, function (e) { r.push(e.name) })' +
+      '.then(function () {' +
+      '  document.getElementById("out").textContent = JSON.stringify(r);' +
+      '});' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  const closed = "The MediaSource's readyState is not 'open'.";
+  assert.deepEqual(JSON.parse(text), [
+    '[object MediaSource]',
+    '[object SourceBufferList]',
+    true,
+    true,
+    0,
+    0,
+    null,
+    true,
+    true,
+    true,
+    true,
+    0,
+    1,
+    2,
+    0,
+    false,
+    false,
+    false,
+    "TypeError: Failed to execute 'isTypeSupported' on 'MediaSource': 1 argument required, but only 0 present.",
+    "TypeError: Failed to execute 'addSourceBuffer' on 'MediaSource': The type provided is empty",
+    "TypeError: Failed to execute 'addSourceBuffer' on 'MediaSource': 1 argument required, but only 0 present.",
+    "TypeError: Failed to execute 'removeSourceBuffer' on 'MediaSource': parameter 1 is not of type 'SourceBuffer'.",
+    "TypeError: Failed to execute 'removeSourceBuffer' on 'MediaSource': 1 argument required, but only 0 present.",
+    `InvalidStateError: Failed to execute 'endOfStream' on 'MediaSource': ${closed}`,
+    "TypeError: Failed to execute 'endOfStream' on 'MediaSource': The provided value 'nope' is not a valid enum value of type EndOfStreamError.",
+    "TypeError: Failed to set the 'duration' property on 'MediaSource': The duration provided (-1) is less than the minimum bound (0).",
+    "TypeError: Failed to set the 'duration' property on 'MediaSource': The duration is not a number.",
+    `InvalidStateError: Failed to set the 'duration' property on 'MediaSource': ${closed}`,
+    `InvalidStateError: Failed to execute 'setLiveSeekableRange' on 'MediaSource': ${closed}`,
+    `InvalidStateError: Failed to execute 'clearLiveSeekableRange' on 'MediaSource': ${closed}`,
+    "TypeError: Failed to construct 'SourceBuffer': Illegal constructor",
+    "TypeError: Failed to construct 'SourceBufferList': Illegal constructor",
+    'TypeError: Illegal invocation',
+    'TypeError: Illegal invocation',
+    'TypeError: Illegal invocation',
+    'TypeError: Illegal invocation',
+    "TypeError: Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
+    'function',
+    null,
+    'TypeError',
+  ]);
+});
+
+test("a MediaSource's duration is its element's while it is attached, and the element's next load detaches it, in Chrome's order", async () => {
+  const doc = await hosted(
+    '<video id="v"></video><p id="out"></p><script>' +
+      MEDIA_LOG +
+      'var r = [], v = document.getElementById("v"), ms = new MediaSource();' +
+      'mediaLog(ms, v, r);' +
+      'ms.addEventListener("sourceopen", function () {' +
+      '  ms.duration = 10; r.push(ms.duration, v.duration);' +
+      '  ms.duration = 10; ms.duration = 5; r.push(v.duration);' +
+      '  ms.duration = Infinity; r.push(ms.duration === Infinity);' +
+      '  ms.setLiveSeekableRange(1, 2); ms.clearLiveSeekableRange();' +
+      '  try { ms.setLiveSeekableRange(2, 1) } catch (e) { r.push(e.name, e.message) }' +
+      '  setTimeout(function () {' +
+      '    r.push("load");' +
+      '    v.removeAttribute("src"); v.load();' +
+      '    r.push(ms.readyState, ms.duration, v.duration);' +
+      '    setTimeout(function () {' +
+      '      r.push(v.networkState, v.error);' +
+      '      document.getElementById("out").textContent = JSON.stringify(r);' +
+      '    }, 0);' +
+      '  }, 0);' +
+      '}, { once: true });' +
+      'v.src = URL.createObjectURL(ms);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(JSON.parse(text), [
+    'loadstart:2',
+    'sourceopen:open',
+    10,
+    10,
+    5,
+    true,
+    'TypeError',
+    "Failed to execute 'setLiveSeekableRange' on 'MediaSource': The start value provided (2) is outside the range [0, 1].",
+    'durationchange:2',
+    'durationchange:2',
+    'durationchange:2',
+    'load',
+    'closed',
+    null,
+    null,
+    'abort:3',
+    'active',
+    'buffers',
+    'sourceclose:closed',
+    'emptied:3',
+    0,
+    null,
+  ]);
+});
+
+test('a MediaSource opens on one element at a time, again once it is closed, and a URL revoked first opens nothing', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [], ms = new MediaSource(), v = document.createElement("video");' +
+      'var w = document.createElement("video");' +
+      'w.addEventListener("error", function () {' +
+      '  r.push("w error", w.error.code, ms.readyState);' +
+      '  v.removeAttribute("src"); v.load();' +
+      '});' +
+      'var opens = 0;' +
+      'ms.addEventListener("sourceopen", function () {' +
+      '  opens += 1;' +
+      '  r.push("open", opens);' +
+      '  if (opens === 1) w.src = url;' +
+      '  else revoked();' +
+      '});' +
+      'ms.addEventListener("sourceclose", function () {' +
+      '  setTimeout(function () { w.src = URL.createObjectURL(ms) }, 0);' +
+      '});' +
+      'var url = URL.createObjectURL(ms);' +
+      'v.src = url;' +
+      'function revoked() {' +
+      '  var gone = new MediaSource(), x = document.createElement("video");' +
+      '  gone.addEventListener("sourceopen", function () { r.push("opened") });' +
+      '  x.addEventListener("error", function () {' +
+      '    r.push("x error", x.error.code, gone.readyState);' +
+      '    document.getElementById("out").textContent = JSON.stringify(r);' +
+      '  });' +
+      '  var u = URL.createObjectURL(gone); x.src = u; URL.revokeObjectURL(u);' +
+      '}' +
+      '</script>',
+    { network: true },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(JSON.parse(text), [
+    'open',
+    1,
+    'w error',
+    4,
+    'open',
+    'open',
+    2,
+    'x error',
+    4,
+    'closed',
+  ]);
+});
+
+test("a worker's global has no MediaSource, as canConstructInDedicatedWorker says", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "postMessage([typeof MediaSource, typeof SourceBuffer, typeof SourceBufferList].join())";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) {' +
+      '  document.getElementById("out").textContent =' +
+      '    MediaSource.canConstructInDedicatedWorker + "|" + e.data; };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'false|undefined,undefined,undefined',
+    doc.logs.join('\n'),
+  );
 });
 
 test("a video's play() and pause() are its player's, and paused, the events and the promise are what the page asked", async () => {

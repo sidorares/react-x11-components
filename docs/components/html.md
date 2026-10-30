@@ -1132,6 +1132,15 @@ as WPT's tests make them, and to another peer the host can reach.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
+- **`MediaSource` is there, and supports no type**
+  (`src/html/scripts/mse.ts`): a media element opens one through its object
+  URL, and `isTypeSupported` answers false and `addSourceBuffer` throws
+  `NotSupportedError` for every type, since nothing can hand a page's
+  appended bytes to the player. So a stream player that asks, as hls.js
+  does, sets its playlist as the `src` where `canPlayType` says the host's
+  player reads it, and a page that does not ask takes the path it has for a
+  type it cannot decode. A window's alone: a worker has none, and
+  `canConstructInDedicatedWorker` is false.
 
 `HtmlNetwork.webRTC` is a real one, over
 [werift](https://github.com/shinyoshiaki/werift-webrtc): ICE with STUN and
