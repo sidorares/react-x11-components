@@ -1491,14 +1491,21 @@ export function buildSubtrees(
   }
   const olds: SubtreeRoot[] = [];
   for (const el of roots) {
-    const old = subtreeRoot(
-      el,
-      firstBoxes,
+    const old = subtreeRoot(el, firstBoxes);
+    if (!old) return null;
+    olds.push(old);
+  }
+  holdDroppedText(olds, tree.textBoxes);
+  for (const old of olds) {
+    if (old.end >= old.start) continue;
+    const at = textBefore(old.box);
+    if (at === null) return null;
+    old.start = old.end = pastDropped(
+      at,
+      old.el!,
       tree.textBoxes,
       tree.textNodes ?? [],
     );
-    if (!old) return null;
-    olds.push(old);
   }
   for (const { node, from } of tails) {
     const old = tailRoot(node, from, tree, document, firstBoxes);
@@ -1523,11 +1530,12 @@ export function buildSubtrees(
     if (olds[i].start < olds[i - 1].end) return null;
   }
   // and none in another's boxes
+  const ofRoot = new Map<Box, SubtreeRoot>();
+  for (const o of olds) for (const box of o.boxes) ofRoot.set(box, o);
   for (const o of olds) {
-    for (const other of olds) {
-      if (other !== o && (other.boxes.has(o.box) || other.boxes.has(o.parent)))
-        return null;
-    }
+    const inBox = ofRoot.get(o.box);
+    const inParent = ofRoot.get(o.parent);
+    if ((inBox && inBox !== o) || (inParent && inParent !== o)) return null;
   }
   const copies = new ShapeCopies(idIndex(document as Element));
   if (!olds.length && !hidden.length) {
@@ -2550,8 +2558,6 @@ function contentReads(items: readonly ContentItem[]): boolean {
 function subtreeRoot(
   el: Element,
   firstBoxes: ReadonlyMap<Element, Box>,
-  textBoxes: readonly Box[],
-  textNodes: readonly TextSource[],
 ): SubtreeRoot | null {
   if (!canRebuild(el, firstBoxes) || !inLightTree(el)) return null;
   const box = firstBoxes.get(el)!;
@@ -2569,22 +2575,6 @@ function subtreeRoot(
     start = box.subtreeTextStart;
     end = box.subtreeTextEnd;
   }
-  // and the text of what the fix-up took out of it, whitespace between its
-  // blocks, which is the document's text where the builder pushed it
-  for (const text of textBoxes) {
-    if (boxes.has(text)) continue;
-    for (let at = text.parent; at; at = at.parent) {
-      if (at !== box) continue;
-      start = Math.min(start, text.textStart);
-      end = Math.max(end, text.textEnd);
-      break;
-    }
-  }
-  if (end < start) {
-    const at = textBefore(box);
-    if (at === null) return null;
-    start = end = pastDropped(at, el, textBoxes, textNodes);
-  }
   return {
     el,
     tail: null,
@@ -2600,6 +2590,35 @@ function subtreeRoot(
     listItems: listItems!,
     counts: counted!,
   };
+}
+
+/**
+ * The text of what the fix-up took out of each root, white space between its
+ * blocks, into where its text starts and ends: it is the document's text
+ * where the builder pushed it, its parent says where, and no walk of the
+ * root's boxes finds it. Once over the document's text for all the roots,
+ * each box asked once for the root it is in: asked for each root, a sheet
+ * that styled 749 of Wikipedia's headings took 1.5 seconds to find them.
+ */
+function holdDroppedText(
+  olds: readonly SubtreeRoot[],
+  textBoxes: readonly Box[],
+): void {
+  const rootOf = new Map<Box, SubtreeRoot | null>();
+  for (const old of olds) rootOf.set(old.box, old);
+  const above: Box[] = [];
+  for (const text of textBoxes) {
+    let root: SubtreeRoot | null | undefined;
+    for (let at = text.parent; at; at = at.parent) {
+      root = rootOf.get(at);
+      if (root !== undefined) break;
+      above.push(at);
+    }
+    while (above.length) rootOf.set(above.pop()!, root ?? null);
+    if (!root || root.boxes.has(text)) continue;
+    root.start = Math.min(root.start, text.textStart);
+    root.end = Math.max(root.end, text.textEnd);
+  }
 }
 
 /** Every box of a run of old boxes and what they hold, with how many list
