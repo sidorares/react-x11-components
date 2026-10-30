@@ -163,6 +163,7 @@ import type {
   TimelineRef,
 } from './css/style.js';
 import {
+  INLINE_BEFORE_ABSOLUTE,
   COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
   NO_SNAP_ALIGN,
@@ -10334,6 +10335,7 @@ export class HtmlViewNode extends Node {
         crossing,
         undefined,
         quiet ? reach.below : null,
+        reach.later,
       );
       return !anchors || spreadAnchors(el, false, anchors, scope, crossing);
     }
@@ -15689,7 +15691,10 @@ interface ChangeScope {
   /** The elements each set of anchors has been asked about, which one
    *  answers alike for every change of a list (`spreadAnchors`), each by
    *  the fewest levels above what changed it was asked at. */
-  anchored: Map<ChangeAnchors, Map<Element, number>>;
+  anchored: Map<
+    ChangeAnchors,
+    { around: Map<Element, number>; beside: Map<Element, number> }
+  >;
   /** Whether the document's sheets read as the cascade's were, asked once
    *  a list where a change is a sheet's element's (`_sheetsAsRead`). */
   sheetsAsRead?: boolean;
@@ -16151,6 +16156,9 @@ function spreadChange(
   /** What of what is in `el` a change reaches there can restyle
    *  (`AttributeReach.below`); null for all of it. */
   below: ((el: Element) => boolean) | null = null,
+  /** And of its later siblings and what they hold
+   *  (`AttributeReach.later`). */
+  later: ((el: Element) => boolean) | null = null,
 ): void {
   if (bits & CHANGES_SELF) {
     own.add(el);
@@ -16169,7 +16177,13 @@ function spreadChange(
   }
   if (bits & CHANGES_LATER) {
     for (let s = el.next; s; s = s.next) {
-      if (isElement(s)) addSubtree(s, own, crossing);
+      if (!isElement(s)) continue;
+      if (!later) {
+        addSubtree(s, own, crossing);
+        continue;
+      }
+      if (later(s)) own.add(s);
+      addSubjects(s, own, later);
     }
   }
 }
@@ -16221,12 +16235,22 @@ function spreadAnchors(
   crossing: boolean,
 ): boolean {
   let asked = scope.anchored.get(anchors);
-  if (!asked) scope.anchored.set(anchors, (asked = new Map()));
-  const from = (at: Element, distance: number): boolean => {
-    const was = asked.get(at);
+  if (!asked) {
+    asked = { around: new Map(), beside: new Map() };
+    scope.anchored.set(anchors, asked);
+  }
+  const { around, beside } = asked;
+  const from = (at: Element, distance: number, aside = false): boolean => {
+    // what is asked of what is around a change holds for what is beside
+    // it, and not the other way round
+    const was = around.get(at);
     if (was !== undefined && was <= distance) return true;
-    asked.set(at, distance);
-    const bits = anchors.at(at, distance);
+    if (aside) {
+      const had = beside.get(at);
+      if (had !== undefined && had <= distance) return true;
+      beside.set(at, distance);
+    } else around.set(at, distance);
+    const bits = anchors.at(at, distance, aside);
     if (bits === null) return false;
     if (bits) spreadChange(at, bits, false, scope.own, crossing);
     return true;
@@ -16241,12 +16265,12 @@ function spreadAnchors(
     if (!from(at, distance)) return false;
     if (!anchors.siblings) continue;
     for (let s = at.prev; s; s = s.prev) {
-      if (isElement(s) && !from(s, distance)) return false;
+      if (isElement(s) && !from(s, distance, true)) return false;
     }
   }
   if (holder && anchors.siblings) {
     for (const child of el.children) {
-      if (isElement(child) && !from(child, 0)) return false;
+      if (isElement(child) && !from(child, 0, true)) return false;
     }
   }
   return true;
@@ -16764,6 +16788,11 @@ function hoverChange(
 ): HoverChange | null | false {
   const a = was as unknown as Record<string, unknown>;
   const b = now as unknown as Record<string, unknown>;
+  // an absolute box's static position, which what its `display` was before
+  // it was made a block says, and which is in no field of a style
+  if (INLINE_BEFORE_ABSOLUTE.has(was) !== INLINE_BEFORE_ABSOLUTE.has(now)) {
+    return false;
+  }
   let change: HoverChange | null = null;
   for (const key in b) {
     // the sets are shared by what made them (`Cascade._customFor`), and

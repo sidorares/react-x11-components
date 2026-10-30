@@ -2092,7 +2092,11 @@ part of the subject compound of each rule that tests it there
 `PointerCompounds.below` is. bun.com's blog sets `data-scrolled` on
 `<html>` at the first notch of the wheel, which one rule reads for its
 header, and `reveal-ready` for elements it has none of, and each restyled
-all 7,000 of its elements: 213 ms at the first notch. The reach stays whole
+all 7,000 of its elements: 213 ms at the first notch. So does one tested
+before a sibling combinator, among the later siblings and what they hold
+(`MutationRules.later`, `AttributeReach.later`): Apple's local nav turns
+dark with `#ac-localnav.ac-localnav-dark ~ #ac-ln-curtain`, and that one
+class restyled and built the 5,000 elements after it. The reach stays whole
 wherever the selectors do not say all a change styles: a rule at a tree's
 edge, a key inside a function's argument, what an inherited pseudo-class
 reads (`PSEUDO_INHERITED`), a `:has()`'s anchors, a subject with nothing
@@ -2150,11 +2154,16 @@ random documents, rules and changes, and fails if none of them went in
 place, through a frame or through a build; every way a reach was dropped
 on purpose was caught by it or by a test beside it.
 
-**A `:has()` that asks only of its element's children is asked only so
-many levels up, and a sibling combinator reaches what it leads to from
-what it follows.** A `:has()` whose argument goes down child combinators
-alone and tests nothing of an element but the element (`childLevels`) has
-its anchor bounded (`HasAnchor.levels`): `spreadAnchors` asks no element
+**A `:has()` that asks only of its element's children or its siblings is
+asked only so many levels up, and a sibling combinator reaches what it
+leads to from what it follows.** A `:has()` whose argument goes by child
+and sibling combinators alone and tests nothing of an element but its name
+and attributes (`childLevels`) has its anchor bounded (`HasAnchor.levels`),
+a sibling counting as no level: Apple's sections style
+`:has(+ .section:not(.background-alt))`, and a dialog moved out of a card
+was 14 sections built and laid out again, some 4,300 boxes a read, 26 reads
+a task. Only an anchor that starts at a sibling is asked of what is beside a
+change (`at`'s `beside`), not every anchor of a set one of which does. So: `spreadAnchors` asks no element
 further above what changed than that, and `_heldReached` looks no further
 into what came. So a compound that names nothing is no longer an anchor
 every element is, `CHANGES_ANYWHERE`: Apple's product pages style
@@ -2169,10 +2178,11 @@ reached are each a source, a `~` reaches what it leads to after one it
 follows, a `+` the next. That is what follows a chain, `A + B ~ C`, and
 `:checked ~ .form-label` beside `#menu:checked ~ #main` reaches labels
 from a banner put in at the top of a `<body>`, and not `#main`. Three
-things are load-bearing. **An argument that can read above the elements
-it tests — a functional pseudo-class, `:lang()`, `:disabled` — gets no
-levels**, so anything new a compound in one can read is checked in
-`childLevels`. **Anything new that walks from a change to the elements
+things are load-bearing. **An argument that can read past the elements it
+tests gets no levels** — above them, as a functional pseudo-class other than
+an `:is()` or a `:not()` of names and attributes can, or `:lang()`, or
+`:disabled`, or what one holds, as `:empty` does — so anything new a compound
+in one can read is checked in `childLevels`. **Anything new that walks from a change to the elements
 whose answers changed counts its levels**, or a bounded anchor matches
 where its `:has()` cannot. And **the tree an element is in is found again
 once the tree changes** (`Cascade._treeInfo`, by `treeGeneration`), not

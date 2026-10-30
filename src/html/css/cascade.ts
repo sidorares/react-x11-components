@@ -2399,24 +2399,41 @@ function anchorOf(
  *  it (`PSEUDO_INHERITED`, `READS_AROUND`'s `:lang()` and `:dir()`). */
 const READS_ABOVE = /:(?:disabled|enabled|read-only|read-write|dir|lang)\b/i;
 
+/** The pseudo-classes an element's answer to is read from what it holds
+ *  (`HOLDS_TESTS`): a level below it. */
+const READS_HELD = /:(?:empty|blank|parent)\b/i;
+
 /**
  * How many levels below a `:has()`'s element the elements its argument
- * `entry` tests are, at most (`HasAnchor.levels`): where it starts with a
- * child combinator, goes on with child combinators alone and tests nothing
- * of an element but the element — no functional pseudo-class, whose
- * argument can read anything above (`:is(.a .b)`), and none an element
- * takes from its ancestors. Undefined for any other.
+ * `entry` tests are, at most (`HasAnchor.levels`), counting a sibling of
+ * its element as none: where it starts at a child or a sibling, goes on
+ * with child and sibling combinators alone and tests nothing of an element
+ * but the element — no functional pseudo-class but an `:is()`, a `:where()`
+ * or a `:not()` of names and attributes (`stableCompound`), whose argument
+ * could read anything above (`:is(.a .b)`), and none an element takes from
+ * its ancestors or from what it holds. Undefined for any other. Apple's
+ * `.section:has(+ .section:not(.background-alt))` asks of the next section
+ * its own classes, and every change anywhere in a page of sections built
+ * all of them again.
  */
 function childLevels(entry: string): number | undefined {
-  if (!/^\s*>/.test(entry)) return undefined;
-  const parts = compoundsOf(entry.replace(/^\s*>\s*/, ''));
+  const start = /^\s*([>+~])\s*/.exec(entry);
+  if (!start) return undefined;
+  const parts = compoundsOf(entry.slice(start[0].length));
   if (!parts.length) return undefined;
+  let levels = start[1] === '>' ? 1 : 0;
   for (let i = 0; i < parts.length; i += 1) {
     const { text, next } = parts[i];
-    if (i < parts.length - 1 && next !== '>') return undefined;
-    if (text.includes('(') || READS_ABOVE.test(text)) return undefined;
+    if (i < parts.length - 1) {
+      if (next === '>') levels += 1;
+      else if (next !== '+' && next !== '~') return undefined;
+    }
+    if (READS_ABOVE.test(text) || READS_HELD.test(text)) return undefined;
+    if (text.includes('(') && stableCompound(text) !== text.trim()) {
+      return undefined;
+    }
   }
-  return parts.length;
+  return levels;
 }
 
 /** An anchor whose argument starts at a sibling: its own, or a `:has()`'s
@@ -2929,12 +2946,31 @@ const ATTR_FUNCTION = /\battr\(\s*([^\s,)]+)/gi;
  * where it is tested, the `:has()`s whose answer it can change, and the
  * pseudo-elements whose rules test it.
  */
+/** A subject into what a key reaches (`MutationRules`): null once one of
+ *  its rules reaches everything there, for `whole`. */
+function noteReach(
+  reach: Map<string, Set<string> | null>,
+  key: string,
+  subject: string | null | undefined,
+  whole: boolean,
+): void {
+  const kept = reach.get(key);
+  if (kept === null) return;
+  if (whole) reach.set(key, null);
+  else if (kept) kept.add(subject!);
+  else reach.set(key, new Set([subject!]));
+}
+
 class MutationRules {
   private _bits = new Map<string, number>();
   /** What each key tested above a rule's subject can restyle below the
    *  element it changes: the subjects' stable compounds, or null for all
    *  that is there (`below`). */
   private _below = new Map<string, Set<string> | null>();
+  /** And what it can restyle among the element's later siblings, from a
+   *  test before a sibling combinator: the same, of what they hold as well
+   *  (`later`). */
+  private _later = new Map<string, Set<string> | null>();
   /** What a test of what an element holds or where it sits is of
    *  (`tested`), by where it reaches and whom. */
   private _tested = new Map<string, Set<string> | null>();
@@ -3087,15 +3123,12 @@ class MutationRules {
       // below the element it changes, a key tested above a subject reaches
       // what the subject can match; a rule at a tree's edge, or one whose
       // subject says nothing stable, reaches everything there
-      if (bits & CHANGES_BELOW) {
-        const kept = this._below.get(key);
-        if (kept !== null) {
-          if (!subject || subject === '*' || wider || anchor) {
-            this._below.set(key, null);
-          } else if (kept) kept.add(subject);
-          else this._below.set(key, new Set([subject]));
-        }
-      }
+      const whole = !subject || subject === '*' || !!wider || !!anchor;
+      if (bits & CHANGES_BELOW) noteReach(this._below, key, subject, whole);
+      // and among its later siblings, and in them, from before a `+` or a
+      // `~`: `#nav.dark ~ #curtain` is one element, where a class of the
+      // local nav on Apple's pages restyled all that came after it
+      if (bits & CHANGES_LATER) noteReach(this._later, key, subject, whole);
       // and of what holds what came or went, or of its children, which
       // elements its compound names
       if (key === 's' || key === 'h') {
@@ -3194,6 +3227,13 @@ class MutationRules {
     return this._below.get(key) ?? null;
   }
 
+  /** What a key tested before a sibling combinator can restyle among the
+   *  later siblings of the element it changes, and in them, or null for
+   *  all that is there. */
+  later(key: string): ReadonlySet<string> | null {
+    return this._later.get(key) ?? null;
+  }
+
   /**
    * Which elements a test of what an element holds or where it sits can
    * change the answer of, to their own style (`self`), to what is below
@@ -3270,15 +3310,21 @@ export class ChangeAnchors {
 
   /** The places (`CHANGES_*`) of the anchors whose compound `el` matches,
    *  `distance` levels above what changed, or fewer: 0 for none, null
-   *  where a compound cannot be asked. */
-  at(el: Element, distance = 0): number | null {
+   *  where a compound cannot be asked. `beside` is for an element that is
+   *  no ancestor of what changed, an earlier sibling of what is, which
+   *  only an anchor that starts at a sibling can answer otherwise for:
+   *  Apple's `.section:has(.all-access-pass)` is asked of the sections
+   *  around a change for no reason but that a card's `:has(~ .card-control)`
+   *  is among the anchors, and every section was built again for it. */
+  at(el: Element, distance = 0, beside = false): number | null {
     if (this._byKey === undefined) this._prepare();
     const byKey = this._byKey;
     if (!byKey) return null;
     let bits = 0;
     const ask = (list: readonly AnchorMatcher[] | undefined): void => {
       if (!list) return;
-      for (const { match, at, levels } of list) {
+      for (const { match, at, levels, siblings } of list) {
+        if (beside && !siblings) continue;
         if ((bits | at) !== bits && distance <= levels && match(el)) {
           bits |= at;
         }
@@ -3302,7 +3348,12 @@ export class ChangeAnchors {
         return;
       }
       const key = anchorKey(anchor.compound);
-      const one = { match, at: anchor.at, levels: anchor.levels ?? Infinity };
+      const one = {
+        match,
+        at: anchor.at,
+        levels: anchor.levels ?? Infinity,
+        siblings: anchor.siblings,
+      };
       if (!key) {
         this._rest.push(one);
         continue;
@@ -3319,6 +3370,7 @@ interface AnchorMatcher {
   match: (el: Element) => boolean;
   at: number;
   levels: number;
+  siblings: boolean;
 }
 
 /** What a change to an element's attribute reaches, from the element
@@ -3331,6 +3383,9 @@ export interface AttributeReach {
    *  the subjects of the rules that test the change; null for everything
    *  there. */
   below: ((el: Element) => boolean) | null;
+  /** And among the element's later siblings and what they hold, for a
+   *  reach of them. */
+  later: ((el: Element) => boolean) | null;
 }
 
 /** What a change to what an element holds reaches, from the element
@@ -4354,15 +4409,22 @@ export class Cascade {
     let bits = 0;
     let pseudo: 0 | 1 | 2 = 0;
     const found: ReadonlySet<HasAnchor>[] = [];
-    // what the reach below the element can restyle: the subjects of every
-    // rule that tests the change there, or everything
+    // what the reach below the element can restyle, and among what comes
+    // after it: the subjects of every rule that tests the change there, or
+    // everything
     let below: Set<string> | null = new Set();
+    let later: Set<string> | null = new Set();
     const add = (key: string): void => {
       const own = rules.bits(key);
       if (own & CHANGES_BELOW && below) {
         const subjects = rules.below(key);
         if (!subjects) below = null;
         else for (const s of subjects) below.add(s);
+      }
+      if (own & CHANGES_LATER && later) {
+        const subjects = rules.later(key);
+        if (!subjects) later = null;
+        else for (const s of subjects) later.add(s);
       }
       bits |= own;
       const p = rules.pseudo(key);
@@ -4385,6 +4447,7 @@ export class Cascade {
     if (name === 'class') {
       if (was === undefined) {
         below = null;
+        later = null;
         bits |= rules.anyClass;
         if (rules.anyClassPseudo > pseudo) pseudo = rules.anyClassPseudo;
         found.push(rules.anyClassAnchors);
@@ -4397,6 +4460,7 @@ export class Cascade {
     } else if (name === 'id') {
       if (was === undefined) {
         below = null;
+        later = null;
         bits |= rules.anyId;
         if (rules.anyIdPseudo > pseudo) pseudo = rules.anyIdPseudo;
         found.push(rules.anyIdAnchors);
@@ -4406,13 +4470,15 @@ export class Cascade {
       }
     }
     if (bits & CHANGES_ANYWHERE) return null;
-    // `add` may have set it null, which the compiler does not see
+    // `add` may have set them null, which the compiler does not see
     const narrowed = below as Set<string> | null;
+    const after = later as Set<string> | null;
     return {
       bits,
       pseudo,
       anchors: this._changeAnchors(found),
       below: narrowed && narrowed.size ? this._subjectsMatcher(narrowed) : null,
+      later: after && after.size ? this._subjectsMatcher(after) : null,
     };
   }
 
