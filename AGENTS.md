@@ -2359,7 +2359,10 @@ and its layout repaints what it moved** (`_restyleInPlace`'s `lengths`,
 `_layoutOwed`, `_claimLaidOut`). A box's lengths and a flex item's grow
 and shrink factors (`LENGTH_FIELDS`, `BOX_LENGTHS`) are taken in place,
 and not a text's size, whose `rem`s a build follows; a box laid out
-apart from all around it goes to a frame's build (`_rebuildFrame`). The
+apart from all around it is taken the same way, and goes to a frame's
+build (`_rebuildFrame`) only where a restyle in place refuses it. Apple's
+hero is an absolute box its script sizes at every step of a scroll, and a
+frame's build was six times a layout's cost for it. The
 document is laid out at once, and each box's place, size, lines and
 marker before it (`_laidShapes`) say which it moved or reshaped
 (`reshaped`): their ink before and after, cut to what the pane shows, is

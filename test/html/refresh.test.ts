@@ -1926,6 +1926,66 @@ metric(
   },
 );
 
+metric(
+  'a backdrop filter that stays one is restyled in place, and one that comes makes a stacking context a build places',
+  async () => {
+    // Apple's cards fade a frosted panel in as they scroll, and every step
+    // of it built them
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#88aaff} main{position:relative}' +
+        '#p{width:100px;height:50px;backdrop-filter:blur(2px)}' +
+        '.on #p{backdrop-filter:blur(6px)}' +
+        '.up #q{backdrop-filter:blur(3px)}</style><body>' +
+        '<main id="m"><div id="p">one</div><div id="q">two</div></main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const tree = treeOf(el);
+    const panel = boxOf(el, 'p');
+    el.touchDocument([setClass(byId(el, 'm'), 'on')]);
+    await act();
+    assert.ok(treeOf(el) === tree, 'the boxes were built');
+    assert.ok(boxOf(el, 'p') === panel, 'the box was built');
+    let drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+    const before = treeOf(el);
+    el.touchDocument([setClass(byId(el, 'm'), 'on up')]);
+    await act();
+    assert.ok(treeOf(el) !== before, 'a new stacking context in place');
+    drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a length of a box out of the flow is taken in place, and what it holds is laid out at it',
+  async () => {
+    // Apple's hero is an absolute box its script sizes at every step of a
+    // scroll, and each built it
+    const { result, node } = await render(
+      '<style>body{margin:0}#a{position:absolute;left:10px;top:10px;' +
+        'width:60px;height:80px} .on #a{width:200px}</style><body>' +
+        '<main id="m"><div id="a"><p id="t" style="margin:0">one two three ' +
+        'four five</p></div><p id="q">after</p></main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const tree = treeOf(el);
+    const held = boxOf(el, 't');
+    const lines = held.height;
+    el.touchDocument([setClass(byId(el, 'm'), 'on')]);
+    await act();
+    assert.ok(treeOf(el) === tree, 'the boxes were built');
+    assert.ok(boxOf(el, 't') === held, 'what it holds was built');
+    assert.strictEqual(boxOf(el, 'a').width, 200);
+    assert.ok(boxOf(el, 't').height < lines, 'the text kept its lines');
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
 test('a :has() that asks what its element is followed by is asked of what a change can change the answer of', async () => {
   // Apple's `.section:has(+ .section.theme-dark:not(.background-alt))`
   // reads the next section's own classes, and every change anywhere inside
