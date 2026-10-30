@@ -2096,12 +2096,17 @@ all 7,000 of its elements: 213 ms at the first notch. So does one tested
 before a sibling combinator, among the later siblings and what they hold
 (`MutationRules.later`, `AttributeReach.later`): Apple's local nav turns
 dark with `#ac-localnav.ac-localnav-dark ~ #ac-ln-curtain`, and that one
-class restyled and built the 5,000 elements after it. The reach stays whole
-wherever the selectors do not say all a change styles: a rule at a tree's
-edge, a key inside a function's argument, what an inherited pseudo-class
-reads (`PSEUDO_INHERITED`), a `:has()`'s anchors, a subject with nothing
-stable in it (`*`, pseudo-classes alone), a class or an id whose old value
-is not known, and an attribute anything but the cascade reads. So
+class restyled and built the 5,000 elements after it. And so does a
+`:has()` above its rule's subject, from each element its compound matches
+(`HasAnchor.subject`): Apple's `:has(>.caption-primary) .caption` names
+nothing, so it is asked of the `<body>` at every change to what it holds,
+and all 5,800 of the page's elements were styled and built for its
+captions. The reach stays whole wherever the selectors do not say all a
+change styles: a rule at a tree's edge, a key inside a function's argument,
+a `:has()` in one, what an inherited pseudo-class reads
+(`PSEUDO_INHERITED`), a subject with nothing stable in it (`*`,
+pseudo-classes alone), a class or an id whose old value is not known, and
+an attribute anything but the cascade reads. So
 **anything new that notes a key below its element notes it with its
 subject, or with none for the whole of what is there**, and the walk below
 stays in the element's tree, since only a rule at an edge styles across
@@ -2189,6 +2194,32 @@ once the tree changes** (`Cascade._treeInfo`, by `treeGeneration`), not
 only at a build: a refresh that builds nothing styled an element a script
 moved into a shadow tree by the document's rules, which this change's
 reach was the first to leave to a refresh of that kind.
+
+**What a change can reach and comes out as it was is not built**
+(`_seedsThatMoved`). Before a build of subtrees each seed is styled, from
+the top down, from its parent's style as it stands: one that comes out as
+it was is no seed, and keeps its style in whatever is built around it, and
+what is in one that moved is built with it and not asked. Scrolling
+through Apple's page while it loads laid out 146,000 boxes where it laid out
+252,000, and built the document 15 times where it built it 28. Four things
+are load-bearing. **A seed whose boxes differ whatever its style comes to
+is in `ChangeScope.always`**: what holds what came or went, a text's
+element, the element of an attribute that is not style-only, and all that
+came or moved, which a rule of a pseudo-element's may reach where it is
+now. **An element's style says nothing of its `::before`**: where a rule of
+a pseudo-element's can answer otherwise (`ChangeScope.pseudo`, `treePseudo`)
+a seed is built if it has had one (`GENERATED_ON`, since an anonymous box
+hides one from its element's box, and a `display: contents` has no box to
+look under) or comes to, and no seed is asked at all for a `::marker`'s, a
+`::first-line`'s or a `::first-letter`'s. So **anything new a build reads
+of an element that is neither its style nor an attribute's value joins
+`always`**, and **anything new that reaches an element joins the
+pseudo-elements' levels**, or a change that moves only what a rule of a
+pseudo-element's sees is dropped with the seed. And **what holds what came
+or went is built from there on where its own style stands**
+(`_subtreeRoots`' `restyled`, which a seed that came out as it was is taken
+out of), so a `:has()` anchored at the `<body>` leaves a tail at its end,
+where it had built the document.
 
 **A build for such a change builds the subtrees it reached, and the
 layout after it keeps the blocks it did not** (`buildSubtrees`,
@@ -2374,7 +2405,8 @@ had left its lines pointing at the old text, and an inline box's fragments
 were found on no line. A float or a box out of the flow holds the space
 before it from its line's end only where it pushed text (`after`'s `held`),
 so **a root or a tail in one whose text comes to some, or to none, is
-refused**: the space outside it is another. **A drawing kept from before is
+refused where a line may have begun before the box** (`mayFollowSpace`):
+the space outside it is another. **A drawing kept from before is
 drawn again where a chunk brings an id or writes into a drawing**
 (`namesAnew`), since what one names may be what came. And **nothing a tail
 needs is noted on every box a build makes**: two fields more on `Box` were a

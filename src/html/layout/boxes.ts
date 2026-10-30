@@ -890,6 +890,11 @@ export const DRAWING_SCALE = new WeakMap<Box, number>();
  *  when the host is asked for them. */
 export const GENERATED_FROM = new WeakMap<Box, Element>();
 
+/** The elements a build has given a `::before` or an `::after`, whatever
+ *  anonymous box the fix-up put it in, or a `display: contents` left it
+ *  with no box of its element's to be found under. */
+export const GENERATED_ON = new WeakSet<Element>();
+
 /** What came before a block among its parent's children (`ranBefore`). */
 const RAN_INLINE = 1;
 const RAN_OUT = 2;
@@ -1624,7 +1629,7 @@ export function buildSubtrees(
       // outside it is another.
       if (old.end > old.start !== made.text.length > 0) {
         for (let at: Box | null = old.parent; at; at = at.parent) {
-          if (at.outOfFlow || at.isFloat) return null;
+          if ((at.outOfFlow || at.isFloat) && mayFollowSpace(at)) return null;
         }
       }
       for (const [el, entry] of made.styles) fresh.set(el, entry);
@@ -2870,6 +2875,28 @@ function inLightTree(el: Element): boolean {
  *  what such a tree holds is no run of the document's order. */
 function holdsShadow(el: Element): boolean {
   return shadowRootOf(el) !== null || el.parent instanceof ShadowRoot;
+}
+
+/**
+ * Whether a float or a box out of the flow can come after a space on a line
+ * (`after`'s `held`): there is inline content before it, or an anonymous
+ * box that may hold some, in what holds it. After a block, or first in a
+ * block, no line has started: Apple's menu counts its search results in an
+ * empty absolute box, and each count laid out the whole document.
+ */
+function mayFollowSpace(box: Box): boolean {
+  for (let at = box; ;) {
+    const parent = at.parent;
+    if (!parent) return false;
+    const kids = parent.children;
+    for (let i = kids.indexOf(at) - 1; i >= 0; i -= 1) {
+      const kid = kids[i];
+      if (kid.outOfFlow || kid.isFloat) continue;
+      return !kid.el || !isBlockLevel(kid);
+    }
+    if (parent.kind !== 'inline') return false;
+    at = parent;
+  }
 }
 
 /** Whether a box changes or reads a counter, or a quote, or is in the top
@@ -4463,6 +4490,7 @@ class Builder {
     // its images are its element's to ask for: a `::after` with no content
     // but a background, which designs hang a picture on, drew nothing
     GENERATED_FROM.set(box, el);
+    GENERATED_ON.add(el);
     if (namesImages(style)) this._backgrounds.push(box);
     // a list item it generates has a marker as an element's has, of the
     // `list-item` counter it has just counted (CSS 2.1 12.5): outside it,

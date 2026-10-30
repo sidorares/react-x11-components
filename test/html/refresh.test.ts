@@ -28,6 +28,7 @@ import {
 import { Html } from '../../src/index.js';
 import {
   FONTS,
+  boxOf,
   bytesApart,
   findById,
   h,
@@ -1654,6 +1655,277 @@ test('a :has() of what an element holds is not asked of what is beside a change,
   assert.ok(asked?.has(byId(el, 'caption')), 'the caption it styles is missed');
 });
 
+/** What holds the document's element of an id, its first box. */
+const firstBox = (el: HtmlViewNode, id: string) => boxOf(el, id) as unknown;
+
+/** Whether what a box holds or is in draws `text` of a `::before`. */
+const hasGenerated = (el: HtmlViewNode, id: string): boolean => {
+  const has = (box: { pseudo?: string | null; children: unknown[] }): boolean =>
+    box.pseudo === 'before' ||
+    box.children.some(
+      (kid) =>
+        !(kid as { el?: unknown }).el &&
+        has(kid as { pseudo?: string | null; children: unknown[] }),
+    );
+  return has(boxOf(el, id) as unknown as { children: unknown[] });
+};
+
+metric(
+  'what a rule can reach and comes out as it was is not built, beside what comes out otherwise',
+  async () => {
+    // Apple's script sets a class on a section as it scrolls in, and each of
+    // the elements a rule of that class can style was built again and laid
+    // out again for the few it changes
+    const { result, node } = await render(
+      '<style>body{margin:0} .same{color:#111111} .on .same{color:#111111}' +
+        ' .on .wide{display:flex}</style><body><main id="top">' +
+        '<section id="s0"><p class="same" id="kept">one</p></section>' +
+        '<section id="s1"><p class="wide" id="made">two</p></section>' +
+        '</main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const kept = firstBox(el, 'kept');
+    const made = firstBox(el, 'made');
+    el.touchDocument([setClass(byId(el, 'top'), 'on')]);
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'made'))?.display,
+      'flex',
+      'what changed was missed',
+    );
+    assert.ok(firstBox(el, 'kept') === kept, 'what is as it was was built');
+    assert.ok(firstBox(el, 'made') !== made, 'nothing was built');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a class taken off goes with the ::before it gave, in an anonymous box around it, where the element is styled as it was',
+  async () => {
+    // a `::before` beside blocks is in an anonymous box: no box of its
+    // element's says it is there, and the element's own style does not move
+    const { result, node } = await render(
+      '<style>body{margin:0} .d::before{content:"*"} .d .w{display:flex}' +
+        '</style><body><section id="s0"><div class="d" id="d"><p>one</p></div>' +
+        '</section><section id="s1"><div class="d" id="d1"><p class="w">two</p>' +
+        '</div></section></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.ok(hasGenerated(el, 'd'), 'no ::before to take off');
+    el.touchDocument([
+      setClass(byId(el, 'd'), ''),
+      setClass(byId(el, 'd1'), ''),
+    ]);
+    await act();
+    const drawn = await snapshot(result, el);
+    assert.ok(!hasGenerated(el, 'd'), 'the ::before stayed');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'an element moved under what a rule of its ::before asks for takes one, styled as it was',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} .in .p::before{content:"*"}</style><body>' +
+        '<section id="to" class="in"><p id="stays">one</p></section>' +
+        '<section id="from"><p class="p" id="moved">two</p></section></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const moved = byId(el, 'moved');
+    const from = byId(el, 'from');
+    const to = byId(el, 'to');
+    assert.ok(!hasGenerated(el, 'moved'));
+    removeNode(moved);
+    appendChild(to, moved);
+    const nothing = { previousSibling: null, nextSibling: null };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: from,
+        addedNodes: [],
+        removedNodes: [moved],
+        ...nothing,
+      },
+      {
+        type: 'childList',
+        target: to,
+        addedNodes: [moved],
+        removedNodes: [],
+        previousSibling: byId(el, 'stays'),
+        nextSibling: null,
+      },
+    ]);
+    await act();
+    const drawn = await snapshot(result, el);
+    assert.ok(hasGenerated(el, 'moved'), 'its ::before was missed');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a ::before a :has() gives an element goes when what it asked for goes, the element styled as it was',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} .a:has(+ .d)::before{content:"*"}</style><body>' +
+        '<section id="s"><p class="a" id="a">one</p><p class="d" id="d">two</p>' +
+        '<p id="c">three</p></section></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.ok(hasGenerated(el, 'a'));
+    const gone = byId(el, 'd');
+    const next = gone.next;
+    const prev = gone.prev;
+    removeNode(gone);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: byId(el, 's'),
+        addedNodes: [],
+        removedNodes: [gone],
+        previousSibling: prev,
+        nextSibling: next,
+      },
+    ]);
+    await act();
+    const drawn = await snapshot(result, el);
+    assert.ok(!hasGenerated(el, 'a'), 'the ::before stayed');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+test('a :has() above its rule’s subject reaches what the subject names in its element, and not all that is there', async () => {
+  // Apple's `:has(>.caption-primary) .caption` names nothing of its own, so
+  // it is asked of the `<body>` at every change to what it holds, and all
+  // 5,800 elements of the page were styled and built again for its captions
+  const paragraphs = Array.from(
+    { length: 40 },
+    (_, i) => `<p id="p${i}">p${i}</p>`,
+  ).join('');
+  const { result, node } = await render(
+    '<style>body{margin:0} :has(> .primary) .caption{color:#ff0000}</style>' +
+      `<body>${paragraphs}<div id="wrap"><i class="caption" id="caption">c</i>` +
+      '</div></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const body = byId(el, 'wrap').parent as Element;
+  const put = createElement('div');
+  put.attribs.class = 'primary';
+  const last = byId(el, 'wrap');
+  appendChild(body, put);
+  const change: HtmlChange = {
+    type: 'childList',
+    target: body,
+    addedNodes: [put],
+    removedNodes: [],
+    previousSibling: last,
+    nextSibling: null,
+  };
+  const own = scopeOf(el, [change]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(own.has(byId(el, 'caption')), 'the caption it styles is missed');
+  assert.ok(!own.has(byId(el, 'p7')), 'all that is in the <body> was reached');
+  el.touchDocument([change]);
+  await act();
+  const drawn = await snapshot(result, el);
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'caption'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+});
+
+metric(
+  'a child put at the end of a <body> a :has() is anchored at builds the end of it, where its style stands',
+  async () => {
+    // a webmail page's popups and Apple's dialogs go at the end of a
+    // `<body>` a rule's `:has()` asks about, and each was the whole document
+    const { result, node } = await render(
+      '<style>body{margin:0} body:has(> .open){color:#111111}' +
+        ' body{color:#111111}</style><body><section id="s0"><p id="kept">one</p>' +
+        '</section><section id="s1"><p>two</p></section></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const kept = firstBox(el, 'kept');
+    const body = byId(el, 's1').parent as Element;
+    const put = createElement('div');
+    put.attribs.class = 'open';
+    appendChild(put, createText('three'));
+    const last = byId(el, 's1');
+    appendChild(body, put);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: body,
+        addedNodes: [put],
+        removedNodes: [],
+        previousSibling: last,
+        nextSibling: null,
+      },
+    ]);
+    await act();
+    const drawn = await snapshot(result, el);
+    assert.ok(firstBox(el, 'kept') === kept, 'the whole document was built');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'text in an absolute box no line comes before builds what is in it, where one after a space builds the document',
+  async () => {
+    // Apple's menu counts its search results in an empty absolute box, and
+    // each count laid out the whole document
+    const { result, node } = await render(
+      '<style>body{margin:0} #count,#after{position:absolute}</style><body>' +
+        '<section id="s0"><p id="kept">one</p></section>' +
+        '<div id="count"><div id="n"></div></div>' +
+        '<p id="line">two <b id="after"><div id="m"></div></b></p></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const kept = firstBox(el, 'kept');
+    const textOf = (): string => (treeOf(el) as { text: string }).text;
+    const tell = async (id: string, text: string): Promise<void> => {
+      const at = byId(el, id);
+      const put = createText(text);
+      appendChild(at, put);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: at,
+          addedNodes: [put],
+          removedNodes: [],
+          previousSibling: null,
+          nextSibling: null,
+        },
+      ]);
+      await act();
+    };
+    await tell('n', '5');
+    let drawn = await snapshot(result, el);
+    assert.ok(firstBox(el, 'kept') === kept, 'the document was built');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+    await tell('m', 'x');
+    drawn = await snapshot(result, el);
+    const told = textOf();
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+    assert.strictEqual(told, textOf(), 'the space before the box is another');
+  },
+);
+
 test('a :has() that asks what its element is followed by is asked of what a change can change the answer of', async () => {
   // Apple's `.section:has(+ .section.theme-dark:not(.background-alt))`
   // reads the next section's own classes, and every change anywhere inside
@@ -2093,6 +2365,9 @@ function rulesFor(
     () => `.${c()}:has(+ .${c()}:empty)`,
     () => `.${c()}:has(> .${c()}:empty)`,
     () => `:has(+ .${c()}) .${c()}`,
+    () => `:has(> .${c()}) .${c()}`,
+    () => `.${c()}:has(> .${c()}) > .${c()}`,
+    () => `.${c()}:has(.${c()}) .${c()} span`,
     () => `.${c()}:has(+ *) > *`,
     () => `${pick(TAGS)}:has(~ ${pick(TAGS)}) .${c()}`,
     () => `:is(p, span):has(~ div > .${c()})`,
