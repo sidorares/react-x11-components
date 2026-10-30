@@ -10614,6 +10614,37 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * Whether an element is drawn, as a script's `checkVisibility` asks
+   * (CSSOM View 6.1), laid out first: it has a box — which nothing under
+   * `display: none` has, nor a `display: contents` element, nor what a
+   * `content-visibility: hidden` box holds — and where `asks.opacity`,
+   * neither it nor an element around it in the flat tree is at an opacity
+   * of 0, and where `asks.visibility`, it is visible. Its style is the one
+   * it has at this moment, where an animation runs on it. Nothing here
+   * skips what `content-visibility: auto` holds, so an option to ask that
+   * finds nothing to refuse.
+   */
+  checkVisibility(
+    element: Element,
+    asks: { opacity: boolean; visibility: boolean },
+  ): boolean {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const style = this._styledNow(element);
+    // the text a `display: contents` element holds is boxed under the
+    // element's name, which `_boxOf` finds, but it has no box of its own
+    if (!tree || !style || style.display === 'contents') return false;
+    if (!this._boxOf(tree, element)) return false;
+    if (asks.visibility && style.visibility !== 'visible') return false;
+    if (asks.opacity) {
+      for (let at: Element | null = element; at; at = flatParentOf(at)) {
+        if (this._styledNow(at)?.opacity === 0) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Whether a scroll container's scroll moves an element: its box is in
    * the container's and positioned against nothing outside it
    * (`scrollMoves`), laid out first as `scrollStateOf` is. What a
