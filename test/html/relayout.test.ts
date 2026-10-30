@@ -35,6 +35,7 @@ import {
   renderScrolled,
   snapshot,
   solidPng,
+  treeOf as treeIn,
   view,
 } from './harness.js';
 import type { Fill } from './harness.js';
@@ -461,6 +462,85 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   assert.ok(partial(el), 'the first step of a drag');
   await clock.finish();
   assert.ok(!partial(el));
+});
+
+/** A long page of rows, each with a `::after` as wide as a tenth of the
+ *  viewport and moved by as much again, as Apple's gallery slides are. */
+const READERS =
+  '<style>body{margin:0}.r{height:50px;position:relative;max-width:90vw;' +
+  'font-size:calc(10px + 1vw)}.r::after{content:"";display:block;' +
+  'height:10px;width:10vw;transform:translateX(5vw)}</style><body>' +
+  Array.from(
+    { length: 60 },
+    (_, i) => `<div id="r${i}" class="r"><b id="b${i}">row ${i}</b></div>`,
+  ).join('') +
+  '</body>';
+
+/** How often the cascade is asked for an element's style during `run`. */
+async function stylesAsked(
+  el: HtmlViewNode,
+  run: () => Promise<void>,
+): Promise<number> {
+  const cascade = (
+    el as unknown as { _cascade: { styleFor(...a: unknown[]): unknown } }
+  )._cascade;
+  const styleFor = cascade.styleFor;
+  let asked = 0;
+  cascade.styleFor = function (...a: unknown[]) {
+    asked += 1;
+    return styleFor.apply(this, a);
+  };
+  await run();
+  cascade.styleFor = styleFor;
+  return asked;
+}
+
+test('a step of a drag styles what can be seen, and keeps the boxes', async (t) => {
+  // Each `vw` on a page was styled at every step, where only those drawn
+  // are restyled: 107 elements on Apple's page, some 25 ms a step for the
+  // 24 boxes that took them, and a `::after` no walk reached refused the
+  // restyle at the end of that and built them all (`_heldBackOf`)
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(READERS, 300, 400);
+  await resize(300, 410);
+  await resize(300, 400);
+  assert.ok(partial(el), 'a step');
+  const tree = treeIn(el);
+  const asked = await stylesAsked(el, () => resize(300, 390));
+  assert.ok(partial(el), 'a step');
+  assert.ok(treeIn(el) === tree, 'the boxes were built again');
+  // of 120 on the page
+  assert.ok(asked < 40, `${asked} styles for a screenful and a viewport more`);
+  await clock.finish();
+  assert.ok(!partial(el), 'rested');
+});
+
+test('what a step of a drag left unstyled is styled where a script asks, and when the drag rests', async (t) => {
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(READERS, 300, 400);
+  await resize(300, 410);
+  await resize(300, 400);
+  await resize(300, 390);
+  assert.ok(partial(el), 'a step');
+  const far = findById(el.document, 'r50')!;
+  const inside = findById(el.document, 'b50')!;
+  // a page's `resize` handler, reading what no walk restyled: an element's
+  // own length, and what an element in it takes from it
+  assert.strictEqual(el.computedStyle(far)?.['max-width'], '351px');
+  assert.strictEqual(el.computedStyle(inside)?.['font-size'], '13.9px');
+  assert.strictEqual(
+    el.computedStyle(far, 'after')?.width,
+    '39px',
+    'a tenth of the viewport as it is now',
+  );
+  await clock.finish();
+  assert.ok(!partial(el), 'rested');
+  const held = (el as unknown as { _stylesOwed: Set<unknown> })._stylesOwed;
+  assert.strictEqual(held.size, 0, 'nothing owed once it rests');
+  assert.strictEqual(el.computedStyle(far)?.['max-width'], '351px');
+  assert.strictEqual(el.computedStyle(inside)?.['font-size'], '13.9px');
+  assert.strictEqual(el.computedStyle(far, 'after')?.width, '39px');
+  assert.strictEqual(boxOf(el, 'r50').y, 2500);
 });
 
 test('a dragged width lays out the boxes on the way to a fixed box it would set aside, and sets aside the rest', async (t) => {

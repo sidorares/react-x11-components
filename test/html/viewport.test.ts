@@ -1338,6 +1338,65 @@ test('a vw length a block is laid out at is taken in place at a new width, and l
   assert.deepStrictEqual(inPlace, laid());
 });
 
+test('a length and a transform in vw are taken together in place at a new width, and lay out as a build does', async () => {
+  // Apple's gallery draws a slide's `::after` `width` in `vw`, turned by a
+  // `translate` in `vw`: neither a change of lengths alone nor of ink
+  // alone, and every step of a drag built the boxes for it
+  const source =
+    '<style>body{margin:0}#b{width:10vw;height:10px;' +
+    'transform:translateX(5vw)}#p{height:30px;position:relative}' +
+    '#p::after{content:"";display:block;width:20vw;height:10px;' +
+    'transform:translateX(5vw);background:#123456}#t{font-size:calc(10px + ' +
+    '1vw);color:#000}</style><div id="b"></div><div id="p"></div>' +
+    '<div id="t">some text</div>';
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const laid = () => {
+    const b = boxOf(el, 'b');
+    const p = boxOf(el, 'p');
+    const after = p.children.find(
+      (c) => (c as unknown as { pseudo?: string }).pseudo === 'after',
+    );
+    return [b.x, b.width, after?.x, after?.width, boxOf(el, 't').height];
+  };
+  assert.deepStrictEqual(laid().slice(0, 4), [20, 40, 20, 80]);
+  const tree = treeOf(el);
+  await resize(300, 600);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.deepStrictEqual(laid().slice(0, 4), [30, 60, 30, 120]);
+  const inPlace = laid();
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+  el.layoutNow();
+  assert.ok(treeOf(el) !== tree);
+  assert.deepStrictEqual(inPlace, laid());
+});
+
+test('a width and a transform a script changes together are taken in place, and the old place repainted', async () => {
+  // Apple's scroll handlers write both on the pill that follows the page
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}#c{height:40px}#b{width:30px;height:10px;' +
+      'background:#123456;transform:translateX(10px)}</style>' +
+      '<div id="c"><div id="b"></div></div><div id="d">after</div>',
+    300,
+    400,
+  );
+  const tree = treeOf(el);
+  const b = findById(el.document, 'b')!;
+  b.attribs.style = 'width:50px;transform:translateX(20px)';
+  await act(async () =>
+    el.touchDocument([
+      { type: 'attributes', target: b, attributeName: 'style', oldValue: null },
+    ]),
+  );
+  el.layoutNow();
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.strictEqual(boxOf(el, 'b').width, 50);
+  assert.strictEqual(boxOf(el, 'b').x, 20);
+  const inPlace = await fillsOf(el);
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+  el.layoutNow();
+  assert.deepStrictEqual(inPlace, await fillsOf(el));
+});
+
 test('vw lengths taken in place at a new width lay out as a build does, over generated documents', async () => {
   // what a box's layouts keep of its sizes for its life, of every kind of
   // box a length in `vw` can be on — a float's preferred width, a flex

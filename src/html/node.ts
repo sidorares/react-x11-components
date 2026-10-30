@@ -3581,9 +3581,17 @@ export class HtmlViewNode extends Node {
       const pseudo = cascade.pseudoReadsViewport(sides)
         ? HOVER_PSEUDO_GENERATED
         : HOVER_PSEUDO_NONE;
+      // What a drag's layout set aside is not styled at each step of it,
+      // only what can be seen: no box of it is restyled here, and the
+      // styles were most of a step. Apple's page holds 107 such elements,
+      // of which a screenful are drawn. They are owed theirs (`_stylesOwed`).
+      const held = this._heldBackOf(tree, readers);
+      const seen = held
+        ? new Set([...readers].filter((el) => !held.has(el)))
+        : readers;
       // what holds it and all that holds, or where that is more than a
       // restyle in place takes, followed down from them (`from`)
-      const reach = inPlace ? withDescendants(readers, limit) : null;
+      const reach = inPlace ? withDescendants(seen, limit) : null;
       if (
         inPlace &&
         this._stale === Stale.Nothing &&
@@ -3592,10 +3600,17 @@ export class HtmlViewNode extends Node {
           (el) => readers.has(el),
           pseudo,
           limit,
-          reach ? null : readers,
+          reach ? null : seen,
           BOX_LENGTHS | FONT_LENGTHS,
         )
       ) {
+        if (held) {
+          for (const el of held) this._stylesOwed.add(el);
+          this._asideOwed = true;
+        }
+        if (this._stylesOwed.size) {
+          for (const el of seen) this._stylesOwed.delete(el);
+        }
         this._styledWidth = target;
         this._styledHeight = viewport;
       } else if (readers.size || rootReads) {
@@ -3649,8 +3664,11 @@ export class HtmlViewNode extends Node {
           (this._styledWith === cascade || this._keptFor === cascade)
             ? {
                 styles: this._tree.styles,
-                restyle: this._withAnimated(restyleOnly, this._tree),
-                follow,
+                restyle: this._withAnimated(
+                  this._withOwed(restyleOnly),
+                  this._tree,
+                ),
+                follow: follow || this._stylesOwed.size > 0,
                 root: this._tree.root.style,
               }
             : null;
@@ -3710,7 +3728,10 @@ export class HtmlViewNode extends Node {
         // their page.
         if (apart) {
           if (this._partial) crossing = true;
-        } else this._asideOwed = false;
+        } else {
+          this._asideOwed = false;
+          this._stylesOwed.clear();
+        }
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
         this._styledWith = cascade;
@@ -6478,7 +6499,11 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
     const known = tree.styles.get(element)?.style;
-    if (known) return known;
+    if (known) {
+      return this._stylesOwed.size
+        ? (this._owedStyle(tree, cascade, element) ?? known)
+        : known;
+    }
     const unboxed = this._unboxedStyles(tree, cascade);
     const kept = unboxed.get(element);
     if (kept) return kept;
@@ -6496,6 +6521,34 @@ export class HtmlViewNode extends Node {
     for (let i = chain.length - 1; i >= 0; i -= 1) {
       style = cascade.styleFor(chain[i], style, false);
       unboxed.set(chain[i], style);
+    }
+    return style;
+  }
+
+  /**
+   * The style an element has now, where a drag's restyle in place passed
+   * over it or an element around it (`_stylesOwed`), or null where none
+   * did: worked out for what reads it, a page's `getComputedStyle` in its
+   * `resize` handler, and not kept, since the build at rest makes it.
+   */
+  private _owedStyle(
+    tree: BoxTree,
+    cascade: Cascade,
+    element: Element,
+  ): ComputedStyle | null {
+    const chain: Element[] = [];
+    let owed = 0;
+    for (let at: Element | null = element; at; at = flatParentOf(at)) {
+      chain.push(at);
+      if (this._stylesOwed.has(at)) owed = chain.length;
+    }
+    if (!owed) return null;
+    const above = flatParentOf(chain[owed - 1]);
+    let style = above ? tree.styles.get(above)?.style : tree.root.style;
+    if (!style) return null;
+    for (let i = owed - 1; i >= 0; i -= 1) {
+      const inFlex = tree.styles.get(chain[i])?.inFlex ?? false;
+      style = cascade.styleFor(chain[i], style, inFlex);
     }
     return style;
   }
@@ -7403,11 +7456,6 @@ export class HtmlViewNode extends Node {
      *  boxes. */
     const resized = new Map<Element, number>();
     const resizedBoxes: Box[] = [];
-    const resizeAs = (el: Element, change: number): boolean => {
-      if (!change || change & ~lengths) return false;
-      resized.set(el, change);
-      return true;
-    };
     let refused = false;
     // what changed beyond ink (`hoverChange`): how far some box's ink
     // reaches, the order its layer paints in, where one is
@@ -7461,7 +7509,7 @@ export class HtmlViewNode extends Node {
       let style = kept.style;
       if (parentStyle !== parentWas || flipped(el)) {
         const made = cascade.styleFor(el, parentStyle, kept.inFlex);
-        const diff = hoverChange(kept.style, made);
+        const diff = hoverChange(kept.style, made, lengths);
         // under `display: none` before and after, a change of any kind
         // draws nothing: Node's API pages hold a hidden picker
         // `max-width: 75vw`, and every step of a drag built the boxes
@@ -7469,20 +7517,13 @@ export class HtmlViewNode extends Node {
           style = made;
           changed.set(el, made);
           quiet.add(el);
-        } else if (
-          diff !== null &&
-          lengths &&
-          resizeAs(el, lengthChange(kept.style, made))
-        ) {
-          // what is laid out next lays it out at these lengths: its ink is
-          // what it was, and where it moves is the layout's to say
-          style = made;
-          changed.set(el, made);
-          quiet.add(el);
         } else if (diff === false) refused = true;
         else if (diff) {
           style = made;
           changed.set(el, made);
+          // what is laid out next lays it out at these lengths: where it
+          // moves is the layout's to say, and only what else changed is ink
+          if (diff.lengths) resized.set(el, diff.lengths);
           if (!diff.ink) quiet.add(el);
           if (diff.reach) reaches = true;
           if (diff.order) reorders = true;
@@ -7660,29 +7701,24 @@ export class HtmlViewNode extends Node {
         if (!parent || parent.style !== kept || box.marker) return false;
         const made = cascade.pseudoStyleFor(from, box.pseudo, inherits);
         if (!made || made.display === 'none') return false;
-        const diff = hoverChange(box.style, made);
-        if (diff === false) {
-          // the size its element's text came to, which its runs are set at
-          // in the layout that follows — or, of a block or a flex box, its
-          // lengths, as an element's are taken (`resizeAs`)
-          const change = lengths ? lengthChange(box.style, made) : 0;
+        const diff = hoverChange(box.style, made, lengths);
+        if (diff === false) return false;
+        if (!diff) continue;
+        // the size its element's text came to, which its runs are set at
+        // in the layout that follows — or, of a block or a flex box, its
+        // lengths, as an element's are taken
+        if (diff.lengths) {
           if (
-            !change ||
-            change & ~lengths ||
             box.replaced !== 'none' ||
-            (change & FONT_LENGTHS && tree.firstLine) ||
+            (diff.lengths & FONT_LENGTHS && tree.firstLine) ||
             (box.kind === 'inline'
-              ? change !== FONT_LENGTHS
+              ? diff.lengths !== FONT_LENGTHS
               : box.kind !== 'block' && box.kind !== 'flex')
           ) {
             return false;
           }
           resizedBoxes.push(box);
-          next.set(box, made);
-          restyled.push([box, made]);
-          continue;
         }
-        if (!diff) continue;
         if (diff.move && !movable(box, box.style, made)) return false;
         if (diff.fade && brokenAround(box)) return false;
         // how far it reaches, the order its layer paints in and where it
@@ -7779,7 +7815,7 @@ export class HtmlViewNode extends Node {
         // and the size its parent's text came to, which its own content
         // was measured at: the text of a flex row is in one, a flex item
         // whose max-content sized the line
-        if (lengthChange(box.style, style) & lengths) {
+        if (lengthsThatDiffer(box.style, style) & lengths) {
           if (box.kind !== 'block' && box.kind !== 'flex') return false;
           resizedBoxes.push(box);
         }
@@ -7809,6 +7845,12 @@ export class HtmlViewNode extends Node {
         if (!flipped(el)) continue;
         const style = fresh.get(el);
         if (!style) continue;
+        // no walk reached what a drag set aside, so none says what it has:
+        // the build it is owed (`passedAside`) makes what it should
+        if (passedAside) {
+          const box = this._firstBoxesOf(tree).get(el);
+          if (box && (heldBack(tree, box) || setAsideIn(tree, box))) continue;
+        }
         const has = generated.get(el) ?? 0;
         for (const [which, bit] of GENERATED_BITS) {
           if (has & bit) continue;
@@ -7846,7 +7888,7 @@ export class HtmlViewNode extends Node {
         for (const text of line.texts) {
           texts.push(text);
           if (relaid.has(text.layout)) continue;
-          const again = reinked(text, layouts, next, refaded);
+          const again = reinked(text, layouts, next, refaded, lengths);
           if (again === false) return false;
           relaid.set(text.layout, again);
         }
@@ -8004,6 +8046,30 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /** Those of `elements` a drag's layout set aside, or null for none:
+   *  those it set aside for drawing nothing are restyled where they are. */
+  private _heldBackOf(
+    tree: BoxTree,
+    elements: ReadonlySet<Element>,
+  ): Set<Element> | null {
+    if (!asideIn(tree)) return null;
+    const first = this._firstBoxesOf(tree);
+    let held: Set<Element> | null = null;
+    for (const el of elements) {
+      const box = first.get(el);
+      if (box && heldBack(tree, box) && !unseenHeld(tree, box)) {
+        (held ??= new Set()).add(el);
+      }
+    }
+    return held;
+  }
+
+  /** What a build restyles, with what is owed a style (`_stylesOwed`). */
+  private _withOwed(restyle: ReadonlySet<Element>): ReadonlySet<Element> {
+    if (!this._stylesOwed.size) return restyle;
+    return new Set([...restyle, ...this._stylesOwed]);
+  }
+
   /** An element's first box in document order, for the tree it was asked
    *  of: made on the first move over a tree, which is one walk of it. */
   private _firstBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
@@ -8013,6 +8079,10 @@ export class HtmlViewNode extends Node {
    *  every element's style, before a layout that lays them out
    *  (`_restyleInPlace`, `_update`). */
   private _asideOwed = false;
+  /** The elements a viewport's move left unstyled, for being set aside
+   *  (`_heldBackOf`): `tree.styles` holds what they were, a build styles
+   *  them again (`_withOwed`), and a read works theirs out (`_owedStyle`). */
+  private _stylesOwed = new Set<Element>();
 
   /**
    * The elements whose container queries answer otherwise for the content
@@ -16439,7 +16509,21 @@ interface HoverChange {
   /** Whether the opacity changed, and the box stays a group to fade or
    *  stays none (`stacksLayers`). */
   fade: boolean;
+  /** Which lengths changed besides, of those it was told to take
+   *  (`BOX_LENGTHS`, `FONT_LENGTHS`), which the layout that follows lays
+   *  out. */
+  lengths: number;
 }
+
+/** A `HoverChange` of nothing yet, which `hoverChange` copies and fills. */
+const NO_HOVER_CHANGE: HoverChange = {
+  ink: false,
+  reach: false,
+  order: false,
+  move: false,
+  fade: false,
+  lengths: 0,
+};
 
 /** An element's `::before` and `::after`, each with its bit in the set
  *  of the ones a restyle found boxes of (`_hoverInPlace`). */
@@ -16637,23 +16721,26 @@ const FONT_FIELDS: ReadonlySet<string> = new Set([
   'textIndent',
 ]);
 
-/** A difference in `LENGTH_FIELDS` (`lengthChange`). */
+/** A difference in `LENGTH_FIELDS` (`lengthKind`). */
 const BOX_LENGTHS = 1;
 /** A difference in `FONT_FIELDS`. */
 const FONT_LENGTHS = 2;
 
-/** How two styles of one element differ where they differ only in lengths:
- *  in `LENGTH_FIELDS` (`BOX_LENGTHS`), in `FONT_FIELDS` (`FONT_LENGTHS`), or
- *  both; and 0 where they differ in anything else, or nothing. */
-function lengthChange(was: ComputedStyle, now: ComputedStyle): number {
+/** Which lengths a field of a style is: `BOX_LENGTHS`, `FONT_LENGTHS`, or 0
+ *  for none. */
+function lengthKind(key: string): number {
+  if (LENGTH_FIELDS.has(key)) return BOX_LENGTHS;
+  return FONT_FIELDS.has(key) ? FONT_LENGTHS : 0;
+}
+
+/** Which lengths two styles of one element differ in, whatever else they
+ *  differ in. */
+function lengthsThatDiffer(was: ComputedStyle, now: ComputedStyle): number {
   const a = was as unknown as Record<string, unknown>;
   const b = now as unknown as Record<string, unknown>;
   let change = 0;
   for (const key in b) {
-    if (sameValue(a[key], b[key])) continue;
-    if (LENGTH_FIELDS.has(key)) change |= BOX_LENGTHS;
-    else if (FONT_FIELDS.has(key)) change |= FONT_LENGTHS;
-    else return 0;
+    if (!sameValue(a[key], b[key])) change |= lengthKind(key);
   }
   return change;
 }
@@ -16664,11 +16751,16 @@ function lengthChange(was: ComputedStyle, now: ComputedStyle): number {
  * reaches, a `z-index` that stays a stacking context's, an opacity or a
  * visibility, or a transform — none of which moves anything but the box
  * and what it holds (CSS Transforms 1: a transform does not affect layout)
- * — and false where anything else differs.
+ * — and false where anything else differs. Where a layout follows, the
+ * kinds of length in `lengths` (`BOX_LENGTHS`, `FONT_LENGTHS`) are taken as
+ * well, beside any of that, and said in `HoverChange.lengths`: Apple's
+ * gallery draws a slide's `::after` `width` in `vw`, turned by a `translate`
+ * in `vw`, and each step of a drag built the boxes for the two together.
  */
 function hoverChange(
   was: ComputedStyle,
   now: ComputedStyle,
+  lengths = 0,
 ): HoverChange | null | false {
   const a = was as unknown as Record<string, unknown>;
   const b = now as unknown as Record<string, unknown>;
@@ -16680,13 +16772,7 @@ function hoverChange(
     // every restyle in place that reached it down through all of the page
     if (key === 'custom') {
       if (!sameValue(a[key], b[key])) {
-        change ??= {
-          ink: false,
-          reach: false,
-          order: false,
-          move: false,
-          fade: false,
-        };
+        change ??= { ...NO_HOVER_CHANGE };
       }
       continue;
     }
@@ -16695,24 +16781,17 @@ function hoverChange(
     // nothing
     if (key === 'animations' || key === 'transitions') {
       if (!sameValue(a[key], b[key])) {
-        change ??= {
-          ink: false,
-          reach: false,
-          order: false,
-          move: false,
-          fade: false,
-        };
+        change ??= { ...NO_HOVER_CHANGE };
       }
       continue;
     }
     if (sameValue(a[key], b[key])) continue;
-    change ??= {
-      ink: true,
-      reach: false,
-      order: false,
-      move: false,
-      fade: false,
-    };
+    change ??= { ...NO_HOVER_CHANGE };
+    const kind = lengths && lengthKind(key);
+    if (kind & lengths) {
+      change.lengths |= kind;
+      continue;
+    }
     change.ink = true;
     if (PAINT_ONLY.has(key)) continue;
     if (key === 'opacity') {
@@ -17377,6 +17456,9 @@ function reinked(
   layouts: TextLayoutCache,
   next: ReadonlyMap<Box, ComputedStyle>,
   refaded: boolean,
+  /** The lengths a layout that follows lays out (`hoverChange`): where it
+   *  sets text at a new size, it is set then, whatever else changed. */
+  lengths: number,
 ): TextLayoutLike | null | false {
   const spans = text.spans;
   const inputs = layouts.inputsOf(text.layout);
@@ -17409,7 +17491,10 @@ function reinked(
       if (spans.boxAt(offset + length - 1) !== box) return false;
       const was = fadeRun(runFor(run.text, box.style), faded);
       const now = fadeRun(runFor(run.text, style ?? box.style), fades);
-      for (const f of FACE_FIELDS) if (!sameValue(was[f], now[f])) return false;
+      for (const f of FACE_FIELDS) {
+        if (sameValue(was[f], now[f])) continue;
+        return lengths & FONT_LENGTHS ? null : false;
+      }
       let inked: Record<string, unknown> | null = null;
       for (const f of INK_FIELDS) {
         // a run that is not what its style made — a first line's colour

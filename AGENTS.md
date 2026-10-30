@@ -4110,6 +4110,27 @@ and once whole. **Anything new that builds the boxes while the width moves
 says whether its tree may stop**, through `crossing` in `_update`, or a
 long page is laid out whole at every step of the drag.
 
+**A step of a drag styles what can be seen, and takes what it can in
+place.** A `vw` in a box's lengths and a `translate` in `vw` on the same
+box are one step's change, and `hoverChange` takes both: where a layout
+follows it is told which `lengths` it may take beside what only inks
+(`HoverChange.lengths`), since a change that was neither lengths alone nor
+ink alone built the boxes. Apple's gallery draws a slide's `::after` so, and
+every step built 40 subtrees for 24 boxes. Three things are load-bearing.
+**What a drag set aside is styled last** (`_heldBackOf`, `_stylesOwed`): a
+reader of the viewport no walk would reach is left out of a step, and
+`tree.styles` holds what it was, so **anything that reads an element's
+style goes through `_styleOf`**, which works out an owed one
+(`_owedStyle`), and **anything that keeps styles across a build keeps them
+through `_withOwed`**, or an element is left in the styles of a width ago
+once the drag rests. A build of the whole document pays them all, and a
+build of subtrees leaves them owed. **No walk says what a box set aside
+has**: `generated` is of what was walked, so the test for a new `::before`
+or `::after` passes over an element set aside, or one whose `::after`
+alone was, which the build it is owed makes. And **a layout that follows
+sets text at its new size**: `reinked` lets such a run go (`lengths`), since
+a box inked beside it sends every run of the block through there.
+
 **A page that writes while the width is dragged is laid out and built as
 the step is.** A page's resize handlers write at every step and read back
 at once: Apple's set classes on a gallery's slides and put a probe of the
