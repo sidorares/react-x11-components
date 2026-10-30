@@ -1618,7 +1618,12 @@ export function buildSubtrees(
       // counts as it did. Or else nothing kept after it reads a counter or
       // a quote (`readsCounter`) — a stream's tail, at the document's
       // end, adding a list — with none counting down in the document.
-      if (old.counts || made.counts || made.listItems !== old.listItems) {
+      if (
+        (old.counts || made.counts || made.listItems !== old.listItems) &&
+        countedBy(
+          old.parent.children.slice(old.index, old.index + old.count),
+        ) !== countedBy(made.boxes)
+      ) {
         if (tree.reversed || made.reversed) return null;
         counting ??= old;
       }
@@ -2897,6 +2902,38 @@ function mayFollowSpace(box: Box): boolean {
     if (parent.kind !== 'inline') return false;
     at = parent;
   }
+}
+
+/**
+ * What a run of boxes does to the counters and the quotes around it, in
+ * their order: two runs alike leave what comes after them to count from
+ * where it did, whatever else they hold. Wikipedia's articles number their
+ * references, and a change to a section that holds a list built the whole
+ * document for what that list could have done to them.
+ */
+function countedBy(run: readonly Box[]): string {
+  const counted: unknown[] = [];
+  const stack = [...run].reverse();
+  while (stack.length) {
+    const box = stack.pop()!;
+    const style = box.style;
+    const item = style.display === 'list-item' && (box.el || box.pseudo);
+    if (item || counts(box)) {
+      counted.push([
+        !!item,
+        box.topLayer,
+        style.counterReset,
+        style.counterIncrement,
+        style.counterSet,
+        box.el ? attr(box.el, 'value') : null,
+        box.pseudo ? style.content : null,
+      ]);
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return JSON.stringify(counted);
 }
 
 /** Whether a box changes or reads a counter, or a quote, or is in the top

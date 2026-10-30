@@ -2435,8 +2435,12 @@ nothing kept after it reads a quote, or a counter made before it or around
 it (`countsAcross`, by the nearest reset of its name) — at the document's
 end, nothing does, and an `<ol>` after it makes its own `list-item`: Apple's
 footnotes, after a section with a `<ul>` in it, made every change to a
-section a build of the whole page. **Anything new a box reads of a counter
-joins `countersOf`.** Where every root and tail ends the document, what the build
+section a build of the whole page. And a root that does what it did to the
+counters and the quotes around it (`countedBy`) leaves what comes after it
+as it was, whatever it holds: Wikipedia's references are numbered, and a
+change to any section with a list in it built the whole article. **Anything
+new a box reads of a counter joins `countersOf`, and anything that changes
+one joins `countedBy`.** Where every root and tail ends the document, what the build
 lists, its text and its styles are spliced at their ends (`atEnd`), the
 element keeps its index of first boxes and its reuse blockers
 (`carryBlockers`), and the layout after it walks no kept block to take its
