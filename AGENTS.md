@@ -4294,7 +4294,13 @@ out was most of the step. Three things are load-bearing. **A layout at a
 fraction of the width the document is drawn at is a question about its
 size**, core's content floors asking, so it is laid out whole, and so is
 the layout after it: the places a question leaves belong to no layout that
-is drawn (`_questioned`). **A frame may lay the document out more than
+is drawn (`_questioned`). With no room on offer, a document drawn at a width
+lays nothing out at all (`_sizeAt`): what it answers is cut to the room, and
+what is left is a height a pass that measures widths does not read. Laid out
+a pixel wide, it crossed every breakpoint down and back, twice a question on
+Apple's product page, some 900 ms each. One in a box that really is no wider
+goes on, since what its scripts are told is told from a layout. **A frame may
+lay the document out more than
 once**, so the anchor is the one drawn last and the pane is asked only for
 what it has not been asked yet (`_frameAnchor.asked`). And **a breakpoint's
 fresh tree has no places to keep**, so it is laid out from the top down to

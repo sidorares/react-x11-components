@@ -3802,7 +3802,8 @@ export class HtmlViewNode extends Node {
         if (crossing) this._crossedTree = this._tree;
         // A layout at a fraction of the width the document is drawn at
         // answers a question about its size: core's content floors lay a
-        // tree out with no room on offer, to learn its min-content width.
+        // tree out with little room on offer, to learn what it needs. (With
+        // none it lays nothing out, `_sizeAt`.)
         // It lays out whole, and so does the one after it: the places the
         // flow keeps its blocks by (`keepAbove`) are the question's then,
         // and the document is drawn at none of them. It moves nothing on
@@ -5137,6 +5138,18 @@ export class HtmlViewNode extends Node {
   private _sizeAt(width: number): { width: number; height: number } {
     const target = Math.max(1, Math.floor(width));
     this._followScale();
+    // Core's content floors lay a window out with no room on offer, to learn
+    // what the items of a row need. What a document answers is cut to the
+    // room it was offered, and what is left of it is a height a pass that
+    // measures widths does not read, so a document drawn at a width lays
+    // nothing out for it. It was laid out a pixel wide, down across every
+    // breakpoint and back: Apple's product page built and laid out all of
+    // itself twice for each, some 900 ms, a few times a load. One in a box
+    // that really is no wider goes on, since what its scripts are told is
+    // told from a layout.
+    if (width < 1 && this._tree && this.abs.width >= 1) {
+      return { width: 0, height: this._documentHeight };
+    }
     if (
       target !== this._laidOutWidth &&
       this._stale === Stale.Nothing &&

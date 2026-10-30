@@ -1577,6 +1577,103 @@ metric(
   },
 );
 
+/** A document mounted in `style`'s box, what `_update` is asked for from
+ *  then on, and a change that has to be laid out. */
+async function mounted(style: Record<string, unknown>) {
+  await renderX11(
+    h(
+      'box',
+      { style },
+      h(Html, {
+        source:
+          '<style>.on{display:flex}' +
+          '@media (max-width:100px){p{font-size:30px}}</style>' +
+          '<body style="margin:0"><p id="p">one two three</p></body>',
+        style: { flexGrow: 1 },
+        'data-testname': 'doc',
+      }),
+    ),
+    { width: 440, height: 600, fonts: FONTS! },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  await act();
+  const inner = el as unknown as {
+    _laidOutWidth: number;
+    _documentHeight: number;
+    _update(target: number): void;
+    measureContent(c: Record<string, unknown>): {
+      width: number;
+      height: number;
+    };
+  };
+  const updates: number[] = [];
+  const update = inner._update;
+  inner._update = function (this: unknown, target: number) {
+    updates.push(target);
+    return update.call(this, target);
+  };
+  const change = (): void => {
+    const p = findById(el.document, 'p')!;
+    p.attribs.class = 'on';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: p,
+        attributeName: 'class',
+        oldValue: null,
+      },
+    ]);
+  };
+  const noRoom = () =>
+    inner.measureContent({
+      width: 0,
+      height: Infinity,
+      widthMode: 'exactly',
+      heightMode: 'unconstrained',
+    });
+  return { el, inner, updates, change, noRoom };
+}
+
+metric(
+  'a document drawn at a width lays nothing out for core’s content floors, across no breakpoint and back',
+  async () => {
+    // a row's items are asked what they come to with no room on offer. What
+    // a document answers is cut to that, so all a layout could say is a
+    // height nothing in the pass reads, and it crossed every breakpoint
+    // down and back: Apple's product page built itself twice for each
+    const { inner, updates, change, noRoom } = await mounted({
+      flexDirection: 'row',
+      width: 400,
+    });
+    assert.ok(inner._laidOutWidth > 100, `at ${inner._laidOutWidth}`);
+    const height = inner._documentHeight;
+    change();
+    updates.length = 0;
+    const asked = noRoom();
+    assert.strictEqual(asked.width, 0);
+    assert.ok(asked.height >= height, `${asked.height} under ${height}`);
+    assert.deepStrictEqual(updates, [], 'laid out with no room on offer');
+    await act();
+    assert.ok(updates.length > 0, 'the change was never laid out');
+    assert.ok(
+      updates.every((target) => target > 100),
+      `${updates}`,
+    );
+  },
+);
+
+metric(
+  'a document in a box of no width lays out all the same, since its scripts hear of it from a layout',
+  async () => {
+    const { el, updates, change, noRoom } = await mounted({ width: 0 });
+    assert.ok((el as unknown as { _tree: unknown })._tree, 'nothing was built');
+    change();
+    updates.length = 0;
+    noRoom();
+    assert.ok(updates.length > 0, 'it waited for a width it will not get');
+  },
+);
+
 metric(
   'a layout that answers a question about the document’s size moves nothing on screen',
   async (t) => {
