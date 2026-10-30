@@ -1927,6 +1927,121 @@ metric(
 );
 
 metric(
+  'what is written for assistive technology builds nothing, and restyles what a rule of it can style',
+  async () => {
+    // Apple's galleries write `aria-hidden`, `role` and `tabindex` on each
+    // card as it scrolls in, and each write built all the card held
+    const { result, node } = await render(
+      '<style>body{margin:0}[aria-expanded=true] .x{color:#ff0000}' +
+        '[role=tab] .x{background:#eeeeee}</style><body><main id="m">' +
+        '<section id="s"><p class="x" id="p">one</p><p id="q">two</p></section>' +
+        '</main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const tree = treeOf(el);
+    const held = boxOf(el, 'q');
+    const s = byId(el, 's');
+    const set = (name: string, value: string): HtmlChange => {
+      const oldValue = s.attribs[name] ?? null;
+      s.attribs[name] = value;
+      return { type: 'attributes', target: s, attributeName: name, oldValue };
+    };
+    el.touchDocument([set('aria-hidden', 'true'), set('role', 'group')]);
+    await act();
+    assert.ok(treeOf(el) === tree, 'the boxes were built');
+    el.touchDocument([set('aria-expanded', 'true')]);
+    await act();
+    assert.ok(treeOf(el) === tree, 'a colour built the boxes');
+    assert.ok(boxOf(el, 'q') === held, 'what it holds was built');
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'p'))?.color,
+      'rgb(255, 0, 0)',
+      'the rule was missed',
+    );
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a tabindex that stays a number builds nothing and moves what Tab reaches, and one that comes makes a stop',
+  async () => {
+    const { node } = await render(
+      '<body><div id="t" tabindex="0">one</div><div id="n">two</div></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const stops = (): { element: Element; tabbable: boolean }[] =>
+      (el as unknown as { _stops: { element: Element; tabbable: boolean }[] })
+        ._stops;
+    const t = byId(el, 't');
+    const n = byId(el, 'n');
+    assert.deepStrictEqual(
+      stops().map((stop) => stop.tabbable),
+      [true],
+    );
+    const tree = treeOf(el);
+    const tell = (target: Element, value: string, oldValue: string | null) => {
+      target.attribs.tabindex = value;
+      el.touchDocument([
+        { type: 'attributes', target, attributeName: 'tabindex', oldValue },
+      ]);
+    };
+    tell(t, '-1', '0');
+    await act();
+    assert.ok(treeOf(el) === tree, 'the boxes were built');
+    assert.deepStrictEqual(
+      stops().map((stop) => stop.tabbable),
+      [false],
+    );
+    tell(n, '0', null);
+    await act();
+    assert.ok(
+      stops().some((stop) => stop.element === n),
+      'a focusable area came and no stop did',
+    );
+  },
+);
+
+metric(
+  'the hidden attribute takes its element out and puts it back, by the UA sheet alone',
+  async () => {
+    const { result, node } = await render(
+      '<body><main><p id="a">one</p><p id="b">two</p></main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const a = byId(el, 'a');
+    const height = boxOf(el, 'b').y;
+    a.attribs.hidden = '';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: a,
+        attributeName: 'hidden',
+        oldValue: null,
+      },
+    ]);
+    await act();
+    assert.ok(boxOf(el, 'b').y < height, 'it stayed');
+    let drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+    delete a.attribs.hidden;
+    el.touchDocument([
+      { type: 'attributes', target: a, attributeName: 'hidden', oldValue: '' },
+    ]);
+    await act();
+    assert.strictEqual(boxOf(el, 'b').y, height, 'it did not come back');
+    drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
   'a backdrop filter that stays one is restyled in place, and one that comes makes a stacking context a build places',
   async () => {
     // Apple's cards fade a frosted panel in as they scroll, and every step
@@ -2463,6 +2578,10 @@ function rulesFor(
     () => `.${c()}:not(:last-child)`,
     () => `[data-x] .${c()}`,
     () => `[data-x=y]`,
+    () => `[role=tab] .${c()}`,
+    () => `[aria-expanded=true] > .${c()}`,
+    () => `[hidden] + .${c()}`,
+    () => `[tabindex="0"] .${c()}`,
     () => `#e${Math.floor(next() * 6)} .${c()}`,
     () => `#e${Math.floor(next() * 6)}`,
   ];
@@ -2908,6 +3027,24 @@ function changeOne(
     return [
       { type: 'attributes', target, attributeName: 'lang', oldValue: was },
     ];
+  }
+  if (kind === 2 && next() < 0.3) {
+    // what is written for assistive technology, and for Tab
+    const target = pick(all);
+    const name = pick(['role', 'aria-expanded', 'hidden', 'tabindex']);
+    const was = target.attribs[name] ?? null;
+    if (was !== null && next() < 0.5) delete target.attribs[name];
+    else {
+      target.attribs[name] =
+        name === 'role'
+          ? pick(['tab', 'menu'])
+          : name === 'aria-expanded'
+            ? pick(['true', 'false'])
+            : name === 'hidden'
+              ? ''
+              : pick(['0', '-1']);
+    }
+    return [{ type: 'attributes', target, attributeName: name, oldValue: was }];
   }
   if (kind === 2) {
     // an attribute set or taken away

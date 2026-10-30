@@ -416,7 +416,13 @@ import {
   shownBy,
   styledField,
 } from './controls.js';
-import { isEditable, isEditingHost, isInert, isTabbable } from './focus.js';
+import {
+  isEditable,
+  isEditingHost,
+  isInert,
+  isTabbable,
+  tabindexStays,
+} from './focus.js';
 import type { FocusStop } from './focus.js';
 import { inReadingOrder } from './reading.js';
 import type { BareField, ControlRect, CoverAnswer } from './controls.js';
@@ -10389,7 +10395,12 @@ export class HtmlViewNode extends Node {
       // Something the boxes read of the element besides its style — a
       // source, a value, a span, a label — or a hint its style takes, or
       // what is in it takes: a table's `cellpadding` is its cells'.
-      const quiet = STYLE_ONLY_ATTRIBUTE.test(name);
+      // A `tabindex` that stays a number says only whether Tab reaches the
+      // element (`isTabbable`), which is asked of a tree's focusable areas
+      // once a tree: Apple's galleries move theirs from card to card
+      const stops = name === 'tabindex' && tabindexStays(el, change.oldValue);
+      if (stops) scope.stops = true;
+      const quiet = stops || STYLE_ONLY_ATTRIBUTE.test(name);
       if (!quiet) scope.always.add(el);
       if (!quiet) bits |= CHANGES_SELF | CHANGES_BELOW;
       else if (name === 'style') bits |= CHANGES_SELF;
@@ -11122,6 +11133,10 @@ export class HtmlViewNode extends Node {
    */
   private _restyleChanged(scope: ChangeScope): void {
     if (scope.drawings.size) this._drawAgain(scope.drawings);
+    if (scope.stops && this._tree) {
+      CANDIDATES.delete(this._tree);
+      this._reportStops();
+    }
     if (scope.sheets) {
       // what the new rules style is known once they are read, before the
       // build (`_sheetsAdded`)
@@ -15970,6 +15985,9 @@ interface ChangeScope {
    *  to: what holds what came, went or changed, and the element of an
    *  attribute the boxes read (`_seedsThatMoved`). */
   always: Set<Element>;
+  /** Whether a `tabindex` moved that leaves its element a focusable area,
+   *  so that only which of them Tab reaches can differ. */
+  stops?: boolean;
   /** Which pseudo-elements' rules a change to the tree can change the
    *  answer to, for `_seedsThatMoved`, as `pseudo` is an attribute's. */
   treePseudo: 0 | 1 | 2;
@@ -16047,14 +16065,18 @@ function isSheetLink(el: Element): boolean {
 /** The attributes nothing reads but the cascade, where a selector tests
  *  them, and an inline style: a change of one builds no box where it
  *  changes no style. Everything else may be read by the boxes, a widget, a
- *  focus stop or a presentational hint. `-rx-defined` is no attribute: it
- *  is a custom element's upgrade, which only `:defined` reads; nor is
- *  `-rx-modal`, a dialog going into the top layer or out, which only
- *  `:modal` reads — and the style it gives, which the boxes follow — nor
- *  `-rx-picker-open`, a `<select>`'s menu dropping or going, which only
- *  `:open` and `:closed` read. */
+ *  focus stop or a presentational hint. `role` and `aria-*` are written for
+ *  assistive technology, and but for `aria-label`, which names a stop and a
+ *  player, a selector is all that reads them here: a widget takes
+ *  `aria-hidden` as it renders. `hidden` is the UA sheet's. `-rx-defined` is
+ *  no attribute: it is a custom element's upgrade, which only `:defined`
+ *  reads; nor is `-rx-modal`, a dialog going into the top layer or out,
+ *  which only `:modal` reads — and the style it gives, which the boxes
+ *  follow — nor `-rx-picker-open`, a `<select>`'s menu dropping or going,
+ *  which only `:open` and `:closed` read; nor what a player tells of itself
+ *  (`mediaSync`). */
 const STYLE_ONLY_ATTRIBUTE =
-  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined|-rx-modal|-rx-picker-open)$/;
+  /^(?:class|id|style|role|hidden|aria-(?!label$)[^]*|data-[^]*|on[a-z]+|-rx-(?:defined|modal|picker-open|paused|muted|seeking|buffering|stalled))$/;
 
 /**
  * The attribute changes in a list that changed nothing: an attribute set to

@@ -2042,7 +2042,12 @@ one missing there reads nothing, which is right only for one css-select
 refuses, since that drops the rule. **An attribute anything but the
 cascade reads is out of `STYLE_ONLY_ATTRIBUTE`** — a source, a value, a
 label, a hint whose style reaches the element's descendants — and builds
-the boxes, restyling the element and what is in it. **A key in a
+the boxes, restyling the element and what is in it. `role`, `aria-*` but
+for `aria-label`, `hidden` and what a player tells of itself are in it,
+since only a selector and a widget's render read them, and a `tabindex`
+that stays a number says only whether Tab reaches its element, so it
+reports the stops again and builds nothing (`tabindexStays`): Apple's
+galleries move theirs from card to card. **A key in a
 `:has()`'s argument reaches the elements whose answer changed, found by
 the `:has()`'s compound** (`HasAnchor`, `spreadAnchors`): the element that
 changed and its ancestors, their earlier siblings where the argument
