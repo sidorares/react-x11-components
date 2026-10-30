@@ -31,6 +31,9 @@ import {
   edgesOf,
   findById,
   h,
+  HAS_ARGUMENTS,
+  HAS_MATCHED,
+  hasArgumentsDocument,
   metric,
   render,
   renderWithBytes,
@@ -750,6 +753,45 @@ test("a :has() answers the tree as it is now, after a stream's next chunk and af
   el().touchDocument();
   await act();
   assert.notStrictEqual(color('d'), '#00ff00', 'the image taken out');
+});
+
+test('what a :has() holds is matched as the document’s, wherever its argument starts: Chrome’s answers', async () => {
+  // css-select read an `:is()`, a `:where()` or a `:not()` in an argument
+  // with a combinator as relative to the `:has()`'s element, so a sibling
+  // was never in one, and what such a selector reads above the element was
+  // never found
+  const { node } = await render(hasArgumentsDocument());
+  const el = view(node);
+  const colour = (id: string) => el.computedStyle(findById(el.document, id)!);
+  HAS_ARGUMENTS.forEach(([selector], i) => {
+    assert.strictEqual(colour(`y${i}t`)?.color, HAS_MATCHED, selector);
+    assert.notStrictEqual(colour(`n${i}t`)?.color, HAS_MATCHED, selector);
+  });
+});
+
+test('a sheet that writes the name a :has()’s function is compiled under matches nothing by it', async () => {
+  const { node } = await render(
+    `<style>.p:has(+ :not(.b)):-rx-hoisted(99) { color: ${HAS_MATCHED} }</style>` +
+      '<div class="p" id="t">p</div><div>next</div>',
+  );
+  const el = view(node);
+  assert.notStrictEqual(
+    el.computedStyle(findById(el.document, 't')!)?.color,
+    HAS_MATCHED,
+  );
+});
+
+test('two elements alike are styled by what each :has() finds after it, and share no style', async () => {
+  const { node } = await render(
+    `<style>.p:has(+ .a:not(.b)) { color: ${HAS_MATCHED} }</style><section>` +
+      '<p class="p" id="one">1</p><p class="a">a</p>' +
+      '<p class="p" id="two">2</p><p class="a b">b</p></section>',
+  );
+  const el = view(node);
+  const colour = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color;
+  assert.strictEqual(colour('one'), HAS_MATCHED);
+  assert.notStrictEqual(colour('two'), HAS_MATCHED);
 });
 
 test('a pseudo-element no rule gives a content to is none, whatever reaches it', async () => {
