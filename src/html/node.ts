@@ -11156,8 +11156,8 @@ export class HtmlViewNode extends Node {
       // `<script>` in the head (`_restyleInPlace`'s `from`)
       const reach = withDescendants(scope.own, HOVER_RESTYLE_LIMIT);
       // what is laid out apart from all around it is built again and
-      // repainted where it was and is (`_rebuildFrame`), where a layout of
-      // lengths taken in place repaints the document
+      // repainted where it was and is (`_rebuildFrame`), where it cannot
+      // be restyled here
       const apart =
         this._stale === Stale.Nothing &&
         !!this._tree &&
@@ -11172,7 +11172,7 @@ export class HtmlViewNode extends Node {
           reach ? null : scope.own,
           // a box's lengths, and not a text's size: a root's is every
           // `rem`'s, which a build follows (`_rootMoved`)
-          apart ? 0 : BOX_LENGTHS,
+          BOX_LENGTHS,
         )
       ) {
         // a change of lengths alone keeps the boxes, and is laid out again
@@ -17060,11 +17060,13 @@ function hoverChange(
       change.fade = true;
       continue;
     }
-    if (key === 'filter') {
+    if (key === 'filter' || key === 'backdropFilter') {
       // a stacking context and the containing block of what is out of the
       // flow in it before and after, or neither — or a filter named in
       // `will-change` both times, which one in transition or animated is:
-      // only how the group's pixels are drawn changes (`paintFiltered`)
+      // only how the group's pixels, or what is behind it, are drawn changes
+      // (`paintFiltered`, `paintBackdrop`). Apple's cards fade a frosted
+      // panel in as they scroll, and every step built them
       if (
         (a[key] === null) !== (b[key] === null) &&
         (was.willChange & now.willChange & FILTER_WILL) !== FILTER_WILL
