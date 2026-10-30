@@ -5,7 +5,7 @@
 // and the text's are walked side by side, a run of collapsed white space
 // being the one space, or none, it came to.
 import type { AnyNode, Element, Text } from 'domhandler';
-import { isText } from 'domhandler';
+import { isTag, isText } from 'domhandler';
 import type { BoxTree, TextSource } from './layout/boxes.js';
 
 const isSpace = (c: number): boolean =>
@@ -85,30 +85,42 @@ function following(node: AnyNode, skip: boolean): AnyNode | null {
  * Where a DOM boundary point is in the document's text, in code units: in
  * a text node that came to text, its offset walked into it; anywhere else,
  * the start of the first text after the point, or the end of the text.
+ * Where `breakAt` is given, a `<br>` after the point and before that text
+ * is where it is instead — the line feed it came to, which `breakAt`
+ * answers for the element, or null where it came to none.
  */
 export function unitOfPoint(
   tree: BoxTree,
   node: AnyNode,
   offset: number,
+  breakAt?: (br: Element) => number | null,
 ): number {
   if (isText(node)) {
     const s = sourceOf(tree, node);
     if (s) return s.start + walk(node.data, textOf(tree, s), offset, true);
     const after = following(node, true);
-    return after ? unitBefore(tree, after) : tree.text.length;
+    return after ? unitBefore(tree, after, breakAt) : tree.text.length;
   }
   const kids = (node as Element).children ?? [];
   const at: AnyNode | null =
     offset < kids.length ? kids[offset] : following(node, true);
-  return at ? unitBefore(tree, at) : tree.text.length;
+  return at ? unitBefore(tree, at, breakAt) : tree.text.length;
 }
 
-/** Where the first text at or after a node, in tree order, starts. */
-function unitBefore(tree: BoxTree, from: AnyNode): number {
+/** Where the first text at or after a node, in tree order, starts — or
+ *  the first `<br>`, where `breakAt` answers for it. */
+function unitBefore(
+  tree: BoxTree,
+  from: AnyNode,
+  breakAt?: (br: Element) => number | null,
+): number {
   for (let at: AnyNode | null = from; at; at = following(at, false)) {
     if (isText(at)) {
       const s = sourceOf(tree, at);
       if (s) return s.start;
+    } else if (breakAt && isTag(at) && at.name === 'br') {
+      const unit = breakAt(at);
+      if (unit !== null) return unit;
     }
   }
   return tree.text.length;

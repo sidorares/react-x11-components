@@ -491,6 +491,10 @@ export interface HandleInternals {
   selectPoints(
     points: { sc: AnyNode; so: number; ec: AnyNode; eo: number } | null,
   ): void;
+  /** Where the page's selection is collapsed, the caret an edit is made
+   *  at, which the document draws in an editing host that has the focus;
+   *  null for none (`HtmlViewNode.setCaret`). */
+  setCaret(point: { node: AnyNode; offset: number } | null): void;
   /** A boundary point moved by a character or a word through the text
    *  the document draws (`HtmlViewNode.movedPoint`). */
   movedPoint(
@@ -1640,6 +1644,14 @@ export class DomHost {
     }
     if (this._sheetsChanged.size) this._writeSheets();
     this._syncHighlights();
+    this._tellChanges();
+    // and where the page's caret is, in the tree as it was just told
+    this._syncCaret();
+  }
+
+  /** The tree's changes, told to the `<Html>` that draws each document
+   *  they were made in (`flush`). */
+  private _tellChanges(): void {
     if (this._s.changes.size && !this._disposed) {
       // what this realm, or another, changed in another realm's document
       const pending = [...this._s.changes];
@@ -3482,6 +3494,11 @@ export class DomHost {
         this._selectionTold = this._seams.handle.selectionPoints?.()?.key ?? '';
         return null;
       }
+      // the page's selection as its live range, by its id, or 0 for none:
+      // drawn as a caret where it is collapsed, at each flush
+      case 'documentCaret':
+        this._caret = Number(a) || 0;
+        return null;
       // a boundary point moved through the drawn text, as `modify` moves
       // the selection's focus
       case 'movePoint': {
@@ -5035,6 +5052,34 @@ export class DomHost {
   /** The reader's selection as the page last heard of it or set it, as
    *  core's range (`documentSelection`). */
   private _selectionTold = '';
+
+  /** The page's selection, the live range by its id (`documentCaret`). */
+  private _caret = 0;
+  /** Where `<Html>` was last told its caret is, as a key: the node's id
+   *  and the offset, or '' for none. */
+  private _caretTold = '';
+
+  /** Tell the document where the page's selection is collapsed, where that
+   *  moved: the range is live, so an edit before it moves it with no word
+   *  from the page, and it is read again at each flush, as the highlights
+   *  are. A caret in another document than this realm's is none. */
+  private _syncCaret(): void {
+    let point: { node: AnyNode; offset: number } | null = null;
+    if (this._caret) {
+      try {
+        const r = this._ranges.get(this._caret);
+        if (r.sc === r.ec && r.so === r.eo && this._inDocument(r.sc)) {
+          point = { node: r.sc, offset: r.so };
+        }
+      } catch {
+        // a range the page has let go of
+      }
+    }
+    const key = point ? `${this.idOf(point.node)},${point.offset}` : '';
+    if (key === this._caretTold) return;
+    this._caretTold = key;
+    this._seams.handle.setCaret?.(point);
+  }
 
   /** The custom highlights of each document's registry, as `highlights`
    *  was last told them: the page's, and a frame's window's. */

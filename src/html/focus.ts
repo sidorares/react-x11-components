@@ -90,7 +90,7 @@ export function isEditingHost(el: Element): boolean {
 
 /** Whether `contenteditable` makes an element editable, itself or by what
  *  it inherits. */
-function isEditable(el: Element): boolean {
+export function isEditable(el: Element): boolean {
   for (let at: Element | null = el; at;) {
     const value = attr(at, 'contenteditable');
     if (value !== undefined) {
