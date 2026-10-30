@@ -2337,7 +2337,12 @@ viewport still keeps its poster.
 mount is cut and placed by take no pointer of their own: a press lands on
 what the host mounted, or goes through it, where that lets it, to the
 element in the document — a canvas's picture does, so the page hears the
-press on its `<canvas>`. And **only what draws something covers a mount**:
+press on its `<canvas>`. A press that lands on what the host mounted is
+that mount's, as a key typed in it is: where it is another `<Html>`, a
+summary it draws opens once and a link or a form in it is its own to
+follow or send, and the document around it is told of none of it — it had
+been, and shut again every `<details>` a frame's summary opened. And
+**only what draws something covers a mount**:
 a box faded to nothing or hidden all through, as a menu's backdrop kept
 fixed over the viewport often is, neither cuts one nor keeps one from
 being mounted, and neither does the overflow of a box beside it that a

@@ -18,7 +18,11 @@ import { parseDocument } from 'htmlparser2';
 import { Image } from 'react-x11/ntk';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type { Element, HtmlViewNode } from '../../src/html/index.js';
-import type { EmbeddedRect, HtmlDomEvent } from '../../src/html/index.js';
+import type {
+  EmbeddedRect,
+  FormSubmission,
+  HtmlDomEvent,
+} from '../../src/html/index.js';
 import { FONTS, boxOf, h, metric, view } from './harness.js';
 
 afterEach(cleanup);
@@ -868,4 +872,85 @@ test("a key typed in an iframe's document is that document's: the embedding page
   // and the page's own keys are still the page's
   await userEvent.type(screen.getByRole('textbox') as DrawnNode, 'x');
   assert.deepStrictEqual(told, ['x:a']);
+});
+
+test("a press in an iframe's document is that document's: its summary opens once, and the embedding page follows none of its links or forms", async () => {
+  // A press in the frame bubbles out of the frame's own `<Html>` to the
+  // page's, and the page's node is not the one the press landed on — but the
+  // frame's answers `elementAtPoint` as well. The page took the press for
+  // its own too: the summary of joshwcomeau.com's interpolate-size
+  // playground was opened by the frame and shut again by the page, so a
+  // click did nothing, and a link or a form in a frame would have been
+  // followed by the page as well.
+  const page: string[] = [];
+  const frame: string[] = [];
+  const tell = (into: string[]) => ({
+    onLink: (href: string) => void into.push(`link ${href}`),
+    onSubmit: (s: FormSubmission) => void into.push(`submit ${s.url}`),
+    onDomEvent: (e: HtmlDomEvent) => {
+      if (e.type === 'click' || e.type === 'toggle') {
+        into.push(`${e.type} ${e.target.attribs.id}`);
+      }
+      return undefined;
+    },
+  });
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+          '<iframe id="f" width="200" height="120"></iframe>',
+        partial: false,
+        baseUrl: 'https://page.test/',
+        ...tell(page),
+        renderEmbedded: () =>
+          h(Html, {
+            'data-testname': 'inner',
+            partial: false,
+            baseUrl: 'https://frame.test/',
+            source:
+              '<style>body{margin:0}summary,a{display:block;height:20px}' +
+              'p{margin:0}button{display:block;width:80px;height:20px}</style>' +
+              '<details id="d"><summary id="s">more</summary><p>inside</p>' +
+              '</details><a id="l" href="/next">next</a>' +
+              '<form id="form" action="/sent"><button id="b">go</button></form>',
+            ...tell(frame),
+          }),
+      }),
+    ),
+    { width: 340, height: 240, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const inner = view(screen.getByTestName('inner') as DrawnNode);
+  const click = async (id: string) => {
+    const doc = inner.document as unknown as Element;
+    const rect = inner.elementRect(byId(doc, id))!;
+    const node = inner as unknown as DrawnNode;
+    // a third of the way in, the link and the button below the summary's
+    // middle: two presses at one point are a double click
+    const at = {
+      dx: rect.x + rect.width / 3 - node.abs.width / 2,
+      dy: rect.y + rect.height / 2 - node.abs.height / 2,
+    };
+    await act(async () => {
+      fireEvent.mouseDown(node, at);
+      fireEvent.mouseUp(node, at);
+    });
+  };
+  await click('s');
+  const details = byId(inner.document as unknown as Element, 'd');
+  assert.strictEqual(details.attribs.open, '', 'the details is open');
+  await click('l');
+  await click('b');
+  assert.deepStrictEqual(frame, [
+    'click s',
+    'toggle d',
+    'click l',
+    'link https://frame.test/next',
+    'click b',
+    'submit https://frame.test/sent?',
+  ]);
+  assert.deepStrictEqual(page, [], 'the page is told of none of it');
 });

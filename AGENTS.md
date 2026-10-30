@@ -4576,7 +4576,14 @@ is mounted beside the document as a player is, held to the same rules
 (`placementOf` in `media.ts`, shared with `mediaRectsOf`). **A mount is
 keyed by its element**, so a layout or a scroll that moves an `<iframe>`
 keeps the document in it and its scripts: anything new that reports these
-rects keeps the element as the key. **Only what draws something covers a mount,
+rects keeps the element as the key. **What happens in a mount is the
+mount's**: a key or a press there bubbles out of the frame's own `<Html>`
+to the root of the page's, and the frame's node answers `elementAtPoint`
+and `hrefAtPoint` as the page's does, so **anything new the root does with
+an event asks `embedded.contains` first**. The press handlers did not, and
+the page toggled back every summary a frame opened — joshwcomeau.com's
+interpolate-size playground did nothing on a click — and followed the
+frame's links and sent its forms itself. **Only what draws something covers a mount,
 or a player** (`drawsNothing`, `inkMeets`): a box faded to nothing or
 hidden all through — Docusaurus's menu backdrop, fixed over the viewport —
 and the overflow of a pane beside it that a box clipping it cuts away
