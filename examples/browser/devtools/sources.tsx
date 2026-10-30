@@ -4,27 +4,36 @@
 // read-only `<CodeEditor>`, highlighted as JavaScript or as CSS, set out a
 // line at a time where it is minified.
 //
-// A file the page loaded is read from the tab's network, whose cache has
-// it from when the page asked for it: nothing goes to the server again
-// unless the cache let it go. One written in the page is the element's
-// text as the document holds it now, a script's changes to it included.
-import { useEffect, useMemo, useState } from 'react';
+// A style sheet the document read is shown as it read it, and a script the
+// page loaded is read from the tab's network, whose cache has it from when
+// the page asked for it: nothing goes to the server again unless the cache
+// let it go. One written in the page is the element's text as the document
+// holds it now, a script's changes to it included.
+//
+// The Styles tab sends a rule here (`Inspection.source`): its file is chosen
+// and shown with what was asked for selected, set a third of the way down.
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Button, SplitPane, useClipboard, useTheme } from 'react-x11';
 
 import { Tree } from '../../../src/tree/index.js';
-import type { TreeRowState } from '../../../src/tree/index.js';
+import type { TreeHandle, TreeRowState } from '../../../src/tree/index.js';
 import { CodeEditor, css, javascript } from '../../../src/code-editor/index.js';
+import type { CodeEditorHandle } from '../../../src/code-editor/index.js';
 import { autoTokenStyles } from '../../../src/code-language/index.js';
 import type { HtmlHandle } from '../../../src/html/index.js';
 import { useTicks } from './elements.js';
 import { CopyGlyph } from './glyphs.js';
+import { useStore } from './model.js';
+import type { Inspection, SourceTarget } from './model.js';
 import { bytesText } from './network.js';
 import {
   formatCss,
   formatJs,
   inlineText,
   looksMinified,
+  sheetFile,
+  shownRange,
   sourcesOf,
 } from './source-files.js';
 import type { SourceFile } from './source-files.js';
@@ -82,29 +91,50 @@ function folderIds(rows: readonly Row[]): string[] {
   );
 }
 
+/** The folders around a file, by their ids. */
+function foldersOf(file: SourceFile): string[] {
+  let path = '';
+  return file.folders.map((name) => `folder:${(path += `/${name}`)}`);
+}
+
 export function SourcesPanel({
   handle,
   docKey,
+  inspection,
   load,
   shown,
 }: {
   handle: HtmlHandle;
   docKey: number;
+  inspection: Inspection;
   load: SourceLoader;
   shown: boolean;
 }): ReactElement {
   // read again each second while shown: a page's script adds sources
   const tick = useTicks(shown);
+  const target = useStore(inspection.source);
   const files = useMemo(
-    () => (handle.document ? sourcesOf(handle.document, handle.base) : []),
-    [docKey, tick, handle.document],
+    () =>
+      handle.document
+        ? sourcesOf(handle.document, handle.base, handle.styleSheets())
+        : [],
+    [docKey, tick, handle.document, target],
   );
   const rows = useMemo(() => treeOf(files), [files]);
   const [expanded, setExpanded] = useState<readonly string[] | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   const file = files.find((f) => f.id === chosen) ?? null;
   const [width, setWidth] = useState(0);
+  const tree = useRef<TreeHandle<Row>>(null);
   useEffect(() => setChosen(null), [docKey]);
+  useEffect(() => {
+    const asked = target && sheetFile(files, target.sheet);
+    if (!asked) return;
+    setChosen(asked.id);
+    setExpanded((was) => was && [...new Set([...was, ...foldersOf(asked)])]);
+    // once the rows are there
+    setTimeout(() => tree.current?.scrollToItem(asked.id), 0);
+  }, [target]);
 
   return (
     <box
@@ -127,6 +157,7 @@ export function SourcesPanel({
         >
           {rows.length ? (
             <Tree<Row>
+              ref={tree}
               aria-label="Sources"
               items={rows}
               getId={getId}
@@ -136,7 +167,9 @@ export function SourcesPanel({
               onExpandedChange={(ids) => setExpanded(ids as string[])}
               selected={chosen}
               onSelect={(id, r) => {
-                if (r.file) setChosen(String(id));
+                if (!r.file) return;
+                setChosen(String(id));
+                inspection.source.set(null);
               }}
               rowHeight={20}
               renderLabel={(state) => <FileLabel state={state} />}
@@ -157,7 +190,13 @@ export function SourcesPanel({
           }}
         >
           {file ? (
-            <SourceView key={file.id} file={file} load={load} tick={tick} />
+            <SourceView
+              key={file.id}
+              file={file}
+              load={load}
+              tick={tick}
+              target={target && sheetFile([file], target.sheet) ? target : null}
+            />
           ) : (
             <Note>
               Choose a script or a style sheet, on the left, to read it.
@@ -224,11 +263,14 @@ function Note({ children }: { children: string }): ReactElement {
 function SourceView({
   file,
   load,
+  target,
 }: {
   file: SourceFile;
   load: SourceLoader;
   /** The panel's tick, which reads a file written in the page again. */
   tick: number;
+  /** What the Styles tab asked to see in it. */
+  target: SourceTarget | null;
 }): ReactElement {
   const theme = useTheme();
   const clipboard = useClipboard();
@@ -236,11 +278,15 @@ function SourceView({
     () => autoTokenStyles(theme.background),
     [theme.background],
   );
-  // a file written in the page is read off its element, as it is now
-  const inline = file.url === null ? inlineText(file) : null;
+  // a file written in the page is read off its element, as it is now, and
+  // a sheet the document read is what it read: a rule's place counts in it
+  const known =
+    file.url === null && file.element
+      ? inlineText(file)
+      : (file.sheet?.text ?? null);
   const [loaded, setLoaded] = useState<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!file.url) return;
+    if (!file.url || known !== null) return;
     let live = true;
     load(file.url, file.kind).then(
       (text) => live && setLoaded(text),
@@ -249,8 +295,8 @@ function SourceView({
     return () => {
       live = false;
     };
-  }, [file.url]);
-  const text = inline ?? loaded;
+  }, [file.url, known === null]);
+  const text = known ?? loaded;
   const minified = useMemo(() => (text ? looksMinified(text) : false), [text]);
   const [pretty, setPretty] = useState<boolean | null>(null);
   const formatted = pretty ?? minified;
@@ -270,6 +316,22 @@ function SourceView({
     () => shownText.replace(/\n$/, '').split('\n').length,
     [shownText],
   );
+  // what was asked for, once there is a text to show it in and the editor
+  // has a height to place it in: the caret at its start, which keeps its
+  // start in view however far it runs
+  const editor = useRef<CodeEditorHandle>(null);
+  const [height, setHeight] = useState(0);
+  const shownTarget = useRef<SourceTarget | null>(null);
+  useEffect(() => {
+    const view = editor.current;
+    if (!view || !target || text == null || !height) return;
+    if (shownTarget.current === target) return;
+    shownTarget.current = target;
+    const [from, to] = shownRange(file, target, text, formatted);
+    view.select(to, from);
+    view.scrollBy(0, view.caretRect().y - height / 3);
+    view.focus();
+  }, [target, text, height]);
 
   return (
     <box style={{ flexGrow: 1, minHeight: 0 }}>
@@ -339,21 +401,27 @@ function SourceView({
           answered nothing.
         </Note>
       ) : (
-        <CodeEditor
-          value={shownText}
-          readOnly
-          language={file.kind === 'script' ? javascript() : css()}
-          tokenStyles={styles}
-          lineNumbers
-          activeLine
-          style={{
-            flexGrow: 1,
-            minHeight: 0,
-            fontFamily: '$monoFamily',
-            fontSize: 12,
-            borderWidth: 0,
-          }}
-        />
+        <box
+          style={{ flexGrow: 1, minHeight: 0 }}
+          onLayout={(ev) => setHeight(ev.height)}
+        >
+          <CodeEditor
+            ref={editor}
+            value={shownText}
+            readOnly
+            language={file.kind === 'script' ? javascript() : css()}
+            tokenStyles={styles}
+            lineNumbers
+            activeLine
+            style={{
+              flexGrow: 1,
+              minHeight: 0,
+              fontFamily: '$monoFamily',
+              fontSize: 12,
+              borderWidth: 0,
+            }}
+          />
+        </box>
       )}
     </box>
   );

@@ -14,6 +14,7 @@ import type {
   ConsoleValue,
   Document,
   Element,
+  HtmlSheetSource,
 } from '../../../src/html/index.js';
 
 /** The panels the tools open on. */
@@ -61,6 +62,14 @@ export function useStore<T>(store: Store<T>): T {
   );
 }
 
+/** A part of a style sheet to show in the Sources panel: `from` to `to`, in
+ *  the sheet's text. */
+export interface SourceTarget {
+  sheet: HtmlSheetSource;
+  from: number;
+  to: number;
+}
+
 /**
  * What the tools inspect, which the page draws over its document: the
  * element chosen in the Elements panel, the one the pointer is over in the
@@ -77,6 +86,9 @@ export class Inspection {
   /** Bumped when the tools changed the document: what reads it reads it
    *  again now, rather than at its next tick. */
   readonly edited = new Store(0);
+  /** What the Sources panel was last asked to show, a new object for each
+   *  ask; null once the reader chose a file there themselves. */
+  readonly source = new Store<SourceTarget | null>(null);
 
   touch(): void {
     this.edited.set(this.edited.value + 1);

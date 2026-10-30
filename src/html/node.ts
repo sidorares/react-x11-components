@@ -138,6 +138,7 @@ import type {
   Declaration,
   MediaCondition,
   StyleRule,
+  SheetSource,
   Stylesheet,
 } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
@@ -2375,6 +2376,11 @@ export class HtmlViewNode extends Node {
       this._sameShadows(kept, shadowRead)
     ) {
       this._cascade = kept.cascade;
+      // an element put in for one that read the same is the sheet now
+      for (let i = 0; i < read.length; i += 1) {
+        const source = kept.sheets[i].source;
+        if (source) source.element = read[i].element;
+      }
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
       this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
@@ -2403,11 +2409,13 @@ export class HtmlViewNode extends Node {
         sheets.push(sheet);
         for (const rule of sheet.fontFaces) faces.push({ rule, element });
       };
-      for (const { text, encoding, element, base, media } of read) {
+      for (const each of read) {
+        const { text, encoding, element, base, media } = each;
         // a sheet under its `media` is under it as an imported one is
         // under its import's: each rule, each face and each import in it
         const under = media ? [media] : null;
         const sheet = this._parseSheet(text, layers, base, under);
+        sheet.source = sourceOfSheet(each);
         const seen: ImportRead[] = [];
         this._placeImports(
           sheet,
@@ -2427,6 +2435,9 @@ export class HtmlViewNode extends Node {
       for (const text of extras) {
         const sheet = parseStylesheet(text, order, layers);
         order += sheet.rules.length + 1;
+        if (sheet.rules.length) {
+          sheet.source = { url: null, element: null, text };
+        }
         sheets.push(sheet);
       }
       // a shadow tree's in an order and layers of their own, read as the
@@ -2444,9 +2455,11 @@ export class HtmlViewNode extends Node {
           treeOrder += 1;
           tree.push(sheet);
         };
-        for (const { text, encoding, element, base, media } of own) {
+        for (const each of own) {
+          const { text, encoding, element, base, media } = each;
           const under = media ? [media] : null;
           const sheet = this._parseSheet(text, treeLayers, base, under);
+          sheet.source = sourceOfSheet(each);
           const seen: ImportRead[] = [];
           this._placeImports(
             sheet,
@@ -2569,6 +2582,11 @@ export class HtmlViewNode extends Node {
       const key = base ?? url;
       if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
       const imported = this._parseSheet(fetched.text, layers, base, media);
+      imported.source = {
+        url: base ?? url,
+        element: null,
+        text: fetched.text,
+      };
       chain.add(key);
       this._placeImports(
         imported,
@@ -6252,6 +6270,12 @@ export class HtmlViewNode extends Node {
   matchedRules(element: Element): MatchedRule[] {
     this._prepare(this.abs.width || 1);
     return this._cascade?.matchedRules(element) ?? [];
+  }
+
+  /** The sheets the document is styled by (`Cascade.sheetSources`). */
+  styleSheets(): SheetSource[] {
+    this._prepare(this.abs.width || 1);
+    return this._cascade?.sheetSources() ?? [];
   }
 
   /** The classes or ids some rule of the document's would style `element`
@@ -13704,6 +13728,15 @@ interface SheetText {
   base: string | null;
   /** What its `media` attribute puts it under (`SheetRef.media`). */
   media: MediaCondition[] | null;
+}
+
+/** Where a sheet read from the document came from. */
+function sourceOfSheet(read: SheetText): SheetSource {
+  return {
+    url: read.href === undefined ? null : (read.base ?? read.href),
+    element: read.element,
+    text: read.text,
+  };
 }
 
 /** One `@import` a sheet read, and what it read as. */
