@@ -25988,6 +25988,7 @@ export function installDom(
       this._kept = range;
       this._backward = false;
       this._changed();
+      call('documentCaret', range._id);
       return range;
     }
     /** `selectionchange`, once a task however many changes it made
@@ -26010,7 +26011,7 @@ export function installDom(
       this._backward = backward;
       this._changed();
       // and drawn as the reader's is, where it is the document's; a caret
-      // draws nothing, and leaves the reader's selection none
+      // is no selection of the reader's, and leaves theirs none
       const drawn =
         range &&
         !range.collapsed &&
@@ -26026,6 +26027,9 @@ export function installDom(
             ])
           : '',
       );
+      // and the range itself, live, which the host draws a caret at where
+      // it is collapsed in an editing host that has the focus
+      call('documentCaret', range ? range._id : 0);
     }
     get rangeCount(): number {
       return this._range ? 1 : 0;
@@ -26272,18 +26276,6 @@ export function installDom(
     return [text, 0];
   };
 
-  /** The text node next to `node` in tree order inside `host`, forwards or
-   *  back, that has text: where a delete at a node's edge goes on into. */
-  const textBeside = (host: Any, node: Any, back: boolean): Any => {
-    const walker = document.createTreeWalker(host, 4);
-    walker.currentNode = node;
-    for (;;) {
-      const next = back ? walker.previousNode() : walker.nextNode();
-      if (!next) return null;
-      if (next.data.length) return next;
-    }
-  };
-
   /** Where a letter before or after an offset ends: a surrogate pair is
    *  one letter. */
   const letterEdge = (data: string, at: number, back: boolean): number => {
@@ -26307,6 +26299,224 @@ export function installDom(
     return /^(pre|pre-wrap|pre-line|break-spaces)$/.test(ws);
   };
 
+  /** The elements laid out as one thing of their own, which an edit takes
+   *  whole: a line break, an image, a control. */
+  const EDIT_ATOMS = new Set([
+    'br',
+    'img',
+    'input',
+    'textarea',
+    'select',
+    'button',
+    'hr',
+    'video',
+    'canvas',
+    'iframe',
+    'embed',
+    'object',
+    'svg',
+    'math',
+    'meter',
+    'progress',
+  ]);
+
+  /** A letter of a text node, by the code units it takes; or an element an
+   *  edit takes whole. */
+  type EditUnit = { text: Any; from: number; to: number } | { el: Any };
+
+  /** The letter before or after an offset of a text node. */
+  const letterAt = (text: Any, at: number, back: boolean): EditUnit => {
+    const edge = letterEdge(text.data, at, back);
+    return { text, from: Math.min(at, edge), to: Math.max(at, edge) };
+  };
+
+  /** Where a walk through a host comes to a block of its own, and stops. */
+  const BLOCK_EDGE = {};
+
+  /** The unit nearest a node's near edge, back or on: the first letter of
+   *  its text, an element taken whole, or the first in what it holds.
+   *  Text that is white space alone collapses to nothing, where the host
+   *  keeps no line feeds; an element that lays out nothing is passed over;
+   *  a block is `BLOCK_EDGE` where the walk keeps to the block it began in.
+   */
+  const unitIn = (
+    n: Any,
+    back: boolean,
+    keeps: boolean,
+    inBlock: boolean,
+  ): Any => {
+    if (n.nodeType === 3) {
+      if (!n.data.length || (!keeps && !/[^ \t\n\r\f]/.test(n.data))) {
+        return null;
+      }
+      return letterAt(n, back ? n.data.length : 0, back);
+    }
+    if (n.nodeType !== 1) return null;
+    if (EDIT_ATOMS.has(n.localName)) return { el: n };
+    const display = getComputedStyle(n).getPropertyValue('display');
+    if (display === 'none') return null;
+    if (inBlock && !display.startsWith('inline') && display !== 'contents') {
+      return BLOCK_EDGE;
+    }
+    for (
+      let c = back ? n.lastChild : n.firstChild;
+      c;
+      c = back ? c.previousSibling : c.nextSibling
+    ) {
+      const unit = unitIn(c, back, keeps, inBlock);
+      if (unit) return unit;
+    }
+    return null;
+  };
+
+  /**
+   * The unit beside a boundary point in an editing host, back or on in
+   * tree order — what a delete there takes, and what an edit asks of the
+   * line the point is on. Null at the host's edge, or, where `inBlock`, at
+   * the edge of the block the point is in.
+   */
+  const unitBeside = (
+    host: Any,
+    keeps: boolean,
+    node: Any,
+    offset: number,
+    back: boolean,
+    inBlock: boolean,
+  ): EditUnit | null => {
+    if (
+      node.nodeType === 3 &&
+      (back ? offset > 0 : offset < node.data.length)
+    ) {
+      return letterAt(node, offset, back);
+    }
+    let parent = node.nodeType === 3 ? node.parentNode : node;
+    let next =
+      node.nodeType === 3
+        ? back
+          ? node.previousSibling
+          : node.nextSibling
+        : (node.childNodes[back ? offset - 1 : offset] ?? null);
+    while (parent) {
+      for (; next; next = back ? next.previousSibling : next.nextSibling) {
+        const unit = unitIn(next, back, keeps, inBlock);
+        if (unit === BLOCK_EDGE) return null;
+        if (unit) return unit;
+      }
+      if (parent === host) return null;
+      if (inBlock) {
+        const display = getComputedStyle(parent).getPropertyValue('display');
+        if (!display.startsWith('inline') && display !== 'contents') {
+          return null;
+        }
+      }
+      next = back ? parent.previousSibling : parent.nextSibling;
+      parent = parent.parentNode;
+    }
+    return null;
+  };
+
+  /** Whether a unit ends a line: a `<br>`, or a line feed where the host
+   *  keeps them. */
+  const breaksLine = (unit: EditUnit | null, keeps: boolean): boolean =>
+    !!unit &&
+    ('el' in unit
+      ? unit.el.localName === 'br'
+      : keeps && unit.text.data.slice(unit.from, unit.to) === '\n');
+
+  /** The boundary point after a unit, or before it. */
+  const pointBy = (unit: EditUnit, after: boolean): [Any, number] => {
+    if ('el' in unit) {
+      const parent = unit.el.parentNode;
+      const index = Array.prototype.indexOf.call(parent.childNodes, unit.el);
+      return [parent, index + (after ? 1 : 0)];
+    }
+    return [unit.text, after ? unit.to : unit.from];
+  };
+
+  /** Take a unit out of the tree. */
+  const dropUnit = (unit: EditUnit): void => {
+    if ('el' in unit) unit.el.remove();
+    else unit.text.deleteData(unit.from, unit.to - unit.from);
+  };
+
+  /** Whether nothing follows a unit in the block it ends. */
+  const endsBlock = (host: Any, keeps: boolean, unit: EditUnit): boolean => {
+    const [node, offset] = pointBy(unit, true);
+    return !unitBeside(host, keeps, node, offset, false, true);
+  };
+
+  /**
+   * The line break after a boundary point that holds the point's line by
+   * itself, or null: the line has nothing else on it, and the break ends
+   * its block, where a break lays out no line after it. A browser puts one
+   * in for the caret's line where an edit leaves a line with nothing to
+   * hold it (Chrome's placeholder), and takes it out where something is
+   * typed there.
+   */
+  const placeholderAfter = (
+    host: Any,
+    keeps: boolean,
+    node: Any,
+    offset: number,
+  ): EditUnit | null => {
+    const after = unitBeside(host, keeps, node, offset, false, true);
+    if (!after || !breaksLine(after, keeps)) return null;
+    if (!endsBlock(host, keeps, after)) return null;
+    const before = unitBeside(host, keeps, node, offset, true, true);
+    return !before || breaksLine(before, keeps) ? after : null;
+  };
+
+  /** Put a line break in at a boundary point: a `<br>`, or a line feed
+   *  where the host keeps them. The point after it. */
+  const putBreak = (
+    keeps: boolean,
+    node: Any,
+    offset: number,
+  ): [Any, number] => {
+    if (keeps) {
+      const [text, at] = textAt(node, offset);
+      text.insertData(at, '\n');
+      return [text, at + 1];
+    }
+    const br = document.createElement('br');
+    if (node.nodeType === 3) {
+      if (offset < node.data.length) node.splitText(offset);
+      node.parentNode.insertBefore(br, node.nextSibling);
+    } else node.insertBefore(br, node.childNodes[offset] ?? null);
+    const parent = br.parentNode;
+    return [parent, Array.prototype.indexOf.call(parent.childNodes, br) + 1];
+  };
+
+  /**
+   * After a delete, the caret's line as a browser leaves it: a line break
+   * after the caret that held a line, and holds none now that a letter is
+   * before it on its line, is taken out; and a line the delete left with
+   * nothing to hold it — nothing after the caret in its block, and a break
+   * or the block's start before it — is given a placeholder.
+   */
+  const tidyLine = (host: Any, keeps: boolean): void => {
+    const range = selection._range;
+    if (!range) return;
+    const node = range.startContainer;
+    const offset = range.startOffset;
+    const before = unitBeside(host, keeps, node, offset, true, true);
+    const after = unitBeside(host, keeps, node, offset, false, true);
+    if (after) {
+      if (
+        before &&
+        !breaksLine(before, keeps) &&
+        breaksLine(after, keeps) &&
+        endsBlock(host, keeps, after)
+      ) {
+        dropUnit(after);
+      }
+      return;
+    }
+    if (before && !breaksLine(before, keeps)) return;
+    putBreak(keeps, node, offset);
+    selection.collapse(node, offset);
+  };
+
   /**
    * An edit of an editing host at the selection, as `inputType` names it
    * (Input Events 2): told as a `beforeinput`, made where it was not
@@ -26326,43 +26536,49 @@ export function installDom(
     };
     if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
     const back = inputType === 'deleteContentBackward';
+    const keeps = keepsLines(host);
     if (inputType.startsWith('delete')) {
       if (range.collapsed) {
-        let [node, offset] = textAt(range.startContainer, range.startOffset);
-        if (back ? offset === 0 : offset === node.data.length) {
-          const next = textBeside(host, node, back);
-          if (!next) return;
-          node = next;
-          offset = back ? next.data.length : 0;
+        const node = range.startContainer;
+        const offset = range.startOffset;
+        // the letter or the element beside the caret, a line break among
+        // them, across the blocks of the host
+        const unit = unitBeside(host, keeps, node, offset, back, false);
+        if (!unit) return;
+        // on from a last line a placeholder holds there is nothing to take
+        if (!back) {
+          const held = placeholderAfter(host, keeps, node, offset);
+          if (held) {
+            const [n, o] = pointBy(held, true);
+            if (!unitBeside(host, keeps, n, o, false, false)) return;
+          }
         }
-        const edge = letterEdge(node.data, offset, back);
-        const from = Math.min(offset, edge);
-        node.deleteData(from, Math.abs(offset - edge));
-        selection.collapse(node, from);
+        const [at, to] = pointBy(unit, false);
+        dropUnit(unit);
+        selection.collapse(at, to);
       } else {
         range.deleteContents();
         selection.collapse(range.startContainer, range.startOffset);
       }
+      tidyLine(host, keeps);
     } else {
       if (!range.collapsed) range.deleteContents();
-      const insert =
-        inputType === 'insertText'
-          ? data
-          : inputType === 'insertParagraph' || inputType === 'insertLineBreak'
-            ? keepsLines(host)
-              ? '\n'
-              : null
-            : null;
-      if (insert !== null) {
-        const [node, offset] = textAt(range.startContainer, range.startOffset);
-        node.insertData(offset, insert);
-        selection.collapse(node, offset + insert.length);
+      const node = range.startContainer;
+      const offset = range.startOffset;
+      if (inputType === 'insertText' && data !== null) {
+        // what is typed on a line a placeholder holds takes its place
+        const held = placeholderAfter(host, keeps, node, offset);
+        if (held) dropUnit(held);
+        const [text, at] = textAt(node, offset);
+        text.insertData(at, data);
+        selection.collapse(text, at + data.length);
       } else {
-        const br = document.createElement('br');
-        range.insertNode(br);
-        const parent = br.parentNode;
-        const index = Array.prototype.indexOf.call(parent.childNodes, br);
-        selection.collapse(parent, index + 1);
+        const [n, o] = putBreak(keeps, node, offset);
+        // a break that ends its block lays out no line after it (CSS Text
+        // 3, 4.1.2): a second holds the line the caret goes to, as Chrome's
+        // InsertLineBreakCommand puts one in
+        if (!unitBeside(host, keeps, n, o, false, true)) putBreak(keeps, n, o);
+        selection.collapse(n, o);
       }
     }
     dispatch(

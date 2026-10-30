@@ -1060,6 +1060,11 @@ export interface ComputedStyle {
   /** `scrollbar-color`'s thumb colour, null for `auto` (CSS Scrollbars 1,
    *  2): the track is an overlay bar's, which draws none. Inherited. */
   scrollbarThumbColor: string | null;
+  /** `caret-color`, null for `auto`, the text's own colour (CSS UI 4,
+   *  6.2.1): what an editing host's caret is drawn in. Inherited, and as a
+   *  keyword where it is `currentColor`, worked out against each element's
+   *  `color` where its caret is. */
+  caretColor: string | null;
   /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
    *  its edges measured from the border box's top left, a null edge the
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
@@ -1524,6 +1529,7 @@ export const INHERITED = [
   'colorSource',
   'interpolateSize',
   'scrollbarThumbColor',
+  'caretColor',
   'colorScheme',
   'colorSchemeKeywords',
   'textFillColor',
@@ -1825,6 +1831,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowY: 'visible',
     scrollbarWidth: 'auto',
     scrollbarThumbColor: null,
+    caretColor: null,
     clip: null,
     clipPath: null,
     opacity: 1,
@@ -2068,6 +2075,7 @@ export function inherit(
   out.colorSource = parent.colorSource;
   out.interpolateSize = parent.interpolateSize;
   out.scrollbarThumbColor = parent.scrollbarThumbColor;
+  out.caretColor = parent.caretColor;
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
@@ -3009,6 +3017,15 @@ export function applyDeclaration(
       const thumb = parseColor(parts[0]);
       if (thumb === null || parseColor(parts[1]) === null) return;
       style.scrollbarThumbColor = thumb;
+      return;
+    }
+    case 'caret-color': {
+      if (value.trim().toLowerCase() === 'auto') {
+        style.caretColor = null;
+        return;
+      }
+      const color = parseColor(value);
+      if (color !== null) style.caretColor = color;
       return;
     }
     case 'overflow':
@@ -8426,6 +8443,7 @@ const INHERITED_NAMES = new Set<string>([
   'color',
   'interpolate-size',
   'scrollbar-color',
+  'caret-color',
   'color-scheme',
   '-webkit-text-fill-color',
   'font',
@@ -9129,6 +9147,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-y': ['overflowY'],
   'scrollbar-width': ['scrollbarWidth'],
   'scrollbar-color': ['scrollbarThumbColor'],
+  'caret-color': ['caretColor'],
   opacity: ['opacity'],
   'scroll-snap-type': ['scrollSnapType'],
   'scroll-snap-align': ['scrollSnapAlign'],

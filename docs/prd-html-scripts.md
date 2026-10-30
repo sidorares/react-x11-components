@@ -858,7 +858,15 @@ standards moved from what Acid3 expected):
   and a key or a press no listener cancelled does what a browser's does
   (Input Events 2): a `beforeinput` the page may cancel, the text inserted
   or deleted at the selection, the caret moved after it, and an `input`;
-  a press focuses the host and puts the caret at the letter under it. A
+  a press focuses the host and puts the caret at the letter under it,
+  where it is drawn while the host has the focus (`HtmlViewNode.setCaret`,
+  told the selection's live range at each flush). Line breaks are edited
+  as Chrome edits them: a break that ends its block lays out no line
+  after it (CSS Text 3, 4.1.2), so Enter there puts in a second one, a
+  placeholder, for the caret's line, which what is typed there takes out;
+  Backspace and Delete beside a break take the break, a delete that
+  empties a line puts a placeholder in to hold it, and Delete on a last
+  line a placeholder holds takes nothing. A
   `Range`'s `getClientRects` is where its letters are drawn, a rectangle a
   line, found through the text node each piece of the document's text came
   from (`BoxTree.textNodes`, `dom-text.ts`), and `caretPositionFromPoint`
@@ -869,9 +877,9 @@ standards moved from what Acid3 expected):
   `getSelection()` had no range, and nothing a key did reached the DOM.
   Not yet: a paste or a cut (no `ClipboardEvent`), composition, a
   paragraph split into blocks (Enter is a line feed where white space keeps
-  them and a `<br>` elsewhere), a caret drawn for a host whose page draws
-  none, and the document's own drag selection, which is apart from the
-  page's.
+  them and a `<br>` elsewhere), a delete that joins two blocks (Backspace
+  at a block's start takes the last letter of the block before), and the
+  document's own drag selection, which is apart from the page's.
 - **The pane's scroll is the page's `scroll`.** Once a frame, at the
   document, bubbling to the window. CodeMirror measures its lines when it
   comes into view, and an editor below the fold kept a 14px default line

@@ -7443,6 +7443,36 @@ export function clipFor(
   return clip && { rect: clip, radius: 0 };
 }
 
+/**
+ * What cuts what `box` holds where it is drawn — a caret on its lines — in
+ * the document's coordinates: its own overflow clip edge as well as the
+ * boxes' around it (`clipFor`, which starts at its parent), each as the
+ * rectangle around it. Undefined where nothing cuts it; null where
+ * something cuts it in a way a rectangle cannot say.
+ */
+export function contentClipFor(
+  box: Box,
+  extent: Rect,
+  scale: number,
+): Rect | null | undefined {
+  const around = clipFor(box, extent, scale);
+  if (around === null) return null;
+  if (!clipsOverflow(box)) return around?.rect;
+  const edge = clipEdge(box, { originX: 0, originY: 0, scale, damage: null });
+  if (edge.shape) return null;
+  const { x, y, w, h } = edge.rect;
+  const outer = around?.rect;
+  if (!outer) return { x, y, width: w, height: h };
+  const left = Math.max(x, outer.x);
+  const top = Math.max(y, outer.y);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, Math.min(x + w, outer.x + outer.width) - left),
+    height: Math.max(0, Math.min(y + h, outer.y + outer.height) - top),
+  };
+}
+
 /** A scale the same both ways and a move: a point `p` is drawn at
  *  `k·p + (x, y)`. */
 export interface Zoom {
