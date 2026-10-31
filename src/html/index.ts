@@ -1120,7 +1120,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onControlChange,
     onSubmit,
     onDomEvent,
-    touch: () => setDomRevision((n) => n + 1),
+    touch: (changes) => {
+      if (changes) viewNode.current?.touchDocument(changes);
+      else setDomRevision((n) => n + 1);
+    },
   });
 
   // The keyboard's way through what the document draws: a box that takes

@@ -504,6 +504,28 @@ metric(
 );
 
 metric(
+  'a summary opened builds its details, and nothing around them',
+  async () => {
+    const { el, focused } = await renderBetween(
+      '<style>details[open] .in { color: #00aa00 }</style><body>' +
+        '<div id="far">far</div><div><p>a</p><p>b</p><p>c</p><p>d</p></div>' +
+        '<details id="d"><summary id="s">More</summary>' +
+        '<p class="in" id="in">inside</p></details></body>',
+    );
+    await tabs(2, focused);
+    assert.strictEqual(focused(), 's');
+    const far = boxOf(el, 'far');
+    await userEvent.key(XK_RETURN);
+    assert.ok(boxOf(el, 'far') === far, 'what is around it was built');
+    const inner = (boxOf(el, 'in') as unknown as { el: unknown }).el;
+    assert.strictEqual(
+      el.computedStyle(inner as never)?.color,
+      'rgb(0, 170, 0)',
+    );
+  },
+);
+
+metric(
   'a page of links mounts a stop for a few of them, and Tab still walks them all',
   async () => {
     // a box each would be a node core walks for every hit test and every

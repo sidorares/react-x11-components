@@ -1730,6 +1730,83 @@ metric(
   },
 );
 
+metric(
+  'a box ticked restyles what tests it, and builds what is around it no more',
+  async () => {
+    type Internals = {
+      setControlValue(el: unknown, value: string | boolean): boolean;
+    };
+    let handle: ReturnType<typeof useHtmlHandle> | null = null;
+    function Form() {
+      handle = useHtmlHandle();
+      return h(Html, {
+        source:
+          '<style>body{margin:0} #far{height:20px} input:checked ~ .on{color:#ff0000} ' +
+          'details[open] .in{color:#00aa00} select:has(option[selected][value=b]) ~ .pick{color:#0000ff}</style>' +
+          '<body><div id="far">far</div>' +
+          '<div><input type="checkbox" id="c"><b class="on" id="on">on</b></div>' +
+          '<div><input type="radio" name="r" id="r1" checked><input type="radio" name="r" id="r2"></div>' +
+          '<div><select id="s"><option value="a">a</option><option value="b">b</option></select>' +
+          '<i class="pick" id="pick">p</i></div>' +
+          '<details id="d"><summary id="sum">s</summary><p class="in" id="in">i</p></details></body>',
+        partial: false,
+        ref: handle.ref,
+      });
+    }
+    await renderX11(
+      h('box', { style: { width: 400, flexDirection: 'column' } }, h(Form)),
+      { width: 440, height: 300, fonts: FONTS! },
+    );
+    await act();
+    const node = screen.all((n) => n.kind === 'htmlview')[0] as unknown as {
+      _tree: unknown;
+      _firstBoxesOf(t: unknown): Map<unknown, unknown>;
+      computedStyle(e: unknown): { color: string } | null;
+      activate(e: unknown): boolean;
+    };
+    const doc = () => handle!.document;
+    const by = (id: string) => findById(doc(), id)!;
+    const far = () => node._firstBoxesOf(node._tree).get(by('far'));
+    const box = far();
+    const widgets = screen.getAllByRole('checkbox') as DrawnNode[];
+    await act(async () => {
+      fireEvent.click(widgets[0]);
+    });
+    await act();
+    assert.ok(far() === box, 'a tick built what is around it');
+    assert.strictEqual(node.computedStyle(by('on'))?.color, 'rgb(255, 0, 0)');
+    // a script's, through the document's own handle
+    await act(async () => {
+      (handle as unknown as Internals).setControlValue(by('c'), false);
+    });
+    await act();
+    assert.ok(far() === box, "a script's built what is around it");
+    assert.notStrictEqual(
+      node.computedStyle(by('on'))?.color,
+      'rgb(255, 0, 0)',
+    );
+    assert.strictEqual(
+      (screen.getAllByRole('checkbox')[0] as DrawnNode & Props).props[
+        'aria-checked'
+      ],
+      false,
+      'the widget shows it',
+    );
+    await act(async () => {
+      (handle as unknown as Internals).setControlValue(by('r2'), true);
+    });
+    await act();
+    assert.ok(far() === box, "a radio's built what is around it");
+    assert.strictEqual(by('r1').attribs.checked, undefined);
+    await act(async () => {
+      (handle as unknown as Internals).setControlValue(by('s'), 'b');
+    });
+    await act();
+    assert.ok(far() === box, "a menu's built what is around it");
+    assert.strictEqual(node.computedStyle(by('pick'))?.color, 'rgb(0, 0, 255)');
+  },
+);
+
 /** The clip each control of a document was reported with, by its id. */
 function clipsOf(node: DrawnNode): Record<string, unknown> {
   const rects = (

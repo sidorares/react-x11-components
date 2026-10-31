@@ -2648,7 +2648,10 @@ position, every relayout that moved a field (a stylesheet landing while
 someone typed) mounted a new widget, and the focus and the caret went with
 the old one. Nor by a count of resets: a reset sets a field's text through
 core's `value` setter, since a counter in every key mounted each control in
-the document again, and the focus went with the button pressed.
+the document again, and the focus went with the button pressed. **A control whose
+state a selector reads tells what it did as a change** (`touch`'s records):
+`checked`, `selected`, a `<details>`'s `open`, restyled as any attribute is,
+where a tick styled, built and laid out the whole document.
 
 **What happens to a document is told before what it does**
 (`onDomEvent`, `dom-events.ts`), and a host's `false` stops it — the seam a
