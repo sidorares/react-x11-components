@@ -2146,6 +2146,20 @@ it was — which `test/html/replaced.test.ts` finds for a drawing only by
 changing what `SvgView` reads once, since what it reads at each draw
 passes either way.
 
+**What a selector reads that is in no tree moves `treeGeneration` as
+well**, or a `:has()` keeps what it answered of it. The states a page's
+script or a widget sets — `:modal`, `:popover-open`, `:fullscreen`,
+`:defined`, a `<select>`'s `:open`, the media pseudo-classes — are told as
+a change of an attribute nothing has, and that refresh moves the clock. A
+fragment refreshes nothing, so `Cascade.setTarget` moves it itself, and
+`div:has(:target)` had answered what it first did through every fragment
+after it. The pointer and the focus are the two that do not: a selector
+that tests either keeps no answers (`STATE_PSEUDO`). **Anything new a
+pseudo-class reads outside the tree is told as one of those, or keeps no
+answers.** What a new fragment restyles is everything, wherever a rule
+tests `:target` (`targetSensitive`): **a rule filed outside `RuleIndex.add`
+says so itself**, as one at a shadow tree's edge does (`_noteEdge`).
+
 **A refresh told what changed restyles what a selector testing it
 reaches** (`refresh(changes)`, `HtmlChange`, a `MutationRecord`'s shape).
 The cascade reads every selector once for where it tests each class, id,

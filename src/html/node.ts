@@ -2940,7 +2940,7 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length ? this._webFonts : null,
         null,
-        null,
+        this._target,
         shadows,
         kept?.cascade ?? null,
       );

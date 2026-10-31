@@ -405,7 +405,8 @@ const SHADOW_ROOTS = new WeakMap<Element, ShadowRoot>();
 let generation = 0;
 
 /** A tree changed: the parser wrote to it, an application mutated it and
- *  said so, or a shadow root was attached. */
+ *  said so, or a shadow root was attached. Or what a selector reads moved
+ *  where no tree says: the element a fragment names (`Cascade.setTarget`). */
 export function treesChanged(): void {
   generation += 1;
 }
