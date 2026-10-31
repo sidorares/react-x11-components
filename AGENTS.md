@@ -2741,9 +2741,11 @@ from** (`_answers`): style containment asked whether a reset reached its
 element's siblings, which a build apart sees no outer counter to decide, so
 a `<ol start="7">` with `contain: style` in a list numbered from 1 built apart
 and from 7 whole. What such an element resets is outside it for what counts
-inside it, as Chromium and Firefox have it, whatever its reach (`_counted`),
-and a `list-item` it resets is its own and in it, as Chromium and WebKit have
-it (`reachesSiblings`).
+inside it, as all three engines have it, whatever its reach (`_counted`), and
+a `list-item` it resets is its own and in it, as Chromium and WebKit have it
+and Firefox does not (`reachesSiblings`). Where the engines differ on what is
+read there, a reset read before anything counts and one read beside it, this
+is Chromium's.
 
 **A script's child put in or taken out builds the end of what holds it
 too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,

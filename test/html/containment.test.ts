@@ -576,8 +576,9 @@ test('style containment keeps counters and quotes in its subtree', async () => {
 });
 
 test('what a style-contained element resets, its subtree does not count on', async () => {
-  // each answer is Chromium's and Firefox's: what is read inside it is the
-  // reset, and the first thing to count there makes a counter of its own
+  // the first thing to count in it makes a counter of its own, in all three
+  // engines; what is read there before that is the reset, in Chromium and
+  // Firefox, where WebKit reads 0
   const sheet =
     '<style>.c{contain:style}.r{counter-reset:n 3}.i{counter-increment:n}' +
     '.i::before{content:"<" counter(n) ">"}' +
@@ -593,7 +594,8 @@ test('what a style-contained element resets, its subtree does not count on', asy
     ).includes('[3]<1><2>[3]'),
   );
   // and with one, which it reaches only what it holds for: what a build of
-  // the element apart, which sees no `n`, has to come to as well
+  // the element apart, which sees no `n`, has to come to as well. What is
+  // beside it reads 10 in Chromium alone, and 3 in Firefox and WebKit
   assert.ok(
     (
       await text(
@@ -602,7 +604,7 @@ test('what a style-contained element resets, its subtree does not count on', asy
       )
     ).includes('<1><2>[10]'),
   );
-  // a child's reset is in its subtree, as its later siblings are
+  // a child's reset is in its subtree, as its later siblings are: all three
   assert.ok(
     (
       await text(
