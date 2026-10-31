@@ -10423,6 +10423,9 @@ export function installDom(
         ) {
           return;
         }
+        // as is no font, which is what `getComputedStyle(el).font` reads
+        // where the shorthand cannot say the element's
+        if (name === 'font' && !str(v).trim()) return;
         this._state[name] =
           typeof was === 'number'
             ? Number.isFinite(Number(v))
@@ -22727,9 +22730,14 @@ export function installDom(
       boxesOwed = json[0] === '~';
       if (boxesOwed) json = json.slice(1);
       values = json ? JSON.parse(json) : {};
-      names = Object.keys(values);
+      names = [];
       byName = new Map();
-      for (const name of names) {
+      for (const name in values) {
+        // answers by its name and is no item of the list, which is of
+        // longhands: a page that copies a style item by item, as
+        // html2canvas does, would set it over them, or take them all off
+        // with a '' it reads
+        if (name !== 'font') names.push(name);
         byName.set(name, values[name]);
         byName.set(camel(name), values[name]);
       }

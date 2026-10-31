@@ -29,6 +29,7 @@ import {
   parseColor,
   splitCommas,
   splitValue,
+  stretchKeyword,
 } from './css/values.js';
 import { colorFormText, rgbaOf } from './css/color.js';
 import { parseUrl } from './css/parse.js';
@@ -602,6 +603,48 @@ function fontFamilyText(style: ComputedStyle): string {
   return text;
 }
 
+/**
+ * `font` as the longhands it is set from come to, in the order Chrome, Firefox
+ * and WebKit all write them: '' where one has a value the shorthand has no way
+ * to say (CSSOM 6.7.2), as all three read, which is a width that is no
+ * keyword, capitals other than `small-caps`, and anything but the initial
+ * value of what it only sets back. `size` and `family` are what those
+ * properties answer, so a list never reads as the names a document's faces go
+ * by here.
+ */
+function fontText(
+  style: ComputedStyle,
+  size: string,
+  family: string,
+  scale: number,
+): string {
+  const width = stretchKeyword(style.fontStretch);
+  if (
+    width === null ||
+    style.fontUnsaid ||
+    style.fontVariantNumeric ||
+    style.fontVariantLigatures ||
+    style.fontVariantPosition ||
+    style.fontKerning ||
+    style.fontFeatureSettings ||
+    (style.fontVariantCaps && style.fontVariantCaps !== 'smcp=1')
+  ) {
+    return '';
+  }
+  let text = style.fontStyle === 'normal' ? '' : `${style.fontStyle} `;
+  if (style.fontVariantCaps) text += 'small-caps ';
+  if (style.fontWeight !== 400) text += `${style.fontWeight} `;
+  if (width !== 'normal') text += `${width} `;
+  text += size;
+  if (style.lineHeight !== 'normal') {
+    const height = style.lineHeightIsLength
+      ? style.lineHeight
+      : style.lineHeight * style.fontSize;
+    text += ` / ${px(height, scale)}`;
+  }
+  return `${text} ${family}`;
+}
+
 /** `display` as the author wrote it, where the box tree reads it as
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
@@ -986,6 +1029,7 @@ function cssomAt(
       style.colorSource,
     ),
   };
+  out.font = fontText(style, out['font-size'], out['font-family'], scale);
   // a transform resolves to the matrix its list comes to for the box
   // (CSSOM 9, "resolved value"), and with no box is the list it computes
   // to

@@ -8831,6 +8831,54 @@ metric(
   },
 );
 
+test("a page reads an element's font, and draws on a canvas in it, as it would in a browser", async () => {
+  const doc = await hosted(
+    `<!doctype html><style>.face { font: 13px 'Helvetica Neue' }
+      .adjusted { font-size-adjust: .5 }</style>
+      <p id="p" style="font: italic bold 16px/20px Inter, serif">a</p>
+      <p id="q" style="font: 12px serif; font-variant-numeric: tabular-nums">a</p>
+      <p id="r" class="face adjusted">a</p>
+      <pre id="out"></pre><script>
+      var p = getComputedStyle(document.getElementById('p'));
+      var q = getComputedStyle(document.getElementById('q'));
+      var r = document.getElementById('r');
+      var read = getComputedStyle(r);
+      var ctx = document.createElement('canvas').getContext('2d');
+      var drawn = [];
+      ctx.font = '20px sans-serif';
+      ctx.font = q.font;
+      drawn.push(ctx.font, ctx.measureText('xx').width);
+      ctx.font = p.font;
+      drawn.push(ctx.measureText('xx').width);
+      var kept = read.font;
+      r.className = 'face';
+      document.getElementById('out').textContent = JSON.stringify({
+        font: p.font,
+        property: p.getPropertyValue('font'),
+        none: q.font,
+        kept: kept,
+        unkept: read.font,
+        // what is no longhand is no item of the list, as in every browser
+        listed: Array.prototype.indexOf.call(p, 'font'),
+        family: Array.prototype.indexOf.call(p, 'font-family') >= 0,
+        drawn: drawn,
+      });
+      </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  assert.deepStrictEqual(out, {
+    font: 'italic 700 16px / 20px Inter, serif',
+    property: 'italic 700 16px / 20px Inter, serif',
+    none: '',
+    kept: '',
+    unkept: '13px "Helvetica Neue"',
+    listed: -1,
+    family: true,
+    // no font set leaves the one before, and the element's is the next
+    drawn: ['20px sans-serif', 22, 17.6],
+  });
+});
+
 metric(
   'a page reads the family it wrote, before its face arrives and after, and none of the names the face goes by',
   async () => {
