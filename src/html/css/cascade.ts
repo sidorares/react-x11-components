@@ -2844,9 +2844,9 @@ type NoteChange = (
    *  (`:empty`), or where it sits among its siblings (`:first-child`);
    *  absent for anything else. */
   tests?: Tests,
-  /** For one that tests where an element sits in a rule's subject, what
-   *  of the compound a child combinator leads to it from no change to the
-   *  tree can change: what the element it sits in has to match. */
+  /** For one that tests where an element sits, what of the compound a
+   *  child combinator leads to it from no change to the tree can change:
+   *  what the element it sits in has to match. */
   parent?: string | null,
 ) => void;
 
@@ -2885,6 +2885,9 @@ function scanChanges(
   note: NoteChange,
   outer = '',
   subject: string | null = null,
+  /** Where this is a function's argument above a rule's subject, that
+   *  subject's stable part (`scanFunctionChanges`). */
+  above: string | null = null,
 ): void {
   const parts = compoundsOf(selector);
   for (let i = 0; i < parts.length; i += 1) {
@@ -2903,9 +2906,9 @@ function scanChanges(
       );
       note(next, bits, null, trail || '*', stableCompound(text) || '*');
     }
-    // what a child combinator leads to a rule's own subject from
+    // what a child combinator leads to a compound of the rule's own from
     const parent =
-      last && subject !== null && i > 0 && parts[i - 1].next === '>'
+      subject !== null && i > 0 && parts[i - 1].next === '>'
         ? stableCompound(parts[i - 1].text)
         : null;
     scanCompoundChanges(
@@ -2914,7 +2917,7 @@ function scanChanges(
       has,
       note,
       last ? outer : '',
-      last ? null : subject,
+      last ? above : (subject ?? above),
       parent,
     );
   }
@@ -3014,7 +3017,7 @@ function scanFunctionChanges(
   has: HasAnchor | null,
   note: NoteChange,
   /** What a child combinator leads to the compound from, in a rule's own
-   *  subject (`NoteChange`'s `parent`). */
+   *  selector (`NoteChange`'s `parent`). */
   parent: string | null = null,
   /** The stable part of the subject of the rule, where the compound is
    *  above it in the rule's own selector (`scanChanges`). */
@@ -3063,7 +3066,7 @@ function scanFunctionChanges(
     for (const entry of selectorsOf(arg)) {
       if (has && readsApart(entry, has.siblings)) {
         scanChanges(entry, CHANGES_ANYWHERE, ANYWHERE_ANCHOR, note);
-      } else scanChanges(entry, bits, has, note, stable);
+      } else scanChanges(entry, bits, has, note, stable, null, subject);
     }
   } else if (name === 'lang' || name === 'dir') {
     // what the nearest element up that says one says: a change to one
@@ -3417,13 +3420,11 @@ class MutationRules {
       }
       const who = tests === 'holds' ? 'holder' : 'kid';
       const named = where && where !== '*' ? where : null;
-      // a child, in a rule's subject that a child combinator leads to, is
-      // one of what the compound it leads from names: as a selector of the
-      // two, matched of the child
-      const from =
-        at === 'self' && who === 'kid' && parent && parent !== '*'
-          ? parent
-          : null;
+      // a child a child combinator leads to is one of what the compound it
+      // leads from names: as a selector of the two, matched of the child.
+      // `.group > :first-child .button` asks nothing of a `<body>`'s
+      // children, and every child put in the `<body>` reached all of it
+      const from = who === 'kid' && parent && parent !== '*' ? parent : null;
       const one = from ? `${from} > ${named ?? '*'}` : named;
       const key = `${at} ${who}`;
       const kept = this._tested.get(key);
