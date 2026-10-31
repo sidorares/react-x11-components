@@ -755,6 +755,150 @@ test("a :has() answers the tree as it is now, after a stream's next chunk and af
   assert.notStrictEqual(color('d'), '#00ff00', 'the image taken out');
 });
 
+test('a :has() answers the fragment as it is now, as :target itself does: Chrome’s answers', async () => {
+  // the element a fragment names is in no tree, and a `:has()`'s answer was
+  // dropped only when a tree changed, so `d` kept what it first answered
+  // through every fragment after it. Each step is what Chrome 151, Firefox
+  // 153 and WebKit 26.5 draw
+  const source =
+    '<style>div:has(:target) { color: #00ff00 } ' +
+    'section:has(:target) p { color: #0000ff } ' +
+    '.before:has(+ :target) { color: #ff0000 } ' +
+    '.within:has(+ :is(:target)) { color: #ff00ff }</style>' +
+    '<div id="d"><span id="a">a</span></div>' +
+    '<section id="s"><b id="b">b</b><p id="p">p</p></section>' +
+    '<i class="before" id="i">x</i><u id="u">y</u>' +
+    '<i class="within" id="j">x</i><u id="v">y</u>';
+  const doc = (baseUrl: string | null) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, baseUrl, 'data-testname': 'doc' }),
+    );
+  const at = (hash: string) => `https://x.test/page${hash}`;
+  const result = await renderX11(doc(at('')), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  const lit = (): string[] => {
+    const on: string[] = [];
+    if (color('d') === '#00ff00') on.push('d');
+    if (color('p') === '#0000ff') on.push('p');
+    if (color('i') === '#ff0000') on.push('i');
+    if (color('j') === '#ff00ff') on.push('j');
+    return on;
+  };
+  const cascade = (el() as unknown as { _cascade: unknown })._cascade;
+  assert.deepStrictEqual(lit(), []);
+  for (const [hash, expected] of [
+    ['#a', ['d']],
+    ['#zz', []],
+    ['#b', ['p']],
+    ['#a', ['d']],
+    ['#u', ['i']],
+    ['#v', ['j']],
+    ['', []],
+  ] as const) {
+    await act(() => result.rerender(doc(at(hash))));
+    assert.deepStrictEqual(lit(), expected, hash);
+  }
+  assert.strictEqual(
+    (el() as unknown as { _cascade: unknown })._cascade,
+    cascade,
+    'all under the one cascade',
+  );
+});
+
+test('a :has() a first render answered at a fragment lets it go at the next', async () => {
+  const source =
+    '<style>div:has(:target) { color: #00ff00 }</style>' +
+    '<div id="d"><span id="a">a</span></div><span id="b">b</span>';
+  const doc = (baseUrl: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, baseUrl, 'data-testname': 'doc' }),
+    );
+  const result = await renderX11(doc('https://x.test/page#a'), {
+    backend: 'mock',
+  });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  assert.strictEqual(color('d'), '#00ff00');
+  await act(() => result.rerender(doc('https://x.test/page#b')));
+  assert.notStrictEqual(color('d'), '#00ff00');
+});
+
+test('a rule at a shadow tree’s edge, and :target in any case, follow the fragment: Chrome’s answers', async () => {
+  // a fragment restyles only where a rule tests `:target`, and what said so
+  // saw neither the rules a tree's edge files outside the indexes nor a
+  // name that was not in lower case, so these kept the fragment they were
+  // first styled at
+  const source =
+    '<style>x-p:target::part(p) { color: #0000ff } ' +
+    'x-q:has(:target)::part(p) { color: #0000ff } ' +
+    'div:has(:TARGET) { color: #00ff00 } u:Target { color: #ff0000 }</style>' +
+    '<x-h id="h"><template shadowrootmode="open"><style>' +
+    ':host(:target) { color: #ff0000 } ' +
+    ':host(:target) .y { color: #00ff00 }</style>' +
+    '<i id="hy" class="y">y</i></template></x-h>' +
+    '<x-s id="s"><template shadowrootmode="open"><style>' +
+    '::slotted(:target) { color: #ff0000 }</style><slot></slot></template>' +
+    '<b id="sb">b</b></x-s>' +
+    '<x-p id="p"><template shadowrootmode="open">' +
+    '<i id="pp" part="p">p</i></template></x-p>' +
+    '<x-q id="q"><template shadowrootmode="open"><i id="qp" part="p">p</i>' +
+    '<slot></slot></template><b id="qb">b</b></x-q>' +
+    '<div id="d"><u id="k">k</u></div><i id="o">o</i>';
+  const doc = (baseUrl: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, baseUrl, 'data-testname': 'doc' }),
+    );
+  const at = (hash: string) => `https://x.test/page${hash}`;
+  const result = await renderX11(doc(at('')), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const WANTS: Record<string, string> = {
+    h: '#ff0000',
+    hy: '#00ff00',
+    sb: '#ff0000',
+    pp: '#0000ff',
+    qp: '#0000ff',
+    d: '#00ff00',
+    k: '#ff0000',
+  };
+  const lit = (): string[] => {
+    el().textContent();
+    return Object.keys(WANTS).filter(
+      (id) =>
+        (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+          .color === WANTS[id],
+    );
+  };
+  assert.deepStrictEqual(lit(), []);
+  for (const [hash, expected] of [
+    ['#h', ['h', 'hy']],
+    ['#sb', ['sb']],
+    ['#p', ['pp']],
+    ['#qb', ['qp']],
+    ['#k', ['d', 'k']],
+    ['#o', []],
+    ['#h', ['h', 'hy']],
+    ['', []],
+  ] as const) {
+    await act(() => result.rerender(doc(at(hash))));
+    assert.deepStrictEqual(lit(), expected, hash);
+  }
+});
+
 test('a function with a combinator in it answers the tree as it is now, wherever a descendant combinator follows it: Chrome’s answers', async () => {
   // css-select rates `:is(.x .a)` as it rates a `:has()`, and a descendant
   // combinator after one keeps what it found above an element for as long
