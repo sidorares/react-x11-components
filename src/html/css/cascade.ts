@@ -332,6 +332,20 @@ export interface KeptStyles {
   root?: ComputedStyle;
 }
 
+/** Whether a container query finds in two styles of one element what it
+ *  finds (`Cascade._containerFor`): its type, the names it goes by, and
+ *  whether it is an inline box, which takes no size containment. */
+function sameContainer(a: ComputedStyle, b: ComputedStyle): boolean {
+  return (
+    a.containerType === b.containerType &&
+    a.containerName === b.containerName &&
+    a.scrollStateContainer === b.scrollStateContainer &&
+    a.anchoredContainer === b.anchoredContainer &&
+    (a.containerType === 'normal' ||
+      (a.display === 'inline') === (b.display === 'inline'))
+  );
+}
+
 /** A shadow tree's sheets, as the cascade is handed them: every tree whose
  *  sheets read the same — `key` — shares their rules (`Cascade.bindShadows`),
  *  which a component stamped out on every card of a page has parsed and
@@ -5901,6 +5915,7 @@ export class Cascade {
     if (!kept) this._containerReads.clear();
     this._kept = kept;
     this._keptShared.clear();
+    this._newContainers.clear();
     // which tree each element is in, found again: an element a script
     // moved into another tree since the last build is styled by its rules
     this._trees = new WeakMap();
@@ -6434,9 +6449,30 @@ export class Cascade {
     if (found) {
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container: found[0], answer: value });
+      reads.set(this._readKey(query, self), {
+        container: found[0],
+        answer: value,
+      });
     }
     return value;
+  }
+
+  /** What a read of `query` is noted under: the query, or for a
+   *  pseudo-element a copy of it, since a pseudo-element's query finds its
+   *  element where the element's own finds what is above it, and one
+   *  element with `.a` and `.a::after` under one `@container` has read two
+   *  containers. */
+  private _selfReads = new WeakMap<ContainerQuery, ContainerQuery>();
+  private _readKey(query: ContainerQuery, self: boolean): ContainerQuery {
+    if (!self) return query;
+    let key = this._selfReads.get(query);
+    if (!key) {
+      key = { ...query };
+      const axis = UNIT_AXIS.get(query);
+      if (axis) UNIT_AXIS.set(key, axis);
+      this._selfReads.set(query, key);
+    }
+    return key;
   }
 
   /** What a container unit of `query`'s axis is a hundredth of, for a
@@ -6562,7 +6598,7 @@ export class Cascade {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container, answer });
+      reads.set(this._readKey(query, self), { container, answer });
     }
     return answer;
   }
@@ -6955,7 +6991,8 @@ export class Cascade {
       kept !== null &&
       !this._rootMoved &&
       !kept.restyle.has(el) &&
-      (!kept.follow || this._parentAsWas(el, parentStyle, kept))
+      (!kept.follow || this._parentAsWas(el, parentStyle, kept)) &&
+      !this._underNewContainer(el)
     ) {
       // An element the change did not reach keeps its style, under a key
       // of its own: a key stands for an element's ancestors, which the
@@ -6971,6 +7008,39 @@ export class Cascade {
         return shared;
       }
     }
+    const made = this._styleToShare(
+      el,
+      parentStyle,
+      parentKey,
+      inFlexContainer,
+    );
+    if (kept !== null) {
+      const was = kept.styles.get(el)?.style;
+      if (was && !sameContainer(was, made.style)) this._newContainers.add(el);
+    }
+    return made;
+  }
+
+  /** The elements this build found another kind of container than they
+   *  were, or stopped being one: what a query in anything under one finds
+   *  has changed, whatever its parent's style came to (`sameContainer`). */
+  private _newContainers = new Set<Element>();
+  private _underNewContainer(el: Element): boolean {
+    if (!this._newContainers.size) return false;
+    for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+      if (this._newContainers.has(at)) return true;
+    }
+    return false;
+  }
+
+  /** The style of an element no style kept answers for, shared where it
+   *  can be. */
+  private _styleToShare(
+    el: Element,
+    parentStyle: ComputedStyle,
+    parentKey: number,
+    inFlexContainer: boolean,
+  ): SharedStyle {
     // one a script animates is as far through its animations as the page
     // has it, and another element alike in every way is not: two `<li>`s
     // with one faded in shared the fade
