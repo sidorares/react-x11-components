@@ -2150,7 +2150,34 @@ one before read of them too (`_noted`), the reach of a change, a hover and
 a focus, which was most of what making a cascade cost: **what `MutationRules`
 and `StateRules` keep reads a selector and nothing else**, and is only ever
 added to, so what a sheet that has gone left in it reaches more than it
-need and never less. **Where all the
+need and never less. **And where the indexes hold nothing that has gone, it
+takes them too** (`_stillHolds`, `_takeOver`): every sheet filed in them is
+still there, for the tree it is filed under, so only the rules of the
+sheets that are new are walked (`_fileRules`), and a sheet that adds rules
+costs what it holds. GitHub and YouTube hold some 28,000 rules, and each
+sheet their scripts brought walked all of them, 50 to 60 ms, were it two
+rules or none: each is about a millisecond, and `_restyle` comes to a
+quarter to a third less a load. A sheet taken out, or written over, which
+is another parse, makes the indexes from nothing, as a `<style>` a CSS-in-JS
+library writes to does: such sheets are small, and BBC's and the Guardian's
+cascades come to some 50 ms a load whichever way they are made. Four things
+are load-bearing. **Anything new a walk of a sheet's rules leaves on the
+cascade is taken over in `_takeOver`**, and what is read from a sheet's
+short lists is read by each cascade from each sheet, in their order
+(`_addSheet`), since a sheet may land anywhere: GitHub's land before the
+sheets in its `<body>`. **A place in the cascade is read from `rule.order`
+as a rule is matched**, and never from where a bucket has it, so **a rule
+made from a sheet's under another selector goes in `_restated`** — a
+pseudo-element's, a view transition's, a `:host()`'s — whose `order` is a
+copy `place` does not reach. **A matcher asks what changes through
+`_current`, never `this`**, since it outlives the cascade that compiled it,
+and **what an `IndexedRule` keeps is kept with what it noted**: a `needs`
+with `_askedIds` and `_askedClasses`. And an added rule is looked for among
+what the cascade filed (`_latest`), since a walk of the indexes for it costs
+what the take-over saved. A refresh of everything keeps a cascade whose
+sheets read as they did, so it agrees with itself: the sheet fuzz in
+`test/html/refresh.test.ts` holds each step to a cascade made from nothing
+as well, and `walkOf` holds all a walk leaves. **Where all the
 sheets did is add rules, what those rules can style is styled and nothing
 else** (`_sheetsAdded`): a sheet put in, a `<style>` written to at its
 end — a CSS-in-JS library's as each component first renders — and a
