@@ -1833,6 +1833,10 @@ scripts on are told a link or a form only once the page's own `click` and
 and the two reach the element as one array for as long as they read the
 same: another array restyles the whole document, and each change a script
 makes renders `<Html>` again.
+A shadow root's (`root.adoptedStyleSheets`) are its tree's alone, after the
+tree's own `<style>`s: a sheet may be shared by any number of roots, an edit
+reaches each, and a change builds the host and what it holds and leaves the
+rest of the document as it was.
 
 Three decisions that look like gaps and are not:
 
@@ -6189,7 +6193,7 @@ but for `shadowRoot`, which no `MutationObserver` reports:
 | `attributes`    | `target`'s attribute `attributeName` was set or removed. `oldValue` is what it was, `null` for none; left out, a `class` or an `id` change is taken for a change of every one a selector tests. |
 | `childList`     | Nodes were added to `target` or taken from it, every one of them listed in `addedNodes` and `removedNodes` — which is how a `<style>` coming or going is found.                                 |
 | `characterData` | A text's or a comment's data changed.                                                                                                                                                           |
-| `shadowRoot`    | `target` took a shadow tree. No selector outside it can tell, so what can differ is the host and all it holds.                                                                                  |
+| `shadowRoot`    | `target` took a shadow tree, or the sheets its tree adopted changed. No selector outside it can tell, so what can differ is the host and all it holds.                                          |
 
 The list has to hold every change since the last refresh. From it the
 component works out which elements' styles can have changed, from where each

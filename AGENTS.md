@@ -4898,6 +4898,29 @@ again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
 
+**A sheet a shadow root adopts is the tree's last sheet, and the host has it
+once.** `root.adoptedStyleSheets` is the document's array (`adoptedArray`,
+`setAdopted`), but where the document's reaches `<Html>` as the `stylesheet`
+prop, a root's stays with its tree. The realm numbers a sheet as a root first
+takes it and tells the host its text (`adoptedSheet`, once an edit, however
+many roots hold it) and each root the numbers it holds (`adoptShadow`, only
+where they moved), and `ShadowRoot.adopted` is one `AdoptedSheet` for all of
+them. `facts()` reads them after the tree's own sheets, so from there they
+are a `<style>` in the tree: trees that adopted one sheet are one set of
+rules (`_sheetsKey`), a Lit element's second instance makes no cascade, and
+what a change reaches is the host and what it holds (`_sheetsAdded`). Lit
+looks for `adoptedStyleSheets` on `Document.prototype` alone and then sets it
+on every root it renders, so a root that takes the sheets and does nothing
+with them drops a component's styles with no error. Three things are
+load-bearing. **Anything new that changes what a constructed sheet says ends
+in `readopt`**, which is why `disabled` is an accessor, or the roots holding
+it read what it was. **Anything that changes `adopted` tells a `shadowRoot`
+record**: `touch` is what makes the next scan a whole one, and a scan
+extended from the last (`_extendFacts`) keeps the text it read. And **an
+adopted sheet's `source.element` is null** (`SheetRef.constructed`): its
+ref's `element` is the host, since an import is asked for by an element, and
+a developer's tools read a `<style>`'s text off the element they are given.
+
 **A read of an element's style or box from a page's script costs a
 lookup.** `_boxOf` finds an element's first box by the tree's index of
 first boxes (`_firstBoxesOf`), and a box a drag set aside, which the index

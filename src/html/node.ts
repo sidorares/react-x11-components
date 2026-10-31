@@ -2318,6 +2318,7 @@ export class HtmlViewNode extends Node {
         encoding,
         element: ref.element,
         ...(ref.kind === 'link' && { href: ref.href }),
+        ...(ref.constructed && { constructed: true }),
         base,
         media: ref.media,
       });
@@ -10340,7 +10341,8 @@ export class HtmlViewNode extends Node {
     // are read (`_sheetsAdded`), where one that brings rules of its own
     // makes the cascade again. Every custom element with a shadow tree
     // restyled and built the whole document: MDN's and GitHub's each spent
-    // more than a second of a load on it.
+    // more than a second of a load on it. A tree that adopted other sheets
+    // reaches what one put on the host does.
     if (change.type === 'shadowRoot') {
       if (drawing) return false;
       const host = change.target;
@@ -13863,13 +13865,15 @@ interface SheetText {
   base: string | null;
   /** What its `media` attribute puts it under (`SheetRef.media`). */
   media: MediaCondition[] | null;
+  /** A sheet its tree adopted (`SheetRef.constructed`). */
+  constructed?: boolean;
 }
 
 /** Where a sheet read from the document came from. */
 function sourceOfSheet(read: SheetText): SheetSource {
   return {
     url: read.href === undefined ? null : (read.base ?? read.href),
-    element: read.element,
+    element: read.constructed ? null : read.element,
     text: read.text,
   };
 }

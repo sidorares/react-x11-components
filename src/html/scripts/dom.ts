@@ -5381,10 +5381,16 @@ export function installDom(
     get activeElement(): Any {
       return null;
     }
-    get adoptedStyleSheets(): Any[] {
-      return [];
+    /** The sheets a page constructed and adopted, which style this tree
+     *  after its own, as CSSOM orders them: the document's array, read by
+     *  the tree rather than handed to `<Html>` (`rootSheets`). */
+    get adoptedStyleSheets(): Any {
+      return rootSheets(this).array;
     }
-    set adoptedStyleSheets(_v: Any) {}
+    set adoptedStyleSheets(sheets: Any) {
+      const held = rootSheets(this);
+      setAdopted(held.sheets, sheets, 'ShadowRoot', held.changed);
+    }
   }
   /** Where an event goes from a node: its parent, and out of a shadow tree
    *  to its host where the event is composed, as most a user makes are. */
@@ -13308,7 +13314,10 @@ export function installDom(
     _version: Any = null;
     _list: Any = null;
     _media = '';
-    disabled = false;
+    _disabled = false;
+    /** The number the host has it by, from the first time a shadow root
+     *  adopts it (`tellSheet`). */
+    _adopted = 0;
     readonly parentStyleSheet = null;
     readonly ownerRule = null;
     readonly type = 'text/css';
@@ -13318,7 +13327,14 @@ export function installDom(
         media === undefined || media === null
           ? ''
           : String(media.mediaText ?? media);
-      this.disabled = !!options?.disabled;
+      this._disabled = !!options?.disabled;
+    }
+    get disabled(): boolean {
+      return this._disabled;
+    }
+    set disabled(v: Any) {
+      this._disabled = !!v;
+      if (!this._owner) readopt(this);
     }
     get ownerNode(): Any {
       return this._owner;
@@ -13535,17 +13551,49 @@ export function installDom(
     call('registeredProperties', [...registeredProperties.values()].join('\n'));
   };
 
-  /** `document.adoptedStyleSheets`: the sheets, and the array a page
-   *  edits them in, which tells the host as it changes. */
-  const adoptedSheets: Any[] = [];
-  const adoptable = (sheet: Any): void => {
+  /** Whether a page may adopt a sheet: one it constructed. */
+  const adoptable = (sheet: Any, on: string): void => {
     if (!(sheet instanceof CSSStyleSheet) || sheet._owner) {
       throw new DOMException(
-        "Failed to set the 'adoptedStyleSheets' property on 'Document': Sharing constructed stylesheets in multiple documents is not allowed",
+        `Failed to set the 'adoptedStyleSheets' property on '${on}': Sharing constructed stylesheets in multiple documents is not allowed`,
         'NotAllowedError',
       );
     }
   };
+  /** An `adoptedStyleSheets`: the array a page edits `sheets` in, which
+   *  says so as it changes. */
+  const adoptedArray = (sheets: Any[], on: string, changed: () => void): Any =>
+    new Proxy(sheets, {
+      set(target: Any, key: Any, value: Any): boolean {
+        if (typeof key === 'string' && /^\d+$/.test(key)) {
+          adoptable(value, on);
+        }
+        target[key] = value;
+        changed();
+        return true;
+      },
+      deleteProperty(target: Any, key: Any): boolean {
+        delete target[key];
+        changed();
+        return true;
+      },
+    });
+  /** `sheets` set whole, as `value` holds them. */
+  const setAdopted = (
+    sheets: Any[],
+    value: Any,
+    on: string,
+    changed: () => void,
+  ): void => {
+    const list = Array.from(value ?? []);
+    for (const sheet of list) adoptable(sheet, on);
+    sheets.splice(0, sheets.length, ...list);
+    changed();
+  };
+
+  /** `document.adoptedStyleSheets`: the sheets, and the array a page
+   *  edits them in, which tells the host as it changes. */
+  const adoptedSheets: Any[] = [];
   const adopt = (): void => {
     call(
       'adopt',
@@ -13556,23 +13604,52 @@ export function installDom(
       ),
     );
   };
-  const adopted: Any = new Proxy(adoptedSheets, {
-    set(target: Any, key: Any, value: Any): boolean {
-      if (typeof key === 'string' && /^\d+$/.test(key)) adoptable(value);
-      target[key] = value;
-      adopt();
-      return true;
-    },
-    deleteProperty(target: Any, key: Any): boolean {
-      delete target[key];
-      adopt();
-      return true;
-    },
-  });
+  const adopted: Any = adoptedArray(adoptedSheets, 'Document', adopt);
+
+  /** How many sheets the host has been told of (`tellSheet`). */
+  let toldSheets = 0;
+  /** A sheet's text, as the roots that adopted it read it: told to the
+   *  host once an edit, however many hold it, and by the number it goes by
+   *  there. A disabled sheet reads as no rules. */
+  const tellSheet = (sheet: Any): void => {
+    sheet._adopted ||= ++toldSheets;
+    call(
+      'adoptedSheet',
+      sheet._adopted,
+      sheet.disabled ? '' : (sheet._rules as string[]).join('\n'),
+    );
+  };
+  /** Each shadow root's adopted sheets, from the first time it is asked:
+   *  the sheets, the array a page edits them in, and the numbers the host
+   *  was last told, which a `push`, a write and then a `length`, leaves as
+   *  the write told them. */
+  const heldBy = new WeakMap<object, Any>();
+  const rootSheets = (root: Any): Any => {
+    let held = heldBy.get(root);
+    if (held) return held;
+    const sheets: Any[] = [];
+    let told = '';
+    const changed = (): void => {
+      const list = sheets.filter(Boolean);
+      for (const sheet of list) if (!sheet._adopted) tellSheet(sheet);
+      const ids = list.map((sheet) => sheet._adopted).join(',');
+      if (ids === told) return;
+      told = ids;
+      call('adoptShadow', root._id, ids);
+    };
+    held = {
+      sheets,
+      changed,
+      array: adoptedArray(sheets, 'ShadowRoot', changed),
+    };
+    heldBy.set(root, held);
+    return held;
+  };
   /** A constructed sheet changed: the document's adopted sheets again,
-   *  where it is one of them. */
+   *  where it is one of them, and its text, where a shadow root took it. */
   const readopt = (sheet: Any): void => {
     if (adoptedSheets.includes(sheet)) adopt();
+    if (sheet._adopted) tellSheet(sheet);
   };
 
   class HTMLStyleElement extends HTMLElement {
@@ -14246,10 +14323,7 @@ export function installDom(
     }
     set adoptedStyleSheets(sheets: Any) {
       if (this !== document) return;
-      const list = Array.from(sheets ?? []);
-      for (const sheet of list) adoptable(sheet);
-      adoptedSheets.splice(0, adoptedSheets.length, ...list);
-      adopt();
+      setAdopted(adoptedSheets, sheets, 'Document', adopt);
     }
     get styleSheets(): Any {
       const list = new StyleSheetList();
