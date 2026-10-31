@@ -44,6 +44,7 @@ import {
   shadowRootOf,
   tagOf,
   treeGeneration,
+  treesChanged,
 } from '../dom.js';
 import {
   BLOCK_AXIS,
@@ -692,7 +693,7 @@ class RuleIndex {
     }
     const focus = FOCUS.test(rule.selector);
     if (focus) this.focusSensitive = true;
-    if (rule.selector.includes(':target')) this.targetSensitive = true;
+    if (TARGET_PSEUDO.test(rule.selector)) this.targetSensitive = true;
     // and one under `@container`, whose answer is the container's an
     // element finds above it, which no sharing key says
     if (UNSHAREABLE.test(rule.selector) || rule.containers) {
@@ -1709,6 +1710,9 @@ const STATE_PSEUDO_AT =
 
 /** Any of them anywhere in a selector. */
 const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
+
+/** `:target` anywhere in a selector, and not `::target-text`. */
+const TARGET_PSEUDO = /:target(?![\w-])/i;
 
 /** A selector whose matcher keeps answers (`cacheResults`): css-select
  *  keeps what a `:has()`, a `:contains()` or an `:icontains()` answered for
@@ -4758,9 +4762,14 @@ export class Cascade {
   }
 
   /** The element the fragment of the document's URL names, `:target`
-   *  (Selectors 4, 9.1), or null for none. */
+   *  (Selectors 4, 9.1), or null for none. It is in no tree, so a matcher
+   *  that kept what a `:has()` answered of the last one is told as one of a
+   *  tree that changed is (`compileSelector`): `div:has(:target)` answered
+   *  what it first did through every fragment after it. */
   setTarget(target: Element | null): void {
+    if (target === this._target) return;
     this._target = target;
+    treesChanged();
   }
 
   /** Whether a rule tests `:target`: whether a new one can restyle
@@ -6188,6 +6197,7 @@ export class Cascade {
     if (FOCUS_STATE.mentions.test(rule.selector)) {
       this._index.focusSensitive = true;
     }
+    if (TARGET_PSEUDO.test(rule.selector)) this._index.targetSensitive = true;
     this._hoverRules.note(rule.selector);
     this._focusRules.note(rule.selector);
     if (UNSHAREABLE.test(rule.selector)) this._index.ownStyleEverywhere = true;
@@ -6209,6 +6219,7 @@ export class Cascade {
       this._index.focusSensitive = true;
       this._focusRules.noteEdge(selector);
     }
+    if (TARGET_PSEUDO.test(selector)) this._index.targetSensitive = true;
     if (UNSHAREABLE.test(selector)) this._index.ownStyleEverywhere = true;
   }
 
