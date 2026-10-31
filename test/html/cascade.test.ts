@@ -820,7 +820,8 @@ test('what a :has() holds is matched as the document’s, wherever its argument 
   // css-select read an `:is()`, a `:where()` or a `:not()` in an argument
   // with a combinator as relative to the `:has()`'s element, so a sibling
   // was never in one, and what such a selector reads above the element was
-  // never found
+  // never found; and it took the element for what an entry with a combinator
+  // in it starts at, which is inside it
   const { node } = await render(hasArgumentsDocument());
   const el = view(node);
   const colour = (id: string) => el.computedStyle(findById(el.document, id)!);

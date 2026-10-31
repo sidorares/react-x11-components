@@ -5056,7 +5056,10 @@ matches it — css-select refuses a `~=` word with any of JavaScript's white
 space in it, so such a class is asked another way. `:empty` is an element
 with no children but comments, as every engine has it: white space makes
 one other than empty, where css-select takes the Selectors 4 draft's
-reading, which none ships. A group
+reading, which none ships. `:has()` is read as Selectors 4 has it, where
+css-select reads it otherwise: what an entry starts at is inside the element,
+so `.a:has(.a .b)` wants an `.a` in it, a selector in a function in it is the
+document's, and a `:scope` in it is the query's. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
 starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
 (CSS Nesting 1): a rule inside a rule's block is relative to it, `&`

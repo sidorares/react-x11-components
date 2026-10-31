@@ -74,12 +74,14 @@ export const metric = FONTS ? test : test.skip;
 const HAS_P = '<div class="p" id="t"></div>';
 
 /**
- * `:has()`s with something in their argument that compiles a selector of
- * its own, each with markup its `#t` is matched in and markup it is not.
- * Every row is what Chrome 152 answers, by `matches()`, `querySelector()`,
- * `closest()`, `querySelectorAll()` and a computed style alike. All but
- * the one with no combinator in its argument failed one side or the other
- * before `compileHoisted`.
+ * `:has()`s css-select reads otherwise than a browser, each with markup its
+ * `#t` is matched in and markup it is not: with something in their argument
+ * that compiles a selector of its own, and with an entry that starts at no
+ * combinator and has one in it. Every row is what Chrome 152 answers, by
+ * `matches()`, `querySelector()`, `closest()`, `querySelectorAll()` and a
+ * computed style alike. All but the one with no combinator in its argument,
+ * and those that say so, failed one side or the other before
+ * `compileHoisted`.
  */
 export const HAS_ARGUMENTS: readonly (readonly [string, string, string])[] = [
   ['.p:has(+ .a:not(.b))', '<div class="a"></div>', '<div class="a b"></div>'],
@@ -175,7 +177,88 @@ export const HAS_ARGUMENTS: readonly (readonly [string, string, string])[] = [
     `<section class="x">${HAS_P}<div class="b"></div></section>`,
     `<section class="x">${HAS_P}<div class="b c"></div></section>`,
   ],
+  // what an entry with a combinator in it starts at is inside the element,
+  // and css-select took the element for it, so a `.p` with a `.b` in it held
+  insideHasRow('.p:has(.p .b)'),
+  insideHasRow('.p:has(.p > .b)'),
+  insideHasRow('.p:HAS(.p .b)'),
+  insideHasRow('.p:has(.p .b, .c)'),
+  insideHasRow('.p:has(.c, .p .b)'),
+  insideHasRow('.p:has(.p:not(.c) .b)'),
+  insideHasRow('.p:has(:is(.p, .c) .b)'),
+  insideHasRow(':is(.p:has(.p .b))'),
+  [
+    '.p:has(.p .c .b)',
+    '<div class="p" id="t"><u class="p"><s class="c"><i class="b"></i></s></u></div>',
+    '<div class="p" id="t"><s class="c"><i class="b"></i></s></div>',
+  ],
+  [
+    '.p:has(* .b)',
+    '<div class="p" id="t"><u><i class="b"></i></u></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has(div > .b)',
+    '<div class="p" id="t"><div><i class="b"></i></div></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has(:any-link .b)',
+    '<div class="p" id="t"><a href="#x"><i class="b"></i></a></div>',
+    '<a class="p" id="t" href="#x"><i class="b"></i></a>',
+  ],
+  [
+    '.p:not(:has(.x .b))',
+    '<div class="p x" id="t"><i class="b"></i></div>',
+    '<div class="p x" id="t"><u class="x"><i class="b"></i></u></div>',
+  ],
+  // where one entry starts at a sibling, css-select looks there for all of
+  // them, and the element is before what it finds
+  [
+    '.p:has(+ .c, .p + .b)',
+    '<div class="p" id="t"><u class="p"></u><i class="b"></i></div>',
+    '<div class="p" id="t"></div><i class="b"></i>',
+  ],
+  [
+    '.p:has(~ .c, .p ~ .b)',
+    '<div class="p" id="t"><u class="p"></u><s></s><i class="b"></i></div>',
+    '<div class="p" id="t"></div><s></s><i class="b"></i>',
+  ],
+  // written as a selector can be, which a split at commas and combinators
+  // does not cut
+  [
+    '.p:has(.md\\:a .b)',
+    '<div class="p md:a" id="t"><u class="md:a"><i class="b"></i></u></div>',
+    '<div class="p md:a" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has([data-x="a, b > c"] .b)',
+    '<div class="p" id="t"><u data-x="a, b > c"><i class="b"></i></u></div>',
+    '<div class="p" id="t" data-x="a, b > c"><i class="b"></i></div>',
+  ],
+  // these two held before as well: an `X` above the element is not inside
+  // it, and a combinator after a comment is still where an entry starts
+  [
+    '.p:has(.x .b)',
+    '<section><div class="p" id="t"><u class="x"><i class="b"></i></u></div></section>',
+    '<section class="x"><div class="p" id="t"><i class="b"></i></div></section>',
+  ],
+  [
+    '.p:has(/* x */ > .a .b)',
+    '<div class="p" id="t"><u class="a"><i class="b"></i></u></div>',
+    '<div class="p" id="t"><s><u class="a"><i class="b"></i></u></s></div>',
+  ],
 ];
+
+/** A row of `HAS_ARGUMENTS` for a selector that asks a `.p` for a `.p` with
+ *  a `.b` in it. */
+function insideHasRow(selector: string): readonly [string, string, string] {
+  return [
+    selector,
+    '<div class="p" id="t"><u class="p"><i class="b"></i></u></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ];
+}
 
 /** The colour a row of `HAS_ARGUMENTS` gives what it matches. */
 export const HAS_MATCHED = 'rgb(0, 255, 0)';
