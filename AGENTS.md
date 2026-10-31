@@ -1975,6 +1975,32 @@ Over a network, the Zen Garden's designs took eleven builds a page before
 these and take one; Wikipedia's X Window System article was built eleven
 times as its images came in, at some 180 ms a time on a Mac, and is
 painted.
+**What lands while a build is owed adds to that build, and never widens
+it** (`_imageArrived`, `_arrivedKinds`). A change says what its build
+reaches (`_buildSeeds`), and `_invalidate` with `Stale.Boxes` and no seeds
+takes that away: the build is the whole document's. An image lands on any
+turn of a page still loading, and each that landed between a change and its
+frame did that, with no box of any other kind. On a cold load of the
+Guardian, in a real window, that was seven to ten builds of the whole
+document, and on BBC two to five. So a build of subtrees that is owed stays
+one: what it builds reads each size as it makes the box, every other box
+takes its size in place as it would with nothing owed, and what comes out
+another box with its image joins the seeds with its element, styles kept.
+Measure these cold, from a profile with nothing in its cache: a warm one
+lands every image in a bunch before the page's scripts have changed
+anything, and shows none of it. **Anything new that answers something late
+adds to a build owed through `_invalidate`'s `seeds`, or leaves it as it
+is**: `'resized'`, which no site here has told, is the last that does neither.
+**A list's entry goes with what built it** (`ContentImage.box`): a tail
+builds its holder's `::after` again, and an entry kept by the holder stays
+beside the new one, and with no size is news at every arrival after it. And
+**what will have no image is listed as waiting for none**: an `<object>`
+that holds a document is its frame for good. A build of subtrees cuts the
+document's text where its boxes say, so **a build's text and its boxes agree
+to the character** (`textBoxesAstray` holds them to it): `_endLine` takes a
+space back off the last chunk, and one it empties goes, or the next takes
+its space from nothing and every place after it is one out, which a
+comparison of two builds cannot see, since both are.
 `htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
 arrivals coalesce into a frame and none of it shows. **A sheet declined
 or failed after it was asked for is news too** (`'declined'`, in

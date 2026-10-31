@@ -1654,6 +1654,8 @@ function boxLine(box: Box): string {
     box.marker?.layout ? box.marker.layout.width : '',
     box.outOfFlow ? 'out' : '',
     box.isFloat ? 'float' : '',
+    // the size an image's box took, in place or as it was built
+    box.intrinsic ? JSON.stringify(box.intrinsic) : '',
     // and where it inks, which a block a layout kept is walked for again;
     // a text's is its line's
     box.kind === 'text' || box.kind === 'break'
@@ -1713,6 +1715,16 @@ export function treeLines(tree: BoxTree): string[] {
   boxes('focusables', tree.focusables);
   boxes('backgrounds', tree.backgrounds);
   boxes('images', tree.images);
+  boxes('awaiting', tree.awaiting);
+  // a set: nothing reads it in order, and a splice lists an element's
+  // `::after` by the element, where a build lists it after what that holds
+  out.push(
+    `contentImages: ${tree.contentImages
+      .map((c) => `${c.url}@${pathOf(c.element)}:${c.sized}`)
+      .sort()
+      .join(' ')}`,
+  );
+  out.push(`awaitingKind: ${tree.awaitingKind.map(pathOf).join(' ')}`);
   out.push(`text: ${JSON.stringify(tree.text)}`);
   out.push(`unselectable: ${tree.unselectable.join(',')}`);
   out.push(

@@ -1158,7 +1158,7 @@ export interface BoxTree {
   /** Every image generated content names, the element whose
    *  pseudo-element names it, for the host to be asked for, and whether its
    *  size was known when the box was built. */
-  contentImages: { url: string; element: Element; sized: boolean }[];
+  contentImages: ContentImage[];
   /** Every `<img>` box built before its image's size was known — at the
    *  size its element's attributes say, or the image it showed before —
    *  and what an image arriving is checked against, since one that sizes
@@ -1342,6 +1342,15 @@ export function buildBoxes(
   return builder.run(root as Element);
 }
 
+/** An image generated content or a marker names (`BoxTree.contentImages`):
+ *  the box that shows it, where one is made for it. */
+export interface ContentImage {
+  url: string;
+  element: Element;
+  sized: boolean;
+  box?: Box;
+}
+
 /** What a build of one subtree made (`Builder.runSubtree`, `runTail`): its
  *  boxes, its text numbered from 0, and its part of each of the tree's
  *  lists. */
@@ -1364,7 +1373,7 @@ interface SubtreeBuild {
   links: Box[];
   focusables: Box[];
   backgrounds: Box[];
-  contentImages: { url: string; element: Element; sized: boolean }[];
+  contentImages: ContentImage[];
   awaiting: Box[];
   images: Box[];
   awaitingKind: Element[];
@@ -1889,14 +1898,17 @@ export function buildSubtrees(
     // with it: all of them before every root and tail, or after
     const lines = at.lines;
     if (lines?.length && lines[0].textStart >= olds[0].start) {
-      const by = movedFor(lines[0].textStart, at);
+      const first = lines[0];
+      const by = movedFor(first.textStart, at, first.textEnd > first.textStart);
       if (by) shiftLines(lines, by, pass);
     }
   };
   // How far a place in the text that a kept box has moves: past each root
   // or tail before it or in it. At one's end, it is past one with text, and
-  // past one with none where the box holds the one or comes after it.
-  const movedFor = (at: number, box: Box): number => {
+  // past one with none where the box holds the one or comes after it, or
+  // what starts there is text (`starts`), which leaves one with none no
+  // room but before it: an anonymous block has no element to say so.
+  const movedFor = (at: number, box: Box, starts: boolean): number => {
     let by = 0;
     for (let i = 0; i < olds.length; i += 1) {
       const o = olds[i];
@@ -1904,6 +1916,7 @@ export function buildSubtrees(
         at > o.end ||
         (at === o.end &&
           (o.start < o.end ||
+            starts ||
             around[i].has(box) ||
             (!!box.el && precedes(o.first, box.el))))
       ) {
@@ -2271,8 +2284,11 @@ export function buildSubtrees(
     backgrounds: boxList(tree.backgrounds, (b) => b.backgrounds),
     awaiting: boxList(tree.awaiting, (b) => b.awaiting),
     images: boxList(tree.images, (b) => b.images),
+    // A tail builds its holder's `::after` again, and an entry goes by the
+    // element it stands for, which stays: left in, one unsized was news at
+    // every arrival after it (`HtmlViewNode._arrivedKinds`).
     contentImages: elementList(
-      tree.contentImages,
+      tree.contentImages.filter((entry) => !entry.box || !dropped(entry.box)),
       (b) => b.contentImages,
       (entry) => entry.element,
     ),
@@ -2427,9 +2443,17 @@ function insideRoot(node: ChildNode, o: SubtreeRoot): boolean {
     const holder = isElement(node) ? node : (node.parent as Element | null);
     return !!holder && isElement(holder) && within(holder, o.el!);
   }
-  let at: ChildNode = node;
-  while (at.parent && at.parent !== tail.node) at = at.parent as ChildNode;
-  return at.parent === tail.node && tail.nodes.has(at);
+  // through a shadow tree's host, as `connected` goes: a tail that builds a
+  // host builds what its tree holds
+  let at: { parent: unknown } = node;
+  for (;;) {
+    while (at.parent && at.parent !== tail.node) {
+      at = at.parent as { parent: unknown };
+    }
+    if (at.parent === tail.node) return tail.nodes.has(at as ChildNode);
+    if (!(at instanceof ShadowRoot)) return false;
+    at = at.host;
+  }
 }
 
 /** Whether a list's entry for a box of `el` comes before what a build of a
@@ -3291,11 +3315,7 @@ class Builder {
   private _links: Box[] = [];
   private _focusables: Box[] = [];
   private _backgrounds: Box[] = [];
-  private _contentImages: {
-    url: string;
-    element: Element;
-    sized: boolean;
-  }[] = [];
+  private _contentImages: ContentImage[] = [];
   private _awaiting: Box[] = [];
   private _images: Box[] = [];
   private _awaitingKind: Element[] = [];
@@ -4074,8 +4094,11 @@ class Builder {
               ? 'image'
               : 'button'
             : replacedKind(el, tag);
+    // and what a document came to has what it will have: listed, it was
+    // news at every image after it
     if (
       replaced !== 'image' &&
+      !this._options.holdsDocument?.(el) &&
       (tag === 'object' ||
         tag === 'embed' ||
         tag === 'video' ||
@@ -4946,7 +4969,7 @@ class Builder {
     into.append(box);
     CONTENT_IMAGES.set(box, url);
     const size = this._options.urlSize?.(url) ?? null;
-    this._contentImages.push({ url, element: owner, sized: !!size });
+    this._contentImages.push({ url, element: owner, sized: !!size, box });
     if (marker) {
       const { width, height } = marker;
       const ratio = width > 0 && height > 0 ? width / height : 0;
@@ -5156,8 +5179,14 @@ class Builder {
       ranges[n - 1] = this._length;
       if (ranges[n - 2] >= this._length) ranges.length = n - 2;
     }
+    // and a chunk it empties goes as well: a float's lone space leaves the
+    // space before the float on the line, and the next line's end takes
+    // that one back from the chunk under it, or every place after it in
+    // the text is one out
     const last = this._chunks.length - 1;
-    this._chunks[last] = this._chunks[last].slice(0, -1);
+    const chunk = this._chunks[last].slice(0, -1);
+    if (chunk) this._chunks[last] = chunk;
+    else this._chunks.pop();
     if (!box.text) {
       this._textBoxes.pop();
       const siblings = box.parent?.children;
