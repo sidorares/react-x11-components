@@ -2165,9 +2165,12 @@ out or written over, and one adding what reaches past its selectors — an
 `@counter-style` or layer, a rule at a shadow tree's edge or for a highlight.
 **Anything new a sheet can declare that reaches past the elements its
 selectors name joins `onlyRules`' and `rulesAfter`'s checks**, or a sheet
-bringing it restyles too little. A `<meta>` the
+bringing it restyles too little. A shadow tree's sheet reaches only what the
+tree's host holds, so a tree that comes to read otherwise, or to other
+rules, styles its host and all it holds (`_shadowKeys`), where GitHub's first
+`<tool-tip>` styled the whole document. A `<meta>` the
 cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
-`<base>`, a sheet in a shadow tree, a `:has()` every element could anchor
+`<base>`, a `:has()` every element could anchor
 that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`
 are refreshes of everything: the scope says null, and nothing is skipped.
 Any other `<meta>` is an element like any, which the Guardian's scripts,
@@ -2299,7 +2302,9 @@ in-flow block around a seed whose content the builder can build apart
 old one was, with the document's text, every box's place in it, the
 lists and the styles spliced to say what a whole build says. A seed with
 no box, new or `display: none` before, is styled where it is and its
-style put in, and where it comes out drawn the whole document is built.
+style put in, and where it comes out drawn its parent is built, or the end
+of its parent from it where nothing around it can be: a menu or a dialog
+shown or hidden built the whole document.
 A root whose element comes out as no block in the flow of its own — a
 caption a class makes absolute, a block turned inline — is placed by its
 parent's flow: the build gives up at every such root before it changes

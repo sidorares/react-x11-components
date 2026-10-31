@@ -906,6 +906,8 @@ export class HtmlViewNode extends Node {
    *  anything (`_sheetsAdded`): a `<style>` a script put in or wrote to, a
    *  sheet that came. */
   private _sheetsOwed = false;
+  /** How each shadow tree's sheets read, as `_restyle` last found them. */
+  private _shadowKeys = new Map<ShadowRoot, string>();
   private _parsing: Map<string, ParsedSheet[]> | null = null;
   /** Each `<link>` and `<style>` whose sheet the cascade in force read,
    *  with the `href` a link's was read from and what the sheet imports
@@ -1323,9 +1325,11 @@ export class HtmlViewNode extends Node {
         else if (what === 'resized') this._invalidate(Stale.Boxes, EMPTY_SET);
         else if (what === 'stylesheet' && this._tree && this._cascade) {
           // a sheet as one more of the document's, whose rules style what
-          // they can style (`_sheetsAdded`)
+          // they can style (`_sheetsAdded`), and whose boxes are all a build
+          // has to make: each sheet GitHub links late built and laid out the
+          // whole page for the few dozen elements it styles
           this._sheetsOwed = true;
-          this._invalidate(Stale.Boxes, EMPTY_SET, true);
+          this._invalidate(Stale.Boxes, EMPTY_SET, true, EMPTY_SET);
         } else {
           this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
         }
@@ -2359,6 +2363,7 @@ export class HtmlViewNode extends Node {
     // trees whose sheets read alike — a component stamped out on every
     // card of a page — are one set of rules, parsed and indexed once.
     const shadowKeys = new Map<ShadowRoot, string>();
+    this._shadowKeys = shadowKeys;
     const shadowRead = new Map<string, SheetText[]>();
     const shadowOwn: [string, SheetText[]][] = [];
     for (const { root, sheets } of facts.shadows) {
@@ -10395,10 +10400,10 @@ export class HtmlViewNode extends Node {
         changesCascade(el, name, change.oldValue ?? null) &&
         !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
       ) {
-        // a sheet's element in the document's tree: the cascade is made
-        // again before the build, which styles what the rules it adds can
-        // style besides what the change reaches (`_sheetsAdded`)
-        if (!SHEET_TAGS.has(tagOf(el)) || inShadowTree(el)) return false;
+        // a sheet's element: the cascade is made again before the build,
+        // which styles what the rules it adds can style besides what the
+        // change reaches (`_sheetsAdded`)
+        if (!SHEET_TAGS.has(tagOf(el))) return false;
         scope.sheets = true;
       }
       const reach = cascade.attributeChange(
@@ -10471,9 +10476,7 @@ export class HtmlViewNode extends Node {
     ) {
       // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
       // rules into one as their components first render
-      if (tagOf(parent as Element) !== 'style' || inShadowTree(parent)) {
-        return false;
-      }
+      if (tagOf(parent as Element) !== 'style') return false;
       scope.sheets = true;
     }
     let drawn = false;
@@ -10484,7 +10487,6 @@ export class HtmlViewNode extends Node {
           const held = cascadeHeld(node);
           if (held & HELD_PRAGMA) return false;
           if (held & HELD_SHEET && !this._sheetsKept(parent, scope)) {
-            if (inShadowTree(parent)) return false;
             scope.sheets = true;
           }
           // a shadow tree that came with it is bound as the sheets are read
@@ -10775,12 +10777,13 @@ export class HtmlViewNode extends Node {
     if (asideIn(tree)) putBack(tree);
     const first = this._firstBoxesOf(tree);
     let built: SubtreesBuilt | null = null;
+    let ends = tails;
     for (let tries = 0; !built; tries += 1) {
       const found = this._subtreeRoots(
         tree,
         seeds,
         options.kept?.restyle,
-        tails,
+        ends,
         parsed,
       );
       if (!found) return null;
@@ -10794,6 +10797,21 @@ export class HtmlViewNode extends Node {
       if (!built) {
         if (!found.wider || tries >= SUBTREE_WIDENINGS) return null;
         seeds = new Set([...seeds, ...found.wider]);
+        // the end of what holds it, from there: a dialog at the top of a
+        // `<body>`, shown or hidden, is no root, and built the whole document
+        if (found.widerEnds) {
+          const wider = new Map(ends);
+          for (const [parent, kid] of found.widerEnds) {
+            const had = wider.get(parent);
+            if (
+              had === undefined ||
+              tailAt(parent, kid) < tailAt(parent, had)
+            ) {
+              wider.set(parent, kid);
+            }
+          }
+          ends = wider;
+        }
       }
     }
     // what the boxes around each new one measured of the old, for their
@@ -11126,13 +11144,23 @@ export class HtmlViewNode extends Node {
     const was = this._sheetsRead;
     const cascade = this._cascade;
     const tree = this._tree;
+    const treesWere = this._shadowKeys;
     // a width that crossed a breakpoint as well, which the styles kept were
     // not computed at
     const band =
       !!cascade && cascade.mediaBand(target, viewport) === this._mediaBand;
     this._restyle(target);
     const now = this._sheetsRead;
-    if (this._cascade === cascade) return new Set();
+    // A shadow tree bound to other rules than it was: all they style is in
+    // its host. GitHub's `<tool-tip>` puts a `<style>` in its tree as it
+    // connects, and the first of them styled the whole document.
+    const rebound = new Set<Element>();
+    for (const [root, key] of this._shadowKeys) {
+      if ((treesWere.get(root) ?? '') !== key) {
+        addFlatSubtree(root.host, rebound);
+      }
+    }
+    if (this._cascade === cascade) return rebound;
     if (!was || !now || !tree || !band || this._styledWith !== cascade) {
       return null;
     }
@@ -11148,6 +11176,7 @@ export class HtmlViewNode extends Node {
     if (reached) {
       this._keptFor = this._cascade;
       if (added.keyframes.size) runningAny(tree, added.keyframes, reached);
+      for (const el of rebound) reached.add(el);
     }
     return reached;
   }
@@ -13881,8 +13910,10 @@ interface ParsedSheet {
  * is all they do (`_sheetsAdded`): every sheet of `was` is in `now`, in its
  * order, under the same base and media and importing the same, reading as
  * it did or with style rules after its last — a CSS-in-JS library's
- * `<style>` written to — and every other sheet is new; neither is in a
- * shadow tree, and the host's sheets are as they were. And nothing added
+ * `<style>` written to — and every other sheet is new; a shadow tree's
+ * sheets import what they did, and one that reads otherwise is bound to
+ * other rules, which styles what its host holds (`_sheetsAdded`); and the
+ * host's sheets are as they were. And nothing added
  * reaches past what its selectors name: no `@import`, `@font-face`,
  * `@property`, `@function`, `@position-try`, `@counter-style` or cascade
  * layer, no `@scope`, `@starting-style` or `@namespace`, and no selector at
@@ -13900,8 +13931,11 @@ function addedRules(
     now.fonts !== was.fonts ||
     now.extras.length !== was.extras.length ||
     now.extras.some((text, i) => text !== was.extras[i]) ||
-    now.shadows.size !== was.shadows.size ||
-    [...now.shadows.keys()].some((key) => !was.shadows.has(key))
+    [...was.shadows].some(([key, imports]) =>
+      now.shadows
+        .get(key)
+        ?.some((list, i) => !sameImportsRead(list, imports[i])),
+    )
   ) {
     return null;
   }

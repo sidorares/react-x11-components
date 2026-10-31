@@ -1186,6 +1186,97 @@ test('a cascade made for a sheet that came keeps what it knew of the rules befor
   );
 });
 
+test('a sheet that comes late builds what its rules style, and keeps every other box', async () => {
+  let arrive: (result: ResourceResult) => void = () => {};
+  const onResource = (r: ResourceRequest) =>
+    r.kind === 'stylesheet'
+      ? new Promise<ResourceResult>((resolve) => (arrive = resolve))
+      : null;
+  const { result, node } = await render(
+    '<!doctype html><html><head></head><body><div id="far">far</div>' +
+      '<section><div id="q">q</div><div id="gone">gone</div></section>' +
+      '<div id="last">last</div></body></html>',
+    300,
+    { onResource },
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const box = (id: string) =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, id));
+  const far = box('far');
+  const body = byId(el, 'far').parent as Element;
+  const link = createElement('link', { rel: 'stylesheet', href: 'late.css' });
+  appendChild(body, link);
+  el.touchDocument([
+    { type: 'childList', target: body, addedNodes: [link], removedNodes: [] },
+  ]);
+  await act();
+  arrive({
+    kind: 'stylesheet',
+    text: '#q { color: #0000ff; display: flex } #gone { display: none }',
+  });
+  await snapshot(result, el);
+  assert.ok(box('far') === far, 'what its rules do not style was built');
+  assert.strictEqual(el.computedStyle(byId(el, 'q'))?.color, 'rgb(0, 0, 255)');
+  assert.strictEqual(el.computedStyle(byId(el, 'q'))?.display, 'flex');
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'farqlast');
+  // and a sheet that does more than add rules styles everything
+  arrive = () => {};
+  const other = createElement('link', { rel: 'stylesheet', href: 'other.css' });
+  appendChild(body, other);
+  el.touchDocument([
+    { type: 'childList', target: body, addedNodes: [other], removedNodes: [] },
+  ]);
+  await act();
+  arrive({
+    kind: 'stylesheet',
+    text: '@font-face { font-family: x; src: url(x.woff) } #far { color: #00aa00 }',
+  });
+  await snapshot(result, el);
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'far'))?.color,
+    'rgb(0, 170, 0)',
+  );
+});
+
+test('an element that comes out drawn, or hidden, builds what holds it, or the end of a body', async () => {
+  const { result, node } = await render(
+    '<!doctype html><html><head><style>body{margin:0} .off{display:none}</style></head>' +
+      '<body><div id="far">far</div><section><p id="a" class="off">a</p><p>b</p></section>' +
+      '<div id="c" class="off">c</div><div id="d">d</div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const box = (id: string) =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, id));
+  const far = box('far');
+  const set = async (id: string, value: string | null) => {
+    const target = byId(el, id);
+    const was = target.attribs.class ?? null;
+    if (value === null) delete target.attribs.class;
+    else target.attribs.class = value;
+    el.touchDocument([
+      { type: 'attributes', target, attributeName: 'class', oldValue: was },
+    ]);
+    await snapshot(result, el);
+    assert.ok(box('far') === far, `${id} built what is around it`);
+  };
+  await set('a', null);
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'farabd');
+  await set('a', 'off');
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'farbd');
+  // a child of the `<body>`, which no root is around
+  await set('c', null);
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'farbcd');
+  await set('c', 'off');
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'farbd');
+});
+
 test('a change to a <link>, a <style> or a <meta> restyles everything only where it changes what the cascade reads', async () => {
   // the sheets the host answers with, at once, and one it answers later
   const sheets: Record<string, string> = {
@@ -1313,7 +1404,7 @@ test('a change to a <link>, a <style> or a <meta> restyles everything only where
     addedNodes: [inTree],
     removedNodes: [],
   };
-  assert.strictEqual(scopeOf(el, [treeSheet]), null, 'a tree’s sheet');
+  assert.ok(sheetsOf(el, [treeSheet]), 'a tree’s sheet was no sheet');
   el.touchDocument([treeSheet]);
   await act();
   const inner = root.children.find(
@@ -3260,9 +3351,38 @@ function changeOne(
  * which makes the cascade again.
  */
 function attachOne(next: () => number, body: Element): HtmlChange[] {
-  const free = elementsIn(body).filter(
+  const all = elementsIn(body);
+  const free = all.filter(
     (e) => e !== body && ['div', 'span', 'p'].includes(e.name),
   );
+  const hosts = all.filter((e) => shadowRootOf(e));
+  const rule = () =>
+    [':host { color: #00aa00 }', 'b { color: #0000ff }', '.a { margin: 1px }'][
+      Math.floor(next() * 3)
+    ];
+  if (hosts.length && next() < 0.4) {
+    // a sheet put in a tree there is, or one in it written over
+    const root = shadowRootOf(
+      hosts[Math.floor(next() * hosts.length)],
+    ) as unknown as Element;
+    const had = root.children.find((n) => (n as Element).name === 'style') as
+      Element | undefined;
+    if (had && next() < 0.5) {
+      const text = had.children[0] as unknown as { data: string };
+      text.data = rule();
+      return [{ type: 'characterData', target: text as never }];
+    }
+    const sheet = createElement('style', {}, [createText(rule())]);
+    appendChild(root, sheet);
+    return [
+      {
+        type: 'childList',
+        target: root,
+        addedNodes: [sheet],
+        removedNodes: [],
+      },
+    ];
+  }
   const target = free[Math.floor(next() * free.length)];
   const root = target && attachShadow(target, { mode: 'open' });
   if (!root) return [];
@@ -3813,6 +3933,76 @@ test('what a <template> comes to hold keeps no style, whatever else a change bui
   const tree = treeOf(el) as unknown as { styles: Map<Element, unknown> };
   assert.ok(!tree.styles.has(moved), 'a style was kept for what a build skips');
   assert.equal(el.computedStyle(a)?.color, 'rgb(255, 0, 0)');
+});
+
+test('a sheet put in a shadow tree styles its host and what it holds, and builds what is around it no more', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body><div id="far">far</div>' +
+      '<div id="h"><template shadowrootmode="open"><b id="in">in</b></template></div>' +
+      '<div id="twin"><template shadowrootmode="open"><b id="other">in</b></template></div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const box = () =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, 'far'));
+  const far = box();
+  const put = async (id: string) => {
+    const host = byId(el, id);
+    const root = shadowRootOf(host)!;
+    const sheet = createElement('style', {}, [
+      createText(':host { color: #00aa00 } b { font-weight: bold }'),
+    ]);
+    appendChild(root as unknown as Element, sheet);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: root as never,
+        addedNodes: [sheet],
+        removedNodes: [],
+      },
+    ]);
+    await snapshot(result, el);
+    assert.ok(box() === far, 'what is around the host was built');
+    assert.equal(el.computedStyle(host)?.color, 'rgb(0, 170, 0)');
+    const inner = root.children.find(
+      (n) => (n as Element).name === 'b',
+    ) as Element;
+    assert.equal(el.computedStyle(inner)?.['font-weight'], '700');
+  };
+  await put('h');
+  // and the second of its kind, whose rules are the first's, the cascade
+  // kept for it
+  const cascade = (el as unknown as { _cascade: unknown })._cascade;
+  await put('twin');
+  assert.ok((el as unknown as { _cascade: unknown })._cascade === cascade);
+});
+
+test('what a shadow tree’s sheet imports late styles the tree', async () => {
+  let arrive: (result: ResourceResult) => void = () => {};
+  const onResource = (r: ResourceRequest) =>
+    r.kind === 'stylesheet'
+      ? new Promise<ResourceResult>((resolve) => (arrive = resolve))
+      : null;
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body>' +
+      '<div id="h"><template shadowrootmode="open">' +
+      '<style>@import "late.css"; b { color: #00aa00 }</style><b>in</b>' +
+      '</template></div></body>',
+    300,
+    { onResource },
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const inner = shadowRootOf(byId(el, 'h'))!.children.find(
+    (n) => (n as Element).name === 'b',
+  ) as Element;
+  assert.strictEqual(el.computedStyle(inner)?.['font-style'], 'normal');
+  arrive({ kind: 'stylesheet', text: 'b { font-style: italic }' });
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(inner)?.['font-style'], 'italic');
 });
 
 test('a change whose seeds are most of the document builds all of it, at once', async () => {

@@ -80,8 +80,8 @@ siblings. Nested roots merge into the outermost. An element with no box is
 a **boxless root** where it was `display: none`, or is new and of a kind
 the UA never draws — the `<script>`s, `<link>`s and `<style>`s a page
 puts in as it loads: it is styled where it is, its style put in the
-tree's in the document's order, and where it comes out drawn the whole
-document is built. Those were most of what made a change reach the
+tree's in the document's order, and where it comes out drawn its parent
+is built, or the end of its parent from it. Those were most of what made a change reach the
 document's top on Next.js, Tailwind and the Guardian.
 
 ### What a rebuild root must be
