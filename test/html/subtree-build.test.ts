@@ -2487,6 +2487,64 @@ const COUNTED: Counted[] = [
     apart: false,
   },
   {
+    what: 'style containment taken off what holds a number',
+    sheet: '.cy { contain: style }',
+    body:
+      '<ol><li>a</li><section id="s" class="cy"><li>b</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), ''),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment taken off what counts besides',
+    sheet: '.cy { contain: style } .cs { counter-increment: n }',
+    body:
+      '<ol><li>a</li><section id="s" class="cs cy"><li>b</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), 'cs'),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment put on what holds a list item with no number',
+    sheet: '.cy { contain: style } .dot { list-style-type: disc }',
+    body: '<ol><section id="s"><li class="dot">a</li></section><li>c</li></ol>',
+    change: (el) => classed(el('s'), 'cy'),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment taken off what holds a list item with no number',
+    sheet: '.cy { contain: style } .dot { list-style-type: disc }',
+    body:
+      '<ol><section id="s" class="cy"><li class="dot">a</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), ''),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list with style containment, started at seven, in a list',
+    sheet: '.cy { contain: style } li { list-style-position: inside }',
+    body:
+      '<ul><li>x<ol class="cy" start="7"><li>a</li><li id="b">b</li>' +
+      '<li>c</li></ol></li></ul>',
+    change: (el) => {
+      el('b').attribs.value = '3';
+      return [
+        {
+          type: 'attributes',
+          target: el('b'),
+          attributeName: 'value',
+          oldValue: null,
+        },
+      ];
+    },
+    tries: 2,
+    apart: true,
+  },
+  {
     what: 'a caption the fix-up moves ahead of what was built before it',
     sheet:
       'body { counter-reset: n } .tick { counter-increment: n }' +

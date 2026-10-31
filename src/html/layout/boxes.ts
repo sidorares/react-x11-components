@@ -3186,6 +3186,7 @@ function countedBy(run: readonly Box[]): string {
         box.el ? attr(box.el, 'value') : null,
         box.pseudo ? style.content : null,
         reads ?? null,
+        (style.contain & CONTAIN_STYLE) !== 0,
       ]);
       around = depth;
     }
@@ -3196,8 +3197,9 @@ function countedBy(run: readonly Box[]): string {
   return JSON.stringify(counted);
 }
 
-/** Whether a box changes or reads a counter, or a quote, or is in the top
- *  layer: what a subtree holding it cannot be built apart for. */
+/** Whether a box changes or reads a counter, or a quote, keeps what it holds
+ *  from changing one, or is in the top layer: what a subtree holding it
+ *  cannot be built apart for. */
 function counts(box: Box): boolean {
   // a text carries its element's style, and its element counts for it
   if (box.kind === 'text') return false;
@@ -3207,6 +3209,7 @@ function counts(box: Box): boolean {
     style.counterReset ||
     style.counterIncrement ||
     style.counterSet ||
+    style.contain & CONTAIN_STYLE ||
     (isListItem(box) && numberedMarker(style))
   ) {
     return true;
@@ -4198,7 +4201,10 @@ class Builder {
     const contains =
       (style.contain & CONTAIN_STYLE) !== 0 && style.display !== 'contents';
     const quoteDepth = this._quoteDepth;
-    if (contains) this._scopes.contain();
+    if (contains) {
+      this._scopes.contain();
+      this._counts = true;
+    }
     this._elementIn(el, tag, style, key, into, inFlex, {
       node: el,
       style,
@@ -5600,7 +5606,16 @@ class CounterScopes {
   /** Whether a reset of `name` here reaches the element's later siblings,
    *  or its descendants alone. */
   reachesSiblings(name: string): boolean {
+    // a list with style containment holds its own numbers, whatever is
+    // around it
+    if (name === 'list-item' && this._containedHere()) return false;
     return this._made.length < 2 || !this._parentHas(name);
+  }
+
+  /** Whether the element whose level is open has style containment. */
+  private _containedHere(): boolean {
+    const contained = this._contained;
+    return contained[contained.length - 1] === this._made.length - 1;
   }
 
   reset(name: string, value: number, reversed: boolean): void {
@@ -5678,7 +5693,13 @@ class CounterScopes {
     if (detached && !this._answers(instance)) detached.escapedWrite = true;
     const bound = this._contained[this._contained.length - 1];
     const level = this._made.length - 1;
-    if (bound === undefined || level <= bound || instance.level >= bound) {
+    if (bound === undefined || level <= bound || instance.level > bound) {
+      return instance;
+    }
+    // what the contained element reset itself is no more in its subtree than
+    // what is around it, whether that reaches its siblings or not — but a
+    // list's, whose items Chrome and WebKit number from its `start`
+    if (instance.level === bound && (!instance.own || name === 'list-item')) {
       return instance;
     }
     const parent = level - 1;
