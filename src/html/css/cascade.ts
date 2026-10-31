@@ -1697,8 +1697,8 @@ const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
 
 /** A selector whose matcher keeps answers (`cacheResults`): css-select
  *  keeps what a `:has()`, a `:contains()` or an `:icontains()` answered for
- *  an element, and in a selector with one, what a descendant combinator
- *  found above it. Every other matcher keeps nothing. */
+ *  an element, and what a descendant combinator after one found above it.
+ *  Every other matcher is told to keep nothing (`compileSelector`). */
 const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 
 /** css-select's `aliases`, which it does not export: pseudo-classes it
@@ -1815,6 +1815,14 @@ export function compileHoisted<Pseudos extends object>(
  * under `label:has(:checked)` was ticked, and before an application's
  * `refresh()`. Only those, and only once they are next asked: compiling
  * one is a few microseconds, and a page's rules are mostly not them.
+ *
+ * Any other selector keeps nothing, and has to be told: a descendant
+ * combinator after an `:is()` or a `:not()` with a combinator in it keeps
+ * what it found as one after a `:has()` does (fb55/css-select#1929), so
+ * `:is(.x .a) .y` answered what it did before the `.x` came. Telling them
+ * changes nothing else, and a selector with no such function has nothing
+ * to turn off. A release that narrows that cache leaves this as it is:
+ * these matchers outlive a change, which is what the option is for.
  */
 function compileSelector(
   selector: string,
@@ -1824,7 +1832,8 @@ function compileSelector(
    *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
   cache = true,
 ): (el: Element) => boolean {
-  const keep = cache && !STATE_PSEUDO.test(selector);
+  const keep =
+    cache && KEEPS_ANSWERS.test(selector) && !STATE_PSEUDO.test(selector);
   // where the siblings are the tree's own: a `<use>`'s copy has its own
   const kept =
     adapter.getSiblings === DomUtils.getSiblings ? nthKept : (s: string) => s;
@@ -1845,7 +1854,7 @@ function compileSelector(
     );
   // compiled here, so a selector css-select refuses throws to the caller
   let match = make();
-  if (!keep || !KEEPS_ANSWERS.test(selector)) return match;
+  if (!keep) return match;
   let at = treeGeneration();
   return (el) => {
     const now = treeGeneration();

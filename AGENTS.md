@@ -2233,6 +2233,18 @@ everything share what the matcher answers, so the fuzz in
 css-select fixes it, delete `compileHoisted`, as "Vendored from core" has it
 for a copy.
 
+**A matcher that outlives a change is told to keep no answers.** css-select
+keeps them by default for as long as a matcher lives, and not only for a
+`:has()`: a descendant combinator after an `:is()` or a `:not()` with a
+combinator in it does too (fb55/css-select#1929), so `:is(.x .a) .y` answered
+what it did before the `.x` came, under a whole refresh as well.
+`compileSelector` and `_query` pass `cacheResults: false` to all but what is
+compiled again after a change. A test of the text cannot say which selectors
+arm it, since a tenth of a page's selectors hold such a function and few of
+those arm anything. The option stays when a release narrows that cache: it is
+what css-select's README asks of a document that changes between queries.
+**Anything new that keeps a compiled matcher does the same.**
+
 **A `:has()` that asks only of its element's children or its siblings is
 asked only so many levels up, and a sibling combinator reaches what it
 leads to from what it follows.** A `:has()` whose argument goes by child
