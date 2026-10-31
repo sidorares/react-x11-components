@@ -632,6 +632,11 @@ metric(
             `line ${at}\nkept  ${kept[at]}\nwhole ${whole[at]}\n` +
             `${markup}\n${DomUtils.getOuterHTML(bodyEl as never)}`,
         );
+        assert.deepStrictEqual(
+          textBoxesAstray(internals._tree),
+          [],
+          `seed ${seed}, step ${step}: the text where its boxes say`,
+        );
       }
       result.unmount();
       held.done();
@@ -886,6 +891,47 @@ metric(
       1,
       'the one button',
     );
+  },
+);
+
+/** The text boxes the document's text says otherwise of: a build of
+ *  subtrees cuts the text where its boxes say, so a build of the whole
+ *  document that puts them one out is one a comparison of the two cannot
+ *  see, and every later splice comes out as garbage. */
+function textBoxesAstray(tree: BoxTree): string[] {
+  return tree.textBoxes
+    .filter(
+      (box) =>
+        box.text && tree.text.slice(box.textStart, box.textEnd) !== box.text,
+    )
+    .map((box) => `${JSON.stringify(box.text)}@${box.textStart}`);
+}
+
+metric(
+  'a space taken back past what a float holds leaves the text where its boxes say',
+  async () => {
+    // The float's own line ends on a space of its own, which empties the
+    // chunk that space was, and leaving the float puts back the space
+    // before it. The next line's end took that one back from the empty
+    // chunk: nothing came off the text, and every place after it was one
+    // out, in a plain build of the whole document.
+    for (const inFloat of [
+      '<input>',
+      '<img src="x.png">',
+      '<span style="display: inline-block; width: 9px"></span>',
+    ]) {
+      for (const out of ['float: left', 'position: absolute']) {
+        const { result, node } = await render(
+          `<!doctype html><p>keep</p><div>a <div style="${out}">${inFloat} </div><div>b</div></div><p>after</p>`,
+          320,
+        );
+        await act();
+        const tree = (view(node) as unknown as { _tree: BoxTree })._tree;
+        assert.deepStrictEqual(textBoxesAstray(tree), [], inFloat);
+        assert.strictEqual(tree.text, 'keepabafter', `${inFloat} ${out}`);
+        result.unmount();
+      }
+    }
   },
 );
 

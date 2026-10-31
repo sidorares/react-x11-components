@@ -5175,8 +5175,14 @@ class Builder {
       ranges[n - 1] = this._length;
       if (ranges[n - 2] >= this._length) ranges.length = n - 2;
     }
+    // and a chunk it empties goes as well: a float's lone space leaves the
+    // space before the float on the line, and the next line's end takes
+    // that one back from the chunk under it, or every place after it in
+    // the text is one out
     const last = this._chunks.length - 1;
-    this._chunks[last] = this._chunks[last].slice(0, -1);
+    const chunk = this._chunks[last].slice(0, -1);
+    if (chunk) this._chunks[last] = chunk;
+    else this._chunks.pop();
     if (!box.text) {
       this._textBoxes.pop();
       const siblings = box.parent?.children;

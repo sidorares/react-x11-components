@@ -1995,7 +1995,12 @@ is**: `'resized'`, which no site here has told, is the last that does neither.
 builds its holder's `::after` again, and an entry kept by the holder stays
 beside the new one, and with no size is news at every arrival after it. And
 **what will have no image is listed as waiting for none**: an `<object>`
-that holds a document is its frame for good.
+that holds a document is its frame for good. A build of subtrees cuts the
+document's text where its boxes say, so **a build's text and its boxes agree
+to the character** (`textBoxesAstray` holds them to it): `_endLine` takes a
+space back off the last chunk, and one it empties goes, or the next takes
+its space from nothing and every place after it is one out, which a
+comparison of two builds cannot see, since both are.
 `htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
 arrivals coalesce into a frame and none of it shows. **A sheet declined
 or failed after it was asked for is news too** (`'declined'`, in
