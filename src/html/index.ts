@@ -923,7 +923,13 @@ export interface HtmlHandle {
   submitForm(form: Element, submitter?: Element | null): void;
   /** HTML's interactive validation of a form: true where it may go, and
    *  else false, with the reason shown at its first wrong control. */
-  reportValidity(form: Element, submitter?: Element | null): boolean;
+  reportValidity(
+    form: Element,
+    submitter?: Element | null,
+    /** Whether this is an attempt to send it, which shows the user what is
+     *  wrong (`:user-invalid`), as `requestSubmit()` is. */
+    attempt?: boolean,
+  ): boolean;
   /** Put a form's controls back as their markup has them, as
    *  `form.reset()` does after its `reset`. */
   resetForm(form: Element): void;
@@ -1550,9 +1556,16 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.interactive?.activate(element) ?? false,
       submitForm: (form: Element, submitter?: Element | null) =>
         nodeRef.current?.interactive?.submit(form, submitter ?? null),
-      reportValidity: (form: Element, submitter?: Element | null) =>
-        nodeRef.current?.interactive?.reportValidity(form, submitter ?? null) ??
-        true,
+      reportValidity: (
+        form: Element,
+        submitter?: Element | null,
+        attempt?: boolean,
+      ) =>
+        nodeRef.current?.interactive?.reportValidity(
+          form,
+          submitter ?? null,
+          attempt,
+        ) ?? true,
       resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
     }),
     [],
@@ -1658,8 +1671,8 @@ function documentInteraction(
       return now.forms.activate(el);
     },
     submit: (form, submitter) => live.current?.forms.submitNow(form, submitter),
-    reportValidity: (form, submitter) =>
-      live.current?.forms.validate(form, submitter) ?? true,
+    reportValidity: (form, submitter, attempt) =>
+      live.current?.forms.validate(form, submitter, attempt) ?? true,
     reset: (form) => live.current?.forms.resetNow(form),
   };
 }

@@ -37,6 +37,7 @@ import type { Style } from 'react-x11/style';
 import type {} from 'react-x11/jsx-runtime';
 
 import { cancelLater, later } from '../internal/timers.js';
+import { controlAnswers } from './control-state.js';
 import { hx } from './hx.js';
 import {
   attr,
@@ -67,6 +68,7 @@ import type {
 import {
   FormState,
   buttonType,
+  controlChange,
   controlsOf,
   firstInvalid,
   formOwner,
@@ -78,6 +80,8 @@ import {
   optionElements,
   optionValue,
   radioGroup,
+  setIndeterminate,
+  setUserValidity,
 } from './form.js';
 import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
@@ -170,7 +174,11 @@ export interface Forms {
   showPicker(el: Element): boolean;
   /** HTML's interactive validation: true where the form may go, and else
    *  false, with the reason shown at the first control that is wrong. */
-  validate(form: Element, submitter: Element | null): boolean;
+  validate(
+    form: Element,
+    submitter: Element | null,
+    attempt?: boolean,
+  ): boolean;
   /** Send a form as `form.submit()` does: no validation, no `submit`. */
   submitNow(form: Element, submitter: Element | null): void;
   /** Put a form back as `form.reset()` does, after its `reset` event. */
@@ -309,6 +317,9 @@ export function useForms(options: FormsOptions): Forms {
   const lastInput = React.useRef<'pointer' | 'keyboard' | null>(null);
   const asked = React.useRef<{ el: Element; visible: boolean } | null>(null);
   const leave = (el: Element, to: Element | null) => {
+    // what the user typed in it shows from here: while they type, a field
+    // is not told off for what they have not finished (HTML 4.10.18.5)
+    if (forms.takeEdited(el)) showValidity(el);
     commit(el);
     fire('focusout', el, { relatedTarget: to });
   };
@@ -351,6 +362,28 @@ export function useForms(options: FormsOptions): Forms {
     leave(el, null);
     const node = view.current;
     if (node?.focusedElement === el) node.setFocus(null);
+  };
+
+  /** What a rule can read of a control, to tell whether a change moved it:
+   *  nothing where no rule reads any, so a keystroke in a document with
+   *  none works nothing out. */
+  const answers = (el: Element): number =>
+    view.current?.readsControls ? controlAnswers(el) : 0;
+  /** The change to tell of a control, where what a rule reads of it is not
+   *  what it was: no refresh for a keystroke that moved no answer. */
+  const answersMoved = (
+    el: Element,
+    was: number,
+  ): readonly HtmlChange[] | null =>
+    view.current?.readsControls && controlAnswers(el) !== was
+      ? [controlChange(el)]
+      : null;
+  /** A control's validity is the user's to see from now: `:user-valid` and
+   *  `:user-invalid`. */
+  const showValidity = (el: Element) => {
+    if (setUserValidity(el, true) && view.current?.readsControls) {
+      touch([controlChange(el)]);
+    }
   };
 
   // What each text field held when it took the focus, or at its last
@@ -398,6 +431,15 @@ export function useForms(options: FormsOptions): Forms {
     if (submission) onSubmit(submission);
   };
 
+  /** A form the user tried to send shows what is wrong with all of it, a
+   *  form with `novalidate` too (HTML 4.10.21.3). */
+  const attempted = (form: Element) => {
+    const moved = controlsOf(form).filter((el) => setUserValidity(el, true));
+    if (moved.length && view.current?.readsControls) {
+      touch(moved.map(controlChange));
+    }
+  };
+
   /**
    * HTML's order (4.10.21.3, "form submission algorithm"): the form is
    * validated, then its `submit` is asked about, and the entry list is
@@ -405,6 +447,7 @@ export function useForms(options: FormsOptions): Forms {
    * sent. Built before, as it was, the field went empty.
    */
   const submit = (form: Element, submitter: Element | null, point?: Point) => {
+    attempted(form);
     if (!onSubmit && !onDomEvent) return;
     if (!validate(form, submitter)) return;
     if (!fire('submit', form, { submitter })) return;
@@ -482,11 +525,14 @@ export function useForms(options: FormsOptions): Forms {
    */
   const setChecked = (el: Element, checked: boolean, init?: DomEventInit) => {
     const was = attr(el, 'checked') !== undefined;
+    const mixed = setIndeterminate(el, false);
     const ticked = tick(el, checked);
     if (!fire('click', el, { detail: 1, ...init })) {
+      if (mixed) setIndeterminate(el, true);
       touch([ticked, tick(el, was)]);
       return;
     }
+    setUserValidity(el, true);
     changed(el, checked, [ticked]);
     fire('input', el);
     fire('change', el);
@@ -511,6 +557,7 @@ export function useForms(options: FormsOptions): Forms {
       touch(ticked);
       return;
     }
+    setUserValidity(el, true);
     changed(el, attr(el, 'value') ?? 'on', ticked);
     if (own) return;
     fire('input', el);
@@ -628,6 +675,8 @@ export function useForms(options: FormsOptions): Forms {
     widgets,
     picker: picker.current,
     pickerChanged,
+    answers,
+    answersMoved,
     changed,
     setChecked,
     checkRadio,
@@ -637,6 +686,7 @@ export function useForms(options: FormsOptions): Forms {
     input: (el) => fire('input', el),
     watchSelection,
     selected: (el) => {
+      showValidity(el);
       fire('input', el);
       fire('change', el);
     },
@@ -690,12 +740,15 @@ export function useForms(options: FormsOptions): Forms {
       }
       if (!isTextField(el)) return false;
       const text = String(value);
-      forms.setTyped(el, text);
+      const was = answers(el);
+      forms.setTyped(el, text, true);
       // a value set is no change the user made: what the field held when
       // it took the focus is this now, as a browser's is
       if (values.current.has(el)) values.current.set(el, text);
       const field = widgets.fieldOf(el);
       if (field) field.value = text;
+      const moved = answersMoved(el, was);
+      if (moved) touch(moved);
       return true;
     },
     selection: (el) => {
@@ -729,7 +782,10 @@ export function useForms(options: FormsOptions): Forms {
       pickerChanged(el, true);
       return true;
     },
-    validate,
+    validate: (form, submitter, attempt) => {
+      if (attempt) attempted(form);
+      return validate(form, submitter);
+    },
     submitNow: (form, submitter) => send(form, submitter),
     resetNow,
     activate: (el) => {
@@ -943,6 +999,10 @@ interface ControlContext {
   picker: Element | null;
   /** A `<select>`'s widget says its menu went down, or came up. */
   pickerChanged: (el: Element, open: boolean) => void;
+  /** What a rule can read of a control, and the change to tell of it where
+   *  that moved since. */
+  answers: (el: Element) => number;
+  answersMoved: (el: Element, was: number) => readonly HtmlChange[] | null;
   changed: (
     el: Element,
     value: string | boolean,
@@ -1029,15 +1089,18 @@ function renderControl(
   // in a bezel only as tall as that title, where the box was measured for
   // the page's.
   const ownFont = !paletteFont(rect, look);
-  // A text edit does NOT restyle: the value lives in the widget and in
-  // `forms`, and neither changes any box — while a restyle would re-run
-  // the cascade and relayout the whole document *per keystroke*. This also
-  // matches HTML's own semantics: typing updates the value, not the
-  // attribute selectors match against. The checkables do restyle, because
-  // `:checked` is a selector documents really use.
+  // A text edit restyles only where it moved what a rule reads: the value
+  // lives in the widget and in `forms`, and neither changes any box, while
+  // a restyle per keystroke would re-run the cascade and lay the document
+  // out each time. Typing updates the value, not the attribute selectors
+  // match against, so `:invalid`, `:placeholder-shown` and their kin are
+  // told as a change of an attribute nothing has, when their answer turns.
+  // The checkables do restyle, because `:checked` is a selector documents
+  // really use.
   const typed = (value: string) => {
+    const was = ctx.answers(el);
     forms.setTyped(el, value);
-    ctx.changed(el, value, null);
+    ctx.changed(el, value, ctx.answersMoved(el, was));
     ctx.input(el);
   };
   // what may leave a field's text selected: a key, Shift+arrow or Ctrl+A;

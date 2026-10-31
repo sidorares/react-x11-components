@@ -21,6 +21,7 @@ import * as DomUtils from 'domutils';
 import { Element as DomElement, isTag } from 'domhandler';
 import type { AnyNode, Element } from 'domhandler';
 
+import { CONTROL_PSEUDOS } from '../control-state.js';
 import {
   NON_RENDERED,
   ShadowRoot,
@@ -569,12 +570,14 @@ interface IndexedRule {
  * (`Cascade.sharedStyleFor`). css-select spells some of them under other
  * names, and those count too: `:checked` and `:selected` read which option
  * comes first, `:disabled` and `:enabled` which legend does, and `:parent`
- * and `:contains()` the element's contents; and `:has-slotted` reads what
- * the host it is in has. Over-broad on purpose: a `+` or `~` inside an
- * attribute value, or the `~=` operator, costs sharing and nothing else.
+ * and `:contains()` the element's contents; `:has-slotted` reads what the
+ * host it is in has; and a control's state is in no attribute, so two forms
+ * alike but for what was typed in them take different rules. Over-broad on
+ * purpose: a `+` or `~` inside an attribute value, or the `~=` operator,
+ * costs sharing and nothing else.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined|modal)\b|:i?contains\(/;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined|modal|(?:user-)?(?:in)?valid|in-range|out-of-range|placeholder-shown|indeterminate|default|read-only|read-write)\b|:(?:state|dir)\(|:i?contains\(/i;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -2689,7 +2692,8 @@ function anchorOf(
 
 /** The pseudo-classes an element's answer to is read from elements above
  *  it (`PSEUDO_INHERITED`, `READS_AROUND`'s `:lang()` and `:dir()`). */
-const READS_ABOVE = /:(?:disabled|enabled|read-only|read-write|dir|lang)\b/i;
+const READS_ABOVE =
+  /:(?:disabled|enabled|read-only|read-write|dir|lang|(?:user-)?(?:in)?valid|in-range|out-of-range)\b/i;
 
 /** The pseudo-classes an element's answer to is read from what it holds
  *  (`HOLDS_TESTS`): a level below it. */
@@ -2792,6 +2796,38 @@ function stableCompound(text: string): string {
   return out.trim();
 }
 
+/** What `:valid` and its kin read: every constraint a field can state. */
+const VALIDITY_READS: readonly string[] = [
+  'a:-rx-form',
+  'a:type',
+  'a:value',
+  'a:required',
+  'a:readonly',
+  'a:disabled',
+  'a:min',
+  'a:max',
+  'a:step',
+  'a:pattern',
+  'a:minlength',
+  'a:maxlength',
+  'a:multiple',
+  'a:checked',
+  'a:selected',
+  'a:name',
+  'a:form',
+];
+
+/** What `:in-range` and `:out-of-range` read. */
+const RANGE_READS: readonly string[] = [
+  'a:-rx-form',
+  'a:type',
+  'a:value',
+  'a:min',
+  'a:max',
+  'a:readonly',
+  'a:disabled',
+];
+
 /**
  * What a simple pseudo-class reads that a change to the DOM can change: the
  * attributes it is answered from (`a:`), or what an element holds (`s`),
@@ -2815,6 +2851,7 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   // change of this attribute nothing has (`DomHost`'s `modal`)
   modal: ['a:-rx-modal'],
   fullscreen: ['a:-rx-fullscreen'],
+  // nothing here fills a form in
   autofill: [],
   '-webkit-autofill': [],
   host: [],
@@ -2824,15 +2861,29 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   target: ['a:id', 'a:name'],
   checked: ['a:checked', 'a:selected', 'a:type'],
   selected: ['a:selected'],
-  default: ['a:checked', 'a:selected', 'a:type', 's'],
-  indeterminate: ['a:indeterminate', 'a:type', 'a:checked', 'a:name'],
+  // what no attribute of the element says: what was typed in it, what a
+  // script set, a form's controls, a radio's group, a form's first button,
+  // told as a change of an attribute nothing has (`controlsReached`)
+  default: ['a:checked', 'a:selected', 'a:type', 'a:form', 'a:-rx-form'],
+  indeterminate: [
+    'a:type',
+    'a:checked',
+    'a:name',
+    'a:form',
+    'a:value',
+    'a:-rx-form',
+  ],
+  valid: VALIDITY_READS,
+  invalid: VALIDITY_READS,
+  'user-valid': VALIDITY_READS,
+  'user-invalid': VALIDITY_READS,
   disabled: ['a:disabled', 'a:type'],
   enabled: ['a:disabled', 'a:type'],
   required: ['a:required'],
   optional: ['a:required'],
   'read-only': ['a:readonly', 'a:disabled', 'a:contenteditable', 'a:type'],
   'read-write': ['a:readonly', 'a:disabled', 'a:contenteditable', 'a:type'],
-  'placeholder-shown': ['a:placeholder', 'a:value', 'a:type'],
+  'placeholder-shown': ['a:placeholder', 'a:value', 'a:type', 'a:-rx-form'],
   link: ['a:href'],
   'any-link': ['a:href'],
   'local-link': ['a:href'],
@@ -2854,8 +2905,8 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   seeking: ['a:-rx-seeking'],
   buffering: ['a:-rx-buffering'],
   stalled: ['a:-rx-stalled'],
-  'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
-  'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
+  'in-range': RANGE_READS,
+  'out-of-range': RANGE_READS,
   // what an element holds, and so where its own later siblings are
   // reached from (`treeChange`), beside where it sits
   empty: ['s', 'h'],
@@ -3162,10 +3213,14 @@ function scanFunctionChanges(
     // what the nearest element up that says one says: a change to one
     // reaches what is in it, and in a `:has()`'s argument the element
     // whose answer it changes is in it, as for `PSEUDO_INHERITED`
-    const keys = name === 'lang' ? ['a:lang', 'a:xml:lang'] : ['a:dir'];
+    const keys = name === 'lang' ? ['a:lang', 'a:xml:lang'] : DIR_READS;
     for (const key of keys) {
       note(key, has ? bits : bits | CHANGES_BELOW, has);
     }
+  } else if (name === 'state') {
+    // a custom element's own states, told as a change of this attribute
+    // nothing has (`DomHost`'s `customStates`)
+    note('a:-rx-state', bits, has, subject, stable, undefined, parent);
   } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
     note('s', bits, has, null, stable, 'sits', parent);
     // counted from the end: every child's place, where one is put in at it
@@ -3230,6 +3285,17 @@ function attributeNameAsWritten(body: string): string {
   }
   return name;
 }
+
+/** What `:dir()` reads of an element and all around it: a `dir`, what makes
+ *  it a telephone number or gives a field with `auto` its text, and a turn
+ *  of what an element with `auto` holds (`directionHolder`). */
+const DIR_READS: readonly string[] = [
+  'a:dir',
+  'a:type',
+  'a:value',
+  'a:-rx-form',
+  'a:-rx-dir',
+];
 
 /** The white space a `class` lists names between: HTML's, which is ASCII's
  *  — an em space is part of a name, and Acid3 asks for `f\2003g`. */
@@ -5057,6 +5123,23 @@ export class Cascade {
       this._anchorSets.set(set, anchors);
     }
     return anchors;
+  }
+
+  /** Whether a rule reads what a control holds or what is around it
+   *  (`controlsReached`): one with none is told nothing of it, and typing
+   *  in a field restyles nothing. */
+  get readsControls(): boolean {
+    return this._reads('a:-rx-form');
+  }
+
+  /** Whether a rule reads a direction a text can turn (`directionHolder`). */
+  get readsDirection(): boolean {
+    return this._reads('a:-rx-dir');
+  }
+
+  private _reads(key: string): boolean {
+    const rules = this._changeRules;
+    return !!rules.bits(key) || !!rules.anchors(key);
   }
 
   /** Whether a rule reaches across a shadow tree's edge, so that a
@@ -9554,6 +9637,7 @@ function asRoot(style: ComputedStyle): ComputedStyle {
  *  link hides with `.mw-jump-link:not(:focus)`, and without it stood in
  *  the flow at the top of every page. */
 const PSEUDOS = {
+  ...CONTROL_PSEUDOS,
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
   // the top of a shadow tree, where `:host > .x`'s `.x` is (`readHost`)

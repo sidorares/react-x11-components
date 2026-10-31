@@ -79,6 +79,11 @@ import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
 import type { HeldClock } from '../held-clock.js';
+import {
+  CHROME_CONTROL_STATES,
+  CONTROL_STATE_PSEUDOS,
+  CONTROL_STATE_SOURCE,
+} from './control-states.js';
 
 afterEach(cleanup);
 
@@ -5079,6 +5084,197 @@ test('a customized built-in is upgraded from its is, and attachInternals is a cu
   assert.equal(
     doc.text('out'),
     'in button|true|true|true|true|true|true|NotSupportedError|NotSupportedError',
+  );
+});
+
+test("a page's matches() answers a control's state as Chromium's does", async () => {
+  const doc = await hosted(
+    CONTROL_STATE_SOURCE.replace(
+      '</body>',
+      '<pre id="out"></pre><script>' +
+        `var pseudos = ${JSON.stringify(CONTROL_STATE_PSEUDOS)}, r = {};` +
+        'document.querySelectorAll("[id]").forEach(function (el) {' +
+        '  r[el.id] = pseudos.filter(function (p) { return el.matches(p) }).join(" ");' +
+        '});' +
+        'document.getElementById("out").textContent = JSON.stringify(r);' +
+        '</script></body>',
+    ),
+  );
+  const got = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const differ = Object.entries(CHROME_CONTROL_STATES)
+    .filter(([id, want]) => got[id] !== want)
+    .map(([id, want]) => `${id}: ${got[id]}, where Chromium has ${want}`);
+  assert.deepStrictEqual(differ, []);
+});
+
+test("a control's validity is one answer to a rule, to matches() and to the script that asks it, and a :has() follows it", async () => {
+  const doc = await hosted(
+    '<style>.w:has(input:invalid) b{color:#ff0000}</style>' +
+      '<form id="f"><div class="w"><input id="a" value="x"><b id="b">b</b></div></form>' +
+      '<input id="m" minlength="4" value="abcd"><p id="out"></p><script>' +
+      'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      'var f = document.getElementById("f"), m = document.getElementById("m");' +
+      'var ink = function () { return getComputedStyle(b).color };' +
+      'r.push(ink(), a.checkValidity(), a.willValidate, a.validationMessage === "");' +
+      'a.setCustomValidity("no");' +
+      'r.push(ink(), a.matches(":invalid"), f.matches(":invalid"), a.validationMessage,' +
+      '  a.validity.customError, a.validity.valid, a.checkValidity());' +
+      'a.setCustomValidity("");' +
+      'r.push(ink(), a.matches(":valid"), a.validity.valid);' +
+      'a.required = true; a.value = "";' +
+      'r.push(ink(), a.validity.valueMissing, a.validationMessage !== "");' +
+      'a.value = "y"; r.push(ink());' +
+      // a length is held to what the user typed, and a script's is its own
+      'm.value = "a"; r.push(m.matches(":valid"), m.validity.tooShort);' +
+      // a form control a script disabled is barred, and answers neither
+      'a.setCustomValidity("no"); a.disabled = true;' +
+      'r.push(a.willValidate, a.matches(":invalid"), a.matches(":valid"), ink());' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'rgb(45, 52, 54)|true|true|true',
+      'rgb(255, 0, 0)|true|true|no|true|false|false',
+      'rgb(45, 52, 54)|true|true',
+      'rgb(255, 0, 0)|true|true',
+      'rgb(45, 52, 54)',
+      'true|false',
+      'false|false|false|rgb(45, 52, 54)',
+    ].join('|'),
+  );
+});
+
+test("a box's indeterminate is a script's, a click takes it off, and :has() follows it", async () => {
+  const doc = await hosted(
+    '<style>.w:has(:indeterminate) b{color:#ff0000}</style>' +
+      '<div class="w"><input id="c" type="checkbox"><b id="b">b</b></div>' +
+      '<progress id="p"></progress><p id="out"></p><script>' +
+      'var r = [], c = document.getElementById("c"), b = document.getElementById("b");' +
+      'var p = document.getElementById("p");' +
+      'var ink = function () { return getComputedStyle(b).color };' +
+      'r.push(c.indeterminate, c.matches(":indeterminate"), ink());' +
+      'c.indeterminate = true;' +
+      'r.push(c.indeterminate, c.matches(":indeterminate"), ink());' +
+      'c.click();' +
+      'r.push(c.indeterminate, c.checked, c.matches(":indeterminate"), ink());' +
+      'c.indeterminate = true;' +
+      'c.addEventListener("click", function (e) { e.preventDefault() });' +
+      'c.click();' +
+      'r.push(c.indeterminate, c.checked);' +
+      'r.push(p.matches(":indeterminate"), p.position); p.value = 0.5;' +
+      'r.push(p.matches(":indeterminate"), p.position, p.getAttribute("value"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'false|false|rgb(45, 52, 54)',
+      'true|true|rgb(255, 0, 0)',
+      'false|true|false|rgb(45, 52, 54)',
+      'true|true',
+      'true|-1',
+      'false|0.5|0.5',
+    ].join('|'),
+  );
+});
+
+test('a custom element’s states are :state(), a rule’s and a query’s, and a :has() follows them', async () => {
+  const doc = await hosted(
+    '<style>x-on:state(open){color:#ff0000}.w:has(:state(open)) b{color:#ff0000}</style>' +
+      '<div class="w"><x-on id="x">x</x-on><b id="b">b</b></div><p id="out"></p><script>' +
+      'var r = [];' +
+      'customElements.define("x-on", class extends HTMLElement {' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'var x = document.getElementById("x"), b = document.getElementById("b");' +
+      'var ink = function () { return getComputedStyle(b).color + "," + getComputedStyle(x).color };' +
+      'r.push(x.matches(":state(open)"), ink());' +
+      'x.i.states.add("open");' +
+      'r.push(x.matches(":state(open)"), x.matches(":state(OPEN)"),' +
+      '  x.matches(":state( open )"), x.i.states.has("open"), ink());' +
+      'x.i.states.delete("open");' +
+      'r.push(x.matches(":state(open)"), ink());' +
+      'x.i.states.add("open"); x.i.states.clear();' +
+      'r.push(x.matches(":state(open)"), ink());' +
+      'var refused = function (s) { try { x.matches(s); return false } catch (e) { return e.name } };' +
+      'r.push(refused(":state()"), refused(":state(a b)"), refused(":state(\\"a\\")"), refused(":state(1a)"));' +
+      'r.push(refused(":dir()"), refused(":dir(a b)"), x.matches(":dir(LTR)"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const plain = 'rgb(45, 52, 54)';
+  const lit = 'rgb(255, 0, 0)';
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      `false|${plain},${plain}`,
+      `true|false|true|true|${lit},${lit}`,
+      `false|${plain},${plain}`,
+      `false|${plain},${plain}`,
+      'SyntaxError|SyntaxError|SyntaxError|SyntaxError',
+      'SyntaxError|SyntaxError|true',
+    ].join('|'),
+  );
+});
+
+test('a query straight after a page’s own change reads the controls as they are now, ahead of the flush', async () => {
+  const doc = await hosted(
+    '<form id="f"><button id="a">a</button></form><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), a = document.getElementById("a");' +
+      'r.push(a.matches(":default"), f.matches(":valid"));' +
+      'var b = document.createElement("button"); f.prepend(b);' +
+      'r.push(a.matches(":default"), b.matches(":default"));' +
+      'var i = document.createElement("input"); i.required = true; f.append(i);' +
+      'r.push(f.matches(":invalid"));' +
+      'i.remove(); r.push(f.matches(":valid"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|true|true|true',
+  );
+});
+
+test('a custom element that takes part in forms answers :valid and :invalid, and its form with it', async () => {
+  const doc = await hosted(
+    '<form id="f"><x-f id="x"></x-f></form><p id="out"></p><script>' +
+      'customElements.define("x-f", class extends HTMLElement {' +
+      '  static formAssociated = true;' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'var r = [], x = document.getElementById("x"), f = document.getElementById("f");' +
+      'r.push(x.matches(":valid"), x.matches(":invalid"));' +
+      'x.i.setValidity({ valueMissing: true }, "no");' +
+      'r.push(x.matches(":valid"), x.matches(":invalid"), f.matches(":invalid"));' +
+      'x.i.setValidity({});' +
+      'r.push(x.matches(":valid"), f.matches(":valid"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|false|false|true|true|true|true',
+  );
+});
+
+test('a box’s default stays through what the user does and what a script sets', async () => {
+  const doc = await hosted(
+    '<input id="c" type="checkbox" checked>' +
+      '<select id="s"><option id="a">a</option><option id="b" selected>b</option></select>' +
+      '<p id="out"></p><script>' +
+      'var r = [], c = document.getElementById("c"), a = document.getElementById("a");' +
+      'var b = document.getElementById("b"), s = document.getElementById("s");' +
+      'c.click(); r.push(c.checked, c.matches(":default"));' +
+      'c.defaultChecked = false; r.push(c.matches(":default"), c.checked);' +
+      'c.defaultChecked = true; r.push(c.matches(":default"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false|true|false|false|true',
   );
 });
 

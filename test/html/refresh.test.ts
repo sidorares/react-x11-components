@@ -13,6 +13,13 @@ import {
   shadowRootOf,
 } from '../../src/html/index.js';
 import { attachShadow } from '../../src/html/dom.js';
+import {
+  FormState,
+  controlChange,
+  setCustomError,
+  setIndeterminate,
+  setUserValidity,
+} from '../../src/html/form.js';
 import type {
   ChildNode,
   Element,
@@ -3932,6 +3939,249 @@ test('in a document with shadow trees whose rules stay inside them, a refresh to
     if (way === 'inPlace' && !FONTS) continue;
     assert.ok(ways[way] > 0, `no refresh went ${way}: ${JSON.stringify(ways)}`);
   }
+});
+
+/** Rules on what a control holds and on what is around it, of an element
+ *  and through each way a change reaches further. */
+function controlRulesFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  // what no key says, first: an answer read from other elements, which is
+  // what a change has to be widened to reach (`controlsReached`)
+  const around = () =>
+    pick([
+      'form:invalid',
+      'form:valid',
+      'fieldset:invalid',
+      'fieldset:valid',
+      'input:indeterminate',
+      'button:default',
+      'input:default',
+    ]);
+  const own = () =>
+    pick([
+      ':valid',
+      ':invalid',
+      ':user-valid',
+      ':user-invalid',
+      ':placeholder-shown',
+      ':in-range',
+      ':out-of-range',
+      ':read-write',
+      ':read-only',
+      ':dir(rtl)',
+      ':dir(ltr)',
+    ]);
+  const state = () => (next() < 0.6 ? around() : `${what()}${own()}`);
+  const what = () => pick(['', 'input', 'select', 'button', `.${c()}`]);
+  const shapes: (() => string)[] = [
+    () => state(),
+    () => `${state()} b`,
+    () => `${state()} > b`,
+    () => `${state()} ~ b`,
+    () => `:not(${state()}) > b`,
+    () => `div:has(${state()}) > b`,
+    () => `section:has(${state()}) b`,
+    () => `form:has(${state()}) b`,
+    () => `fieldset:has(> ${state()}) > b`,
+    () => `section:has(+ section ${state()})`,
+  ];
+  const rules: string[] = [];
+  const count = 10 + Math.floor(next() * 8);
+  for (let i = 0; i < count; i += 1) {
+    const ink = pick(INKS);
+    rules.push(
+      `${pick(shapes)()} { ${pick([`color: ${ink}`, `background-color: ${ink}`, 'font-weight: bold', 'display: block', 'padding-left: 7px'])} }`,
+    );
+  }
+  return rules.join('\n');
+}
+
+const CONTROL_ATTRIBUTES: readonly (readonly [string, readonly string[]])[] = [
+  ['required', ['']],
+  ['required', ['']],
+  ['checked', ['']],
+  ['checked', ['']],
+  ['disabled', ['']],
+  ['readonly', ['']],
+  ['type', ['text', 'number', 'radio', 'checkbox', 'submit', 'date', 'tel']],
+  ['name', ['g', 'h']],
+  ['form', ['f0', 'f1', 'nothing']],
+  ['value', ['', 'x', '3', '30', '2020-01-02']],
+  ['checked', ['']],
+  ['min', ['5', '2020-01-01']],
+  ['max', ['9']],
+  ['step', ['2']],
+  ['pattern', ['a+']],
+  ['placeholder', ['p']],
+  ['dir', ['rtl', 'ltr', 'auto']],
+  ['contenteditable', ['', 'false']],
+];
+
+/** A control of a random kind, as markup. */
+function controlFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const attributes = CONTROL_ATTRIBUTES.filter(() => next() < 0.2)
+    .map(([name, values]) => `${name}="${pick(values)}"`)
+    .join(' ');
+  const c = pick(CLASSES);
+  return pick([
+    `<input class="${c}" ${attributes}>`,
+    `<input class="${c}" type="radio" name="g" ${attributes}>`,
+    `<input class="${c}" type="number" ${attributes}>`,
+    `<button class="${c}" ${attributes}>b</button>`,
+    `<textarea class="${c}" ${attributes}>t</textarea>`,
+    `<select class="${c}" ${attributes}><option value="">o</option><option>p</option></select>`,
+  ]);
+}
+
+/** Forms, fieldsets and what is outside either, with something beside each
+ *  control for a rule to reach. */
+function controlMarkupFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const line = () =>
+    `<div class="${pick(CLASSES)}">${controlFor(next)}<b>b</b></div>`;
+  const lines = (n: number) => Array.from({ length: n }, line).join('');
+  return (
+    `<section class="a"><form id="f0">${lines(2)}<fieldset class="b">${lines(2)}<b>f</b></fieldset><b>f</b></form></section>` +
+    `<section class="b"><form id="f1">${lines(2)}<b>f</b></form></section>` +
+    `<section class="c">${lines(3)}<div dir="auto" class="d">text<b>b</b></div><bdi>text</bdi><b>s</b></section>`
+  );
+}
+
+/** A change to a control a user or a script might make, done, and what a
+ *  refresh is told of it. */
+function controlChangeFor(
+  next: () => number,
+  body: Element,
+  forms: FormState,
+): HtmlChange[] {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const all = elementsIn(body);
+  const controls = all.filter((e) =>
+    ['input', 'button', 'textarea', 'select'].includes(e.name),
+  );
+  // those another element's answer reads, half the time
+  const read = controls.filter(
+    (e) => e.name === 'button' || e.attribs.type === 'radio',
+  );
+  const target = pick(
+    read.length && next() < 0.5 ? read : controls.length ? controls : all,
+  );
+  const kind = Math.floor(next() * 10);
+  if (kind < 3) {
+    const [attributeName, values] = pick(CONTROL_ATTRIBUTES);
+    const oldValue = target.attribs[attributeName] ?? null;
+    target.attribs[attributeName] = pick(values);
+    return [{ type: 'attributes', target, attributeName, oldValue }];
+  }
+  if (kind === 3) {
+    const [attributeName] = pick(CONTROL_ATTRIBUTES);
+    const oldValue = target.attribs[attributeName] ?? null;
+    delete target.attribs[attributeName];
+    return [{ type: 'attributes', target, attributeName, oldValue }];
+  }
+  if (kind === 4) {
+    forms.setTyped(target, pick(['', 'x', '3', '30', 'مرحبا']));
+    return [controlChange(target)];
+  }
+  if (kind === 5) {
+    const moved = pick([
+      () => setCustomError(target, next() < 0.5 ? 'no' : ''),
+      () => setIndeterminate(target, next() < 0.5),
+      () => setUserValidity(target, next() < 0.5),
+    ])();
+    return moved ? [controlChange(target)] : [];
+  }
+  if (kind === 6) {
+    const parent = target.parent as Element;
+    DomUtils.removeElement(target);
+    return [
+      {
+        type: 'childList',
+        target: parent,
+        addedNodes: [],
+        removedNodes: [target],
+      },
+    ];
+  }
+  if (kind === 7) {
+    const holders = all.filter((e) =>
+      ['div', 'form', 'fieldset', 'section'].includes(e.name),
+    );
+    const holder = pick(holders);
+    const added = new HtmlSource();
+    added.setSource(controlFor(next), true);
+    const made = added.document.children.find(
+      (n) => n.type === 'tag',
+    ) as Element;
+    DomUtils.removeElement(made);
+    DomUtils.appendChild(holder, made);
+    return [
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [made],
+        removedNodes: [],
+      },
+    ];
+  }
+  // text a direction or a default is read from
+  const holders = all.filter((e) =>
+    ['div', 'bdi', 'textarea'].includes(e.name),
+  );
+  const holder = pick(holders.length ? holders : all);
+  const text = holder.children.find((n) => n.type === 'text') as
+    { data: string } | undefined;
+  if (!text) return [];
+  text.data = pick(['text', 'مرحبا', '123', '']);
+  return [{ type: 'characterData', target: text as unknown as ChildNode }];
+}
+
+test('in a document of form controls, a refresh told what changed comes to the styles of a refresh of everything', async () => {
+  // A control's state reads what is around it, a radio's group and a
+  // form's controls among it, and no key says so: `controlsReached` does.
+  let scoped = 0;
+  const seeds = Number(process.env.CONTROL_SEEDS ?? 8);
+  const from = Number(process.env.CONTROL_FROM ?? 1);
+  for (let seed = from; seed < from + seeds; seed += 1) {
+    const next = random(seed * 6271);
+    const css = controlRulesFor(next);
+    const { result, node } = await render(
+      `<style>body{margin:0}\n${css}</style><body>${controlMarkupFor(next)}</body>`,
+      320,
+    );
+    const el = view(node);
+    await act();
+    const bodyEl = el.document.children.find(
+      (n) => (n as Element).name === 'body',
+    ) as Element;
+    const forms = new FormState();
+    for (let step = 0; step < 10; step += 1) {
+      const changes = controlChangeFor(next, bodyEl, forms);
+      const asked = (
+        el as unknown as { _changeScope(c: HtmlChange[]): unknown }
+      )._changeScope(changes);
+      if (asked) scoped += 1;
+      el.touchDocument(changes);
+      const told = stylesOf(el, bodyEl);
+      el.touchDocument();
+      const whole = stylesOf(el, bodyEl);
+      const at = told.findIndex((s, i) => s !== whole[i]);
+      assert.ok(
+        at < 0 && told.length === whole.length,
+        `seed ${seed}, step ${step}: ${changes.map((c) => `${c.type} ${c.type === 'attributes' ? c.attributeName : ''} on ${(c.target as Element).name}`).join(', ')}\n` +
+          `told: ${String(told[at]).slice(0, 200)}\nwhole: ${String(whole[at]).slice(0, 200)}\n` +
+          `rules\n${css}\n${DomUtils.getOuterHTML(bodyEl)}`,
+      );
+    }
+    result.unmount();
+  }
+  assert.ok(scoped > seeds * 5, `${scoped} refreshes said what they reached`);
 });
 
 test('in a document of :has() and attribute selectors, a refresh told what changed comes to the same styles, and finds the elements whose answer changed', async () => {
