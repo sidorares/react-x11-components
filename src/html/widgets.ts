@@ -46,7 +46,7 @@ import {
   setPickerOpen,
   tagOf,
 } from './dom.js';
-import type { Document, Element } from './dom.js';
+import type { Document, Element, HtmlChange } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
@@ -96,8 +96,9 @@ export interface FormsOptions {
   onSubmit?: (submission: FormSubmission) => void;
   /** What happened, before what it does: `onDomEvent` (`dom-events.ts`). */
   onDomEvent?: DomEventHandler;
-  /** Restyle and lay out again: a change a selector can see. */
-  touch: () => void;
+  /** Restyle and lay out again: a change a selector can see, told as
+   *  what it did to the document where that is known. */
+  touch: (changes?: readonly HtmlChange[]) => void;
 }
 
 export interface Forms {
@@ -441,7 +442,11 @@ export function useForms(options: FormsOptions): Forms {
 
   /** A control's value changed: tell the application, and let a message
    *  about it go. */
-  const changed = (el: Element, value: string | boolean, restyle: boolean) => {
+  const changed = (
+    el: Element,
+    value: string | boolean,
+    restyle: readonly HtmlChange[] | null,
+  ) => {
     onControlChange?.(el, value);
     // a field's change lets its own message go, and a radio's its group's
     if (
@@ -453,13 +458,20 @@ export function useForms(options: FormsOptions): Forms {
     ) {
       setInvalid(null);
     }
-    if (restyle) touch();
+    if (restyle) touch(restyle);
   };
 
-  const tick = (el: Element, checked: boolean) => {
+  const tick = (el: Element, checked: boolean): HtmlChange => {
+    const oldValue = attr(el, 'checked') ?? null;
     forms.remember(el);
     if (checked) el.attribs.checked = '';
     else delete el.attribs.checked;
+    return {
+      type: 'attributes',
+      target: el,
+      attributeName: 'checked',
+      oldValue,
+    };
   };
 
   /**
@@ -470,13 +482,12 @@ export function useForms(options: FormsOptions): Forms {
    */
   const setChecked = (el: Element, checked: boolean, init?: DomEventInit) => {
     const was = attr(el, 'checked') !== undefined;
-    tick(el, checked);
+    const ticked = tick(el, checked);
     if (!fire('click', el, { detail: 1, ...init })) {
-      tick(el, was);
-      touch();
+      touch([ticked, tick(el, was)]);
       return;
     }
-    changed(el, checked, true);
+    changed(el, checked, [ticked]);
     fire('input', el);
     fire('change', el);
   };
@@ -492,15 +503,15 @@ export function useForms(options: FormsOptions): Forms {
     const before = radioGroup(el).filter(
       (other) => attr(other, 'checked') !== undefined,
     );
-    for (const other of before) tick(other, false);
-    tick(el, true);
+    const ticked = before.map((other) => tick(other, false));
+    ticked.push(tick(el, true));
     if (!fire('click', el, { detail: 1, ...init })) {
-      tick(el, own);
-      for (const other of before) tick(other, true);
-      touch();
+      ticked.push(tick(el, own));
+      for (const other of before) ticked.push(tick(other, true));
+      touch(ticked);
       return;
     }
-    changed(el, attr(el, 'value') ?? 'on', true);
+    changed(el, attr(el, 'value') ?? 'on', ticked);
     if (own) return;
     fire('input', el);
     fire('change', el);
@@ -517,9 +528,12 @@ export function useForms(options: FormsOptions): Forms {
    *  `details[open]` a selector a sheet styles by. */
   const toggleDetails = (summary: Element) => {
     const details = summary.parent as Element;
-    if (attr(details, 'open') !== undefined) delete details.attribs.open;
+    const oldValue = attr(details, 'open') ?? null;
+    if (oldValue !== null) delete details.attribs.open;
     else details.attribs.open = '';
-    touch();
+    touch([
+      { type: 'attributes', target: details, attributeName: 'open', oldValue },
+    ]);
     fire('toggle', details);
   };
 
@@ -658,11 +672,12 @@ export function useForms(options: FormsOptions): Forms {
       const type = tag === 'input' ? inputType(el) : '';
       if (type === 'checkbox' || type === 'radio') {
         const on = value === true || value === 'true';
-        if (on && type === 'radio') {
-          for (const other of radioGroup(el)) tick(other, false);
-        }
-        tick(el, on);
-        touch();
+        const ticked =
+          on && type === 'radio'
+            ? radioGroup(el).map((other) => tick(other, false))
+            : [];
+        ticked.push(tick(el, on));
+        touch(ticked);
         return true;
       }
       // a boolean is a checkedness, which no other control shows: never
@@ -670,8 +685,7 @@ export function useForms(options: FormsOptions): Forms {
       if (typeof value === 'boolean') return false;
       if (tag === 'select') {
         forms.remember(el);
-        setSelectedOption(el, String(value));
-        touch();
+        touch(setSelectedOption(el, String(value)));
         return true;
       }
       if (!isTextField(el)) return false;
@@ -929,7 +943,11 @@ interface ControlContext {
   picker: Element | null;
   /** A `<select>`'s widget says its menu went down, or came up. */
   pickerChanged: (el: Element, open: boolean) => void;
-  changed: (el: Element, value: string | boolean, restyle: boolean) => void;
+  changed: (
+    el: Element,
+    value: string | boolean,
+    restyle: readonly HtmlChange[] | null,
+  ) => void;
   setChecked: (el: Element, checked: boolean) => void;
   checkRadio: (el: Element) => void;
   /** A button was pressed: what it does to its form. */
@@ -1019,7 +1037,7 @@ function renderControl(
   // `:checked` is a selector documents really use.
   const typed = (value: string) => {
     forms.setTyped(el, value);
-    ctx.changed(el, value, false);
+    ctx.changed(el, value, null);
     ctx.input(el);
   };
   // what may leave a field's text selected: a key, Shift+arrow or Ctrl+A;
@@ -1121,8 +1139,7 @@ function renderControl(
         onChange: (ev) => {
           const next = String(ev.value ?? '');
           forms.remember(el);
-          setSelectedOption(el, next);
-          ctx.changed(el, next, true);
+          ctx.changed(el, next, setSelectedOption(el, next));
           ctx.selected(el);
         },
       });
@@ -1535,17 +1552,28 @@ const BARE_TRIGGER: Style = {
 };
 
 /** Select the option of a drop-down `<select>` whose value is `value`, and
- *  no other. */
-function setSelectedOption(el: Element, value: string): void {
+ *  no other: what that did to them. */
+function setSelectedOption(el: Element, value: string): HtmlChange[] {
   let found = false;
+  const changes: HtmlChange[] = [];
   for (const option of optionElements(el)) {
+    const oldValue = attr(option, 'selected') ?? null;
     if (!found && optionValue(option) === value) {
       option.attribs.selected = '';
       found = true;
     } else {
       delete option.attribs.selected;
     }
+    if ((attr(option, 'selected') ?? null) !== oldValue) {
+      changes.push({
+        type: 'attributes',
+        target: option,
+        attributeName: 'selected',
+        oldValue,
+      });
+    }
   }
+  return changes;
 }
 
 /** Whether a control is a text field: one whose value is what is typed,
