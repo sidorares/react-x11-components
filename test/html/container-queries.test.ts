@@ -818,3 +818,48 @@ test('a style() comparison in rem or rlh follows a root font size in vw across a
   await resize(300, 400);
   assert.deepStrictEqual([color('q'), color('r')], [GREEN, GREEN]);
 });
+
+test('a query answered otherwise after a layout builds what it styles, and keeps the rest', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .c{container-type:inline-size}' +
+      '@container (min-width: 200px) { .q { color: #00aa00 } .q::before { content: "*" } .r { display: flex } }' +
+      '</style><body><div id="far">far</div><div id="w" style="width:100px">' +
+      '<div class="c"><p class="q" id="q">q</p><p class="r" id="r">r</p>' +
+      '<p id="s">s</p></div></div><div id="last">last</div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const box = (id: string) =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<unknown, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(findById(el.document, id));
+  const far = box('far');
+  const wide = box('s');
+  const w = findById(el.document, 'w')!;
+  const was = w.attribs.style;
+  w.attribs.style = 'width:300px';
+  el.touchDocument([
+    { type: 'attributes', target: w, attributeName: 'style', oldValue: was },
+  ]);
+  await act();
+  await act();
+  assert.ok(box('far') === far, 'what is around the container was built');
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'q')!)?.color,
+    'rgb(0, 170, 0)',
+  );
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'r')!)?.display,
+    'flex',
+  );
+  // a pseudo-element the query gives, which its element's style says nothing of
+  assert.ok(
+    (box('q') as { children: { pseudo?: string }[] }).children.some(
+      (c) => c.pseudo === 'before',
+    ),
+    'the query’s ::before was not built',
+  );
+  assert.ok(wide, 'the test reads a box');
+  result.unmount();
+});

@@ -3463,8 +3463,8 @@ export class HtmlViewNode extends Node {
     let seeds = restyleOnly ? this._buildSeeds : null;
     let always = seeds ? this._buildAlways : null;
     const pseudoRules = this._buildPseudo;
-    const tails = seeds ? this._buildTails : null;
-    const parsed = !!seeds && this._buildParsed;
+    let tails = seeds ? this._buildTails : null;
+    let parsed = !!seeds && this._buildParsed;
     this._buildSeeds = null;
     this._buildAlways = null;
     this._buildPseudo = HOVER_PSEUDO_NONE;
@@ -3761,7 +3761,7 @@ export class HtmlViewNode extends Node {
         // their subtrees are built (`_subtreeBuild`) — the first build of
         // the pass only, whose `restyleOnly` is still theirs.
         const subtrees =
-          kept && seeds && restyleOnly === seededWith && pass === 0
+          kept && seeds && restyleOnly === seededWith
             ? this._seedsThatMoved(
                 seeds,
                 always,
@@ -3957,8 +3957,14 @@ export class HtmlViewNode extends Node {
           : null;
       if (!chose && !queried) break;
       this._stale = Stale.Boxes;
-      restyleOnly = queried ?? new Set<Element>();
+      restyleOnly = seededWith = queried ?? new Set<Element>();
       if (queried) follow = true;
+      // and only their subtrees built, where a build of the whole for the
+      // two elements a query answers otherwise for followed every layout of
+      // GitHub's and Next.js's, a tenth of a second each
+      seeds = always = queried && new Set(queried);
+      tails = null;
+      parsed = false;
     }
     this._stale = Stale.Nothing;
     // Read after core's layout pass — the viewport is the box around this

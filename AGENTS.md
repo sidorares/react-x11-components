@@ -1710,8 +1710,8 @@ layout.** A container's size is layout's, so the cascade answers an
 layout gave the container (`Cascade._containerSizes`), and notes for each
 element which container each read and what it came to
 (`_containerReads`). Every layout then hands the containers' boxes back
-(`HtmlViewNode._containersMoved`), and the elements whose answers moved are
-built again around everyone else's kept style and laid out again, at most
+(`HtmlViewNode._containersMoved`), and the subtrees of the elements whose
+answers moved are built again and laid out again, at most
 `CONTAINER_PASSES` times. Three things are load-bearing. **A read is noted
 only where the selector matched**, so a query is a cost of the elements it
 styles and not of its bucket. **An element a container rule reaches, or
