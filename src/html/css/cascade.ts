@@ -6434,9 +6434,30 @@ export class Cascade {
     if (found) {
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container: found[0], answer: value });
+      reads.set(this._readKey(query, self), {
+        container: found[0],
+        answer: value,
+      });
     }
     return value;
+  }
+
+  /** What a read of `query` is noted under: the query, or for a
+   *  pseudo-element a copy of it, since a pseudo-element's query finds its
+   *  element where the element's own finds what is above it, and one
+   *  element with `.a` and `.a::after` under one `@container` has read two
+   *  containers. */
+  private _selfReads = new WeakMap<ContainerQuery, ContainerQuery>();
+  private _readKey(query: ContainerQuery, self: boolean): ContainerQuery {
+    if (!self) return query;
+    let key = this._selfReads.get(query);
+    if (!key) {
+      key = { ...query };
+      const axis = UNIT_AXIS.get(query);
+      if (axis) UNIT_AXIS.set(key, axis);
+      this._selfReads.set(query, key);
+    }
+    return key;
   }
 
   /** What a container unit of `query`'s axis is a hundredth of, for a
@@ -6562,7 +6583,7 @@ export class Cascade {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container, answer });
+      reads.set(this._readKey(query, self), { container, answer });
     }
     return answer;
   }

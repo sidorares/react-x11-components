@@ -1735,7 +1735,11 @@ are the container's (`_queryUnit`) — noted for the element under a key per
 container and axis (`_queryUnitKey`), and a query asked again after a
 layout reads them at the sizes that layout gave (`_moving`): asked at the
 last ones, a container no style had read yet answered with the viewport's,
-and the query kept its answer.
+and the query kept its answer. **One element reads one query twice where it
+is a container**: its `::after` finds the element, and the element what is
+above it, so a pseudo-element's read is noted under a key of its own
+(`_readKey`), or the second read takes the first's place and no layout moves
+the element's answer.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
