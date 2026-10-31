@@ -332,6 +332,20 @@ export interface KeptStyles {
   root?: ComputedStyle;
 }
 
+/** Whether a container query finds in two styles of one element what it
+ *  finds (`Cascade._containerFor`): its type, the names it goes by, and
+ *  whether it is an inline box, which takes no size containment. */
+function sameContainer(a: ComputedStyle, b: ComputedStyle): boolean {
+  return (
+    a.containerType === b.containerType &&
+    a.containerName === b.containerName &&
+    a.scrollStateContainer === b.scrollStateContainer &&
+    a.anchoredContainer === b.anchoredContainer &&
+    (a.containerType === 'normal' ||
+      (a.display === 'inline') === (b.display === 'inline'))
+  );
+}
+
 /** A shadow tree's sheets, as the cascade is handed them: every tree whose
  *  sheets read the same — `key` — shares their rules (`Cascade.bindShadows`),
  *  which a component stamped out on every card of a page has parsed and
@@ -5901,6 +5915,7 @@ export class Cascade {
     if (!kept) this._containerReads.clear();
     this._kept = kept;
     this._keptShared.clear();
+    this._newContainers.clear();
     // which tree each element is in, found again: an element a script
     // moved into another tree since the last build is styled by its rules
     this._trees = new WeakMap();
@@ -6976,7 +6991,8 @@ export class Cascade {
       kept !== null &&
       !this._rootMoved &&
       !kept.restyle.has(el) &&
-      (!kept.follow || this._parentAsWas(el, parentStyle, kept))
+      (!kept.follow || this._parentAsWas(el, parentStyle, kept)) &&
+      !this._underNewContainer(el)
     ) {
       // An element the change did not reach keeps its style, under a key
       // of its own: a key stands for an element's ancestors, which the
@@ -6992,6 +7008,39 @@ export class Cascade {
         return shared;
       }
     }
+    const made = this._styleToShare(
+      el,
+      parentStyle,
+      parentKey,
+      inFlexContainer,
+    );
+    if (kept !== null) {
+      const was = kept.styles.get(el)?.style;
+      if (was && !sameContainer(was, made.style)) this._newContainers.add(el);
+    }
+    return made;
+  }
+
+  /** The elements this build found another kind of container than they
+   *  were, or stopped being one: what a query in anything under one finds
+   *  has changed, whatever its parent's style came to (`sameContainer`). */
+  private _newContainers = new Set<Element>();
+  private _underNewContainer(el: Element): boolean {
+    if (!this._newContainers.size) return false;
+    for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+      if (this._newContainers.has(at)) return true;
+    }
+    return false;
+  }
+
+  /** The style of an element no style kept answers for, shared where it
+   *  can be. */
+  private _styleToShare(
+    el: Element,
+    parentStyle: ComputedStyle,
+    parentKey: number,
+    inFlexContainer: boolean,
+  ): SharedStyle {
     // one a script animates is as far through its animations as the page
     // has it, and another element alike in every way is not: two `<li>`s
     // with one faded in shared the fade
