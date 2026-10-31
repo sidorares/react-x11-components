@@ -1453,6 +1453,9 @@ export interface SubtreeRoots {
    *  (`HtmlViewNode._subtreeBuild`). All of them, so that a gallery whose
    *  every caption moved is built again once from around them. */
   wider?: Element[];
+  /** Of those, each root's parent with the child that came out so: the end
+   *  of the parent from it is enough, where it can be built. */
+  widerEnds?: [Element, Element][];
   /** Whether all that changed is what a stream's chunks put in, which
    *  moves and takes away nothing (`HtmlViewNode._buildParsed`). */
   appendOnly?: boolean;
@@ -1565,6 +1568,12 @@ export function buildSubtrees(
   let counting: SubtreeRoot | null = null;
   const outer = cascade.stylesOf;
   cascade.stylesOf = (el) => fresh.get(el)?.style ?? tree.styles.get(el)?.style;
+  /** What is built around `kid` next: its parent's end from it, where no
+   *  element around it can be built apart (`wider`, `widerEnds`). */
+  const widen = (parent: Element, kid: Element): void => {
+    (found.wider ??= []).push(parent);
+    (found.widerEnds ??= []).push([parent, kid]);
+  };
   cascade.beginSharing(options.kept ?? null);
   try {
     for (const el of hidden) {
@@ -1583,8 +1592,12 @@ export function buildSubtrees(
         cascade.freshShareKey(),
         inFlex,
       );
-      // drawn after all: its boxes are its parent's to build
-      if (style.display !== 'none') return null;
+      // drawn after all: its boxes are its parent's to build. A menu or a
+      // dialog shown built the whole document
+      if (style.display !== 'none') {
+        widen(up, el);
+        continue;
+      }
       unboxed.set(el, { style, inFlex });
       fresh.set(el, { style, inFlex });
     }
@@ -1618,7 +1631,8 @@ export function buildSubtrees(
           found.wider = undefined;
           return null;
         }
-        (found.wider ??= []).push(wider);
+        if (old.tail) (found.wider ??= []).push(wider);
+        else widen(wider, old.el!);
         continue;
       }
       // As many list items as it had, numbering nothing, and nothing else
