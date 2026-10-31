@@ -1817,9 +1817,9 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  * Each of them is compiled by itself, with no context to read, and
  * `:nth-child(… of S)` and css-select's `aliases` with it, which are `:is()`s
  * under other names: `:has(+ input:checked)` matched nothing. So is a `:scope`,
- * which is the query's and not the `:has()`'s element: `el.closest(':has(:scope
- * .a)')` found `el` for an `.a` in it, where it finds what `el` is in. What is
- * left of an argument goes through `insideHas`.
+ * which is the query's and not the `:has()`'s element (fb55/css-select#1931):
+ * `el.closest(':has(:scope .a)')` found `el` for an `.a` in it, where it finds
+ * what `el` is in. What is left of an argument goes through `insideHas`.
  *
  * Only what is compiled changes: what reads a rule for what it reaches reads
  * it as written, and never sees `-rx-hoisted` or the `* > `.

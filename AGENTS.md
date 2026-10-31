@@ -2208,8 +2208,8 @@ every `.a`, and Apple's sections matched rules a browser's do not;
 `:has(+ :is(.a))` and `:has(+ input:checked)` matched nothing, and
 `:has(> .a:is(.x .a))` found no `.x` around the element. So each `:is()`,
 `:where()`, `:not()`, `:nth-child(… of S)`, alias of css-select's and `:scope`
-in an argument is compiled by itself, with `:-rx-hoisted(n)` left in its
-place, and only what is compiled changes: what reads a rule for what it
+(fb55/css-select#1931) in an argument is compiled by itself, with
+`:-rx-hoisted(n)` left in its place, and only what is compiled changes: what reads a rule for what it
 reaches reads it as written. What is left of an argument is held inside the
 element (`insideHas`): css-select anchors an entry that starts at no
 combinator and has one in it with a descendant combinator that may take the
@@ -2238,10 +2238,9 @@ a refresh of the whole document. A refresh told what changed and a refresh of
 everything share what the matcher answers, so the fuzz in
 `test/html/refresh.test.ts` sees none of this: `HAS_ARGUMENTS` in
 `test/html/harness.ts` holds the answers to Chrome's. When a release of
-css-select fixes fb55/css-select#1928 delete `insideHas`, and when one fixes
-fb55/css-select#1930 delete `compileHoisted`, as "Vendored from core" has it
-for a copy, leaving a `:scope` in an argument compiled apart until css-select
-reads one as the query's.
+css-select fixes fb55/css-select#1928 delete `insideHas`, and when releases
+have fixed both fb55/css-select#1930 and fb55/css-select#1931 delete
+`compileHoisted`, as "Vendored from core" has it for a copy.
 
 **A `:has()` that asks only of its element's children or its siblings is
 asked only so many levels up, and a sibling combinator reaches what it
