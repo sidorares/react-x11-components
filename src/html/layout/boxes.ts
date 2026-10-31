@@ -823,6 +823,20 @@ function orderOf(box: Box): number {
  *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The pieces after the first of an inline box broken around blocks, under
+ *  the first (`breakAround`): a sticky one moves as one box, by what all of
+ *  it comes to (`applyRelativeOffsets`), and its first piece moves the rest. */
+export const CUT_PIECES = new WeakMap<Box, Box[]>();
+
+/** How large a sticky inline box's rect is (`setStickyRect`), beside it: a
+ *  box of any size paints as a rectangle, and one here was filled with its
+ *  background over its text. Its `x` and `y` are where the rect stands, and
+ *  no box but a sticky inline one with a fragment has an entry. */
+export const STICKY_SIZES = new WeakMap<
+  Box,
+  { width: number; height: number }
+>();
+
 /** Where a block that clearance moved below the floats would have stood
  *  without it, its border edge's top (CSS 2.1 9.5.2): a browser's
  *  fragment of an inline box around such a block starts there, and takes
@@ -6564,6 +6578,7 @@ function breakAround(inline: Box): Box[] | null {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
   CUT_BLOCKS.set(pieces[0], blocks);
+  CUT_PIECES.set(pieces[0], pieces.slice(1));
   const fade = inline.style.opacity;
   if (fade < 1) {
     for (const block of blocks) {

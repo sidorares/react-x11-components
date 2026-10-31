@@ -1087,17 +1087,7 @@ function fuzzed(next: () => number, depth: number): Element {
     classes.push(pick(FUZZ_CLASSES));
   }
   const name = pick(['div', 'p', 'section', 'h2', 'span', 'b', 'em']);
-  // an inline box's rect is never laid out, and `stickyOffset` reads it,
-  // so where one is held turns on how far a kept block has moved it: that
-  // is so of any layout that keeps blocks, and no font's doing
-  const inline = name === 'span' || name === 'b' || name === 'em';
-  const out = createElement(
-    name,
-    {
-      class: classes.filter((c) => !(inline && c === 'sti')).join(' '),
-    },
-    [],
-  );
+  const out = createElement(name, { class: classes.join(' ') }, []);
   const inner = depth < 3 ? Math.floor(next() * 4) : 0;
   if (next() < 0.8 || inner === 0) {
     appendChild(out, createText(pick(FUZZ_WORDS)));

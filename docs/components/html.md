@@ -5465,6 +5465,15 @@ never needs: the whole document's was worked out again at every step, and
 a scroll of Wikipedia's article on the United States, with its contents list
 held beside it, went from 9 ms a frame to 1.8 on X11.
 
+A sticky inline box sticks as a block does, as Chrome and WebKit have it: it is
+placed by the rectangle around its own fragments and moves as one, however
+many lines it is on and with whatever blocks it was broken around, while the
+lines stay where they are. What keeps it in is the block around it the markup
+wrote, not an anonymous one around its line, and the margins above and below
+it, which take no room on a line, count all the same. It is drawn with its line,
+as a relative inline box is, so what comes after it in the flow is drawn over
+it where a browser draws that under it.
+
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
 and End to its ends, as Chrome steps them — where the focus is on the

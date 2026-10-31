@@ -901,6 +901,14 @@ const STICKY =
   '<section><div class="t" id="t2"></div></section>' +
   '<div style="height:600px"></div><div id="foot"></div>';
 
+/** A span the viewport holds, whose text and background are drawn on its
+ *  paragraph's lines, off the line they are on. */
+const STICKY_SPAN =
+  '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0;height:380px}' +
+  '#s{position:sticky;top:30px;background:#ff0000;padding:0 4px}</style>' +
+  '<p style="height:60px">word</p><p>word <span id="s">held, then let go' +
+  '</span> word</p><p>word</p>';
+
 /** Sticky boxes the viewport holds a level down, one casting a shadow past
  *  itself, and one in a flex row its section lets go of half way down:
  *  what a pane's scroll moves, and the boxes around them grown to hold
@@ -1060,6 +1068,54 @@ test("a sticky element's text is no sticky box: a scroll of the pane places the 
   }
 });
 
+metric(
+  'a sticky inline box the viewport keeps holds to it as the pane scrolls, a point on it is it, and the pane is told where',
+  async () => {
+    const { el } = await renderScrolled(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+        '#cb{height:300px}#s{position:sticky;top:12px;background:#ff0000}' +
+        '</style><div style="height:100px"></div><p id="cb">word ' +
+        '<span id="s">held</span></p><div style="height:900px"></div>',
+      200,
+    );
+    const pane = paneOf(el);
+    const rect = () => el.elementRect(findById(el.document, 's')!)!;
+    const size = rect().height;
+    const offsets = () =>
+      (
+        el as unknown as { viewportFixedRects(): FixedRect[] | null }
+      ).viewportFixedRects();
+    const flow = rect().y;
+    const browsers: [number, number][] = [
+      // where the flow has it
+      [0, flow],
+      // held 12px down the viewport
+      [200, 212],
+      // and gone with its containing block
+      [500, 400 - size],
+    ];
+    for (const [y, want] of browsers) {
+      await act(async () => pane.scrollTo(y));
+      assert.strictEqual(rect().y, want, `scrolled to ${y}`);
+      assert.strictEqual(rect().height, size, 'as tall');
+    }
+    await act(async () => pane.scrollTo(200));
+    assert.strictEqual(el.elementAtPoint(rect().x + 5, 20)?.attribs.id, 's');
+    assert.ok(
+      offsets()?.some((r) => r.height >= size - 1 && r.height <= size + 1),
+      `the pane is told where it is held: ${JSON.stringify(offsets())}`,
+    );
+    // a layout of a block that keeps it takes it off and puts it back
+    await act(async () =>
+      (el as unknown as { _invalidate(stale: number): void })._invalidate(1),
+    );
+    await act();
+    assert.strictEqual(rect().y, 212, 'laid out again where it is held');
+    await act(async () => pane.scrollTo(0));
+    assert.strictEqual(rect().y, flow, 'and back where the flow has it');
+  },
+);
+
 test('a box fixed to the viewport stays where the viewport has it, whatever a sticky or a relative box around it is moved by', async () => {
   // docs.github.com's search dialog is fixed under the header, inside a
   // header stuck to the top: moved with the header as it stuck and then
@@ -1115,9 +1171,10 @@ for (const [measured, source, every] of [
   [false, STICKY, false],
   [true, STICKY, false],
   [false, STICKY_DEEP, true],
+  [false, STICKY_SPAN, false],
 ] as const) {
   metric(
-    `a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does${measured ? ', measured between each scroll and its pass' : ''}${every ? ', a level down and casting a shadow' : ''}`,
+    `a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does${measured ? ', measured between each scroll and its pass' : ''}${every ? ', a level down and casting a shadow' : ''}${source === STICKY_SPAN ? ', a span among them' : ''}`,
     async () => {
       // A step of a pane's scroll copies what it shows and paints the strip
       // it exposed, and the copy drags a held box with the text. The document

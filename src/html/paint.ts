@@ -135,6 +135,7 @@ import {
   SHADOWED_TEXT,
   SHAPE_STYLES,
   SHIFTED_LINES,
+  STICKY_SIZES,
   TEXT_RAISES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
@@ -840,6 +841,18 @@ function boundsOf(
       x2 = Math.max(x2, reach.x2 + (out?.right ?? 0));
       y2 = Math.max(y2, reach.y2 + (out?.bottom ?? 0));
       if (padded) bottom = Math.max(bottom, reach.y2);
+    }
+    // a sticky one has a rect, its lines', which stands where it is held:
+    // what a pane's scroll is told it does not copy with the text
+    // (`viewportFixedRects`), and what is asked what is over a mount
+    const held =
+      box.style.position === 'sticky' ? STICKY_SIZES.get(box) : undefined;
+    // and a box of no area reaches nowhere: a span of collapsed spaces
+    if (held && held.width > 0 && held.height > 0) {
+      x1 = Math.min(x1, box.x);
+      y1 = Math.min(y1, box.y);
+      x2 = Math.max(x2, box.x + held.width);
+      y2 = Math.max(y2, box.y + held.height);
     }
   }
   const lines = box.lines;
