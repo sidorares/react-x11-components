@@ -2142,7 +2142,12 @@ otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
 it is under and the layers ranked before it joins `ParsedSheet`, and
-nothing after a parse changes a sheet but that `order`. **Where all the
+nothing after a parse changes a sheet but that `order`. It takes what the
+one before read of them too (`_noted`), the reach of a change, a hover and
+a focus, which was most of what making a cascade cost: **what `MutationRules`
+and `StateRules` keep reads a selector and nothing else**, and is only ever
+added to, so what a sheet that has gone left in it reaches more than it
+need and never less. **Where all the
 sheets did is add rules, what those rules can style is styled and nothing
 else** (`_sheetsAdded`): a sheet put in, a `<style>` written to at its
 end — a CSS-in-JS library's as each component first renders — and a

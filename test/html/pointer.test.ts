@@ -16,7 +16,14 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
-import { HtmlViewNode, removeNode } from '../../src/html/index.js';
+import {
+  appendChild,
+  createHtmlElement,
+  createText,
+  HtmlViewNode,
+  removeNode,
+} from '../../src/html/index.js';
+import type { Element as DocElement } from '../../src/html/index.js';
 import { hoverClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { holdClock } from '../held-clock.js';
@@ -1091,6 +1098,34 @@ test('a :hover that leads below names the subject it reaches, not all that is in
   // a host's own state is the edge's
   assert.strictEqual(pointerCompounds(':host(:hover) .x').host, true);
   assert.strictEqual(pointerCompounds(':host(:hover) .x').nested, false);
+});
+
+test('a hover reaches what it did after a sheet came, and what the sheet adds', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .m:hover .i{color:#00aa00}</style>' +
+      '<body><div class="m" id="m"><p class="i" id="i">i</p></div>' +
+      '<div class="n" id="n"><p class="j" id="j">j</p></div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const body = el.document.children.find(
+    (n) => (n as { name?: string }).name === 'body',
+  ) as DocElement;
+  const style = createHtmlElement('style', {}, [
+    createText('.n:hover .j { color: #0000ff }'),
+  ]);
+  appendChild(body, style);
+  el.touchDocument([
+    { type: 'childList', target: body, addedNodes: [style], removedNodes: [] },
+  ]);
+  await snapshot(result, el);
+  el.setHover(...pointIn(el, 'i'));
+  await snapshot(result, el);
+  assert.strictEqual(colourOf(el, 'i'), '#00aa00');
+  el.setHover(...pointIn(el, 'j'));
+  await snapshot(result, el);
+  assert.strictEqual(colourOf(el, 'j'), '#0000ff');
 });
 
 test('the focus names the elements it can restyle the way the pointer does', async () => {

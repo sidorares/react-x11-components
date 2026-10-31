@@ -2502,6 +2502,7 @@ export class HtmlViewNode extends Node {
         null,
         null,
         shadows,
+        kept?.cascade ?? null,
       );
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;

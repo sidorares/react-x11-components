@@ -2326,6 +2326,15 @@ class StateRules {
 
   constructor(private readonly _kind: StateKind) {}
 
+  /** These rules for another cascade, whose matchers its own adapter
+   *  compiles. */
+  rebound(): this {
+    this._matchers = null;
+    this._belowMatchers = null;
+    this._anchorMatchers = null;
+    return this;
+  }
+
   note(selector: string): void {
     if (!this._kind.mentions.test(selector)) return;
     const found = pointerCompounds(selector, this._kind);
@@ -3170,6 +3179,10 @@ function noteReach(
  *  where an element sits, what it holds, its text, a sibling combinator. */
 const TREE_KEYS = new Set(['s', 'h', 'k', 't', 'e', 'n', 'g', '+', '~']);
 
+/** How many sheets a cascade's reading of its rules may hold that its
+ *  document no longer has before it reads them afresh (`Cascade`). */
+const SHEETS_GONE = 16;
+
 class MutationRules {
   private _bits = new Map<string, number>();
   /** What each key tested above a rule's subject can restyle below the
@@ -3856,6 +3869,8 @@ export class Cascade {
   /** …and the ones that test what a change to the DOM can change
    *  (`attributeChange`, `treeChange`). */
   private _changeRules = new MutationRules();
+  /** The sheets those three have read. */
+  private _noted = new Set<Stylesheet>();
   /** What `attributeChange` asks: each attribute selector compiled alone
    *  (`_flips`), each anchor's compound, and each set of anchors as one. */
   private _attributeTests = new Map<
@@ -4262,8 +4277,23 @@ export class Cascade {
     /** The shadow trees' sheets, a set for each way they read: what each
      *  styles is in the trees bound to it (`bindShadows`). */
     shadows: readonly ShadowSheets[] = [],
+    /** The cascade this one takes over from, whose reading of its sheets
+     *  this one's are spared (`_noted`). */
+    before: Cascade | null = null,
   ) {
     this._sheets = [...sheets, ...shadows.flatMap((tree) => tree.sheets)];
+    // What a rule says it tests is the same in every cascade it is in, and
+    // reading that is most of what making one costs: a page that links five
+    // sheets late read every rule of all of them for each, a second of
+    // GitHub's load. A reading only ever says more, and what a rule that
+    // has gone left in it reaches more than it need, never less, so it is
+    // kept but for a few sheets gone.
+    if (before && before._noted.size <= this._sheets.length + SHEETS_GONE) {
+      this._hoverRules = before._hoverRules.rebound();
+      this._focusRules = before._focusRules.rebound();
+      this._changeRules = before._changeRules;
+      this._noted = before._noted;
+    }
     // css-select has none of the focus's three, and a pseudo-class is
     // handed only the element, so they are this cascade's own closures
     this._pseudos = {
@@ -4396,6 +4426,8 @@ export class Cascade {
     rules: TreeRules,
     breakpoints: Set<number>,
   ): void {
+    const noted = this._noted.has(sheet);
+    this._noted.add(sheet);
     for (const rule of sheet.rules) {
       if (rule.order < 0) {
         for (const d of rule.declarations) this._uaProps.add(d.prop);
@@ -4409,6 +4441,7 @@ export class Cascade {
       }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
+        if (noted) continue;
         const split = splitPseudoElement(rule);
         this._changeRules.noteEdge(
           (split?.rule ?? rule).selector,
@@ -4446,6 +4479,7 @@ export class Cascade {
           this._shapes.add(rule, key, scope);
         }
       }
+      if (noted) continue;
       const selector = (pseudo?.rule ?? rule).selector;
       this._hoverRules.note(selector);
       this._focusRules.note(selector);

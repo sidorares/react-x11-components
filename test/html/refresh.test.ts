@@ -1111,6 +1111,81 @@ test('a stylesheet prop made again with the sheets it held styles nothing again,
   assert.strictEqual(el.computedStyle(byId(el, 'q'))?.color, 'rgb(0, 0, 255)');
 });
 
+test('a cascade made for a sheet that came keeps what it knew of the rules before it, and learns the new', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .old[data-x] { color: #00aa00 }</style>' +
+      '<body><p class="old" id="old">old</p><p class="new" id="new">new</p>' +
+      '<style id="gone">.gone[data-z] { color: #ff0000 }</style></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const internals = el as unknown as {
+    _cascade: {
+      attributeChange(name: string, was: null, now: string): { bits: number };
+      _changeRules: { note(...a: unknown[]): void };
+    };
+  };
+  const reach = (name: string) =>
+    internals._cascade.attributeChange(name, null, '').bits;
+  assert.ok(reach('data-x'), 'the first sheet was not read');
+  const before = internals._cascade;
+  const reading = before._changeRules;
+  const note = reading.note;
+  let read = 0;
+  reading.note = function (this: unknown, ...a: unknown[]) {
+    read += 1;
+    note.apply(this, a);
+  };
+  const body = byId(el, 'old').parent as Element;
+  const style = createElement('style', {}, [
+    createText('.new[data-y] { color: #0000ff }'),
+  ]);
+  appendChild(body, style);
+  el.touchDocument([
+    { type: 'childList', target: body, addedNodes: [style], removedNodes: [] },
+  ]);
+  await snapshot(result, el);
+  assert.ok(internals._cascade !== before, 'the cascade was kept');
+  assert.ok(internals._cascade._changeRules === reading, 'all read again');
+  assert.strictEqual(read, 1, 'rules read before were read again');
+  // the rule before it and the rule that came, each told of a change
+  assert.ok(reach('data-x'), 'what the first sheet tests was forgotten');
+  assert.ok(reach('data-y'), 'the new sheet was not read');
+  const next = byId(el, 'new');
+  next.attribs['data-y'] = '';
+  el.touchDocument([
+    {
+      type: 'attributes',
+      target: next,
+      attributeName: 'data-y',
+      oldValue: null,
+    },
+  ]);
+  await snapshot(result, el);
+  assert.equal(el.computedStyle(next)?.color, 'rgb(0, 0, 255)');
+  // a sheet gone leaves what it tested read, which reaches more, not less
+  const gone = byId(el, 'gone');
+  removeNode(gone as unknown as ChildNode);
+  el.touchDocument([
+    { type: 'childList', target: body, addedNodes: [], removedNodes: [gone] },
+  ]);
+  await snapshot(result, el);
+  assert.ok(reach('data-x'), 'what the first sheet tests was forgotten');
+  // and enough of them read it afresh, or a page that writes a new sheet at
+  // every step would hold every one it wrote
+  const text = style.children[0] as unknown as { data: string };
+  for (let i = 0; i < 24; i += 1) {
+    text.data = `.new[data-w${i}] { color: #0000ff }`;
+    el.touchDocument([{ type: 'characterData', target: text as never }]);
+    await act();
+  }
+  assert.ok(
+    internals._cascade._changeRules !== reading,
+    'it was held for good',
+  );
+});
+
 test('a change to a <link>, a <style> or a <meta> restyles everything only where it changes what the cascade reads', async () => {
   // the sheets the host answers with, at once, and one it answers later
   const sheets: Record<string, string> = {
