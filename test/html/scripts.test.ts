@@ -8831,6 +8831,57 @@ metric(
   },
 );
 
+metric(
+  'a page reads the family it wrote, before its face arrives and after, and none of the names the face goes by',
+  async () => {
+    const sans = new Uint8Array(readFileSync(FONTS!['sans-serif']));
+    const doc = await hosted(
+      `<!doctype html><style>
+      @font-face { font-family: "Web Face"; src: url(a.ttf) }
+      #p { font: 16px "Web Face", 'Not Here' }
+      #kept { font-family: inherit(font-family) }
+      #p::before { content: "a"; font-family: 'Web Face' }
+      </style><p id="p">words <b id="b">more</b>
+      <span id="kept">kept</span></p><p id="out"></p><script>
+      var families = function () {
+        return ['p', 'b', 'kept']
+          .map(function (id) {
+            return getComputedStyle(document.getElementById(id)).fontFamily;
+          })
+          .concat(
+            getComputedStyle(document.getElementById('p'), '::before').fontFamily,
+          )
+          .join(' | ');
+      };
+      var before = families();
+      document.fonts.load('16px "Web Face"').then(function () {
+        document.getElementById('out').textContent = before + ' -> ' + families();
+      });
+      </script>`,
+      { fonts: { 'a.ttf': sans } },
+    );
+    const written = '"Web Face", "Not Here"';
+    const read = `${written} | ${written} | ${written} | "Web Face"`;
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      `${read} -> ${read}`,
+      doc.logs.join('\n'),
+    );
+    const style = (id: string) =>
+      (boxOf(doc.view, id) as unknown as { style: ComputedStyle }).style;
+    const drawn = () => style('p').fontFamily;
+    for (let i = 0; i < 40 && !drawn().includes('html webfont'); i += 1) {
+      await new Promise((go) => setTimeout(go, 5));
+      await act();
+    }
+    // which is what makes this a test: the text is set in a name of ours
+    assert.match(drawn(), /^html webfont /);
+    assert.match(style('kept').fontFamily, /^html webfont /);
+    doc.run('console.log("after", families());');
+    assert.strictEqual(doc.logs.at(-1), `log: after ${read}`);
+  },
+);
+
 test('a frame’s document: XML read as XML, a malformed one an error, its scripts run, a new src navigates, and open and write build a tree', async () => {
   const files: Record<string, [string, string]> = {
     'svg.xml': [

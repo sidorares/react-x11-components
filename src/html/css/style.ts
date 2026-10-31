@@ -729,6 +729,13 @@ export interface ComputedStyle {
    *  one of those while no face of a family has loaded, and only this says
    *  which of them a face that arrives is for (`WebFonts.affects`). */
   familyWritten: string;
+  /** The declaration's value as it was written, which a page reads back
+   *  (`fontFamilyText`, `computed.ts`) and neither list above can say: both
+   *  have lost their quotes, so `'monospace'` is the generic, and go on to
+   *  the document's own family where the sheet stopped. `''` where no sheet
+   *  named one, and `monospace` for the host's code face, which the UA
+   *  sheet names for that generic. */
+  fontFamilyText: string;
   fontSize: number;
   /** What `fontSize` is worked out from — an absolute-size keyword, a size
    *  relative to such a keyword's, or a length that is its own — which
@@ -1540,6 +1547,7 @@ export const INHERITED = [
   'textFillColor',
   'fontFamily',
   'familyWritten',
+  'fontFamilyText',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -1709,6 +1717,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     fontFamily: look.fontFamily,
     // the host's, which is no list of the sheets' and is handed on as it is
     familyWritten: '',
+    fontFamilyText: '',
     fontSize: look.fontSize,
     // the host's font is a browser's standard font, which is no generic
     fontSizeBasis: 'medium',
@@ -2089,6 +2098,7 @@ export function inherit(
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
   out.familyWritten = parent.familyWritten;
+  out.fontFamilyText = parent.fontFamilyText;
   out.fontSize = parent.fontSize;
   out.fontSizeBasis = parent.fontSizeBasis;
   out.genericMonospace = parent.genericMonospace;
@@ -2258,6 +2268,7 @@ export const FIRST_LINE_INHERITED = [
   'textFillColor',
   'fontFamily',
   'familyWritten',
+  'fontFamilyText',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -4100,9 +4111,11 @@ export function applyDeclaration(
       // the generic `monospace` alone — a browser's IsMonospace, which a
       // quoted 'monospace' is not — or the host's code face where the UA
       // sheet names it, which stands for that generic
+      const code = list === ctx.codeFamily?.();
       style.genericMonospace =
         (generic && names.length === 1 && last.toLowerCase() === 'monospace') ||
-        list === ctx.codeFamily?.();
+        code;
+      style.fontFamilyText = code ? 'monospace' : value;
       return;
     }
     case 'font-size': {
@@ -8818,7 +8831,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-image-width': ['borderImage'],
   'border-image-outset': ['borderImage'],
   'border-image-repeat': ['borderImage'],
-  'font-family': ['fontFamily', 'familyWritten', 'genericMonospace'],
+  'font-family': [
+    'fontFamily',
+    'familyWritten',
+    'fontFamilyText',
+    'genericMonospace',
+  ],
   'font-size': ['fontSize', 'fontSizeBasis'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
@@ -8828,6 +8846,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   font: [
     'fontFamily',
     'familyWritten',
+    'fontFamilyText',
     'genericMonospace',
     'fontSize',
     'fontSizeBasis',

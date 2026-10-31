@@ -1517,6 +1517,163 @@ test('background-image computes to the images as written, its urls, colours and 
   assert.strictEqual(image('bad'), 'url("a.png")');
 });
 
+test('font-family reads as its list was written, serialized as Chrome serializes it', async () => {
+  // Chrome 151's answers, each read back from that browser (WebKit quotes
+  // less, and Firefox did not start where this was checked). Not its answer
+  // for `BlinkMacSystemFont`, which on a Mac alone comes back `"system-ui"`:
+  // here a page reads the name it wrote, as WebKit has it.
+  const lists: [string, string][] = [
+    // an identifier needs no quotes, whatever it was written with
+    ['Inter', 'Inter'],
+    [`'Inter'`, 'Inter'],
+    ['"Inter"', 'Inter'],
+    [`'a1'`, 'a1'],
+    [`'a-b'`, 'a-b'],
+    [`'_'`, '_'],
+    ['-foo', '-foo'],
+    [`'-apple-system'`, '-apple-system'],
+    [`'日本語'`, '日本語'],
+    ['F\\6Fo', 'Foo'],
+    // anything else is a string
+    ['Helvetica Neue', '"Helvetica Neue"'],
+    ['Helvetica \t  Neue', '"Helvetica Neue"'],
+    [`'Helvetica  Neue'`, '"Helvetica  Neue"'],
+    [`'  Foo'`, '"  Foo"'],
+    [`'Foo, Bar'`, '"Foo, Bar"'],
+    [`'1996'`, '"1996"'],
+    [`'1a'`, '"1a"'],
+    [`'-1a'`, '"-1a"'],
+    [`'-'`, '"-"'],
+    [`'--'`, '"--"'],
+    ['--foo', '"--foo"'],
+    [`'a.b'`, '"a.b"'],
+    ['Foo serif', '"Foo serif"'],
+    ['inherit Foo', '"inherit Foo"'],
+    [`''`, '""'],
+    [`'', serif`, '"", serif'],
+    // and escaped as one
+    [`'Foo"Bar'`, '"Foo\\"Bar"'],
+    [`"Foo\\"Bar"`, '"Foo\\"Bar"'],
+    [`"Foo'Bar"`, `"Foo'Bar"`],
+    [`"a\\\\b"`, '"a\\\\b"'],
+    [`'a\\1 b'`, '"a\\1 b"'],
+    [`"a\\A b"`, '"a\\a b"'],
+    [`'a\\\nb'`, 'ab'],
+    // a generic family is a keyword bare, in any case, and a name quoted
+    ['monospace', 'monospace'],
+    ['MONOSPACE', 'monospace'],
+    ['Sans-Serif', 'sans-serif'],
+    ['SYSTEM-UI', 'system-ui'],
+    ['Math', 'math'],
+    ['Cursive', 'cursive'],
+    ['FANTASY', 'fantasy'],
+    [`'monospace'`, '"monospace"'],
+    ['"sans-serif"', '"sans-serif"'],
+    [`'system-ui'`, '"system-ui"'],
+    [`'math'`, '"math"'],
+    [`serif, 'serif'`, 'serif, "serif"'],
+    ['monospace, monospace', 'monospace, monospace'],
+    // quoted in another case it is no generic family, and needs none
+    [`'Serif'`, 'Serif'],
+    [`'MONOSPACE'`, 'MONOSPACE'],
+    [`'Sans-Serif'`, 'Sans-Serif'],
+    // what is no keyword to Chrome is a name, in its own case
+    ['UI-Sans-Serif', 'UI-Sans-Serif'],
+    [`'ui-serif'`, 'ui-serif'],
+    ['Emoji', 'Emoji'],
+    [`'emoji'`, 'emoji'],
+    [`'none'`, 'none'],
+    // a CSS-wide keyword and `default` would mean that, in any case
+    [`'inherit'`, '"inherit"'],
+    [`'INHERIT'`, '"INHERIT"'],
+    [`'Initial'`, '"Initial"'],
+    ['"unset"', '"unset"'],
+    [`'Revert-Layer'`, '"Revert-Layer"'],
+    [`'default'`, '"default"'],
+    [`'Default'`, '"Default"'],
+    // and a list is its names, with nothing after them
+    ['Inter , Arial,serif', 'Inter, Arial, serif'],
+    [
+      `'Inter', 'Helvetica Neue', Arial, sans-serif`,
+      'Inter, "Helvetica Neue", Arial, sans-serif',
+    ],
+    [
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto',
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto',
+    ],
+  ];
+  const { node } = await render(
+    '<style>' +
+      lists.map(([list], i) => `#l${i} { font-family: ${list} }`).join('') +
+      '</style>' +
+      lists.map((_, i) => `<i id="l${i}"></i>`).join(''),
+  );
+  const el = view(node);
+  lists.forEach(([list, want], i) => {
+    assert.strictEqual(
+      el.computedStyle(findById(el.document, `l${i}`)!)?.['font-family'],
+      want,
+      list,
+    );
+  });
+});
+
+test('where no sheet named a family it reads as the host named one, and the host’s code face as what it stands for', async () => {
+  // Chrome answers the font its settings name, `Times`, and `monospace` for
+  // what its UA sheet sets in that generic, whichever face it comes to
+  const { node } = await render(
+    '<style>.shorthand { font: italic 12px/2 "Page Face" }' +
+      '@font-face { font-family: Loaded; src: url(a.ttf) }</style>' +
+      '<p id="p">a</p><a id="a" href="#">a</a><h1 id="h">a</h1>' +
+      '<pre id="pre">a</pre><code id="code">a</code><kbd id="kbd">a</kbd>' +
+      '<textarea id="field"></textarea>' +
+      '<pre id="inherits" style="font-family: inherit">a</pre>' +
+      '<pre id="initial" style="font-family: initial">a</pre>' +
+      '<div style="font-family: Outer"><pre id="own">a</pre><b id="b">a</b></div>' +
+      '<div class="shorthand" id="short">a</div>' +
+      '<font id="face" face="Foo Bar, Arial">a</font>' +
+      '<div id="declared" style="font-family: Loaded">a</div>' +
+      '<div id="vars" style="--f: Inter, \'Helvetica Neue\'; font-family: var(--f)">a</div>',
+    400,
+    {
+      fontFamily: `Host Sans, 'Segoe UI', serif`,
+      monoFamily: `"Host Mono", monospace`,
+    },
+  );
+  const el = view(node);
+  const family = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.['font-family'];
+  const host = '"Host Sans", "Segoe UI", serif';
+  for (const id of ['p', 'a', 'h', 'inherits', 'initial']) {
+    assert.strictEqual(family(id), host, id);
+  }
+  for (const id of ['pre', 'code', 'kbd', 'field', 'own']) {
+    assert.strictEqual(family(id), 'monospace', id);
+  }
+  assert.strictEqual(family('b'), 'Outer', 'inherited');
+  // a list the sheet ended goes on to the document's family, and reads as
+  // it ended
+  assert.strictEqual(
+    (boxOf(el, 'b') as unknown as { style: ComputedStyle }).style.fontFamily,
+    `Outer, Host Sans, 'Segoe UI', serif`,
+  );
+  assert.strictEqual(family('short'), '"Page Face"', 'through `font`');
+  assert.strictEqual(family('face'), '"Foo Bar", Arial', 'through `face`');
+  assert.strictEqual(family('vars'), 'Inter, "Helvetica Neue"');
+  // a face of its own that has not loaded, which the list leaves out
+  assert.strictEqual(family('declared'), 'Loaded');
+  assert.ok(
+    !(
+      boxOf(el, 'declared') as unknown as { style: ComputedStyle }
+    ).style.fontFamily.includes('Loaded'),
+    'the engine is handed none of it yet',
+  );
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'p')!, 'before')?.['font-family'],
+    host,
+  );
+});
+
 test("attr()'s name may be a var(), and a type too, which are read once they are substituted", async () => {
   // attr-argument-grammar.html: `attr(var(--x))` is the attribute and the
   // type `--x` holds; one that is no name and type once it is substituted

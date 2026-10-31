@@ -3788,6 +3788,22 @@ into the list where the document's was, found by asking for a match and
 believing it only when the face that comes back carries the name
 (`localFamily`), since a font manager has no lookup to ask.
 
+**A page reads the list it wrote, and none of those names.** Three things
+are kept of a `font-family`, for three readers: `fontFamily` is what the
+engine is handed, with the private names in it and what has not loaded left
+out; `familyWritten` is what that is made from, which has lost its quotes
+and goes on to the document's family where the sheet stopped, so `'monospace'`
+is the generic and `Inter` reads `Inter, sans-serif`; and `fontFamilyText` is
+the declaration's value as it stood, which `computed.ts` serializes at a
+read, as it does `background-image`'s. It answers what Chrome does, whichever
+face has arrived. Two answers are the host's rather than a sheet's: where no
+sheet named a family it is the host's, which stands where a browser answers
+its standard font, and the host's code face is `monospace`, the generic the
+UA sheet names it for. And one is not Chrome's: on a Mac Chrome answers
+`"system-ui"` for `BlinkMacSystemFont`, and a page reads what it wrote, as on
+WebKit. **Anything new that sets `fontFamily` sets `fontFamilyText` too**, or
+a page reads the list before it.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a
