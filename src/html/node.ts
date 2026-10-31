@@ -16394,20 +16394,24 @@ function deepestAt(
         // its texts and atomics in the document's order, which paint
         // paints them in (`placesOn`): a word an inline-block is under is
         // what the pointer is over
+        const shifted = tree.movedInline && SHIFTED_LINES.has(line);
         const texts =
-          clipped.length === 0 && y >= line.y && y < line.y + line.height
+          clipped.length === 0 &&
+          (shifted || (y >= line.y && y < line.y + line.height))
             ? line.texts
             : NO_TEXTS;
         let i = 0;
         for (const placed of line.atomics) {
           for (; i < placed.before && i < texts.length; i += 1) {
-            textAt(texts[i], context);
+            textAt(texts[i], line, shifted, context);
           }
           const atomic = placed.box;
           if (atomic.parent && layered(atomic.parent, atomic)) continue;
           enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
         }
-        for (; i < texts.length; i += 1) textAt(texts[i], context);
+        for (; i < texts.length; i += 1) {
+          textAt(texts[i], line, shifted, context);
+        }
       }
     }
   };
@@ -16420,11 +16424,22 @@ function deepestAt(
   // it but its extent. Whether it is seen and pointed at is its text box's
   // to say, whose style is the pseudo-element's in generated content: Zen
   // Garden 220's headings are hidden, and their `::after`s, which say
-  // `visible`, are what each shows.
-  const textAt = (text: LineText, context: readonly number[]): void => {
+  // `visible`, are what each shows. A text a relative or a sticky inline box
+  // moved is on its line's row moved with it, where it is drawn: on the row
+  // it left, a span held at the top of the viewport was no target.
+  const textAt = (
+    text: LineText,
+    line: LineBox,
+    shifted: boolean,
+    context: readonly number[],
+  ): void => {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) return;
     const at = (order += 1);
+    if (shifted) {
+      const top = line.y + (TEXT_SHIFTS.get(text)?.y ?? 0);
+      if (y < top || y >= top + line.height) return;
+    }
     for (const run of natural.runs) {
       const left = text.drawX + natural.x + run.x;
       if (x >= left && x < left + run.width) {

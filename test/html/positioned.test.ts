@@ -20,6 +20,7 @@ import {
 import {
   FONTS,
   boxOf,
+  bytesApart,
   clipsAround,
   fillsOf,
   findById,
@@ -27,8 +28,10 @@ import {
   linesOf,
   metric,
   pathsOf,
+  pixelsIn,
   render,
   render2x,
+  renderScrolled,
   view,
   windingAt,
 } from './harness.js';
@@ -1485,6 +1488,100 @@ test('a sticky box is where a browser starts it, not moved by its insets', async
   // short of the 196 + 30 its `top` asks for
   assert.strictEqual(boxOf(el, 'lim').y, 211);
 });
+
+for (const [label, mount] of [
+  ['', render],
+  [', at 2x', render2x],
+] as const) {
+  metric(
+    `a sticky inline box is where its lines have it, however many layouts ran${label}`,
+    async () => {
+      // No layout sets an inline box's rect, and a move adds up on it, so
+      // read for where the box is, it was at the page's corner: moved by the
+      // whole of its `top` at the first layout wherever it stood, which
+      // stayed on the box as the place it was at, and by nothing at the
+      // layout after
+      const { node } = await mount(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+          '.s{position:sticky;top:10px}</style>' +
+          '<p style="height:80px">word <span id="top" class="s">held</span></p>' +
+          '<p>word <span id="far" class="s">here</span> ' +
+          '<b id="beside">here</b></p><p>word <span id="rel" ' +
+          'style="position:relative;top:4px">here</span></p>' +
+          '<div style="height:300px"></div>',
+      );
+      const el = view(node);
+      const stale = el as unknown as { _invalidate(stale: number): void };
+      const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+      const places = () =>
+        ['top', 'far', 'rel'].flatMap((id) => [at(id).x, at(id).y]);
+      const first = places();
+      // as far down as its `top` asks, from the top of the viewport
+      assert.strictEqual(first[1], 10, 'held down to its top');
+      // and past it, where the text beside it is, moved by nothing
+      assert.strictEqual(first[3], at('beside').y, 'where the flow has it');
+      for (let layouts = 2; layouts <= 4; layouts += 1) {
+        await act(async () => stale._invalidate(1));
+        await act();
+        assert.deepStrictEqual(places(), first, `after ${layouts} layouts`);
+      }
+    },
+  );
+}
+
+metric(
+  'a sticky inline box stuck nowhere is drawn as the same box unpositioned is, its text over its background',
+  async () => {
+    // Given a size, it was painted as a rectangle after its lines were, and
+    // its background covered its text, in a repaint of it as much as in the
+    // first paint: only the same box not sticky says what should be there
+    const drawn = async (position: string) => {
+      const { result } = await render(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+          `span{position:${position};top:-100px;background:#ffcc00;` +
+          'padding:2px 8px;border-radius:4px}</style>' +
+          '<p>word <span>here</span> word</p>',
+      );
+      const pixels = await pixelsIn(result.ctx, {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 40,
+      });
+      await result.unmount();
+      return pixels;
+    };
+    const want = await drawn('static');
+    const got = await drawn('sticky');
+    assert.ok(
+      want.some((_, i) => i % 4 === 0 && want[i] < 100),
+      'the text is drawn',
+    );
+    assert.strictEqual(bytesApart(got, want), 0, 'its pixels');
+  },
+);
+
+metric(
+  'an inline box a relative offset moves is moved by it once, at each width it is laid out at',
+  async () => {
+    // Its text comes off new lines at another width, with nothing on them,
+    // and what the offset came to has to start from nothing with them: it
+    // adds up as a sticky box is moved, and read on, the box was moved twice
+    const { el, resize } = await renderScrolled(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}</style>' +
+        '<p><b id="beside">word</b> <span id="rel" style="position:relative;' +
+        'top:4px">word</span></p>',
+      200,
+    );
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const apart = () => at('rel').y - at('beside').y;
+    assert.strictEqual(apart(), 4, 'at the width it started at');
+    await resize(200, 300);
+    assert.strictEqual(apart(), 4, 'narrower');
+    await resize(200, 400);
+    assert.strictEqual(apart(), 4, 'and back');
+  },
+);
 
 /** A box 300 by 200 positioned relative, with an anchor `--b` 60 by 30 at
  *  100, `top` down it, and what `css` and `more` say. */
