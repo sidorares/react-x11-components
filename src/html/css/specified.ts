@@ -356,7 +356,7 @@ export function canonicalHighlights(selector: string): string {
 
 /** An identifier's escapes made the characters they stand for (CSS
  *  Syntax 3, 4.3.7). */
-function unescapeIdent(ident: string): string {
+export function unescapeIdent(ident: string): string {
   return ident.replace(
     /\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|([^\n\r\f]))/g,
     (_m, hex: string | undefined, ch: string | undefined) => {

@@ -33,6 +33,7 @@ import {
 import { colorFormText, rgbaOf } from './css/color.js';
 import { parseUrl } from './css/parse.js';
 import { closingParen } from './css/vars.js';
+import { unescapeIdent } from './css/specified.js';
 
 /** What a layout made of an element's principal box, in device pixels:
  *  its border box's size, and its margins, borders and padding. */
@@ -520,6 +521,87 @@ function urlText(url: string): string {
   return `url("${escaped}")`;
 }
 
+/** The generic families Chrome has as keywords. A bare one is the keyword
+ *  in any case, and a string keeps its quotes only in this case, since
+ *  `'Serif'` read bare is a family of that name and `'serif'` is not. */
+const GENERIC_KEYWORDS = new Set([
+  'serif',
+  'sans-serif',
+  'cursive',
+  'fantasy',
+  'monospace',
+  'system-ui',
+  'math',
+]);
+
+/** What a family name would mean with no quotes, in any case. */
+const NOT_A_NAME = /^(?:inherit|initial|unset|revert|revert-layer|default)$/i;
+
+/** An identifier as Chrome tells one here: at most one hyphen, and no digit
+ *  after it. `--foo` is one to CSS, and Chrome quotes it. */
+const IDENTIFIER = /^-?[a-z_\u0080-\u{10ffff}][-\w\u0080-\u{10ffff}]*$/iu;
+
+/** A family's name: a string where an identifier would not read as it
+ *  (CSSOM 6.7.2, and csswg-drafts#5846 for those that need no quotes). */
+function familyNameText(name: string): string {
+  return IDENTIFIER.test(name) &&
+    !NOT_A_NAME.test(name) &&
+    !GENERIC_KEYWORDS.has(name)
+    ? name
+    : `"${name
+        .replace(/[\\"]/g, '\\$&')
+        .replace(
+          /[\x01-\x1f\x7f]/g,
+          (c) => `\\${c.charCodeAt(0).toString(16)} `,
+        )}"`;
+}
+
+/** One name of a `font-family` as it was written: a string, or identifiers,
+ *  which come to their words with one space between (CSS Fonts 4, 4.2). */
+function writtenFamilyText(written: string): string {
+  if (written[0] === '"' || written[0] === "'") {
+    return familyNameText(
+      unescapeIdent(
+        written
+          .replace(/^['"]|['"]$/g, '')
+          // a string carried over a line break (CSS Syntax 3, 4.3.5)
+          .replace(/\\(?:\r\n|[\n\r\f])/g, ''),
+      ),
+    );
+  }
+  const name = written
+    .split(/[ \t\n\r\f]+/)
+    .map(unescapeIdent)
+    .join(' ');
+  const lower = name.toLowerCase();
+  return GENERIC_KEYWORDS.has(lower) ? lower : familyNameText(name);
+}
+
+/** The lists read so far, by what was written: a document has few, and an
+ *  element of a page read in a loop is rarely in a list of its own.
+ *  Tailwind's stack of seven was a third of a whole style's read. */
+const FAMILY_TEXTS = new Map<string, string>();
+
+/**
+ * `font-family` as it computes: the list as the sheets wrote it
+ * (`ComputedStyle.fontFamilyText`), as Chrome serializes it, and neither
+ * `fontFamily`, where a document's faces go by names of ours and a family
+ * not loaded yet is left out, nor what a list goes on to. Where no sheet
+ * named one it is the host's, which stands where a browser answers its
+ * standard font, and is no less a list.
+ */
+function fontFamilyText(style: ComputedStyle): string {
+  const written = style.fontFamilyText || style.fontFamily;
+  let text = FAMILY_TEXTS.get(written);
+  if (text === undefined) {
+    text = splitCommas(written).map(writtenFamilyText).join(', ');
+    // a page can write as many as it likes
+    if (FAMILY_TEXTS.size >= 256) FAMILY_TEXTS.clear();
+    FAMILY_TEXTS.set(written, text);
+  }
+  return text;
+}
+
 /** `display` as the author wrote it, where the box tree reads it as
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
@@ -835,7 +917,7 @@ function cssomAt(
       style.colorSource,
     ),
     'background-image': backgroundImageText(style.backgroundImageText),
-    'font-family': style.fontFamily,
+    'font-family': fontFamilyText(style),
     'font-size': px(style.fontSize, scale),
     'font-weight': String(style.fontWeight),
     'font-style': style.fontStyle,
