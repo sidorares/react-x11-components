@@ -755,6 +755,67 @@ test("a :has() answers the tree as it is now, after a stream's next chunk and af
   assert.notStrictEqual(color('d'), '#00ff00', 'the image taken out');
 });
 
+test('a function with a combinator in it answers the tree as it is now, wherever a descendant combinator follows it: Chrome’s answers', async () => {
+  // css-select rates `:is(.x .a)` as it rates a `:has()`, and a descendant
+  // combinator after one keeps what it found above an element for as long
+  // as the matcher lives. No `:has()` in the selector said so, and the
+  // cascade, with its matchers, outlives a change under the same sheets, so
+  // the first answer stood. `>` keeps nothing, and always answered.
+  const rows: [string, boolean, boolean][] = [
+    [':is(.x .a) .t0', false, true],
+    [':where(.x .a) .t1', false, true],
+    [':is(.q, .x > .a) .t2', false, true],
+    [':is(.x .a) i .t3', false, true],
+    ['.a:not(.x .a) .t4', true, false],
+    [':not(.x .a) > .t5', true, false],
+  ];
+  const source =
+    `<style>${rows
+      .map(([selector]) => `${selector} { color: ${HAS_MATCHED} }`)
+      .join(' ')}</style><div id="o"><div class="a">` +
+    '<b id="t0" class="t0">0</b><b id="t1" class="t1">1</b>' +
+    '<b id="t2" class="t2">2</b><i><b id="t3" class="t3">3</b></i>' +
+    '<b id="t4" class="t4">4</b><b id="t5" class="t5">5</b></div></div>';
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, 'data-testname': 'doc' }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const element = (id: string) => boxOf(el, id).el as unknown as Element;
+  const answers = () =>
+    rows.map(
+      (_, i) => el.computedStyle(element(`t${i}`))?.color === HAS_MATCHED,
+    );
+  const o = element('o');
+  assert.deepStrictEqual(
+    answers(),
+    rows.map(([, before]) => before),
+    'as it was first styled',
+  );
+  o.attribs.class = 'x';
+  el.touchDocument([
+    { type: 'attributes', target: o, attributeName: 'class', oldValue: null },
+  ]);
+  await act();
+  assert.deepStrictEqual(
+    answers(),
+    rows.map(([, , after]) => after),
+    'a refresh told of the class',
+  );
+  delete o.attribs.class;
+  el.touchDocument();
+  await act();
+  assert.deepStrictEqual(
+    answers(),
+    rows.map(([, before]) => before),
+    'a refresh of everything, with the class taken off',
+  );
+});
+
 test('what a :has() holds is matched as the document’s, wherever its argument starts: Chrome’s answers', async () => {
   // css-select read an `:is()`, a `:where()` or a `:not()` in an argument
   // with a combinator as relative to the `:has()`'s element, so a sibling
