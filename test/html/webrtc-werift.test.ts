@@ -228,7 +228,9 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     var certs = pc1.sctp.transport.getRemoteCertificates();
     log('certificates', heard, certs.length, certs[0] instanceof ArrayBuffer, new Uint8Array(certs[0])[0]);
     var up = await transportStats(pc1);
-    log('up', up.iceState, up.iceRole, up.dtlsState, up.dtlsRole === 'client' || up.dtlsRole === 'server', up.tlsVersion, /^SRTP_/.test(up.srtpCipher), up.selectedCandidatePairChanges);
+    // a machine with two addresses has two pairs, the first to pass its check
+    // and then the one nominated, so a page hears the pair change twice
+    log('up', up.iceState, up.iceRole, up.dtlsState, up.dtlsRole === 'client' || up.dtlsRole === 'server', up.tlsVersion, /^SRTP_/.test(up.srtpCipher), up.selectedCandidatePairChanges >= 1);
     var closed = new Promise(function (r) { pc2.sctp.onstatechange = function () { if (pc2.sctp.state === 'closed') r(); }; });
     pc1.close();
     await closed;
@@ -246,7 +248,7 @@ test('transports: ICE goes new, checking, connected on both sides, the SCTP tran
     'described|false',
     'ice|new,checking,connected|new,checking,connected',
     'certificates|true|1|true|48',
-    'up|connected|controlling|connected|true|FEFD|true|1',
+    'up|connected|controlling|connected|true|FEFD|true|true',
     'closed|closed',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
