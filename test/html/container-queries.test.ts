@@ -863,3 +863,48 @@ test('a query answered otherwise after a layout builds what it styles, and keeps
   assert.ok(wide, 'the test reads a box');
   result.unmount();
 });
+
+test('an element that is a container reads what is above it, and its pseudo-element reads the element', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.o{width:300px;container-type:inline-size}' +
+      '#t{width:100px;container-type:inline-size;color:#000000}' +
+      '@container (min-width: 150px) { #t { color: #0000ff } #t::after { content: "x" } }' +
+      '</style><body><div class="o"><div id="t">t</div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  // one query, read twice over: of the 300px above `#t`, which holds, and of
+  // `#t`'s own 100px, which does not
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+  assert.ok(
+    !(boxOf(el, 't') as unknown as { children: { pseudo?: string }[] }).children
+      .map((c) => c.pseudo)
+      .includes('after'),
+    'the ::after read the container above its element',
+  );
+});
+
+metric(
+  'a container unit in an element and in its pseudo-element are of different containers',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}.o{width:300px;container-type:inline-size}' +
+        '#t{width:50cqw;container-type:inline-size}' +
+        '#t::before{content:"";display:block;width:50cqw;height:1px}' +
+        '</style><body><div class="o"><div id="t">t</div></div></body>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const box = boxOf(el, 't') as unknown as {
+      width: number;
+      children: { pseudo?: string; width: number }[];
+    };
+    assert.strictEqual(box.width, 150);
+    assert.strictEqual(
+      box.children.find((c) => c.pseudo === 'before')?.width,
+      75,
+    );
+  },
+);
