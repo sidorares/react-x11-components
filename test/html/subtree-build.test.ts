@@ -930,6 +930,50 @@ metric(
   },
 );
 
+metric(
+  'a block with no element keeps its lines on its text where text comes before it',
+  async () => {
+    // Text coming into a box that held none moves everything after it, and
+    // a kept block's lines went by whether its element came after the box:
+    // an anonymous block has no element, so its lines stayed where they
+    // were and its own text moved. An inline box's border is drawn from
+    // them, and it was found on no line.
+    const { result, node } = await render(
+      '<!doctype html><style>body { margin: 0 } b { padding: 4px; border: 1px solid }</style>' +
+        '<div id="empty"></div><b id="late">after</b>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as { _tree: BoxTree };
+    const empty = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'empty',
+    )!;
+    const text = createText('new');
+    appendChild(empty, text);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: empty,
+        addedNodes: [text],
+        removedNodes: [],
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const late = boxOf(el, 'late') as unknown as Box;
+    let block = late.parent!;
+    while (block.kind === 'inline') block = block.parent!;
+    assert.strictEqual(internals._tree.text, 'newafter');
+    assert.strictEqual(
+      block.lines?.[0].textStart,
+      3,
+      'its line, with its text',
+    );
+    assert.ok(Number.isFinite(late.boundsY), 'and its border found on it');
+    result.unmount();
+  },
+);
+
 /** What a long page holds besides: lengths in `vw`, which a drag's steps
  *  restyle, in place or by a build, over what the drag set aside, and
  *  breakpoints the drag crosses, which turn on what lays a box out

@@ -1898,14 +1898,17 @@ export function buildSubtrees(
     // with it: all of them before every root and tail, or after
     const lines = at.lines;
     if (lines?.length && lines[0].textStart >= olds[0].start) {
-      const by = movedFor(lines[0].textStart, at);
+      const first = lines[0];
+      const by = movedFor(first.textStart, at, first.textEnd > first.textStart);
       if (by) shiftLines(lines, by, pass);
     }
   };
   // How far a place in the text that a kept box has moves: past each root
   // or tail before it or in it. At one's end, it is past one with text, and
-  // past one with none where the box holds the one or comes after it.
-  const movedFor = (at: number, box: Box): number => {
+  // past one with none where the box holds the one or comes after it, or
+  // what starts there is text (`starts`), which leaves one with none no
+  // room but before it: an anonymous block has no element to say so.
+  const movedFor = (at: number, box: Box, starts: boolean): number => {
     let by = 0;
     for (let i = 0; i < olds.length; i += 1) {
       const o = olds[i];
@@ -1913,6 +1916,7 @@ export function buildSubtrees(
         at > o.end ||
         (at === o.end &&
           (o.start < o.end ||
+            starts ||
             around[i].has(box) ||
             (!!box.el && precedes(o.first, box.el))))
       ) {
