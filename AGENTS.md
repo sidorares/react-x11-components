@@ -1714,28 +1714,37 @@ to be measured again, which costs a frame per resize and only for those.
 **A container query is the third exception, and it is answered after the
 layout.** A container's size is layout's, so the cascade answers an
 `@container` query, and a `cqw` or its kin, for the content box the last
-layout gave the container (`Cascade._containerSizes`), and notes for each
-element which container each read and what it came to
-(`_containerReads`). Every layout then hands the containers' boxes back
+layout gave the container (`Cascade._sizeOf`), and notes for each element
+which container each read and what it came to (`_containerReads`). Every
+layout then hands the containers' boxes back
 (`HtmlViewNode._containersMoved`), and the subtrees of the elements whose
 answers moved are built again and laid out again, at most
-`CONTAINER_PASSES` times. Three things are load-bearing. **A read is noted
+`CONTAINER_PASSES` times. Four things are load-bearing. **A read is noted
 only where the selector matched**, so a query is a cost of the elements it
 styles and not of its bucket. **An element a container rule reaches, or
 whose style holds a container unit, shares no style** (`UNSHAREABLE`'s
 buckets, `_containerUnitRead`): a sharing key is the element's ancestors'
 and attributes, and two elements alike in all of them can be in containers
-of other sizes. And **the containers are measured from boxes taken as the
-tree was built** (`BoxTree.containers`), since a dragged width sets boxes
-aside from the root's walk. Anything new that makes a style read a
-container's size goes through `_containerReads`, or a layout that moves the
-container leaves the style as it was. A query's container units are its
-container's — the nearest size container above it, since a query's lengths
-are the container's (`_queryUnit`) — noted for the element under a key per
-container and axis (`_queryUnitKey`), and a query asked again after a
-layout reads them at the sizes that layout gave (`_moving`): asked at the
-last ones, a container no style had read yet answered with the viewport's,
-and the query kept its answer. **One element reads one query twice where it
+of other sizes. **The containers are measured from boxes taken as the tree
+was built** (`BoxTree.containers`), or as a read first asks of a tree built
+before one did, down what a dragged width set aside from the root's walk
+(`asideOf`). And **a read asks the boxes, and keeps nothing**
+(`laidOutSize`, and `laidOutScroll` for a scroll state): a layout hears of
+a container only where a style has read it, and a restyle in place, which
+no layout follows, may be the first to, or the first since a build forgot
+who had. Read from what the last layout was told, a colour under a query
+came out as though the container had no size, or the size before the one
+it has, until something laid the document out. The boxes are the last
+layout's that asked no question (`_sizedTree`), since a build's are laid
+out by nothing yet and a question's are no container's, and nothing in
+this costs a document anything until a query or a unit is read. Anything
+new that makes a style read a container's size goes through `_sizeOf` and
+`_containerReads`, or a layout that moves the container leaves the style as
+it was. A query's container units are its container's — the nearest size
+container above it, since a query's lengths are the container's
+(`_queryUnit`) — noted for the element under a key per container and axis
+(`_queryUnitKey`), and a query asked again after a layout reads them at the
+sizes that layout gave, as every read does. **One element reads one query twice where it
 is a container**: its `::after` finds the element, and the element what is
 above it, so a pseudo-element's read is noted under a key of its own
 (`_readKey`), or the second read takes the first's place and no layout moves

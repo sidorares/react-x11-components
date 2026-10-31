@@ -2944,6 +2944,8 @@ export class HtmlViewNode extends Node {
         shadows,
         kept?.cascade ?? null,
       );
+      this._cascade.laidOutSize = this._laidOutSize;
+      this._cascade.laidOutScroll = this._laidOutScroll;
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
       this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
@@ -4334,6 +4336,7 @@ export class HtmlViewNode extends Node {
           stop?.reach,
         );
         this._questioned = question;
+        this._sizedTree = question ? null : this._tree;
         // the sticky boxes the viewport keeps, where the pane is scrolled to
         this._followViewport();
         this._stickyMoved = false;
@@ -6320,10 +6323,10 @@ export class HtmlViewNode extends Node {
     ) {
       return undefined;
     }
-    // a highlight's style is worked out here, after every layout, and its
-    // `@container` rules and container units read the containers as the
-    // last one left them, whether or not an element's style read them
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    // a highlight's style is worked out here, after every layout, and what
+    // it keeps of what its `@container` rules and container units read
+    // stands until one of those sizes moves
+    const boxes = this._containerBoxesOf(tree);
     if (boxes.size) {
       this._cascade?.sizeContainers(boxes.keys(), containerSizer(tree, boxes));
     }
@@ -8672,12 +8675,39 @@ export class HtmlViewNode extends Node {
   private _containersMoved(tree: BoxTree): Set<Element> | null {
     const cascade = this._cascade;
     if (!cascade?.readsContainers) return null;
-    // a tree built before any style read one — a restyle in place read the
-    // first — has none taken, and takes them now
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    const boxes = this._containerBoxesOf(tree);
     return cascade.containersMoved(containerSizer(tree, boxes), (el) =>
       this._scrollStatesOf(boxes.get(el)),
     );
+  }
+
+  /** The tree whose boxes hold what the last layout gave them, while the
+   *  next is built: none after a layout that asked a question, whose sizes
+   *  are no container's. */
+  private _sizedTree: BoxTree | null = null;
+
+  /** A size container's content box as the last layout left it, for the
+   *  cascade (`Cascade.laidOutSize`): a restyle in place may be the first
+   *  thing to read one, or the first since the layout that moved it, and
+   *  no layout follows it to say otherwise. */
+  private _laidOutSize = (el: Element): ContainerSize | null | undefined => {
+    const tree = this._sizedTree;
+    if (!tree) return undefined;
+    return containerSizer(tree, this._containerBoxesOf(tree))(el);
+  };
+
+  /** …and a scroll-state container's scroll states, for the same reason
+   *  (`Cascade.laidOutScroll`). */
+  private _laidOutScroll = (el: Element): ScrollStates | undefined => {
+    const tree = this._sizedTree;
+    if (!tree) return undefined;
+    return this._scrollStatesOf(this._containerBoxesOf(tree).get(el));
+  };
+
+  /** A tree's containers (`BoxTree.containers`): one built before any style
+   *  read one has none taken, and takes them as a read first asks. */
+  private _containerBoxesOf(tree: BoxTree): Map<Element, Box> {
+    return (tree.containers ??= containerBoxes(tree.root, asideOf(tree)));
   }
 
   /**
@@ -8897,7 +8927,7 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade?.readsScrollState) return;
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    const boxes = this._containerBoxesOf(tree);
     const moved = cascade.containersMoved(
       () => undefined,
       (el) => this._scrollStatesOf(boxes.get(el)),

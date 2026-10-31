@@ -466,11 +466,8 @@ metric(
 );
 
 /** Images a document's rules name, which its boxes are built without
- *  until they are in: generated content and a list's marker. No containers:
- *  a restyle in place that is the first to read one answers with no size
- *  until the next layout, which is nothing an image does. */
+ *  until they are in: generated content and a list's marker. */
 const IMAGE_SHEET = `${SHEET}
-.l { container-type: normal }
 .r::before { content: url(before.png) }
 .s::after { content: url(after.png) }
 .t { display: list-item; list-style-image: url(marker.png) }`;
