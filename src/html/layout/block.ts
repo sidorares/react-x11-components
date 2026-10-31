@@ -1125,7 +1125,9 @@ export function keepLaid(box: Box, ctx: LayoutContext): void {
  * one is a blocker. A sticky box is none: where it sticks is worked out
  * again after every flow, from where the flow put it, and a kept block
  * takes the shift off it as it takes a relative offset off
- * (`unoffsetHeld`). Once a tree.
+ * (`unoffsetHeld`). Nor is the root of a vertical flow, which is kept with
+ * its frame as any block is with what it holds; every box in the frame is
+ * one. Once a tree.
  */
 function reuseBlockers(tree: BoxTree): Blockers {
   let found = BLOCKERS.get(tree);
@@ -1156,6 +1158,17 @@ function noteBlockers(
     if (movesAfterFlow(box)) {
       for (let up: Box | null = box; up && !moved.has(up); up = up.parent) {
         moved.add(up);
+      }
+    }
+    // a frame is laid out whole, as its root is laid out or kept
+    // (`layoutFramed`): what `reflectFrame` moves after its flow is none of
+    // what a flow notes of a block it holds
+    if (framed.any && FRAME_ROOTS.has(box)) {
+      const inFrame = [box];
+      while (inFrame.length) {
+        const at = inFrame.pop()!;
+        blockers.add(at);
+        for (const child of at.children) inFrame.push(child);
       }
     }
     if (
@@ -1643,12 +1656,7 @@ export function layoutDocument(
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
   const keep = cuts && above !== undefined ? keepAbove(tree, above) : null;
-  const reusing =
-    !cuts &&
-    !tree.anchors &&
-    !tree.vertical &&
-    !tree.firstLine &&
-    !tree.foreign;
+  const reusing = !cuts && !tree.anchors && !tree.firstLine && !tree.foreign;
   const ctx: LayoutContext = {
     fonts,
     scale,
@@ -1889,8 +1897,13 @@ export function layoutDocument(
   else FIXED_BOXES.delete(tree);
   if (tree.foreign) layoutForeign(tree.foreign, fonts, scale);
   // what this layout laid out holds under another height where it read
-  // none of this one's
-  ctx.under.read = readsViewportHeight || ctx.readViewportHeight === true;
+  // none of this one's — and a frame it kept fits to the viewport as the
+  // layout that laid it out read it (`frameInlineSize`): the one thing a
+  // kept block can hold that reads it
+  ctx.under.read =
+    readsViewportHeight ||
+    ctx.readViewportHeight === true ||
+    (tree.vertical && (ctx.reused?.size ?? 0) > 0);
   return {
     width: viewportWidth,
     height: bottom,

@@ -61,7 +61,14 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .n::after { content: " +"; color: #0000aa }
 .o { position: relative; top: 3px; left: 2px }
 .p { transform: translate(5px, 2px) }
-.q { overflow: hidden; height: 20px }`;
+.q { overflow: hidden; height: 20px }
+.vrl { writing-mode: vertical-rl; height: 60px }
+.vlr { writing-mode: vertical-lr; padding: 2px }
+.vsl { writing-mode: sideways-lr; max-height: 90px }`;
+
+/** The classes that set a box in a vertical writing mode, out of `CLASSES`
+ *  so that a document holds one where a fuzz asks for it (`turnSome`). */
+const VERTICAL = ['vrl', 'vlr', 'vsl'];
 
 const BLOCKS = ['div', 'p', 'section', 'h2'];
 const INLINES = ['span', 'b', 'a'];
@@ -123,6 +130,20 @@ function elementsUnder(root: Element): Element[] {
   return out;
 }
 
+/** A box or two of a document set in a vertical writing mode, each the root
+ *  of a flow in a frame turned a quarter (`makeFrame`): what a build of a
+ *  subtree outside a frame leaves as it is, and a layout keeps. */
+function turnSome(next: () => number, body: Element): void {
+  const blocks = elementsUnder(body).filter((e) => BLOCKS.includes(e.name));
+  const count = 1 + Math.floor(next() * 2);
+  for (let i = 0; i < count && blocks.length; i += 1) {
+    const el = blocks[Math.floor(next() * blocks.length)];
+    const was = el.attribs.class;
+    const mode = VERTICAL[Math.floor(next() * VERTICAL.length)];
+    el.attribs.class = was ? `${was} ${mode}` : mode;
+  }
+}
+
 /** Where a node is among its siblings, as a record says, half the time:
  *  a host that keeps a `MutationObserver`'s records hands them on. */
 function sidesOf(
@@ -134,7 +155,12 @@ function sidesOf(
 }
 
 /** A change a page's scripts might make, done, and its records. */
-function change(next: () => number, body: Element): HtmlChange[] {
+function change(
+  next: () => number,
+  body: Element,
+  /** What a class written on an element may be. */
+  classes: readonly string[] = CLASSES,
+): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
@@ -255,7 +281,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
     const target = pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(CLASSES);
+    const c = pick(classes);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -377,6 +403,21 @@ function boxLine(box: Box): string {
           .join(','),
       )
       .join(';'),
+    // and which of the document's text is on them, which a build of what
+    // is before a kept block moves: what a selection and a hit test read
+    (box.lines ?? [])
+      .map((line) =>
+        [
+          line.textStart,
+          line.textEnd,
+          ...line.texts.flatMap((t) => [
+            t.textStart,
+            t.textEnd,
+            t.spans.documentAt(t.layoutStart),
+          ]),
+        ].join(','),
+      )
+      .join(';'),
   ].join('|');
 }
 
@@ -410,6 +451,7 @@ function treeLines(tree: BoxTree): string[] {
   boxes('focusables', tree.focusables);
   boxes('backgrounds', tree.backgrounds);
   boxes('images', tree.images);
+  out.push(`vertical: ${tree.vertical}`);
   out.push(`text: ${JSON.stringify(tree.text)}`);
   out.push(`unselectable: ${tree.unselectable.join(',')}`);
   out.push(
@@ -438,6 +480,10 @@ metric(
     let widened = 0;
     const keptAtStart = blocksKept();
     let shadowed = 0;
+    /** Subtrees built, and blocks kept, with a vertical flow in the tree:
+     *  every other document holds one. */
+    let beside = 0;
+    let keptBeside = 0;
     // SUBTREE_SEEDS sweeps more of them, for a change to the splice, and
     // SUBTREE_FROM starts at the one a sweep failed at
     const env =
@@ -449,6 +495,9 @@ metric(
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
       for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
+      const vertical = seed % 2 === 0;
+      if (vertical) turnSome(next, body);
+      const classes = vertical ? [...CLASSES, ...VERTICAL] : CLASSES;
       const markup = DomUtils.getOuterHTML(body as never);
       const { result, node } = await render(
         `<!doctype html><html><head><style>${SHEET}</style></head>${markup}</html>`,
@@ -472,7 +521,7 @@ metric(
         return subtreeRoots.apply(this, a);
       };
       for (let step = 0; step < 10; step += 1) {
-        const changes = change(next, bodyEl);
+        const changes = change(next, bodyEl, classes);
         let built: unknown = undefined;
         internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
           tries = 0;
@@ -482,11 +531,16 @@ metric(
           if (built && tries > 1) widened += 1;
           return built;
         };
+        const keptBefore = blocksKept();
         el.touchDocument(changes);
         await act();
         delete internals._subtreeBuild;
         if (built) subtrees += 1;
         else if (built === null) wholes += 1;
+        if (internals._tree.vertical) {
+          if (built) beside += 1;
+          keptBeside += blocksKept() - keptBefore;
+        }
         const kept = treeLines(internals._tree);
         // the whole document built again, every style kept, and laid out
         (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
@@ -509,6 +563,8 @@ metric(
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+    assert.ok(beside > 25, `${beside} built beside a vertical flow`);
+    assert.ok(keptBeside > 50, `${keptBeside} kept beside a vertical flow`);
   },
 );
 
@@ -575,6 +631,7 @@ metric(
           createElement('div', { style: 'height: 40px' }, [createText('·')]),
         );
       }
+      if (seed % 2 === 0) turnSome(next, body);
       const markup = DomUtils.getOuterHTML(body as never);
       const { el, resize, result } = await renderScrolled(
         `<!doctype html><html><head><style>${DRAG_SHEET}</style></head>${markup}</html>`,
@@ -1006,6 +1063,7 @@ metric(
       for (let i = 0; i < blocks; i += 1) {
         appendChild(holder, streamed(next, 0));
       }
+      if (seed % 2 === 0) turnSome(next, holder);
       // a document, or a fragment the way a model writes one, whose
       // children are the document's own
       const sheet = SHEET + '\n' + STREAM_SHEETS[seed % STREAM_SHEETS.length];
@@ -1768,6 +1826,8 @@ const MOVING_SHEET = `body { margin: 0; font-size: 14px }
 .fx { display: flex; gap: 3px }
 .gr { display: grid; grid-template-columns: 1fr 1fr }
 .tall { min-height: 90px }
+.vrl { writing-mode: vertical-rl; height: 50px }
+.vlr { writing-mode: vertical-lr; height: 50px }
 p { margin: 4px 0 }`;
 
 const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr'];
@@ -1820,6 +1880,16 @@ metric(
       const blocks = 4 + Math.floor(next() * 5);
       for (let i = 0; i < blocks; i += 1) appendChild(body, moving(next, 0));
       appendChild(body, createElement('div', { style: 'height: 400px' }));
+      // and a block or two a vertical flow's root, which a layout keeps
+      if (seed % 2 === 0) {
+        const roots = elementsUnder(body);
+        for (let i = 0; i < 2; i += 1) {
+          const root = pick(roots);
+          const was = root.attribs.class;
+          const mode = pick(['vrl', 'vlr']);
+          root.attribs.class = was ? `${was} ${mode}` : mode;
+        }
+      }
       const markup = DomUtils.getOuterHTML(body as never);
       const { el, result } = await renderScrolled(
         `<!doctype html><html><head><style>${MOVING_SHEET}</style></head>${markup}</html>`,
@@ -2074,5 +2144,306 @@ metric(
         `#${id}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
       );
     }
+  },
+);
+
+/** A page with a vertical flow in it, and what a test asks of it. */
+async function withFlow(mode: string, flow: string) {
+  const sections = Array.from(
+    { length: 12 },
+    (_, i) => `<section id="s${i}"><p>section ${i}</p></section>`,
+  ).join('');
+  const { node, result } = await render(
+    '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+      `.v { writing-mode: ${mode}; height: 80px; padding: 2px }</style>` +
+      `</head><body><main><section id="a"><p>before</p></section>${flow}` +
+      `${sections}</main></body></html>`,
+    320,
+  );
+  const el = view(node);
+  await act();
+  const internals = el as unknown as Record<
+    string,
+    (...a: unknown[]) => unknown
+  > & {
+    _tree: BoxTree;
+    _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+    _invalidate(stale: number): void;
+  };
+  const byId = (id: string): Element =>
+    elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === id,
+    )!;
+  const boxOf = (id: string) =>
+    internals._firstBoxesOf(internals._tree).get(byId(id));
+  /** A child put in `target` before `before`, or at its end, and what the
+   *  build made of it: a tree, or null for one of the whole document. */
+  const put = async (target: Element, before?: Element): Promise<unknown> => {
+    const child = createElement('p', {}, [createText('more')]);
+    if (before) DomUtils.prepend(before, child);
+    else appendChild(target, child);
+    const subtreeBuild = internals._subtreeBuild;
+    let built: unknown = undefined;
+    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+      built = subtreeBuild.apply(this, a);
+      return built;
+    };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target,
+        addedNodes: [child],
+        removedNodes: [],
+        previousSibling: child.prev,
+        nextSibling: child.next,
+      },
+    ]);
+    await act();
+    delete internals._subtreeBuild;
+    return built;
+  };
+  /** That the tree is what a build of the whole document makes. */
+  const holds = async (what: string): Promise<void> => {
+    const lines = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const at = lines.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      at < 0 && lines.length === whole.length,
+      `${what}: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+    );
+  };
+  return { byId, boxOf, put, holds, result };
+}
+
+const FLOW =
+  '<aside id="v" class="v"><p id="in">one two</p><p>three</p></aside>';
+
+metric(
+  'a change outside a vertical flow builds its subtree, and the layout after it keeps the flow',
+  async () => {
+    // One box in a vertical writing mode anywhere made every later change a
+    // whole build and a whole layout: an MDN article's live sample, and
+    // CodeMirror's six layers beside it, each 200 ms where it is 20
+    for (const mode of ['vertical-rl', 'vertical-lr', 'sideways-lr']) {
+      const { byId, boxOf, put, holds, result } = await withFlow(mode, FLOW);
+      const root = boxOf('v')!;
+      const inner = boxOf('in')!;
+      const serial = root.layoutSerial;
+      const kept = blocksKept();
+      // before it, which moves it down a line, and after it
+      for (const id of ['a', 's3']) {
+        assert.ok(await put(byId(id)), `${mode}: #${id} built apart`);
+        assert.ok(
+          boxOf('v') === root && boxOf('in') === inner,
+          `${mode}: the flow built again beside #${id}`,
+        );
+      }
+      assert.strictEqual(root.layoutSerial, serial, `${mode}: laid out again`);
+      assert.ok(blocksKept() > kept, `${mode}: nothing kept`);
+      await holds(mode);
+      result.unmount();
+    }
+  },
+);
+
+metric(
+  'a change in a vertical flow, or before one in what holds it, builds the whole document',
+  async () => {
+    // Every box in a frame has its style turned, and a build apart makes no
+    // frame: a root in one would hand what it built the turned style for
+    // its parent's, and a root around one would come back with none
+    for (const mode of ['vertical-rl', 'vertical-lr']) {
+      const inFlow = await withFlow(
+        mode,
+        '<aside id="v" class="v"><div id="deep"><p id="in">one</p>' +
+          '<p>two</p></div><p>three</p></aside>',
+      );
+      // the end of what a box in the flow holds, and a box in the flow
+      for (const id of ['deep', 'in']) {
+        assert.strictEqual(
+          await inFlow.put(inFlow.byId(id)),
+          null,
+          `${mode}: #${id} built apart in the flow`,
+        );
+        await inFlow.holds(`${mode}, #${id} in the flow`);
+      }
+      inFlow.result.unmount();
+      const around = await withFlow(
+        mode,
+        `<section id="holds"><p>first</p><aside id="v" class="v">` +
+          '<p id="in">one</p></aside><p>last</p></section>',
+      );
+      assert.strictEqual(
+        await around.put(around.byId('holds'), around.byId('v')),
+        null,
+        `${mode}: built apart around the flow`,
+      );
+      await around.holds(`${mode}, around the flow`);
+      around.result.unmount();
+    }
+  },
+);
+
+metric('the end of what holds a vertical flow is built after it', async () => {
+  const { byId, boxOf, put, holds, result } = await withFlow(
+    'vertical-rl',
+    '<section id="holds"><p>first</p><aside id="v" class="v">' +
+      '<p id="in">one</p></aside>' +
+      '<p id="last">last</p></section>',
+  );
+  const root = boxOf('v');
+  assert.ok(await put(byId('holds')), 'the end of it built apart');
+  assert.ok(boxOf('v') === root, 'the flow built again before the end');
+  await holds('a tail after a flow');
+  result.unmount();
+});
+
+metric(
+  'a vertical flow a layout kept is fit to the viewport again when its height moves',
+  async () => {
+    // A frame with no height of its own is fit to the viewport's: a read of
+    // it in a box a layout keeps, which is one more than the document knew
+    // it read once that layout had kept the box
+    const sections = Array.from(
+      { length: 12 },
+      (_, i) => `<section id="s${i}"><p>section ${i}</p></section>`,
+    ).join('');
+    const { el, resize, result } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '.v { writing-mode: vertical-rl }</style></head><body><main>' +
+        '<section id="a"><p>before</p></section><aside id="v" class="v">' +
+        'one two three four five six seven eight nine ten eleven twelve ' +
+        'thirteen fourteen fifteen sixteen seventeen eighteen nineteen ' +
+        `twenty</aside>${sections}</main></body></html>`,
+      200,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const boxOf = (id: string) =>
+      internals._firstBoxesOf(internals._tree).get(byId(id))!;
+    const target = byId('a');
+    const root = boxOf('v');
+    const serial = root.layoutSerial;
+    const child = createElement('p', {}, [createText('more')]);
+    appendChild(target, child);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target,
+        addedNodes: [child],
+        removedNodes: [],
+        previousSibling: child.prev,
+        nextSibling: null,
+      },
+    ]);
+    await act();
+    assert.ok(boxOf('v') === root, 'built again');
+    assert.strictEqual(root.layoutSerial, serial, 'laid out again');
+    const tall = root.height;
+    await resize(120);
+    assert.ok(
+      boxOf('v').height < tall,
+      `${boxOf('v').height} is the height it had under ${tall}`,
+    );
+    const lines = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const at = lines.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      at < 0 && lines.length === whole.length,
+      `line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+    );
+    result.unmount();
+  },
+);
+
+metric(
+  'a document with no vertical flow painted last leaves one that has one refusing a root in it',
+  async () => {
+    // `framed.any` is a tree's, set as a layout or a paint of it begins, and
+    // two documents in one window take turns at it: read as another's left
+    // it, a root in a frame was a root like any
+    const sections = Array.from(
+      { length: 12 },
+      (_, i) => `<section><p>section ${i}</p></section>`,
+    ).join('');
+    const page = (flow: string) =>
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+      '.v { writing-mode: vertical-rl; height: 80px }</style></head><body>' +
+      `<main>${flow}${sections}</main></body></html>`;
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 320, flexDirection: 'column' } },
+        h(Html, {
+          source: page(
+            '<aside class="v"><div id="deep"><p>one</p><p>two</p></div></aside>',
+          ),
+          partial: false,
+          'data-testname': 'flow',
+        }),
+        h(Html, {
+          source: page('<p>nothing turned</p>'),
+          partial: false,
+          'data-testname': 'plain',
+        }),
+      ),
+      { width: 360, height: 800, fonts: FONTS! },
+    );
+    await act();
+    const el = view(screen.getByTestName('flow') as DrawnNode);
+    const plain = view(screen.getByTestName('plain') as DrawnNode);
+    const internals = el as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    > & { _tree: BoxTree; _invalidate(stale: number): void };
+    // the second document laid out last, in a frame of its own
+    (plain as unknown as { _invalidate(stale: number): void })._invalidate(1);
+    await act();
+    const target = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'deep',
+    )!;
+    const child = createElement('p', {}, [createText('more')]);
+    appendChild(target, child);
+    const subtreeBuild = internals._subtreeBuild;
+    let built: unknown = undefined;
+    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+      built = subtreeBuild.apply(this, a);
+      return built;
+    };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target,
+        addedNodes: [child],
+        removedNodes: [],
+        previousSibling: child.prev,
+        nextSibling: null,
+      },
+    ]);
+    await act();
+    delete internals._subtreeBuild;
+    assert.strictEqual(built, null, 'built apart in the flow');
+    const lines = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const at = lines.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      at < 0 && lines.length === whole.length,
+      `line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+    );
+    result.unmount();
   },
 );

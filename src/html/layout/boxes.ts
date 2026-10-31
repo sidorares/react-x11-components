@@ -42,7 +42,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
-import { makeFrame } from './writing.js';
+import { FRAMES, frameOf, framed, makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -1485,13 +1485,14 @@ export function buildSubtrees(
   const cascade = options.cascade;
   if (
     tree.foreign ||
-    tree.vertical ||
     tree.firstLine ||
     cascade.hasFirstLine ||
     options.transition
   ) {
     return null;
   }
+  // a frame is a matter for each root (`subtreeRoot`, `tailRoot`, `oldBoxes`)
+  framed.any = tree.vertical;
   const olds: SubtreeRoot[] = [];
   for (const el of roots) {
     const old = subtreeRoot(el, firstBoxes);
@@ -2580,10 +2581,12 @@ function contentReads(items: readonly ContentItem[]): boolean {
 /**
  * `el`'s old box, as the root of a subtree build: its only box, a block
  * or a flex box in the flow, the child of its parent element's block or
- * flex box, its subtree hosting no shadow tree and with no box in the top
- * layer, and where in the document's text its subtree's is — from what the
- * boxes before it in its ancestors hold, where it holds none. Null where
- * any of that is not so.
+ * flex box, in no vertical flow's frame, its subtree hosting no shadow tree
+ * and with no box in the top layer or frame in it, and where in the
+ * document's text its subtree's is — from what the boxes before it in its
+ * ancestors hold, where it holds none. Null where any of that is not so:
+ * every box in a frame has its style turned (`framedStyle`), which a build
+ * apart would hand what it built, as the parent's style, and made no frame.
  */
 function subtreeRoot(
   el: Element,
@@ -2591,6 +2594,7 @@ function subtreeRoot(
 ): SubtreeRoot | null {
   if (!canRebuild(el, firstBoxes) || !inLightTree(el)) return null;
   const box = firstBoxes.get(el)!;
+  if (framed.any && frameOf(box)) return null;
   const parent = box.parent!;
   const index = parent.children.indexOf(box);
   if (index < 0) return null;
@@ -2654,7 +2658,8 @@ function holdDroppedText(
 /** Every box of a run of old boxes and what they hold, with how many list
  *  items they hold that number nothing and whether any other changes a
  *  counter or reads one, or a quote (`counts`): null where one is in the
- *  top layer, which no build apart takes apart. */
+ *  top layer, or the root of a vertical flow, which no build apart takes
+ *  apart: it makes no frame (`_apart`). */
 function oldBoxes(
   run: readonly Box[],
 ): { boxes: Set<Box>; listItems: number; counts: boolean } | null {
@@ -2665,7 +2670,7 @@ function oldBoxes(
   while (stack.length) {
     const at = stack.pop()!;
     boxes.add(at);
-    if (at.topLayer) return null;
+    if (at.topLayer || (framed.any && FRAMES.has(at))) return null;
     if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
       listItems += 1;
     }
@@ -2683,8 +2688,9 @@ function oldBoxes(
  * starts where the builder starts a build of its own — its white space,
  * the word it is in and the holder's anonymous blocks as a block leaves
  * them. The holder's box stays as it is: a block container in the
- * document's own tree, hosting no shadow tree and with nothing it holds
- * moved elsewhere (`TAILS_REFUSED`). Its old boxes are the run of the
+ * document's own tree and in no vertical flow's frame, hosting no shadow
+ * tree and with nothing it holds moved elsewhere (`TAILS_REFUSED`). Its old
+ * boxes are the run of the
  * holder box's children after the box before, its `::after` with them, and
  * its text from where that box's line ended (`textAfterBox`) to where the
  * holder's did. Null where any of that is not so.
@@ -2718,6 +2724,7 @@ function tailRoot(
     if (node !== document) return null;
     box = tree.root;
   }
+  if (framed.any && frameOf(box)) return null;
   // a block's, or a flex or grid box's, whose children are each an item of
   // their own, with nothing before one that its fix-up carries to it
   const items = box.kind === 'flex';

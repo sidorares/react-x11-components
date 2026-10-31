@@ -99,13 +99,16 @@ is at a known value and comes out the same:
 | depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                                                                       |
 | the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                                                                             |
 | the flat tree                                                          | the root is in the document's own tree and assigned to no slot (`inLightTree`): what changed in a shadow tree or a slot is built with the host around it                                                             |
+| a vertical flow's frame (`makeFrame`)                                  | refused where the root is in a frame or holds one (`subtreeRoot`, `oldBoxes`): every box in a frame has its style turned (`framedStyle`), and a build apart makes no frame (`_apart`)                                |
 
 So a rebuild root is an element whose old box is its only box, an in-flow
 block-level box (`block` or `flex`), child of a block or flex container,
 and whose new box is one too — and nothing in the document styles a first
-line, and no block around it styles its first letter. A root that fails
-any of these hands its parent the role, and a root at the document's top
-is a whole build.
+line, no block around it styles its first letter, and it is in no vertical
+flow's frame and holds none. A root that fails any of these hands its
+parent the role, and a root at the document's top is a whole build: but
+for a frame, whose refusal is final, since the parent is in the frame too,
+or holds it.
 
 ### What the tree keeps besides boxes
 
@@ -128,7 +131,9 @@ flags that say where none of a kind is:
   nothing, as before the change.
 - **What is refused**: a subtree with a `<foreignObject>`, an orthogonal
   flow, a view transition's tree or a box in the top layer builds the
-  whole document, as now.
+  whole document, as now. Of those, an orthogonal flow is the subtree's
+  alone: a frame anywhere else in the tree stays as it is, with its boxes'
+  places in the text and its lines moved like any kept block's.
 
 ### What it is held to
 
@@ -160,8 +165,12 @@ it where all of that is the same, nothing has laid it out since
 in it changed: `forgetSizes`, which every change that a box's layout
 reads calls for the box and every box it is in, forgets the record with
 the sizes. A layout that may keep a block is one of the whole document, of
-a tree with no anchor, no vertical flow, no `::first-line` and no foreign
-object.
+a tree with no anchor, no `::first-line` and no foreign object. In a tree
+with a vertical flow the root is kept as a block, its frame moved with it,
+and nothing in a frame is (`noteBlockers`): `reflectFrame` moves what is in
+one after the flow a record would be noted in. A frame fit to the viewport
+is the one thing a kept block can hold that reads the viewport's height, so
+a layout of such a tree that kept anything is taken to have read it.
 
 **What it holds is where its layout put it, from its corner.** The passes
 after a flow move boxes — their transforms' translations, their relative
