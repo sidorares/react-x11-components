@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.31.1](https://github.com/sidorares/react-x11-components/compare/v0.31.0...v0.31.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **html:** a connection asks only the STUN servers its page named, and a data channel closes once what it sent has arrived ([#1154](https://github.com/sidorares/react-x11-components/issues/1154)) ([c04b772](https://github.com/sidorares/react-x11-components/commit/c04b772c677fbff8929e374b0730ee6f5bc37cfd))
+* **html:** a page reads the font family it wrote, where it read the names a document's faces go by here ([#1156](https://github.com/sidorares/react-x11-components/issues/1156)) ([08b1c6b](https://github.com/sidorares/react-x11-components/commit/08b1c6be02216d1a4f21c7625219f5cb8003c130))
+
+
+### Performance Improvements
+
+* **html:** a face that arrives sets what can be seen, and what nobody can see waits, where each arrival styled, built and laid out the whole document ([#1152](https://github.com/sidorares/react-x11-components/issues/1152)) ([200374c](https://github.com/sidorares/react-x11-components/commit/200374c3b1ea99cdd2f64148460f94e4af007881))
+* **html:** a list item reads what its last build read, where a change in one built the whole document ([#1161](https://github.com/sidorares/react-x11-components/issues/1161)) ([f319ffa](https://github.com/sidorares/react-x11-components/commit/f319ffa4d0ad67d04523b6a2c29ab4c1708873d5))
+
 ## [0.31.0](https://github.com/sidorares/react-x11-components/compare/v0.30.1...v0.31.0) (2026-10-31)
 
 
