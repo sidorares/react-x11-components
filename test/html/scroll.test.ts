@@ -755,6 +755,107 @@ test("a scroll container's sticky boxes keep to it where it is scrolled to, as C
   assert.deepEqual(tops(), [0, 5, 120, 90], 'laid out again');
 });
 
+metric(
+  'a sticky inline box keeps to its container as a block does, moved whole by what its lines come to, as Chrome and WebKit place it',
+  async () => {
+    const { el: node } = await renderScrolled(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        '#s{height:100px;overflow:auto;position:relative}' +
+        'section{height:60px}.t{position:sticky;top:10px}</style><div id="s">' +
+        '<section id="one">word <span id="a" class="t">word</span></section>' +
+        '<section><span id="l" style="position:sticky;left:30px;' +
+        'border-left:4px solid #000000;padding:0 3px">word</span></section>' +
+        '<section id="pad" style="height:90px">word <span id="p" class="t" ' +
+        'style="padding:3px 5px;border:2px solid #000000;margin:0 7px">word' +
+        '</span></section>' +
+        '<section id="two"><span id="m" class="t" style="margin-bottom:15px">' +
+        'word</span></section>' +
+        '<section id="three" style="width:60px;height:200px">' +
+        '<span id="w" class="t">one two three four five six seven eight' +
+        '</span></section>' +
+        '<section id="four" style="height:120px">word <span id="n" class="t">' +
+        'word</span><div style="height:20px"></div></section>' +
+        '<section id="five" style="height:90px"><span id="c" class="t">word' +
+        '<div id="in" style="height:20px"></div>word</span></section>' +
+        '<div style="height:400px"></div></div>',
+      300,
+    );
+    const rect = (id: string) => node.elementRect(el(node, id))!;
+    const scroll = async (y: number) => {
+      node.scrollElementTo(el(node, 's'), { y });
+      await act();
+    };
+    // where each section ends in the list, at the top of it, and what is
+    // read below is read at a place in the list
+    const size = rect('a').height;
+    const start = (id: string) => rect(id).y;
+    const end = (id: string) => rect(id).y + rect(id).height;
+    assert.ok(size > 0, 'as tall as its face');
+
+    // held at its `top` until its containing block's end takes it away
+    await scroll(30);
+    assert.strictEqual(rect('a').y, 10);
+    await scroll(55);
+    assert.strictEqual(rect('a').y, end('one') - size, "at its section's end");
+
+    // and it is its border box that is held, and that stays inside
+    await scroll(0);
+    assert.strictEqual(rect('l').x, 30, 'its border edge at its `left`');
+    const padded = rect('p');
+    assert.ok(padded.height > size, `${padded.height}: its padding and border`);
+    await scroll(start('pad') + 40);
+    assert.strictEqual(rect('p').y, 10, 'its border edge at its `top`');
+    await scroll(0);
+    await scroll(start('pad') + 75);
+    assert.strictEqual(
+      rect('p').y + padded.height,
+      end('pad'),
+      'and its border edge at the end of its section',
+    );
+
+    // its margin box is what stays inside, though a margin below takes no
+    // room on a line
+    await scroll(0);
+    await scroll(start('two') + 55);
+    assert.strictEqual(rect('m').y, end('two') - 15 - size, 'by its margin');
+
+    // a box of eight lines is one box: as tall wherever it is held, and as
+    // far as the room under its last line, and no further
+    await scroll(0);
+    const lines = rect('w');
+    assert.ok(lines.height > 3 * size, `${lines.height}: on several lines`);
+    await scroll(start('three') + 100);
+    const held = rect('w');
+    assert.strictEqual(held.height, lines.height, 'moved whole');
+    assert.strictEqual(held.y + held.height, end('three'), 'to its end');
+
+    // a box in an anonymous block keeps inside the block around that one:
+    // the wrapper is a line tall, and left it no room to move in
+    await scroll(0);
+    await scroll(start('four') + 40);
+    assert.strictEqual(rect('n').y, 10, 'past the anonymous block');
+
+    // and what an inline box was broken around goes with it, by the room
+    // all of it leaves in its section
+    await scroll(0);
+    const whole = rect('c');
+    const inner = rect('in');
+    const flow = whole.y - inner.y;
+    await scroll(start('five') + 50);
+    assert.strictEqual(rect('c').height, whole.height, 'moved whole');
+    assert.strictEqual(
+      rect('c').y + rect('c').height,
+      end('five'),
+      'to its end',
+    );
+    assert.strictEqual(
+      rect('c').y - rect('in').y,
+      flow,
+      'and the block with it',
+    );
+  },
+);
+
 test('the scroll keys scroll the container the document was last pressed in, and the pane around it once that is at its end', async () => {
   const tall =
     LIST.replace('#foot{height:20px', '#foot{height:600px') + '<p>after</p>';

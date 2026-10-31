@@ -3896,7 +3896,14 @@ slack and `moveTo` refuses a non-finite destination. The same pass found
 that `translate` moves an inline box's `x`/`y`, which are never laid out,
 with the rest — they add up across passes — so nothing may read an inline
 box's rect: `computePaintBounds` read it as the box's reach and measured a
-card grid three times its height.
+card grid three times its height. A sticky inline box is the one exception,
+and only because its place is set from its lines at every layout
+(`setStickyRect`): read before it was, it stood at the page's corner, and
+where the box stuck turned on how many layouts had run. **Its `width` and
+`height` stay 0**, its size kept beside it (`STICKY_SIZES`): a box of any
+size paints as a rectangle, and one was filled over its own text, which no
+comparison of two paints or of the boxes showed. A test of what is drawn
+holds it to the same text unpositioned.
 
 **A level of nesting costs every frame on the way down, and an interpreted
 frame is whole.** A table in a cell is measured and laid out from inside
@@ -5338,7 +5345,15 @@ of its container and after every layout** (`restickWithin`,
 `restickAll`), from where the flow has it: `STUCK` holds how far it was
 moved, and a container's reach is measured with every sticky box taken
 back by it, or a footer stuck at `bottom: 0` makes the container shorter
-by its height. One the viewport keeps (`VIEWPORT_STICKY`) is the
+by its height. A sticky inline box is placed as a block is, by a rect
+`setStickyRect` sets from its lines, around its own fragments' border
+boxes, as Chrome and WebKit take it; its lines stay and its text moves off
+them (`offsetInline`), its first piece moves all of a box broken around
+blocks (`CUT_PIECES`), and what keeps it in is never an anonymous block
+(`stickyContainer`). **Anything new that moves a sticky box goes through
+`moveSticky`**, or that text stays on its line, and a move of the box's
+lines moves its rect, as `translate` does. One the viewport keeps
+(`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
 (`_followViewport`, `restickToViewport`), for the offsets the pane has
 now (`_scrolledOrigin`), the next pass's: **anything new that reads where
