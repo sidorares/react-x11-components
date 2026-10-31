@@ -977,7 +977,11 @@ export interface LaidUnder {
 /** Whether what a layout made under `under` holds under this layout's
  *  viewport: the same height, or one that layout read none of. */
 function heightHolds(under: LaidUnder, ctx: LayoutContext): boolean {
-  return under.height === ctx.viewportHeight || !under.read;
+  if (under.height !== ctx.viewportHeight && under.read) return false;
+  // a frame kept in a block reads the height it read, or a move of the
+  // height would lay nothing out (`frameInlineSize`)
+  if (framed.any && under.read) ctx.readViewportHeight = true;
+  return true;
 }
 
 /** Every layout that may keep blocks counted, for `Laid.pass`. */
@@ -1161,13 +1165,10 @@ function noteBlockers(
         moved.add(up);
       }
     }
-    // a flow in another writing mode is laid out as a whole, as what holds
-    // it is, so that no layout keeps a frame: its heights run across the
-    // page, and what a kept block is moved by is the page's
+    // what is in a flow in another writing mode is laid out with what holds
+    // it, or moved whole with it where that is kept: its heights run across
+    // the page, so no block in it is kept alone
     if (framed.any && FRAMES.has(box)) {
-      // all the way up: an absolute box marks those only as far as what it
-      // is placed against, and a kept frame reads no viewport's height
-      for (let up = box.parent; up; up = up.parent) blockers.add(up);
       const held = [box];
       while (held.length) {
         const at = held.pop()!;
