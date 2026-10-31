@@ -2572,9 +2572,17 @@ export class HtmlViewNode extends Node {
    * again, as an image a background names is, and laid out again where it
    * can. Only an element whose box is another kind with its image
    * (`awaitingKind`), or a marker or generated content sized by it, is
-   * built again. Wikipedia says how big each image of an article is, and
-   * its article on the X Window System was built and laid out again eleven
-   * times as they came in, at some 180 ms a time on a Mac.
+   * built again, with what it holds (`_arrivedKinds`). Wikipedia says how
+   * big each image of an article is, and its article on the X Window System
+   * was built and laid out again eleven times as they came in, at some
+   * 180 ms a time on a Mac.
+   *
+   * Nothing here changes what a build already owed is: one of every box
+   * reads each size as it makes the box, and one of some subtrees leaves
+   * the rest to take theirs here. An image that landed between a page's
+   * change and the frame that builds it had made that build the whole
+   * document's: most of what the Guardian's and BBC's images cost as they
+   * came in, 120 to 420 ms an arrival, with no box of any other kind.
    *
    * `painted` is false where only the size arrived, read from the image's
    * header while its pixels decode: nothing draws it yet, so nothing is
@@ -2582,16 +2590,7 @@ export class HtmlViewNode extends Node {
    */
   private _imageArrived(painted = true): void {
     const tree = this._tree;
-    if (
-      !tree ||
-      this._stale >= Stale.Boxes ||
-      this._contentImagesArrived(tree) ||
-      tree.awaitingKind.some(
-        (el) =>
-          this._imageSize(el) ||
-          this._resources.holdsDocument(imageUrlOf(el) ?? ''),
-      )
-    ) {
+    if (!tree || (this._stale >= Stale.Boxes && !this._buildSeeds)) {
       // built again for the boxes an image makes, and no style: an image
       // changes none, and every element was matched again for Wikipedia's
       // interlanguage stars, `list-style-image`s that arrive after the
@@ -2599,6 +2598,8 @@ export class HtmlViewNode extends Node {
       this._invalidate(Stale.Boxes, EMPTY_SET);
       return;
     }
+    const kinds = this._arrivedKinds(tree);
+    if (kinds) this._invalidate(Stale.Boxes, EMPTY_SET, false, kinds);
     let moves = false;
     const s = this._scale;
     // A box takes the size of what its element shows now, unless what it
@@ -2653,6 +2654,27 @@ export class HtmlViewNode extends Node {
       this._resources.state(url) === 'pending' &&
       !this._resources.imageSize(url)
     );
+  }
+
+  /** The elements whose boxes an image that arrived makes otherwise: what
+   *  it was built without, as generated content or a marker, and what comes
+   *  out another kind with it. Null where it is none. */
+  private _arrivedKinds(tree: BoxTree): Set<Element> | null {
+    let kinds: Set<Element> | null = null;
+    for (const { url, element, sized } of tree.contentImages) {
+      if (!sized && this._resources.imageSize(url)) {
+        (kinds ??= new Set()).add(element);
+      }
+    }
+    for (const el of tree.awaitingKind) {
+      if (
+        this._imageSize(el) ||
+        this._resources.holdsDocument(imageUrlOf(el) ?? '')
+      ) {
+        (kinds ??= new Set()).add(el);
+      }
+    }
+    return kinds;
   }
 
   /** Whether an image generated content names arrived as it was asked for,

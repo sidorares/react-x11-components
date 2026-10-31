@@ -9,6 +9,7 @@ import { afterEach } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
+import * as ntk from 'react-x11/ntk';
 import * as DomUtils from 'domutils';
 import {
   appendChild,
@@ -23,16 +24,19 @@ import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import {
+  boxOf,
   FONTS,
   h,
   metric,
   pathOf,
   render,
   renderScrolled,
+  solidPng,
   treeLines,
   view,
 } from './harness.js';
 import { resizeClock } from '../../src/html/node.js';
+import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
 
@@ -407,6 +411,481 @@ metric(
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** Images a document's rules name, which its boxes are built without
+ *  until they are in: generated content and a list's marker. */
+const IMAGE_SHEET = `${SHEET}
+.r::before { content: url(before.png) }
+.s::after { content: url(after.png) }
+.t { display: list-item; list-style-image: url(marker.png) }`;
+
+/** An image of each kind of thing a late one is to its document: sized by
+ *  nothing else, sized by its attributes, chosen from a set, and what comes
+ *  out another kind of box with it. */
+function imageOf(next: () => number, url: string): Element {
+  switch (Math.floor(next() * 8)) {
+    case 0:
+      return createElement('img', { src: url, width: '30', height: '12' });
+    case 1:
+      return createElement('img', { srcset: `${url} 2x` });
+    case 2:
+      return createElement(
+        'object',
+        { data: next() < 0.3 ? url.replace('.png', '.html') : url },
+        [createText('in its place')],
+      );
+    case 3:
+      return createElement('embed', {
+        src: next() < 0.3 ? url.replace('.png', '.html') : url,
+      });
+    case 4:
+      return createElement('video', { poster: url });
+    case 5:
+      return createElement('input', { type: 'image', src: url, alt: 'go' });
+    default:
+      return createElement('img', { src: url });
+  }
+}
+
+/** Every image a fuzz's host holds back, to land when the test says: a
+ *  request answered, which says its size, then its pixels decoded. */
+function holdImages(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  next: () => number,
+  images: ReadonlyMap<string, Uint8Array>,
+): {
+  onResource(r: { url: string; kind: string }): unknown;
+  /** Whether anything is still to land. */
+  held(): boolean;
+  /** The next to land, at random. */
+  land(): void;
+  /** The decoder as it was. */
+  done(): void;
+} {
+  const answers = new Map<string, () => void>();
+  const decodes: Array<() => void> = [];
+  const decoder = t.mock.method(
+    imageDecoder,
+    'decode',
+    (bytes: Uint8Array) =>
+      new Promise<never>((resolve) => {
+        decodes.push(() => resolve(ntk.decodeImageBytes(bytes) as never));
+      }),
+  );
+  return {
+    done: () => decoder.mock.restore(),
+    onResource: (r) => {
+      if (r.kind !== 'image') return null;
+      const bytes = images.get(r.url);
+      if (!bytes && !r.url.endsWith('.html')) return null;
+      return new Promise((resolve) => {
+        answers.set(r.url, () =>
+          resolve(bytes ? { kind: 'image', bytes } : { kind: 'document' }),
+        );
+      });
+    },
+    held: () => answers.size > 0 || decodes.length > 0,
+    land: () => {
+      if (decodes.length && (!answers.size || next() < 0.5)) {
+        const at = Math.floor(next() * decodes.length);
+        decodes.splice(at, 1)[0]();
+      } else if (answers.size) {
+        const urls = [...answers.keys()];
+        const url = urls[Math.floor(next() * urls.length)];
+        const go = answers.get(url)!;
+        answers.delete(url);
+        go();
+      }
+    },
+  };
+}
+
+metric(
+  'images that arrive make the tree a build of the whole document makes, a change owed or none',
+  async (t) => {
+    // An image is news to the boxes it sizes, and to those of what comes
+    // out another kind with it (`_imageArrived`, `_arrivedKinds`), whether
+    // or not a change has a build of some subtrees owed: those subtrees read
+    // each size as they are built, and every other box takes its own in
+    // place, or is built for it. Held to a build and a layout of the whole
+    // document after each step.
+    let owed = 0;
+    let kinds = 0;
+    let subtrees = 0;
+    let landed = 0;
+    let moved = 0;
+    const keptAtStart = blocksKept();
+    // IMAGE_SEEDS sweeps more of them, and IMAGE_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.IMAGE_SEEDS ?? 40);
+    for (let seed = Number(env.IMAGE_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 15485863);
+      const pick = <T>(list: readonly T[]): T =>
+        list[Math.floor(next() * list.length)];
+      const body = createElement('body', {});
+      // a style reads a container from the first build: the sizes are taken
+      // as a tree is built where one does, and this is about images
+      appendChild(
+        body,
+        createElement('div', { class: 'l' }, [
+          createElement('b', { class: 'b' }, [createText('read')]),
+        ]),
+      );
+      const blocks = 3 + Math.floor(next() * 4);
+      for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
+      const images = new Map<string, Uint8Array>();
+      const png = (url: string) =>
+        images.set(
+          url,
+          solidPng(
+            ...pick<[number, number]>([
+              [20, 10],
+              [40, 20],
+              [8, 30],
+            ]),
+            [255, 0, 0],
+          ),
+        );
+      for (const url of ['before.png', 'after.png', 'marker.png']) png(url);
+      const holders = [body, ...elementsUnder(body)].filter(
+        (e) => !['input', 'br', 'ul', 'ol', 'template'].includes(e.name),
+      );
+      for (const holder of holders) {
+        if (holder !== body && next() < 0.12) {
+          holder.attribs.class =
+            `${holder.attribs.class ?? ''} ${pick(['r', 's', 't'])}`.trim();
+        }
+      }
+      const count = 3 + Math.floor(next() * 6);
+      for (let i = 0; i < count; i += 1) {
+        // now and then an image two elements show
+        const url = `${i && next() < 0.2 ? i - 1 : i}.png`;
+        png(url);
+        appendChild(pick(holders), imageOf(next, url));
+      }
+      const markup = DomUtils.getOuterHTML(body as never);
+      const held = holdImages(t, next, images);
+      const { result, node } = await render(
+        `<!doctype html><html><head><style>${IMAGE_SHEET}</style></head>${markup}</html>`,
+        320,
+        { onResource: held.onResource },
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as Record<
+        string,
+        (...a: unknown[]) => unknown
+      > & {
+        _tree: BoxTree;
+        _stale: number;
+        _buildSeeds: ReadonlySet<Element> | null;
+      };
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      const arrived = internals._imageArrived;
+      internals._imageArrived = function (this: unknown, ...a: unknown[]) {
+        landed += 1;
+        if (internals._stale >= 2 && internals._buildSeeds) owed += 1;
+        return arrived.apply(this, a);
+      };
+      const arrivedKinds = internals._arrivedKinds;
+      internals._arrivedKinds = function (this: unknown, ...a: unknown[]) {
+        const found = arrivedKinds.apply(this, a);
+        if (found) kinds += 1;
+        return found;
+      };
+      const subtreeBuild = internals._subtreeBuild;
+      for (let step = 0; step < 18; step += 1) {
+        if (!held.held() && step > 6) break;
+        const changed = next() < 0.6;
+        if (changed) el.touchDocument(change(next, bodyEl));
+        // and what lands, before the frame that builds what it reached
+        const count = 1 + Math.floor(next() * 3);
+        for (let i = 0; i < count; i += 1) {
+          held.land();
+          for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+        }
+        let built: unknown = undefined;
+        internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+          built = subtreeBuild.apply(this, a);
+          return built;
+        };
+        const before = internals._tree;
+        await act();
+        delete internals._subtreeBuild;
+        if (built) subtrees += 1;
+        if (internals._tree === before) moved += 1;
+        const kept = treeLines(internals._tree);
+        // the whole document built again and laid out
+        (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step} (${built ? 'subtrees' : 'whole'}): ` +
+            `line ${at}\nkept  ${kept[at]}\nwhole ${whole[at]}\n` +
+            `${markup}\n${DomUtils.getOuterHTML(bodyEl as never)}`,
+        );
+      }
+      result.unmount();
+      held.done();
+    }
+    assert.ok(landed > 200, `${landed} images landed`);
+    assert.ok(owed > 40, `${owed} with a build of subtrees owed`);
+    assert.ok(kinds > 20, `${kinds} made something's boxes otherwise`);
+    assert.ok(subtrees > 40, `${subtrees} built only their subtrees`);
+    assert.ok(moved > 20, `${moved} kept every box`);
+    const kept = blocksKept() - keptAtStart;
+    assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** A document whose images land when the test says, one URL at a time, in
+ *  the microtasks of the turn that says so: before any frame. */
+async function withHeldImages(source: string) {
+  const answers = new Map<string, () => void>();
+  const bytes = solidPng(40, 20, [255, 0, 0]);
+  const { node } = await render(
+    `<!doctype html><html><head><style>body { margin: 0 }</style></head><body>${source}</body></html>`,
+    320,
+    {
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'image'
+          ? new Promise((resolve) => {
+              answers.set(r.url, () => resolve({ kind: 'image', bytes }));
+            })
+          : null,
+    },
+  );
+  const el = view(node);
+  await act();
+  return {
+    el,
+    internals: el as unknown as {
+      _subtreeBuild(...a: unknown[]): unknown;
+      _tree: BoxTree;
+      _buildSeeds: ReadonlySet<Element> | null;
+    },
+    of: (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!,
+    land: async (url: string) => {
+      answers.get(url)!();
+      answers.delete(url);
+      for (let tick = 0; tick < 12; tick += 1) await Promise.resolve();
+    },
+  };
+}
+
+metric(
+  'an image that lands while a build of subtrees is owed leaves it one',
+  async (t) => {
+    // An image landing between a page's change and the frame that builds it
+    // made that build the whole document's: an arrival that had nothing to do
+    // with the change took away what the change had said it reached, 120 to
+    // 420 ms a time on the Guardian and BBC. An image can land on any turn of
+    // a page still loading, so most of a page's cheap builds were lost so.
+    const doc = await withHeldImages(
+      '<p id="still">still</p><p><img id="late" src="i.png"></p><p id="under">under</p><div id="moved">one</div>',
+    );
+    const built = t.mock.method(doc.internals, '_subtreeBuild');
+    const still = boxOf(doc.el, 'still');
+    const late = boxOf(doc.el, 'late');
+    const under = boxOf(doc.el, 'under').y;
+    doc.of('moved').attribs.hidden = '';
+    doc.el.touchDocument([
+      { type: 'attributes', target: doc.of('moved'), attributeName: 'hidden' },
+    ] as HtmlChange[]);
+    assert.ok(doc.internals._buildSeeds, 'a build of what the change reached');
+    await doc.land('i.png');
+    assert.ok(doc.internals._buildSeeds, 'which the image leaves as it was');
+    await act();
+    assert.strictEqual(built.mock.callCount(), 1, 'its subtrees');
+    assert.ok(built.mock.calls[0].result, 'built apart');
+    assert.ok(boxOf(doc.el, 'still') === still, 'and no other box');
+    // and the box a change never reached has what arrived all the same
+    assert.ok(boxOf(doc.el, 'late') === late, 'its box kept');
+    assert.strictEqual(
+      (late as unknown as Box).intrinsic?.width,
+      40,
+      'the size it took in place',
+    );
+    assert.notStrictEqual(
+      boxOf(doc.el, 'under').y,
+      under,
+      'and what follows it',
+    );
+  },
+);
+
+metric(
+  'what comes out another box with its image is built, and nothing else',
+  async (t) => {
+    // an `<object>` is its content until its image is in, and generated
+    // content and a marker are built without it: each with what holds it,
+    // where each built the whole document
+    for (const [late, url] of [
+      ['<object id="late" data="i.png">in its place</object>', 'i.png'],
+      ['<embed id="late" src="i.png">', 'i.png'],
+      ['<input id="late" type="image" src="i.png" alt="go">', 'i.png'],
+      ['<span id="late" class="g"></span>', 'g.png'],
+      ['<ul><li id="late" class="m">item</li></ul>', 'm.png'],
+    ] as const) {
+      const doc = await withHeldImages(
+        '<style>.g::before { content: url(g.png) } .m { list-style-image: url(m.png) }</style>' +
+          `<p id="still">still</p><div>${late}</div>`,
+      );
+      const built = t.mock.method(doc.internals, '_subtreeBuild');
+      const still = boxOf(doc.el, 'still');
+      await doc.land(url);
+      await act();
+      assert.strictEqual(built.mock.callCount(), 1, `its subtree: ${late}`);
+      assert.ok(built.mock.calls[0].result, `built apart: ${late}`);
+      assert.ok(boxOf(doc.el, 'still') === still, `no other box: ${late}`);
+      const kept = doc.internals._tree;
+      assert.ok(
+        kept.contentImages.every((c) => c.sized),
+        `none left to come: ${late}`,
+      );
+      built.mock.restore();
+      cleanup();
+    }
+  },
+);
+
+metric('what a document came to is no news at the next image', async (t) => {
+  // an `<object>` that holds a document is its frame for good, and it was
+  // listed as waiting all the same: every image after it built the whole
+  // document, and would have built the frame's subtree
+  const answers = new Map<string, () => void>();
+  const { node } = await render(
+    '<!doctype html><p id="still">still</p><div><object id="doc" data="d.html">in its place</object></div><p><img src="i.png"></p>',
+    320,
+    {
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'image'
+          ? new Promise((resolve) => {
+              answers.set(r.url, () =>
+                resolve(
+                  r.url === 'd.html'
+                    ? { kind: 'document' }
+                    : {
+                        kind: 'image',
+                        bytes: solidPng(40, 20, [255, 0, 0]),
+                      },
+                ),
+              );
+            })
+          : null,
+    },
+  );
+  const el = view(node);
+  await act();
+  const internals = el as unknown as {
+    _tree: BoxTree;
+    _subtreeBuild(...a: unknown[]): unknown;
+  };
+  answers.get('d.html')!();
+  await act();
+  assert.deepStrictEqual(
+    internals._tree.awaitingKind,
+    [],
+    'nothing left to come',
+  );
+  const built = t.mock.method(internals, '_subtreeBuild');
+  answers.get('i.png')!();
+  await act();
+  assert.strictEqual(built.mock.callCount(), 0, 'no box of it built again');
+});
+
+metric(
+  "a tail built again leaves one entry for its holder's `::after`",
+  async (t) => {
+    // A tail builds its holder's `::after` again, and the list goes by the
+    // element it stands for, which stays. Left in, an entry with no size
+    // said an image had come at every arrival after it, and built the holder
+    // again each time.
+    const doc = await withHeldImages(
+      '<style>.s::after { content: url(g.png) }</style>' +
+        '<p>before</p><div id="holder" class="s"><p>first</p><p id="gone">gone</p><p>kept</p></div><p>after</p>',
+    );
+    const holder = doc.of('holder');
+    const gone = doc.of('gone');
+    const roots = t.mock.method(
+      doc.internals as unknown as { _subtreeRoots(...a: unknown[]): unknown },
+      '_subtreeRoots',
+    );
+    const previousSibling = gone.prev;
+    const nextSibling = gone.next;
+    removeNode(gone);
+    doc.el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [gone],
+        previousSibling,
+        nextSibling,
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const found = roots.mock.calls[0]?.result as {
+      tails: readonly unknown[];
+    } | null;
+    assert.strictEqual(found?.tails.length, 1, 'a tail of the holder');
+    const images = doc.internals._tree.contentImages;
+    assert.strictEqual(images.length, 1, 'the one it has');
+  },
+);
+
+metric(
+  'a tail that builds a shadow host leaves nothing of its tree waiting',
+  async (t) => {
+    // What a tail holds is reached through a host, or an element in the
+    // tree stays listed beside the one the build lists: an image button in
+    // a card's shadow tree, once its image came, was news at every arrival.
+    const doc = await withHeldImages(
+      '<div id="holder"><p>first</p><p id="gone">gone</p>' +
+        '<section><template shadowrootmode="open">' +
+        '<input id="button" type="image" src="i.png" alt="go">' +
+        '</template>light</section></div>',
+    );
+    const holder = doc.of('holder');
+    const gone = doc.of('gone');
+    const roots = t.mock.method(
+      doc.internals as unknown as { _subtreeRoots(...a: unknown[]): unknown },
+      '_subtreeRoots',
+    );
+    const previousSibling = gone.prev;
+    const nextSibling = gone.next;
+    removeNode(gone);
+    doc.el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [gone],
+        previousSibling,
+        nextSibling,
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const found = roots.mock.calls[0]?.result as {
+      tails: readonly unknown[];
+    } | null;
+    assert.strictEqual(found?.tails.length, 1, 'a tail of the holder');
+    assert.strictEqual(
+      doc.internals._tree.awaitingKind.length,
+      1,
+      'the one button',
+    );
   },
 );
 
