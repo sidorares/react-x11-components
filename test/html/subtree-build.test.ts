@@ -55,7 +55,8 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .i { white-space: pre }
 .j { text-transform: uppercase }
 .k { user-select: none }
-.l { margin: 10px 0 }
+.l { margin: 10px 0; container-type: inline-size }
+@container (min-width: 150px) { .b { color: #123456 } .k::after { content: " q" } }
 .m { display: grid; grid-template-columns: 1fr 1fr }
 .n::after { content: " +"; color: #0000aa }
 .o { position: relative; top: 3px; left: 2px }
