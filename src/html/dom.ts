@@ -447,7 +447,8 @@ export function mutationGeneration(): number {
  *    side of where they were, as a record has them; left out, the change
  *    is taken for one anywhere among `target`'s children.
  *  - `characterData`: a text's or a comment's data changed.
- *  - `shadowRoot`: `target` took a shadow tree. No selector outside it can
+ *  - `shadowRoot`: `target` took a shadow tree, or the sheets its tree
+ *    adopted changed (`ShadowRoot.adopted`). No selector outside it can
  *    tell, so what can differ is the host and all it holds.
  */
 export type HtmlChange =
@@ -467,6 +468,18 @@ export type HtmlChange =
     }
   | { type: 'characterData'; target: AnyNode }
   | { type: 'shadowRoot'; target: Element };
+
+/**
+ * A sheet a page's script constructed, as the shadow trees that adopted it
+ * have it: one object for all of them, so an edit is one string whichever
+ * trees read it, and trees that read alike hash that string once
+ * (`HtmlViewNode._sheetsKey`).
+ */
+export interface AdoptedSheet {
+  text: string;
+  /** The trees that hold it, which an edit is told of. */
+  roots: Set<ShadowRoot>;
+}
 
 /** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
  *  value, or none, is no shadow root, and the template an ordinary one. */
@@ -499,6 +512,9 @@ export class ShadowRoot extends DomDocument {
    *  which hands such a root back emptied rather than refusing the host
    *  (DOM 4.9, "attach a shadow root", step 4). */
   declarative = false;
+  /** What a page's script adopted (`adoptedStyleSheets`): this tree's last
+   *  sheets, after its own, as CSSOM orders them. */
+  adopted: readonly AdoptedSheet[] = [];
   private _assignedAt = -1;
   /** The nodes assigned to each slot, in tree order. */
   private _assigned = new Map<Element, ChildNode[]>();
@@ -1105,8 +1121,8 @@ export interface DocumentFacts {
    *  (`shadows`). */
   sheets: SheetRef[];
   /** Every shadow tree, in the order the scan meets them, a host's before
-   *  those in its own, with its sheets in its order: what each styles is
-   *  in it (CSS Scoping 1, 3.2). */
+   *  those in its own, with its sheets in its order and what it adopted
+   *  after them: what each styles is in it (CSS Scoping 1, 3.2). */
   shadows: { root: ShadowRoot; sheets: SheetRef[] }[];
   /** Every `<script>`, for the seam. Never parsed and never evaluated. */
   scripts: Element[];
@@ -1137,6 +1153,9 @@ export type SheetRef = (
    *  an `@import`'s media queries do: null where it has none, or one that
    *  always holds. */
   media: MediaCondition[] | null;
+  /** A sheet its tree adopted, which no element is: `element` is the
+   *  tree's host. */
+  constructed?: boolean;
 };
 
 /**
@@ -1717,6 +1736,17 @@ export class HtmlSource {
         shadow,
         trees,
       );
+      if (root instanceof ShadowRoot) {
+        for (const { text } of root.adopted) {
+          sheets.push({
+            kind: 'inline',
+            text,
+            element: root.host,
+            media: null,
+            constructed: true,
+          });
+        }
+      }
     }
     this._facts = facts;
     // and a chunk recorded after it extends it

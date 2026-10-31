@@ -48,6 +48,7 @@ import type {
 import type { MarginLength } from '../paint.js';
 import type { MediaEventKind } from '../media.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
+import type { AdoptedSheet } from '../dom.js';
 import {
   HtmlSource,
   ShadowRoot,
@@ -1426,6 +1427,9 @@ export class DomHost {
   private _ids = new WeakMap<AnyNode, number>();
   private _nodes = new Map<number, AnyNode>();
   private _next = 2;
+  /** The sheets this realm's shadow roots adopted, by their numbers
+   *  (`adoptedSheet`). */
+  private _adoptedSheets = new Map<number, AdoptedSheet>();
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
   /** What each media element's source is being read for (`_mediaFetch`). */
@@ -3552,6 +3556,36 @@ export class DomHost {
         if (Array.isArray(sheets)) {
           this._seams.adopt?.(sheets.map((sheet) => String(sheet)));
         }
+        return null;
+      }
+      // a sheet a shadow root adopted, by the number the realm gave it:
+      // the text every root that holds it reads, each told it changed
+      case 'adoptedSheet': {
+        const sheet = this._adoptedSheets.get(Number(a));
+        if (!sheet) {
+          this._adoptedSheets.set(Number(a), {
+            text: text(b),
+            roots: new Set(),
+          });
+          return null;
+        }
+        sheet.text = text(b);
+        for (const root of sheet.roots) {
+          this._tell(root.host, { type: 'shadowRoot', target: root.host });
+        }
+        return null;
+      }
+      // the sheets a shadow root adopted, by those numbers, in order
+      case 'adoptShadow': {
+        const root = this._node(a) as ShadowRoot;
+        for (const sheet of root.adopted) sheet.roots.delete(root);
+        root.adopted = text(b)
+          ? text(b)
+              .split(',')
+              .map((id) => this._adoptedSheets.get(Number(id))!)
+          : [];
+        for (const sheet of root.adopted) sheet.roots.add(root);
+        this._tell(root.host, { type: 'shadowRoot', target: root.host });
         return null;
       }
       // a sheet's text as rules, for a sheet of the page's own and what a

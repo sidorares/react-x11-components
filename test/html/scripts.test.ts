@@ -3733,6 +3733,220 @@ test('a sheet a page constructs and adopts is drawn after the document’s own, 
   assert.equal(doc.view.computedStyle(z)?.['background-color'], 'rgb(7, 8, 9)');
 });
 
+/** An element of `host`'s shadow tree. */
+const inTree = (doc: Hosted, host: string, id: string): DocElement =>
+  findById(shadowRootOf(doc.byId(host)), id) as DocElement;
+
+test('a sheet a shadow root adopts styles its tree, after the tree’s own, and as the array is edited', async () => {
+  const doc = await hosted(
+    '<div id="h"></div><p class="t" id="z">z</p>' +
+      '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+      'var root = document.getElementById("h").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<style>.t { color: rgb(0, 0, 0) }</style><p class=t id=in>in</p>";' +
+      'var sheet = new CSSStyleSheet();' +
+      'sheet.replaceSync(".t { color: rgb(1, 2, 3) } :host { margin-left: 7px }");' +
+      'root.adoptedStyleSheets = [sheet];' +
+      'var more = new CSSStyleSheet(); more.replaceSync(".t { color: rgb(4, 5, 6) }");' +
+      'var r = [root.adoptedStyleSheets === root.adoptedStyleSheets];' +
+      'try { root.adoptedStyleSheets = [document.styleSheets[0]]; } catch (e) { r.push(e.name); }' +
+      'try { root.adoptedStyleSheets.push(document.styleSheets[0]); } catch (e) { r.push(e.name); }' +
+      'r.push(root.adoptedStyleSheets.length);' +
+      'var steps = [' +
+      '  function () { root.adoptedStyleSheets.push(more); },' +
+      '  function () { root.adoptedStyleSheets.pop(); },' +
+      '  function () { root.adoptedStyleSheets = [more, sheet]; },' +
+      '  function () { sheet.disabled = true; },' +
+      '  function () { root.adoptedStyleSheets.length = 0; },' +
+      '];' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  steps.shift()(); document.getElementById("out").textContent = r.join(" ") + " " + root.adoptedStyleSheets.length;' +
+      '});</script>',
+  );
+  await settle();
+  const colour = () => doc.view.computedStyle(inTree(doc, 'h', 'in'))?.color;
+  const step = async (length: number) => {
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    await settle();
+    assert.equal(
+      doc.text('out'),
+      `true NotAllowedError NotAllowedError 1 ${length}`,
+    );
+  };
+  assert.equal(colour(), 'rgb(1, 2, 3)');
+  // its tree's, and what its `:host` rule styles, and nothing else
+  assert.equal(doc.view.computedStyle(doc.byId('h'))?.['margin-left'], '7px');
+  assert.notEqual(doc.view.computedStyle(doc.byId('z'))?.color, 'rgb(1, 2, 3)');
+  // no element is the sheet, which a developer's tools read a `<style>` by
+  const source = doc.view
+    .styleSheets()
+    .find((sheet) => sheet.text.includes('rgb(1, 2, 3)'));
+  assert.ok(source, 'the sheet is listed');
+  assert.equal(source.element, null);
+  await step(2);
+  assert.equal(colour(), 'rgb(4, 5, 6)');
+  await step(1);
+  assert.equal(colour(), 'rgb(1, 2, 3)');
+  await step(2);
+  assert.equal(colour(), 'rgb(1, 2, 3)');
+  await step(2);
+  assert.equal(colour(), 'rgb(4, 5, 6)');
+  await step(0);
+  assert.equal(colour(), 'rgb(0, 0, 0)');
+  assert.equal(doc.view.computedStyle(doc.byId('h'))?.['margin-left'], '0px');
+});
+
+metric(
+  'a sheet a shadow root adopted draws, and draws as it is replaced',
+  async () => {
+    const doc = await hosted(
+      '<style>body { margin: 0 }</style><div id="h"></div>' +
+        '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+        'var root = document.getElementById("h").attachShadow({ mode: "open" });' +
+        'root.innerHTML = "<div class=t></div>";' +
+        'var sheet = new CSSStyleSheet();' +
+        'sheet.replaceSync(".t { height: 30px; background-color: #00ff00 }");' +
+        'root.adoptedStyleSheets = [sheet];' +
+        'document.getElementById("go").addEventListener("click", function () {' +
+        '  sheet.replace(".t { height: 30px; background-color: #0000ff }").then(function (back) {' +
+        '    document.getElementById("out").textContent = String(back === sheet);' +
+        '    sheet.insertRule(".t { width: 50px }", 1);' +
+        '  });' +
+        '});</script>',
+    );
+    await waitForPixel(doc.result.ctx, 100, 15, '#00ff00', {
+      message: 'the adopted sheet’s background',
+    });
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    await settled(doc, 'out', (text) => text === 'true');
+    await waitForPixel(doc.result.ctx, 20, 15, '#0000ff', {
+      message: 'the background it was replaced with',
+    });
+    // and the rule put in after it, which leaves its width what it says
+    await waitForPixel(doc.result.ctx, 100, 15, '#ffffff', {
+      message: 'the width of the rule inserted',
+    });
+  },
+);
+
+test('elements that adopt a sheet as Lit does share its rules, and an edit reaches each', async () => {
+  const doc = await hosted(
+    '<input type="button" id="go" value="go"><p id="out"></p><x-card id="a"></x-card><script>' +
+      'var sheet = new CSSStyleSheet(); sheet.replaceSync("p { color: rgb(1, 2, 3) }");' +
+      'class Card extends HTMLElement {' +
+      '  connectedCallback() {' +
+      '    var root = this.attachShadow({ mode: "open" });' +
+      '    if ("adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype) root.adoptedStyleSheets = [sheet];' +
+      '    root.innerHTML = "<p id=in>" + this.id + "</p>";' +
+      '  }' +
+      '}' +
+      'customElements.define("x-card", Card);' +
+      'var steps = [' +
+      '  function () { var b = document.createElement("x-card"); b.id = "b"; document.body.appendChild(b); },' +
+      '  function () { sheet.replaceSync("p { color: rgb(4, 5, 6) }"); },' +
+      '];' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  steps.shift()(); document.getElementById("out").textContent = String(steps.length);' +
+      '});</script>',
+  );
+  await settle();
+  const view = doc.view as unknown as {
+    _cascade: unknown;
+    _shadowKeys: Map<unknown, string>;
+  };
+  const colour = (id: string) =>
+    doc.view.computedStyle(inTree(doc, id, 'in'))?.color;
+  const go = async (left: string) => {
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    await settled(doc, 'out', (text) => text === left);
+    await settle();
+  };
+  assert.equal(colour('a'), 'rgb(1, 2, 3)');
+  const cascade = view._cascade;
+  await go('1');
+  assert.equal(colour('b'), 'rgb(1, 2, 3)');
+  // one set of rules for the two trees: the second read nothing new
+  assert.equal(view._cascade, cascade);
+  assert.equal(
+    view._shadowKeys.get(shadowRootOf(doc.byId('a'))),
+    view._shadowKeys.get(shadowRootOf(doc.byId('b'))),
+  );
+  await go('0');
+  assert.equal(colour('a'), 'rgb(4, 5, 6)');
+  assert.equal(colour('b'), 'rgb(4, 5, 6)');
+});
+
+test('a sheet a shadow root adopts builds its host, and none of the document around it', async () => {
+  // enough around the host that it is not most of the document, which is
+  // built whole (`SUBTREE_MOST`)
+  const around = '<p>around</p>'.repeat(30);
+  const doc = await hosted(
+    '<body><input type="button" id="go" value="go"><p id="out"></p>' +
+      `${around}<p id="before">before</p><div id="h"><b id="light">light</b></div>` +
+      `<p id="after">after</p>${around}<script>` +
+      'var root = document.getElementById("h").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<p id=in>in</p><slot></slot>";' +
+      'var sheet = new CSSStyleSheet(); sheet.replaceSync("p { color: rgb(1, 2, 3) } ::slotted(b) { color: rgb(4, 5, 6) }");' +
+      'var steps = [' +
+      '  function () { root.adoptedStyleSheets = [sheet]; },' +
+      '  function () { sheet.replaceSync("p { color: rgb(7, 8, 9) }"); },' +
+      '];' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  steps.shift()(); document.getElementById("out").textContent = String(steps.length);' +
+      '});</script>',
+  );
+  await settle();
+  const view = doc.view as unknown as {
+    _tree: { styles: Map<DocElement, { style: unknown }> };
+    _firstBoxesOf(tree: unknown): Map<DocElement, unknown>;
+    _subtreeBuild(...args: unknown[]): unknown;
+  };
+  const box = (id: string) => view._firstBoxesOf(view._tree).get(doc.byId(id));
+  const kept = (id: string) => view._tree.styles.get(doc.byId(id))?.style;
+  const style = (id: string) => doc.view.computedStyle(doc.byId(id));
+  const build = view._subtreeBuild;
+  let builds = 0;
+  view._subtreeBuild = function (this: unknown, ...args: unknown[]) {
+    const built = build.apply(this, args);
+    if (built) builds += 1;
+    return built;
+  };
+  const boxes = [box('before'), box('after')];
+  const styles = [kept('before'), kept('after')];
+  const plain = style('before')?.color;
+  const held = () => {
+    assert.ok(
+      box('before') === boxes[0] && box('after') === boxes[1],
+      'what is around the host was built',
+    );
+    assert.ok(
+      kept('before') === styles[0] && kept('after') === styles[1],
+      'what is around the host was styled',
+    );
+  };
+  const go = async (left: string) => {
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    await settled(doc, 'out', (text) => text === left);
+    await settle();
+  };
+  await go('1');
+  assert.equal(
+    doc.view.computedStyle(inTree(doc, 'h', 'in'))?.color,
+    'rgb(1, 2, 3)',
+  );
+  assert.equal(style('light')?.color, 'rgb(4, 5, 6)');
+  assert.ok(builds, 'the whole document was built');
+  held();
+  builds = 0;
+  await go('0');
+  assert.equal(
+    doc.view.computedStyle(inTree(doc, 'h', 'in'))?.color,
+    'rgb(7, 8, 9)',
+  );
+  assert.equal(style('light')?.color, plain);
+  assert.ok(builds, 'the whole document was built');
+  held();
+});
+
 test('streams read, pipe, tee and transform, and a response’s body is one', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
