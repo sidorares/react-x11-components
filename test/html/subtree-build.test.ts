@@ -19,7 +19,11 @@ import {
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { buildsAnswered, buildsAtEnd } from '../../src/html/layout/boxes.js';
-import { blocksKept, standsMade } from '../../src/html/layout/block.js';
+import {
+  blocksKept,
+  boxLayoutsMade,
+  standsMade,
+} from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import {
@@ -2491,9 +2495,10 @@ metric(
 metric(
   'a change beside a flow in another writing mode builds what it reached, keeps the blocks around it, and moves the frame as a whole build places it',
   async () => {
-    // an MDN article's live sample in a vertical writing mode made every
-    // build of the page whole, and CodeMirror's six updates of a cursor's
-    // layer held one task for a second and a half
+    // the browsers' names at the head of an MDN article's compatibility
+    // table are turned in a vertical writing mode, which made every build
+    // of the page whole, and CodeMirror's six updates of a cursor's layer
+    // held one task for a second and a half
     const paragraphs: string[] = [];
     for (let i = 0; i < 40; i += 1) {
       paragraphs.push(`<p id="p${i}">a paragraph of the page</p>`);
@@ -2560,6 +2565,134 @@ metric(
 );
 
 metric(
+  'a table with a flow in another writing mode in its head is kept whole by a layout',
+  async () => {
+    // MDN's compatibility tables turn each browser's name, and each layout
+    // of an article laid out all 5,400 boxes of the table for twelve labels
+    const head = Array.from(
+      { length: 6 },
+      () => '<th><div style="writing-mode: vertical-rl">a browser</div></th>',
+    ).join('');
+    const row = `<tr>${'<td>yes</td>'.repeat(6)}</tr>`.repeat(40);
+    const { el } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 2px 0 }</style></head><body>' +
+        '<p id="above">above the table</p>' +
+        `<section><table><tr>${head}</tr>${row}</table></section>` +
+        '</body></html>',
+      320,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    assert.ok(internals._tree.vertical, 'a flow in another writing mode');
+    const p = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'above',
+    )!;
+    const text = p.children[0] as unknown as { data: string };
+    text.data += ', and a line more of words than it had before it';
+    const made = boxLayoutsMade();
+    el.touchDocument([{ type: 'characterData', target: text as never }]);
+    await act();
+    const laid = boxLayoutsMade() - made;
+    assert.ok(laid < 30, `${laid} boxes laid out for a paragraph above it`);
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const line = kept.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      line < 0 && kept.length === whole.length,
+      `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+    );
+  },
+);
+
+metric(
+  'what a flow in another writing mode holds is laid out with it, and a change to what holds a frame builds as a whole build does',
+  async () => {
+    for (const mode of ['vertical-rl', 'vertical-lr']) {
+      const { el, result } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          `p { margin: 2px 0 } .v { writing-mode: ${mode}; height: 90px }` +
+          '</style></head><body><section id="s">' +
+          '<div class="v" id="f"><p>the first of two</p><p>the other</p>' +
+          '<div><p>one deeper</p></div></div>' +
+          '<p id="here">beside the flow</p></section><p>after</p></body></html>',
+        240,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const asWhole = async (what: string): Promise<void> => {
+        const kept = treeLines(internals._tree);
+        internals._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const line = kept.findIndex((one, i) => one !== whole[i]);
+        assert.ok(
+          line < 0 && kept.length === whole.length,
+          `${mode}, ${what}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+        );
+      };
+      // laid out again with what holds it, which a change beside it does,
+      // and more than once, since a kept block is kept from the last
+      for (let i = 0; i < 3; i += 1) {
+        const text = byId('here').children[0] as unknown as { data: string };
+        text.data += ', and a line more of words than it had before';
+        el.touchDocument([{ type: 'characterData', target: text as never }]);
+        await act();
+        await asWhole(`beside it, ${i}`);
+      }
+      // what holds a root come to another width, taken in place, which is
+      // the one way a frame is laid out with what it holds the same size: a
+      // block kept in a `vertical-lr` frame is left where it was reflected
+      // from, on the far side of a root as wide as it was
+      for (const width of ['200px', '160px']) {
+        const was = byId('s').attribs.style ?? null;
+        byId('s').attribs.style = `width: ${width}`;
+        el.touchDocument([
+          {
+            type: 'attributes',
+            target: byId('s'),
+            attributeName: 'style',
+            oldValue: was,
+          },
+        ]);
+        await act();
+        await asWhole(`${width} wide`);
+      }
+      // and a child put in a frame's own element, whose children are the
+      // frame's and not its element's box's
+      const frame = byId('f');
+      const child = createElement('p', {}, [createText('put in')]);
+      appendChild(frame, child);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: frame,
+          addedNodes: [child],
+          removedNodes: [],
+          previousSibling: frame.children[frame.children.length - 2],
+          nextSibling: null,
+        } as HtmlChange,
+      ]);
+      await act();
+      await asWhole('put in it');
+      result.unmount();
+    }
+  },
+);
+
+metric(
   'a frame fit to the viewport follows its height, wherever an absolute box beside it stops what it marks',
   async () => {
     const words = 'one two three four five six seven eight nine '.repeat(8);
@@ -2586,7 +2719,6 @@ metric(
         )!;
       const frame = () =>
         internals._firstBoxesOf(internals._tree).get(byId('v'))!;
-      const serial = frame().layoutSerial;
       const target = byId('a');
       const child = createElement('p', {}, [createText('more')]);
       appendChild(target, child);
@@ -2601,7 +2733,6 @@ metric(
         } as HtmlChange,
       ]);
       await act();
-      assert.notStrictEqual(frame().layoutSerial, serial, `${what}: laid out`);
       await resize(120);
       const after = frame().height;
       internals._invalidate(2);
