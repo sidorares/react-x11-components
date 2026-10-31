@@ -5511,17 +5511,20 @@ block axis, which is the root's intrinsic width at its least and its most
   in it are turned from the other side (`REFLECTED_MARGINS`). A block no
   layout has laid out since it was put back is left as it is
   (`layoutSerial`).
-- **A frame is laid out whole, and what is around it is kept as any box
-  is.** All a frame holds, and the boxes that hold it, are blockers
-  (`noteBlockers`), so no layout keeps a frame and no kept block holds one:
-  what a kept block is moved by is the page's, and a frame's heights run
-  across it. And a build apart stops at a frame (`buildSubtrees`, `_apart`):
+- **A frame is laid out with what holds it, or moved whole with it.** All a
+  frame holds is a blocker (`noteBlockers`), so no block in one is kept
+  alone, its heights running across the page; what holds a frame is kept as
+  any block is, and the frame goes with it. A kept block's read of the
+  viewport's height is read again (`heightHolds`), since a frame fit to the
+  viewport reads it only as it is laid out, and a move of the height would
+  lay nothing out. A build apart stops at a frame (`buildSubtrees`, `_apart`):
   a frame is made as a build of the whole ends and what is in one takes its
-  sides from it, so a change in one builds the whole document. One live
-  sample in a vertical writing mode made every build of an MDN article
-  whole and every layout 12,892 boxes, where a CodeMirror cursor costs a
-  few. **Anything new a layout keeps asks `blockers`**, or it keeps what a
-  frame holds, and `framed.any` keeps a probe from standing in such a tree.
+  sides from it, so a change in one builds the whole document. MDN's browser
+  compatibility tables turn each browser's name in a `vertical-rl` label,
+  twelve frames of three boxes, and they cost every layout of the article the
+  5,400 boxes of the table around them. **Anything new a layout keeps asks
+  `blockers`**, or it keeps what is in a frame alone. `framed.any` keeps a
+  probe from standing anywhere in such a tree.
 - **A writing mode and a direction are read ahead of the other
   declarations where a sheet declares a writing mode** (`Cascade._writing`):
   a logical property maps by the element's own, whatever its place in

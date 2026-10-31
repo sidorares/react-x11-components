@@ -42,7 +42,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
-import { FRAMES, frameOf, makeFrame } from './writing.js';
+import { frameOf, makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -1561,7 +1561,7 @@ export function buildSubtrees(
   // its sides from it (`makeFrame`): what is around one is built as any box
   if (tree.vertical) {
     for (const old of olds) {
-      if (FRAMES.has(old.box) || frameOf(old.box)) return null;
+      if (frameOf(old.box)) return null;
     }
   }
   // a root a block around looks for a first letter in, or a tail of one
