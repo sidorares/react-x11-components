@@ -1971,7 +1971,14 @@ export function buildSubtrees(
     }
     return tailRoots.some((o) => insideRoot(node, o));
   };
-  const goneElement = (el: Element): boolean => !connected(el) || insideAny(el);
+  // at or under what a host holds and no slot takes, which no build reaches
+  const unslottedKnown = new Map<Element, boolean>();
+  const unslotted = (at: Element): boolean =>
+    !flatParentOf(at) && !!at.parent && isElement(at.parent);
+  const outOfFlat = (el: Element): boolean =>
+    atOrAbove(el, unslotted, unslottedKnown);
+  const goneElement = (el: Element): boolean =>
+    goneSet.has(el) || !connected(el) || insideAny(el) || outOfFlat(el);
   // and from a list, one no box is made for now: what a script moved out of
   // a root to under an element of `display: none`
   const goneEntry = (el: Element): boolean => goneElement(el) || undrawn(el);
@@ -2049,6 +2056,7 @@ export function buildSubtrees(
       !holder ||
       !connected(node as unknown as Element) ||
       insideAny(node) ||
+      (isElement(holder) && outOfFlat(holder)) ||
       olds.some(
         (o) =>
           // one moved out of a root to where nothing draws it, at its end
@@ -2159,6 +2167,9 @@ export function buildSubtrees(
           const at = stack.pop()!;
           styles.delete(at);
           for (const child of at.children) {
+            if (isElement(child)) stack.push(child);
+          }
+          for (const child of shadowRootOf(at)?.children ?? []) {
             if (isElement(child)) stack.push(child);
           }
         }
@@ -2628,8 +2639,8 @@ function holdDroppedText(
 
 /** Every box of a run of old boxes and what they hold, with how many list
  *  items they hold that number nothing and whether any other changes a
- *  counter or reads one, or a quote (`counts`): null where one hosts a
- *  shadow tree or is in the top layer, which no build apart takes apart. */
+ *  counter or reads one, or a quote (`counts`): null where one is in the
+ *  top layer, which no build apart takes apart. */
 function oldBoxes(
   run: readonly Box[],
 ): { boxes: Set<Box>; listItems: number; counts: boolean } | null {
@@ -2640,7 +2651,7 @@ function oldBoxes(
   while (stack.length) {
     const at = stack.pop()!;
     boxes.add(at);
-    if (at.topLayer || (at.el && holdsShadow(at.el))) return null;
+    if (at.topLayer) return null;
     if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
       listItems += 1;
     }
@@ -2884,7 +2895,7 @@ export function canRebuild(
  * of it finds the boxes and the entries it replaces by where their
  * elements are in it (`within`, `before`).
  */
-function inLightTree(el: Element): boolean {
+export function inLightTree(el: Element): boolean {
   for (let at: Element = el; ;) {
     const parent = at.parent;
     if (!parent || parent instanceof ShadowRoot) return false;
@@ -3039,10 +3050,15 @@ function firstStyled(
   return null;
 }
 
-/** Whether `el` is still in a document. */
+/** Whether `el` is still in a document, through the host of each shadow
+ *  tree it is in, whose root is a document of its own. */
 function connected(el: Element): boolean {
   let at: { parent: unknown } = el;
-  while (at.parent) at = at.parent as { parent: unknown };
+  for (;;) {
+    while (at.parent) at = at.parent as { parent: unknown };
+    if (!(at instanceof ShadowRoot)) break;
+    at = at.host;
+  }
   return (at as { type?: string }).type === 'root';
 }
 
@@ -3557,21 +3573,14 @@ class Builder {
   /** Whether what was just built can be built apart from what is around it
    *  (`runSubtree`, `runTail`): it read no counter it did not make, and
    *  holds nothing a build of the whole finishes across the tree — an
-   *  orthogonal flow, a `<foreignObject>`, a first line's style — nor a
-   *  shadow tree's host (`holdsShadow`). */
+   *  orthogonal flow, a `<foreignObject>`, a first line's style. */
   private _apart(): boolean {
-    if (
-      this._scopes.escapedRead ||
-      this._orthogonal.length ||
-      this._foreign ||
-      this._firstLine
-    ) {
-      return false;
-    }
-    for (const at of this._styles.keys()) {
-      if (shadowRootOf(at) !== null) return false;
-    }
-    return true;
+    return (
+      !this._scopes.escapedRead &&
+      !this._orthogonal.length &&
+      !this._foreign &&
+      !this._firstLine
+    );
   }
 
   /** What `runSubtree` or `runTail` made: `boxes` and what was found as

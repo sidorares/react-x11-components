@@ -12,6 +12,7 @@ import {
   removeNode,
   shadowRootOf,
 } from '../../src/html/index.js';
+import { attachShadow } from '../../src/html/dom.js';
 import type {
   ChildNode,
   Element,
@@ -30,6 +31,7 @@ import {
   FONTS,
   boxOf,
   bytesApart,
+  drawnText,
   findById,
   h,
   metric,
@@ -3178,6 +3180,34 @@ function changeOne(
 }
 
 /**
+ * A shadow tree put on an element, as a custom element does as it connects:
+ * with a slot where most have one, and a sheet of its own where a few do,
+ * which makes the cascade again.
+ */
+function attachOne(next: () => number, body: Element): HtmlChange[] {
+  const free = elementsIn(body).filter(
+    (e) => e !== body && ['div', 'span', 'p'].includes(e.name),
+  );
+  const target = free[Math.floor(next() * free.length)];
+  const root = target && attachShadow(target, { mode: 'open' });
+  if (!root) return [];
+  if (next() < 0.25) {
+    appendChild(
+      root as unknown as Element,
+      createElement('style', {}, [createText(':host { color: #00aa00 }')]),
+    );
+  }
+  appendChild(
+    root as unknown as Element,
+    createElement('b', { class: 'a' }, [createText('in ')]),
+  );
+  if (next() < 0.7) {
+    appendChild(root as unknown as Element, createElement('slot'));
+  }
+  return [{ type: 'shadowRoot', target }];
+}
+
+/**
  * A sheet change a CSS-in-JS library, a lazy chunk or a late `<link>` makes,
  * done, and its records: a `<style>` put in, rules written into one, its
  * text extended or replaced, one taken out, which the last two of make
@@ -3610,6 +3640,223 @@ test('a host’s colour reaches its shadow tree in place, and what its top holds
   assert.ok(scope, 'the change was a refresh of everything');
 });
 
+test('a shadow tree put on an element builds its host, and none of the document around it', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .far{height:20px}</style>' +
+      '<body><div class="far" id="before">before</div>' +
+      '<div id="h"><b id="slotted" slot="s">taken</b><i id="left">left</i></div>' +
+      '<div class="far" id="after">after</div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const host = byId(el, 'h');
+  const box = (id: string) =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, id));
+  const far = box('before');
+  const root = attachShadow(host, { mode: 'open' })!;
+  appendChild(root as unknown as Element, createText('['));
+  const slot = createElement('slot', { name: 's' });
+  appendChild(root as unknown as Element, slot);
+  appendChild(root as unknown as Element, createText(']'));
+  const build = (el as unknown as Record<string, unknown>)._subtreeBuild as (
+    ...a: unknown[]
+  ) => unknown;
+  let built: unknown;
+  (el as unknown as Record<string, unknown>)._subtreeBuild = function (
+    this: unknown,
+    ...a: unknown[]
+  ) {
+    built = build.apply(this, a);
+    return built;
+  };
+  el.touchDocument([{ type: 'shadowRoot', target: host }]);
+  await snapshot(result, el);
+  assert.ok(built, 'the whole document was built');
+  assert.ok(box('before') === far, 'what is around the host was built');
+  // what its slot takes is drawn in the tree, and what none takes is not
+  assert.ok(el.computedStyle(byId(el, 'slotted')));
+  assert.equal(el.computedStyle(byId(el, 'left')), null);
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'before[taken]after');
+});
+
+test('a host put in with its shadow tree styles the tree by the tree’s own sheet', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><div id="into">x</div>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  // made apart from the document, as a custom element's constructor does,
+  // and put in by a later task
+  const host = createElement('div', { id: 'h' });
+  const root = attachShadow(host, { mode: 'open' })!;
+  appendChild(
+    root as unknown as Element,
+    createElement('style', {}, [createText('p { color: #00aa00 }')]),
+  );
+  const inner = createElement('p', {}, [createText('in')]);
+  appendChild(root as unknown as Element, inner);
+  const into = byId(el, 'into');
+  appendChild(into, host);
+  el.touchDocument([
+    { type: 'childList', target: into, addedNodes: [host], removedNodes: [] },
+  ]);
+  await snapshot(result, el);
+  assert.equal(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+});
+
+test('what a <template> comes to hold keeps no style, whatever else a change builds', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .off{display:none} .on{color:#ff0000}</style>' +
+      '<body><p class="off" id="moved">m</p><template id="t"></template>' +
+      '<div id="a">a</div><div id="b">b</div><div id="c">c</div>' +
+      '<div id="d">d</div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const moved = byId(el, 'moved');
+  const from = moved.parent as Element;
+  const into = byId(el, 't');
+  appendChild(into, moved);
+  const a = byId(el, 'a');
+  a.attribs.class = 'on';
+  el.touchDocument([
+    { type: 'childList', target: from, addedNodes: [], removedNodes: [moved] },
+    { type: 'childList', target: into, addedNodes: [moved], removedNodes: [] },
+    {
+      type: 'attributes',
+      target: a,
+      attributeName: 'class',
+      oldValue: null,
+    },
+  ]);
+  await snapshot(result, el);
+  const tree = treeOf(el) as unknown as { styles: Map<Element, unknown> };
+  assert.ok(!tree.styles.has(moved), 'a style was kept for what a build skips');
+  assert.equal(el.computedStyle(a)?.color, 'rgb(255, 0, 0)');
+});
+
+test('a change whose seeds are most of the document builds all of it, at once', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body><div id="a"><p>1</p><p>2</p></div><div id="b">x</div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const internals = el as unknown as Record<string, unknown>;
+  const found = internals._subtreeRoots as (...a: unknown[]) => unknown;
+  let asked = 0;
+  internals._subtreeRoots = function (this: unknown, ...a: unknown[]) {
+    asked += 1;
+    return found.apply(this, a);
+  };
+  const body = el.document.children.find(
+    (n) => (n as Element).name === 'body',
+  ) as Element;
+  const every = elementsIn(body);
+  (
+    el as unknown as {
+      _invalidate(
+        stale: number,
+        restyle: Set<Element>,
+        follow: boolean,
+        seeds: Set<Element>,
+      ): void;
+    }
+  )._invalidate(2, new Set(every), true, new Set(every));
+  await snapshot(result, el);
+  assert.strictEqual(asked, 0, 'the roots of nearly all of it were looked for');
+  // and a seed or two are built apart
+  const b = byId(el, 'b');
+  (
+    el as unknown as {
+      _invalidate(
+        stale: number,
+        restyle: Set<Element>,
+        follow: boolean,
+        seeds: Set<Element>,
+      ): void;
+    }
+  )._invalidate(2, new Set([b]), true, new Set([b]));
+  await snapshot(result, el);
+  assert.strictEqual(asked, 1);
+});
+
+test('a sheet put in with what comes at the end of the body builds the end of the body', async () => {
+  const { result, node } = await render(
+    '<!doctype html><html><head><style>body{margin:0}</style></head>' +
+      '<body><div id="before">before</div><div id="last">last</div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const body = byId(el, 'last').parent as Element;
+  const head = el.document.children
+    .flatMap((n) => (n as Element).children ?? [])
+    .find((n) => (n as Element).name === 'head') as Element;
+  const sheet = createElement('style', {}, [
+    createText('.new { color: #ff0000 }'),
+  ]);
+  appendChild(head, sheet);
+  const added = createElement('div', { class: 'new' }, [createText('new')]);
+  appendChild(body, added);
+  const box = () =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, 'before'));
+  const far = box();
+  el.touchDocument([
+    { type: 'childList', target: head, addedNodes: [sheet], removedNodes: [] },
+    {
+      type: 'childList',
+      target: body,
+      addedNodes: [added],
+      removedNodes: [],
+      nextSibling: null,
+      previousSibling: byId(el, 'last'),
+    },
+  ]);
+  await snapshot(result, el);
+  assert.ok(box() === far, 'what was before it was built');
+  assert.equal(el.computedStyle(added)?.color, 'rgb(255, 0, 0)');
+});
+
+test('a change inside a shadow tree builds its host, where it built the whole document', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .far{height:20px}</style>' +
+      '<body><div class="far" id="before">before</div>' +
+      '<div id="h"><template shadowrootmode="open"><div><p id="p">in</p></div></template></div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const root = shadowRootOf(byId(el, 'h'))!;
+  const inner = (root.children[0] as Element).children[0] as Element;
+  const boxes = () =>
+    (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+      ._firstBoxesOf(treeOf(el))
+      .get(byId(el, 'before'));
+  const far = boxes();
+  const added = createElement('b', {}, [createText('new')]);
+  appendChild(inner.parent as Element, added);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: inner.parent as Element,
+      addedNodes: [added],
+      removedNodes: [],
+    },
+  ]);
+  await snapshot(result, el);
+  assert.ok(boxes() === far, 'what is around the host was built');
+  assert.ok(el.computedStyle(added));
+  assert.equal(drawnText(el).replace(/\s+/g, ''), 'beforeinnew');
+});
+
 test('a rule across a shadow tree’s edge reaches what is below its host across the edge, and nothing makes it a refresh of everything', async () => {
   const { result, node } = await render(
     '<div class="a" id="h"><template shadowrootmode="open">' +
@@ -3686,7 +3933,11 @@ async function refreshesAgree(
       const changes: HtmlChange[] = [];
       const batch = 1 + Math.floor(next() * 3);
       for (let i = 0; i < batch; i += 1) {
-        changes.push(...changeOne(next, bodyEl, next() < 0.25, edges));
+        changes.push(
+          ...(anchoredShare === undefined && next() < 0.05
+            ? attachOne(next, bodyEl)
+            : changeOne(next, bodyEl, next() < 0.25, edges)),
+        );
       }
       const node = el as unknown as Record<
         string,

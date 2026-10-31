@@ -5490,7 +5490,9 @@ that hosts none, one of another `shadowrootmode`, and one in markup read by
 `parseFragment` — which reads as `innerHTML` does — are ordinary templates,
 and inert. An application builds a shadow root itself with
 `attachShadow(host, { mode })`, fills it with `appendChild`, and calls
-`refresh()`.
+`refresh()`, or `refresh([{ type: 'shadowRoot', target: host }])`, which
+styles and builds the host and all it holds and leaves the rest of the
+document as it is.
 
 **What is drawn is the flat tree** (CSS Scoping 1, 2.2): a host's shadow
 tree in place of its children, and in each `<slot>` the light children
@@ -6179,13 +6181,15 @@ handle.refresh([
 ]);
 ```
 
-`HtmlChange` is a `MutationRecord`'s shape, so the same list feeds both:
+`HtmlChange` is a `MutationRecord`'s shape, so the same list feeds both,
+but for `shadowRoot`, which no `MutationObserver` reports:
 
 | `type`          | What it says                                                                                                                                                                                    |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `attributes`    | `target`'s attribute `attributeName` was set or removed. `oldValue` is what it was, `null` for none; left out, a `class` or an `id` change is taken for a change of every one a selector tests. |
 | `childList`     | Nodes were added to `target` or taken from it, every one of them listed in `addedNodes` and `removedNodes` — which is how a `<style>` coming or going is found.                                 |
 | `characterData` | A text's or a comment's data changed.                                                                                                                                                           |
+| `shadowRoot`    | `target` took a shadow tree. No selector outside it can tell, so what can differ is the host and all it holds.                                                                                  |
 
 The list has to hold every change since the last refresh. From it the
 component works out which elements' styles can have changed, from where each

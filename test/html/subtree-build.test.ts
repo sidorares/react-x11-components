@@ -21,7 +21,7 @@ import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
 import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
-import { shadowRootOf } from '../../src/html/dom.js';
+import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
 import { resizeClock } from '../../src/html/node.js';
 import { holdClock } from '../held-clock.js';
@@ -138,6 +138,32 @@ function change(next: () => number, body: Element): HtmlChange[] {
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
   const inside = all.slice(1);
+  // a shadow tree put on an element, as a custom element does as it
+  // connects, and what is in one changed
+  if (next() < 0.06) {
+    const free = inside.filter((e) => e.name === 'div' && !shadowRootOf(e));
+    if (free.length) {
+      const target = pick(free);
+      const root = attachShadow(target, { mode: 'open' }) as unknown as Element;
+      appendChild(root, createElement('p', {}, [createText('in ')]));
+      if (next() < 0.7) appendChild(root, createElement('slot'));
+      return [{ type: 'shadowRoot', target }];
+    }
+  }
+  const hosts = all.filter((e) => shadowRootOf(e));
+  if (hosts.length && next() < 0.1) {
+    const root = shadowRootOf(pick(hosts)) as unknown as Element;
+    const child = createElement('i', {}, [createText('more ')]);
+    appendChild(root, child);
+    return [
+      {
+        type: 'childList',
+        target: root,
+        addedNodes: [child],
+        removedNodes: [],
+      },
+    ];
+  }
   const kind = Math.floor(next() * 7);
   if (kind === 6) {
     // what a page's scripts put in and take out as they load, which draws

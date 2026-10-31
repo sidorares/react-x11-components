@@ -98,7 +98,7 @@ is at a known value and comes out the same:
 | CSS counters and quotes (`_scopes`, `_quoteDepth`)                     | refused where the old or new subtree changes or reads a counter or a quote — but for list items whose markers show no number, as many after as before (`_listItems`)                                                 |
 | depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                                                                       |
 | the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                                                                             |
-| the flat tree                                                          | the root is in the document's own tree, assigned to no slot, and neither subtree hosts a shadow tree (`inLightTree`, `holdsShadow`)                                                                                  |
+| the flat tree                                                          | the root is in the document's own tree and assigned to no slot (`inLightTree`): what changed in a shadow tree or a slot is built with the host around it                                                             |
 
 So a rebuild root is an element whose old box is its only box, an in-flow
 block-level box (`block` or `flex`), child of a block or flex container,

@@ -78,6 +78,7 @@ import {
   isText,
   madeByParser,
   isStylePreload,
+  NON_RENDERED,
   ShadowRoot,
   shadowRootOf,
   tagOf,
@@ -190,6 +191,7 @@ import {
   buildBoxes,
   buildSubtrees,
   canRebuild,
+  inLightTree,
   idIndex,
   tailFrom,
   containerBoxes,
@@ -10319,6 +10321,25 @@ export class HtmlViewNode extends Node {
     // frame restyled all 6,000 elements of the page, which held its frames'
     // downloads back seconds.
     const drawing = drawingAround(change.target);
+    // A host that took a shadow tree draws what the tree holds, and what no
+    // slot takes of its own is drawn no longer. No selector outside the host
+    // can tell, so that is its reach: every element it holds, however
+    // deep, built with it. Its rules are bound to the tree as the sheets
+    // are read (`_sheetsAdded`), where one that brings rules of its own
+    // makes the cascade again. Every custom element with a shadow tree
+    // restyled and built the whole document: MDN's and GitHub's each spent
+    // more than a second of a load on it.
+    if (change.type === 'shadowRoot') {
+      if (drawing) return false;
+      const host = change.target;
+      scope.boxes = true;
+      scope.sheets = true;
+      scope.targets.add(host);
+      scope.always.add(host);
+      addFlatSubtree(host, scope.own);
+      addFlatSubtree(host, scope.always);
+      return true;
+    }
     if (drawing) {
       if (cascade.asksWhatElementsHold) {
         const reach =
@@ -10460,9 +10481,13 @@ export class HtmlViewNode extends Node {
       for (const nodes of [change.addedNodes, change.removedNodes]) {
         for (const node of nodes) {
           const held = cascadeHeld(node);
-          if (held === HELD_PRAGMA) return false;
-          if (held === HELD_SHEET && !this._sheetsKept(parent, scope)) {
+          if (held & HELD_PRAGMA) return false;
+          if (held & HELD_SHEET && !this._sheetsKept(parent, scope)) {
             if (inShadowTree(parent)) return false;
+            scope.sheets = true;
+          }
+          // a shadow tree that came with it is bound as the sheets are read
+          if (held & HELD_TREE && nodes === change.addedNodes) {
             scope.sheets = true;
           }
           if (node.type !== 'comment') counted = true;
@@ -10740,6 +10765,8 @@ export class HtmlViewNode extends Node {
   ): BoxTree | null {
     const tree = this._tree;
     if (!tree) return null;
+    // most of the document is the whole of it, built with no splice after
+    if (seeds.size > tree.styles.size * SUBTREE_MOST) return null;
     // what a drag's layout set aside is put back, as it was, for the
     // build to splice the subtrees into the whole lists: what a restyle in
     // place owed it stays owed (`_asideOwed`), and the next layout sets it
@@ -10934,7 +10961,9 @@ export class HtmlViewNode extends Node {
       // child built with it, since a tail holds one
       const kid = touched ?? node.children[node.children.length - 1];
       const from =
-        !kid || (isElement(node) && restyled?.has(node))
+        !kid ||
+        (isElement(node) &&
+          (restyled?.has(node) || !inLightTree(node as Element)))
           ? -1
           : tailFrom(node, kid, first, tree);
       if (from < 0) {
@@ -10975,6 +11004,15 @@ export class HtmlViewNode extends Node {
       }
       return false;
     };
+    // a subtree in a shadow tree or a slot is no run of the document's order:
+    // it is built with the host it is in (`inLightTree`)
+    const rootAround = (el: Element): Element | null => {
+      let at: Element | null = el;
+      while (at && !(canRebuild(at, first) && inLightTree(at))) {
+        at = flatParentOf(at);
+      }
+      return at;
+    };
     for (const seed of seeds) {
       if (!inDocument(seed, document)) {
         gone.push(seed);
@@ -10982,13 +11020,41 @@ export class HtmlViewNode extends Node {
       }
       if (holders.has(seed) || (tailed.size && inTail(seed))) continue;
       let hiding: Element | null = null;
+      let above: Element | null = null;
+      let top = seed;
+      let inert = false;
       for (let at: Element | null = seed; at; at = flatParentOf(at)) {
-        if (tree.styles.get(at)?.style.display === 'none') {
-          hiding = at;
+        top = at;
+        // no build styles what a `<template>` holds
+        if (at !== seed && NON_RENDERED.has(tagOf(at))) {
+          inert = true;
           break;
         }
+        if (tree.styles.get(at)?.style.display === 'none') {
+          hiding ??= at;
+          if (at !== seed) above ??= at;
+        }
+      }
+      if (inert) {
+        if (tree.styles.has(seed)) gone.push(seed);
+        continue;
+      }
+      // in a host's light tree and in no slot: drawn no longer, and what it
+      // drew goes with what the host builds
+      if (!hiding && top.parent && isElement(top.parent)) {
+        gone.push(seed);
+        if (!first.has(top)) continue;
+        const around = rootAround(top.parent as Element);
+        if (!around) return null;
+        roots.add(around);
+        continue;
       }
       if (!first.has(seed)) {
+        // no build styles what is under an element of `display: none`
+        if (above && !restyled?.has(above)) {
+          if (tree.styles.has(seed)) gone.push(seed);
+          continue;
+        }
         if (hiding && !restyled?.has(hiding)) continue;
         // no box, before or after, where it was `display: none` or is new
         // and of a kind the UA never draws: styled where it is, and the
@@ -11003,8 +11069,7 @@ export class HtmlViewNode extends Node {
           continue;
         }
       }
-      let at: Element | null = seed;
-      while (at && !canRebuild(at, first)) at = flatParentOf(at);
+      const at = rootAround(seed);
       if (at) roots.add(at);
       else if (!tails || !parsed || !tailAround(seed)) return null;
     }
@@ -11146,7 +11211,7 @@ export class HtmlViewNode extends Node {
         scope.own,
         true,
         seedsOf(scope),
-        scope.tails,
+        scope.tails ?? endsOf(scope),
         !!scope.tails,
         scope.always,
         Math.max(scope.pseudo, scope.treePseudo) as 0 | 1 | 2,
@@ -15935,6 +16000,11 @@ const HOVER_RESTYLE_LIMIT = 300;
  *  one that came out as no block in the flow (`_subtreeBuild`), before the
  *  whole document is built: each is a build of what the last one was. */
 const SUBTREE_WIDENINGS = 3;
+/** The share of the document's elements past which a change's seeds are
+ *  built as a whole document (`_subtreeBuild`): GitHub's `<body>` holds a
+ *  `:has()` that reaches all of it, and each of four widenings built nearly
+ *  all of it before the whole build it came to. */
+const SUBTREE_MOST = 0.7;
 
 /**
  * Whether two `stylesheet` props hold the same sheets in the same order. An
@@ -16249,11 +16319,11 @@ function pragmaMeta(el: Element, name?: string, value?: string): boolean {
   );
 }
 
-/** What a node is, or holds, of `CASCADE_TAGS`: nothing, a sheet's element
- *  (`HELD_SHEET`) — a `<style>`, a sheet's `<link>`, and not the `<link
- *  rel="preload">` a page's scripts put in for every chunk they load — or a
- *  pragma `<meta>` (`pragmaMeta`) or a `<base>` (`HELD_PRAGMA`), the most
- *  it holds. */
+/** What a node is, or holds, that the cascade reads, as bits: a sheet's
+ *  element (`HELD_SHEET`) — a `<style>`, a sheet's `<link>`, and not the
+ *  `<link rel="preload">` a page's scripts put in for every chunk they load
+ *  — a pragma `<meta>` (`pragmaMeta`) or a `<base>` (`HELD_PRAGMA`), which
+ *  ends the walk, and a shadow tree's host (`HELD_TREE`). */
 function cascadeHeld(node: AnyNode): number {
   if (!isElement(node)) return HELD_NOTHING;
   let held = HELD_NOTHING;
@@ -16265,8 +16335,9 @@ function cascadeHeld(node: AnyNode): number {
       return HELD_PRAGMA;
     }
     if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
-      held = HELD_SHEET;
+      held |= HELD_SHEET;
     }
+    if (shadowRootOf(el)) held |= HELD_TREE;
     for (const child of el.children) if (isElement(child)) stack.push(child);
   }
   return held;
@@ -16275,6 +16346,7 @@ function cascadeHeld(node: AnyNode): number {
 const HELD_NOTHING = 0;
 const HELD_SHEET = 1;
 const HELD_PRAGMA = 2;
+const HELD_TREE = 4;
 
 /** The elements of `CASCADE_TAGS` a sheet is read from. */
 const SHEET_TAGS = new Set(['style', 'link']);
