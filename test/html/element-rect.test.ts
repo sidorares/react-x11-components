@@ -2,7 +2,14 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup } from 'react-x11/test';
-import { findById, linesOf, metric, render, view } from './harness.js';
+import {
+  findById,
+  linesOf,
+  metric,
+  render,
+  render2x,
+  view,
+} from './harness.js';
 
 afterEach(cleanup);
 
@@ -358,4 +365,288 @@ test('an inline box around a block that clears a float measures from where clear
     'and a margin stays outside',
   );
   await result.unmount();
+});
+
+/** Where an empty box is, in what a row holds it to. */
+type Empty = { x?: number; y?: number; height?: number };
+type Rects = (id: string) => {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+const EMPTY_CSS =
+  '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}</style>';
+const IMAGE = '<img width="40" height="40">';
+
+/** Each row is an empty box `#x` and where Chrome measures it. Text widths
+ *  and a font's height are the machine's, so what turns on them is held to
+ *  `#r`, a span of text on its line, or to `#b`, a box beside it. */
+const EMPTY_BOXES: [string, string, (rect: Rects) => Empty][] = [
+  [
+    'after a paragraph with no text in it',
+    '<style>p{height:60px}</style><p>one two</p>' +
+      `<p>${IMAGE}</p><p><span id="x"></span><span id="r">|</span></p>`,
+    (rect) => ({ x: 0, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'in the paragraph after one of text, which ends where it starts',
+    '<style>p{height:60px}</style><p>one two</p>' +
+      '<p><span id="x"></span><span id="r">|</span></p>',
+    (rect) => ({ x: 0, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'a named anchor that starts a heading',
+    '<p>one</p><h2 style="margin:0"><a name="t" id="x"></a>' +
+      '<span id="r">Title</span></h2>',
+    (rect) => ({ x: 0, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'a named anchor among the words',
+    '<p><span id="r">one </span><a name="t" id="x"></a>two</p>',
+    (rect) => ({
+      x: rect('r').x + rect('r').width,
+      y: rect('r').y,
+      height: rect('r').height,
+    }),
+  ],
+  [
+    'a named anchor before a heading, on a line of no height',
+    '<p>one</p><a name="t" id="x"></a><h2 style="margin:0">Title</h2>',
+    () => ({ x: 0, y: 20, height: 0 }),
+  ],
+  [
+    'a named anchor in a paragraph of its own',
+    '<p>one</p><p><a name="t" id="x"></a></p><p>two</p>',
+    () => ({ x: 0, y: 20, height: 0 }),
+  ],
+  [
+    'on the line it ends, where the next word wrapped',
+    '<p style="width:min-content"><span id="r">aaaa</span> ' +
+      '<span id="x"></span>bbbb</p>',
+    (rect) => ({
+      x: rect('r').x + rect('r').width,
+      y: rect('r').y,
+      height: rect('r').height,
+    }),
+  ],
+  [
+    'after an image, with no text after it',
+    `<p><span id="r">a</span>${IMAGE}<span id="x"></span></p>`,
+    (rect) => ({
+      x: rect('r').width + 40,
+      y: rect('r').y,
+      height: rect('r').height,
+    }),
+  ],
+  [
+    'before an image, with no text before it',
+    `<p><span id="x"></span>${IMAGE}<span id="r">a</span></p>`,
+    (rect) => ({ x: 0, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'between two images',
+    `<p>${IMAGE}<span id="x"></span>${IMAGE}<span id="r">a</span></p>`,
+    (rect) => ({ x: 40, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'before a forced break',
+    '<p><span id="r">one</span><span id="x"></span><br>two</p>',
+    (rect) => ({
+      x: rect('r').x + rect('r').width,
+      y: rect('r').y,
+      height: rect('r').height,
+    }),
+  ],
+  [
+    'on the line a forced break leaves empty',
+    '<p>one<br><span id="x"></span><br><span id="r">two</span></p>',
+    (rect) => ({ x: 0, y: rect('r').y - 20, height: rect('r').height }),
+  ],
+  [
+    'after a last forced break, on a line of no height',
+    '<p>one<br><span id="x"></span></p>',
+    () => ({ x: 0, y: 20, height: 0 }),
+  ],
+  [
+    'there, in the middle of a centred paragraph',
+    '<p style="text-align:center">one<br><span id="x"></span></p>',
+    () => ({ x: 200, y: 20, height: 0 }),
+  ],
+  [
+    'in the middle of a centred paragraph of nothing',
+    '<p style="text-align:center"><span id="x"></span></p>',
+    () => ({ x: 200, y: 0, height: 0 }),
+  ],
+  [
+    "before a padded box's padding",
+    '<p><span id="r">one </span><i id="x"></i>' +
+      '<b style="padding:0 10px">two</b></p>',
+    (rect) => ({ x: rect('r').x + rect('r').width, y: rect('r').y }),
+  ],
+  [
+    'after the padding of the box it starts',
+    '<p>one <b id="b" style="padding:0 10px"><i id="x"></i>two</b></p>',
+    (rect) => ({ x: rect('b').x + 10 }),
+  ],
+  [
+    'before the padding of the box it ends',
+    '<p><b id="b" style="padding:0 10px">two<i id="x"></i></b> three</p>',
+    (rect) => ({ x: rect('b').x + rect('b').width - 10 }),
+  ],
+  [
+    "after a padded box's padding",
+    '<p><b id="b" style="padding:0 10px">two</b><i id="x"></i> three</p>',
+    (rect) => ({ x: rect('b').x + rect('b').width }),
+  ],
+  [
+    'past its own margin',
+    '<p><span id="r">one </span><i id="x" style="margin:0 5px"></i>two</p>',
+    (rect) => ({ x: rect('r').x + rect('r').width + 5 }),
+  ],
+  [
+    'in the font of the box it is in',
+    '<p>one <small><i id="x"></i><span id="r">two</span></small></p>',
+    (rect) => ({ y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'raised by its own vertical-align',
+    '<p><span id="r">one </span>' +
+      '<span id="x" style="vertical-align:10px"></span>two</p>',
+    (rect) => ({ y: rect('r').y - 10, height: rect('r').height }),
+  ],
+  [
+    'raised by the vertical-align of the box it is in',
+    '<p><b style="vertical-align:10px"><i id="x"></i>' +
+      '<span id="r">two</span></b> one</p>',
+    (rect) => ({ y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'back on the line where the box it is in is lowered as far',
+    '<p>zero <b style="vertical-align:10px">one ' +
+      '<i style="vertical-align:-10px"><u id="x"></u>' +
+      '<span id="r">two</span></i></b></p>',
+    (rect) => ({ y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'moved by its own relative offset',
+    '<p><span id="r">one </span>' +
+      '<span id="x" style="position:relative;left:7px;top:9px"></span>' +
+      'two</p>',
+    (rect) => ({
+      x: rect('r').x + rect('r').width + 7,
+      y: rect('r').y + 9,
+    }),
+  ],
+  [
+    'moved by a relative offset on a line of no height',
+    '<p><span id="x" style="position:relative;left:7px"></span></p>',
+    () => ({ x: 7, y: 0, height: 0 }),
+  ],
+  [
+    'not moved by a relative offset on the text before it',
+    '<p>one <b id="b" style="position:relative;left:5px">two</b>' +
+      '<i id="x"></i> three</p>',
+    (rect) => ({ x: rect('b').x + rect('b').width - 5 }),
+  ],
+  [
+    'after an image, right to left',
+    `<p dir="rtl">${IMAGE}<span id="x"></span>${IMAGE}<span id="r">a</span></p>`,
+    (rect) => ({ x: 360, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'before an image, right to left',
+    `<p dir="rtl"><span id="x"></span>${IMAGE}<span id="r">a</span></p>`,
+    (rect) => ({ x: 400, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'at the end of the line, right to left, whichever way its text reads',
+    '<p dir="rtl"><span id="r">two</span><span id="x"></span></p>',
+    (rect) => ({ x: rect('r').x, y: rect('r').y, height: rect('r').height }),
+  ],
+  [
+    'after a last forced break, right to left',
+    '<p dir="rtl">one<br><span id="x"></span></p>',
+    () => ({ x: 400, y: 20, height: 0 }),
+  ],
+  [
+    'through a transform once, where a caret was mapped twice',
+    '<div style="transform:translateX(30px) scale(2);transform-origin:0 0">' +
+      '<p><span id="r">one </span><span id="x"></span>two</p></div>',
+    (rect) => ({
+      x: rect('r').x + rect('r').width,
+      y: rect('r').y,
+      height: rect('r').height,
+    }),
+  ],
+  [
+    'after text an absolutely positioned box is in the middle of',
+    '<p><span id="r">one</span><span id="x"></span>' +
+      '<span style="position:absolute">two</span> three</p>',
+    (rect) => ({ x: rect('r').x + rect('r').width, y: rect('r').y }),
+  ],
+  [
+    'after another box as empty',
+    '<p><span id="r">one </span><span></span><span id="x"></span>two</p>',
+    (rect) => ({ x: rect('r').x + rect('r').width, y: rect('r').y }),
+  ],
+];
+
+for (const [name, source, expected] of EMPTY_BOXES) {
+  metric(`an inline box with nothing in it: ${name}`, async () => {
+    const { node } = await render(EMPTY_CSS + source, 400);
+    const el = view(node);
+    await act();
+    const rect: Rects = (id) => el.elementRect(findById(el.document, id)!)!;
+    const got = rect('x');
+    assert.strictEqual(got.width, 0, 'no wider than nothing');
+    const want = expected(rect);
+    for (const key of ['x', 'y', 'height'] as const) {
+      const value = want[key];
+      if (value === undefined) continue;
+      assert.ok(
+        Math.abs(got[key] - value) < 0.5,
+        `${key}: ${got[key]}, where Chrome has ${value}`,
+      );
+    }
+  });
+}
+
+metric(
+  'offsetLeft and offsetTop find an empty box where its rect does',
+  async () => {
+    const { node } = await render(
+      `${EMPTY_CSS}<p>one two</p><p>${IMAGE}</p>` +
+        '<p style="position:relative;padding-left:9px">' +
+        '<span id="r">a </span><span id="x"></span>b</p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const ruler = el.offsetRect(findById(el.document, 'r')!)!;
+    const empty = el.offsetRect(findById(el.document, 'x')!)!;
+    assert.ok(
+      Math.abs(empty.x - (ruler.x + ruler.width)) < 0.5,
+      `after the text: ${empty.x}`,
+    );
+    assert.ok(Math.abs(empty.y - ruler.y) < 0.5, `on its line: ${empty.y}`);
+    assert.strictEqual(empty.width, 0);
+  },
+);
+
+metric('an empty box measures in logical pixels on a 2x display', async () => {
+  const { node } = await render2x(
+    `${EMPTY_CSS}<style>p{height:60px}</style><p>one two</p><p>${IMAGE}</p>` +
+      '<p><span id="r">a </span><i id="x" style="margin:0 5px"></i>b</p>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const r = el.elementRect(findById(el.document, 'r')!)!;
+  const x = el.elementRect(findById(el.document, 'x')!)!;
+  assert.ok(Math.abs(x.x - (r.x + r.width + 5)) < 0.5, `across: ${x.x}`);
+  assert.ok(Math.abs(x.y - r.y) < 0.5, `on its line: ${x.y}`);
+  assert.ok(Math.abs(x.height - r.height) < 0.5, `as tall: ${x.height}`);
+  assert.ok(r.y > 120, `three paragraphs down: ${r.y}`);
 });

@@ -362,6 +362,8 @@ import type { TextRun } from '../richtext/index.js';
 // a layout is built once, on the first selection that needs it.
 import {
   documentOffsetOf,
+  emptyBoxPoint,
+  emptyLinePoint,
   layoutOffsetOf,
   layoutOffsets as layoutOffsetsOf,
 } from './layout/inline.js';
@@ -6538,8 +6540,9 @@ export class HtmlViewNode extends Node {
    * last, each across its text, the inline-blocks and inline boxes' edges
    * it holds, and its own padding and border where it starts or ends — its
    * border box across, as `getBoundingClientRect` is (CSSOM View 6.1) — and
-   * as tall as its lines; or where its text would start when it has none,
-   * as `<a name>` has none. A box fixed to the viewport, and what is in it,
+   * as tall as its lines; or of no width, where it stands among what is on
+   * its lines when it has none of that, as `<a name>` has none, and as tall
+   * as its font. A box fixed to the viewport, and what is in it,
    * where the pane's scroll draws it (`_moveToViewport`). Null for an
    * element with no box — `display: none`, or not in the document.
    */
@@ -7261,8 +7264,8 @@ export class HtmlViewNode extends Node {
   /**
    * Where a box's fragments are, in device pixels, as layout placed them
    * and before a turn or a scale draws them elsewhere: the first, and the
-   * rectangle around all of them — a block's border box, both. Null for an
-   * inline box on no line with no text after it.
+   * rectangle around all of them — a block's border box, both. Null for a
+   * box its block's content does not hold.
    */
   private _fragmentsOf(
     tree: BoxTree,
@@ -7316,21 +7319,28 @@ export class HtmlViewNode extends Node {
     // above it
     let block = box.parent;
     while (block && block.kind === 'inline') block = block.parent;
-    let rect: Rect | null = null;
-    if (block && !block.lines?.length) {
-      const rtl = block.style.direction === 'rtl';
+    if (!block) return null;
+    let rect: Rect;
+    if (!block.lines?.length) {
+      const left = block.contentX;
       rect = {
-        x: rtl ? block.contentX + block.contentWidth : block.contentX,
+        x: emptyLinePoint(block.style, left, left + block.contentWidth),
         y: block.contentY,
         width: 0,
         height: 0,
       };
     } else {
-      // an empty subtree's range is `[0, 0)`, wherever it stands: where
-      // its text would be is where the text after it starts
-      const caret = caretAt(tree.root, textAfter(tree.root, box));
-      if (!caret) return null;
-      rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
+      // nothing of it takes any room, and it is where the content around
+      // it has it on its block's lines, a fragment of no width: an `<a
+      // name>`, or a `<span>` a script has not filled yet
+      const point = emptyBoxPoint(block, box, fonts);
+      if (!point) return null;
+      const { x, y, height, onLine } = point;
+      const empty = [{ x, y, width: 0, height }];
+      if (box.kind === 'inline') {
+        fragmentBoxes(box, empty, onLine ? fonts : null);
+      }
+      rect = empty[0];
     }
     return { first: rect, all: rect };
   }
@@ -14837,21 +14847,27 @@ function inlineBands(
   }
   if (box.kind === 'inline') {
     fragmentReach(box, bands);
-    if (fonts) fragmentHeights(box, bands, fonts);
-    // where `position: relative` on it or an inline box around it moved
-    // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
-    // (CSSOM View 6.1): the bands are where the lines put it, and a link
-    // moved 120px down measured on its line, as wide as from where it was
-    // laid out to where it was drawn
-    const { x, y } = relativeOffsetOf(box);
-    if (x || y) {
-      for (const band of bands) {
-        band.x += x;
-        band.y += y;
-      }
-    }
+    fragmentBoxes(box, bands, fonts);
   }
   out.push(...bands);
+}
+
+/** An inline box's bands on its lines made its fragments' border boxes:
+ *  as tall as they are, and moved where it was. */
+function fragmentBoxes(box: Box, bands: Rect[], fonts: FontsLike | null): void {
+  if (fonts) fragmentHeights(box, bands, fonts);
+  // where `position: relative` on it or an inline box around it moved
+  // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
+  // (CSSOM View 6.1): the bands are where the lines put it, and a link
+  // moved 120px down measured on its line, as wide as from where it was
+  // laid out to where it was drawn
+  const { x, y } = relativeOffsetOf(box);
+  if (x || y) {
+    for (const band of bands) {
+      band.x += x;
+      band.y += y;
+    }
+  }
 }
 
 /** How far an inline box and the inline boxes around it moved it by their
@@ -14920,29 +14936,6 @@ function textBefore(box: Box): number {
     }
   }
   return 0;
-}
-
-/** Where the document's text goes on after a box with none: the start of
- *  the next text in document order, or the end of the last before it. */
-function textAfter(root: Box, target: Box): number {
-  const stack: Box[] = [root];
-  let passed = false;
-  let before = 0;
-  while (stack.length) {
-    const box = stack.pop()!;
-    if (box === target) {
-      passed = true;
-      continue;
-    }
-    if (box.kind === 'text' && box.textEnd > box.textStart) {
-      if (passed) return box.textStart;
-      before = box.textEnd;
-    }
-    for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
-    }
-  }
-  return before;
 }
 
 /** Rects that overlap or touch made one, until none of those left do. */
@@ -15921,15 +15914,28 @@ function fragmentHeights(box: Box, bands: Rect[], fonts: FontsLike): void {
     const band = bands[i];
     const line = byTop.get(band.y);
     if (!line) continue;
-    // on its own baseline, which `vertical-align` may raise off the line's
-    const raise = SHIFTED_LINES.has(line)
-      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
-      : 0;
-    const baseline = line.y + line.baseline - raise;
+    // on its own baseline, which `vertical-align` may raise off the line's:
+    // a line says so of the text on it, and a band of no width is a box
+    // with nothing on the line to say it of
+    const raised = !band.width || SHIFTED_LINES.has(line);
+    const baseline = line.y + line.baseline - (raised ? raiseOn(line, box) : 0);
     const top = baseline - face.ascent - box.padTop - box.borderTop;
     const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
     bands[i] = { x: band.x, y: top, width: band.width, height: bottom - top };
   }
+}
+
+/** How far `vertical-align` raises an inline box's baseline off its line's:
+ *  by what was noted of it, or of the nearest box around it, for one with
+ *  no text for anything to be noted of. Nothing is noted of a box lowered
+ *  back to the line's baseline, which goes for what is in it too. */
+function raiseOn(line: LineBox, box: Box): number {
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const raise = LINE_BOX_RAISES.get(line)?.get(at) ?? BOX_RAISES.get(at);
+    if (raise !== undefined) return raise;
+    if (at.style.verticalAlign !== 'baseline') return 0;
+  }
+  return 0;
 }
 
 /** The bands of a text range on one block's own lines. */

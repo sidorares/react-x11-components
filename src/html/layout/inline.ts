@@ -57,6 +57,7 @@ import {
   SHIFTED_LINES,
   TEXT_RAISES,
   textFade,
+  TEXT_SHIFTS,
   transformInPlace,
 } from './boxes.js';
 import type {
@@ -3858,13 +3859,42 @@ function staticPositions(
   }
 }
 
+/** The line an inline box's edge is on, and where. */
+function edgeOn(
+  lines: LineBox[],
+  item: Extract<Item, { kind: 'edge' }>,
+): { line: LineBox; placed: EdgePlacement } | null {
+  for (const line of lines) {
+    const placed = line.edges?.find(
+      (e) => e.box === item.box && e.side === item.side,
+    );
+    if (placed) return { line, placed };
+  }
+  return null;
+}
+
+/** The line an inline-block or an image is on, and where. */
+function atomicOn(
+  lines: LineBox[],
+  box: Box,
+): { line: LineBox; placed: AtomicPlacement } | null {
+  for (const line of lines) {
+    const placed = line.atomics.find((a) => a.box === box);
+    if (placed) return { line, placed };
+  }
+  return null;
+}
+
 /** The line the content before `items[index]` ended on, where the pen
  *  stood after it, and whether it ended in a forced break. Null where no
- *  text or atomic comes before. */
+ *  text or atomic comes before. `rtl` for a paragraph whose pen goes
+ *  leftwards past what is not text; a static position is found as though
+ *  every one went right. */
 function penAfter(
   items: Item[],
   index: number,
   lines: LineBox[],
+  rtl = false,
 ): { line: LineBox; pen: number; broken: boolean } | null {
   for (let i = index - 1; i >= 0; i -= 1) {
     const item = items[i];
@@ -3873,24 +3903,21 @@ function penAfter(
       // its line from being one of no height (CSS 2.1 9.4.2), even where
       // they add up to no width
       if (!hasEdgeOn(item.box, item.side)) continue;
-      for (const line of lines) {
-        const placed = line.edges?.find(
-          (e) => e.box === item.box && e.side === item.side,
-        );
-        if (placed) {
-          return { line, pen: placed.x + placed.width, broken: false };
-        }
-      }
-      continue;
+      const on = edgeOn(lines, item);
+      if (!on) continue;
+      const { line, placed } = on;
+      const pen = rtl ? placed.x : placed.x + placed.width;
+      return { line, pen, broken: false };
     }
     if (item.kind === 'atomic') {
-      for (const line of lines) {
-        const placed = line.atomics.find((a) => a.box === item.box);
-        if (!placed) continue;
-        const pen = placed.x + item.box.width + item.box.marginRight;
-        return { line, pen, broken: false };
-      }
-      return null;
+      const on = atomicOn(lines, item.box);
+      if (!on) return null;
+      const { line, placed } = on;
+      const { box } = item;
+      const pen = rtl
+        ? placed.x - box.marginLeft
+        : placed.x + box.width + box.marginRight;
+      return { line, pen, broken: false };
     }
     if (item.kind !== 'text' || item.control) continue;
     const end = item.start + item.length;
@@ -3903,6 +3930,102 @@ function penAfter(
   return null;
 }
 
+/** `penAfter` the other way: the line the content from `items[index]` on
+ *  starts on, and where the pen stands before it. Null where nothing comes
+ *  after. */
+function penBefore(
+  items: Item[],
+  index: number,
+  lines: LineBox[],
+  rtl: boolean,
+): { line: LineBox; pen: number } | null {
+  for (let i = index; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'edge') {
+      if (!hasEdgeOn(item.box, item.side)) continue;
+      const on = edgeOn(lines, item);
+      if (!on) continue;
+      const { line, placed } = on;
+      return { line, pen: rtl ? placed.x + placed.width : placed.x };
+    }
+    if (item.kind === 'atomic') {
+      const on = atomicOn(lines, item.box);
+      if (!on) return null;
+      const { line, placed } = on;
+      const { box } = item;
+      const pen = rtl
+        ? placed.x + box.width + box.marginRight
+        : placed.x - box.marginLeft;
+      return { line, pen };
+    }
+    if (item.kind !== 'text' || item.control) continue;
+    const { start } = item;
+    const line = lines.find((l) => l.textStart <= start && start < l.textEnd);
+    return line ? { line, pen: caretX(line, start, false) } : null;
+  }
+  return null;
+}
+
+/**
+ * Where an inline box with nothing in it stands on its block's lines, as
+ * browsers find it: with the content before it, where the pen stood after
+ * that, and at the end of a line it is the last of, in the paragraph's
+ * direction, whatever a break there left over. After a forced break, or
+ * with nothing before it, it starts the next content's line, where that
+ * content starts; and after a forced break with no content to come it is
+ * on a line of no height, under the lines (CSS 2.1 9.4.2), which `onLine`
+ * says. The lines keep no such box, so it is found from the block's content
+ * when it is asked for: most are never asked about. Found from the
+ * document's text it was on a line of an earlier paragraph, where that text
+ * ended at the offset the next one started at.
+ */
+export function emptyBoxPoint(
+  block: Box,
+  box: Box,
+  fonts: FontsLike | null,
+): { x: number; y: number; height: number; onLine: boolean } | null {
+  const lines = block.lines;
+  if (!lines?.length) return null;
+  const items: Item[] = [];
+  const seek: StaticMark = { index: -1, box };
+  collect(
+    block,
+    items,
+    block.contentWidth,
+    fonts,
+    block.style,
+    false,
+    undefined,
+    false,
+    1,
+    seek,
+  );
+  if (seek.index < 0) return null;
+  const rtl = block.style.direction === 'rtl';
+  const before = penAfter(items, seek.index, lines, rtl);
+  const next = penBefore(items, seek.index, lines, rtl);
+  // its own margin stands between the pen and it
+  const margin = rtl ? -box.marginRight : box.marginLeft;
+  if (before && !before.broken) {
+    const { line, pen } = before;
+    const end = rtl ? line.x : line.x + line.width;
+    const x = (next?.line === line ? pen : end) + margin;
+    return { x, y: line.y, height: line.height, onLine: true };
+  }
+  if (next) {
+    const { line, pen } = next;
+    return { x: pen + margin, y: line.y, height: line.height, onLine: true };
+  }
+  const last = lines[lines.length - 1];
+  const left = block.contentX;
+  return {
+    x: emptyLinePoint(block.style, left, left + block.contentWidth),
+    y: last.y + last.height,
+    height: 0,
+    onLine: false,
+  };
+}
+
 /** Whether an inline box has margin, border or padding on a side. */
 function hasEdgeOn(box: Box, side: 'start' | 'end'): boolean {
   const left = (side === 'start') !== (box.style.direction === 'rtl');
@@ -3912,15 +4035,18 @@ function hasEdgeOn(box: Box, side: 'start' | 'end'): boolean {
 }
 
 /** Where the caret at document offset `at` stands on a line, in the
- *  paragraph's coordinates: the line's end where no text of it holds the
- *  offset. */
-function caretX(line: LineBox, at: number): number {
+ *  paragraph's coordinates, as the lines put the text and before a relative
+ *  offset moved it (`TEXT_SHIFTS`): the line's end where no text of it
+ *  holds the offset. `ending` for the end of what stands before `at`, and
+ *  not the start of what stands after it. */
+function caretX(line: LineBox, at: number, ending = true): number {
   for (const text of line.texts) {
-    if (at < text.textStart || at > text.textEnd) continue;
+    if (at < text.textStart) continue;
+    if (ending ? at > text.textEnd : at >= text.textEnd) continue;
     const offsets = layoutOffsets(text.layout);
-    const units = layoutOffsetOf(text, at, true);
+    const units = layoutOffsetOf(text, at, ending);
     const caret = text.layout.caretPosition(codePointAtOffset(offsets, units));
-    return text.drawX + caret.x;
+    return text.drawX + caret.x - (TEXT_SHIFTS.get(text)?.x ?? 0);
   }
   return line.x + line.width;
 }
@@ -3946,6 +4072,9 @@ function collect(
   apart = false,
   /** How much the inline boxes the text is in fade it (`inlineFade`). */
   fade = 1,
+  /** A box to note the place of among the content, as `statics` notes an
+   *  absolutely positioned one's (`emptyBoxPoint`). */
+  seek?: StaticMark,
 ): number {
   let floated = 0;
   for (const child of box.children) {
@@ -3960,6 +4089,7 @@ function collect(
       }
       continue;
     }
+    if (child === seek?.box) seek.index = out.length;
     switch (child.kind) {
       case 'text':
         if (child.text) {
@@ -4051,6 +4181,7 @@ function collect(
           statics,
           start !== 0 || end !== 0,
           inner,
+          seek,
         );
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd, inner);
