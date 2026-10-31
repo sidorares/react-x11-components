@@ -1739,7 +1739,12 @@ and the query kept its answer. **One element reads one query twice where it
 is a container**: its `::after` finds the element, and the element what is
 above it, so a pseudo-element's read is noted under a key of its own
 (`_readKey`), or the second read takes the first's place and no layout moves
-the element's answer.
+the element's answer. **And a query reads past the parent**, which `follow`
+stands on it not doing: an element that comes to be a container, or stops, or
+goes by another name or turns inline, changes what a query under it finds
+whatever its parent's style came to, so everything under it is styled again
+(`sameContainer`, `_newContainers`). Anything new a query finds a container by
+joins `sameContainer`.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
