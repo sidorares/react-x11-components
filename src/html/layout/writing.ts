@@ -483,6 +483,13 @@ export function frameOf(box: Box): Box | null {
   return null;
 }
 
+/** Whether a box is laid out in a frame: a grid or a flex box in a vertical
+ *  writing mode makes none, and is laid out level with its text, whatever
+ *  else the document holds (`BoxTree.vertical`). */
+export function inFrame(box: Box): boolean {
+  return FRAME_ROOTS.has(box) || frameOf(box) !== null;
+}
+
 export type PhysicalSide = 'top' | 'right' | 'bottom' | 'left';
 
 const LOWER: readonly PhysicalSide[] = ['top', 'right', 'bottom', 'left'];
