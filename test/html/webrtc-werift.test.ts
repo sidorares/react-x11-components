@@ -8,12 +8,21 @@
 // Skipped where werift, the optional peer, is not installed or does not
 // load, and on Node before 22, which werift does not run on.
 import assert from 'node:assert/strict';
+import dgram from 'node:dgram';
+import dns from 'node:dns';
 import { afterEach, test as nodeTest } from 'node:test';
 import { act, cleanup, renderX11 } from 'react-x11/test';
 
 import { Html, HtmlNetwork, preloadHtmlScripts } from '../../src/html/index.js';
+import type { HtmlWebRTC } from '../../src/html/index.js';
+import type {
+  RTCConnectionEvents,
+  RTCDataChannelInitLike,
+} from '../../src/html/rtc.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
-import { loadWerift } from '../../src/html/werift.js';
+import { WeriftTransports } from '../../src/html/werift-transports.js';
+import type { WTransportsPeer } from '../../src/html/werift-transports.js';
+import { loadWerift, weriftWebRTC } from '../../src/html/werift.js';
 import { FONTS, h } from './harness.js';
 
 afterEach(cleanup);
@@ -28,10 +37,13 @@ const werift = supported ? await loadWerift() : null;
 const test = SCRIPTS_CONTAINED && werift ? nodeTest : nodeTest.skip;
 
 /** A page's scripts over werift: what they log, once one line starts with
- *  `done` or `failed`. */
-async function run(script: string): Promise<string[]> {
+ *  `done` or `failed`. The limit is on how long they go without logging, not
+ *  on how long they take, so a busy machine is not a failure. */
+async function run(
+  script: string,
+  webRTC: HtmlWebRTC = new HtmlNetwork().webRTC,
+): Promise<string[]> {
   const logs: string[] = [];
-  const network = new HtmlNetwork();
   await renderX11(
     h(Html, {
       source:
@@ -42,18 +54,67 @@ async function run(script: string): Promise<string[]> {
       partial: false,
       baseUrl: 'https://page.test/',
       scripts: {
-        webRTC: network.webRTC,
+        webRTC,
         timeout: 10000,
         log: (_level: string, text: string) => void logs.push(text),
       },
     }),
     FONTS ? { width: 100, height: 50, fonts: FONTS } : { backend: 'mock' },
   );
-  const end = Date.now() + 20000;
-  while (!logs.some((l) => /^(done|failed)\|?/.test(l)) && Date.now() < end) {
+  let heard = 0;
+  let end = 0;
+  while (!logs.some((l) => /^(done|failed)\|?/.test(l))) {
+    if (logs.length > heard || !end) {
+      heard = logs.length;
+      end = Date.now() + 20000;
+    }
+    if (Date.now() >= end) break;
     await act(() => new Promise((r) => setTimeout(r, 20)));
   }
   return logs;
+}
+
+/** The first SCTP DATA chunk of the given message on a channel of the first
+ *  connection made, left out the first time it is sent, as a receive buffer
+ *  that overflowed leaves it out: SCTP has to send it again. */
+async function losingAChunkOf(message: number): Promise<HtmlWebRTC> {
+  const seam = await weriftWebRTC();
+  let made = 0;
+  let lost = false;
+  return {
+    ...seam,
+    connect(request, events) {
+      const connection = seam.connect(request, events);
+      if (made++ > 0) return connection;
+      const { createDataChannel } = connection;
+      connection.createDataChannel = (init) => {
+        const channel = createDataChannel.call(connection, init);
+        const { sctp } = (connection as unknown as WithAssociation)._pc
+          .sctpTransport;
+        const { sendChunk } = sctp;
+        sctp.sendChunk = function (chunk) {
+          if (chunk.streamSeqNum !== message || lost) {
+            return sendChunk.call(this, chunk);
+          }
+          lost = true;
+          return Promise.resolve();
+        };
+        return channel;
+      };
+      return connection;
+    },
+  };
+}
+
+/** What of a connection's werift `losingAChunkOf` replaces. */
+interface WithAssociation {
+  _pc: {
+    sctpTransport: {
+      sctp: {
+        sendChunk(chunk: { streamSeqNum?: number }): Promise<void>;
+      };
+    };
+  };
 }
 
 test('two peers in one page offer, answer, trickle their candidates and connect', async () => {
@@ -143,18 +204,20 @@ test('data channels: a close delivers what was queued, a negotiated channel open
     var dc2 = await remote;
     await until('open', function () { return dc1.readyState === 'open' && dc2.readyState === 'open'; });
 
-    // 4 MiB sent and closed at once: all of it arrives before the close
+    // More than SCTP's first window, sent and closed at once: all of it arrives
+    // before the close. How long that takes is the machine's, so nothing here
+    // is timed: each message logged is what \`run\` waits on
     var received = 0, events1 = [], events2 = [];
     dc2.binaryType = 'arraybuffer';
-    dc2.onmessage = function (e) { received += e.data.byteLength; };
+    dc2.onmessage = function (e) { received += e.data.byteLength; log('received', received); };
     ['closing', 'close', 'error'].forEach(function (type) {
       dc1.addEventListener(type, function () { events1.push(type); });
       dc2.addEventListener(type, function () { events2.push(type); });
     });
-    var chunk = new Uint8Array(64 * 1024);
-    for (var i = 0; i < 64; i++) dc1.send(chunk);
+    var chunk = new Uint8Array(16 * 1024);
+    for (var i = 0; i < 8; i++) dc1.send(chunk);
     dc1.close();
-    await until('closed', function () { return dc1.readyState === 'closed' && dc2.readyState === 'closed'; });
+    while (dc1.readyState !== 'closed' || dc2.readyState !== 'closed') await wait(10);
     log('delivered', received, events1.join(','), events2.join(','));
 
     // negotiated once the association is up: open, and carrying messages
@@ -182,12 +245,181 @@ test('data channels: a close delivers what was queued, a negotiated channel open
     `a step failed: ${logs.join('\n')}`,
   );
   for (const line of [
-    `delivered|${4 * 1024 * 1024}|close|closing,close`,
+    `delivered|${8 * 16 * 1024}|close|closing,close`,
     'negotiated|hello',
     'ended|error:true:sctp-failure:null,close',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
+});
+
+test('a close waits for what SCTP has to send again, which its reset would overtake', async () => {
+  const logs = await run(
+    `
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+    async function until(what, f) {
+      for (var end = Date.now() + 10000; !f(); await wait(10)) {
+        if (Date.now() > end) throw new Error('never ' + what);
+      }
+    }
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    var dc1 = pc1.createDataChannel('x');
+    var remote = new Promise(function (r) { pc2.ondatachannel = function (e) { r(e.channel); }; });
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    var dc2 = await remote;
+    await until('open', function () { return dc1.readyState === 'open' && dc2.readyState === 'open'; });
+    var received = 0;
+    dc2.binaryType = 'arraybuffer';
+    dc2.onmessage = function (e) { received += e.data.byteLength; };
+    var chunk = new Uint8Array(16 * 1024);
+    dc1.send(chunk);
+    dc1.send(chunk);
+    dc1.close();
+    await until('closed', function () { return dc1.readyState === 'closed' && dc2.readyState === 'closed'; });
+    log('delivered', received);
+    pc1.close(); pc2.close();
+    log('done');
+  `,
+    // the channel's open message is its stream's message 0
+    await losingAChunkOf(2),
+  );
+  assert.ok(
+    logs.includes(`delivered|${2 * 16 * 1024}`),
+    `delivered less, or nothing: ${logs.join('\n')}`,
+  );
+});
+
+nodeTest(
+  'a close waits on its own stream alone, and is made whatever state the channel is in',
+  () => {
+    const silent = { subscribe() {} };
+    const flushes: (() => void)[] = [];
+    const sentQueue = [{ streamId: 3 }, { streamId: 1 }];
+    let closed = 0;
+    // its open message unacknowledged, and a neighbour's chunk in flight
+    const channel = {
+      id: 1,
+      readyState: 'connecting',
+      bufferedAmount: 0,
+      bufferedAmountLow: silent,
+      stateChanged: silent,
+      onMessage: silent,
+      error: silent,
+      close: () => void closed++,
+    };
+    const transports = new WeriftTransports(
+      {
+        onIceCandidate: silent,
+        onDataChannel: silent,
+        iceGatheringStateChange: silent,
+        iceConnectionStateChange: silent,
+        connectionStateChange: silent,
+        sctpTransport: {
+          sctp: {
+            flush: { subscribe: (f: () => void) => flushes.push(f) },
+            outboundQueue: [],
+            sentQueue,
+          },
+        },
+        createDataChannel: () => channel,
+      } as unknown as WTransportsPeer,
+      {} as RTCConnectionEvents,
+      () => false,
+    );
+    const made = transports.channel({
+      id: null,
+      maxPacketLifeTime: null,
+      maxRetransmits: null,
+    } as RTCDataChannelInitLike);
+    made.close();
+    assert.equal(closed, 0, 'closed with its own chunk unacknowledged');
+    sentQueue.pop();
+    for (const flush of flushes) flush();
+    assert.equal(closed, 1, 'held up by a neighbour, or by connecting');
+  },
+);
+
+test('a page that names no STUN server asks none, where werift asks Google', async (t) => {
+  const asked: string[] = [];
+  t.mock.method(dns.promises, 'lookup', (host: string) => {
+    asked.push(host);
+    return Promise.reject(new Error('no network here'));
+  });
+  const logs = await run(`
+    var pc = new RTCPeerConnection();
+    var gathered = new Promise(function (r) {
+      pc.onicecandidate = function (e) { if (!e.candidate) r(); };
+    });
+    pc.createDataChannel('x');
+    await pc.setLocalDescription();
+    await gathered;
+    pc.close();
+    log('done');
+  `);
+  assert.ok(logs.includes('done'), logs.join('\n'));
+  assert.deepEqual(asked, []);
+});
+
+test('a STUN server a page names is asked, in its constructor or in setConfiguration, and one it takes away is not', async (t) => {
+  const server = dgram.createSocket('udp4');
+  t.after(() => server.close());
+  let asked = 0;
+  // RFC 8489's Binding success response: the transaction echoed, and an
+  // XOR-MAPPED-ADDRESS of 203.0.113.7
+  server.on('message', (request, from) => {
+    asked++;
+    const reply = Buffer.alloc(32);
+    reply.writeUInt16BE(0x0101, 0);
+    reply.writeUInt16BE(12, 2);
+    request.copy(reply, 4, 4, 20);
+    reply.writeUInt16BE(0x0020, 20);
+    reply.writeUInt16BE(8, 22);
+    reply.writeUInt16BE(0x0001, 24);
+    reply.writeUInt16BE(from.port ^ 0x2112, 26);
+    reply.writeUInt32BE((0xcb007107 ^ 0x2112a442) >>> 0, 28);
+    server.send(reply, from.port, from.address);
+  });
+  await new Promise<void>((r) => server.bind(0, '127.0.0.1', r));
+  const url = `stun:127.0.0.1:${server.address().port}`;
+  const logs = await run(`
+    async function reflexive(pc) {
+      var found = false;
+      var gathered = new Promise(function (r) {
+        pc.onicecandidate = function (e) {
+          if (!e.candidate) r();
+          else if (e.candidate.type === 'srflx') found = true;
+        };
+      });
+      pc.createDataChannel('x');
+      await pc.setLocalDescription();
+      await gathered;
+      pc.close();
+      return found;
+    }
+    var servers = [{ urls: ${JSON.stringify(url)} }];
+    log('constructor', await reflexive(new RTCPeerConnection({ iceServers: servers })));
+    var pc = new RTCPeerConnection();
+    pc.setConfiguration({ iceServers: servers });
+    log('setConfiguration', await reflexive(pc));
+    var taken = new RTCPeerConnection({ iceServers: servers });
+    taken.createDataChannel('first');
+    taken.setConfiguration({ iceServers: [] });
+    log('taken away', await reflexive(taken));
+    log('done');
+  `);
+  for (const line of [
+    'constructor|true',
+    'setConfiguration|true',
+    'taken away|false',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+  assert.ok(asked >= 2, `asked ${asked} times`);
 });
 
 test('transports: ICE goes new, checking, connected on both sides, the SCTP transport is told, and the stats name it all', async () => {

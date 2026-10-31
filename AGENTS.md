@@ -1002,11 +1002,18 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream. **The adapter reaches into werift once**: an empty message,
-which werift sends as nothing, is put on its `RTCSctpTransport`'s own send
-queue as RFC 8831's one byte under payload protocol 56 or 57
-(`WeriftChannel._sendEmpty`), and a werift without the queue sends nothing,
-as before. Ask werift for an empty send before reaching in anywhere else.
+file upstream. **The adapter reaches into werift three times**, each for what
+werift has no public way to do, and a werift without the field goes on as
+before. An empty message, which werift sends as nothing, is put on its
+`RTCSctpTransport`'s own send queue as RFC 8831's one byte under payload
+protocol 56 or 57 (`WeriftChannel._sendEmpty`). A close waits for what it sent
+to be acknowledged (`WeriftChannel.close`, reading `sentQueue`): a reset
+overtakes a retransmission, and werift's far side drops what arrives after
+one. And a connection whose page names no STUN server asks none
+(`_gatherFromNamed`, clearing each transport's `stunServer`): werift falls back
+to Google's whatever `iceServers` says, which is a request nobody asked for and
+five seconds of `setLocalDescription` on a network that does not answer. Ask
+werift for each of these before reaching in anywhere else.
 
 `publicSuffixList()` in `src/html/cookies.ts` is the fourth: `tldts`, the
 Public Suffix List with its private domains, is an **optional peer** and a
