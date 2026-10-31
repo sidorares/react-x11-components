@@ -29,6 +29,7 @@ import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import {
   boxOf,
+  fillsOf,
   FONTS,
   h,
   metric,
@@ -39,12 +40,16 @@ import {
   treeLines,
   view,
 } from './harness.js';
+import { parseColor } from '../../src/html/css/values.js';
 import { resizeClock } from '../../src/html/node.js';
 import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
+
+/** What a paint is asked to draw again (`fillsOf`). */
+type Damage = { x: number; y: number; width: number; height: number };
 
 /** mulberry32: the same document for the same seed. */
 function random(seed: number): () => number {
@@ -988,9 +993,11 @@ metric(
     // a kept block's lines went by whether its element came after the box:
     // an anonymous block has no element, so its lines stayed where they
     // were and its own text moved. An inline box's border is drawn from
-    // them, and it was found on no line.
+    // them, and it was found on no line: it had no ink at all, so a repaint
+    // of the strip its shadow falls in, past its line, did not reach it.
     const { result, node } = await render(
-      '<!doctype html><style>body { margin: 0 } b { padding: 4px; border: 1px solid }</style>' +
+      '<!doctype html><style>body { margin: 0 } b { padding: 4px; ' +
+        'border: 1px solid; box-shadow: 0 8px 0 #0d0d0d }</style>' +
         '<div id="empty"></div><b id="late">after</b>',
       320,
     );
@@ -1000,7 +1007,9 @@ metric(
     const empty = elementsUnder(el.document as unknown as Element).find(
       (e) => e.attribs.id === 'empty',
     )!;
-    const text = createText('new');
+    // longer than what comes after it: a line left behind by less is one
+    // the box is still found on, by the text of its own it holds
+    const text = createText('longer than what follows');
     appendChild(empty, text);
     el.touchDocument([
       {
@@ -1014,13 +1023,30 @@ metric(
     const late = boxOf(el, 'late') as unknown as Box;
     let block = late.parent!;
     while (block.kind === 'inline') block = block.parent!;
-    assert.strictEqual(internals._tree.text, 'newafter');
+    assert.strictEqual(internals._tree.text, 'longer than what followsafter');
     assert.strictEqual(
       block.lines?.[0].textStart,
-      3,
+      24,
       'its line, with its text',
     );
     assert.ok(Number.isFinite(late.boundsY), 'and its border found on it');
+    const shadows = async (damage?: Damage) =>
+      (await fillsOf(el, undefined, { damage })).filter(
+        (fill) => fill.style === parseColor('#0d0d0d'),
+      );
+    const [shadow] = await shadows();
+    assert.ok(shadow, 'its shadow, in a paint of all of it');
+    const strip = {
+      x: 0,
+      y: Math.floor(shadow.y + shadow.h) - 3,
+      width: 320,
+      height: 3,
+    };
+    assert.strictEqual(
+      (await shadows(strip)).length,
+      1,
+      'and in one of the strip it falls in',
+    );
     result.unmount();
   },
 );
@@ -2835,9 +2861,11 @@ function moving(next: () => number, depth: number): Element {
     else if (roll < 0.6) {
       appendChild(
         el,
-        createElement('span', { class: pick(['r', 'z', 'sh', '']) }, [
-          createText(pick(WORDS)),
-        ]),
+        createElement(
+          'span',
+          { class: pick(['r', 'z', 'sh', 'st', 'sb', '']) },
+          [createText(pick(WORDS))],
+        ),
       );
     } else appendChild(el, createText(pick(['one two', 'three four five'])));
   }

@@ -1527,6 +1527,31 @@ for (const [label, mount] of [
       }
     },
   );
+
+  metric(
+    `a sticky box nothing scrolls sticks where the flow has it, and its transform moves it from there${label}`,
+    async () => {
+      // No scroll places it again, so where a layout puts it at rest is
+      // where it stays: all three engines' `r` is 10 less its own height,
+      // and `q`, turned, 30 less that and what a turn adds to its rect
+      const { node } = await mount(
+        '<style>body{margin:0}.h{width:20px;height:20px;position:sticky}' +
+          '</style><div style="height:400px">' +
+          '<div class="h" id="r" style="top:10px;' +
+          'transform:translateY(-100%)"></div>' +
+          '<div class="h" id="q" style="top:30px;' +
+          'transform:translateY(-100%) rotate(45deg)"></div>' +
+          '<div class="h" id="x" style="left:10px;' +
+          'transform:translateX(-100%)"></div></div>',
+      );
+      const el = view(node);
+      const top = (id: string) =>
+        Math.round(el.elementRect(findById(el.document, id)!)!.y * 10) / 10;
+      assert.strictEqual(top('r'), -10);
+      assert.strictEqual(top('q'), 5.9);
+      assert.strictEqual(el.elementRect(findById(el.document, 'x')!)!.x, -10);
+    },
+  );
 }
 
 metric(
