@@ -2724,9 +2724,10 @@ order, nested alike, start and end with what is outside where that run's did.
 Where they differ the build is thrown away. **So `countedBy` says everything
 a run does to a counter**: its nesting, since a reset reaches what its box
 holds or what is beside it, and what it read, since a caption the fix-up moves
-was read in another order than its boxes have. What no box says is
-`BoxTree.countsUnseen`, a `display: contents` element that counts, where no
-two runs are known to count alike. **Anything new that reads a counter or a
+was read in another order than its boxes have, and which of its boxes have style
+containment, which keeps what they hold from counting on what is around them.
+What no box says is `BoxTree.countsUnseen`, a `display: contents` element that
+counts, where no two runs are known to count alike. **Anything new that reads a counter or a
 quote's depth goes through `CounterScopes._answer`, on a path that ends in
 `_noteReads`**: a read a box does not keep is out of step with every read
 after it in its run. And **a read is answered by its kind, and never of a
@@ -2739,7 +2740,17 @@ once, and that goes for a kept box after it that reads another number too.
 The tries over a load came to 556–1,337 ms on that article and come to
 15–76. `test/html/subtree-build.test.ts` holds each case to a whole build and
 to how many tries it took (`COUNTED`), and the fuzz has numbered lists,
-reads and quotes in its documents.
+reads and quotes in its documents. **What a counter's reach depends on is
+what is around it, so nothing may turn on the reach but where it is read
+from** (`_answers`): style containment asked whether a reset reached its
+element's siblings, which a build apart sees no outer counter to decide, so
+a `<ol start="7">` with `contain: style` in a list numbered from 1 built apart
+and from 7 whole. What such an element resets is outside it for what counts
+inside it, as all three engines have it, whatever its reach (`_counted`), and
+a `list-item` it resets is its own and in it, as Chromium and WebKit have it
+and Firefox does not (`reachesSiblings`). Where the engines differ on what is
+read there, a reset read before anything counts and one read beside it, this
+is Chromium's.
 
 **A script's child put in or taken out builds the end of what holds it
 too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,

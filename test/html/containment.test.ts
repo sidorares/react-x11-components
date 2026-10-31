@@ -575,6 +575,71 @@ test('style containment keeps counters and quotes in its subtree', async () => {
   assert.ok(quotes.includes('A1Z'), JSON.stringify(quotes));
 });
 
+test('what a style-contained element resets, its subtree does not count on', async () => {
+  // the first thing to count in it makes a counter of its own, in all three
+  // engines; what is read there before that is the reset, in Chromium and
+  // Firefox, where WebKit reads 0
+  const sheet =
+    '<style>.c{contain:style}.r{counter-reset:n 3}.i{counter-increment:n}' +
+    '.i::before{content:"<" counter(n) ">"}' +
+    '.s::before{content:"[" counter(n) "]"}</style>';
+  const text = (body: string) => documentText(sheet + body);
+  // with no `n` around it, which its reset reaches its siblings for
+  assert.ok(
+    (
+      await text(
+        '<div class="c r"><span class="s"></span><span class="i"></span>' +
+          '<span class="i"></span></div><span class="s"></span>',
+      )
+    ).includes('[3]<1><2>[3]'),
+  );
+  // and with one, which it reaches only what it holds for: what a build of
+  // the element apart, which sees no `n`, has to come to as well. What is
+  // beside it reads 10 in Chromium alone, and 3 in Firefox and WebKit
+  assert.ok(
+    (
+      await text(
+        '<div style="counter-reset:n 10"><div class="c r"><span class="i">' +
+          '</span><span class="i"></span></div><span class="s"></span></div>',
+      )
+    ).includes('<1><2>[10]'),
+  );
+  // a child's reset is in its subtree, as its later siblings are: all three
+  assert.ok(
+    (
+      await text(
+        '<div class="c"><span style="counter-reset:n 5"></span>' +
+          '<span class="i"></span></div>',
+      )
+    ).includes('<6>'),
+  );
+});
+
+test('a style-contained list numbers its items from its start, wherever it is', async () => {
+  // Chromium's and WebKit's, whose lists are no counters; Firefox's lists
+  // are, and its items start at 1 here
+  const list = (attrs: string) =>
+    `<ol class="c"${attrs}><li>a</li><li>b</li></ol>`;
+  const text = (body: string) =>
+    documentText(
+      '<style>.c{contain:style}li{list-style-position:inside}</style>' + body,
+    );
+  assert.ok((await text(list(' start="7"'))).includes('7. a8. b'));
+  assert.ok(
+    (await text(`<ul><li>x${list(' start="7"')}</li></ul>`)).includes(
+      '7. a8. b',
+    ),
+  );
+  assert.ok((await text(list(' reversed'))).includes('2. a1. b'));
+  assert.ok((await text(list(' reversed start="9"'))).includes('9. a8. b'));
+  // and it leaves a list around it as it found it
+  assert.ok(
+    (
+      await text(`<ol start="4"><li>a</li>${list(' start="7"')}<li>c</li></ol>`)
+    ).includes('4. a7. a8. b5. c'),
+  );
+});
+
 metric(
   "an inline box's padding below its line makes the document taller, where nothing clips it",
   async () => {
