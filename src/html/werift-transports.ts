@@ -45,6 +45,8 @@ export interface WIce {
   getSelectedCandidatePair(): { local: WCandidate; remote: WCandidate } | null;
   getLocalParameters(): { usernameFragment: string; password: string };
   getRemoteParameters(): { usernameFragment: string; password: string } | null;
+  /** What gathers for it, and the STUN server it asks. */
+  readonly connection?: { stunServer?: unknown };
 }
 
 export interface WDtls {
@@ -75,6 +77,12 @@ export interface WAssociation {
   readonly associationState: number;
   /** The streams it can carry each way, once it is up. */
   readonly maxChannels?: number;
+  /** Told as each transmission ends, which a SACK starts. */
+  readonly flush?: WEvent<[]>;
+  /** What is still to go, and what went and is not acknowledged yet, the
+   *  second a private of its own (see `close`). */
+  readonly outboundQueue?: { readonly streamId: number }[];
+  readonly sentQueue?: { readonly streamId: number }[];
 }
 
 /** What an empty message is queued on: werift's own send queue, a private
@@ -235,24 +243,47 @@ class WeriftChannel implements RTCDataChannelLike {
     void sctp.dataChannelFlush();
   }
 
+  /** Whether anything sent on this channel has yet to be acknowledged:
+   *  what werift has not handed to SCTP, and what SCTP has not been told
+   *  arrived. By the channel's stream, so a neighbour that goes on sending
+   *  holds no close up. */
+  private _unacknowledged(): boolean {
+    if (this._ch.bufferedAmount > 0) return true;
+    const sctp = this._sctp()?.sctp;
+    const ours = (chunk: { readonly streamId: number }) =>
+      chunk.streamId === this._ch.id;
+    return !!(sctp?.outboundQueue?.some(ours) || sctp?.sentQueue?.some(ours));
+  }
+
   /**
-   * Closes it once what was sent has gone. werift resets the stream as it
-   * is closed, with what it has queued still unsent, and its far side
-   * drops whatever arrives after a reset — it does none of RFC 6525's
-   * deferred reset processing (5.2.2) — so a channel closed at once lost
-   * every message it had not sent yet.
+   * Closes it once what was sent has been acknowledged. werift resets the
+   * stream as it is closed, with what it has queued still unsent, and its
+   * far side drops whatever arrives after a reset — it does none of RFC
+   * 6525's deferred reset processing (5.2.2). So a channel closed at once
+   * lost every message it had not sent yet, and one closed as the last of
+   * them was sent lost a message with a chunk still to come again: a burst
+   * can overflow a receive buffer, and the reset overtakes the
+   * retransmission. Nothing public says what was acknowledged, so this
+   * reads `sentQueue`, a private: a werift without it closes as the last
+   * message is sent.
    */
   close(): void {
     if (this._closing) return;
     this._closing = true;
-    if (!(this._ch.bufferedAmount > 0)) {
+    if (!this._unacknowledged()) {
       this._ch.close();
       return;
     }
+    let waiting = true;
+    const settled = () => {
+      if (!waiting || this._unacknowledged()) return;
+      waiting = false;
+      // whatever its state: one closed as it opened is still connecting
+      this._ch.close();
+    };
     this._ch.bufferedAmountLowThreshold = 0;
-    this._ch.bufferedAmountLow.subscribe(() => {
-      if (this._ch.readyState === 'open') this._ch.close();
-    });
+    this._ch.bufferedAmountLow.subscribe(settled);
+    this._sctp()?.sctp?.flush?.subscribe(settled);
   }
 }
 
