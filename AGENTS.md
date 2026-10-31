@@ -1977,6 +1977,100 @@ host refuses, and the bench's harness measured it a viewport tall until a
 query built it; anything new that holds the first rendering has to be told
 when what it waits on will never come.
 
+**What nobody can see waits, and a face that arrives is the first to.**
+A face changes two things: the family list of the styles it is for, and
+the text set in them. Neither needs a cascade or a box. So the lists change
+where they are, in every style the tree holds (`_takeFaces`), a walk of a
+few milliseconds where a whole build was most of a swap, and each block
+with text in such a face owes setting again (`_owe`, `_setAgain`). What can
+be seen is set at the next frame, and the rest a slice at a time on
+`owedClock`, up to `OWED_SLICE_MS` a slice, once no scroll or key has come
+for `OWED_QUIET_MS`, sooner where a scroll comes near it (`_followOwed`).
+Nothing is set aside: an owed block keeps its old lines and is moved by the
+layouts around it as any kept block is (`reuseLaid`), so a scroll onto it
+finds it there, drawn as it was. That is why this is the keep and not the
+drag's `setAside`: a drag's boxes are a width out of date and cannot be
+drawn, and these can. Faces that come before a frame are taken as one, and
+a bold face leaves the regular text alone (`WebFonts.arrivals`). Seven
+things are load-bearing.
+
+- **`familyWritten` is what a list comes from, and `fontFamily` what the
+  engine is handed.** Two lists can come to one `fontFamily` while no face
+  of a family has loaded, `Inter, sans-serif` and `sans-serif`, and only the
+  first changes when Inter does. Anything new that sets `fontFamily` sets
+  `familyWritten`, or a style keeps the face it had. The host's own family
+  is written as `''`, since no list of the sheets' is mapped from it.
+- **Every style the tree can hand out takes the list**: those of the
+  elements and the boxes, a marker's, and each style `anonymous` made, one
+  no box has now among them (`anonymousMade`). Anything new that keeps a
+  style past a build joins that walk. A style is changed where it is, so
+  what is noted of it by identity stands (`ROOT_READS`, `VIEWPORT_SIDES`).
+- **A length read from a face is computed again** (`readsFace`, `_exOf`,
+  `_chOf`, `_lineHeightOf`): anything new that reads a face as a style is
+  computed sets `_faceRead`, or `max-width: 65ch` stays the old face's. Such
+  an element waits with its box, in `_stylesOwed` until then.
+- **A box built from a face is built again** (`READS_FACE_AS_BUILT`): a
+  widget's size and a drawing's text are read as the boxes are built, so a
+  kept box would keep them. Anything new the builder reads of a face joins
+  it.
+- **A block owes setting again for its own font as well as its text**: its
+  lines are held open by its strut, whatever is on them, and an inline box's
+  by its. Anything new that lays a line out from a style's face is asked in
+  `_takeFaces`' walk, or a line stays the old face's height.
+- **What a box was laid out by is `FontsLike.engine`, not the cache**: a
+  `TextLayoutCache` is new at each arrival, which drops every per-`fonts`
+  cache keyed by a list (`FACE_EXTENTS`, `SPACERS`), and a kept box stands.
+  Anything new that notes what a box was laid out by notes `ctx.engine`.
+- **A tree a face cannot be taken into in place takes the swap whole**, at
+  the next frame, as it always did: where a layout keeps no blocks, under
+  anchors, `::first-line` or a `<foreignObject>` (`layoutDocument`'s
+  `reusing`), and a vertical flow, whose styles are turned copies of the
+  cascade's.
+
+**A read of the page's brings all of it up to date** (`_settle`): a rect,
+an offset, a client box, a range's rects, a scroll to an element, and a
+scroller's extent where something in it waits. So it answers what a whole
+build would, and pays what is left, which is the text and no build. A
+script's `getComputedStyle` is the one that looks first: a style is right
+with its text still to set, so the host answers with what waits left waiting
+and says so, and the facade asks again for a property a box decides
+(`comesFromBox`), which is the read that settles. Settled at every call, one
+read of a sidebar's style in the middle of a scroll paid 258 ms on MDN for 208
+blocks nobody could see. **Anything new `cssomAt` reads from a box joins
+`FROM_A_BOX`**, and a test in `values.test.ts` finds one that does not. What aims a press, or a hover, is no such read: it asks
+what is drawn, and a pointer move must settle nothing, which is why the
+handle's `elementAtPoint` settles and the node's does not.
+`IntersectionObserver`s and `ResizeObserver`s do not settle either: they are
+told as the boxes move (`_geometry`). **Anything new that answers a page from
+the layout calls `_settle`**, and anything that answers core or a pointer does
+not. `FontFaceSet` is told as a face settles, as before: what a page reads
+after `ready` goes through `_settle`, so it is neither early nor late.
+
+**Joining it takes three things**, for an image's size or a sheet's rules
+as for a face (`_owe`). A change may wait where the document stays whole
+without it: the box stays drawn as it was, and nothing that runs before its
+turn reads what the change would make. Its work is handed to `_owe` with the
+box it is for, the block a layout keeps, and brings that box up to date for
+the layout that follows, forgetting what is kept of it (`forgetSizesIn`);
+what it owes a style goes in `_stylesOwed`, which a read works out
+(`_owedStyle`). And what the work changes is kept off screen by a box's
+place: anything that depends on the whole document, a stylesheet's new
+`@font-face` say, is no change that can wait. A build makes it all new
+(`_owedDone`), so nothing has to be undone, and work on a box a subtree build
+replaced runs on nothing. The order is the viewport first, then the nearest
+either way while they are near, then down the page, then up it: what is set
+above what can be seen moves it, and the pane follows (`_keepAnchor`), which
+repaints what it shows. So does telling the pane how tall the document came
+to be, so that is held to `OWED_MEASURE_MS`.
+`test/html/owed.test.ts` holds a document set again around a page's scrolls,
+reads and changes to a whole build, box for box over generated documents;
+`OWED_SEEDS` sweeps more of them, and `OWED_FROM` starts at one. **None of
+it runs under a drag's layout** (`_partial`): what a flex box measures of
+an item is kept for the item's life, and measured with what is set aside
+cut out of it, so forgotten during a drag it stays short of what the item
+holds. The drag lays out what can be seen in the faces there are, and what
+waits runs once it has rested; a read during a drag has what the drag has.
+
 **An image's size is its header's until its pixels are in**
 (`image-header.ts`, `ResourceStore._decoding`). A PNG, a JPEG or a WebP of
 8 KB or more decodes on a worker thread, and a page of photographs queues
@@ -5318,6 +5412,17 @@ block axis, which is the root's intrinsic width at its least and its most
   in it are turned from the other side (`REFLECTED_MARGINS`). A block no
   layout has laid out since it was put back is left as it is
   (`layoutSerial`).
+- **A frame is laid out whole, and what is around it is kept as any box
+  is.** All a frame holds, and the boxes that hold it, are blockers
+  (`noteBlockers`), so no layout keeps a frame and no kept block holds one:
+  what a kept block is moved by is the page's, and a frame's heights run
+  across it. And a build apart stops at a frame (`buildSubtrees`, `_apart`):
+  a frame is made as a build of the whole ends and what is in one takes its
+  sides from it, so a change in one builds the whole document. One live
+  sample in a vertical writing mode made every build of an MDN article
+  whole and every layout 12,892 boxes, where a CodeMirror cursor costs a
+  few. **Anything new a layout keeps asks `blockers`**, or it keeps what a
+  frame holds, and `framed.any` keeps a probe from standing in such a tree.
 - **A writing mode and a direction are read ahead of the other
   declarations where a sheet declares a writing mode** (`Cascade._writing`):
   a logical property maps by the element's own, whatever its place in

@@ -288,6 +288,8 @@ export class WebFonts implements FontFamilies {
   private _keys: { declared: string; faces: Map<string, Face> } | null = null;
   /** What `settled` handed out, resolved once nothing is loading. */
   private _waiting: (() => void)[] = [];
+  /** The faces that came since `arrivals` was last asked. */
+  private _arrived: Face[] = [];
 
   constructor(app: unknown, ask: Ask, changed: () => void, fallback: string) {
     this._app = app !== null && typeof app === 'object' ? app : null;
@@ -471,6 +473,61 @@ export class WebFonts implements FontFamilies {
       else for (const f of used) if (!sources.includes(f)) sources.push(f);
     }
     return mapped;
+  }
+
+  /**
+   * What the faces that came since this was last asked change, where any
+   * did: a question to ask of each style that text is set in. Yes where a
+   * face that came is the one CSS matches for it in its range (CSS Fonts 4,
+   * 5.2) — the first of its range, which is the list changing, or a nearer
+   * weight, slant or width under the same list. A family's bold coming
+   * changes no paragraph of its regular, and the Guardian's eleven faces
+   * come one after another.
+   */
+  arrivals(): ((style: ComputedStyle) => boolean) | null {
+    const arrived = this._arrived;
+    if (!arrived.length) return null;
+    this._arrived = [];
+    const known = new Map<string, boolean>();
+    return (style) => {
+      const list = style.familyWritten;
+      if (!list) return false;
+      const italic = style.fontStyle !== 'normal';
+      const key = `${style.fontWeight}|${italic ? 1 : 0}|${style.fontStretch}|${list}`;
+      let answer = known.get(key);
+      if (answer === undefined) {
+        answer = this._nearest(
+          list,
+          arrived,
+          style.fontWeight,
+          italic,
+          style.fontStretch,
+        );
+        known.set(key, answer);
+      }
+      return answer;
+    };
+  }
+
+  /** Whether one of `faces` is the one matched in its range, in a family
+   *  of `list`, at a weight, slant and width. */
+  private _nearest(
+    list: string,
+    faces: readonly Face[],
+    weight: number,
+    italic: boolean,
+    stretch: number,
+  ): boolean {
+    for (const raw of list.split(',')) {
+      const family = this._families.get(raw.trim().toLowerCase());
+      if (!family) continue;
+      for (const face of faces) {
+        if (face.family !== family) continue;
+        const ready = face.group.faces.filter((f) => f.state === 'ready');
+        if (bestFace(ready, weight, italic, stretch) === face) return true;
+      }
+    }
+    return false;
   }
 
   note(style: ComputedStyle): void {
@@ -859,6 +916,7 @@ export class WebFonts implements FontFamilies {
     const key = faceKey(face.name, face.rule);
     if (registry.ready.has(key)) {
       arrive(face, registry);
+      this._arrived.push(face);
       return 'ready';
     }
     face.state = 'loading';
@@ -896,8 +954,10 @@ export class WebFonts implements FontFamilies {
           if (family === null) continue;
           registry.locals.set(key, family);
           finish(true);
-          if (sync) arrive(face, registry);
-          else this._settled(face, true);
+          if (sync) {
+            arrive(face, registry);
+            this._arrived.push(face);
+          } else this._settled(face, true);
           return 'ready';
         }
         let answer: ReturnType<Ask>;
@@ -924,8 +984,10 @@ export class WebFonts implements FontFamilies {
         }
         if (registered) {
           finish(true);
-          if (sync) arrive(face, registry);
-          else this._settled(face, true);
+          if (sync) {
+            arrive(face, registry);
+            this._arrived.push(face);
+          } else this._settled(face, true);
           return 'ready';
         }
       }
@@ -1035,7 +1097,8 @@ export class WebFonts implements FontFamilies {
     if (this._destroyed) return;
     if (ok && this._app) arrive(face, registryOf(this._app));
     else face.state = ok ? 'ready' : 'failed';
-    if (!ok) face.family.asked.clear();
+    if (ok) this._arrived.push(face);
+    else face.family.asked.clear();
     this._forget();
     this._changed();
     if (!this.loading) for (const resolve of this._waiting.splice(0)) resolve();

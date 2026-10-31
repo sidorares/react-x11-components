@@ -701,6 +701,44 @@ export function computedText(
   return sides ? shortest(sides.map((side) => all[side])) : undefined;
 }
 
+/** The sides a flow-relative property names (`logicalProperties`). */
+const LOGICAL_SIDES = [
+  'block-start',
+  'block-end',
+  'inline-start',
+  'inline-end',
+];
+
+/** What `cssomAt` reads from a box rather than from a style, by name and in
+ *  camel case, as a page reads it. */
+const FROM_A_BOX: ReadonlySet<string> = new Set(
+  [
+    'width',
+    'height',
+    'inline-size',
+    'block-size',
+    'transform',
+    ...SIDES,
+    ...LOGICAL_SIDES.map((side) => `inset-${side}`),
+    ...[...SIDES, ...LOGICAL_SIDES].flatMap((side) => [
+      `margin-${side}`,
+      `padding-${side}`,
+      `border-${side}-width`,
+    ]),
+  ].flatMap((name) => [
+    name,
+    name.replace(/-(.)/g, (_, letter: string) => letter.toUpperCase()),
+  ]),
+);
+
+/** Whether a page reading `property` of a computed style reads what a
+ *  layout made of the box. Anything new `cssomAt` reads from a box joins
+ *  `FROM_A_BOX`, or a script reads it as the text still to be set again
+ *  left it (`HtmlViewNode.computedStyle`). */
+export function comesFromBox(property: string): boolean {
+  return FROM_A_BOX.has(property);
+}
+
 /**
  * An element's style as `getComputedStyle` answers it, by property name:
  * `box` where a layout gave the element one, for the used values of its

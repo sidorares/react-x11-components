@@ -42,7 +42,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
-import { makeFrame } from './writing.js';
+import { FRAMES, frameOf, makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -1485,7 +1485,6 @@ export function buildSubtrees(
   const cascade = options.cascade;
   if (
     tree.foreign ||
-    tree.vertical ||
     tree.firstLine ||
     cascade.hasFirstLine ||
     options.transition
@@ -1514,6 +1513,13 @@ export function buildSubtrees(
     const old = tailRoot(node, from, tree, document, firstBoxes);
     if (!old) return null;
     olds.push(old);
+  }
+  // a frame is made as a build of the whole ends, and what is in one takes
+  // its sides from it (`makeFrame`): what is around one is built as any box
+  if (tree.vertical) {
+    for (const old of olds) {
+      if (FRAMES.has(old.box) || frameOf(old.box)) return null;
+    }
   }
   // a root a block around looks for a first letter in, or a tail of one
   if (cascade.hasFirstLetter) {
@@ -6290,6 +6296,20 @@ function namesImages(style: ComputedStyle): boolean {
  * paragraph after it the height of the div further down. One per parent
  * style, which the cascade already shares between elements.
  */
+/** Every style an `AnonymousStyle` made, which a family list changes in
+ *  (`HtmlViewNode._takeFaces`): one no box has now is still what the next
+ *  box that asks for it is handed. */
+const ANONYMOUS_MADE = new WeakMap<AnonymousStyle, Set<ComputedStyle>>();
+
+/** The styles a tree's `anonymous` made. */
+export function anonymousMade(
+  anonymous: AnonymousStyle,
+): ReadonlySet<ComputedStyle> {
+  return ANONYMOUS_MADE.get(anonymous) ?? EMPTY_STYLES;
+}
+
+const EMPTY_STYLES: ReadonlySet<ComputedStyle> = new Set();
+
 export type AnonymousStyle = (
   parent: ComputedStyle,
   display: ComputedStyle['display'],
@@ -6297,7 +6317,8 @@ export type AnonymousStyle = (
 
 function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
   const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
-  return (parent, display) => {
+  const all = new Set<ComputedStyle>();
+  const anonymous: AnonymousStyle = (parent, display) => {
     let byDisplay = made.get(parent);
     if (!byDisplay) {
       byDisplay = new Map();
@@ -6310,9 +6331,12 @@ function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
       style = inherit(parent, initial);
       style.display = display;
       byDisplay.set(display, style);
+      all.add(style);
     }
     return style;
   };
+  ANONYMOUS_MADE.set(anonymous, all);
+  return anonymous;
 }
 
 function isBlockLevel(box: Box): boolean {

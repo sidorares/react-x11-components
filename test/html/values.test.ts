@@ -24,7 +24,11 @@ import {
   specifiedValue,
 } from '../../src/html/css/specified.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
-import { cssomColor, cssomStyle } from '../../src/html/computed.js';
+import {
+  comesFromBox,
+  cssomColor,
+  cssomStyle,
+} from '../../src/html/computed.js';
 import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
@@ -1665,6 +1669,37 @@ test('the scroll-driven animation properties take their grammars, and are kept w
     '',
     'lists of other lengths make none',
   );
+});
+
+test('what a computed style reads from a box says so, by name and in camel case', async () => {
+  const { node } = await render(
+    '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +
+      'border: 1px solid; transform: translateX(10%)"></div>' +
+      '<div id="b" style="position: relative; top: 1px; border: 1px solid; ' +
+      'transform: translateX(10%); writing-mode: vertical-rl; direction: rtl"></div>',
+  );
+  const el = view(node);
+  const box = (at: number): Parameters<typeof cssomStyle>[2] => ({
+    width: 100 + at,
+    height: 200 + at,
+    margin: [1 + at, 2 + at, 3 + at, 4 + at],
+    border: [5 + at, 6 + at, 7 + at, 8 + at],
+    padding: [9 + at, 10 + at, 11 + at, 12 + at],
+    insets: [13 + at, 14 + at, 15 + at, 16 + at],
+  });
+  for (const id of ['a', 'b']) {
+    const { style } = boxOf(el, id) as unknown as { style: ComputedStyle };
+    const one = cssomStyle(style, 1, box(0));
+    const other = cssomStyle(style, 1, box(30));
+    const moved = Object.keys(one).filter((name) => one[name] !== other[name]);
+    for (const name of Object.keys(one)) {
+      assert.strictEqual(comesFromBox(name), moved.includes(name), name);
+    }
+  }
+  assert.ok(comesFromBox('marginInlineEnd'));
+  assert.ok(comesFromBox('insetBlockStart'));
+  assert.ok(!comesFromBox('--width'));
+  assert.ok(!comesFromBox('display'));
 });
 
 test('the scroll-timeline and view-timeline shorthands set their longhands, and getComputedStyle reads them back', async () => {

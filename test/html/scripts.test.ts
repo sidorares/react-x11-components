@@ -62,6 +62,7 @@ import type {
   FetchResponse,
 } from '../../src/html/scripts/host.js';
 import {
+  boxOf,
   bytesApart,
   findById,
   FONTS,
@@ -74,7 +75,7 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
-import { animationClock, caretClock } from '../../src/html/node.js';
+import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
 import type { HeldClock } from '../held-clock.js';
@@ -8727,6 +8728,76 @@ metric(
       ].join('|'),
       doc.logs.join('\n'),
     );
+  },
+);
+
+metric(
+  'a style reads with what waits left waiting, and what a box decides with it set',
+  async (t) => {
+    holdClock(t, owedClock);
+    const face = new Uint8Array(readFileSync(FONTS!.monospace));
+    const text = 'words that wrap at another place in the other face '.repeat(
+      3,
+    );
+    const body = Array.from(
+      { length: 120 },
+      (_, i) => `<p id="p${i}">${text}</p>`,
+    ).join('');
+    const reads = [
+      's.height',
+      's.width',
+      's.blockSize',
+      's["inline-size"]',
+      's.getPropertyValue("height")',
+      's.getPropertyValue("margin-top")',
+      's.marginBlockEnd',
+      's.paddingInlineStart',
+      's.borderTopWidth',
+      's.transform',
+      's.top',
+    ];
+    for (const read of reads) {
+      const doc = await hosted(
+        `<!doctype html><style>
+        @font-face { font-family: Web; src: url(a.ttf) }
+        body { margin: 0; font: 14px Web, sans-serif } p { margin: 4px 0 }
+        </style>${body}`,
+        { fonts: { 'a.ttf': face }, pane: 300 },
+      );
+      const el = doc.view;
+      const owed = el as unknown as { _owed: Map<unknown, unknown> };
+      for (let i = 0; i < 40 && !owed._owed.size; i += 1) {
+        await new Promise((go) => setTimeout(go, 5));
+        await act();
+      }
+      assert.ok(owed._owed.size > 50, `${read}: something waits`);
+      const waiting = owed._owed.size;
+      const kept = boxOf(el, 'p110');
+      const height = kept.height;
+      doc.run(
+        'var s = getComputedStyle(document.getElementById("p110"));' +
+          'console.log("style", s.display, s.getPropertyValue("font-size"), s.fontWeight, s[0]);',
+      );
+      assert.strictEqual(owed._owed.size, waiting, 'nothing of it read a box');
+      assert.ok(
+        doc.logs.at(-1)?.includes('block 14px 400'),
+        String(doc.logs.at(-1)),
+      );
+      doc.run(`console.log("read", ${read});`);
+      assert.strictEqual(owed._owed.size, 0, `${read} found it set`);
+      if (read === 's.height') {
+        assert.notStrictEqual(
+          boxOf(el, 'p110').height,
+          height,
+          'the face moved the box',
+        );
+        assert.strictEqual(
+          doc.logs.at(-1),
+          `log: read ${el.computedStyle(doc.byId('p110') as never)?.height}`,
+        );
+      }
+      doc.result.unmount();
+    }
   },
 );
 
