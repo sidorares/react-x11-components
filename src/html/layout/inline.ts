@@ -102,6 +102,12 @@ export interface DocumentRun extends TextRun {
 
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
+  /** The engine these fonts lay text out by, where they are a cache of its
+   *  layouts: one object for as long as the engine is. What a box was laid
+   *  out by is told by this, since a cache is new at each face that arrives
+   *  and a box not set again yet is kept as it is drawn
+   *  (`HtmlViewNode._takeFaces`). */
+  engine?: FontsLike;
   layout(
     content: DocumentRun[],
     style: Record<string, unknown>,

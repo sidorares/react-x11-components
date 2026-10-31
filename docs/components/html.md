@@ -546,9 +546,14 @@ anything on a runtime with no Brotli — node and Bun both have one — and
 such a source is one that did not load.
 
 Until a face has loaded its family is left out of the list, and the text is
-set in the next family the author named, as `font-display: swap` has it;
-when it arrives the document is set again. That holds for a family none of
-whose faces ever loads: a family the document declares is never looked up on
+set in the next family the author named, as `font-display: swap` has it.
+When it arrives, the text that can be seen is set in it at the next frame,
+and the rest a slice at a time, nearest first, once nothing is being scrolled
+or typed, so a face never holds up what is under the pointer for text nobody
+can see. A script that reads the layout finds all of it set.
+
+A family left out of the list stays out for good where none of its faces
+ever loads: a family the document declares is never looked up on
 the system by the name the document gave it (CSS Fonts 4, 5.2), so
 `font-family: Mine` with a declined `@font-face` is the document's default
 and not whatever a text engine finds nearest to `Mine`.

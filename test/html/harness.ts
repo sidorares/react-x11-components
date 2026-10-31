@@ -22,7 +22,9 @@ import { parseColor } from '../../src/html/css/values.js';
 import { mapPoint } from '../../src/html/css/transform.js';
 import { placedMatrix } from '../../src/html/layout/block.js';
 import { drawsForeignObjects } from '../../src/html/svg.js';
-import type { Box } from '../../src/html/layout/boxes.js';
+import { GENERATED_FROM } from '../../src/html/layout/boxes.js';
+import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
+import type { Element } from '../../src/html/index.js';
 
 export const h = React.createElement;
 
@@ -1610,4 +1612,123 @@ export function findById(node: unknown, id: string): DocElement | null {
     if (found) return found;
   }
   return null;
+}
+
+export function pathOf(el: Element | null | undefined): string {
+  if (!el) return '-';
+  const steps: number[] = [];
+  for (let at: Element = el; at.parent; at = at.parent as Element) {
+    steps.push((at.parent as Element).children.indexOf(at));
+  }
+  return steps.reverse().join('.');
+}
+
+/** What a box says of itself that two builds must agree on. */
+function boxLine(box: Box): string {
+  const s = box.style;
+  const el = box.el ?? GENERATED_FROM.get(box);
+  return [
+    box.kind,
+    pathOf(el),
+    box.pseudo ?? '',
+    JSON.stringify(box.text),
+    `${box.textStart}-${box.textEnd}`,
+    `${box.subtreeTextStart}-${box.subtreeTextEnd}`,
+    // a text's, a break's or an inline box's rect is never laid out, and
+    // `translate` moves it with the rest, pass after pass
+    box.kind === 'text' || box.kind === 'break' || box.kind === 'inline'
+      ? ''
+      : // to a thousandth of a pixel: Yoga's sizes are float32, and one a
+        // kept box's layout measured comes out a last bit or two apart
+        [box.x, box.y, box.width, box.height]
+          .map((n) => Math.round(n * 1000) / 1000)
+          .join(','),
+    s.display,
+    s.position,
+    s.float,
+    s.color,
+    s.fontFamily,
+    s.fontSize,
+    s.whiteSpace,
+    s.userSelect,
+    box.marker?.layout ? box.marker.layout.width : '',
+    box.outOfFlow ? 'out' : '',
+    box.isFloat ? 'float' : '',
+    // and where it inks, which a block a layout kept is walked for again;
+    // a text's is its line's
+    box.kind === 'text' || box.kind === 'break'
+      ? ''
+      : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
+          .map((n) => Math.round(n * 1000) / 1000)
+          .join(','),
+    box.lines?.length ?? '',
+    // a list item's number
+    box.marker ? JSON.stringify(box.marker.text) : '',
+    // where its lines and the text on them are drawn, which a block kept
+    // from an earlier layout carries with it
+    (box.lines ?? [])
+      .map((line) =>
+        [
+          line.x,
+          line.y,
+          line.width,
+          line.height,
+          line.baseline,
+          ...line.texts.flatMap((t) => [t.drawX, t.drawY]),
+        ]
+          .map((n) => Math.round(n * 1000) / 1000)
+          .join(','),
+      )
+      .join(';'),
+  ].join('|');
+}
+
+/** The elements the UA's sheet never draws, whose styles a build that
+ *  restyles what a change reached may leave out. */
+const UNDRAWN = [
+  'script',
+  'style',
+  'link',
+  'meta',
+  'title',
+  'base',
+  'template',
+];
+
+/** A tree as two builds of one document must have it alike. */
+export function treeLines(tree: BoxTree): string[] {
+  const out: string[] = [];
+  const walk = (box: Box, depth: number) => {
+    out.push(`${' '.repeat(depth)}${boxLine(box)}`);
+    for (const child of box.children) walk(child, depth + 1);
+  };
+  walk(tree.root, 0);
+  const boxes = (name: string, list: readonly Box[]) =>
+    out.push(
+      `${name}: ${list.map((b) => boxLine(b).split('|').slice(0, 3).join('|')).join(' ')}`,
+    );
+  boxes('textBoxes', tree.textBoxes);
+  boxes('controls', tree.controls);
+  boxes('links', tree.links);
+  boxes('focusables', tree.focusables);
+  boxes('backgrounds', tree.backgrounds);
+  boxes('images', tree.images);
+  out.push(`text: ${JSON.stringify(tree.text)}`);
+  out.push(`unselectable: ${tree.unselectable.join(',')}`);
+  out.push(
+    `textNodes: ${(tree.textNodes ?? [])
+      .map((t) => `${JSON.stringify(t.node.data)}@${t.start}-${t.end}`)
+      .join(' ')}`,
+  );
+  out.push(
+    // but for what is never drawn, which a restyle in place leaves out
+    `styles: ${[...tree.styles]
+      .filter(([el]) => !UNDRAWN.includes(el.name))
+      .map(
+        ([el, { style, inFlex }]) =>
+          `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
+      )
+      .join(' ')}`,
+  );
+  return out;
 }

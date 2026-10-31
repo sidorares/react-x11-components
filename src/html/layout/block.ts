@@ -202,6 +202,9 @@ import {
 
 export interface LayoutContext {
   fonts: FontsLike | null;
+  /** The engine `fonts` lay text out by (`FontsLike.engine`), which what a
+   *  layout keeps of a box was laid out by. */
+  engine: FontsLike | null;
   /** Device pixels to a CSS pixel, the unit every length here is in: what
    *  `text-wrap: pretty` scales its scores by (`InlineOptions.scale`). */
   scale?: number;
@@ -913,7 +916,7 @@ function standFor(child: Box, ctx: LayoutContext, width: number): Stand | null {
     stand.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(stand.under, ctx) ||
     stand.scale !== ctx.scale ||
-    stand.fonts !== ctx.fonts
+    stand.fonts !== ctx.engine
   ) {
     return null;
   }
@@ -945,7 +948,7 @@ function standAfter(
     viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
-    fonts: ctx.fonts,
+    fonts: ctx.engine,
     serial: child.layoutSerial,
     bottom: child.y + child.height - childY,
     hanging: bottomOf(child),
@@ -1008,7 +1011,7 @@ function noteLaid(
     viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
-    fonts: ctx.fonts,
+    fonts: ctx.engine,
     dx: child.x - contentLeft,
     dy: child.y - y,
     marginBottom: child.marginBottom,
@@ -1042,7 +1045,7 @@ function reuseLaid(
     laid.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(laid.under, ctx) ||
     laid.scale !== ctx.scale ||
-    laid.fonts !== ctx.fonts ||
+    laid.fonts !== ctx.engine ||
     ctx.blockers!.blockers.has(child) ||
     !Number.isFinite(child.x) ||
     !Number.isFinite(child.y)
@@ -1087,7 +1090,7 @@ export function mayKeepLaid(
     was.viewportWidth === ctx.viewportWidth &&
     heightHolds(was.under, ctx) &&
     was.scale === ctx.scale &&
-    was.fonts === ctx.fonts &&
+    was.fonts === ctx.engine &&
     !ctx.blockers!.blockers.has(box) &&
     Number.isFinite(box.x) &&
     Number.isFinite(box.y)
@@ -1156,6 +1159,20 @@ function noteBlockers(
     if (movesAfterFlow(box)) {
       for (let up: Box | null = box; up && !moved.has(up); up = up.parent) {
         moved.add(up);
+      }
+    }
+    // a flow in another writing mode is laid out as a whole, as what holds
+    // it is, so that no layout keeps a frame: its heights run across the
+    // page, and what a kept block is moved by is the page's
+    if (framed.any && FRAMES.has(box)) {
+      // all the way up: an absolute box marks those only as far as what it
+      // is placed against, and a kept frame reads no viewport's height
+      for (let up = box.parent; up; up = up.parent) blockers.add(up);
+      const held = [box];
+      while (held.length) {
+        const at = held.pop()!;
+        blockers.add(at);
+        for (const child of at.children) held.push(child);
       }
     }
     if (
@@ -1643,14 +1660,10 @@ export function layoutDocument(
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
   const keep = cuts && above !== undefined ? keepAbove(tree, above) : null;
-  const reusing =
-    !cuts &&
-    !tree.anchors &&
-    !tree.vertical &&
-    !tree.firstLine &&
-    !tree.foreign;
+  const reusing = !cuts && !tree.anchors && !tree.firstLine && !tree.foreign;
   const ctx: LayoutContext = {
     fonts,
+    engine: fonts?.engine ?? fonts,
     scale,
     viewportWidth,
     viewportHeight,
@@ -5180,17 +5193,39 @@ const PREFERRED = new WeakMap<Box, number>();
  * next asked for.
  */
 export function forgetSizes(box: Box): void {
-  for (let at: Box | null = box; at; at = at.parent) {
-    at.intrinsicMinContent = -1;
-    at.intrinsicMaxContent = -1;
-    PREFERRED.delete(at);
-    PERCENT_HEIGHTS.delete(at);
-    FLOW_PLACE.delete(at);
-    LAID.delete(at);
-    STANDS.delete(at);
-    if (stoodAny) STOOD.delete(at);
-    forgetMaxContent(at);
-    forgetGridItem(at);
+  for (let at: Box | null = box; at; at = at.parent) forgetOne(at);
+}
+
+function forgetOne(at: Box): void {
+  at.intrinsicMinContent = -1;
+  at.intrinsicMaxContent = -1;
+  PREFERRED.delete(at);
+  PERCENT_HEIGHTS.delete(at);
+  FLOW_PLACE.delete(at);
+  LAID.delete(at);
+  STANDS.delete(at);
+  if (stoodAny) STOOD.delete(at);
+  forgetMaxContent(at);
+  forgetGridItem(at);
+}
+
+/**
+ * `forgetSizes` of all a box holds as well, and of the boxes around it up
+ * to one a call before it reached, whose own way up was gone over then:
+ * for a run of blocks set again, whose text may be in an inline-block's or
+ * a table's cell (`HtmlViewNode._takeFaces`), where one call for each would
+ * go over the document's root as many times.
+ */
+export function forgetSizesIn(box: Box, up: Set<Box>): void {
+  const stack: Box[] = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    forgetOne(at);
+    for (const child of at.children) stack.push(child);
+  }
+  for (let at: Box | null = box; at && !up.has(at); at = at.parent) {
+    up.add(at);
+    forgetOne(at);
   }
 }
 
@@ -8304,7 +8339,7 @@ function establishesInlineContext(box: Box): boolean {
   return sawInline;
 }
 
-function isInlineLevel(box: Box): boolean {
+export function isInlineLevel(box: Box): boolean {
   const d = box.style.display;
   return (
     d === 'inline' ||

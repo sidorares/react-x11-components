@@ -724,6 +724,11 @@ export interface ComputedStyle {
    *  `<meta name=color-scheme>`, which leaves the root's `normal`. */
   colorSchemeKeywords: string;
   fontFamily: string;
+  /** The list `fontFamily` was made from, as the sheets wrote it, where
+   *  `fontFamily` is what the text engine is handed: two lists can come to
+   *  one of those while no face of a family has loaded, and only this says
+   *  which of them a face that arrives is for (`WebFonts.affects`). */
+  familyWritten: string;
   fontSize: number;
   /** What `fontSize` is worked out from — an absolute-size keyword, a size
    *  relative to such a keyword's, or a length that is its own — which
@@ -1534,6 +1539,7 @@ export const INHERITED = [
   'colorSchemeKeywords',
   'textFillColor',
   'fontFamily',
+  'familyWritten',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -1701,6 +1707,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     colorScheme: look.normalScheme ?? look.colorScheme,
     colorSchemeKeywords: 'normal',
     fontFamily: look.fontFamily,
+    // the host's, which is no list of the sheets' and is handed on as it is
+    familyWritten: '',
     fontSize: look.fontSize,
     // the host's font is a browser's standard font, which is no generic
     fontSizeBasis: 'medium',
@@ -2080,6 +2088,7 @@ export function inherit(
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
+  out.familyWritten = parent.familyWritten;
   out.fontSize = parent.fontSize;
   out.fontSizeBasis = parent.fontSizeBasis;
   out.genericMonospace = parent.genericMonospace;
@@ -2248,6 +2257,7 @@ export const FIRST_LINE_INHERITED = [
   'colorSource',
   'textFillColor',
   'fontFamily',
+  'familyWritten',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -4086,6 +4096,7 @@ export function applyDeclaration(
       const fallback = generic ? null : (ctx.fallbackFamily?.() ?? null);
       const full = fallback ? `${list}, ${fallback}` : list;
       style.fontFamily = ctx.families ? ctx.families(full) : full;
+      style.familyWritten = full;
       // the generic `monospace` alone — a browser's IsMonospace, which a
       // quoted 'monospace' is not — or the host's code face where the UA
       // sheet names it, which stands for that generic
@@ -8807,7 +8818,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-image-width': ['borderImage'],
   'border-image-outset': ['borderImage'],
   'border-image-repeat': ['borderImage'],
-  'font-family': ['fontFamily', 'genericMonospace'],
+  'font-family': ['fontFamily', 'familyWritten', 'genericMonospace'],
   'font-size': ['fontSize', 'fontSizeBasis'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
@@ -8816,6 +8827,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   // would be read as a multiple of the font size
   font: [
     'fontFamily',
+    'familyWritten',
     'genericMonospace',
     'fontSize',
     'fontSizeBasis',

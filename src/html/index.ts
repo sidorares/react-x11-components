@@ -1381,7 +1381,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         force();
       },
       elementAt: (x: number, y: number) =>
-        nodeRef.current?.elementAtPoint(x, y) ?? null,
+        (nodeRef.current?.settle(), nodeRef.current?.elementAtPoint(x, y)) ??
+        null,
       hrefAt: (x: number, y: number) =>
         nodeRef.current?.hrefAtPoint(x, y) ?? null,
       elementRect: (element: Element) =>
@@ -1477,6 +1478,9 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         target?: Element | null,
       ) =>
         nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
+      styleWhileOwed: (element, pseudo) =>
+        nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
+      layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
       computedStyle: (
         element: Element,
         pseudo?: 'before' | 'after' | HighlightPseudo | null,
@@ -1784,6 +1788,7 @@ function useDocumentEvents(
       fire('mouseup', target, mouse(ev));
     },
     onKeyDownCapture: (ev: X11KeyboardEvent<DrawnNode>) => {
+      view.current?.noteInput();
       if (embedded.contains(ev.target as DrawnNode)) return;
       // a modifier alone, or a chord, is no move through the document:
       // Ctrl+C after a click leaves a script's focus without its ring

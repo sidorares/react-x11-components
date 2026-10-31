@@ -496,6 +496,20 @@ export const ROOT_LINE_HEIGHT = 2;
 /** What each style read of the root's, by the style, as `VIEWPORT_SIDES`. */
 const ROOT_READS = new WeakMap<ComputedStyle, number>();
 
+/**
+ * The styles that hold a length read from a face: an `ex`, a `ch`, an `lh`
+ * of a `normal` line height. What a face that arrives changes in a style is
+ * its family list, which a style can take where it is
+ * (`HtmlViewNode._takeFaces`); these come out otherwise, and are computed
+ * again. Noted by the style, since a style is shared, as `ROOT_READS` is.
+ */
+const FACE_READS = new WeakSet<ComputedStyle>();
+
+/** Whether a length in a style was read from a face (`FACE_READS`). */
+export function readsFace(style: ComputedStyle): boolean {
+  return FACE_READS.has(style);
+}
+
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
   rule: StyleRule;
@@ -4119,6 +4133,9 @@ export class Cascade {
     this._rootRead |= ROOT_LINE_HEIGHT;
     this._rootBits |= ROOT_LINE_HEIGHT;
   }
+  /** Whether a length in the style being computed was read from a face
+   *  (`FACE_READS`), as `_sidesRead` is. */
+  private _faceRead = false;
   private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
     if (unit !== 'vh') {
       this._heldWidth = true;
@@ -7734,9 +7751,19 @@ export class Cascade {
     return style;
   }
 
+  /** Faces came or changed: what was read of one is read again, the list
+   *  it is kept under being the same where a family has another weight now
+   *  (`HtmlViewNode._takeFaces`). */
+  facesChanged(): void {
+    this._xHeights.clear();
+    this._zeroWidths.clear();
+    this._normalLines.clear();
+  }
+
   /** The x-height of a style's font: the font's own, asked once per face,
    *  or half an em. */
   private _exOf(style: FaceSource): number {
+    this._faceRead = true;
     const key = faceKey(style);
     let ex = this._xHeights.get(key);
     if (ex === undefined) {
@@ -7750,6 +7777,7 @@ export class Cascade {
   /** The advance of a style's font's "0": the font's own, asked once per
    *  face, or half an em. */
   private _chOf(style: FaceSource): number {
+    this._faceRead = true;
     const key = faceKey(style);
     let ch = this._zeroWidths.get(key);
     if (ch === undefined) {
@@ -7767,6 +7795,7 @@ export class Cascade {
     if (set !== 'normal') {
       return style.lineHeightIsLength ? set : set * style.fontSize;
     }
+    this._faceRead = true;
     const key = faceKey(style);
     let line = this._normalLines.get(key);
     if (line === undefined) {
@@ -7806,8 +7835,10 @@ export class Cascade {
     // what of the root's font, the same way (`rootReaders`)
     const outer = this._sidesRead;
     const outerRoot = this._rootBits;
+    const outerFace = this._faceRead;
     this._sidesRead = 0;
     this._rootBits = 0;
+    this._faceRead = false;
     const style = this._computeStyleOf(
       el,
       parentStyle,
@@ -7824,6 +7855,8 @@ export class Cascade {
         this._pseudoSides.set(el, (this._pseudoSides.get(el) ?? 0) | sides);
       }
     }
+    if (this._faceRead) FACE_READS.add(style);
+    this._faceRead ||= outerFace;
     const rootBits = this._rootBits;
     this._rootBits = outerRoot | rootBits;
     if (rootBits) {

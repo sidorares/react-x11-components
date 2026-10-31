@@ -18,11 +18,20 @@ import {
 } from '../../src/html/index.js';
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
-import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
+import { buildsAtEnd } from '../../src/html/layout/boxes.js';
 import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
-import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
+import {
+  FONTS,
+  h,
+  metric,
+  pathOf,
+  render,
+  renderScrolled,
+  treeLines,
+  view,
+} from './harness.js';
 import { resizeClock } from '../../src/html/node.js';
 import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
@@ -41,7 +50,7 @@ function random(seed: number): () => number {
   };
 }
 
-const CLASSES = 'abcdefghijklmnopq'.split('');
+const CLASSES = 'abcdefghijklmnopqrs'.split('');
 const SHEET = `body { margin: 0; font-size: 14px }
 .a { display: flex; gap: 4px }
 .b { color: #aa0000 }
@@ -62,6 +71,12 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .o { position: relative; top: 3px; left: 2px }
 .p { transform: translate(5px, 2px) }
 .q { overflow: hidden; height: 20px }`;
+/** And flows in another writing mode, which a build of subtrees stops at:
+ *  a change in one builds the whole document, so a sheet that means to see
+ *  subtrees built at every step leaves them out. */
+const FRAMED_SHEET = `${SHEET}
+.r { writing-mode: vertical-rl; height: 60px }
+.s { writing-mode: vertical-lr }`;
 
 const BLOCKS = ['div', 'p', 'section', 'h2'];
 const INLINES = ['span', 'b', 'a'];
@@ -313,123 +328,6 @@ function change(next: () => number, body: Element): HtmlChange[] {
 }
 
 /** Where an element is: its indices down from the document. */
-function pathOf(el: Element | null | undefined): string {
-  if (!el) return '-';
-  const steps: number[] = [];
-  for (let at: Element = el; at.parent; at = at.parent as Element) {
-    steps.push((at.parent as Element).children.indexOf(at));
-  }
-  return steps.reverse().join('.');
-}
-
-/** What a box says of itself that two builds must agree on. */
-function boxLine(box: Box): string {
-  const s = box.style;
-  const el = box.el ?? GENERATED_FROM.get(box);
-  return [
-    box.kind,
-    pathOf(el),
-    box.pseudo ?? '',
-    JSON.stringify(box.text),
-    `${box.textStart}-${box.textEnd}`,
-    `${box.subtreeTextStart}-${box.subtreeTextEnd}`,
-    // a text's, a break's or an inline box's rect is never laid out, and
-    // `translate` moves it with the rest, pass after pass
-    box.kind === 'text' || box.kind === 'break' || box.kind === 'inline'
-      ? ''
-      : // to a thousandth of a pixel: Yoga's sizes are float32, and one a
-        // kept box's layout measured comes out a last bit or two apart
-        [box.x, box.y, box.width, box.height]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-    s.display,
-    s.position,
-    s.float,
-    s.color,
-    s.fontSize,
-    s.whiteSpace,
-    s.userSelect,
-    box.outOfFlow ? 'out' : '',
-    box.isFloat ? 'float' : '',
-    // and where it inks, which a block a layout kept is walked for again;
-    // a text's is its line's
-    box.kind === 'text' || box.kind === 'break'
-      ? ''
-      : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-    box.lines?.length ?? '',
-    // a list item's number
-    box.marker ? JSON.stringify(box.marker.text) : '',
-    // where its lines and the text on them are drawn, which a block kept
-    // from an earlier layout carries with it
-    (box.lines ?? [])
-      .map((line) =>
-        [
-          line.x,
-          line.y,
-          line.width,
-          line.height,
-          line.baseline,
-          ...line.texts.flatMap((t) => [t.drawX, t.drawY]),
-        ]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-      )
-      .join(';'),
-  ].join('|');
-}
-
-/** The elements the UA's sheet never draws, whose styles a build that
- *  restyles what a change reached may leave out. */
-const UNDRAWN = [
-  'script',
-  'style',
-  'link',
-  'meta',
-  'title',
-  'base',
-  'template',
-];
-
-/** A tree as two builds of one document must have it alike. */
-function treeLines(tree: BoxTree): string[] {
-  const out: string[] = [];
-  const walk = (box: Box, depth: number) => {
-    out.push(`${' '.repeat(depth)}${boxLine(box)}`);
-    for (const child of box.children) walk(child, depth + 1);
-  };
-  walk(tree.root, 0);
-  const boxes = (name: string, list: readonly Box[]) =>
-    out.push(
-      `${name}: ${list.map((b) => boxLine(b).split('|').slice(0, 3).join('|')).join(' ')}`,
-    );
-  boxes('textBoxes', tree.textBoxes);
-  boxes('controls', tree.controls);
-  boxes('links', tree.links);
-  boxes('focusables', tree.focusables);
-  boxes('backgrounds', tree.backgrounds);
-  boxes('images', tree.images);
-  out.push(`text: ${JSON.stringify(tree.text)}`);
-  out.push(`unselectable: ${tree.unselectable.join(',')}`);
-  out.push(
-    `textNodes: ${(tree.textNodes ?? [])
-      .map((t) => `${JSON.stringify(t.node.data)}@${t.start}-${t.end}`)
-      .join(' ')}`,
-  );
-  out.push(
-    // but for what is never drawn, which a restyle in place leaves out
-    `styles: ${[...tree.styles]
-      .filter(([el]) => !UNDRAWN.includes(el.name))
-      .map(
-        ([el, { style, inFlex }]) =>
-          `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
-      )
-      .join(' ')}`,
-  );
-  return out;
-}
-
 metric(
   'a build of the subtrees a change reached makes the tree a build of the whole document makes',
   async () => {
@@ -451,7 +349,7 @@ metric(
       for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
       const markup = DomUtils.getOuterHTML(body as never);
       const { result, node } = await render(
-        `<!doctype html><html><head><style>${SHEET}</style></head>${markup}</html>`,
+        `<!doctype html><html><head><style>${seed % 3 ? SHEET : FRAMED_SHEET}</style></head>${markup}</html>`,
         320,
       );
       const el = view(node);
@@ -1768,9 +1666,10 @@ const MOVING_SHEET = `body { margin: 0; font-size: 14px }
 .fx { display: flex; gap: 3px }
 .gr { display: grid; grid-template-columns: 1fr 1fr }
 .tall { min-height: 90px }
+.v { writing-mode: vertical-rl; height: 60px }
 p { margin: 4px 0 }`;
 
-const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr'];
+const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr', 'v'];
 
 function moving(next: () => number, depth: number): Element {
   const pick = <T>(list: readonly T[]): T =>
@@ -2009,6 +1908,136 @@ metric(
     assert.ok(
       line < 0 && kept.length === whole.length,
       `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+    );
+  },
+);
+
+metric(
+  'a change beside a flow in another writing mode builds what it reached, keeps the blocks around it, and moves the frame as a whole build places it',
+  async () => {
+    // an MDN article's live sample in a vertical writing mode made every
+    // build of the page whole, and CodeMirror's six updates of a cursor's
+    // layer held one task for a second and a half
+    const paragraphs: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      paragraphs.push(`<p id="p${i}">a paragraph of the page</p>`);
+    }
+    const { el } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 2px 0 } .v { height: 80px }</style></head><body>' +
+        '<p id="above">above</p>' +
+        '<div class="v" id="rl" style="writing-mode: vertical-rl">' +
+        '<p id="in">in the flow</p></div>' +
+        '<div class="v" id="lr" style="writing-mode: vertical-lr">' +
+        '<p>in another</p></div>' +
+        `${paragraphs.join('')}</body></html>`,
+      240,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const box = (id: string) =>
+      internals._firstBoxesOf(internals._tree).get(byId(id))!;
+    assert.ok(internals._tree.vertical, 'a flow in another writing mode');
+    const write = async (id: string): Promise<void> => {
+      const text = byId(id).children[0] as unknown as { data: string };
+      text.data += ', and a line more of words than it had before it';
+      el.touchDocument([{ type: 'characterData', target: text as never }]);
+      await act();
+    };
+    const asWhole = async (what: string): Promise<void> => {
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `${what}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    };
+    // beside it, after it: built apart, and what is around it kept
+    const far = box('p30');
+    const serial = far.layoutSerial;
+    await write('p3');
+    assert.strictEqual(box('p30'), far, 'a box it did not reach is the same');
+    assert.strictEqual(far.layoutSerial, serial, 'and was not laid out');
+    await asWhole('beside the frames');
+    // before it, which moves it down the page and all after it
+    const moved = box('p30');
+    const was = moved.layoutSerial;
+    await write('above');
+    assert.strictEqual(box('p30'), moved, 'kept below what moved');
+    assert.strictEqual(moved.layoutSerial, was, 'and moved whole');
+    await asWhole('above the frames');
+    // and in it, which only a build of the whole can make
+    await write('in');
+    await asWhole('in a frame');
+  },
+);
+
+metric(
+  'a frame fit to the viewport follows its height, wherever an absolute box beside it stops what it marks',
+  async () => {
+    const words = 'one two three four five six seven eight nine '.repeat(8);
+    const sections = '<section><p>a section</p></section>'.repeat(12);
+    const follows = async (flow: string, what: string) => {
+      const { el, resize, result } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          '.v { writing-mode: vertical-rl } .pos { position: relative }' +
+          '.ab { position: absolute; top: 2px; right: 3px; width: 12px;' +
+          ' height: 6px }</style></head><body><main>' +
+          `<section id="a"><p>before</p></section>${flow}${sections}` +
+          '</main></body></html>',
+        200,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const frame = () =>
+        internals._firstBoxesOf(internals._tree).get(byId('v'))!;
+      const serial = frame().layoutSerial;
+      const target = byId('a');
+      const child = createElement('p', {}, [createText('more')]);
+      appendChild(target, child);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target,
+          addedNodes: [child],
+          removedNodes: [],
+          previousSibling: target.children[0],
+          nextSibling: null,
+        } as HtmlChange,
+      ]);
+      await act();
+      assert.notStrictEqual(frame().layoutSerial, serial, `${what}: laid out`);
+      await resize(120);
+      const after = frame().height;
+      internals._invalidate(2);
+      await act();
+      assert.strictEqual(after, frame().height, what);
+      result.unmount();
+    };
+    await follows(`<aside id="v" class="v">${words}</aside>`, 'plain');
+    await follows(
+      `<section class="pos"><div><aside id="v" class="v">${words}</aside>` +
+        '<i class="ab"></i></div></section>',
+      'between an absolute box and what it is placed against',
     );
   },
 );

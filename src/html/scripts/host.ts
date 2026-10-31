@@ -95,7 +95,7 @@ import {
 import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
-import { cssomStyle } from '../computed.js';
+import { comesFromBox, cssomStyle } from '../computed.js';
 import { fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { DocumentFontFace, FontMatch } from '../fonts.js';
@@ -345,6 +345,13 @@ export interface HandleInternals {
   /** A page's script was stopped inside an op, and what the document was
    *  in the middle of is made again (`HtmlViewNode.interrupted`). */
   interrupted(): void;
+  /** `computedStyle` leaving what is owed waiting, whose boxes may yet move
+   *  where `layoutOwed` says so (`HtmlViewNode.computedStyle`). */
+  styleWhileOwed(
+    element: Element,
+    pseudo: string | null,
+  ): Record<string, string> | null;
+  layoutOwed(): boolean;
   /** The document's `@font-face` faces, as `document.fonts` lists them
    *  (`HtmlViewNode.fontFaces`). */
   fontFaces(): DocumentFontFace[];
@@ -3893,10 +3900,19 @@ export class DomHost {
           const style = this._frameStyle(this._element(a), pseudo);
           return style ? JSON.stringify(style) : '';
         }
-        const style = this._seams.handle.computedStyle(
-          this._element(a),
-          pseudo,
-        );
+        // a style can be read with text waiting to be set again, which only
+        // moves its boxes: marked so with a `~`, and asked for again with
+        // the property (`c`) where a page reads one a box decides
+        const { handle } = this._seams;
+        if (typeof c === 'string') {
+          if (!comesFromBox(c)) return '';
+        } else if (handle.styleWhileOwed) {
+          const style = handle.styleWhileOwed(this._element(a), pseudo);
+          if (!style) return '';
+          const json = JSON.stringify(style);
+          return handle.layoutOwed?.() ? `~${json}` : json;
+        }
+        const style = handle.computedStyle(this._element(a), pseudo);
         return style ? JSON.stringify(style) : '';
       }
       // one custom property's, by its name: a theme's hundreds are no part
