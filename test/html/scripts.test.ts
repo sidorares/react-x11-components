@@ -5238,6 +5238,30 @@ test('a :has() answers again as what an entry starts at comes inside its element
   assert.notStrictEqual(colour(), HAS_MATCHED, 'the element itself');
 });
 
+test('a page’s selector with a combinator in a function answers again as a script changes what it reads: Chrome’s answers', async () => {
+  // a compiled query is kept by its selector, and css-select keeps what a
+  // descendant combinator after such a function found for as long as the
+  // matcher lives
+  const doc = await hosted(
+    '<div id="o"><div class="a"><span class="y" id="t"></span></div></div>' +
+      '<p id="out"></p><script>' +
+      'var o = document.getElementById("o"), t = document.getElementById("t"), r = [];' +
+      'var ask = function (s) {' +
+      '  return [t.matches(s), document.querySelector(s) === t,' +
+      '    t.closest(s) === t, document.querySelectorAll(s).length].join();' +
+      '};' +
+      'var both = function () {' +
+      '  r.push(ask(":is(.x .a) .y"), ask(".a:not(.x .a) .y"));' +
+      '};' +
+      'both(); o.classList.add("x"); both(); o.classList.remove("x"); both();' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const no = 'false,false,false,0';
+  const yes = 'true,true,true,1';
+  assert.equal(doc.text('out'), [no, yes, yes, no, no, yes].join('|'));
+});
+
 test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {
   const doc = await hosted(
     '<style>x-late:not(:defined) { display: none } x-late:defined { color: rgb(1, 2, 3) }</style>' +

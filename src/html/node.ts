@@ -2448,8 +2448,9 @@ export class HtmlViewNode extends Node {
         place(sheet, element);
       }
       for (const text of extras) {
-        const sheet = parseStylesheet(text, order, layers);
-        order += sheet.rules.length + 1;
+        const sheet = this._parseSheet(text, layers, null, null);
+        for (const rule of sheet.rules) rule.order = order++;
+        order += 1;
         if (sheet.rules.length) {
           sheet.source = { url: null, element: null, text };
         }

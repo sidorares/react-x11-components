@@ -658,7 +658,7 @@ class RuleIndex {
     key = rightmostKey(rule.selector),
     scope = 0,
     host: ((host: Element) => boolean) | null = null,
-  ): void {
+  ): IndexedRule {
     this.size += 1;
     const indexed: IndexedRule = {
       rule,
@@ -696,6 +696,7 @@ class RuleIndex {
       this.pointer.size += 1;
       this.pointer._bucket(key).push(indexed);
     }
+    return indexed;
   }
 
   private _bucket(key: SelectorKey): IndexedRule[] {
@@ -1697,8 +1698,8 @@ const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
 
 /** A selector whose matcher keeps answers (`cacheResults`): css-select
  *  keeps what a `:has()`, a `:contains()` or an `:icontains()` answered for
- *  an element, and in a selector with one, what a descendant combinator
- *  found above it. Every other matcher keeps nothing. */
+ *  an element, and what a descendant combinator after one found above it.
+ *  Every other matcher is told to keep nothing (`compileSelector`). */
 const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 
 /** css-select's `aliases`, which it does not export: pseudo-classes it
@@ -1858,6 +1859,14 @@ export function compileHoisted<Pseudos extends object>(
  * under `label:has(:checked)` was ticked, and before an application's
  * `refresh()`. Only those, and only once they are next asked: compiling
  * one is a few microseconds, and a page's rules are mostly not them.
+ *
+ * Any other selector keeps nothing, and has to be told: a descendant
+ * combinator after an `:is()` or a `:not()` with a combinator in it keeps
+ * what it found as one after a `:has()` does (fb55/css-select#1929), so
+ * `:is(.x .a) .y` answered what it did before the `.x` came. Telling them
+ * changes nothing else, and a selector with no such function has nothing
+ * to turn off. A release that narrows that cache leaves this as it is:
+ * these matchers outlive a change, which is what the option is for.
  */
 function compileSelector(
   selector: string,
@@ -1867,7 +1876,8 @@ function compileSelector(
    *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
   cache = true,
 ): (el: Element) => boolean {
-  const keep = cache && !STATE_PSEUDO.test(selector);
+  const keep =
+    cache && KEEPS_ANSWERS.test(selector) && !STATE_PSEUDO.test(selector);
   // where the siblings are the tree's own: a `<use>`'s copy has its own
   const kept =
     adapter.getSiblings === DomUtils.getSiblings ? nthKept : (s: string) => s;
@@ -1888,7 +1898,7 @@ function compileSelector(
     );
   // compiled here, so a selector css-select refuses throws to the caller
   let match = make();
-  if (!keep || !KEEPS_ANSWERS.test(selector)) return match;
+  if (!keep) return match;
   let at = treeGeneration();
   return (el) => {
     const now = treeGeneration();
@@ -3862,6 +3872,8 @@ export class Cascade {
    *  keeps its `@keyframes` under `prefers-reduced-motion`, and every
    *  breakpoint a drag crossed styled the whole page again. */
   private _mediaOutsideRules: MediaCondition[][][] = [];
+  /** …and those over a `@keyframes`, read from the sheets by each cascade. */
+  private _keyframeMedia: MediaCondition[][][] = [];
   /** The rules for pseudo-elements, kept apart: they never style the
    *  element itself, and a document with none of them asks nothing. */
   private _pseudo: Record<PseudoElement, RuleIndex> = {
@@ -3893,7 +3905,7 @@ export class Cascade {
    *  `<svg>`, which have none (`shapeStyles`). */
   private _shapes = new RuleIndex();
   private _shapeNeeds: ShapeNeeds | null = null;
-  private _adapter: CssSelectAdapter;
+  private _adapter!: CssSelectAdapter;
   /** The rules of the indexes by id, for `matchedRules`, made once asked. */
   private _rulesById: Map<number, IndexedRule> | null = null;
   /** The sheets it was made from, the document's and the shadow trees',
@@ -3911,7 +3923,7 @@ export class Cascade {
    * the pointer, as nothing in a drawing is: it has no box to be.
    */
   private _copyTop: Element | null = null;
-  private _copyAdapter: CssSelectAdapter;
+  private _copyAdapter!: CssSelectAdapter;
   /** What the selectors that test the pointer, and the ones that test the
    *  focus, say of the elements a change of it reaches. */
   private _hoverRules = new StateRules(HOVER_STATE);
@@ -3921,6 +3933,20 @@ export class Cascade {
   private _changeRules = new MutationRules();
   /** The sheets those three have read. */
   private _noted = new Set<Stylesheet>();
+  /** The sheets whose rules are in the indexes, by the tree they are filed
+   *  under (`_stillHolds`). */
+  private _filed = new Map<Stylesheet, TreeRules>();
+  /** The rules filed by this cascade, in `_index` and `_pseudo`: all of
+   *  them, or those it added to the indexes it took over (`addedReach`). */
+  private _latest: IndexedRule[] = [];
+  /** Each rule of the indexes made from a sheet's under another selector,
+   *  followed by the sheet's: its place in the cascade is the sheet's rule's,
+   *  which a sheet put in before it moves (`_takeOver`). */
+  private _restated: StyleRule[] = [];
+  /** The cascade in force, which the matchers ask for the pointer, the focus
+   *  and the target: one is compiled once, and may outlive the cascade it
+   *  was compiled for (`_takeOver`). */
+  private _current: { cascade: Cascade } = { cascade: this };
   /** What `attributeChange` asks: each attribute selector compiled alone
    *  (`_flips`), each anchor's compound, and each set of anchors as one. */
   private _attributeTests = new Map<
@@ -4289,7 +4315,7 @@ export class Cascade {
   private _writing = false;
   /** The pseudo-classes css-select is handed: `:root` this cascade's, and
    *  the focus's three answered from `_focus`. */
-  private _pseudos: typeof PSEUDOS;
+  private _pseudos!: typeof PSEUDOS;
   /** The colour schemes the page says it supports with a `<meta
    *  name="color-scheme">` (HTML 4.2.5.4), which its root element takes
    *  as it takes a presentational attribute: under any rule that sets its
@@ -4327,36 +4353,28 @@ export class Cascade {
     /** The shadow trees' sheets, a set for each way they read: what each
      *  styles is in the trees bound to it (`bindShadows`). */
     shadows: readonly ShadowSheets[] = [],
-    /** The cascade this one takes over from, whose reading of its sheets
-     *  this one's are spared (`_noted`). */
+    /** The cascade this one takes over from: its reading of its sheets
+     *  (`_noted`), and its indexes where it holds nothing that has gone
+     *  (`_takeOver`). */
     before: Cascade | null = null,
   ) {
     this._sheets = [...sheets, ...shadows.flatMap((tree) => tree.sheets)];
+    const takes = before !== null && before._stillHolds(sheets, shadows);
     // What a rule says it tests is the same in every cascade it is in, and
     // reading that is most of what making one costs: a page that links five
     // sheets late read every rule of all of them for each, a second of
     // GitHub's load. A reading only ever says more, and what a rule that
     // has gone left in it reaches more than it need, never less, so it is
     // kept but for a few sheets gone.
-    if (before && before._noted.size <= this._sheets.length + SHEETS_GONE) {
+    if (
+      before &&
+      (takes || before._noted.size <= this._sheets.length + SHEETS_GONE)
+    ) {
       this._hoverRules = before._hoverRules.rebound();
       this._focusRules = before._focusRules.rebound();
       this._changeRules = before._changeRules;
       this._noted = before._noted;
     }
-    // css-select has none of the focus's three, and a pseudo-class is
-    // handed only the element, so they are this cascade's own closures
-    this._pseudos = {
-      ...PSEUDOS,
-      ...(documentElement && {
-        root: (el: Element) => el === documentElement,
-      }),
-      target: (el: Element) => el === this._target,
-      focus: (el: Element) => this._focus.element === el,
-      'focus-visible': (el: Element) =>
-        this._focus.visible && this._focus.element === el,
-      'focus-within': (el: Element) => this._focus.within.has(el),
-    };
     this._target = target;
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
@@ -4372,37 +4390,8 @@ export class Cascade {
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
     this.scale = scale;
-    // Before the sheets, whose rules at a shadow tree's edges are compiled
-    // as they are read (`_addScoped`).
-    // css-select's default adapter is domutils; `isHovered` and `isActive`
-    // are its documented hooks for exactly this, so `:hover` costs an
-    // adapter field rather than a fork of the matcher.
-    // `{ ...DomUtils, isTag }` is css-select's own default adapter, spelled
-    // out because domutils 4 no longer carries `isTag` — it moved to
-    // domhandler — and because the three pointer hooks are the whole reason
-    // for building one at all.
-    this._adapter = {
-      ...DomUtils,
-      isTag,
-      // a type selector sees `tagOf`'s name — XHTML's `<svg:svg>` is an
-      // `svg` — asked only of a name that could be one: this runs for every
-      // type selector tried, and the parser has lowercased the rest
-      getName: (el: Element) =>
-        el.name.endsWith(':svg') ? tagOf(el) : el.name,
-      isHovered: (el: Element) => this._pointer.hovered.has(el),
-      isActive: (el: Element) => this._pointer.active.has(el),
-      isVisited: () => false,
-    };
-    this._copyAdapter = {
-      ...this._adapter,
-      getParent: (el) => (el === this._copyTop ? null : DomUtils.getParent(el)),
-      getSiblings: (el) =>
-        el === this._copyTop ? [el] : DomUtils.getSiblings(el),
-      prevElementSibling: (el) =>
-        el === this._copyTop ? null : DomUtils.prevElementSibling(el),
-      isHovered: () => false,
-      isActive: () => false,
-    };
+    if (takes) this._takeOver(before);
+    else this._makeMatchers(documentElement);
     const breakpoints = new Set<number>();
     const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
@@ -4464,18 +4453,177 @@ export class Cascade {
     this.counterStyles = new CounterStyles(counterStyles);
   }
 
+  /** What a matcher is compiled over: made before the sheets, whose rules
+   *  at a shadow tree's edges are compiled as they are read (`_addScoped`),
+   *  and reaching what they ask through `_current`, not `this`. */
+  private _makeMatchers(documentElement: Element | null): void {
+    const now = this._current;
+    // css-select has none of the focus's three, and a pseudo-class is
+    // handed only the element, so they are closures of the cascade's own
+    this._pseudos = {
+      ...PSEUDOS,
+      ...(documentElement && {
+        root: (el: Element) => el === documentElement,
+      }),
+      target: (el: Element) => el === now.cascade._target,
+      focus: (el: Element) => now.cascade._focus.element === el,
+      'focus-visible': (el: Element) =>
+        now.cascade._focus.visible && now.cascade._focus.element === el,
+      'focus-within': (el: Element) => now.cascade._focus.within.has(el),
+    };
+    // css-select's default adapter is domutils; `isHovered` and `isActive`
+    // are its documented hooks for exactly this, so `:hover` costs an
+    // adapter field rather than a fork of the matcher.
+    // `{ ...DomUtils, isTag }` is css-select's own default adapter, spelled
+    // out because domutils 4 no longer carries `isTag` — it moved to
+    // domhandler — and because the three pointer hooks are the whole reason
+    // for building one at all.
+    this._adapter = {
+      ...DomUtils,
+      isTag,
+      // a type selector sees `tagOf`'s name — XHTML's `<svg:svg>` is an
+      // `svg` — asked only of a name that could be one: this runs for every
+      // type selector tried, and the parser has lowercased the rest
+      getName: (el: Element) =>
+        el.name.endsWith(':svg') ? tagOf(el) : el.name,
+      isHovered: (el: Element) => now.cascade._pointer.hovered.has(el),
+      isActive: (el: Element) => now.cascade._pointer.active.has(el),
+      isVisited: () => false,
+    };
+    this._copyAdapter = {
+      ...this._adapter,
+      getParent: (el) =>
+        el === now.cascade._copyTop ? null : DomUtils.getParent(el),
+      getSiblings: (el) =>
+        el === now.cascade._copyTop ? [el] : DomUtils.getSiblings(el),
+      prevElementSibling: (el) =>
+        el === now.cascade._copyTop ? null : DomUtils.prevElementSibling(el),
+      isHovered: () => false,
+      isActive: () => false,
+    };
+  }
+
   /**
-   * A sheet's rules into the indexes, filed under the tree they are for —
-   * the user agent's for every tree — and its `@keyframes` into that
-   * tree's. The rules written from inside a shadow tree about what is
-   * outside it — `:host`, `::slotted()` — and from outside it about what is
-   * inside — `::part()` — are the tree's own (`_addScoped`).
+   * Whether the indexes here hold nothing but what a cascade of `sheets` and
+   * `shadows` would: every sheet filed in them is among those, for the tree
+   * it is filed under. Each sheet is its parse (`_parseSheet`), so one that
+   * reads otherwise, or was taken out, is not there, and one that moved from
+   * a tree to another is under other rules' id.
+   */
+  private _stillHolds(
+    sheets: readonly Stylesheet[],
+    shadows: readonly ShadowSheets[],
+  ): boolean {
+    let held = 0;
+    for (const sheet of sheets) {
+      if (this._filed.get(sheet) === this._document) held += 1;
+    }
+    for (const { key, sheets: own } of shadows) {
+      const rules = this._byKey.get(key);
+      if (!rules) continue;
+      for (const sheet of own) if (this._filed.get(sheet) === rules) held += 1;
+    }
+    return held === this._filed.size;
+  }
+
+  /**
+   * The indexes of `before`, and all a walk of its rules left, for this
+   * cascade to add the rules of its new sheets to: the rest of a sheet's
+   * reading is done again from the sheet's short lists (`_addSheet`). A page
+   * of 28,000 rules that puts in a sheet of two walked all of them, which
+   * every chunk of GitHub's and YouTube's scripts did, some 60 ms each.
+   *
+   * It stands on three things. A rule's place in the cascade is read as it
+   * is matched, from `order`, which `_restyle`'s `place` sets on the sheets'
+   * own rules, so which bucket holds what in what order says nothing, and a
+   * sheet may land anywhere: GitHub's land before the sheets in its `<body>`.
+   * What was made from a rule under another selector has its own `order`,
+   * put right here. A matcher reads what changes through `_current`, so it
+   * can be kept with its index, compiled. And `before` is not asked again:
+   * its indexes are this cascade's now.
+   */
+  private _takeOver(before: Cascade): void {
+    this._index = before._index;
+    this._pseudo = before._pseudo;
+    this._highlights = before._highlights;
+    this._transitionRules = before._transitionRules;
+    this._shapes = before._shapes;
+    this._filed = before._filed;
+    this._restated = before._restated;
+    this._mediaOutsideRules = before._mediaOutsideRules;
+    this._document = before._document;
+    this._docInfo = before._docInfo;
+    this._byKey = before._byKey;
+    this._nextTree = before._nextTree;
+    this._scopedId = before._scopedId;
+    this._scopedPseudos = before._scopedPseudos;
+    // what an `IndexedRule.needs` it holds has noted
+    this._askedIds = before._askedIds;
+    this._askedClasses = before._askedClasses;
+    this._uaProps = before._uaProps;
+    this._vars = before._vars;
+    this._lh = before._lh;
+    this.snaps = before.snaps;
+    this._zoom = before._zoom;
+    this._writing = before._writing;
+    this._adapter = before._adapter;
+    this._copyAdapter = before._copyAdapter;
+    this._pseudos = before._pseudos;
+    this._current = before._current;
+    this._current.cascade = this;
+    const restated = this._restated;
+    for (let i = 0; i < restated.length; i += 2) {
+      restated[i].order = restated[i + 1].order;
+    }
+    // listed in the order of the sheets, which may have one between them now
+    for (const rules of [this._document, ...this._byKey.values()]) {
+      rules.keyframes.clear();
+    }
+  }
+
+  /**
+   * A sheet read into this cascade, under the tree it is for: its rules
+   * where they are not in the indexes yet (`_fileRules`), and each time
+   * what is found from its short lists, in the order of the sheets.
    */
   private _addSheet(
     sheet: Stylesheet,
     rules: TreeRules,
     breakpoints: Set<number>,
   ): void {
+    if (!this._filed.has(sheet)) {
+      this._filed.set(sheet, rules);
+      this._fileRules(sheet, rules);
+    }
+    // a position option, the last of a name in the tree
+    for (const { name, declarations } of sheet.positionTries ?? []) {
+      rules.positionTries.set(name, declarations);
+      this._positionTries = true;
+    }
+    for (const rule of sheet.keyframes ?? []) {
+      let named = rules.keyframes.get(rule.name);
+      if (!named) rules.keyframes.set(rule.name, (named = []));
+      named.push(rule);
+      this._anyKeyframes = true;
+      if (rule.media) this._keyframeMedia.push(rule.media);
+    }
+    for (const bp of sheet.breakpoints) breakpoints.add(bp);
+    // a query on the viewport's height reads it, and one on its aspect
+    // ratio its width as well: each in the media band (`mediaBand`)
+    if (sheet.readsHeight) this._mediaHeight = true;
+    if (sheet.readsWidth) this._mediaWidth = true;
+    if (sheet.sized) this._sized.push(...sheet.sized);
+  }
+
+  /**
+   * A sheet's rules into the indexes, filed under the tree they are for —
+   * the user agent's for every tree. The rules written from inside a shadow
+   * tree about what is outside it — `:host`, `::slotted()` — and from
+   * outside it about what is inside — `::part()` — are the tree's own
+   * (`_addScoped`). Anything new a walk of them leaves on the cascade is
+   * taken over with the indexes (`_takeOver`).
+   */
+  private _fileRules(sheet: Stylesheet, rules: TreeRules): void {
     const noted = this._noted.has(sheet);
     this._noted.add(sheet);
     for (const rule of sheet.rules) {
@@ -4508,6 +4656,7 @@ export class Cascade {
       if (transition) {
         TRANSITION_PARTS.set(transition.rule, transition.part);
         this._transitionRules.add(transition.rule, undefined, scope);
+        this._restated.push(transition.rule, rule);
         continue;
       }
       const pseudo = splitPseudoElement(rule);
@@ -4516,11 +4665,15 @@ export class Cascade {
         if (!index)
           this._highlights.set(pseudo.name!, (index = new RuleIndex(true)));
         index.add(pseudo.rule, undefined, scope);
+        this._restated.push(pseudo.rule, rule);
       } else if (pseudo) {
-        this._pseudo[pseudo.which].add(pseudo.rule, undefined, scope);
+        this._latest.push(
+          this._pseudo[pseudo.which].add(pseudo.rule, undefined, scope),
+        );
+        this._restated.push(pseudo.rule, rule);
       } else {
         const key = rightmostKey(rule.selector);
-        this._index.add(rule, key, scope);
+        this._latest.push(this._index.add(rule, key, scope));
         if (
           rule.order >= 0 &&
           (key.kind !== 'tag' || SHAPE_TAGS.has(key.name)) &&
@@ -4543,29 +4696,13 @@ export class Cascade {
         rule.declarations,
       );
     }
-    // a position option, the last of a name in the tree
-    for (const { name, declarations } of sheet.positionTries ?? []) {
-      rules.positionTries.set(name, declarations);
-      this._positionTries = true;
-    }
     for (const rule of sheet.keyframes ?? []) {
-      let named = rules.keyframes.get(rule.name);
-      if (!named) rules.keyframes.set(rule.name, (named = []));
-      named.push(rule);
-      this._anyKeyframes = true;
-      if (rule.media) this._mediaOutsideRules.push(rule.media);
       for (const frame of rule.frames) {
         const declarations = frame.declarations;
         if (!this._vars && usesVars(declarations)) this._vars = true;
         if (!this._lh && usesLh(declarations)) this._lh = true;
       }
     }
-    for (const bp of sheet.breakpoints) breakpoints.add(bp);
-    // a query on the viewport's height reads it, and one on its aspect
-    // ratio its width as well: each in the media band (`mediaBand`)
-    if (sheet.readsHeight) this._mediaHeight = true;
-    if (sheet.readsWidth) this._mediaWidth = true;
-    if (sheet.sized) this._sized.push(...sheet.sized);
   }
 
   /** Whether a pointer move can change what this cascade produces. */
@@ -5422,9 +5559,11 @@ export class Cascade {
         this.reducedMotion,
         this.scripting,
       );
-    for (const media of this._mediaOutsideRules) {
-      if (answers(media, from, fromHeight) !== answers(media, to, toHeight)) {
-        return null;
+    for (const list of [this._mediaOutsideRules, this._keyframeMedia]) {
+      for (const media of list) {
+        if (answers(media, from, fromHeight) !== answers(media, to, toHeight)) {
+          return null;
+        }
       }
     }
     const holds = (rule: StyleRule, width: number, height: number): boolean =>
@@ -5468,10 +5607,11 @@ export class Cascade {
    * each one an added rule's selector matches, whatever media it is under,
    * or whose pseudo-element it does — the rest are styled as they were, by
    * the rules they were. Found as `crossed` finds what a breakpoint turns
-   * rules on and off for, from this cascade's indexes, where each rule is
-   * known by its declarations, which a pseudo-element's rule keeps. Null
-   * where one is in none of them: a rule at a shadow tree's edge, a
-   * highlight's, a view transition's.
+   * rules on and off for, from the rules this cascade filed, where each is
+   * known by its declarations, which a pseudo-element's rule keeps: an added
+   * rule is in a sheet no cascade had filed. Null where one is in neither
+   * `_index` nor `_pseudo`: a rule at a shadow tree's edge, a highlight's, a
+   * view transition's.
    */
   addedReach(
     added: readonly StyleRule[],
@@ -5497,10 +5637,8 @@ export class Cascade {
     }
     const declarations = new Set(added.map((rule) => rule.declarations));
     const turned = new RuleIndex();
-    for (const index of [this._index, ...Object.values(this._pseudo)]) {
-      for (const indexed of index.all()) {
-        if (declarations.has(indexed.rule.declarations)) turned.adopt(indexed);
-      }
+    for (const indexed of this._latest) {
+      if (declarations.has(indexed.rule.declarations)) turned.adopt(indexed);
     }
     if (turned.size < added.length) return null;
     const stack: unknown[] = [...(root.children ?? [])];
@@ -5944,6 +6082,7 @@ export class Cascade {
     const pseudo = splitPseudoElement(rule);
     // a custom highlight's is the document's, by its name, wherever it is
     if (pseudo?.which === 'highlight') return false;
+    if (pseudo) this._restated.push(pseudo.rule, rule);
     const which: PseudoTarget = pseudo?.which ?? '';
     const subject = pseudo?.rule ?? rule;
     const selector = subject.selector;
@@ -6013,6 +6152,7 @@ export class Cascade {
     // `:host(.dark) .x`: the rest, which is in the tree, matched as any
     // rule of the tree's, and then its host asked
     const derived = { ...subject, selector: reading.rest };
+    this._restated.push(derived, rule);
     const key = rightmostKey(reading.rest);
     if (which) this._pseudo[which].add(derived, key, rules.id, test);
     else {

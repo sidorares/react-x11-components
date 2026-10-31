@@ -2,7 +2,7 @@
 // change can reach is styled again, and nothing else is.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup } from 'react-x11/test';
+import { act, cleanup, expectPixel } from 'react-x11/test';
 import { Comment, Document } from 'domhandler';
 import * as DomUtils from 'domutils';
 import {
@@ -26,6 +26,9 @@ import {
   Cascade,
   ChangeAnchors,
 } from '../../src/html/css/cascade.js';
+import { parseStylesheet } from '../../src/html/css/parse.js';
+import type { RootLook } from '../../src/html/css/style.js';
+import { HtmlSource } from '../../src/html/dom.js';
 import { Html } from '../../src/index.js';
 import {
   FONTS,
@@ -81,6 +84,65 @@ async function damageOf(el: HtmlViewNode, run: () => unknown) {
     delete (el as { invalidate?: unknown }).invalidate;
   }
   return damage;
+}
+
+/** What a test asks of the cascade in force about its indexes. */
+interface IndexesOf {
+  _index: {
+    all(): Iterable<{ rule: { order: number; declarations: object } }>;
+  };
+  _pseudo: Record<string, IndexesOf['_index']>;
+  _highlights: Map<string, IndexesOf['_index']>;
+  _transitionRules: IndexesOf['_index'];
+  _document: { parts: { rule: { order: number; declarations: object } }[] };
+  _latest: unknown[];
+  _noted: Set<unknown>;
+  _changeRules: object;
+  _keyframeMedia: unknown[];
+  _mediaOutsideRules: unknown[];
+  _sheets: { rules: { order: number; declarations: object }[] }[];
+}
+const cascadeOf = (el: HtmlViewNode) =>
+  (el as unknown as { _cascade: IndexesOf })._cascade;
+
+/** All a cascade's walk of its sheets leaves on it, as numbers and names. */
+function walkOf(cascade: IndexesOf): unknown {
+  const c = cascade as unknown as Record<string, never>;
+  const sizes = (map: Map<string, { size: number }>) =>
+    [...map].map(([name, { size }]) => [name, size]).sort();
+  const lengths = (map: Map<string, unknown[]>) =>
+    [...map].map(([name, { length }]) => [name, length]).sort();
+  const tree = c._document as unknown as {
+    keyframes: Map<string, unknown[]>;
+    positionTries: Map<string, unknown>;
+    host: unknown[];
+    slotted: unknown[];
+    parts: unknown[];
+  };
+  return {
+    index: (c._index as { size: number }).size,
+    pseudo: sizes(new Map(Object.entries(c._pseudo as object))),
+    highlights: sizes(c._highlights),
+    transitions: (c._transitionRules as { size: number }).size,
+    shapes: (c._shapes as { size: number }).size,
+    flags: [c._vars, c._lh, c.snaps, c._zoom, c._writing],
+    uaProps: (c._uaProps as Set<string>).size,
+    outside: (c._mediaOutsideRules as unknown[]).length,
+    keyframeMedia: (c._keyframeMedia as unknown[]).length,
+    scopedPseudos: [...(c._scopedPseudos as Set<string>)].sort(),
+    scopedId: c._scopedId,
+    nextTree: c._nextTree,
+    trees: (c._byKey as Map<string, unknown>).size,
+    keyframes: lengths(tree.keyframes),
+    tries: [...tree.positionTries.keys()].sort(),
+    edges: [tree.host.length, tree.slotted.length, tree.parts.length],
+    filed: (c._filed as Map<unknown, unknown>).size,
+    restated: (c._restated as unknown[]).length,
+    asked: [
+      [...(c._askedIds as Set<string>)].sort(),
+      [...(c._askedClasses as Set<string>)].sort(),
+    ],
+  };
 }
 
 const byId = (el: HtmlViewNode, id: string) =>
@@ -3468,7 +3530,16 @@ function sheetChange(
 ): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
-  const rules = () => rulesFor(next, true).split('\n').slice(0, 4).join('\n');
+  // and rules as specific as another sheet's, on an element and on a
+  // `::before`, which a place in the cascade decides between
+  const rules = () => {
+    const ink = pick(['#aa0000', '#00aa00', '#0000aa', '#aaaa00']);
+    return [
+      ...rulesFor(next, true).split('\n').slice(0, 4),
+      `.a { outline-color: ${ink} }`,
+      `.b::before { color: ${ink} }`,
+    ].join('\n');
+  };
   const kind = sheets.length ? Math.floor(next() * 8) : 0;
   if (kind === 6 || kind === 7) {
     const text = pick(sheets).children.find((n) => n.type === 'text') as
@@ -3569,6 +3640,7 @@ function sheetChange(
 test('sheets put in, written to, extended, replaced and taken out come to the styles of a refresh of everything, and an added rule restyles what it can style', async () => {
   let added = 0;
   let whole = 0;
+  let tookOver = 0;
   for (let seed = 1; seed <= 32; seed += 1) {
     const next = random(seed * 7919);
     // what runs a `@keyframes` no sheet has yet, held half way through it
@@ -3604,9 +3676,16 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
         answer = sheetsAdded.apply(this, a);
         return answer;
       };
+      const cascadeWas = cascadeOf(el);
       el.touchDocument(changes);
       await act();
       delete internals._sheetsAdded;
+      if (
+        cascadeOf(el) !== cascadeWas &&
+        cascadeOf(el)._index === cascadeWas._index
+      ) {
+        tookOver += 1;
+      }
       if (answer instanceof Set) added += 1;
       else if (answer === null) whole += 1;
       const scoped = stylesOf(el, bodyEl);
@@ -3620,6 +3699,29 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
           `styled whole: ${String(styled[at]).slice(0, 300)}\n` +
           `sheets\n${sheets.map((st) => DomUtils.textContent(st)).join('\n---\n')}`,
       );
+      // and a cascade that took over the one before it styles what one made
+      // from nothing does: the refresh above asks the same cascade, which
+      // would agree with itself. Put back, so the next step takes it over.
+      const chain = el as unknown as {
+        _sheetsRead: unknown;
+        _cascade: unknown;
+      };
+      const { _sheetsRead, _cascade } = chain;
+      chain._sheetsRead = null;
+      el.touchDocument();
+      await act();
+      const made = stylesOf(el, bodyEl);
+      chain._sheetsRead = _sheetsRead;
+      chain._cascade = _cascade;
+      el.touchDocument();
+      await act();
+      const apart = styled.findIndex((s, i) => s !== made[i]);
+      assert.ok(
+        apart < 0 && styled.length === made.length,
+        `seed ${seed}, step ${step}: ${String(styled[apart]).slice(0, 300)}\n` +
+          `from nothing: ${String(made[apart]).slice(0, 300)}\n` +
+          `sheets\n${sheets.map((st) => DomUtils.textContent(st)).join('\n---\n')}`,
+      );
     }
     result.unmount();
   }
@@ -3627,6 +3729,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   // and the changes they could not vouch for styled everything again
   assert.ok(added > 20, `${added} sheet changes restyled what they reach`);
   assert.ok(whole > 5, `${whole} sheet changes restyled everything`);
+  assert.ok(tookOver > 20, `${tookOver} cascades took over the one before`);
 });
 
 metric(
@@ -4055,6 +4158,423 @@ test('what a shadow tree’s sheet imports late styles the tree', async () => {
   arrive({ kind: 'stylesheet', text: 'b { font-style: italic }' });
   await snapshot(result, el);
   assert.strictEqual(el.computedStyle(inner)?.['font-style'], 'italic');
+});
+
+const elementParentOf = (el: Element) => el.parent as unknown as Element;
+
+/** A `<style>` a script puts in, before `at` or at the end of `body`. */
+function putSheet(
+  el: HtmlViewNode,
+  css: string,
+  at: Element | null = null,
+): Element {
+  const body = elementsIn(el.document as unknown as Element).find(
+    (e) => e.name === 'body',
+  )!;
+  const style = createElement('style', {}, [createText(css)]);
+  if (at) DomUtils.prepend(at, style);
+  else appendChild(body, style);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: style.parent as unknown as Element,
+      addedNodes: [style],
+      removedNodes: [],
+    },
+  ]);
+  return style;
+}
+
+test('a sheet put in files its own rules in the indexes it finds, and walks no others', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .a{color:#111111} .a::before{color:#111111}</style>' +
+      '<body><p class="a" id="p">p</p><p class="b" id="q">q</p></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const was = cascadeOf(el);
+  putSheet(el, '.b { color: #00aa00 } .b::before { content: "x" }');
+  await act();
+  const now = cascadeOf(el);
+  assert.notStrictEqual(now, was, 'a cascade for the new sheet');
+  assert.strictEqual(now._index, was._index);
+  assert.strictEqual(now._pseudo, was._pseudo);
+  assert.strictEqual(now._latest.length, 2);
+  assert.strictEqual(el.computedStyle(byId(el, 'q'))?.color, 'rgb(0, 170, 0)');
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(17, 17, 17)');
+});
+
+test("the host's sheets are parsed once, so a sheet put in takes the indexes over under them too", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><body><p id="p">p</p></body>',
+    300,
+    { stylesheet: 'p { color: #00aa00 }' },
+  );
+  const el = view(node);
+  await act();
+  const was = cascadeOf(el);
+  // the same as the host's, before it in the cascade
+  putSheet(el, 'p { color: #ff0000 }');
+  await act();
+  assert.notStrictEqual(cascadeOf(el), was);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  assert.strictEqual(cascadeOf(el)._latest.length, 1);
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(0, 170, 0)');
+});
+
+test('a sheet put in before another comes before it, however the indexes hold the rules', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><body>' +
+      '<x-a id="h"><template shadowrootmode="open"><b part="q">in</b></template></x-a>' +
+      '<p class="a" id="p">p</p>' +
+      '<style id="late">' +
+      '.a { color: #00aa00 }\n' +
+      '.a::before { content: "x"; color: #00aa00 }\n' +
+      'x-a::part(q)::before { content: "x"; color: #00aa00 }\n' +
+      '.a::highlight(h) { color: #00aa00 }\n' +
+      '::view-transition-group(v) { color: #00aa00 }' +
+      '</style></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const was = cascadeOf(el);
+  // long enough that a rule of the last sheet left where it was comes
+  // before all of these
+  putSheet(
+    el,
+    '.z { color: #000000 }\n.y { color: #000000 }\n.x { color: #000000 }\n' +
+      '.w { color: #000000 }\n.v { color: #000000 }\n.u { color: #000000 }\n' +
+      '.a { color: #ff0000 }\n.a::before { color: #ff0000 }\n' +
+      'x-a::part(q)::before { color: #ff0000 }',
+    byId(el, 'late'),
+  );
+  await act();
+  const now = cascadeOf(el);
+  assert.strictEqual(now._index, was._index);
+  const p = byId(el, 'p');
+  assert.strictEqual(el.computedStyle(p)?.color, 'rgb(0, 170, 0)');
+  assert.strictEqual(el.computedStyle(p, 'before')?.color, 'rgb(0, 170, 0)');
+  const inner = shadowRootOf(byId(el, 'h'))!.children.find(
+    (n) => (n as Element).name === 'b',
+  ) as Element;
+  assert.strictEqual(
+    el.computedStyle(inner, 'before')?.color,
+    'rgb(0, 170, 0)',
+  );
+  // and what no style says here: each rule filed anywhere has the place of
+  // the sheet's rule it was made from
+  const places = new Map<object, number>();
+  for (const sheet of now._sheets) {
+    for (const rule of sheet.rules) places.set(rule.declarations, rule.order);
+  }
+  const filed = [
+    ...now._index.all(),
+    ...Object.values(now._pseudo).flatMap((index) => [...index.all()]),
+    ...[...now._highlights.values()].flatMap((index) => [...index.all()]),
+    ...now._transitionRules.all(),
+    ...now._document.parts,
+  ];
+  assert.ok(filed.length > 12, `${filed.length} rules filed`);
+  for (const { rule } of filed) {
+    // the user agent's lists share their declarations, and never move
+    if (rule.order >= 0) {
+      assert.strictEqual(rule.order, places.get(rule.declarations));
+    }
+  }
+});
+
+test("a sheet that comes to a shadow tree's sheet by its import comes before it, on a rule of the host's too", async () => {
+  let arrive: (result: ResourceResult) => void = () => {};
+  const onResource = (r: ResourceRequest) =>
+    r.kind === 'stylesheet'
+      ? new Promise<ResourceResult>((resolve) => (arrive = resolve))
+      : null;
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body>' +
+      '<div id="h" class="on"><template shadowrootmode="open">' +
+      '<style>@import "late.css"; :host(.on) b { color: #00aa00 }</style>' +
+      '<b>in</b></template></div></body>',
+    300,
+    { onResource },
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const was = cascadeOf(el);
+  const inner = shadowRootOf(byId(el, 'h'))!.children.find(
+    (n) => (n as Element).name === 'b',
+  ) as Element;
+  assert.strictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+  arrive({
+    kind: 'stylesheet',
+    text: 'i { color: #000000 } u { color: #000000 } :host(.on) b { color: #ff0000 }',
+  });
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  assert.strictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+});
+
+test("what a rule's matcher asks it asks of the cascade in force, once one has taken its indexes over", () => {
+  const source = new HtmlSource();
+  source.setSource('<p id="p">x</p>', true);
+  const p = findById(source.document, 'p') as unknown as Element;
+  const css = [
+    'p:hover { --a: 1 }',
+    'p:active { --b: 1 }',
+    'p:focus { --c: 1 }',
+    'p:focus-visible { --d: 1 }',
+    'p:focus-within { --e: 1 }',
+    'p:target { --f: 1 }',
+  ];
+  const sheet = parseStylesheet(css.join('\n'), 0);
+  const look = {
+    color: '#000000',
+    fontFamily: 'sans-serif',
+    fontSize: 16,
+    monoFamily: 'monospace',
+    linkColor: '#0000ee',
+    borderColor: '#808080',
+    mutedColor: '#666666',
+    background: '#ffffff',
+    colorScheme: 'light',
+    surface: '#ffffff',
+  } as RootLook;
+  const candidates = (cascade: Cascade) =>
+    (cascade as unknown as { _candidates(el: Element): unknown[] })._candidates(
+      p,
+    );
+  const first = new Cascade([sheet], look, 800, 600, 1);
+  // compiled here, over what the first cascade made
+  assert.strictEqual(candidates(first).length, 0);
+  const second = new Cascade(
+    [sheet, parseStylesheet('b { --z: 1 }', css.length)],
+    look,
+    800,
+    600,
+    1,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    [],
+    first,
+  );
+  second.setPointer({ hovered: new Set([p]), active: new Set([p]) });
+  second.setFocus({ element: p, visible: true, within: new Set([p]) });
+  second.setTarget(p);
+  assert.strictEqual(candidates(second).length, css.length);
+});
+
+test('a rule that asks an ancestor still does in a cascade that took it over', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .dark .card { color: #00aa00 }</style><body>' +
+      '<div class="dark"><p id="a" class="card">a</p></div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const was = cascadeOf(el);
+  putSheet(el, '.other { color: #ff0000 }');
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  // styled again, with a `needs` the first cascade worked out
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(byId(el, 'a'))?.color, 'rgb(0, 170, 0)');
+});
+
+test('the rule of a name a sheet put in first is still found after the one of it that is last', async () => {
+  const frames = (ink: string) =>
+    `@keyframes k { from { color: ${ink} } to { color: ${ink} } }`;
+  const { result, node } = await render(
+    '<style>body{margin:0} p { animation: k 1s paused }</style><body><p id="p">p</p>' +
+      `<style id="late">${frames('#00aa00')}</style></body>`,
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const was = cascadeOf(el);
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(0, 170, 0)');
+  putSheet(el, frames('#ff0000'), byId(el, 'late'));
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(0, 170, 0)');
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(0, 170, 0)');
+});
+
+test('a @keyframes under a media query is read from its sheet by each cascade, and not once more each', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} @media (min-width: 200px) { @keyframes k { to { color: red } } }</style>' +
+      '<body><p id="p">p</p></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const was = cascadeOf(el);
+  putSheet(el, '.a { color: #000000 }');
+  await snapshot(result, el);
+  putSheet(el, '.b { color: #000000 }');
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  assert.strictEqual(cascadeOf(el)._keyframeMedia.length, 1);
+  assert.strictEqual(cascadeOf(el)._mediaOutsideRules.length, 0);
+});
+
+test('a sheet taken out leaves the cascade, and one moved into a shadow tree styles that tree', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body><div id="h"><template shadowrootmode="open">' +
+      '<b>in</b></template></div><b id="out">out</b>' +
+      '<style id="s">b { color: #00aa00 }</style></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const root = shadowRootOf(byId(el, 'h'))!;
+  const inner = root.children.find(
+    (n) => (n as Element).name === 'b',
+  ) as Element;
+  const out = byId(el, 'out');
+  assert.strictEqual(el.computedStyle(out)?.color, 'rgb(0, 170, 0)');
+  // the sheet that reads the same is the same parse, for another tree
+  const style = byId(el, 's');
+  removeNode(style);
+  appendChild(root as unknown as Element, style);
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.notStrictEqual(el.computedStyle(out)?.color, 'rgb(0, 170, 0)');
+  assert.strictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+  // and back: filed under the tree it has left, it would style nothing
+  removeNode(style);
+  appendChild(elementParentOf(out), style);
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.strictEqual(el.computedStyle(out)?.color, 'rgb(0, 170, 0)');
+  assert.notStrictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+  removeNode(style);
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.notStrictEqual(el.computedStyle(out)?.color, 'rgb(0, 170, 0)');
+});
+
+test('a cascade that took the one before it over holds all that one made from nothing holds', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style><body>' +
+      '<x-a id="h" class="on"><template shadowrootmode="open"><style>' +
+      ':host::before { content: "x" }\n' +
+      ':host(.on) b::before { color: #00aa00 }\n' +
+      '</style><b part="q">in</b></template></x-a>' +
+      '<div id="host"></div><p id="p">p</p>' +
+      '<svg width="10" height="10"><path class="s" d="M0 0h9v9z"/></svg>' +
+      '<style id="last">' +
+      'p { --x: #00aa00; color: var(--x); margin-top: 1lh; zoom: 1.5;' +
+      ' writing-mode: horizontal-tb; scroll-snap-type: y mandatory }\n' +
+      '@media (min-width: 1px) { x-a::part(q) { color: #00aa00 } }\n' +
+      '.s { fill: #00aa00 }\n.a::highlight(h) { color: #00aa00 }\n' +
+      '::view-transition-group(v) { color: #00aa00 }\n' +
+      '@keyframes k { to { color: red } }\n' +
+      '@position-try --t { top: 0 }' +
+      '</style></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const first = cascadeOf(el);
+  // a sheet where the rest are not, one after them, and a tree's of its own
+  putSheet(
+    el,
+    '@keyframes k { to { color: blue } } .a { color: #000000 }',
+    byId(el, 'last'),
+  );
+  await snapshot(result, el);
+  putSheet(el, '.b::before { color: #000000 }');
+  await snapshot(result, el);
+  const root = attachShadow(byId(el, 'host'), { mode: 'open' });
+  appendChild(
+    root as unknown as Element,
+    createElement('style', {}, [createText('b { color: #0000ff }')]),
+  );
+  appendChild(
+    root as unknown as Element,
+    createElement('b', {}, [createText('b')]),
+  );
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, first._index, 'taken over');
+  assert.strictEqual(el.computedStyle(byId(el, 'p'))?.color, 'rgb(0, 170, 0)');
+  const took = walkOf(cascadeOf(el));
+  const chain = el as unknown as { _sheetsRead: unknown };
+  chain._sheetsRead = null;
+  el.touchDocument();
+  await snapshot(result, el);
+  assert.notStrictEqual(cascadeOf(el)._index, first._index, 'from nothing');
+  assert.deepStrictEqual(took, walkOf(cascadeOf(el)));
+});
+
+metric(
+  "a rule matched in a <use>'s copy stops at the copy's top in a cascade that took it over",
+  async () => {
+    // Each copy is a tree of its own, whose top has nothing above it and
+    // nothing beside it, whichever it is of the sprite's elements: a rule
+    // that finds one wrong draws it red.
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block;float:left}' +
+        '.above{fill:#00aa00}.sprite .above{fill:#ff0000}' +
+        '.beside{fill:#00aa00}.before + .beside{fill:#ff0000}' +
+        '.only{fill:#ff0000}.only:last-child{fill:#00aa00}</style><body>' +
+        '<svg class="sprite" width="0" height="0"><g>' +
+        '<rect class="before" width="12" height="12"/>' +
+        '<rect id="u" class="above" width="12" height="12"/>' +
+        '<rect class="before" width="12" height="12"/>' +
+        '<rect id="v" class="beside" width="12" height="12"/>' +
+        '<rect id="w" class="only" width="12" height="12"/>' +
+        '<rect class="before" width="12" height="12"/>' +
+        '</g></svg>' +
+        '<svg width="12" height="12"><use href="#u"/></svg>' +
+        '<svg width="12" height="12"><use href="#v"/></svg>' +
+        '<svg width="12" height="12"><use href="#w"/></svg></body>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const drawn = async (message: string, beside = '#00aa00') => {
+      await expectPixel(result.ctx, 6, 6, '#00aa00', { message });
+      await expectPixel(result.ctx, 18, 6, beside, { message });
+      await expectPixel(result.ctx, 30, 6, '#00aa00', { message });
+    };
+    await drawn('the cascade that compiled them');
+    const was = cascadeOf(el);
+    // and rules compiled since: one that finds nothing above a copy, and
+    // one that holds of what is in it
+    putSheet(
+      el,
+      '.sprite .only { fill: #ff0000 } .beside.beside { fill: #0000aa }',
+    );
+    await snapshot(result, el);
+    assert.strictEqual(cascadeOf(el)._index, was._index);
+    el.touchDocument();
+    await snapshot(result, el);
+    await drawn('the one that took it over', '#0000aa');
+  },
+);
+
+test('a cascade that takes over indexes takes over what read their rules, however many sheets went before', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .m:hover .i { color: #00aa00 }</style><body><div class="m"><p class="i" id="i">i</p></div></body>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const was = cascadeOf(el);
+  for (let i = 0; i < 40; i += 1) was._noted.add({});
+  putSheet(el, '.other { color: #ff0000 }');
+  await snapshot(result, el);
+  assert.strictEqual(cascadeOf(el)._index, was._index);
+  assert.strictEqual(cascadeOf(el)._changeRules, was._changeRules);
 });
 
 test('a change whose seeds are most of the document builds all of it, at once', async () => {

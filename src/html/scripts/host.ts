@@ -662,7 +662,7 @@ function computedPseudo(b: Primitive): ComputedPseudo {
 /** A selector that names the node a query is asked from (`_query`). */
 const QUERY_SCOPED = /:scope(?![\w-])/i;
 
-/** A selector whose matcher keeps answers for as long as it lives
+/** A selector that needs a matcher keeping answers for as long as it lives
  *  (css-select's `cacheResults`): a `:has()`, a `:contains()`. */
 const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 
@@ -5067,16 +5067,19 @@ export class DomHost {
    * document, with `:scope` the node it is asked from, and no relative
    * selector, which throws. css-select reads a query from an element as
    * jQuery does, `:scope .a .b`, and `el.querySelectorAll('.a .b')` found
-   * none whose `.a` was above `el`. One that names no `:scope` and keeps
-   * no answers (a `:has()` or a `:contains()` does, `KEEPS_ANSWERS` in the
-   * cascade) is compiled once: GitHub's scripts ask the same few hundred
-   * selectors thousands of times a load.
+   * none whose `.a` was above `el`. One that names no `:scope` and needs
+   * no kept answers (a `:has()` or a `:contains()` does, `KEEPS_ANSWERS`
+   * in the cascade) is compiled once: GitHub's scripts ask the same few
+   * hundred selectors thousands of times a load. So it is told to keep
+   * none, or `:is(.x .a) .y` answers what it did before the `.x` came
+   * (fb55/css-select#1929); one compiled for this query keeps what it
+   * found until the query ends.
    */
   private _query(selector: string, scope: AnyNode): (el: Element) => boolean {
     const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
     const kept = keeps ? this._queries.get(selector) : undefined;
     if (kept) return kept;
-    const options = this._queryOptions();
+    const options = { ...this._queryOptions(), cacheResults: !keeps };
     const query = compileHoisted(
       selector,
       options.pseudos,
