@@ -1277,6 +1277,46 @@ test('an element that comes out drawn, or hidden, builds what holds it, or the e
   assert.equal(drawnText(el).replace(/\s+/g, ''), 'farbd');
 });
 
+test('a key tested through a function reaches what its rule names, and a child sits where a combinator says', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} x-a:not(:defined) .i { color: #ff0000 } .g > :first-child .b { color: #00aa00 } :is(.u .v) .w { color: #0000ff }</style>' +
+      '<body><x-a id="a"><p class="i" id="i">i</p><p id="other">o</p></x-a>' +
+      '<div id="plain"><p class="b" id="deep">d</p></div>' +
+      '<div id="u"><div class="v"><p class="w" id="w">w</p><p id="x">x</p></div></div></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const a = byId(el, 'a');
+  a.attribs['-rx-defined'] = '';
+  const reached = scopeOf(el, [
+    {
+      type: 'attributes',
+      target: a,
+      attributeName: '-rx-defined',
+      oldValue: null,
+    },
+  ]);
+  assert.ok(reached?.has(byId(el, 'i')), 'what the rule names was not reached');
+  assert.ok(!reached?.has(byId(el, 'other')), 'all of the element was reached');
+  // a child put in what is no `.g`
+  const body = a.parent as Element;
+  const child = createElement('div', {}, [createText('n')]);
+  appendChild(body, child);
+  const scope = scopeOf(el, [
+    { type: 'childList', target: body, addedNodes: [child], removedNodes: [] },
+  ]);
+  assert.ok(!scope?.has(byId(el, 'deep')), 'all of the body was reached');
+  // and what is above a subject inside a function
+  const u = byId(el, 'u');
+  u.attribs.class = 'u';
+  const inside = scopeOf(el, [
+    { type: 'attributes', target: u, attributeName: 'class', oldValue: null },
+  ]);
+  assert.ok(inside?.has(byId(el, 'w')), 'what the rule names was not reached');
+  assert.ok(!inside?.has(byId(el, 'x')), 'all of the element was reached');
+});
+
 test('a change to a <link>, a <style> or a <meta> restyles everything only where it changes what the cascade reads', async () => {
   // the sheets the host answers with, at once, and one it answers later
   const sheets: Record<string, string> = {
@@ -2961,6 +3001,15 @@ function belowRulesFor(next: () => number): string {
     () => `#e${Math.floor(next() * 6)}`,
     () => `${t()}.${c()}`,
     () => `.${c()}:not(.${c()})`,
+    // what a change reaches through a function, which holds no subject of
+    // its own, and through a test of where a child sits
+    () => `:not(.${c()})`,
+    () => `:is(.${c()}, [data-x])`,
+    () => `:where(.${c()} .${c()})`,
+    () => `:not(.${c()} + .${c()})`,
+    () => `.${c()} > :first-child`,
+    () => `.${c()} > :not(:last-child)`,
+    () => `.${c()} > ${t()}:nth-child(2)`,
   ];
   const subjects: (() => string)[] = [
     () => `.${c()}`,

@@ -2073,9 +2073,9 @@ of where a child sits, or of what an element holds, reaches from what its
 compound names** (`TreeReach.self` and `below`, `MutationRules.tested`):
 the holder for a test of what an element holds (`:empty`), its children
 for one of where an element sits (`:first-child`, `:nth-child()`), each
-where the stable part of the compound it is in matches — a child in a
-rule's subject where the compound a child combinator leads to it from
-matches the holder too, `.menu > :first-child` — and below them what its
+where the stable part of the compound it is in matches — a child
+where the compound a child combinator leads to it from matches the holder
+too, above a rule's subject as in it, `.menu > :first-child` — and below them what its
 rule's subject names. **A new pseudo-class that reads what an element holds
 or where it sits joins `HOLDS_TESTS` or `SITS_TESTS`**, or it is taken to
 reach every one of them, as `:default` is. A webmail
@@ -2112,7 +2112,10 @@ part of the subject compound of each rule that tests it there
 `PointerCompounds.below` is. bun.com's blog sets `data-scrolled` on
 `<html>` at the first notch of the wheel, which one rule reads for its
 header, and `reveal-ready` for elements it has none of, and each restyled
-all 7,000 of its elements: 213 ms at the first notch. So does one tested
+all 7,000 of its elements: 213 ms at the first notch. A function's argument
+is tested above the subject of the rule it is in, `query-builder:not(:defined)
+.QueryBuilder-Input` as much as `.dark .card`, which every custom element
+GitHub upgrades took for all it holds. So does one tested
 before a sibling combinator, among the later siblings and what they hold
 (`MutationRules.later`, `AttributeReach.later`): Apple's local nav turns
 dark with `#ac-localnav.ac-localnav-dark ~ #ac-ln-curtain`, and that one
