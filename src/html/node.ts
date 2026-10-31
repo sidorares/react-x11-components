@@ -226,6 +226,7 @@ import type {
   ForeignObject,
   SubtreeRoots,
   SubtreesBuilt,
+  AtomicPlacement,
   LineBox,
   LineText,
   ReplacedKind,
@@ -388,6 +389,8 @@ import {
   inClip,
   inClipPath,
   intersectionClips,
+  apartFromLines,
+  apartOf,
   layered,
   layerOf,
   onLine,
@@ -16422,29 +16425,51 @@ function deepestAt(
         if (!child.topLayer) enter(child, context, stack, clipped);
       }
     }
+    // what is on a block's lines but for what the inline boxes that are
+    // layers have of them, which is in each's layers rather than the
+    // block's (`paintsApart`)
     if (node.lines) {
-      for (const line of node.lines) {
-        // its texts and atomics in the document's order, which paint
-        // paints them in (`placesOn`): a word an inline-block is under is
-        // what the pointer is over
-        const shifted = tree.movedInline && SHIFTED_LINES.has(line);
-        const texts =
-          clipped.length === 0 &&
-          (shifted || (y >= line.y && y < line.y + line.height))
-            ? line.texts
-            : NO_TEXTS;
-        let i = 0;
-        for (const placed of line.atomics) {
-          for (; i < placed.before && i < texts.length; i += 1) {
-            textAt(texts[i], line, shifted, context);
-          }
-          const atomic = placed.box;
-          if (atomic.parent && layered(atomic.parent, atomic)) continue;
-          enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
+      walkLines(
+        node.lines,
+        apartFromLines(node.lines),
+        context,
+        stack,
+        clipped,
+      );
+    } else if (node.kind === 'inline') {
+      const own = apartOf(node);
+      if (own) walkLines(own.lines, own.skip, context, stack, clipped);
+    }
+  };
+  const walkLines = (
+    lines: Iterable<LineBox>,
+    skip: ReadonlySet<LineText | AtomicPlacement> | undefined,
+    context: readonly number[],
+    stack: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
+    for (const line of lines) {
+      // its texts and atomics in the document's order, which paint
+      // paints them in (`placesOn`): a word an inline-block is under is
+      // what the pointer is over
+      const shifted = tree.movedInline && SHIFTED_LINES.has(line);
+      const texts =
+        clipped.length === 0 &&
+        (shifted || (y >= line.y && y < line.y + line.height))
+          ? line.texts
+          : NO_TEXTS;
+      let i = 0;
+      for (const placed of line.atomics) {
+        for (; i < placed.before && i < texts.length; i += 1) {
+          if (!skip?.has(texts[i])) textAt(texts[i], line, shifted, context);
         }
-        for (; i < texts.length; i += 1) {
-          textAt(texts[i], line, shifted, context);
-        }
+        const atomic = placed.box;
+        if (skip?.has(placed)) continue;
+        if (atomic.parent && layered(atomic.parent, atomic)) continue;
+        enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
+      }
+      for (; i < texts.length; i += 1) {
+        if (!skip?.has(texts[i])) textAt(texts[i], line, shifted, context);
       }
     }
   };

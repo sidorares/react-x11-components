@@ -3385,7 +3385,16 @@ step 8), as Chrome, Firefox and Safari paint it: over the text of a block
 after it that a negative margin draws up under it, and over a relative
 box before it. An inline-block or an image is one as much as a block is,
 and so is one that is positioned: painted with the positioned boxes, over
-the text after it on its line and on the lines after that. An
+the text after it on its line and on the lines after that. So is an inline
+box an inset moves, `position: relative` or `sticky`, with all it holds: its
+text, its background and borders and what is on its lines are drawn and hit
+in its turn among the positioned boxes, so the text after it goes under it,
+and it goes over an absolute box before it, as all three engines have it. One
+with every inset `auto` is in its paragraph's one layout and stays on its
+line, so an absolute box before it, or a line a negative margin draws up over
+it, goes over it where a browser draws that under it. So does what is over
+one inside an inline box `opacity` fades, whose text has the fade in its
+colours. An
 absolute box with both offsets on an axis fills what they leave, or, with
 a width, shares it between its `auto` margins, which is how `margin: auto`
 centres one. The height two offsets leave is definite, as one the box
@@ -5470,9 +5479,9 @@ placed by the rectangle around its own fragments and moves as one, however
 many lines it is on and with whatever blocks it was broken around, while the
 lines stay where they are. What keeps it in is the block around it the markup
 wrote, not an anonymous one around its line, and the margins above and below
-it, which take no room on a line, count all the same. It is drawn with its line,
-as a relative inline box is, so what comes after it in the flow is drawn over
-it where a browser draws that under it.
+it, which take no room on a line, count all the same. It is painted with the
+positioned boxes, as a relative inline box with an inset is, so what scrolls
+under it goes under it.
 
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home

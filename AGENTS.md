@@ -5120,6 +5120,35 @@ is on the lines is faded where it is painted (`inlineFade`), and none of
 it may be text faded through the context's alpha, which ntk's glyphs do
 not take (`fadesGlyphs`).
 
+**An inline box an inset moves is a layer, and its lines are painted a box
+at a time.** A positioned box paints after the flow (CSS 2.1 Appendix E, step
+8), and an inline box has no paint of its own: what it shows is on its block's
+lines. A box with an inset has its text laid out apart from the text around
+it (`collect`), and a line paints a batch a layout, so that much can be
+lifted out: such a box is `layered`, on its context's list like any
+(`paintsApart`), `LINES_APART` says what of a block's lines is whose, the
+block's paint leaves that out through `LinePart.skip`, and the box paints it
+at its turn (`paintApart`). The hit test walks the same lines the same way
+(`walkLines`), so a word is under the pointer in the context of what paints
+it. A span held at the top of a list had the paragraphs under it drawn over
+it, and a label moved at all went under an absolute box before it. Four things
+are load-bearing. **Anything new a line draws goes through `paintLinePart` and
+honours `skip`**, and anything new on a line that is a box's goes in
+`noteLinesOf`, or it is drawn with the flow, or twice. **A layer is culled by
+its own ink**, and a box's text is on no walk of it, so `apartReach` says
+where it is drawn: anything new a layer draws on its lines joins it, or a
+repaint of that strip draws what is under it. **What a layer has on its lines
+is painted ahead of its own paint, not in it**: the fade is in the colours of
+its text (`inlineFade`), and a group would fade it twice. That is also why a
+box in a faded inline box is no layer. And **`LINES_APART` is made as the
+layers are gathered**, so anything new that turns a box into a layer or out of
+one in place goes through `stackLayers`, as an opacity's `diff.order` does.
+What the gate leaves out is deliberate: a box with every inset `auto` is in
+its paragraph's one layout, and joshwcomeau.com has hundreds of them, each
+holding an absolute box. Lifting those out takes laying them apart, a line at
+a time, for a box that moves nowhere, so one still goes under an absolute box
+before it, where all three engines draw it over.
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
