@@ -1279,9 +1279,9 @@ test('an element that comes out drawn, or hidden, builds what holds it, or the e
 
 test('a key tested through a function reaches what its rule names, and a child sits where a combinator says', async () => {
   const { node } = await render(
-    '<style>body{margin:0} x-a:not(:defined) .i { color: #ff0000 } .g > :first-child .b { color: #00aa00 } :is(.u .v) .w { color: #0000ff }</style>' +
+    '<style>body{margin:0} x-a:not(:defined) .i { color: #ff0000 } .g > :first-child .b { color: #00aa00 } :is(.u .v) .w { color: #0000ff } .t :first-child .under { color: #ff00ff }</style>' +
       '<body><x-a id="a"><p class="i" id="i">i</p><p id="other">o</p></x-a>' +
-      '<div id="plain"><p class="b" id="deep">d</p></div>' +
+      '<div id="plain"><p class="b" id="deep">d</p><p class="under" id="under">u</p></div>' +
       '<div id="u"><div class="v"><p class="w" id="w">w</p><p id="x">x</p></div></div></body>',
     300,
   );
@@ -1307,6 +1307,7 @@ test('a key tested through a function reaches what its rule names, and a child s
     { type: 'childList', target: body, addedNodes: [child], removedNodes: [] },
   ]);
   assert.ok(!scope?.has(byId(el, 'deep')), 'all of the body was reached');
+  assert.ok(!scope?.has(byId(el, 'under')), 'a descendant’s rule reached it');
   // and what is above a subject inside a function
   const u = byId(el, 'u');
   u.attribs.class = 'u';
@@ -3008,6 +3009,8 @@ function belowRulesFor(next: () => number): string {
     () => `:where(.${c()} .${c()})`,
     () => `:not(.${c()} + .${c()})`,
     () => `.${c()} > :first-child`,
+    () => `.${c()} :first-child`,
+    () => `${t()}.${c()} :nth-child(2)`,
     () => `.${c()} > :not(:last-child)`,
     () => `.${c()} > ${t()}:nth-child(2)`,
   ];

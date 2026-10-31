@@ -2845,8 +2845,9 @@ type NoteChange = (
    *  absent for anything else. */
   tests?: Tests,
   /** For one that tests where an element sits, what of the compound a
-   *  child combinator leads to it from no change to the tree can change:
-   *  what the element it sits in has to match. */
+   *  child or a descendant combinator leads to it from no change to the
+   *  tree can change, and that combinator: what is around the element it
+   *  sits in has to match. */
   parent?: string | null,
 ) => void;
 
@@ -2906,10 +2907,14 @@ function scanChanges(
       );
       note(next, bits, null, trail || '*', stableCompound(text) || '*');
     }
-    // what a child combinator leads to a compound of the rule's own from
-    const parent =
-      subject !== null && i > 0 && parts[i - 1].next === '>'
+    // what a combinator leads to a compound of the rule's own from, with it
+    const lead =
+      subject !== null && i > 0 && /[> ]/.test(parts[i - 1].next)
         ? stableCompound(parts[i - 1].text)
+        : '';
+    const parent =
+      lead && lead !== '*'
+        ? `${lead}${parts[i - 1].next === '>' ? ' > ' : ' '}`
         : null;
     scanCompoundChanges(
       text,
@@ -3420,12 +3425,13 @@ class MutationRules {
       }
       const who = tests === 'holds' ? 'holder' : 'kid';
       const named = where && where !== '*' ? where : null;
-      // a child a child combinator leads to is one of what the compound it
-      // leads from names: as a selector of the two, matched of the child.
-      // `.group > :first-child .button` asks nothing of a `<body>`'s
+      // a child a combinator leads to is one of what the compound it leads
+      // from names: as a selector of the two, matched of the child.
+      // `.group > :first-child .button` and Wikipedia's
+      // `table.mw-collapsible :first-child tr` ask nothing of a `<body>`'s
       // children, and every child put in the `<body>` reached all of it
-      const from = who === 'kid' && parent && parent !== '*' ? parent : null;
-      const one = from ? `${from} > ${named ?? '*'}` : named;
+      const from = who === 'kid' ? parent : null;
+      const one = from ? `${from}${named ?? '*'}` : named;
       const key = `${at} ${who}`;
       const kept = this._tested.get(key);
       if (kept === null) continue;
