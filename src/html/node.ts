@@ -8037,7 +8037,18 @@ export class HtmlViewNode extends Node {
     };
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
-      if (!kept) return null;
+      if (!kept) {
+        // a `<script>` put in draws nothing and has no style to go by, until
+        // a page gives it a `display`
+        if (
+          reach.has(el) &&
+          UNDRAWN_TAGS.has(tagOf(el)) &&
+          draws(el, true, tree, cascade)
+        ) {
+          refused = true;
+        }
+        return null;
+      }
       if (!reach.has(el)) return kept.style;
       const done = fresh.get(el);
       if (done) return done;

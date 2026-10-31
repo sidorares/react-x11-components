@@ -2613,18 +2613,19 @@ its children after the last block-level box of its own before that child are
 built after a stand-in block, as the fix-up has them after it (`ranBefore`,
 from the first blocks `RAN_FROM` keeps by the holder), from where that box's
 line ended in the text (`textAfterBox`: the text ranges, and past them what
-the fix-up dropped from the box). A build apart counts no counter it did not
+the fix-up dropped from the box). A build apart makes no counter it did not
 make (`CounterScopes.detach`), and counts otherwise than it did only where
-nothing kept after it reads a quote, or a counter made before it or around
-it (`countsAcross`, by the nearest reset of its name) — at the document's
-end, nothing does, and an `<ol>` after it makes its own `list-item`: Apple's
-footnotes, after a section with a `<ul>` in it, made every change to a
-section a build of the whole page. And a root that does what it did to the
-counters and the quotes around it (`countedBy`) leaves what comes after it
-as it was, whatever it holds: Wikipedia's references are numbered, and a
-change to any section with a list in it built the whole article. **Anything
-new a box reads of a counter joins `countersOf`, and anything that changes
-one joins `countedBy`.** Where every root and tail ends the document, what the build
+nothing kept after it reads a name it changed (`countedNames`): a quote, or
+a counter made before it or around it (`countsAcross`, by the nearest reset
+of its name) — at the document's end, nothing does, and an `<ol>` after it
+makes its own `list-item`: Apple's footnotes, after a section with a `<ul>`
+in it, made every change to a section a build of the whole page. And a root
+that does what it did to the counters and the quotes around it (`countedBy`)
+leaves what comes after it as it was, whatever it holds: Wikipedia's
+references are numbered, and a change to any section with a list in it built
+the whole article. **Anything new a box reads of a counter joins
+`countersOf`, and anything that changes one joins `countedBy` and
+`countedNames`.** Where every root and tail ends the document, what the build
 lists, its text and its styles are spliced at their ends (`atEnd`), the
 element keeps its index of first boxes and its reuse blockers
 (`carryBlockers`), and the layout after it walks no kept block to take its
@@ -2655,6 +2656,41 @@ where it needs it, or kept by the few boxes it is about.
 chunk at a time, cut inside words, tags and attributes, and holds every step
 to the same chunks styled, built and scanned whole; `STREAM_SEEDS` sweeps
 more of them, and `STREAM_FROM` starts at one.
+
+**A subtree that counts as the run it replaces did reads what that run
+read** (`COUNTER_READS`, `CounterScopes.detach`). A build apart knows nothing
+around it, so a list item's number, a `counter()` of a name made outside, a
+`counters()`'s outer instances and a quote's depth each refused it, and the
+build widened to what was around them, which read the same, and gave up: a
+sheet arriving on Wikipedia's X Window System article built 138 roots, then
+58, 58 and 57, and then the whole document, and a change to a reference's
+text built the whole document every time. Every read is kept by the box it
+was for, and a build apart reads them back in their order where it cannot
+work one out, so that change builds its item: 79–146 ms there and 24–38 ms
+here on that article, and 182–283 ms and 53–72 ms on an article of 7,100
+elements, whose worst went from 626–2,911 ms to 133–258. Four things are
+load-bearing. **What it read so stands only where it counts as that run
+did** (`SubtreeBuild.outside`, `countedBy`): the same changes in the same
+order, nested alike, start and end with what is outside where that run's did.
+Where they differ the build is thrown away. **So `countedBy` says everything
+a run does to a counter**: its nesting, since a reset reaches what its box
+holds or what is beside it, and what it read, since a caption the fix-up moves
+was read in another order than its boxes have. What no box says is
+`BoxTree.countsUnseen`, a `display: contents` element that counts, where no
+two runs are known to count alike. **Anything new that reads a counter or a
+quote's depth goes through `CounterScopes._answer`, on a path that ends in
+`_noteReads`**: a read a box does not keep is out of step with every read
+after it in its run. And **a read is answered by its kind, and never of a
+name something before it in the same build counted otherwise** (`touched`). What cannot be answered is built from what makes the counter
+(`makerAround`), the nearest box around that resets it, in one try: the end
+of what holds it and its parent read the same. Where nothing around does —
+the document's counter, a sibling's, whose reach no build apart can say, a
+quote's depth, a `counters()` (`EVERYWHERE`) — the whole document is built at
+once, and that goes for a kept box after it that reads another number too.
+The tries over a load came to 556–1,337 ms on that article and come to
+15–76. `test/html/subtree-build.test.ts` holds each case to a whole build and
+to how many tries it took (`COUNTED`), and the fuzz has numbered lists,
+reads and quotes in its documents.
 
 **A script's child put in or taken out builds the end of what holds it
 too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,
