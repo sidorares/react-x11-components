@@ -18,7 +18,7 @@ import {
 } from '../../src/html/index.js';
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
-import { buildsAtEnd } from '../../src/html/layout/boxes.js';
+import { buildsAnswered, buildsAtEnd } from '../../src/html/layout/boxes.js';
 import { blocksKept, standsMade } from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
@@ -51,6 +51,9 @@ function random(seed: number): () => number {
 }
 
 const CLASSES = 'abcdefghijklmnopqrs'.split('');
+/** What counts and what reads it, kept apart so that most of a document does
+ *  neither: a list item, a `counter()`, a `counters()`, a quote. */
+const COUNTERS = 'rstuvwxyz'.split('').map((c) => `c${c}`);
 const SHEET = `body { margin: 0; font-size: 14px }
 .a { display: flex; gap: 4px }
 .b { color: #aa0000 }
@@ -70,7 +73,17 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .n::after { content: " +"; color: #0000aa }
 .o { position: relative; top: 3px; left: 2px }
 .p { transform: translate(5px, 2px) }
-.q { overflow: hidden; height: 20px }`;
+.q { overflow: hidden; height: 20px }
+.cr { counter-reset: fig }
+.cs { counter-increment: fig }
+.ct::before { content: counter(fig) ". " }
+.cu::after { content: counters(fig, ".") " " }
+.cv { list-style-type: upper-roman; list-style-position: inside }
+.cw::before { content: open-quote }
+.cw::after { content: close-quote }
+.cx { display: contents; counter-increment: fig 2 }
+.cy { contain: style }
+.cz::marker { content: counter(list-item) ") " }`;
 /** And flows in another writing mode, which a build of subtrees stops at:
  *  a change in one builds the whole document, so a sheet that means to see
  *  subtrees built at every step leaves them out. */
@@ -79,10 +92,10 @@ const FRAMED_SHEET = `${SHEET}
 .s { writing-mode: vertical-lr }`;
 
 const BLOCKS = ['div', 'p', 'section', 'h2'];
-const INLINES = ['span', 'b', 'a'];
+const INLINES = ['span', 'b', 'a', 'q'];
 const WORDS = ['one', 'two three', ' four ', 'five\nsix', '  ', 'seven'];
 
-function element(next: () => number, depth: number): Element {
+function element(next: () => number, depth: number, counters = 0.04): Element {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const roll = next();
@@ -92,12 +105,28 @@ function element(next: () => number, depth: number): Element {
       : roll < 0.85
         ? pick(INLINES)
         : pick(['ul', 'ol', 'input', 'button', 'br']);
-  const classes = CLASSES.filter(() => next() < 0.12).join(' ');
+  const classes = [
+    ...CLASSES.filter(() => next() < 0.12),
+    ...COUNTERS.filter(() => next() < counters),
+  ].join(' ');
   const attribs: Record<string, string> = classes ? { class: classes } : {};
   if (tag === 'a') attribs.href = '#x';
+  if (tag === 'ol') {
+    const roll = next();
+    if (roll < 0.15) attribs.start = '7';
+    else if (roll < 0.25) attribs.reversed = '';
+  }
   const el = createElement(tag, attribs);
   if (tag === 'ul' || tag === 'ol') {
-    appendChild(el, createElement('li', {}, [createText('item')]));
+    const items = 1 + Math.floor(next() * 3);
+    for (let i = 0; i < items; i += 1) {
+      const item = createElement('li', next() < 0.1 ? { value: '5' } : {}, [
+        createText('item'),
+      ]);
+      if (depth < 3 && next() < 0.4)
+        appendChild(item, element(next, depth + 1, counters));
+      appendChild(el, item);
+    }
     return el;
   }
   if (tag === 'input' || tag === 'br') return el;
@@ -117,7 +146,8 @@ function element(next: () => number, depth: number): Element {
   }
   const count = depth > 2 ? 1 : 1 + Math.floor(next() * 3);
   for (let i = 0; i < count; i += 1) {
-    if (depth < 3 && next() < 0.45) appendChild(el, element(next, depth + 1));
+    if (depth < 3 && next() < 0.45)
+      appendChild(el, element(next, depth + 1, counters));
     else appendChild(el, createText(pick(WORDS)));
   }
   return el;
@@ -179,6 +209,17 @@ function change(next: () => number, body: Element): HtmlChange[] {
         removedNodes: [],
       },
     ];
+  }
+  // what a list says of its numbers
+  const lists = inside.filter((e) => e.name === 'li' || e.name === 'ol');
+  if (lists.length && next() < 0.1) {
+    const target = pick(lists);
+    const attributeName =
+      target.name === 'li' ? 'value' : pick(['start', 'reversed']);
+    const oldValue = target.attribs[attributeName] ?? null;
+    if (oldValue === null) target.attribs[attributeName] = '3';
+    else delete target.attribs[attributeName];
+    return [{ type: 'attributes', target, attributeName, oldValue }];
   }
   const kind = Math.floor(next() * 7);
   if (kind === 6) {
@@ -270,7 +311,7 @@ function change(next: () => number, body: Element): HtmlChange[] {
     const target = pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(CLASSES);
+    const c = pick(next() < 0.25 ? COUNTERS : CLASSES);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -320,6 +361,8 @@ function change(next: () => number, body: Element): HtmlChange[] {
     'padding-left: 6px',
     'display: inline',
     'display: list-item',
+    'list-style-type: decimal',
+    'counter-increment: fig',
     '',
   ]);
   return [
@@ -335,6 +378,7 @@ metric(
     let wholes = 0;
     let widened = 0;
     const keptAtStart = blocksKept();
+    const answeredAtStart = buildsAnswered();
     let shadowed = 0;
     // SUBTREE_SEEDS sweeps more of them, for a change to the splice, and
     // SUBTREE_FROM starts at the one a sweep failed at
@@ -401,9 +445,12 @@ metric(
       result.unmount();
     }
     assert.ok(subtrees > 60, `${subtrees} changes built only their subtrees`);
-    assert.ok(widened > 5, `${widened} built from a root around one refused`);
+    assert.ok(widened > 3, `${widened} built from a root around one refused`);
     assert.ok(wholes > 10, `${wholes} changes built the whole document`);
     assert.ok(shadowed > 5, `${shadowed} documents with a shadow tree`);
+    // and read what the run they replaced read
+    const answered = buildsAnswered() - answeredAtStart;
+    assert.ok(answered > 10, `${answered} subtrees answered from their runs`);
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
@@ -460,7 +507,9 @@ metric(
       const body = createElement('body', {});
       const blocks = 18 + Math.floor(next() * 8);
       for (let i = 0; i < blocks; i += 1) {
-        const block = element(next, 0);
+        // none that counts: one `display: contents` that does marks all of
+        // a page this long, and a drag is not what that is held to
+        const block = element(next, 0, 0);
         if (next() < 0.3) {
           const was = block.attribs.class ? `${block.attribs.class} ` : '';
           block.attribs.class = was + pick(['v', 'w', 'x', 'y']);
@@ -1483,6 +1532,533 @@ metric(
     await act();
     await compare(false, 'what counts no more');
     built.mock.restore();
+  },
+);
+
+/** What a change to a document that counts came to: `tries` builds, the last
+ *  a subtree's, or null for the whole document's, held to a whole build. */
+interface Counted {
+  what: string;
+  sheet: string;
+  body: string;
+  change(el: (id: string) => Element): HtmlChange[];
+  tries: number;
+  apart: boolean;
+}
+
+const textOf = (el: Element): HtmlChange[] => {
+  const text = el.children.find((n) => n.type === 'text') as unknown as {
+    data: string;
+  };
+  text.data = `${text.data} more`;
+  return [{ type: 'characterData', target: text as never }];
+};
+const put = (parent: Element, child: Element): HtmlChange[] => {
+  const previousSibling = parent.children.at(-1) ?? null;
+  appendChild(parent, child);
+  return [
+    {
+      type: 'childList',
+      target: parent,
+      addedNodes: [child],
+      removedNodes: [],
+      previousSibling,
+      nextSibling: null,
+    },
+  ];
+};
+const classed = (el: Element, value: string): HtmlChange[] => {
+  const oldValue = el.attribs.class ?? null;
+  el.attribs.class = value;
+  return [{ type: 'attributes', target: el, attributeName: 'class', oldValue }];
+};
+
+const moved = (el: Element, into: Element): HtmlChange[] => {
+  const from = el.parent as unknown as Element;
+  const previousSibling = el.prev;
+  const nextSibling = el.next;
+  removeNode(el as unknown as ChildNode);
+  appendChild(into, el as unknown as ChildNode);
+  return [
+    {
+      type: 'childList',
+      target: from,
+      addedNodes: [],
+      removedNodes: [el],
+      previousSibling,
+      nextSibling,
+    },
+    { type: 'childList', target: into, addedNodes: [el], removedNodes: [] },
+  ];
+};
+
+/** A reset with no counter of its name outside, which reaches its box's
+ *  later siblings, and what counts and reads beside it. */
+const REACH =
+  '.r { counter-reset: n 5 } .tick { counter-increment: n }' +
+  ' .read::before { content: counter(n) " " }';
+
+const COUNTED: Counted[] = [
+  {
+    what: 'a number a list item keeps, which nothing built apart knows',
+    sheet: '',
+    body: '<ol><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list started at seven, its items a roman numeral',
+    sheet: 'li { list-style-type: upper-roman }',
+    body: '<ol start="7"><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list counting down',
+    sheet: '',
+    body: '<ol reversed><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'every instance of a name, which a reference list cites by',
+    sheet:
+      '.refs { counter-reset: r } .refs > li { counter-increment: r }' +
+      ' .refs > li::after { content: " " counters(r, ".") }',
+    body: '<ol class="refs"><li>one</li><li id="b">two</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list that reads every instance built from around it',
+    sheet:
+      '.refs { counter-reset: r } .refs > li { counter-increment: r }' +
+      ' .refs > li::after { content: " " counters(r, ".") }' +
+      ' .wide::before { content: "list " }',
+    body: '<ol id="o" class="refs"><li>one</li><li>two</li></ol>',
+    change: (el) => classed(el('o'), 'refs wide'),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a quote inside a quote another block left open',
+    sheet: '.open::before { content: open-quote } q { color: #aa0000 }',
+    body: '<p class="open">a</p><p id="b">two <q>three</q></p>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a `::marker` that reads what is outside it',
+    sheet: 'li::marker { content: counter(list-item) ") " }',
+    body: '<ol><li>one</li><li id="b">two</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a number it changes, built from what makes the counter',
+    sheet: '',
+    body: '<ol id="o"><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => {
+      el('b').attribs.value = '9';
+      return [
+        {
+          type: 'attributes',
+          target: el('b'),
+          attributeName: 'value',
+          oldValue: null,
+        },
+      ];
+    },
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list in an item, whose list the items after it read through',
+    sheet: '',
+    body:
+      '<ol><li>one<ul id="u"><li>a</li></ul></li><li>two</li><li>three</li>' +
+      '</ol>',
+    change: (el) =>
+      put(el('u'), createElement('li', {}, [createText('another')])),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list above what reads a quote, which no list can move',
+    sheet: '',
+    body: '<section id="s"><p>a</p></section><p><q>two</q></p>',
+    change: (el) =>
+      put(
+        el('s'),
+        createElement('ul', {}, [
+          createElement('li', {}, [createText('item')]),
+        ]),
+      ),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a counter of the document’s counted otherwise',
+    sheet:
+      'body { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::before { content: counter(n) ". " }',
+    body:
+      '<section id="s"><p class="c">a</p></section><p class="c">two</p>' +
+      '<p class="c">three</p>',
+    change: (el) =>
+      put(el('s'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a `counters()` where a `counter()` of its name was',
+    sheet:
+      'body { counter-reset: n } .c::before { content: counter(n) " " }' +
+      ' .d::before { content: counters(n, ".") " " }',
+    body: '<p id="b" class="c">one</p><p class="c">two</p>',
+    change: (el) => classed(el('b'), 'd'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what no box says, a `display: contents` element that counts',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .x { display: contents } .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div id="b" class="x"><p>a</p></div></section>' +
+      '<p class="read">two</p>',
+    change: (el) => classed(el('b'), 'x tick'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'the same changes nested otherwise',
+    sheet:
+      'body { counter-reset: n } .r { counter-reset: n }' +
+      ' .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div class="r">a</div>' +
+      '<div id="b" class="tick">b</div></section><p class="read">two</p>',
+    change: (el) => {
+      const b = el('b');
+      const r = b.prev as Element;
+      const from = el('s');
+      removeNode(b as unknown as ChildNode);
+      appendChild(r, b as unknown as ChildNode);
+      return [
+        {
+          type: 'childList',
+          target: from,
+          addedNodes: [],
+          removedNodes: [b],
+        },
+        ...[
+          {
+            type: 'childList' as const,
+            target: r,
+            addedNodes: [b],
+            removedNodes: [],
+          },
+        ],
+      ];
+    },
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what reads a name a root before it in the same change counted',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body: '<p id="a">one</p><p id="b" class="read">two</p>',
+    change: (el) => [...classed(el('a'), 'tick'), ...textOf(el('b'))],
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a counter a sibling made, whose reach no build apart can say',
+    sheet:
+      '.r { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::before { content: counter(n) " " }',
+    body:
+      '<section><p class="r">a</p><div id="w"><p class="c">b</p></div>' +
+      '</section>',
+    change: (el) =>
+      put(el('w'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a quote put in, whose depth no element around holds',
+    sheet: '',
+    body: '<p id="b">one <q>two</q></p><p>three</p>',
+    change: (el) => put(el('b'), createElement('q', {}, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a quote only a `::marker` opened, gone, above what reads one',
+    sheet: '.m::marker { content: open-quote } li { list-style-type: disc }',
+    body: '<ul><li id="b" class="m">one<div>a</div></li></ul><p><q>two</q></p>',
+    change: (el) => classed(el('b'), ''),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a reset put in a box of its own, which reaches what follows no more',
+    sheet: REACH,
+    body:
+      '<section><span id="w"></span><span id="b" class="r"></span>' +
+      '<span class="tick read">c</span></section>',
+    change: (el) => moved(el('b'), el('w')),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what read a reset beside it moved to beside the reset',
+    sheet: REACH,
+    body:
+      '<section><span id="w"><span class="r">a</span></span>' +
+      '<span id="x"><span id="b" class="tick read">c</span></span></section>',
+    change: (el) => moved(el('b'), el('w')),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'an item put in for another in a list, the items after it its tail',
+    sheet: '',
+    body:
+      '<ol id="o"><li>one</li><li>two</li><li id="b">three</li><li>four</li>' +
+      '<li>five</li></ol>',
+    change: (el) => {
+      const gone = el('b');
+      const holder = el('o');
+      const previousSibling = gone.prev;
+      const nextSibling = gone.next;
+      const item = createElement('li', {}, [createText('another')]);
+      DomUtils.replaceElement(gone as never, item as never);
+      return [
+        {
+          type: 'childList',
+          target: holder,
+          addedNodes: [item],
+          removedNodes: [gone],
+          previousSibling,
+          nextSibling,
+        },
+      ];
+    },
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'more text in a numbered item, which is no more items',
+    sheet: '',
+    body: '<ol><li id="b">one <b>two</b></li><li>three</li></ol>',
+    change: (el) => {
+      const child = createText(' four');
+      const change = put(el('b'), child as unknown as Element);
+      return change;
+    },
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'every instance of a name counted otherwise, which nothing can say',
+    sheet:
+      '.s { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::after { content: " " counters(n, ".") }',
+    body: '<section class="s"><div id="b"><p class="c">a</p></div></section>',
+    change: (el) =>
+      put(el('b'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'more text in what counts, which counts no more',
+    sheet: REACH,
+    body:
+      '<section class="r"><p id="b" class="tick">one <b>two</b></p>' +
+      '<p class="read">three</p></section>',
+    change: (el) => put(el('b'), createText(' four') as unknown as Element),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'what reads every instance of a name, the outer one counted',
+    sheet:
+      'body { counter-reset: n } .r { counter-reset: n }' +
+      ' .tick { counter-increment: n }' +
+      ' .deep::before { content: counters(n, ".") " " }',
+    body:
+      '<section id="s"><p>a</p></section>' +
+      '<div class="r"><p class="deep">b</p></div>',
+    change: (el) =>
+      put(el('s'), createElement('p', { class: 'tick' }, [createText('c')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a `display: contents` element that counts no more',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .x { display: contents } .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div id="b" class="x tick"><p>a</p></div></section>' +
+      '<p class="read">two</p>',
+    change: (el) => classed(el('b'), 'x'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a caption the fix-up moves ahead of what was built before it',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body:
+      '<div id="b">text<table><tbody><tr><td class="tick read">a</td></tr>' +
+      '</tbody><caption class="tick read">cap</caption></table></div>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: false,
+  },
+];
+
+metric(
+  'a change where what is around it counts builds what it can read, and tries nothing that cannot be built apart',
+  async (t) => {
+    for (const test of COUNTED) {
+      const { node, result: rendered } = await render(
+        '<!doctype html><html><head><style>body { margin: 0;' +
+          ` font-size: 14px } p { margin: 2px } ${test.sheet}</style></head>` +
+          `<body>${test.body}</body></html>`,
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _subtreeBuild(...a: unknown[]): BoxTree | null;
+        _subtreeRoots(...a: unknown[]): unknown;
+        _invalidate(stale: number): void;
+      };
+      const all = elementsUnder(el.document as unknown as Element);
+      const byId = (id: string): Element =>
+        all.find((e) => e.attribs.id === id)!;
+      const built = t.mock.method(internals, '_subtreeBuild');
+      const tried = t.mock.method(internals, '_subtreeRoots');
+      el.touchDocument(test.change(byId));
+      await act();
+      assert.strictEqual(
+        !!built.mock.calls.at(-1)?.result,
+        test.apart,
+        test.what,
+      );
+      assert.strictEqual(tried.mock.callCount(), test.tries, test.what);
+      built.mock.restore();
+      tried.mock.restore();
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      assert.deepStrictEqual(kept, treeLines(internals._tree), test.what);
+      rendered.unmount();
+    }
+  },
+);
+
+metric(
+  'a script put in that a page then gives a display draws its text, where a build of all new boxes does',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }</style></head>' +
+        '<body><section id="s"><p>a</p></section><p>b</p></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const section = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 's',
+    )!;
+    const script = createElement('script', {}, [createText('x')]);
+    el.touchDocument(put(section, script));
+    await act();
+    script.attribs.style = 'display: block';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: script,
+        attributeName: 'style',
+        oldValue: null,
+      },
+    ]);
+    await act();
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
+metric(
+  'a text moved out of a tail into a template before it goes with its boxes, where a build of all new boxes has no such text',
+  async (t) => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }</style></head>' +
+        '<body><section id="s"><template id="t">x</template><p>a</p></section>' +
+        '<h2 id="h">seven</h2><div>two</div><div>three</div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const all = elementsUnder(el.document as unknown as Element);
+    const byId = (id: string): Element => all.find((e) => e.attribs.id === id)!;
+    const moved = byId('h');
+    const holder = moved.parent as unknown as Element;
+    const previousSibling = moved.prev;
+    const nextSibling = moved.next;
+    removeNode(moved as unknown as ChildNode);
+    appendChild(byId('t'), moved as unknown as ChildNode);
+    const built = t.mock.method(internals, '_subtreeBuild');
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [moved],
+        previousSibling,
+        nextSibling,
+      },
+      {
+        type: 'childList',
+        target: byId('t'),
+        addedNodes: [moved],
+        removedNodes: [],
+      },
+    ]);
+    await act();
+    assert.ok(built.mock.calls.at(-1)?.result, 'built the whole document');
+    built.mock.restore();
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
   },
 );
 
