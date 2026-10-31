@@ -415,8 +415,11 @@ metric(
 );
 
 /** Images a document's rules name, which its boxes are built without
- *  until they are in: generated content and a list's marker. */
+ *  until they are in: generated content and a list's marker. No containers:
+ *  a restyle in place that is the first to read one answers with no size
+ *  until the next layout, which is nothing an image does. */
 const IMAGE_SHEET = `${SHEET}
+.l { container-type: normal }
 .r::before { content: url(before.png) }
 .s::after { content: url(after.png) }
 .t { display: list-item; list-style-image: url(marker.png) }`;
@@ -527,14 +530,6 @@ metric(
       const pick = <T>(list: readonly T[]): T =>
         list[Math.floor(next() * list.length)];
       const body = createElement('body', {});
-      // a style reads a container from the first build: the sizes are taken
-      // as a tree is built where one does, and this is about images
-      appendChild(
-        body,
-        createElement('div', { class: 'l' }, [
-          createElement('b', { class: 'b' }, [createText('read')]),
-        ]),
-      );
       const blocks = 3 + Math.floor(next() * 4);
       for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
       const images = new Map<string, Uint8Array>();
