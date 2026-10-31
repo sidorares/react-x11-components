@@ -2201,25 +2201,33 @@ on purpose was caught by it or by a test beside it.
 **What a `:has()` holds that compiles a selector of its own is compiled
 apart from it** (`compileHoisted`). css-select hands the `:has()`'s element
 to whatever is in an argument with a combinator, as a context, and reads the
-selector in it as relative to that element, where Selectors 4 matches it
-against the whole document: `.p:has(+ .a:not(.b))` asked for a `.b` inside
-the `.p`, which its sibling never is, so it held of every `.a`, and Apple's
-sections matched rules a browser's do not; `:has(+ :is(.a))` and
-`:has(+ input:checked)` matched nothing, and `:has(> .a:is(.x .a))` found
-no `.x` around the element. So each `:is()`, `:where()`, `:not()`,
-`:nth-child(… of S)` and alias of css-select's in an argument is compiled by
-itself, with `:-rx-hoisted(n)` left in its place, and only what is compiled
-changes: what reads a rule for what it reaches reads it as written. Four
-things are load-bearing. **Anything new that hands css-select a selector
-goes through `compileHoisted`**, as `compileSelector` and `_query` do, or
-what it answers and what the page is styled by come apart. **`_query` gives
-each piece the context it was asked with**, since `:scope` in such a function
-is the query's. **A pseudo-class css-select adds that compiles a selector
-joins `compilesSelector`, or `SELECTOR_ALIASES`** where it is one of its
-`aliases`, which it does not export. And **a selector in such a function may
-read what no walk from a change finds** (`readsApart`): what a combinator in
-it climbs to may be above the `:has()`'s element, and what a sibling
-combinator reaches may be before it where the argument starts at a sibling.
+selector in it as relative to that element (fb55/css-select#1930), where
+Selectors 4 matches it against the whole document: `.p:has(+ .a:not(.b))`
+asked for a `.b` inside the `.p`, which its sibling never is, so it held of
+every `.a`, and Apple's sections matched rules a browser's do not;
+`:has(+ :is(.a))` and `:has(+ input:checked)` matched nothing, and
+`:has(> .a:is(.x .a))` found no `.x` around the element. So each `:is()`,
+`:where()`, `:not()`, `:nth-child(… of S)`, alias of css-select's and `:scope`
+in an argument is compiled by itself, with `:-rx-hoisted(n)` left in its
+place, and only what is compiled changes: what reads a rule for what it
+reaches reads it as written. What is left of an argument is held inside the
+element (`insideHas`): css-select anchors an entry that starts at no
+combinator and has one in it with a descendant combinator that may take the
+element itself (fb55/css-select#1928), so `.a:has(.a .b)` held of an `.a` with
+a `.b` in it, and `* > X Y` hands that combinator the `*` to take instead. It
+is that form because `> X Y, > * X Y` or a `:scope` in the entry gives up what
+css-select keeps of a `:has()`'s answers, and `* X Y` walks up from each of
+`X`'s ancestors in turn. Four things are load-bearing. **Anything new that
+hands css-select a selector goes through `compileHoisted`**, as
+`compileSelector` and `_query` do, or what it answers and what the page is
+styled by come apart. **`_query` gives each piece the context it was asked
+with**, since a `:scope` in an argument is the query's, and the root's in a
+rule. **A pseudo-class css-select adds that compiles a selector joins
+`compilesSelector`, or `SELECTOR_ALIASES`** where it is one of its `aliases`,
+which it does not export. And **a selector in such a function may read what
+no walk from a change finds** (`readsApart`): what a combinator in it climbs
+to may be above the `:has()`'s element, and what a sibling combinator reaches
+may be before it where the argument starts at a sibling.
 `scanFunctionChanges` notes such a selector `CHANGES_ANYWHERE` and `testsApart`
 makes a state it tests no local one, and a change of either styles every
 element, as what `:nth-child(… of S)` counts by does, so the test stays as
@@ -2230,8 +2238,10 @@ a refresh of the whole document. A refresh told what changed and a refresh of
 everything share what the matcher answers, so the fuzz in
 `test/html/refresh.test.ts` sees none of this: `HAS_ARGUMENTS` in
 `test/html/harness.ts` holds the answers to Chrome's. When a release of
-css-select fixes it, delete `compileHoisted`, as "Vendored from core" has it
-for a copy.
+css-select fixes fb55/css-select#1928 delete `insideHas`, and when one fixes
+fb55/css-select#1930 delete `compileHoisted`, as "Vendored from core" has it
+for a copy, leaving a `:scope` in an argument compiled apart until css-select
+reads one as the query's.
 
 **A `:has()` that asks only of its element's children or its siblings is
 asked only so many levels up, and a sibling combinator reaches what it

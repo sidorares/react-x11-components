@@ -1715,10 +1715,48 @@ function compilesSelector(name: string, arg: string): boolean {
   );
 }
 
+/** A combinator at a selector's start, past white space and comments: a
+ *  sheet's comments are gone by here, and a page's own selector keeps them. */
+const STARTS_AT_COMBINATOR = /^(?:\s|\/\*[^]*?\*\/)*[>+~]/;
+
+/**
+ * A `:has()`'s argument with `* > ` before each entry that starts at no
+ * combinator and has one in it.
+ *
+ * css-select reads `:has(X Y)` as `:scope X Y`, and the descendant combinator
+ * it puts after `:scope` there may take the element itself
+ * (`_flexibleDescendant`, fb55/css-select#1928), so `.a:has(.a .b)` held of an
+ * `.a` with a `.b` in it, where `X` has to be inside the element (Selectors 4,
+ * 4.5). Under `* > X Y` that combinator has the `*` to take for the element:
+ * `X`'s parent is the element or is inside it, which is `X` inside it. An
+ * entry of one compound is that already, being what the element is searched
+ * for.
+ *
+ * This form because of what each of the others costs. css-select keeps a
+ * `:has()`'s answers to answer what is under an element with, unless an entry
+ * starts at a combinator or names `:scope`, so `> X Y, > * X Y` and `:scope
+ * X:not(:scope) Y` took some fifteen times as long over a deep tree. And
+ * `* X Y` says the same, but walks up from each of `X`'s ancestors in turn,
+ * which took thirteen times as long forty levels of `X` down.
+ *
+ * A `:scope` in the argument is compiled apart by then (`hoistFromHas`), so no
+ * entry here names it: an entry that did would be anchored at nothing.
+ */
+function insideHas(arg: string): string {
+  return selectorsOf(arg)
+    .map((entry) =>
+      compoundsOf(entry).length < 2 || STARTS_AT_COMBINATOR.test(entry)
+        ? entry
+        : `* > ${entry}`,
+    )
+    .join(',');
+}
+
 /**
  * `text` with what `compileHoisted` compiles apart taken out of each
- * `:has()` in it, into `hoisted`, and `:-rx-hoisted(n)` left in its place.
- * `inHas` says `text` is such a `:has()`'s argument.
+ * `:has()` in it, into `hoisted`, and `:-rx-hoisted(n)` left in its place,
+ * and each such argument held inside its element (`insideHas`). `inHas` says
+ * `text` is such a `:has()`'s argument.
  */
 function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
   const hoist = (whole: string): string => {
@@ -1742,15 +1780,16 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
         const own = compilesSelector(name, arg);
         end = close + 1;
         if (name === 'has' || own) {
+          const held = hoistFromHas(arg, hoisted, name === 'has');
           const whole =
             text.slice(i, open + 1) +
-            hoistFromHas(arg, hoisted, name === 'has') +
+            (name === 'has' ? insideHas(held) : held) +
             text.slice(close, end);
           piece = own && inHas ? hoist(whole) : whole;
         }
       } else if (inHas) {
         const name = /^:([\w-]+)/.exec(text.slice(i))?.[1];
-        if (name && SELECTOR_ALIASES.test(name)) {
+        if (name && (SELECTOR_ALIASES.test(name) || /^scope$/i.test(name))) {
           end = i + 1 + name.length;
           piece = hoist(text.slice(i, end));
         }
@@ -1767,7 +1806,8 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  *
  * css-select hands the `:has()`'s element, as a context, to whatever in its
  * argument compiles a selector of its own, and reads that selector as
- * relative to the element, where one has a combinator in it: so
+ * relative to the element, where one has a combinator in it
+ * (fb55/css-select#1930): so
  * `.p:has(+ .a:not(.b))` asked for a `.b` inside the `.p`, which its sibling
  * never is, and held of every `.a`, and `.p:has(+ :is(.a))` of none. An
  * `:is()`, a `:where()` and a `:not()` take a selector of the document's
@@ -1776,10 +1816,13 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  * product pages style a section by `:has(+ .section.theme-dark:not(.alt))`.
  * Each of them is compiled by itself, with no context to read, and
  * `:nth-child(… of S)` and css-select's `aliases` with it, which are `:is()`s
- * under other names: `:has(+ input:checked)` matched nothing.
+ * under other names: `:has(+ input:checked)` matched nothing. So is a `:scope`,
+ * which is the query's and not the `:has()`'s element: `el.closest(':has(:scope
+ * .a)')` found `el` for an `.a` in it, where it finds what `el` is in. What is
+ * left of an argument goes through `insideHas`.
  *
  * Only what is compiled changes: what reads a rule for what it reaches reads
- * it as written, and never sees `-rx-hoisted`.
+ * it as written, and never sees `-rx-hoisted` or the `* > `.
  */
 export function compileHoisted<Pseudos extends object>(
   selector: string,
@@ -1789,7 +1832,7 @@ export function compileHoisted<Pseudos extends object>(
   if (!/:has\(/i.test(selector)) return make(selector, pseudos);
   const hoisted: string[] = [];
   const text = hoistFromHas(selector, hoisted, false);
-  if (!hoisted.length) return make(selector, pseudos);
+  if (!hoisted.length) return make(text, pseudos);
   const matchers: ((el: Element) => boolean)[] = [];
   const own = {
     ...pseudos,

@@ -5164,6 +5164,30 @@ test('a selector compiled apart from a :has() has the scope of the query it is i
   assert.equal(doc.text('out'), 'true|true|false');
 });
 
+test('a :scope in a :has() is the query’s and not the :has()’s element, in a rule the root: Chrome’s answers', async () => {
+  const doc = await hosted(
+    `<style>.a:has(:scope .b) { color: ${HAS_MATCHED} }</style>` +
+      '<div id="m"><div class="a" id="s"><i class="a" id="i"><b class="b" id="b"></b></i></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), i = document.getElementById("i");' +
+      'var m = document.getElementById("m"), r = [];' +
+      'r.push(s.matches(":has(:scope .b)"), i.closest(":has(:scope .b)").id);' +
+      'r.push(s.closest(":has(:scope .b)").id, i.closest(":has(.a :scope)").id);' +
+      'r.push(i.closest(":has(> :scope)").id, i.closest(":has(.c, :scope .b)").id);' +
+      'r.push(m.querySelectorAll(":has(:scope .b)").length);' +
+      'r.push(document.querySelectorAll(":has(:scope)").length);' +
+      'r.push(i.querySelector(".a:has(:scope) .b").id);' +
+      'r.push(s.querySelector(".a:has(:scope) .b"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), 'false|s|m|m|s|s|0|0|b|');
+  assert.notStrictEqual(
+    doc.view.computedStyle(doc.byId('s'))?.color,
+    HAS_MATCHED,
+  );
+});
+
 test('a :has() answers again as a script changes what its function reads, in a sibling and above it', async () => {
   const doc = await hosted(
     `<style>.p:has(+ .a:not(.b)) { color: ${HAS_MATCHED} }` +
@@ -5192,6 +5216,26 @@ test('a :has() answers again as a script changes what its function reads, in a s
   await settle();
   assert.strictEqual(colour('t'), HAS_MATCHED, 'the sibling lost .b');
   assert.notStrictEqual(colour('u'), HAS_MATCHED, 'what is above lost .x');
+});
+
+test('a :has() answers again as what an entry starts at comes inside its element, and as the element takes it', async () => {
+  const doc = await hosted(
+    `<style>.p:has(.x .b) { color: ${HAS_MATCHED} }</style>` +
+      '<div class="p" id="t"><u id="u"><b class="b">b</b></u></div>',
+  );
+  const colour = () => doc.view.computedStyle(doc.byId('t'))?.color;
+  assert.notStrictEqual(colour(), HAS_MATCHED);
+  await act(() => doc.run('document.getElementById("u").classList.add("x");'));
+  await settle();
+  assert.strictEqual(colour(), HAS_MATCHED, 'inside it');
+  await act(() =>
+    doc.run(
+      'document.getElementById("u").classList.remove("x");' +
+        'document.getElementById("t").classList.add("x");',
+    ),
+  );
+  await settle();
+  assert.notStrictEqual(colour(), HAS_MATCHED, 'the element itself');
 });
 
 test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {
