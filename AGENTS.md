@@ -1735,7 +1735,16 @@ are the container's (`_queryUnit`) — noted for the element under a key per
 container and axis (`_queryUnitKey`), and a query asked again after a
 layout reads them at the sizes that layout gave (`_moving`): asked at the
 last ones, a container no style had read yet answered with the viewport's,
-and the query kept its answer.
+and the query kept its answer. **One element reads one query twice where it
+is a container**: its `::after` finds the element, and the element what is
+above it, so a pseudo-element's read is noted under a key of its own
+(`_readKey`), or the second read takes the first's place and no layout moves
+the element's answer. **And a query reads past the parent**, which `follow`
+stands on it not doing: an element that comes to be a container, or stops, or
+goes by another name or turns inline, changes what a query under it finds
+whatever its parent's style came to, so everything under it is styled again
+(`sameContainer`, `_newContainers`). Anything new a query finds a container by
+joins `sameContainer`.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
@@ -2715,9 +2724,10 @@ order, nested alike, start and end with what is outside where that run's did.
 Where they differ the build is thrown away. **So `countedBy` says everything
 a run does to a counter**: its nesting, since a reset reaches what its box
 holds or what is beside it, and what it read, since a caption the fix-up moves
-was read in another order than its boxes have. What no box says is
-`BoxTree.countsUnseen`, a `display: contents` element that counts, where no
-two runs are known to count alike. **Anything new that reads a counter or a
+was read in another order than its boxes have, and which of its boxes have style
+containment, which keeps what they hold from counting on what is around them.
+What no box says is `BoxTree.countsUnseen`, a `display: contents` element that
+counts, where no two runs are known to count alike. **Anything new that reads a counter or a
 quote's depth goes through `CounterScopes._answer`, on a path that ends in
 `_noteReads`**: a read a box does not keep is out of step with every read
 after it in its run. And **a read is answered by its kind, and never of a
@@ -2730,7 +2740,17 @@ once, and that goes for a kept box after it that reads another number too.
 The tries over a load came to 556–1,337 ms on that article and come to
 15–76. `test/html/subtree-build.test.ts` holds each case to a whole build and
 to how many tries it took (`COUNTED`), and the fuzz has numbered lists,
-reads and quotes in its documents.
+reads and quotes in its documents. **What a counter's reach depends on is
+what is around it, so nothing may turn on the reach but where it is read
+from** (`_answers`): style containment asked whether a reset reached its
+element's siblings, which a build apart sees no outer counter to decide, so
+a `<ol start="7">` with `contain: style` in a list numbered from 1 built apart
+and from 7 whole. What such an element resets is outside it for what counts
+inside it, as all three engines have it, whatever its reach (`_counted`), and
+a `list-item` it resets is its own and in it, as Chromium and WebKit have it
+and Firefox does not (`reachesSiblings`). Where the engines differ on what is
+read there, a reset read before anything counts and one read beside it, this
+is Chromium's.
 
 **A script's child put in or taken out builds the end of what holds it
 too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,

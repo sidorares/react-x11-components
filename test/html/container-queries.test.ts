@@ -863,3 +863,123 @@ test('a query answered otherwise after a layout builds what it styles, and keeps
   assert.ok(wide, 'the test reads a box');
   result.unmount();
 });
+
+test('an element that is a container reads what is above it, and its pseudo-element reads the element', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.o{width:300px;container-type:inline-size}' +
+      '#t{width:100px;container-type:inline-size;color:#000000}' +
+      '@container (min-width: 150px) { #t { color: #0000ff } #t::after { content: "x" } }' +
+      '</style><body><div class="o"><div id="t">t</div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  // one query, read twice over: of the 300px above `#t`, which holds, and of
+  // `#t`'s own 100px, which does not
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+  assert.ok(
+    !(boxOf(el, 't') as unknown as { children: { pseudo?: string }[] }).children
+      .map((c) => c.pseudo)
+      .includes('after'),
+    'the ::after read the container above its element',
+  );
+});
+
+metric(
+  'a container unit in an element and in its pseudo-element are of different containers',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}.o{width:300px;container-type:inline-size}' +
+        '#t{width:50cqw;container-type:inline-size}' +
+        '#t::before{content:"";display:block;width:50cqw;height:1px}' +
+        '</style><body><div class="o"><div id="t">t</div></div></body>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const box = boxOf(el, 't') as unknown as {
+      width: number;
+      children: { pseudo?: string; width: number }[];
+    };
+    assert.strictEqual(box.width, 150);
+    assert.strictEqual(
+      box.children.find((c) => c.pseudo === 'before')?.width,
+      75,
+    );
+  },
+);
+
+/** Each class step is a container that comes, goes or changes under an
+ *  element no change reaches by what its own rules test. */
+async function containerTurned(
+  markup: string,
+  id: string,
+  to: Record<string, string>,
+): Promise<HtmlViewNode> {
+  const { node } = await render(
+    '<style>body{margin:0}.c{container-type:inline-size}' +
+      '.n{container-name:side}.i{display:inline}' +
+      '.w{width:100px}.t{color:#000000}' +
+      '@container (min-width: 150px) { .t { color: #0000ff } }' +
+      '@container side (min-width: 50px) { .u { color: #0000ff } }' +
+      `</style><body>${markup}</body>`,
+    400,
+  );
+  const el = view(node);
+  await act();
+  const target = findById(el.document, id)!;
+  const records = Object.entries(to).map(([attributeName, value]) => {
+    const oldValue = target.attribs[attributeName] ?? null;
+    target.attribs[attributeName] = value;
+    return { type: 'attributes' as const, target, attributeName, oldValue };
+  });
+  el.touchDocument(records);
+  await act();
+  await act();
+  return el;
+}
+
+test('a container that comes answers for what is under it, however far', async () => {
+  const el = await containerTurned(
+    '<div id="o"><p><b><i class="t" id="t">t</i></b></p></div>',
+    'o',
+    { class: 'c' },
+  );
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+});
+
+test('a nearer container that comes takes the query from the one above it', async () => {
+  const el = await containerTurned(
+    '<div class="c"><div id="o" class="w"><p><b class="t" id="t">t</b></p></div></div>',
+    'o',
+    { class: 'w c' },
+  );
+  assert.strictEqual(colorOf(el, 't'), '#000000');
+});
+
+test('a container that goes hands the query to the one above it', async () => {
+  const el = await containerTurned(
+    '<div class="c"><div id="o" class="w c"><p><b class="t" id="t">t</b></p></div></div>',
+    'o',
+    { class: 'w' },
+  );
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+});
+
+test('a name that comes answers for a query of the name', async () => {
+  const el = await containerTurned(
+    '<div id="o" class="c"><p><b class="u" id="t">t</b></p></div>',
+    'o',
+    { class: 'c n' },
+  );
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+});
+
+test('a container turned inline answers for nothing, its query the next one out', async () => {
+  const el = await containerTurned(
+    '<div class="c"><div class="w"><div id="o" class="c"><p><b class="t" id="t">t</b></p></div></div></div>',
+    'o',
+    { class: 'c i' },
+  );
+  assert.strictEqual(colorOf(el, 't'), BLUE);
+});
