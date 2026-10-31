@@ -639,21 +639,24 @@ metric(
       '.g{display:grid;width:30px;writing-mode:vertical-lr;' +
       'text-orientation:upright}</style>';
     const laid = async (before: string) => {
-      const { node } = await render(
+      const { node, result } = await render(
         `${sheet}<body>${before}<div class="g" id="g">one two three</div></body>`,
       );
       const el = view(node);
       await act();
-      const block = (
-        boxOf(el, 'g') as unknown as {
-          children: {
-            lines: {
-              y: number;
-              texts: { drawY: number; layout: never }[];
-            }[];
+      const box = boxOf(el, 'g') as unknown as {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        children: {
+          lines: {
+            y: number;
+            texts: { drawY: number; layout: never }[];
           }[];
-        }
-      ).children[0];
+        }[];
+      };
+      const block = box.children[0];
       assert.ok(block.lines.length > 1, 'the text wraps');
       for (const line of block.lines) {
         for (const text of line.texts) {
@@ -663,7 +666,16 @@ metric(
           );
         }
       }
-      return block.lines.map((line) => line.texts.map((t) => t.drawY));
+      const data = await pixelsIn(result.ctx, {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.round(box.width),
+        height: Math.round(box.height),
+      });
+      let ink = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] < 128) ink += 1;
+      assert.ok(ink > 0, 'the text is drawn');
+      return { ink, at: block.lines.map((l) => l.texts.map((t) => t.drawY)) };
     };
     assert.deepStrictEqual(
       await laid('<p class="r">x</p>'),
