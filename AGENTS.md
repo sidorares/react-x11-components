@@ -3900,6 +3900,21 @@ UA sheet names it for. And one is not Chrome's: on a Mac Chrome answers
 WebKit. **Anything new that sets `fontFamily` sets `fontFamilyText` too**, or
 a page reads the list before it.
 
+**A family's name is read in one place** (`readFamilyName`, `css/parse.ts`),
+whoever asks: a `font-family`, a `font`, a drawing's, a `@font-face`'s and
+`getComputedStyle`. What it takes and refuses is Chrome's, read back from that
+browser (`font-family takes what Chrome takes`), and its escapes are read, so a
+name is one string wherever two are compared: `Foo\ Bar` in a list finds the
+face `@font-face` calls `"Foo Bar"`, and the text engine never sees a
+backslash. Three things are load-bearing. **A list has no name with a comma in
+it**: every reader splits a list at its commas, the engines too, so
+`joinFamilies` leaves out `'Courier New, Arial'` and the list goes on to the
+next name, as Chrome's does. **Anything that splits or trims a value holds an
+escape's character**, as `splitCommas`, `splitValue` and `trimValue` do:
+`Foo\, Bar` is one name and `Foo\ ` ends in a space. And **`unescapeValue` keeps
+an escape that starts an identifier as no character could**, so `\31 996` is
+still a name when it gets here; written out it is a number.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a
