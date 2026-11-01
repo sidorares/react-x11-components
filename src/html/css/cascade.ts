@@ -3212,10 +3212,14 @@ function scanFunctionChanges(
   } else if (name === 'lang' || name === 'dir') {
     // what the nearest element up that says one says: a change to one
     // reaches what is in it, and in a `:has()`'s argument the element
-    // whose answer it changes is in it, as for `PSEUDO_INHERITED`
+    // whose answer it changes is in it, as for `PSEUDO_INHERITED` — but
+    // only what the rule can style of that (`subject`, or the compound
+    // where this is its subject). A mail page's one `.item:dir(rtl) .mark`
+    // had every row of its list restyled for each page of rows put in,
+    // whose checkboxes tell the list `-rx-form` (`controlsReached`)
     const keys = name === 'lang' ? ['a:lang', 'a:xml:lang'] : DIR_READS;
     for (const key of keys) {
-      note(key, has ? bits : bits | CHANGES_BELOW, has);
+      note(key, has ? bits : bits | CHANGES_BELOW, has, subject ?? stable);
     }
   } else if (name === 'state') {
     // a custom element's own states, told as a change of this attribute

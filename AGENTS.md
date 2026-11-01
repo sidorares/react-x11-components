@@ -1823,7 +1823,12 @@ there too. Six things are load-bearing.
   one (`readsControls`). **Anything new one of these reads of another element
   joins `controlsReached`**; `in a document of form controls` in
   `test/html/refresh.test.ts` finds what is missed, and `CONTROL_SEEDS` and
-  `CONTROL_FROM` sweep more of it.
+  `CONTROL_FROM` sweep more of it. Only what answers from what it holds is
+  told: a `<div>` a control is put in is not, and a mail page's list, told so
+  for each page of rows, restyled every row it held. `:dir()` reads
+  `-rx-form` for a field with `dir=auto`, and like `:lang()` it reaches, below
+  what it is told of, what its rule can style (`subject ?? stable`) and not
+  all that is there.
 - **A keystroke tells only what it turned** (`controlAnswers`,
   `answersMoved`): a refresh per keystroke would run the cascade and lay the
   document out for nothing. **Anything new a rule reads of what a field holds
