@@ -28,9 +28,10 @@
 //
 // Asking for the chosen URL is still the host's (`onResource`), and a
 // declined one is an ordinary state: the image is framed as any declined
-// image is.
+// image is. A lazy image chooses as any does, and what it chose waits to be
+// near the viewport to be asked for (`HtmlViewNode._waitsLazily`).
 import type { AnyNode, Element } from 'domhandler';
-import { attr, childrenOf, isElement, tagOf } from './dom.js';
+import { attr, childrenOf, isElement, loadsLazily, tagOf } from './dom.js';
 import { mediaMatches, parseMediaQuery, splitSelectors } from './css/parse.js';
 import type { MediaCondition } from './css/parse.js';
 import { parseLength } from './css/values.js';
@@ -384,7 +385,7 @@ function sourcesOf(img: Element): readonly AnyNode[] {
  * does not load lazily.
  */
 export function allowsAutoSizes(img: Element): boolean {
-  if (attr(img, 'loading')?.toLowerCase() !== 'lazy') return false;
+  if (!loadsLazily(img)) return false;
   const sizes = attr(img, 'sizes')?.toLowerCase();
   return sizes === 'auto' || sizes?.startsWith('auto,') === true;
 }
@@ -404,7 +405,9 @@ function dimensionsOf(img: Element, source: Element | null): Element {
 
 /** The store a choice asks for its URLs through, and asks the state of:
  *  `'pending'` until an image's pixels are in, and whether its size is
- *  known, which its header may say before them (`ResourceStore`). */
+ *  known, which its header may say before them (`ResourceStore`). Asked
+ *  for a URL that waits to be near the viewport, it asks nothing, and the
+ *  state stays null (`HtmlViewNode._waitsLazily`). */
 export interface SourceStore {
   request(url: string, element: Element): void;
   state(url: string): 'pending' | 'ready' | 'failed' | null;
@@ -574,12 +577,19 @@ export class ImageSources {
     if (!choice?.chosen) return null;
     if (
       choice.previous &&
-      this._store.state(choice.chosen.url) === 'pending' &&
+      this._onItsWay(choice.chosen.url) &&
       this._store.state(choice.previous.url) === 'ready'
     ) {
       return choice.previous;
     }
     return choice.chosen;
+  }
+
+  /** Whether a URL chosen is still to arrive: asked for, or waiting to be
+   *  near the viewport to be asked for. */
+  private _onItsWay(url: string): boolean {
+    const state = this._store.state(url);
+    return state === 'pending' || state === null;
   }
 
   /**
@@ -601,7 +611,7 @@ export class ImageSources {
    *  said its size. */
   sizePending(el: Element): boolean {
     const chosen = this._choices.get(el)?.chosen;
-    if (!chosen || this._store.state(chosen.url) !== 'pending') return false;
+    if (!chosen || !this._onItsWay(chosen.url)) return false;
     return this.shown(el) !== chosen || !this._store.sized(chosen.url);
   }
 
@@ -758,12 +768,13 @@ function envKey(env: SourceEnv): string {
 }
 
 /** What an `<img>`'s choice reads, as one string: a choice is made again
- *  when it changes. */
+ *  when it changes. `loading` among it: whether `sizes` may be `auto` turns
+ *  on it, and an image made eager is asked for by the choice made again. */
 function signatureOf(img: Element): string {
   let out = '';
   for (const el of sourcesOf(img)) {
     if (el === img) {
-      return `${out}\u0000${attr(img, 'srcset')}\u0001${attr(img, 'sizes')}\u0001${attr(img, 'src')}`;
+      return `${out}\u0000${attr(img, 'srcset')}\u0001${attr(img, 'sizes')}\u0001${attr(img, 'src')}\u0001${attr(img, 'loading')}`;
     }
     if (!isElement(el) || tagOf(el) !== 'source') continue;
     out += `\u0000${attr(el, 'srcset')}\u0001${attr(el, 'sizes')}\u0001${attr(el, 'media')}\u0001${attr(el, 'type')}`;

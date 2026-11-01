@@ -523,8 +523,8 @@ export interface HtmlProps {
   onParsed?: () => void;
   /** Everything the document asked for has arrived or failed — counted
    *  from its first complete layout, since a background, a font or a
-   *  chosen image source is asked for only as one finds it. Once a
-   *  document: `load`'s moment. */
+   *  chosen image source is asked for only as one finds it — but for a
+   *  lazy image, which holds no `load`. Once a document: `load`'s moment. */
   onLoaded?: () => void;
   /**
    * A link was activated. Absent means clicks do nothing: this component

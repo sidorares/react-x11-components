@@ -2137,6 +2137,68 @@ from the header is told as `'sized'`**, which takes sizes in place and
 paints nothing; the pixels' arrival is the `'image'` it always was. A test
 holds the decode through `imageDecoder`, as it holds a clock.
 
+**A lazy image is asked for from the boxes, and by nothing else** (HTML
+2.5.7, `_waitsLazily`, `_askNear`). An `<img loading="lazy">` in a document
+whose scripts run is not asked for as the markup is read or as its source is
+chosen. Nothing is kept of which images wait: one waits for as long as the
+store has never heard of what it shows, so an image whose URL something else
+asked for shows it as it lands, and one with no box, under `display: none` or
+in no document, waits until it has one. A paint asks what has come near: from
+the boxes as they are laid out, within `LAZY_NEAR_PX` of what can be seen and
+of the scrollport of each box around that scrolls, clips and transforms
+counted (`_lazyAway`). With scripting off an image never waits, since a server
+could read a reader's way down a page from what it was asked for and when.
+The browsers were asked before any of this was written, and the docs page
+names where they differ. Seven things are load-bearing.
+
+- **Until `load` near is `LAZY_LOADING_PX`, since a document's first boxes are
+  a guess.** Its first layout comes before its head's scripts, and Wikipedia's
+  menus, open until one runs, stood the first image of an article 3,500
+  pixels down. At Chrome's distance what the viewport shows was done a fifth
+  to a third later than with every image asked for at once, on Wikipedia, BBC
+  and the Guardian, and at this one no later: a cold load in a real window
+  decoded 46 images where it had 130 on the Guardian, 29 for 74 on BBC and 20
+  for 77 on Wikipedia's article on the United States, and the Guardian's `load`
+  went from 2.9 s to 1.6.
+- **It is a paint's, and no layout.** `_askNear` reads boxes, and walks them
+  only once the pane has moved `LAZY_STEP_PX` or the boxes have (`_geometry`):
+  a wheel through a page of waiting images, with an `IntersectionObserver` on
+  it, lays out nothing and walks them a few times. The host is asked a
+  microtask later, never from inside the paint, as `request`'s `late` says.
+- **Asking is not `_owe`'s.** What is owed is brought up to date at a page's
+  read (`_settle`), and a read brings in no image: `complete`, `naturalWidth`
+  and `decode()` go on saying it has not come. So asking for a lazy image is no
+  work for a slice or a forced layout to run.
+- **Anything new that asks for an `<img>`'s image asks `_waitsLazily` first**,
+  and passes `'lazily'` where it says the image has waited (`_waited`): HTML
+  settles "delay load event" before an image waits, so one in view holds no
+  `load`, and it stays so if `loading` turns eager. Anything else that asks
+  for its URL holds `load` from then on (`request`), and repaints as any
+  image does. A background that gets to the URL first has to size the image
+  as it lands, which is what `expect` is for.
+- **What a page's script changes is asked for at the end of its task**
+  (`_askDue`, HTML's "await a stable state"). React sets attributes in the
+  order they are written, so a client-rendered `<img src loading>` is `src`
+  first, on an element in no document yet: asked for at once, no such image
+  would ever have waited. What the store has is still there as it is asked
+  for.
+- **A lazy image's arrival repaints what shows it** (`_lazyPainted`): it lands
+  off screen and in the middle of a scroll, where `_imagePainted` would make a
+  frame's blit a repaint of the whole pane and drop every kept surface.
+- **Its size waits where it can** (`_oweSize`): off screen, or a pixel from
+  what the box has, in view or not (`closeIntrinsic`). Wikipedia's images are
+  `height: auto`, half a pixel from their attributes by rounding, and each that
+  landed laid a long article out in the frames of a fling. Such a size does not
+  come in for being near, and waits for the scroll to end. What it cannot
+  escape is a read: a scroll-spy that reads `offsetTop` on a timer settles what
+  is owed, as any read does, which is what is left of the cost on the longest
+  articles at 4,000 pixels a second.
+
+A `<base>` changed after an image started to wait resolves it against the new
+one, where HTML has it resolved as it starts (WPT's
+`image-loading-lazy-base-url`), and `<iframe loading="lazy">` is not read:
+what a frame shows is the host's (`renderEmbedded`).
+
 **A cache kept by an element is dropped by what can make it stale.** A
 `refresh()` is an application saying it changed the tree — anything in it,
 an attribute or the middle of a drawing — and a stream's chunk is the

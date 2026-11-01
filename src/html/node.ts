@@ -76,6 +76,7 @@ import {
   isElement,
   isInputButton,
   isText,
+  loadsLazily,
   madeByParser,
   isStylePreload,
   NON_RENDERED,
@@ -1299,7 +1300,7 @@ export class HtmlViewNode extends Node {
       this._props().onResource?.(request) ?? null;
     this._resources = new ResourceStore(
       ask,
-      (what, layout) => {
+      (what, layout, lazily) => {
         // A late stylesheet is a new cascade: its rules, what it imports,
         // the faces it declares. A late image changes intrinsic sizes, so
         // the box tree is what has to be rebuilt — not merely repainted —
@@ -1324,8 +1325,8 @@ export class HtmlViewNode extends Node {
           if (!this._tree) this._invalidate(Stale.Style);
         } else if ((what === 'image' || what === 'resized') && !layout) {
           this._imagePainted();
-        } else if (what === 'image') this._imageArrived();
-        else if (what === 'sized') this._imageArrived(false);
+        } else if (what === 'image') this._imageArrived(true, lazily);
+        else if (what === 'sized') this._imageArrived(false, lazily);
         else if (what === 'resized') this._invalidate(Stale.Boxes, EMPTY_SET);
         else if (what === 'stylesheet' && this._tree && this._cascade) {
           // a sheet as one more of the document's, whose rules style what
@@ -1347,8 +1348,14 @@ export class HtmlViewNode extends Node {
       this._lifecycle();
     };
     this._images = new ImageSources({
-      request: (url, element) =>
-        this._resources.request({ url, kind: 'image', element }),
+      request: (url, element) => {
+        if (this._waitsLazily(element, url)) return;
+        this._resources.request(
+          { url, kind: 'image', element },
+          false,
+          this._waited.has(element) && 'lazily',
+        );
+      },
       state: (url) => this._resources.state(url),
       sized: (url) => this._resources.imageSize(url) !== null,
     });
@@ -1555,6 +1562,8 @@ export class HtmlViewNode extends Node {
   /** The owed boxes drawn where the viewport is, wherever they are laid out:
    *  each is seen, whatever its place in the document. */
   private _owedFixed = new Set<Box>();
+  /** Of it, what no scroll need bring in early (`_oweSize`). */
+  private _owedSlight = new Set<Box>();
   /** What the next `_update` is to run of it (`OWED_ALL`, or how many). */
   private _owedAsk = 0;
   /** Whether what it ran can be seen, and is to be painted. */
@@ -1610,6 +1619,7 @@ export class HtmlViewNode extends Node {
     this._owed.clear();
     this._owedStyles.clear();
     this._owedFixed.clear();
+    this._owedSlight.clear();
     this._owedAsk = 0;
     this._webFonts.arrivals();
   }
@@ -1794,6 +1804,7 @@ export class HtmlViewNode extends Node {
       owed.get(box)!(box, up);
       owed.delete(box);
       this._owedFixed.delete(box);
+      this._owedSlight.delete(box);
       const held = this._owedStyles.get(box);
       if (!held) continue;
       this._owedStyles.delete(box);
@@ -1867,6 +1878,7 @@ export class HtmlViewNode extends Node {
     const from = this._seenTop() - near;
     const to = this._seenBottom() + near;
     for (const box of this._owed.keys()) {
+      if (this._owedSlight.has(box)) continue;
       if (box.y < to && box.y + box.height > from) {
         this._owedAsk ||= this._owedChunk;
         this._invalidate(Stale.Layout);
@@ -2309,10 +2321,13 @@ export class HtmlViewNode extends Node {
       if (!url) continue;
       // a sheet a `<link rel=preload>` fetches is nobody's yet: its
       // arrival changes nothing, until a sheet's link asks for it too
-      this._resources.request(
-        { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
-        isStylePreload(el),
-      );
+      if (tag !== 'img' || !this._waitsLazily(el, url)) {
+        this._resources.request(
+          { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
+          isStylePreload(el),
+          this._waited.has(el) && 'lazily',
+        );
+      }
       // the markup's own, the first time it is seen: what a page's script
       // changes after that it says (`askImage`)
       if (tag === 'img' && props.onImage && !this._imageKeys.has(el)) {
@@ -2348,6 +2363,9 @@ export class HtmlViewNode extends Node {
   /** What the next microtask tells: one outcome an element, and none for
    *  one that asked for something else since. */
   private _imageTells = new Map<Element, 'load' | 'error'>();
+  /** The images a page's script changed, which the end of its task asks
+   *  for (`_askDue`). */
+  private _imagesDue = new Set<Element>();
 
   /**
    * A page's script changed what an `<img>` shows, or made one: its image
@@ -2362,19 +2380,217 @@ export class HtmlViewNode extends Node {
       this._imagesOwed.add(el);
       return;
     }
-    if (chooses) {
-      this._images.choose(
-        [el],
-        this._sourceEnv(
-          this._laidOutWidth > 0 ? this._laidOutWidth : this.abs.width || 1,
-          this._viewportHeight(),
-        ),
-      );
-    } else {
+    // what the store has is there as it is asked for, and no src is no image
+    if (!chooses) {
       const url = attr(el, 'src');
-      if (url) this._resources.request({ url, kind: 'image', element: el });
+      const state = url ? this._resources.state(url) : 'failed';
+      if (state === 'ready' || state === 'failed') {
+        this._watchImage(el, true);
+        return;
+      }
     }
-    this._watchImage(el, true);
+    if (!this._imagesDue.size) {
+      void Promise.resolve().then(() => this._askDue());
+    }
+    this._imagesDue.add(el);
+  }
+
+  /**
+   * Ask for what the images a page's script changed show, at the end of its
+   * task: HTML's "await a stable state", which is why a `loading` set after
+   * a `src` still counts. React sets an element's attributes in the order
+   * they are written, on an element in no document yet.
+   */
+  private _askDue(): void {
+    const due = this._imagesDue;
+    this._imagesDue = new Set();
+    if (this.destroyed) return;
+    for (const el of due) {
+      if (choosesSource(el)) {
+        this._images.choose(
+          [el],
+          this._sourceEnv(
+            this._laidOutWidth > 0 ? this._laidOutWidth : this.abs.width || 1,
+            this._viewportHeight(),
+          ),
+        );
+      } else {
+        const url = attr(el, 'src');
+        if (url && !this._waitsLazily(el, url)) {
+          this._resources.request(
+            { url, kind: 'image', element: el },
+            false,
+            true,
+          );
+        }
+      }
+      this._watchImage(el, true);
+    }
+  }
+
+  // --- what a lazy image waits for ----------------------------------------
+  //
+  // HTML's lazy loading (2.5.7): an `<img loading="lazy">` in a document
+  // whose scripts run is asked for once it comes near the viewport, and
+  // holds no `load`. Nothing is kept of which images wait: one waits for as
+  // long as what it shows has not been asked for, by it or by anything else
+  // (`_waitsLazily`). An element with no box is near nothing, so one under
+  // `display: none`, or in no document at all, waits until it has one.
+
+  /** Whether an image may wait in the document as it is: some did the last
+   *  time anything asked, so a paint asks again (`_askNear`). */
+  private _lazyWaits = false;
+  /** The images that have waited, which hold no `load` once they are asked
+   *  for, by the viewport or by `loading` set eager: HTML's "delay load
+   *  event" is settled before an image waits. */
+  private _waited = new WeakSet<Element>();
+  /** What can be seen, and the boxes as they were laid out, when a paint
+   *  last asked what is near it (`_askNear`). */
+  private _lazySeen: { rect: Rect; geometry: number } | null = null;
+
+  /**
+   * Whether an `<img>`'s image waits to be near the viewport: HTML's "will
+   * lazy load element steps", which are false where scripting is disabled,
+   * since a server could read a reader's way down a document from what it
+   * was asked for and when. Not where the URL is in the store, as it is in
+   * HTML's list of available images, and asked for by another element: it
+   * is shown as it arrives.
+   */
+  private _waitsLazily(el: Element, url: string): boolean {
+    if (!(this._props().scripting ?? false) || !loadsLazily(el)) return false;
+    if (this._resources.state(url) !== null) return false;
+    this._resources.expect(url);
+    this._waited.add(el);
+    this._lazyWaits = true;
+    return true;
+  }
+
+  /**
+   * Ask for the lazy images a paint finds near what can be seen: HTML's
+   * lazy load intersection observer, whose root margin and scroll margin it
+   * leaves to the browser. From the boxes as they are laid out, so a paint pays for
+   * a walk of what waits and no layout, and no walk at all until the pane
+   * has moved `LAZY_STEP_PX` or the boxes have (`_geometry`). The asking is
+   * a microtask later: never from inside a paint, since a host answers from
+   * it. Not `_owe`'s: what is owed is the document's to bring up to date at
+   * a page's read, and a read of a document brings in no image.
+   */
+  private _askNear(): void {
+    const tree = this._tree;
+    if (!tree) return;
+    // at the paint's end, where what the frame asked of the pane has landed
+    this._painting = true;
+    const seen = this._seenRect();
+    this._painting = false;
+    const was = this._lazySeen;
+    if (
+      was?.geometry === this._geometry &&
+      Math.abs(seen.x - was.rect.x) +
+        Math.abs(seen.y - was.rect.y) +
+        Math.abs(seen.width - was.rect.width) +
+        Math.abs(seen.height - was.rect.height) <
+        LAZY_STEP_PX
+    ) {
+      return;
+    }
+    this._lazySeen = { rect: seen, geometry: this._geometry };
+    const boxes = this._imageBoxesOf(tree);
+    const facts = this._source.facts();
+    const shift = this._fixedShift(this._scrolledOrigin());
+    // what a `<foreignObject>` holds is in a tree of its own, laid out
+    // against the object, and drawn as the drawing is reached
+    const foreign = tree.foreign && foreignImages(tree.foreign);
+    const near: { el: Element; url: string; away: number }[] = [];
+    let waits = false;
+    const ask = (el: Element): void => {
+      if (!loadsLazily(el)) return;
+      const url = choosesSource(el)
+        ? this._images.chosen(el)?.url
+        : attr(el, 'src');
+      if (!url || this._resources.state(url) !== null) return;
+      const box = boxes.get(el);
+      const away = box
+        ? this._lazyAway(tree, box, seen, shift)
+        : foreign?.has(el)
+          ? 0
+          : null;
+      if (away === null) waits = true;
+      else near.push({ el, url, away });
+    };
+    for (const el of facts.resources) ask(el);
+    for (const el of facts.pictures) ask(el);
+    this._lazyWaits = waits;
+    if (!near.length) return;
+    // what can be seen first: a host goes through what it is asked in order
+    near.sort((a, b) => a.away - b.away);
+    const doc = this._source.document;
+    void Promise.resolve().then(() => {
+      if (this._source.document !== doc || this.destroyed) return;
+      for (const { el, url } of near) {
+        if (this._props().onImage) this._watchImage(el);
+        this._resources.request(
+          { url, kind: 'image', element: el },
+          false,
+          'lazily',
+        );
+      }
+    });
+  }
+
+  /**
+   * How far a box is from what can be seen, in CSS pixels and 0 where it
+   * meets it, where it is near that and the viewport of every box around
+   * it that scrolls (`LAZY_NEAR_PX`, `LAZY_LOADING_PX`); null where it is
+   * not. What cuts it short is asked only of what the viewport has near: a
+   * page of images is a few of those and a walk up the boxes for none of
+   * the rest.
+   */
+  private _lazyAway(
+    tree: BoxTree,
+    box: Box,
+    seen: Rect,
+    shift: { x: number; y: number } | null,
+  ): number | null {
+    const drawn = this._drawnRect(tree, box, false);
+    if (!drawn) return null;
+    const rect = this._moveToViewport(box, drawn, shift);
+    const across = Math.max(
+      seen.x - rect.x - rect.width,
+      rect.x - seen.x - seen.width,
+      0,
+    );
+    const down = Math.max(
+      seen.y - rect.y - rect.height,
+      rect.y - seen.y - seen.height,
+      0,
+    );
+    const loaded = this._loadedOf === this._source.document;
+    const near = loaded ? LAZY_NEAR_PX : LAZY_LOADING_PX;
+    if (across > near || down > near) return null;
+    const clips = intersectionClips(
+      box,
+      null,
+      this._scale,
+      loaded ? LAZY_MARGINS : LAZY_LOADING_MARGINS,
+    );
+    return clips && this._cutBy(rect, clips, shift)
+      ? Math.max(across, down)
+      : null;
+  }
+
+  /** What can be seen of the document, in `elementRect`'s coordinates. */
+  private _seenRect(): Rect {
+    const s = this._scale;
+    const top = this._seenTop();
+    const viewport = this._viewport();
+    const left = viewport ? viewport.x - this.contentBox().x : 0;
+    const width = viewport ? viewport.width : (this.root?.abs?.width ?? 0);
+    return {
+      x: left / s,
+      y: top / s,
+      width: width / s,
+      height: (this._seenBottom() - top) / s,
+    };
   }
 
   /** Watch what an `<img>` shows now, unless that is what it was watched
@@ -2586,9 +2802,10 @@ export class HtmlViewNode extends Node {
    *
    * `painted` is false where only the size arrived, read from the image's
    * header while its pixels decode: nothing draws it yet, so nothing is
-   * painted but what a layout moves.
+   * painted but what a layout moves. `lazily` is where a lazy image is
+   * kept, which only the boxes showing it draw (`_lazyPainted`).
    */
-  private _imageArrived(painted = true): void {
+  private _imageArrived(painted = true, lazily?: string): void {
     const tree = this._tree;
     if (!tree || (this._stale >= Stale.Boxes && !this._buildSeeds)) {
       // built again for the boxes an image makes, and no style: an image
@@ -2610,6 +2827,11 @@ export class HtmlViewNode extends Node {
       if (!size || this._sizePending(el)) return false;
       const next = intrinsicsOf(size, s * box.style.effectiveZoom);
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
+        const slight = closeIntrinsic(box.intrinsic, next, s);
+        if (lazily !== undefined && (slight || !this._inView(tree, box))) {
+          this._oweSize(box, next, slight);
+          return true;
+        }
         moves = true;
         // what the boxes around it measured of it, for their lives, is
         // measured again: a flex item shrunk to an image that had not come
@@ -2635,8 +2857,72 @@ export class HtmlViewNode extends Node {
         if (box && !tree.awaiting.includes(box)) take(box);
       }
     }
-    if (painted) this._imagePainted();
+    if (painted) {
+      if (lazily === undefined) this._imagePainted();
+      else this._lazyPainted(tree, lazily);
+    }
     if (moves) this._invalidate(Stale.Layout);
+  }
+
+  /**
+   * A lazy image's size, which waits with what else can (`_owe`): it lands
+   * ahead of the reader, and a size is news to the layout of all of a long
+   * article, in the frames of a scroll. `slight` is a size no reader can
+   * tell from the one it has, which does not come in for being near, or in
+   * view, and waits for the scroll to end: Wikipedia's images are `height:
+   * auto`, half a pixel from their attributes by rounding, and a fling
+   * laid the article out for each that landed.
+   */
+  private _oweSize(
+    box: Box,
+    next: NonNullable<Box['intrinsic']>,
+    slight: boolean,
+  ): void {
+    if (slight) this._owedSlight.add(box);
+    this._owe(box, (_, up) => {
+      box.intrinsic = next;
+      forgetSizesIn(box, up);
+      this._dropSprites(box, true);
+    });
+  }
+
+  /** Whether a box meets what can be seen. */
+  private _inView(tree: BoxTree, box: Box): boolean {
+    const drawn = this._drawnRect(tree, box, false);
+    if (!drawn) return false;
+    const r = this._moveToViewport(box, drawn);
+    const seen = this._seenRect();
+    return (
+      r.x <= seen.x + seen.width &&
+      r.x + r.width >= seen.x &&
+      r.y <= seen.y + seen.height &&
+      r.y + r.height >= seen.y
+    );
+  }
+
+  /**
+   * A lazy image's pixels are in: what shows it is painted again, what holds
+   * a drawing of that goes, and nothing else does. Such an image lands
+   * ahead of the reader, off screen and in the middle of a scroll, whose
+   * frames are blits: painted as any image is, each arrival repainted all
+   * the pane shows and every surface kept for a box.
+   */
+  private _lazyPainted(tree: BoxTree, key: string): void {
+    const shown = this._viewportInDocument();
+    const inks: Rect[] = [];
+    for (const box of tree.images) {
+      const url = box.el ? this._imageUrl(box.el) : undefined;
+      if (!url || this._resources.keyOf(url) !== key) continue;
+      this._dropSprites(box, true);
+      if (this._lifted.size && this._insideLifted(box)) {
+        this._spriteGen += 1;
+        this.spritesChanged();
+      }
+      const ink = this._inkOf(box);
+      const part = ink && shown ? rectWithin(ink, shown) : ink;
+      if (part) inks.push(part);
+    }
+    this._repaintInk(inks);
   }
 
   /**
@@ -3557,7 +3843,8 @@ export class HtmlViewNode extends Node {
    * Tell the host where the document has got to, each once a document:
    * `onParsed` once its parse has ended, and `onLoaded` once, after that,
    * it has been laid out whole and nothing it asked for is on its way — a
-   * sheet, an image and its decode, a face. Counted from a layout because
+   * sheet, an image and its decode, a face, but for a lazy image, which
+   * holds no `load` (`ResourceStore.pending`). Counted from a layout because
    * a background, a font and an image's chosen source are asked for only
    * as a layout finds them. Told a microtask later, never from inside a
    * paint or a commit: a host runs a page's scripts from them.
@@ -6599,28 +6886,37 @@ export class HtmlViewNode extends Node {
         box && drawn && intersectionClips(box, rootBox, this._scale, margin);
       if (!box || !drawn || !clips) return null;
       const rect = this._moveToViewport(box, drawn, shift);
-      let x0 = rect.x;
-      let y0 = rect.y;
-      let x1 = rect.x + rect.width;
-      let y1 = rect.y + rect.height;
-      for (const clip of clips) {
-        const c = this._moveToViewport(
-          clip.at,
-          throughTransforms(clip.rect, clip.at),
-          shift,
-        );
-        x0 = Math.max(x0, c.x);
-        y0 = Math.max(y0, c.y);
-        x1 = Math.min(x1, c.x + c.width);
-        y1 = Math.min(y1, c.y + c.height);
-      }
-      const shown =
-        x0 <= x1 && y0 <= y1
-          ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
-          : null;
-      return { rect, shown };
+      return { rect, shown: this._cutBy(rect, clips, shift) };
     });
     return { root: rootRect, targets };
+  }
+
+  /** What `clips` leave of a rectangle, each through the matrices around
+   *  the box whose coordinates it is in: an edge that only meets one kept
+   *  as a rectangle of no area, and null where they leave none of it. */
+  private _cutBy(
+    rect: Rect,
+    clips: readonly { rect: Rect; at: Box }[],
+    shift: { x: number; y: number } | null,
+  ): Rect | null {
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width;
+    let y1 = rect.y + rect.height;
+    for (const clip of clips) {
+      const c = this._moveToViewport(
+        clip.at,
+        throughTransforms(clip.rect, clip.at),
+        shift,
+      );
+      x0 = Math.max(x0, c.x);
+      y0 = Math.max(y0, c.y);
+      x1 = Math.min(x1, c.x + c.width);
+      y1 = Math.min(y1, c.y + c.height);
+    }
+    return x0 <= x1 && y0 <= y1
+      ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+      : null;
   }
 
   /**
@@ -13273,6 +13569,7 @@ export class HtmlViewNode extends Node {
     this._noteFrame();
     this._notePaneScroll();
     if (this._owed.size) this._followOwed();
+    if (this._lazyWaits) this._askNear();
     this._props().onPaint?.();
   }
 
@@ -15374,6 +15671,20 @@ function sameIntrinsic(a: Box['intrinsic'], b: Box['intrinsic']): boolean {
   );
 }
 
+/** Whether two sizes of an image are within a CSS pixel of each other, each
+ *  way: `s` device pixels. */
+function closeIntrinsic(
+  a: Box['intrinsic'],
+  b: NonNullable<Box['intrinsic']>,
+  s: number,
+): boolean {
+  return (
+    !!a &&
+    Math.abs(a.width - b.width) <= s &&
+    Math.abs(a.height - b.height) <= s
+  );
+}
+
 /**
  * Whether a replaced box is the size its style names whatever its image's
  * is: a width and a height that are lengths, as an `<img>`'s attributes
@@ -17395,6 +17706,46 @@ const OWED_FEW = 3;
 const OWED_MEASURE_MS = 250;
 /** How many viewports either side of what can be seen count as near. */
 const OWED_NEAR = 1;
+
+/**
+ * How near what can be seen, in CSS pixels, a lazy image has to be to be
+ * asked for, across and down, and from the viewport of each box around it
+ * that scrolls. HTML leaves it to the browser: this is Chrome's on a fast
+ * connection, Firefox's is 600 down alone and WebKit's the viewport. It
+ * buys the time an image takes to arrive: at 1,250 a fling of 3,000 pixels
+ * a second finds it there if it took 400 ms.
+ */
+const LAZY_NEAR_PX = 1250;
+
+/**
+ * The same until the document's `load`, whose boxes are a guess. Its first
+ * layout comes before its head's scripts, and Wikipedia's menus, open until
+ * one of them runs, stood 3,500 pixels of them above the first image of an
+ * article, so nothing the reader was about to see was near for a second.
+ * At `LAZY_NEAR_PX` what a viewport shows was done a fifth to a third later
+ * than with every image asked for at once, on Wikipedia, BBC and the
+ * Guardian, and at this no later.
+ */
+const LAZY_LOADING_PX = 4000;
+
+/** How far the pane moves between walks of what waits (`_askNear`): a
+ *  quarter of how near an image has to be, which is too little to come. */
+const LAZY_STEP_PX = 300;
+
+/** A distance as an observer's `scrollMargin`. */
+const marginsOf = (value: number): readonly MarginLength[] =>
+  new Array<MarginLength>(4).fill({ value, percent: false });
+const LAZY_MARGINS = marginsOf(LAZY_NEAR_PX);
+const LAZY_LOADING_MARGINS = marginsOf(LAZY_LOADING_PX);
+
+/** The `<img>`s of the documents `<foreignObject>`s hold. */
+function foreignImages(foreign: ReadonlyMap<Element, ForeignObject>) {
+  const images = new Set<Element>();
+  for (const { tree } of foreign.values()) {
+    for (const box of tree.images) if (box.el) images.add(box.el);
+  }
+  return images;
+}
 
 /**
  * The clock an editing host's caret blinks on (`_caretMoved`), as
