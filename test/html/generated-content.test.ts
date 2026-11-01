@@ -508,6 +508,125 @@ test('a pseudo-element is a box of its own display', async () => {
   assert.deepStrictEqual(pseudos, [['after', 'block']]);
 });
 
+test("a display: contents element's ::before and ::after are items of the flex or grid box around it", async () => {
+  // Styled from the element's own `contents`, which says nothing of what it
+  // is in, the two went inline in one anonymous block: no `gap` between them
+  // and neither sized. Every number and `display` here is Chrome's, and
+  // every `min-width`, which keeps its `auto` on an item alone.
+  const sheet =
+    '<style>body{margin:0}.i{width:40px;height:20px}.c{display:contents}' +
+    '.b::before{content:"";width:10px;height:20px}' +
+    '.b::after{content:"";width:30px;height:20px}' +
+    '.row{display:flex;gap:5px;position:relative}' +
+    '.cols,.incols{grid-template-columns:10px 40px 30px 20px;gap:5px}' +
+    '.cols{display:grid}.incols{display:inline-grid}' +
+    '.inrow{display:inline-flex;gap:5px;width:300px}' +
+    '.wb{display:-webkit-box}' +
+    '.o::before{order:1}.o::after{order:-1}' +
+    '.p::before{grid-column:4}.p::after{grid-column:2}' +
+    '.ib::before{display:inline-block}.ib::after{display:inline-flex}' +
+    '.tc::before{display:table-cell}.tc::after{display:inline-table}' +
+    '.fl::before{float:left}.fl::after{position:absolute;left:0;top:0}' +
+    '</style>';
+  const items = {
+    a: [15, 0],
+    z: [95, 0],
+    before: 'block',
+    after: 'block',
+    minWidth: { before: 'auto', after: 'auto' },
+    boxes: ['before', 'a', 'after', 'z'],
+  };
+  // each in an anonymous block, with nothing in it to make it any size
+  const inline = {
+    a: [0, 0],
+    z: [40, 0],
+    before: 'inline',
+    after: 'inline',
+    minWidth: { before: '0px', after: '0px' },
+    boxes: [null, 'a', null, 'z'],
+  };
+  const cases: (Omit<typeof items, 'boxes'> & {
+    holder: string;
+    classes?: string;
+    /** In a second `display: contents` element. */
+    nested?: boolean;
+    style?: string;
+    boxes: (string | null)[];
+  })[] = [
+    { ...items, holder: 'row' },
+    { ...items, holder: 'cols' },
+    { ...items, holder: 'inrow' },
+    { ...items, holder: 'incols' },
+    { ...items, holder: 'row', nested: true },
+    // what places an item places them
+    { ...items, holder: 'row', classes: 'o', a: [35, 0], z: [80, 0] },
+    { ...items, holder: 'cols', classes: 'p', a: [0, 25], z: [60, 25] },
+    // blockified as any item is
+    { ...items, holder: 'row', classes: 'ib', after: 'flex' },
+    { ...items, holder: 'row', classes: 'tc', after: 'table' },
+    // a float is an item all the same, and an absolute box is none
+    {
+      ...items,
+      holder: 'row',
+      classes: 'fl',
+      z: [60, 0],
+      minWidth: { before: 'auto', after: '0px' },
+    },
+    // a zoom styles it from a copy of its parent's style
+    {
+      ...items,
+      holder: 'row',
+      nested: true,
+      style: 'zoom:2',
+      a: [25, 0],
+      z: [175, 0],
+    },
+    // and what holds no items, a `-webkit-box` in a browser, leaves them be
+    { ...inline, holder: 'wb' },
+    { ...inline, holder: 'wb', nested: true },
+    { ...inline, holder: 'plain', z: [0, 20] },
+  ];
+  const page = cases.map(({ holder, classes, nested, style }, i) => {
+    const held =
+      `<div id="c${i}" class="c b ${classes ?? ''}" style="${style ?? ''}">` +
+      `<div id="a${i}" class="i"></div></div>`;
+    return (
+      `<div id="h${i}" class="${holder}">` +
+      (nested ? `<div class="c">${held}</div>` : held) +
+      `<div id="z${i}" class="i"></div></div>`
+    );
+  });
+  const { node } = await render(sheet + page.join(''), 1280);
+  const el = view(node);
+  cases.forEach((c, i) => {
+    const what = `${c.holder} ${c.classes ?? ''} ${c.style ?? ''}`;
+    const holder = boxOf(el, `h${i}`);
+    const at = (id: string) => {
+      const box = boxOf(el, `${id}${i}`);
+      return [box.x - holder.x, box.y - holder.y];
+    };
+    assert.deepStrictEqual(at('a'), c.a, what);
+    assert.deepStrictEqual(at('z'), c.z, what);
+    assert.deepStrictEqual(
+      holder.children.map(
+        (box) => box.pseudo ?? box.el?.attribs.id?.[0] ?? null,
+      ),
+      c.boxes,
+      what,
+    );
+    const contents = findById(el.document, `c${i}`)!;
+    for (const which of ['before', 'after'] as const) {
+      const style = el.computedStyle(contents, which)!;
+      assert.strictEqual(style.display, c[which], `${what} ::${which}`);
+      assert.strictEqual(
+        style['min-width'],
+        c.minWidth[which],
+        `${what} ::${which}`,
+      );
+    }
+  });
+});
+
 metric(
   "an empty list item's marker stands where its first line would",
   async () => {

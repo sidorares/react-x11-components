@@ -1432,6 +1432,37 @@ metric(
 );
 
 metric(
+  'a frame that changes the ::before or the ::after of a display: contents element in a flex box repaints it, to the pixels a build draws',
+  async (t) => {
+    // each an item of the box around the element, which has none to find
+    // them in or to compare: what moves here, in the flow and out of it
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes turn { from { transform: rotate(0deg) }' +
+        ' to { transform: rotate(45deg) } }' +
+        '@keyframes rise { from { top: 80px } to { top: 0 } }' +
+        '#row { display: flex; gap: 4px; position: relative; height: 100px;' +
+        ' background: #eeeeee }' +
+        '#c { display: contents }' +
+        '#c::before { content: ""; width: 30px; height: 20px;' +
+        ' background: #0000aa; animation: turn 160ms linear infinite }' +
+        '#c::after { content: ""; position: absolute; left: 60px;' +
+        ' width: 30px; height: 20px; background: #aa0000;' +
+        ' animation: rise 160ms linear infinite }</style>' +
+        '<div id="row"><div id="c"><div style="width:10px"></div></div></div>',
+      300,
+    );
+    const { repainted, frames } = await framesAgainstBuilds(doc, [48, 96]);
+    assert.ok(repainted.length > 0, 'something was repainted');
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+  },
+);
+
+metric(
   'a frame of a box fixed to the viewport repaints it where the viewport has it, however far the pane has scrolled the document under it',
   async (t) => {
     // Zen Garden 215's starburst turns, fixed to the viewport, behind its
@@ -3148,6 +3179,40 @@ test('a `::before` or an `::after` whose animation a layer can carry is a sprite
   doc.el.paint(back.ctx as never);
   assert.strictEqual(own(back.fills), 1, 'drawn again');
   assert.strictEqual(small(back.fills), 1, 'and the `::before`');
+});
+
+test('a `::before` of a display: contents element is a sprite of its own, placed as the item it is, and a hole once lifted', async (t) => {
+  // the box is the flex box's, which the element has none of its own to
+  // find it in
+  const doc = await running(
+    t,
+    '<style>@keyframes spin { to { transform: rotate(360deg) } }' +
+      'body { margin: 0 } #row { display: flex; gap: 4px }' +
+      '#c { display: contents } .i { width: 40px; height: 20px }' +
+      '#c::before { content: ""; width: 20px; height: 20px;' +
+      ' background: #000080; animation: spin 320ms linear infinite }</style>' +
+      '<div id="row"><div id="c"><div class="i"></div></div></div>',
+  );
+  await doc.at(32);
+  const sprites = doc.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 1);
+  const [spin] = sprites;
+  const abs = doc.el.abs;
+  assert.deepStrictEqual(spin.rect, {
+    x: abs.x,
+    y: abs.y,
+    width: 20,
+    height: 20,
+  });
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 20 && f.h === 20).length;
+  const drawn = recorder();
+  spin.paint!(drawn.ctx as never);
+  assert.strictEqual(own(drawn.fills), 1, 'by its own paint');
+  doc.el.spritesLifted(new Set([spin.key]));
+  const hole = recorder();
+  doc.el.paint(hole.ctx as never);
+  assert.strictEqual(own(hole.fills), 0, 'a hole in the document');
 });
 
 test('a lifted element that moves is hit where its animation has it, with nothing repainted and nothing sampled again', async (t) => {

@@ -1067,6 +1067,12 @@ export interface ComputedStyle {
    *  is the page's then and not the palette's (`Cascade`'s
    *  `stylesControl`, `styledField`). Not inherited. */
   styledControl: boolean;
+  /** Whether this is a `display: contents` element in a flex or a grid
+   *  box, or in another such element: having no box of its own, it hands
+   *  that box what it holds, its `::before` and `::after` as much as its
+   *  children, so those are items (`holdsItems`). The cascade's, from the
+   *  parent's style. Not inherited. */
+  itemsThrough: boolean;
   /** Whether the element is drawn in its document's top layer (CSS
    *  Position 4, 3.3): over every stacking context, against the viewport
    *  or the initial containing block whatever is around it. The cascade's
@@ -1854,6 +1860,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     objectFit: 'fill',
     appearance: 'auto',
     styledControl: false,
+    itemsThrough: false,
     overlay: 'none',
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
@@ -8801,7 +8808,8 @@ function applyAll(
 /** The fields `all` leaves alone: the two properties it does not name,
  *  the custom properties, and what is no property — the decorations an
  *  ancestor propagates (`decorate`), and whether the page styled a
- *  control, which the cascade works out after the declarations. */
+ *  control and whether items pass through it, which the cascade works out
+ *  after the declarations. */
 const NOT_ALL: ReadonlySet<string> = new Set<keyof ComputedStyle>([
   'direction',
   'unicodeBidi',
@@ -8814,6 +8822,7 @@ const NOT_ALL: ReadonlySet<string> = new Set<keyof ComputedStyle>([
   'lineThroughStyle',
   'lineThroughThickness',
   'styledControl',
+  'itemsThrough',
   'overlay',
   'effectiveZoom',
 ]);
@@ -9741,6 +9750,21 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     default:
       return;
   }
+}
+
+/**
+ * Whether what an element holds are flex or grid items: a grid is a flex
+ * box to the box tree (`display`), and a `display: contents` element in one
+ * has no box to hold them. Its `display` does not say so, which is why the
+ * style does (`itemsThrough`), and a `::before` is styled from no more than
+ * its element's style.
+ */
+export function holdsItems(style: ComputedStyle): boolean {
+  return (
+    style.display === 'flex' ||
+    style.display === 'inline-flex' ||
+    style.itemsThrough
+  );
 }
 
 /**
