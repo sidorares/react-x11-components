@@ -3760,6 +3760,29 @@ closes a way out a DOM binding opens by accident:
   runs nothing there either (`importStaysInPage`). **An escape test reads
   what a refusal hands the page**, and what `import()` hands it, not only
   that it was refused.
+- **A list is a proxy, and is live by a count kept in the realm** (`itemsOf`,
+  `LIST_PROXY`). `NodeList`, `HTMLCollection` and the lists like them are
+  legacy platform objects, whose indices are own properties nobody can set,
+  which only a proxy gives: an `Array` subclass was the shape before, so
+  `Array.isArray` said yes, `slice.call` made another list and held lists were
+  snapshots, and `while (kids.length) parent.removeChild(kids[0])` never ended.
+  A read is some 100 ns, less than the op a page does with what it read. A live
+  list reads the host only where `treeEpoch` or `attrEpoch` moved since it last
+  did, and a read of the host at each index would be a trip per element. Three
+  things are load-bearing. **`KEEPS_LISTS` names reads alone**: an op it does
+  not name moves the counts, which costs a read and is never wrong, so an op
+  added to it has to change nothing a list holds. **A list that an attribute
+  decides passes `readsAttributes`, and the attribute joins `LIST_ATTRIBUTES`**,
+  or `setAttribute` leaves it as it was. **Anything new that runs the page's
+  code from the host goes through an `entry`**, which moves both counts, as
+  `__task` does for a module: the parser and the host change the tree only
+  between two tasks, and nothing else tells a list so. A frame's realm counts
+  its own ops, so a list of one realm is told of another realm's change to the
+  same tree at the next task. And a held list that a page changes in a loop
+  reads the tree at each step, which is what makes it live: 200 steps of
+  `appendChild` over a held `getElementsByTagName` in a document of 6,000
+  elements take 57 ms, where a snapshot took 1 and went on answering what the
+  tree no longer held.
 - **A page's stacks are its own frames** (`stacks.ts`). Every task is
   entered from the host, and the runtime wrote every frame into an error's
   `stack`: any page read the user's home directory and the install's

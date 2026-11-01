@@ -8185,7 +8185,7 @@ test('indexedDB keeps a page’s records for the document: stores, keys, indexes
       '  db.createObjectStore("events", { autoIncrement: true });' +
       '};' +
       'open.onsuccess = function () {' +
-      '  var db = open.result; r.push(db.version, db.objectStoreNames.join(","));' +
+      '  var db = open.result; r.push(db.version, Array.from(db.objectStoreNames).join(","));' +
       '  var tx = db.transaction(["things", "events"], "readwrite"); var things = tx.objectStore("things");' +
       '  things.put({ id: 2, tags: ["b", "c"], when: new Date(5) }); things.put({ id: 1, tags: ["a", "b"] });' +
       '  tx.objectStore("events").add({ e: "x" }); tx.objectStore("events").add({ e: "y" }).onsuccess = function (e) { r.push("key " + e.target.result); };' +
@@ -14401,6 +14401,161 @@ metric(
     );
   },
 );
+
+test('a NodeList and an HTMLCollection are no arrays, and what a page slices of one is a plain array', async () => {
+  // StackEdit's `NodeList.prototype.cl_each` goes through
+  // `Array.prototype.slice.call`, and an `Array` subclass made another
+  // NodeList of that, whose `forEach` was `cl_each`, without end
+  const doc = await hosted(
+    `<p id=out></p><div id=r><i></i><b></b></div>
+     <script>
+       const q = document.querySelectorAll('#r > *');
+       const c = document.getElementById('r').children;
+       const out = {
+         isArray: [Array.isArray(q), Array.isArray(c)],
+         sliced: [
+           Array.isArray([].slice.call(q)),
+           [].slice.call(c).constructor === Array,
+         ],
+         parents: [
+           Object.getPrototypeOf(NodeList.prototype) === Object.prototype,
+           Object.getPrototypeOf(HTMLCollection.prototype) === Object.prototype,
+         ],
+         arrayMethods: ['map', 'filter', 'slice', 'push', 'includes', 'at']
+           .filter((m) => m in q || m in c),
+         missing: ['forEach', 'keys', 'values', 'entries', 'item', 'length']
+           .filter((m) => !(m in q))
+           .concat(['item', 'namedItem', 'length'].filter((m) => !(m in c))),
+         iterators: [
+           NodeList.prototype[Symbol.iterator] === Array.prototype.values,
+           HTMLCollection.prototype[Symbol.iterator] === Array.prototype.values,
+           NodeList.prototype.forEach === Array.prototype.forEach,
+         ],
+         collectionHasForEach: 'forEach' in c,
+         keys: Object.keys(q),
+         writable: Object.getOwnPropertyDescriptor(q, 0).writable,
+         tags: [...q].map((e) => e.localName),
+         tag: Object.prototype.toString.call(q),
+         kinds: [q instanceof NodeList, c instanceof HTMLCollection],
+       };
+       q[0] = 'x';
+       q.expando = 1;
+       out.written = [q[0].localName, q.expando];
+       out.illegal = (() => {
+         try { return Object.create(q).length; }
+         catch (e) { return e.name; }
+       })();
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    isArray: [false, false],
+    sliced: [true, true],
+    parents: [true, true],
+    arrayMethods: [],
+    missing: [],
+    iterators: [true, true, true],
+    collectionHasForEach: false,
+    keys: ['0', '1'],
+    writable: false,
+    tags: ['i', 'b'],
+    tag: '[object NodeList]',
+    kinds: [true, true],
+    written: ['i', 1],
+    illegal: 'TypeError',
+  });
+});
+
+test('a live list holds what the tree holds now, and querySelectorAll what it held', async () => {
+  const doc = await hosted(
+    `<p id=out></p><div id=r><b class=x></b><b></b></div>
+     <script>
+       const r = document.getElementById('r');
+       const kids = r.childNodes;
+       const out = { same: kids === r.childNodes && r.children === r.children };
+       const tags = document.getElementsByTagName('b');
+       const classes = document.getElementsByClassName('x');
+       const fixed = document.querySelectorAll('b');
+       const held = [tags.length, classes.length, fixed.length];
+       r.appendChild(document.createElement('b')).className = 'x';
+       out.grew = [held, [tags.length, classes.length, fixed.length]];
+       tags[1].className = 'x';
+       out.classed = classes.length;
+       tags[0].classList.remove('x');
+       out.unclassed = classes.length;
+       // a list that lost what it held is no loop without end
+       let turns = 0;
+       while (kids.length && turns < 10) { r.removeChild(kids[0]); turns += 1; }
+       out.emptied = [turns, tags.length, fixed.length];
+       document.getElementById('out').textContent = JSON.stringify(out);
+       window.italics = document.getElementsByTagName('i');
+       window.italicsThen = italics.length;
+     </script>
+     <i></i>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    same: true,
+    grew: [
+      [2, 1, 2],
+      [3, 2, 2],
+    ],
+    classed: 3,
+    unclassed: 2,
+    emptied: [3, 0, 2],
+  });
+  // what the parser made after the script ran no op of the page's said
+  doc.run(
+    `document.getElementById('out').textContent = [italicsThen, italics.length].join();`,
+  );
+  assert.equal(doc.text('out'), '0,1');
+});
+
+test("a select's options take a length and an option at an index, and a form's controls answer a name several go by", async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <select id=s><option>a</option><optgroup><option>b</option></optgroup></select>
+     <form id=f><input type=radio name=r value=1><input type=radio name=r value=2 checked></form>
+     <script>
+       const s = document.getElementById('s');
+       const o = s.options;
+       const out = { same: o === s.options, kind: String(o) };
+       o.length = 4;
+       out.grown = [o.length, s.children.length];
+       o[3] = new Option('d', 'd');
+       out.set = o[3].value;
+       o[4] = null;
+       o[0] = null;
+       out.removed = [...o].map((e) => e.textContent);
+       o.add(new Option('e', 'e'), 0);
+       s.remove(1);
+       out.added = [...o].map((e) => e.textContent);
+       out.refused = (() => {
+         try { o.add(document.createElement('div')); }
+         catch (e) { return e.name; }
+       })();
+       const f = document.getElementById('f');
+       const radios = f.elements.r;
+       out.radios = [String(radios), radios.length, radios.value];
+       radios.value = '1';
+       out.chosen = [radios.value, f.elements[0].checked];
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    same: true,
+    kind: '[object HTMLOptionsCollection]',
+    grown: [4, 4],
+    set: 'd',
+    removed: ['b', '', 'd'],
+    added: ['e', '', 'd'],
+    refused: 'TypeError',
+    radios: ['[object RadioNodeList]', 2, '2'],
+    chosen: ['1', true],
+  });
+});
 
 test('children replaced all at once leave the tree whole, told once, and a live range where DOM puts it', async () => {
   // with no range or iterator live the children go at once

@@ -1722,6 +1722,17 @@ until its animations are over, when it is finished.
 - **Not yet.** Rendering held while the update runs, and transitions across
   documents.
 
+**A list is live, as the DOM has it.** `childNodes`, `children`,
+`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
+form's `elements`, a select's `options` and `selectedOptions`, a table's
+`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
+the tree holds when they are read, and an attribute hands out the same list
+each time. `querySelectorAll` holds what it found. None of them is an array:
+`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
+a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
+`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
+properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another
