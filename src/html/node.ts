@@ -192,7 +192,6 @@ import {
   buildSubtrees,
   canRebuild,
   inLightTree,
-  idIndex,
   tailFrom,
   containerBoxes,
   CONTENT_IMAGES,
@@ -464,7 +463,7 @@ import type {
 } from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges, SourceEnv } from './srcset.js';
-import { atDensity, forgetDrawings } from './svg.js';
+import { atDensity, drawingsNaming, forgetDrawings } from './svg.js';
 import {
   askMedia,
   cutByFixed,
@@ -11294,7 +11293,12 @@ export class HtmlViewNode extends Node {
    */
   touchDocument(changes: readonly HtmlChange[] | null = null): void {
     this._source.touch(!!changes);
-    if (changes) forgetDrawings(changes);
+    const named = new Set<Element>();
+    if (changes) {
+      // before what a change was in forgets what it names
+      drawingsNaming(changes, this._source.facts().drawings, named);
+      forgetDrawings(changes);
+    }
     this._updateBase();
     this._sweep();
     // a preload of what is here already settles as it is asked for, which
@@ -11306,6 +11310,11 @@ export class HtmlViewNode extends Node {
       this._invalidate(Stale.Style);
       return;
     }
+    for (const el of named) scope.drawings.add(el);
+    // a `<use>` copies what it names, and what its copy matched goes with it,
+    // for whichever drawing asks next: one that has read nothing since it
+    // changed is reached by nothing, and still matches what it names
+    if (scope.drawings.size) this._tree?.shapeCopies?.forget();
     this._restyleChanged(scope);
   }
 
@@ -11348,9 +11357,7 @@ export class HtmlViewNode extends Node {
     // a chunk brings an id, or writes into a drawing, every drawing is
     // drawn again. A build of the whole made every drawing anew.
     if (namesAnew(changes)) {
-      this._tree?.shapeCopies?.forget(
-        idIndex(this._source.document as unknown as Element),
-      );
+      this._tree?.shapeCopies?.forget();
       for (const el of this._source.facts().drawings) scope.drawings.add(el);
     }
     this._restyleChanged(scope);
@@ -12473,23 +12480,38 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * Inline drawings whose insides changed: what the rules give their
-   * shapes is asked again at their next paint, the surfaces kept around
-   * them are let go, and where nothing else is due to repaint the whole
-   * element, what they draw is repainted.
+   * Inline drawings whose insides changed, or what they name: what the
+   * rules give their shapes is asked again at their next paint, the
+   * surfaces kept around them are let go, and where nothing else is due to
+   * repaint the whole element, what they draw is repainted. One that shows
+   * what it draws past its box reaches as far as its shapes do now, which
+   * is asked here and not at its paint, or what grew past its ink is cut at
+   * the damage. The boxes around it go on as large as they grew, and a
+   * drawing a page animates a path at a time walks no more than those.
    */
   private _drawAgain(drawings: ReadonlySet<Element>): void {
     const tree = this._tree;
     if (!tree) return;
     const boxes = this._firstBoxesOf(tree);
     const inks: Rect[] = [];
+    const reaching: Box[] = [];
     for (const el of drawings) {
       const box = boxes.get(el);
       if (!box) continue;
       SHAPE_STYLES.delete(box);
       this._drawnOtherwise(box, inks);
+      if (drawingOverflows(box.style)) reaching.push(box);
     }
-    if (this._stale === Stale.Nothing) this._repaintInk(inks);
+    if (this._stale !== Stale.Nothing) return;
+    for (const box of reaching) tree.shapeStyler?.(box);
+    if (!reaching.every((box) => inkAfterMove(box, tree.movedInline))) {
+      computePaintBounds(tree.root, tree.movedInline);
+    }
+    for (const box of reaching) {
+      const ink = this._inkOf(box);
+      if (ink) inks.push(ink);
+    }
+    this._repaintInk(inks);
   }
 
   /** A drawing that draws something else now: the surfaces kept around it
@@ -12498,6 +12520,7 @@ export class HtmlViewNode extends Node {
     this._dropSprites(box, true);
     // a lifted box's pixels are its layer's, painted again in a frame
     if (this._lifted.size && this._insideLifted(box)) {
+      this._spriteGen += 1;
       this.spritesChanged();
       return;
     }

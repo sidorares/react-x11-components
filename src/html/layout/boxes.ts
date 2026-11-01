@@ -33,6 +33,7 @@ import {
   ShadowRoot,
   shadowRootOf,
   tagOf,
+  treeGeneration,
 } from '../dom.js';
 import {
   ShapeCopies,
@@ -3418,11 +3419,16 @@ function flatPrecedes(a: ChildNode, b: ChildNode): boolean {
 }
 
 /** A document's first element with an id: one walk of it, the first time
- *  an id is asked for (`ShapeCopies`). */
+ *  an id is asked for after the tree moved (`ShapeCopies`). Moved by what no
+ *  drawing has read yet too, so it is the index's to notice: told of every
+ *  change, a walk of what each put in would be every refresh's. */
 export function idIndex(root: Element): (id: string) => Element | null {
   let index: Map<string, Element> | null = null;
+  let at = -1;
   return (id) => {
-    if (!index) {
+    const now = treeGeneration();
+    if (!index || at !== now) {
+      at = now;
       index = new Map();
       const stack: ChildNode[] = [...root.children].reverse();
       for (let node = stack.pop(); node; node = stack.pop()) {
