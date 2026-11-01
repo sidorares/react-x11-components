@@ -226,6 +226,10 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
       return usage;
     });
   const FORMATS: Any = {
+    'raw-public': 1,
+    'raw-private': 1,
+    'raw-seed': 1,
+    'raw-secret': 1,
     raw: 1,
     spki: 1,
     pkcs8: 1,
@@ -254,6 +258,8 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
     'n',
     'oth',
     'p',
+    'priv',
+    'pub',
     'q',
     'qi',
     'use',
@@ -310,7 +316,7 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
     ['counter', 'b', 1],
     ['length', '8', 1],
   ];
-  const AES_GCM: Dictionary = [
+  const AEAD: Dictionary = [
     ['additionalData', 'b', 0],
     ['iv', 'b', 1],
     ['tagLength', '8', 0],
@@ -340,9 +346,43 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
     ['iterations', '32', 1],
     ['salt', 'b', 1],
   ];
+  const CONTEXT: Dictionary = [['context', 'b', 0]];
+  const CSHAKE: Dictionary = [
+    ['customization', 'b', 0],
+    ['functionName', 'b', 0],
+    ['outputLength', '32', 1],
+  ];
+  const TURBOSHAKE: Dictionary = [
+    ['domainSeparation', '8', 0],
+    ['outputLength', '32', 1],
+  ];
+  const KANGAROO: Dictionary = [
+    ['customization', 'b', 0],
+    ['outputLength', '32', 1],
+  ];
+  const KMAC_LENGTH: Dictionary = [['length', '32', 0]];
+  const KMAC_PARAMS: Dictionary = [
+    ['customization', 'b', 0],
+    ['outputLength', '32', 1],
+  ];
+  const ARGON2: Dictionary = [
+    ['associatedData', 'b', 0],
+    ['memory', '32', 1],
+    ['nonce', 'b', 1],
+    ['parallelism', '32', 1],
+    ['passes', '32', 1],
+    ['secretValue', 'b', 0],
+    ['version', '8', 0],
+  ];
 
   const RSA = ['RSASSA-PKCS1-v1_5', 'RSA-PSS', 'RSA-OAEP'];
-  const AES = ['AES-CBC', 'AES-CTR', 'AES-GCM', 'AES-KW'];
+  const AES = ['AES-CBC', 'AES-CTR', 'AES-GCM', 'AES-KW', 'AES-OCB'];
+  const ML_DSA = ['ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87'];
+  const ML_KEM = ['ML-KEM-512', 'ML-KEM-768', 'ML-KEM-1024'];
+  const KMAC = ['KMAC128', 'KMAC256'];
+  const ARGON = ['Argon2d', 'Argon2i', 'Argon2id'];
+  const OKP = ['Ed25519', 'Ed448', 'X25519', 'X448'];
+  const SECRETS = ['ChaCha20-Poly1305'];
 
   /** An operation's registered algorithms, what it takes of each. */
   const table = (
@@ -371,40 +411,79 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
     ['RSA-OAEP', RSA_OAEP],
     ['AES-CBC', AES_CBC],
     ['AES-CTR', AES_CTR],
-    ['AES-GCM', AES_GCM],
+    ['AES-GCM', AEAD],
+    ['AES-OCB', AEAD],
+    ['ChaCha20-Poly1305', AEAD],
   );
   const SIGNING = table(
     [['RSASSA-PKCS1-v1_5', 'HMAC', 'Ed25519'], NONE],
     ['RSA-PSS', RSA_PSS],
     ['ECDSA', HASHED],
+    ['Ed448', CONTEXT],
+    [ML_DSA, CONTEXT],
+    [KMAC, KMAC_PARAMS],
   );
-  const DIGESTS = table([['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512'], NONE]);
+  const DIGESTS = table(
+    [
+      [
+        'SHA-1',
+        'SHA-256',
+        'SHA-384',
+        'SHA-512',
+        'SHA3-256',
+        'SHA3-384',
+        'SHA3-512',
+      ],
+      NONE,
+    ],
+    [['cSHAKE128', 'cSHAKE256'], CSHAKE],
+    [['TurboSHAKE128', 'TurboSHAKE256'], TURBOSHAKE],
+    [['KT128', 'KT256'], KANGAROO],
+  );
   const GENERATE = table(
     [RSA, RSA_GEN],
     [['ECDSA', 'ECDH'], EC],
     [AES, AES_LENGTH],
     ['HMAC', HMAC_PARAMS],
-    [['Ed25519', 'X25519'], NONE],
+    [OKP, NONE],
+    [ML_DSA, NONE],
+    [ML_KEM, NONE],
+    [SECRETS, NONE],
+    [KMAC, KMAC_LENGTH],
   );
   const IMPORT = table(
     [RSA, HASHED],
     [['ECDSA', 'ECDH'], EC],
     [AES, NONE],
     ['HMAC', HMAC_PARAMS],
-    [['Ed25519', 'X25519'], NONE],
+    [OKP, NONE],
+    [ML_DSA, NONE],
+    [ML_KEM, NONE],
+    [SECRETS, NONE],
+    [KMAC, KMAC_LENGTH],
     [['HKDF', 'PBKDF2'], NONE],
+    [ARGON, NONE],
   );
   const DERIVE = table(
-    [['ECDH', 'X25519'], ECDH_PARAMS],
+    [['ECDH', 'X25519', 'X448'], ECDH_PARAMS],
     ['HKDF', HKDF_PARAMS],
     ['PBKDF2', PBKDF2_PARAMS],
+    [ARGON, ARGON2],
   );
   const WRAP = table(['AES-KW', NONE]);
+  /** What a key of each algorithm is exported by, which takes no parameters:
+   *  what `supports` asks of `exportKey` and `getPublicKey`. */
+  const EXPORT = new Map<string, [string, Dictionary]>();
+  for (const [key, [name]] of IMPORT) EXPORT.set(key, [name, NONE]);
   const KEY_LENGTH = table(
-    [AES, AES_LENGTH],
+    [['AES-CBC', 'AES-CTR', 'AES-GCM', 'AES-KW', 'AES-OCB'], AES_LENGTH],
     ['HMAC', HMAC_PARAMS],
+    [KMAC, KMAC_LENGTH],
+    [SECRETS, NONE],
     [['HKDF', 'PBKDF2'], NONE],
+    [ARGON, NONE],
   );
+  const KEMS = table([ML_KEM, NONE]);
 
   /** An algorithm as the host is handed it (Web Crypto, "normalize an
    *  algorithm"): its name as the operation registers it, and what its
@@ -704,8 +783,8 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
       usages,
     });
   });
-  /** A derived key's algorithm: as it is imported, with what says how long
-   *  it is. */
+  /** A derived or shared key's algorithm: as it is imported, with what
+   *  says how long it is. */
   const derivedOf = (id: Any): Any => {
     const imported = normalize(IMPORT, id);
     const sized = normalize(KEY_LENGTH, id);
@@ -847,6 +926,160 @@ export function installWebCrypto(deps: WebCryptoDeps): WebCryptoInternals {
       });
     },
   );
+
+  // what only a later runtime has, here where the runtime has it: a page
+  // that feature-detects one of these and finds it should find it working
+  const offered: string[] = parse(`${call('crypto', 'offers')}`) ?? [];
+  if (offered.includes('getPublicKey')) {
+    method('getPublicKey', 2, (key, keyUsages) => {
+      const slot = slotOf(key, 'key');
+      const usages = usagesOf(keyUsages);
+      return asked({ op: 'getPublicKey', key: slot.sealed, usages });
+    });
+  }
+  if (offered.includes('encapsulateBits')) {
+    method(
+      'encapsulateKey',
+      5,
+      (algorithm, key, sharedKeyAlgorithm, extractable, keyUsages) => {
+        const id = identifier(algorithm);
+        const slot = slotOf(key, 'encapsulationKey');
+        const shared = identifier(sharedKeyAlgorithm);
+        const ext = !!extractable;
+        const usages = usagesOf(keyUsages);
+        return asked({
+          op: 'encapsulateKey',
+          algorithm: normalize(KEMS, id),
+          key: slot.sealed,
+          derived: derivedOf(shared),
+          extractable: ext,
+          usages,
+        });
+      },
+    );
+    method('encapsulateBits', 2, (algorithm, key) => {
+      const id = identifier(algorithm);
+      const slot = slotOf(key, 'encapsulationKey');
+      return asked({
+        op: 'encapsulateBits',
+        algorithm: normalize(KEMS, id),
+        key: slot.sealed,
+      });
+    });
+    method(
+      'decapsulateKey',
+      6,
+      (
+        algorithm,
+        key,
+        ciphertext,
+        sharedKeyAlgorithm,
+        extractable,
+        keyUsages,
+      ) => {
+        const id = identifier(algorithm);
+        const slot = slotOf(key, 'decapsulationKey');
+        const parts = source(ciphertext, 'ciphertext');
+        const shared = identifier(sharedKeyAlgorithm);
+        const ext = !!extractable;
+        const usages = usagesOf(keyUsages);
+        const normalized = normalize(KEMS, id);
+        const derived = derivedOf(shared);
+        return asked({
+          op: 'decapsulateKey',
+          algorithm: normalized,
+          key: slot.sealed,
+          data: copyOf(parts),
+          derived,
+          extractable: ext,
+          usages,
+        });
+      },
+    );
+    method('decapsulateBits', 3, (algorithm, key, ciphertext) => {
+      const id = identifier(algorithm);
+      const slot = slotOf(key, 'decapsulationKey');
+      const parts = source(ciphertext, 'ciphertext');
+      const normalized = normalize(KEMS, id);
+      return asked({
+        op: 'decapsulateBits',
+        algorithm: normalized,
+        key: slot.sealed,
+        data: copyOf(parts),
+      });
+    });
+  }
+  if (offered.includes('supports')) {
+    /** Which table an operation's algorithm is read by. */
+    const ASKED: Any = {
+      encrypt: CIPHERS,
+      decrypt: CIPHERS,
+      sign: SIGNING,
+      verify: SIGNING,
+      digest: DIGESTS,
+      generateKey: GENERATE,
+      deriveKey: DERIVE,
+      deriveBits: DERIVE,
+      importKey: IMPORT,
+      exportKey: EXPORT,
+      getPublicKey: EXPORT,
+      wrapKey: null,
+      unwrapKey: null,
+      encapsulateKey: KEMS,
+      encapsulateBits: KEMS,
+      decapsulateKey: KEMS,
+      decapsulateBits: KEMS,
+    };
+    const supports = {
+      supports(...args: Any[]): boolean {
+        if (args.length < 2) {
+          throw new TypeError('supports takes at least 2 arguments.');
+        }
+        const operation = text(args[0]);
+        const id = identifier(args[1]);
+        const third = args[2];
+        const length =
+          third === undefined || third === null || typeof third === 'number'
+            ? third === undefined || third === null
+              ? null
+              : enforced(third, 4294967295, 'length')
+            : undefined;
+        const additional = length === undefined ? identifier(third) : null;
+        if (!Object.hasOwn(ASKED, operation)) return false;
+        const registered = ASKED[operation];
+        let algorithm: Any;
+        let extra: Any = length ?? null;
+        try {
+          algorithm = registered
+            ? normalize(registered, id)
+            : wrapping(CIPHERS, id);
+          if (additional !== null) {
+            extra = normalize(IMPORT, additional);
+            if (operation === 'deriveKey' || operation.endsWith('Key')) {
+              const sized = normalize(KEY_LENGTH, additional);
+              if (sized.length !== undefined) extra.length = sized.length;
+            }
+          }
+        } catch {
+          return false;
+        }
+        return (
+          call(
+            'crypto',
+            'supports',
+            stringify({ operation, algorithm, extra }),
+          ) === true
+        );
+      },
+    }.supports;
+    defineProperty(supports, 'length', { value: 2, configurable: true });
+    defineProperty(SubtleCrypto, 'supports', {
+      value: supports,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
 
   // --- Crypto -----------------------------------------------------------------
 

@@ -4321,7 +4321,10 @@ closes a way out a DOM binding opens by accident:
   **Anything new that carries a key's material leaves the host sealed**, and
   never through a field of the facade, since the realm can read all it holds.
   And **the buffers are copied after the algorithm is normalized**, which WPT
-  holds to a getter that changes one. Where a store keeps databases past the
+  holds to a getter that changes one. The table of algorithms is everything
+  a runtime might have, so one it lacks is its `NotSupportedError`, and
+  `offers` says which later methods it has, so a page that finds one finds it
+  working. Where a store keeps databases past the
   process it answers `keySecret()`, or a key in one opens for that process's
   life and reads back as no record after it.
 - **WebTransport's network is a seam whose default opens nothing**

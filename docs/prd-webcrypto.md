@@ -95,10 +95,10 @@ be able to read a generated key's material out to seal it. The `extractable`
 the page sees is the record's and is enforced here, before the runtime is
 asked. Two consequences:
 
-- **HKDF and PBKDF2 keys cannot be extractable** in any runtime, so they
+- **HKDF, PBKDF2 and Argon2 keys cannot be extractable** in any runtime, so they
   are imported as they are and their material is what they were imported from.
   A key derived or unwrapped into one is handled by hand (`_deriveKey`,
-  `_unwrapKey`), since the runtime's result could not be read out.
+  `_unwrapKey`, `_kemKey`), since the runtime's result could not be read out.
 - **`unwrapKey` is the specification's steps**, not the runtime's method: the
   runtime would hand back a key it will not export where the page's may not be.
   The bytes are unwrapped into a scratch HMAC key, which any bytes can be, read
@@ -166,3 +166,16 @@ Measured on the whole of `WebCryptoAPI/`, 334 tests, against Node 26.
   wants a `TypeError`. On Bun a call on the global hands a getter nothing it
   could tell from that object, and a check of it left every page with no
   `crypto`, so the getter asks nothing.
+- The hybrid KEMs, `MLKEM768-P256` and its kin, are in no runtime yet, so they
+  are refused as any unknown algorithm is. Most of what fails in
+  `modern-algos/` is these: 3,054 of the 3,321 subtests of `WebCryptoAPI/` that
+  fail expect a `SyntaxError` or a success from an algorithm nothing here can
+  run.
+- ML-KEM's JWK form is Node's to add: it answers `NotSupportedError`.
+- `SubtleCrypto.supports` answers as the runtime does, so 18 of its finer checks
+  say yes where a call would fail: an RSA modulus or exponent that could never
+  work, or a `deriveKey` longer than its curve gives.
+
+Node has the modern algorithms and Bun 1.4 has fewer: no AES-OCB, Ed448, X448,
+ML-KEM, KMAC or Argon2. A page finds out as it would in a browser that lacks
+one, through `SubtleCrypto.supports` or a `NotSupportedError`.

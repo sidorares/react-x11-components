@@ -285,7 +285,9 @@ const inOrder = (usages: readonly string[]): string[] =>
 
 /** Keys the runtime lets nobody export, and whose material is what they were
  *  imported from. */
-const NEVER_EXPORTED = /^(HKDF|PBKDF2)$/;
+const NEVER_EXPORTED = /^(HKDF|PBKDF2|Argon2(d|i|id))$/;
+/** Keys that have `raw-secret` and no `raw`. */
+const RAW_SECRET = /^(AES-OCB|ChaCha20-Poly1305|KMAC(128|256))$/;
 
 /** The runtime's key for a sealed one, with `usages` in place of its own
  *  where a step asks for what the page's key may do by another name. */
@@ -379,6 +381,13 @@ export class PageCrypto {
   /** An op of the facade's (`crypto`). */
   op(kind: string, a: Primitive, b: Primitive): Primitive {
     switch (kind) {
+      case 'offers': {
+        const subtle = crypto.subtle as unknown as Subtle;
+        return JSON.stringify([
+          ...['getPublicKey', 'encapsulateBits'].filter((op) => subtle[op]),
+          ...(typeof runtimeSupports() === 'function' ? ['supports'] : []),
+        ]);
+      }
       case 'run':
         void this._run(Number(a), String(b));
         return null;
@@ -386,6 +395,8 @@ export class PageCrypto {
         const sealed = String(a);
         return JSON.stringify(keyValue(sealed, open(sealed).record));
       }
+      case 'supports':
+        return this._supports(String(a));
       default:
         return null;
     }
@@ -514,6 +525,37 @@ export class PageCrypto {
       }
       case 'unwrapKey':
         return this._unwrapKey(q);
+      case 'getPublicKey': {
+        const made: RuntimeKey = await ask(
+          'getPublicKey',
+          await runtimeKey(q.key),
+          q.usages,
+        );
+        return this._seal(made, true);
+      }
+      case 'encapsulateBits': {
+        const made: Record<string, ArrayBuffer> = await ask(
+          'encapsulateBits',
+          await revived(q.algorithm),
+          await runtimeKey(q.key),
+        );
+        return {
+          sharedKey: told(made.sharedKey!),
+          ciphertext: told(made.ciphertext!),
+        };
+      }
+      case 'decapsulateBits':
+        return told(
+          await ask(
+            'decapsulateBits',
+            await revived(q.algorithm),
+            await runtimeKey(q.key),
+            await revived(q.data),
+          ),
+        );
+      case 'encapsulateKey':
+      case 'decapsulateKey':
+        return this._kemKey(q);
       default:
         throw failure('NotSupportedError', `${q.op} is not supported.`);
     }
@@ -522,8 +564,15 @@ export class PageCrypto {
   /** A key the runtime made, sealed: its material read out, in the form the
    *  runtime will take back. */
   private async _seal(key: RuntimeKey, extractable: boolean): Promise<unknown> {
+    const name = String(key.algorithm.name);
     const format =
-      key.type === 'private' ? 'pkcs8' : key.type === 'public' ? 'spki' : 'raw';
+      key.type === 'private'
+        ? 'pkcs8'
+        : key.type === 'public'
+          ? 'spki'
+          : RAW_SECRET.test(name)
+            ? 'raw-secret'
+            : 'raw';
     const data: ArrayBuffer = await ask('exportKey', format, key);
     return this._sealed({
       t: key.type,
@@ -666,4 +715,147 @@ export class PageCrypto {
     }
     return this._import(q.format, data, q.imported, q.extractable, q.usages);
   }
+
+  private async _kemKey(q: Request): Promise<unknown> {
+    const encapsulating = q.op === 'encapsulateKey';
+    const key = open(q.key).record;
+    if (key.a.name !== q.algorithm.name) {
+      throw failure('InvalidAccessError', 'The key is not of this algorithm.');
+    }
+    if (!key.u.includes(q.op)) {
+      throw failure(
+        'InvalidAccessError',
+        `The key's usages do not include ${q.op}.`,
+      );
+    }
+    const algorithm = await revived(q.algorithm);
+    if (NEVER_EXPORTED.test(q.derived.name)) {
+      const usage = encapsulating ? 'encapsulateBits' : 'decapsulateBits';
+      const bits: ArrayBuffer | Record<string, ArrayBuffer> = encapsulating
+        ? await ask(usage, algorithm, await runtimeKey(q.key, [usage]))
+        : await ask(
+            usage,
+            algorithm,
+            await runtimeKey(q.key, [usage]),
+            await revived(q.data),
+          );
+      const secret = encapsulating
+        ? (bits as Record<string, ArrayBuffer>).sharedKey!
+        : (bits as ArrayBuffer);
+      const sharedKey = await this._import(
+        'raw',
+        new Uint8Array(secret),
+        q.derived,
+        q.extractable,
+        q.usages,
+      );
+      return encapsulating
+        ? {
+            sharedKey,
+            ciphertext: told((bits as Record<string, ArrayBuffer>).ciphertext!),
+          }
+        : sharedKey;
+    }
+    const derived = await revived(q.derived);
+    const usable = await runtimeKey(q.key);
+    if (encapsulating) {
+      const made: { sharedKey: RuntimeKey; ciphertext: ArrayBuffer } =
+        await ask(q.op, algorithm, usable, derived, true, q.usages);
+      return {
+        sharedKey: await this._seal(made.sharedKey, q.extractable),
+        ciphertext: told(made.ciphertext),
+      };
+    }
+    const made: RuntimeKey = await ask(
+      q.op,
+      algorithm,
+      usable,
+      await revived(q.data),
+      derived,
+      true,
+      q.usages,
+    );
+    return this._seal(made, q.extractable);
+  }
+
+  /** `SubtleCrypto.supports`, which has to answer as it is asked: what a
+   *  key in an algorithm's parameters is does not change the answer, so a
+   *  stand-in for it is no key at all. */
+  private _supports(json: string): boolean {
+    const supports = runtimeSupports();
+    if (typeof supports !== 'function') return false;
+    const { operation, algorithm, extra } = JSON.parse(json) as {
+      operation: string;
+      algorithm: Algorithm;
+      extra: Algorithm | number | null;
+    };
+    // an `ECDH`'s or an `X25519`'s `public` is a key no runtime can be handed
+    // here, since it would have to be imported first, and all it decides is
+    // how long what it derives can be
+    const peer = algorithm.public as { $k: string } | undefined;
+    if (peer) {
+      const { record } = open(peer.$k);
+      const most = CURVE_BITS[String(record.a.namedCurve ?? record.a.name)];
+      return (
+        supports.call(crypto.subtle.constructor, 'importKey', {
+          ...record.a,
+          name: algorithm.name,
+        }) === true &&
+        (typeof extra !== 'number' || most === undefined || extra <= most)
+      );
+    }
+    // what the runtime's answer leaves out, which only a call would refuse
+    if (
+      algorithm.name === 'HKDF' &&
+      typeof extra === 'number' &&
+      extra > 255 * (HASH_BITS[(algorithm.hash as Algorithm).name] ?? Infinity)
+    ) {
+      return false;
+    }
+    const context = algorithm.context as { $b: string } | undefined;
+    if (context && bytesOf(context.$b).length > 255) return false;
+    const sync = (value: unknown): unknown => {
+      if (value === null || typeof value !== 'object') return value;
+      const v = value as Record<string, unknown>;
+      if (typeof v.$b === 'string') return bytesOf(v.$b);
+      const out: Record<string, unknown> = {};
+      for (const name of Object.keys(v)) out[name] = sync(v[name]);
+      return out;
+    };
+    try {
+      return supports.call(
+        crypto.subtle.constructor,
+        operation,
+        sync(algorithm),
+        sync(extra),
+      ) as boolean;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** How many bits each hash answers with. */
+const HASH_BITS: Record<string, number> = {
+  'SHA-1': 160,
+  'SHA-256': 256,
+  'SHA-384': 384,
+  'SHA-512': 512,
+  'SHA3-256': 256,
+  'SHA3-384': 384,
+  'SHA3-512': 512,
+};
+/** How many bits a shared secret on each curve is. */
+const CURVE_BITS: Record<string, number> = {
+  'P-256': 256,
+  'P-384': 384,
+  'P-521': 528,
+  X25519: 256,
+  X448: 448,
+};
+
+/** The runtime's `SubtleCrypto.supports`, where it has one. */
+function runtimeSupports(): ((...args: unknown[]) => unknown) | undefined {
+  return (crypto.subtle.constructor as unknown as { supports?: () => unknown })
+    .supports as ((...args: unknown[]) => unknown) | undefined;
 }
