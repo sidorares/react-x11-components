@@ -4657,13 +4657,24 @@ drawn again, and a `:has()` that asks what it holds restyles what its
 anchors find from the drawing up (`_scopeOf`), as for a change anywhere —
 it had been a restyle of everything wherever a sheet had a `:has()`, and
 joshwcomeau.com's sparkles, a path at a time, restyled its 6,000 elements
-three times a second. Two
+three times a second. A change told outside a drawing reaches what a
+rule's subject names in one, `.dark .logo path`, and those shapes are taken
+out of what it restyles (`_shapesReached`): a restyle finds no style of
+theirs, and a build took each for a seed and built the block around the
+drawing. Each drawing they are in, and a root the change reached, asks
+again, and is drawn again only for another answer (`_askShapes`): most of
+what a subject can reach comes to what it was. **What a drawing names by a
+`url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which nothing
+says, so a reach into one asks every drawing. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
 ancestor it is for by a class or an id, which is looked for once around
 the drawing rather than matched from each of its elements
-(`ancestorKeys`); and the root's paint is its box's already, so an icon
-set's `.icon { fill }` is not matched a second time. GitHub's repository
+(`ancestorKeys`), and looked for whichever bucket a rule is in: `live`
+passes over a rule whose names were not found, and `.scope .st0` gave its
+fill to the first `.st0` and no other. And the root's paint is its box's
+already, so an icon set's `.icon { fill }` is not matched a second time.
+GitHub's repository
 page, a hundred drawings and no rule for any shape in them, went from a
 tenth of a millisecond a drawing to a few microseconds. A property added to
 `shapes.ts` has to be one `SvgView` reads, or a shorthand the cascade

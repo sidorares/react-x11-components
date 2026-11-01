@@ -1944,6 +1944,19 @@ metric(
         'after a sibling',
       ],
       [svg(rect()), '#000000', 'and under none of them'],
+      // a rule kept by a class that names an ancestor, of every element it
+      // matches, where it gave the first and none after it
+      [
+        `<div class="scope">${svg(rect('class="kept"'))}</div>`,
+        '#00aa00',
+        'a class under a class',
+      ],
+      [
+        `<div class="scope">${svg(rect('class="kept"'))}</div>`,
+        '#00aa00',
+        'and the next it matches',
+      ],
+      [svg(rect('class="kept"')), '#000000', 'and not outside the class'],
       // a drawing's own style sheet is one of the document's
       [
         svg(
@@ -1962,7 +1975,8 @@ metric(
         '.s{stroke:#ff0000;stroke-width:4px} .k{stroke-width:4px}' +
         '.h{display:none} .i{visibility:hidden} .w{visibility:visible}' +
         '.o{opacity:0} .on rect{fill:#00aa00} #w circle{fill:#00aa00}' +
-        '.sib + g rect{fill:#00aa00} .off rect{fill:#ff0000}</style>' +
+        '.sib + g rect{fill:#00aa00} .off rect{fill:#ff0000}' +
+        '.scope .kept{fill:#00aa00}</style>' +
         rows.map(([markup]) => markup).join(''),
       {},
     );
@@ -3745,13 +3759,7 @@ metric(
       ['its currentColor', addClass('color')],
       ['its fill', addClass('fill')],
       ['its stroke', addClass('stroke')],
-      [
-        'what a rule gives a shape',
-        () => {
-          addClass('shape')();
-          return null;
-        },
-      ],
+      ['what a rule gives a shape', addClass('shape')],
       ['what it inherits', addClass('width')],
       ['its font size', addClass('em')],
       ['the root font size', () => [setAttribute(root, 'class', 'big')]],
