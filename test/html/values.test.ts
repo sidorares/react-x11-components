@@ -2859,8 +2859,14 @@ test('a ::before with no box reads as its rules compute it', async () => {
       '#unseen { display: none }' +
       '#unseen::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
       '#held::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
+      // what it holds is set in a box, and that box is none of its own
+      '#contents::before { content: "x"; display: contents; width: 50%; height: 10%;' +
+      ' margin-left: 10%; padding-left: 5%; top: 10%; position: relative }' +
+      '#through { display: contents }' +
+      '#through::before { content: "x"; display: contents; width: 50%; margin-left: 10% }' +
       '</style><div id="none"></div><div id="empty"></div><div id="gone"></div>' +
       '<div id="normal"></div><div id="unseen"></div>' +
+      '<div id="contents"></div><div><div id="through"></div></div>' +
       '<div style="display: none"><div id="held"></div></div>',
   );
   const el = view(node);
@@ -2872,6 +2878,8 @@ test('a ::before with no box reads as its rules compute it', async () => {
     ['normal', 'after', '50% auto 10% 0px auto'],
     ['unseen', 'before', '50% auto 10% 0px auto'],
     ['held', 'before', '50% auto 10% 0px auto'],
+    ['contents', 'before', '50% 10% 10% 5% 10%'],
+    ['through', 'before', '50% auto 10% 0px auto'],
   ] as const;
   for (const [id, pseudo, want] of rows) {
     const style = el.computedStyle(findById(el.document, id)!, pseudo)!;

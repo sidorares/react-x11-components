@@ -7185,8 +7185,14 @@ export class HtmlViewNode extends Node {
       // and one no rule styles has the style it would be made with all
       // the same, its element's inherited, as a browser answers for it
       const read = own ?? inherit(style, cascade.initial);
-      // a box a drag set aside is a width ago, where its rules are now
-      const used = generated && !computed && !heldBack(tree, generated);
+      // the box of a `display: contents` one only sets its content, and is
+      // none of its own (`contentsStyle`), and a box a drag set aside is a
+      // width ago, where its rules are now
+      const used =
+        generated &&
+        !computed &&
+        read.display !== 'contents' &&
+        !heldBack(tree, generated);
       return cssomStyle(
         read,
         this._scale,

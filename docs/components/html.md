@@ -5089,8 +5089,8 @@ and an `::after` as for an element: `width: fit-content` and `margin-left:
 10%` read in pixels, a percentage worked out against what the box was laid
 out in, a track of a grid or the block an absolute box is placed in, and
 an `auto` margin of a block in the flow as the room it came to. One with no
-box — `display: none`, no `content`, under an element that has none — reads
-as its rules compute it. An inline box has no rectangle of its own, so as in
+box — `display: none` or `contents`, no `content`, under an element that has
+none — reads as its rules compute it. An inline box has no rectangle of its own, so as in
 Chrome its percentage margins, padding and offsets stay percentages. The
 first frame `getKeyframes()` makes up takes the computed `width` and reads no
 box, and a `::before` a dragged width set aside reads as its rules compute

@@ -3128,10 +3128,11 @@ tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
 margin reads `0px`. **An inline box reads as it computes** (`UsedBox.inline`,
 `resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
 with no rectangle of its own. And **what takes the computed value asks no
-box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`),
-and a `::before` a drag set aside (`heldBack`), which is a width ago where
-its rules are now. `_pseudoBoxOf` finds a box wherever it is, set aside or
-not, so anything new it answers asks that as well.
+box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`), a
+`::before` a drag set aside (`heldBack`), which is a width ago where its rules
+are now, and one of `display: contents`, whose box only sets its content and
+is none of its own (`contentsStyle`). `_pseudoBoxOf` finds a box for all of
+them, so anything new it answers asks the same.
 
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
