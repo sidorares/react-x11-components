@@ -2381,6 +2381,231 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
   });
 });
 
+test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
+  // pdf.js makes every request's signal with `any`
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const a = new AbortController();
+       const b = new AbortController();
+       const any = AbortSignal.any([a.signal, b.signal]);
+       const nested = AbortSignal.any([any]);
+       const order = [];
+       a.signal.addEventListener('abort', () => order.push('a'));
+       any.onabort = () => order.push('any');
+       nested.addEventListener('abort', () => order.push('nested:' + nested.reason));
+       a.abort('why');
+       a.abort('again');
+       b.abort('later');
+       const out = {
+         order,
+         reasons: [any.aborted, any.reason, b.signal.reason],
+         done: AbortSignal.any([AbortSignal.abort('now')]).reason,
+         fields: ['aborted', 'reason', 'onabort'].filter((k) =>
+           Object.prototype.hasOwnProperty.call(any, k),
+         ),
+       };
+       for (const make of [
+         () => new AbortSignal(),
+         () => AbortSignal.any([1]),
+         () => AbortSignal.any(1),
+         () => AbortSignal.timeout(-1),
+       ]) {
+         try { make(); order.push('made'); }
+         catch (e) { order.push(e.name); }
+       }
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    order: [
+      'a',
+      'any',
+      'nested:why',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+    ],
+    reasons: [true, 'why', 'later'],
+    done: 'now',
+    fields: [],
+  });
+});
+
+test("scheduler.postTask runs each task in a turn of its own, by priority, and a controller's signal moves or cancels what it holds", async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const order = [];
+       const post = (id, options) =>
+         scheduler.postTask(() => { order.push(id); return id; }, options);
+       const controller = new TaskController({ priority: 'background' });
+       const tasks = [
+         post('moved', { signal: controller.signal }),
+         post('visible'),
+         post('blocking', { priority: 'user-blocking' }),
+       ];
+       // no sooner than it says, whatever else has run by then
+       const asked = performance.now();
+       tasks.push(
+         scheduler.postTask(() => performance.now() - asked >= 15, {
+           delay: 15,
+         }),
+       );
+       const gone = new TaskController();
+       const dropped = post('dropped', { signal: gone.signal });
+       const heard = [];
+       controller.signal.onprioritychange = (e) =>
+         heard.push(e.previousPriority, controller.signal.priority);
+       controller.setPriority('user-blocking');
+       gone.abort('no');
+       const caught = (p) => p.then(() => 'ran', (e) => e?.name ?? e);
+       Promise.all([
+         Promise.all(tasks),
+         caught(dropped),
+         caught(scheduler.postTask(() => {}, { priority: 'none' })),
+         caught(scheduler.postTask(() => { throw new RangeError('x'); })),
+         scheduler.yield().then(() => 'yielded'),
+       ]).then((results) => {
+         document.getElementById('out').textContent = JSON.stringify({
+           order,
+           heard,
+           waited: results[0].at(-1),
+           results: results.slice(1),
+           kinds: [
+             controller.signal instanceof TaskSignal,
+             controller.signal instanceof AbortSignal,
+             scheduler instanceof Scheduler,
+           ],
+         });
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''));
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    order: ['moved', 'blocking', 'visible'],
+    heard: ['background', 'user-blocking'],
+    waited: true,
+    results: ['no', 'TypeError', 'RangeError', 'yielded'],
+    kinds: [true, true, true],
+  });
+});
+
+test('navigator.permissions answers what a browser answers before it has asked, and refuses a name it does not know', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const name = (p) => p.then((s) => [s.name, s.state, s instanceof PermissionStatus, s.onchange], (e) => e.name);
+       Promise.all([
+         name(navigator.permissions.query({ name: 'notifications' })),
+         name(navigator.permissions.query({ name: 'nonsense' })),
+         name(navigator.permissions.query({})),
+         name(navigator.permissions.query()),
+       ]).then((a) => {
+         document.getElementById('out').textContent = JSON.stringify(a);
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''));
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    ['notifications', 'prompt', true, null],
+    'TypeError',
+    'TypeError',
+    'TypeError',
+  ]);
+});
+
+test("execCommand makes the edits a key makes, in an editing host and a text field, and says of the rest that it can't", async () => {
+  // Monaco's setup asks `queryCommandSupported` of `cut` and `copy`, and
+  // threw at the first line that did: a TS Playground with no editor
+  const doc = await hosted(
+    `<p id=out></p>
+     <div id=e contenteditable>ab</div>
+     <textarea id=t>xy</textarea>
+     <script>
+       const out = {
+         supported: ['insertText', 'INSERTTEXT', 'delete', 'selectAll', 'bold', 'copy']
+           .map((c) => document.queryCommandSupported(c)),
+         answers: [
+           document.queryCommandState('bold'),
+           document.queryCommandValue('bold'),
+           document.queryCommandIndeterminate('bold'),
+           document.execCommand('bold'),
+         ],
+         nothingToEdit: [
+           document.queryCommandEnabled('insertText'),
+           document.execCommand('insertText', false, 'x'),
+           document.queryCommandEnabled('selectAll'),
+         ],
+       };
+       const e = document.getElementById('e');
+       const told = [];
+       e.addEventListener('beforeinput', (ev) => told.push('before:' + ev.inputType + ':' + ev.data));
+       e.addEventListener('input', (ev) => told.push('input:' + ev.inputType));
+       getSelection().collapse(e.firstChild, 1);
+       out.inserted = document.execCommand('insertText', false, 'Z');
+       out.host = [e.textContent, told.slice()];
+       document.execCommand('delete');
+       document.execCommand('forwardDelete');
+       out.deleted = e.textContent;
+       document.execCommand('selectAll');
+       out.selected = getSelection().toString();
+       const t = document.getElementById('t');
+       t.focus();
+       t.setSelectionRange(1, 1);
+       const heard = [];
+       t.addEventListener('input', (ev) => heard.push(ev.inputType + ':' + ev.data));
+       document.execCommand('insertText', false, 'Q');
+       out.field = [t.value, t.selectionStart, heard];
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    supported: [true, true, true, true, false, false],
+    answers: [false, '', false, false],
+    nothingToEdit: [false, false, true],
+    inserted: true,
+    host: ['aZb', ['before:insertText:Z', 'input:insertText']],
+    deleted: 'a',
+    selected: 'a',
+    field: ['xQy', 2, ['insertText:Q']],
+  });
+});
+
+test('an XMLHttpRequest and its upload are XMLHttpRequestEventTargets', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const x = new XMLHttpRequest();
+       const parent = Object.getPrototypeOf;
+       const make = (Kind) => { try { new Kind(); return 'made'; } catch (e) { return e.name; } };
+       x.upload.onload = () => {};
+       document.getElementById('out').textContent = JSON.stringify([
+         parent(XMLHttpRequest.prototype) === XMLHttpRequestEventTarget.prototype,
+         parent(XMLHttpRequestUpload.prototype) === XMLHttpRequestEventTarget.prototype,
+         parent(XMLHttpRequestEventTarget.prototype) === EventTarget.prototype,
+         x.upload instanceof XMLHttpRequestUpload,
+         typeof x.upload.onload,
+         make(XMLHttpRequestEventTarget),
+         make(XMLHttpRequestUpload),
+       ]);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    true,
+    true,
+    true,
+    'function',
+    'TypeError',
+    'TypeError',
+  ]);
+});
+
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
