@@ -3114,6 +3114,25 @@ answers a page in CSS pixels from a style divides by both, as
 zoom**: one added to `INHERITED` that holds a length joins `zoomedBy`, or a
 zoomed child inherits it at its parent's size.
 
+**What `getComputedStyle` reads of a box is what layout used** (`_usedBox`,
+`usedMargins`), for a `::before` and an `::after` as for an element. A
+margin is read from the box, which layout resolved against what it laid the
+box out in: worked out again from `box.parent`, a box in an inline box read
+none, a grid item a share of the grid and an absolute box a share of the
+wrong block. Three things are load-bearing. **What a box does not keep is
+noted beside it**: `placeBlock` shares room out to a block's `auto` margins
+and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
+`marginBottom` carries what hangs from the box for the next sibling to
+collapse with (`bottomStrut`), so anything new that gives a margin room
+tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
+margin reads `0px`. **An inline box reads as it computes** (`UsedBox.inline`,
+`resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
+with no rectangle of its own. And **what takes the computed value asks no
+box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`),
+and a `::before` a drag set aside (`heldBack`), which is a width ago where
+its rules are now. `_pseudoBoxOf` finds a box wherever it is, set aside or
+not, so anything new it answers asks that as well.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed

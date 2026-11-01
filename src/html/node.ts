@@ -89,12 +89,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
-import {
-  alphaOf,
-  inkColor,
-  isTransparent,
-  resolve as resolveLength,
-} from './css/values.js';
+import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
 import type { UsedBox } from './computed.js';
@@ -262,6 +257,7 @@ import {
   commitLastPositions,
   placedStyleOf,
   resolvedInsets,
+  usedMargins,
   restickToViewport,
   restickWithin,
   retranslate,
@@ -271,7 +267,12 @@ import {
   forgetSizesIn,
   isInlineLevel,
 } from './layout/block.js';
-import { frameModeOf, onPage, pageSides } from './layout/writing.js';
+import {
+  frameModeOf,
+  onPage,
+  pageMargins,
+  pageSides,
+} from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -7150,14 +7151,15 @@ export class HtmlViewNode extends Node {
    * waiting, for a script that may read nothing a box decides (`comesFromBox`):
    * a style is right whether its text has been set again or not, since the
    * lists and the lengths read from a face are, and what a box answers is
-   * asked for again if it is read (`layoutOwed`). `keepsAuto` is
-   * `cssomStyle`'s, for what takes the computed value.
+   * asked for again if it is read (`layoutOwed`). `computed` is for what
+   * takes the computed value: it keeps `cssomStyle`'s `min-width: auto`, and
+   * asks no box of a `::before` or an `::after`.
    */
   computedStyle(
     element: Element,
     pseudo: string | null = null,
     waits = false,
-    keepsAuto = false,
+    computed = false,
   ): Record<string, string> | null {
     if (waits) this._prepare(this.abs.width || 1);
     else this._settle();
@@ -7170,28 +7172,26 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      const generated = this._pseudoBoxOf(tree, element, pseudo);
       // one placed by a position option has that option's style, and the
       // insets its layout came to (CSS Anchor Positioning 1, 6.2)
-      const generated = this._pseudoBoxOf(tree, element, pseudo);
       const placed = generated && this._placedStyle(generated);
-      if (generated && placed) {
-        return cssomStyle(
-          placed,
-          this._scale,
-          this._usedBox(generated, placed),
-        );
-      }
       // one the rules give no `content` is styled by them all the same
-      const own = this._atNow(element, () =>
-        cascade.pseudoComputedStyle(element, pseudo, style),
-      );
+      const own =
+        placed ??
+        this._atNow(element, () =>
+          cascade.pseudoComputedStyle(element, pseudo, style),
+        );
       // and one no rule styles has the style it would be made with all
       // the same, its element's inherited, as a browser answers for it
+      const read = own ?? inherit(style, cascade.initial);
+      // a box a drag set aside is a width ago, where its rules are now
+      const used = generated && !computed && !heldBack(tree, generated);
       return cssomStyle(
-        own ?? inherit(style, cascade.initial),
+        read,
         this._scale,
-        null,
-        keepsAuto || (!!generated && isItem(generated)),
+        used ? this._usedBox(generated, read) : null,
+        computed || (!!generated && isItem(generated)),
       );
     }
     const key = pseudo ? highlightKey(pseudo) : null;
@@ -7218,19 +7218,10 @@ export class HtmlViewNode extends Node {
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
   private _usedBox(box: Box, style: ComputedStyle): UsedBox {
-    // margins are no part of a box: worked out again, as layout did, from
-    // the width of the block that holds it
-    const across = box.parent ? box.parent.contentWidth : this.abs.width;
-    const margin = (len: Len) => resolveLength(len, across);
     const used: UsedBox = {
       width: box.width,
       height: box.height,
-      margin: [
-        margin(style.marginTop),
-        margin(style.marginRight),
-        margin(style.marginBottom),
-        margin(style.marginLeft),
-      ],
+      margin: usedMargins(box),
       border: [
         box.borderTop,
         box.borderRight,
@@ -7239,6 +7230,7 @@ export class HtmlViewNode extends Node {
       ],
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
+      inline: box.kind === 'inline',
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)
@@ -7246,6 +7238,7 @@ export class HtmlViewNode extends Node {
     if (mode) {
       used.width = box.height;
       used.height = box.width;
+      used.margin = pageMargins(used.margin, mode);
       used.border = pageSides(used.border, mode);
       used.padding = pageSides(used.padding, mode);
       if (used.insets) {
@@ -7260,6 +7253,17 @@ export class HtmlViewNode extends Node {
         );
       }
     }
+    // a margin written as a length reads as written, whatever an
+    // over-constrained line made of it
+    const written = [
+      style.marginTop,
+      style.marginRight,
+      style.marginBottom,
+      style.marginLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.margin[i] = len;
+    });
     return used;
   }
 

@@ -5084,6 +5084,20 @@ of any colour function may be a math function — `calc()`, `min()`, `max()`,
 `clamp()` — of numbers, of percentages or of angles, one of the three
 throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`.
 
+What `getComputedStyle` reads of a box is what layout used, for a `::before`
+and an `::after` as for an element: `width: fit-content` and `margin-left:
+10%` read in pixels, a percentage worked out against what the box was laid
+out in, a track of a grid or the block an absolute box is placed in, and
+an `auto` margin of a block in the flow as the room it came to. One with no
+box — `display: none`, no `content`, under an element that has none — reads
+as its rules compute it. An inline box has no rectangle of its own, so as in
+Chrome its percentage margins, padding and offsets stay percentages. The
+first frame `getKeyframes()` makes up takes the computed `width` and reads no
+box, and a `::before` a dragged width set aside reads as its rules compute
+it, its box being a width ago. Two reads are still not Chrome's. An `auto`
+margin of a flex item reads `0px`, Chrome the room it came to. And the
+opposite insets of an absolute box placed against an inline box stay `auto`.
+
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)
 and 5 say, which keeps the space a colour was written or mixed in: a legacy

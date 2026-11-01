@@ -56,6 +56,10 @@ export interface UsedBox {
   /** The insets, top first, where the box is positioned: device pixels,
    *  `auto`, or null for the computed value (`resolvedInsets`). */
   insets?: readonly (number | 'auto' | null)[] | null;
+  /** Whether it is an inline box, whose margins and padding read as they
+   *  compute, a percentage as a percentage: what Chrome answers, having
+   *  resolved them only for a box with a rectangle of its own. */
+  inline?: boolean;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -1096,6 +1100,7 @@ function cssomAt(
     style.paddingBottom,
     style.paddingLeft,
   ];
+  const edges = box?.inline ? null : box;
   SIDES.forEach((side, i) => {
     out[`border-${side}-style`] = styles[i];
     // a side with no style has no width (CSS Backgrounds 3, 4.3)
@@ -1109,11 +1114,11 @@ function cssomAt(
       color,
       style.colorSource,
     );
-    out[`margin-${side}`] = box
-      ? px(box.margin[i], scale)
+    out[`margin-${side}`] = edges
+      ? px(edges.margin[i], scale)
       : len(margins[i], scale);
-    out[`padding-${side}`] = box
-      ? px(box.padding[i], scale)
+    out[`padding-${side}`] = edges
+      ? px(edges.padding[i], scale)
       : len(paddings[i], scale);
   });
   // a positioned box's insets are the ones layout used (CSSOM 9.1)
