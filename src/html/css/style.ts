@@ -791,6 +791,9 @@ export interface ComputedStyle {
   fontVariantPosition: string;
   fontKerning: string;
   fontFeatureSettings: string;
+  /** Which of the longhands `font` sets that no text is set by here have a
+   *  value other than their initial one, a bit each (`UNSAID_FONT`). */
+  fontUnsaid: number;
   /** Where a kept tab's stops are (CSS Text 3, 4.2): every so many spaces,
    *  or every so many pixels where `tabSizeIsLength`. */
   tabSize: number;
@@ -1575,6 +1578,7 @@ export const INHERITED = [
   'fontVariantPosition',
   'fontKerning',
   'fontFeatureSettings',
+  'fontUnsaid',
   'tabSize',
   'tabSizeIsLength',
   'orphans',
@@ -1744,6 +1748,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     fontVariantPosition: '',
     fontKerning: '',
     fontFeatureSettings: '',
+    fontUnsaid: 0,
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
@@ -2125,6 +2130,7 @@ export function inherit(
   out.fontVariantPosition = parent.fontVariantPosition;
   out.fontKerning = parent.fontKerning;
   out.fontFeatureSettings = parent.fontFeatureSettings;
+  out.fontUnsaid = parent.fontUnsaid;
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
   out.orphans = parent.orphans;
@@ -4326,8 +4332,20 @@ export function applyDeclaration(
       return;
     }
     case 'font-variant': {
-      const variant = parseFontVariant(value, null);
-      if (variant) Object.assign(style, variant);
+      applyVariantShorthand(style, value);
+      return;
+    }
+    case 'font-size-adjust':
+    case 'font-variation-settings':
+    case 'font-optical-sizing':
+    case 'font-language-override':
+    case 'font-variant-east-asian':
+    case 'font-variant-alternates':
+    case 'font-variant-emoji': {
+      const { bit, initial, takes } = UNSAID_FONT[name];
+      const v = value.toLowerCase();
+      if (v === initial) style.fontUnsaid &= ~bit;
+      else if (takes(v)) style.fontUnsaid |= bit;
       return;
     }
     case 'font-kerning': {
@@ -7174,6 +7192,161 @@ function parseFeatureSettings(value: string): string | null {
   return pairs.join(',');
 }
 
+/** A longhand of `font` that no text is set by here (`UNSAID_FONT`): its bit
+ *  of `fontUnsaid`, its initial value, and whether a lower-cased value that
+ *  is not that one is one it takes. */
+interface UnsaidFont {
+  bit: number;
+  initial: string;
+  takes(value: string): boolean;
+}
+
+/** Whether every word of an `a || b || c` is of a kind, and no two of one. */
+function eachOnce(
+  value: string,
+  kindOf: (word: string) => string | null,
+): boolean {
+  const seen = new Set<string>();
+  for (const word of splitValue(value)) {
+    const kind = kindOf(word);
+    if (kind === null || seen.has(kind)) return false;
+    seen.add(kind);
+  }
+  return true;
+}
+
+const EAST_ASIAN: UnsaidFont = {
+  bit: 1,
+  initial: 'normal',
+  takes: (value) =>
+    eachOnce(value, (word) =>
+      /^(?:jis78|jis83|jis90|jis04|simplified|traditional)$/.test(word)
+        ? 'form'
+        : /^(?:full-width|proportional-width)$/.test(word)
+          ? 'width'
+          : word === 'ruby'
+            ? 'ruby'
+            : null,
+    ),
+};
+
+/** One word of a `font-variant-alternates` (CSS Fonts 4, 6.8): only two of
+ *  its functions take a list. */
+const ALTERNATE =
+  /^(?:historical-forms|(?:stylistic|swash|ornaments|annotation)\(\s*-?[a-z_][-\w]*\s*\)|(?:styleset|character-variant)\(\s*-?[a-z_][-\w]*(?:\s*,\s*-?[a-z_][-\w]*)*\s*\))$/;
+
+const ALTERNATES: UnsaidFont = {
+  bit: 2,
+  initial: 'normal',
+  takes: (value) =>
+    eachOnce(value, (word) =>
+      ALTERNATE.test(word) ? word.split('(')[0] : null,
+    ),
+};
+
+const EMOJI: UnsaidFont = {
+  bit: 4,
+  initial: 'normal',
+  takes: (value) => /^(?:text|emoji|unicode)$/.test(value),
+};
+
+/** The longhands a `font-variant` sets that no text is set by here, whose
+ *  bits are `VARIANT_UNSAID`. */
+const UNSAID_VARIANTS = [EAST_ASIAN, ALTERNATES, EMOJI];
+const VARIANT_UNSAID = 1 | 2 | 4;
+
+/** `font-size-adjust`: a number or `from-font`, after a metric or not. */
+function isSizeAdjust(value: string): boolean {
+  const [first, second, more] = splitValue(value);
+  if (more !== undefined) return false;
+  if (
+    second !== undefined &&
+    !/^(?:ex-height|cap-height|ch-width|ic-width|ic-height)$/.test(first)
+  ) {
+    return false;
+  }
+  const last = second ?? first;
+  const n = parseNumber(last);
+  return last === 'from-font' || (n !== null && n >= 0);
+}
+
+/** `font-variation-settings`: `"wght" 500, "wdth" 90`. */
+function isVariationSettings(value: string): boolean {
+  return splitCommas(value).every((part) => {
+    const m = /^(["'])[\x20-\x7e]{4}\1\s*(.+)$/.exec(part.trim());
+    return m !== null && parseNumber(m[2]) !== null;
+  });
+}
+
+/**
+ * The longhands `font` sets that no text is set by here, held only for
+ * `getComputedStyle(el).font`, which reads '' where one of them has anything
+ * but its initial value (`fontText`, `computed.ts`). `font` and `font-variant`
+ * set them back as they set the longhands text is set by. A bit each, on one
+ * field, since few pages write any of them and every element would copy a
+ * field each.
+ */
+const UNSAID_FONT: Readonly<Record<string, UnsaidFont>> = {
+  'font-variant-east-asian': EAST_ASIAN,
+  'font-variant-alternates': ALTERNATES,
+  'font-variant-emoji': EMOJI,
+  'font-size-adjust': { bit: 8, initial: 'none', takes: isSizeAdjust },
+  'font-variation-settings': {
+    bit: 16,
+    initial: 'normal',
+    takes: isVariationSettings,
+  },
+  'font-optical-sizing': {
+    bit: 32,
+    initial: 'auto',
+    takes: (value) => value === 'none',
+  },
+  'font-language-override': {
+    bit: 64,
+    initial: 'normal',
+    takes: (value) => /^(["'])[\x20-\x7e]{1,4}\1$/.test(value),
+  },
+};
+
+/** The bits of `fontUnsaid` each property that sets some of them sets. */
+const UNSAID_BITS: Readonly<Record<string, number>> = {
+  font: 127,
+  'font-variant': VARIANT_UNSAID,
+  'font-variant-east-asian': 1,
+  'font-variant-alternates': 2,
+  'font-variant-emoji': 4,
+  'font-size-adjust': 8,
+  'font-variation-settings': 16,
+  'font-optical-sizing': 32,
+  'font-language-override': 64,
+};
+
+/**
+ * `font-variant`, which sets all seven longhands it stands for: the four text
+ * is set by, and the three of `UNSAID_VARIANTS`, whose words are told apart
+ * here. `none` and `normal` stand alone, so neither goes with one of those.
+ */
+function applyVariantShorthand(style: ComputedStyle, value: string): void {
+  const said: string[] = [];
+  const unsaid: string[][] = UNSAID_VARIANTS.map(() => []);
+  for (const word of splitValue(value.toLowerCase())) {
+    const at = UNSAID_VARIANTS.findIndex((variant) => variant.takes(word));
+    if (at < 0) said.push(word);
+    else unsaid[at].push(word);
+  }
+  let bits = 0;
+  for (let i = 0; i < unsaid.length; i += 1) {
+    if (!unsaid[i].length) continue;
+    if (!UNSAID_VARIANTS[i].takes(unsaid[i].join(' '))) return;
+    bits |= UNSAID_VARIANTS[i].bit;
+  }
+  if (bits && (said.includes('none') || said.includes('normal'))) return;
+  const variant = parseFontVariant(said.join(' ') || 'normal', null);
+  if (!variant) return;
+  Object.assign(style, variant);
+  style.fontUnsaid = (style.fontUnsaid & ~VARIANT_UNSAID) | bits;
+}
+
 /** A `font` shorthand's parts, as written (CSS Fonts 4, 2.8). */
 interface FontShorthand {
   style: ComputedStyle['fontStyle'];
@@ -7273,13 +7446,15 @@ function applyFontShorthand(
     ? parseWeight(font.weight, parent.fontWeight)
     : 400;
   style.fontStretch = font.stretch;
-  // the variants too, save the small capitals it may name; not the
-  // features `font-feature-settings` sets, which the shorthand leaves
+  // the variants too, save the small capitals it may name, and the features
+  // and everything else it cannot name (CSS Fonts 4, 2.8)
   style.fontVariantNumeric = '';
   style.fontVariantCaps = font.smallCaps ? 'smcp=1' : '';
   style.fontVariantLigatures = '';
   style.fontVariantPosition = '';
   style.fontKerning = '';
+  style.fontFeatureSettings = '';
+  style.fontUnsaid = 0;
   style.lineHeight = 'normal';
   style.lineHeightIsLength = false;
   applyDeclaration(style, parent, 'font-size', font.size, ctx);
@@ -8445,6 +8620,20 @@ const INHERITED_NAMES = new Set<string>([
   'font-weight',
   'font-style',
   'font-stretch',
+  'font-variant',
+  'font-variant-numeric',
+  'font-variant-caps',
+  'font-variant-ligatures',
+  'font-variant-position',
+  'font-variant-east-asian',
+  'font-variant-alternates',
+  'font-variant-emoji',
+  'font-kerning',
+  'font-feature-settings',
+  'font-size-adjust',
+  'font-variation-settings',
+  'font-optical-sizing',
+  'font-language-override',
   'line-height',
   'text-align',
   'text-align-last',
@@ -8710,6 +8899,12 @@ function inheritOne(
     };
     return;
   }
+  // a bit or a few of one field, so the others stay as they are
+  const unsaid = UNSAID_BITS[name];
+  if (unsaid) {
+    style.fontUnsaid =
+      (style.fontUnsaid & ~unsaid) | (parent.fontUnsaid & unsaid);
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   // A border colour left to `currentColor` inherits as the keyword and
@@ -8829,6 +9024,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'fontVariantLigatures',
     'fontVariantPosition',
     'fontKerning',
+    'fontFeatureSettings',
   ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign', 'alignBlocks'],

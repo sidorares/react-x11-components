@@ -43,6 +43,7 @@ import {
   findById,
   metric,
   render,
+  render2x,
   renderWithBytes,
   treeOf,
   view,
@@ -2010,6 +2011,327 @@ test('where no sheet named a family it reads as the host named one, and the host
     host,
   );
 });
+
+/** What `font` reads of an element with `own` for its style, in a parent with
+ *  `parent` for its, under `font: 16px Times`, which is what Chrome's unstyled
+ *  element reads. */
+async function fontsOf(
+  cases: readonly (readonly [own: string, parent?: string])[],
+): Promise<(string | undefined)[]> {
+  const { node } = await render(
+    '<div style="font: 16px Times">' +
+      cases
+        .map(
+          ([own, parent = ''], i) =>
+            `<div style="${parent}"><div id="f${i}" style="${own}">a</div></div>`,
+        )
+        .join('') +
+      '</div>',
+  );
+  const el = view(node);
+  return cases.map(
+    (_, i) => el.computedStyle(findById(el.document, `f${i}`)!)?.font,
+  );
+}
+
+test('font reads as its longhands come to, in the order every engine writes them', async () => {
+  // what Chrome 151, Firefox 153 and WebKit 26 read of each, on a test page
+  const cases: [string, string][] = [
+    ['', '16px Times'],
+    [
+      'font: italic bold 16px/20px Inter, serif',
+      'italic 700 16px / 20px Inter, serif',
+    ],
+    [`font: 13px 'Helvetica Neue'`, '13px "Helvetica Neue"'],
+    ['font: 12px monospace', '12px monospace'],
+    [`font-family: 'monospace'`, '16px "monospace"'],
+    ['font-family: Inter, sans-serif', '16px Inter, sans-serif'],
+    [
+      'font: italic small-caps 700 condensed 12px/1.5 Georgia, serif',
+      'italic small-caps 700 condensed 12px / 18px Georgia, serif',
+    ],
+    ['font: normal normal normal normal 12px serif', '12px serif'],
+    ['font: 150% serif', '24px serif'],
+    ['font: 12px/normal serif', '12px serif'],
+    ['font-style: italic', 'italic 16px Times'],
+    ['font-style: oblique', 'oblique 16px Times'],
+    ['font-variant-caps: small-caps', 'small-caps 16px Times'],
+    ['font-variant: small-caps', 'small-caps 16px Times'],
+    ['font-weight: 400', '16px Times'],
+    ['font-weight: 300', '300 16px Times'],
+    ['font-weight: bold', '700 16px Times'],
+    ['font-weight: bolder', '700 16px Times'],
+    ['font-weight: 450', '450 16px Times'],
+    // the width each keyword is, whichever way it was written
+    ['font-stretch: ultra-condensed', 'ultra-condensed 16px Times'],
+    ['font-stretch: 62.5%', 'extra-condensed 16px Times'],
+    ['font-stretch: 75%', 'condensed 16px Times'],
+    ['font-stretch: calc(50% + 25%)', 'condensed 16px Times'],
+    ['font-stretch: 87.5%', 'semi-condensed 16px Times'],
+    ['font-stretch: 100%', '16px Times'],
+    ['font-stretch: normal', '16px Times'],
+    ['font-stretch: 112.5%', 'semi-expanded 16px Times'],
+    ['font-stretch: 125%', 'expanded 16px Times'],
+    ['font-stretch: 150%', 'extra-expanded 16px Times'],
+    ['font-stretch: 200%', 'ultra-expanded 16px Times'],
+    ['font: semi-expanded 12px serif', 'semi-expanded 12px serif'],
+    // a line height in pixels, whatever it was written in
+    ['line-height: 1.5', '16px / 24px Times'],
+    ['line-height: 150%', '16px / 24px Times'],
+    ['line-height: 22px', '16px / 22px Times'],
+    ['line-height: 2em', '16px / 32px Times'],
+    ['line-height: calc(10px + 4px)', '16px / 14px Times'],
+    ['line-height: 0', '16px / 0px Times'],
+    ['line-height: normal', '16px Times'],
+    ['font-size: 13px; line-height: 1.37', '13px / 17.81px Times'],
+    ['font-size: 13.5px', '13.5px Times'],
+    ['font-size: 0', '0px Times'],
+    ['font-size: 1.25em', '20px Times'],
+    // what it does not set
+    ['letter-spacing: 1px', '16px Times'],
+    ['text-rendering: optimizeLegibility', '16px Times'],
+    ['font-synthesis: none', '16px Times'],
+    ['font-palette: dark', '16px Times'],
+    ['display: none; font: 12px serif', '12px serif'],
+  ];
+  const read = await fontsOf(cases.map(([own]) => [own]));
+  cases.forEach(([own, want], i) => assert.strictEqual(read[i], want, own));
+});
+
+test('font reads nothing where a longhand has a value it has no way to say', async () => {
+  // all three engines' answer, but for the two WebKit has no property for,
+  // `font-variant-emoji` and `font-language-override`
+  const own = [
+    'font-stretch: 80%',
+    'font-stretch: 110%',
+    'font-stretch: 60%',
+    'font-variant-numeric: tabular-nums',
+    'font-variant-ligatures: none',
+    'font-variant-ligatures: no-common-ligatures',
+    'font-variant-ligatures: common-ligatures',
+    'font-variant-position: sub',
+    'font-variant-caps: all-small-caps',
+    'font-variant-caps: petite-caps',
+    'font-variant-caps: unicase',
+    'font-variant-caps: titling-caps',
+    'font-kerning: none',
+    'font-kerning: normal',
+    `font-feature-settings: 'tnum'`,
+    `font-feature-settings: 'tnum' 0`,
+    'font-variant-east-asian: jis78',
+    'font-variant-east-asian: ruby full-width jis78',
+    'font-variant-alternates: historical-forms',
+    'font-variant-alternates: HISTORICAL-FORMS',
+    'font-variant-alternates: stylistic(a) swash(b)',
+    'font-variant-alternates: styleset(a, b)',
+    'font-variant-emoji: text',
+    'font-variant-emoji: emoji',
+    'font-variant-emoji: unicode',
+    'font-size-adjust: 0.5',
+    'font-size-adjust: 0',
+    'font-size-adjust: from-font',
+    'font-size-adjust: cap-height 0.5',
+    'font-size-adjust: cap-height from-font',
+    'font-size-adjust: calc(0.25 + 0.25)',
+    `font-variation-settings: 'wght' 500`,
+    `font-variation-settings: 'wght' 500, 'wdth' 90`,
+    `font-variation-settings: 'wght'500`,
+    `font-variation-settings: 'wght' -1.5`,
+    `font-variation-settings: 'wght' calc(1 + 1)`,
+    'font-optical-sizing: none',
+    'font-optical-sizing: NONE',
+    `font-language-override: 'SRB'`,
+    `font-language-override: 'S'`,
+    'font-variant: none',
+    'font-variant: jis78',
+    'font-variant: emoji',
+    'font-variant: small-caps tabular-nums',
+    'font-variant: styleset(a, b) small-caps',
+    // set after a `font`, which has no say then
+    'font: 12px serif; font-variant-numeric: tabular-nums',
+    'font: 12px serif; font-size-adjust: 0.5',
+    // what `font-variant` leaves of a longhand it does not set
+    'font-size-adjust: 0.5; font-variant: normal',
+    // a bit of the field, and not all of it
+    'font-size-adjust: 0.5; font-optical-sizing: none; font-size-adjust: initial',
+  ];
+  const read = await fontsOf(own.map((s) => [s]));
+  own.forEach((s, i) => assert.strictEqual(read[i], '', s));
+});
+
+test('a value a longhand of font does not take, or its initial one, leaves font to read', async () => {
+  const own = [
+    'font-size-adjust: banana',
+    'font-size-adjust: -1',
+    'font-size-adjust: 0.5 cap-height',
+    'font-size-adjust: cap-height',
+    'font-size-adjust: banana 0.5',
+    'font-size-adjust: cap-height 0.5 0.5',
+    'font-size-adjust: none',
+    'font-size-adjust: NONE',
+    'font-optical-sizing: banana',
+    'font-optical-sizing: auto',
+    'font-optical-sizing: AUTO',
+    `font-variation-settings: 'wght'`,
+    `font-variation-settings: 'wg' 500`,
+    `font-variation-settings: 'wght' on`,
+    'font-variation-settings: normal',
+    'font-variant-east-asian: banana',
+    'font-variant-east-asian: jis78 jis83',
+    'font-variant-east-asian: full-width proportional-width',
+    'font-variant-east-asian: normal',
+    'font-variant-alternates: banana',
+    'font-variant-alternates: stylistic(1)',
+    'font-variant-alternates: swash(a, b)',
+    'font-variant-alternates: swash(a) swash(b)',
+    'font-variant-alternates: swash()',
+    'font-variant-alternates: normal',
+    'font-variant-emoji: banana',
+    'font-variant-emoji: normal',
+    'font-language-override: SRB',
+    `font-language-override: 'TOOLONG'`,
+    `font-language-override: ''`,
+    'font-language-override: normal',
+    'font-variant: jis78 jis83',
+    'font-variant: none jis78',
+    'font-variant: normal jis78',
+    'font-variant: normal',
+    'font-variant-numeric: normal',
+    'font-variant-ligatures: normal',
+    'font-feature-settings: normal',
+    'font-kerning: auto',
+  ];
+  const read = await fontsOf(own.map((s) => [s]));
+  own.forEach((s, i) => assert.strictEqual(read[i], '16px Times', s));
+});
+
+test('font sets back all it cannot say, and those it cannot say inherit', async () => {
+  const twelve = '12px serif';
+  const sets = [
+    `font-feature-settings: 'tnum'`,
+    'font-kerning: none',
+    'font-variant-numeric: tabular-nums',
+    'font-variant-ligatures: none',
+    'font-variant-position: sub',
+    'font-variant-caps: all-small-caps',
+    'font-stretch: 80%',
+    'font-size-adjust: .5',
+    `font-variation-settings: 'wght' 500`,
+    'font-optical-sizing: none',
+    'font-variant-east-asian: jis78',
+    'font-variant-alternates: historical-forms',
+    'font-variant-emoji: text',
+    `font-language-override: 'SRB'`,
+  ];
+  const cases: [own: string, parent: string, want: string][] = [
+    ...sets.flatMap((set): [string, string, string][] => [
+      [`${set}; font: 12px serif`, '', twelve],
+      ['font: 12px serif', set, twelve],
+      ['', set, ''],
+      ['font: inherit', set, ''],
+      ['font: unset', set, ''],
+    ]),
+    // each property by itself, the others in the field left as they were
+    ['font-size-adjust: none', 'font-size-adjust: .5', '16px Times'],
+    ['font-size-adjust: initial', 'font-size-adjust: .5', '16px Times'],
+    ['font-size-adjust: unset', 'font-size-adjust: .5', ''],
+    ['font-size-adjust: inherit', 'font-size-adjust: .5', ''],
+    ['font-variant-numeric: unset', 'font-variant-numeric: tabular-nums', ''],
+    [
+      'font-variant-numeric: initial',
+      'font-variant-numeric: tabular-nums',
+      '16px Times',
+    ],
+    ['font-kerning: unset', 'font-kerning: none', ''],
+    ['font-feature-settings: unset', `font-feature-settings: 'tnum'`, ''],
+    [
+      'font-optical-sizing: auto; font-size-adjust: inherit',
+      'font-optical-sizing: none',
+      '16px Times',
+    ],
+    // what `inherit` has to bring back: a field an element inherited is the
+    // parent's already, until something earlier on it says otherwise
+    [
+      `font-feature-settings: normal; font: inherit`,
+      `font-feature-settings: 'tnum'`,
+      '',
+    ],
+    ['font-size-adjust: none; font: inherit', 'font-size-adjust: .5', ''],
+    ['font-size-adjust: .5; font: inherit', '', '16px Times'],
+    [`font-feature-settings: 'tnum'; font: inherit`, '', '16px Times'],
+    [
+      'font-variant-east-asian: normal; font-variant: inherit',
+      'font-variant-east-asian: jis78',
+      '',
+    ],
+    ['font-variant-east-asian: jis78; font-variant: inherit', '', '16px Times'],
+    // `font-variant` sets back the three it stands for and no others
+    ['font-variant-east-asian: jis78; font-variant: normal', '', '16px Times'],
+    [
+      'font-variant: normal',
+      'font-variant-numeric: tabular-nums',
+      '16px Times',
+    ],
+    ['font-variant-east-asian: jis78; font-variant: none', '', ''],
+    ['font-variant: inherit', 'font-variant-east-asian: jis78', ''],
+    [
+      'font-size-adjust: none; font-variant: inherit',
+      'font-size-adjust: .5',
+      '16px Times',
+    ],
+    ['font-size-adjust: .5; all: initial; font: 16px Times', '', '16px Times'],
+    ['all: inherit', 'font-size-adjust: .5', ''],
+  ];
+  const read = await fontsOf(cases.map(([own, parent]) => [own, parent]));
+  cases.forEach(([own, parent, want], i) =>
+    assert.strictEqual(read[i], want, `${own} in ${parent}`),
+  );
+});
+
+test('font reads the host’s family where no sheet named one, in CSS pixels whatever the zoom', async () => {
+  const { node } = await render(
+    '<style>#p::before { content: "x"; font: italic 700 12px/2 Inter, serif }' +
+      '@font-face { font-family: Loaded; src: url(a.ttf) }</style>' +
+      '<p id="plain">a</p><pre id="pre">a</pre><i id="i">a</i>' +
+      '<div id="z" style="zoom: 2; font: 12px/20px serif">a</div>' +
+      '<div id="n" style="zoom: 2; font: 12px/1.5 serif">a</div>' +
+      '<div id="declared" style="font: 12px Loaded">a</div>' +
+      '<div id="p">a</div>',
+    400,
+    { fontFamily: `Host Sans, 'Segoe UI', serif`, monoFamily: 'Host Mono' },
+  );
+  const el = view(node);
+  const font = (id: string, pseudo?: 'before') =>
+    el.computedStyle(findById(el.document, id)!, pseudo)?.font;
+  const host = '"Host Sans", "Segoe UI", serif';
+  const size = el.computedStyle(findById(el.document, 'plain')!)?.['font-size'];
+  assert.strictEqual(font('plain'), `${size} ${host}`);
+  assert.strictEqual(font('i'), `italic ${size} ${host}`);
+  assert.match(font('pre')!, /^[\d.]+px monospace$/);
+  assert.strictEqual(font('z'), '12px / 20px serif');
+  assert.strictEqual(font('n'), '12px / 18px serif');
+  // a face of its own that has not loaded, which the engine is handed none of
+  assert.strictEqual(font('declared'), '12px Loaded');
+  assert.strictEqual(
+    font('p', 'before'),
+    'italic 700 12px / 24px Inter, serif',
+  );
+});
+
+metric(
+  'font reads in CSS pixels on a display of two device pixels to one',
+  async () => {
+    const { node } = await render2x(
+      '<div id="a" style="font: 12px/1.5 serif">a</div>' +
+        '<div id="b" style="font: 12px/20px serif">a</div>',
+    );
+    const el = view(node);
+    const font = (id: string) =>
+      el.computedStyle(findById(el.document, id)!)?.font;
+    assert.strictEqual(font('a'), '12px / 18px serif');
+    assert.strictEqual(font('b'), '12px / 20px serif');
+  },
+);
 
 test("attr()'s name may be a var(), and a type too, which are read once they are substituted", async () => {
   // attr-argument-grammar.html: `attr(var(--x))` is the attribute and the
