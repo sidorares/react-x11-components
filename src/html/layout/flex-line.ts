@@ -70,6 +70,7 @@ export type FlexNode = Pick<
   | 'setMinWidth'
   | 'setPadding'
   | 'setWidth'
+  | 'setWidthAuto'
   | 'setWidthPercent'
 > & {
   insertChild(child: FlexNode, index: number): void;
@@ -335,6 +336,15 @@ export class LineNode implements FlexNode {
       return;
     }
     this.widthPoints = value;
+    this.widthPercent = NaN;
+    this.touch();
+  }
+
+  setWidthAuto(): void {
+    if (Number.isNaN(this.widthPoints) && Number.isNaN(this.widthPercent)) {
+      return;
+    }
+    this.widthPoints = NaN;
     this.widthPercent = NaN;
     this.touch();
   }
