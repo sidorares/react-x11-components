@@ -5011,6 +5011,50 @@ test('getComputedStyle of a ::before reads its box once it has one, and its rule
   );
 });
 
+test("getComputedStyle reads what a flex item's auto margins come to after each change that moves them", async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '#f { display: flex; width: 200px; height: 40px }' +
+      '#f::after { content: ""; width: 40px; height: 10px; margin-left: auto }' +
+      '#x { width: 40px; height: 10px; margin: auto; flex: none }' +
+      '</style></head><body><div id="f"><div id="x"></div></div><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'var e = document.getElementById("x");' +
+      'var x = getComputedStyle(e);' +
+      'var after = getComputedStyle(f, "::after");' +
+      'var read = function () {' +
+      ' return [x.marginTop, x.marginRight, x.marginBottom, x.marginLeft, after.marginLeft].join(" ");' +
+      '};' +
+      'var r = [read()];' +
+      'f.style.width = "320px";' +
+      'r.push(read());' +
+      'f.style.height = "60px";' +
+      'r.push(read());' +
+      'e.style.marginRight = "20px";' +
+      'r.push(read());' +
+      'e.style.marginRight = "";' +
+      'f.style.flexDirection = "column";' +
+      'f.style.height = "110px";' +
+      'r.push(read(), x.marginInlineStart, after.marginTop);' +
+      'f.style.flexWrap = "wrap";' +
+      'f.style.height = "30px";' +
+      'r.push(read());' +
+      'f.style.display = "block";' +
+      'r.push(read());' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '15px 40px 15px 40px 40px|15px 80px 15px 80px 80px|25px 80px 25px 80px 80px|' +
+      '25px 20px 25px 110px 110px|45px 140px 45px 140px 280px|140px|' +
+      '0px|5px 140px 5px 140px 280px|0px 140px 0px 140px auto',
+    doc.logs.join('\n'),
+  );
+});
+
 test("getComputedStyle answers the flow-relative properties with their physical sides', as the writing mode and direction map them", async () => {
   // CSS Logical 1, 4: Apple's galleries read
   // `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll

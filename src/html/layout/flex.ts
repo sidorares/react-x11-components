@@ -33,6 +33,7 @@ import type { ComputedStyle, ContentSize, SizeOf } from '../css/style.js';
 import { Box, inOrder, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
+  FLEX_ROOM,
   MIN_CONTENT_PROBE,
   STRETCHED_ACROSS,
   USED_HEIGHT,
@@ -499,6 +500,9 @@ export function layoutFlex(
   // does not, which it takes through that pass only where it is told an
   // item is aligned by its baseline: here, never
   const lined = box.style.flexWrap !== 'nowrap';
+  const across = crossed
+    ? crossLines(box.style, items, contentWidth, columnGap)
+    : undefined;
   let bottom = placeItems(
     box,
     ctx,
@@ -508,7 +512,7 @@ export function layoutFlex(
     lined,
     contentWidth,
     started,
-    crossed ? crossLines(box.style, items, contentWidth, columnGap) : undefined,
+    across,
   );
   // Items that share a line and are aligned by their baselines are laid
   // out by the flex layout again, set at their lines' starts with the
@@ -571,6 +575,16 @@ export function layoutFlex(
   }
 
   const contentHeight = root.getComputedHeight();
+  noteAutoMargins(
+    box.style,
+    items,
+    row,
+    bounded ? contentWidth : root.getComputedWidth(),
+    height ?? contentHeight,
+    columnGap,
+    rowGap,
+    across,
+  );
   // The nodes this made, the root first, which leaves its children with no
   // parent to be taken out of one at a time. `freeRecursive` asked the root
   // for each child, and the engine hands a node back as a new object each
@@ -3450,20 +3464,12 @@ function baselineLines<T extends { box: Box; node: YogaNode }>(
   style: ComputedStyle,
   items: readonly T[],
 ): (T[] & { margins: number[] })[] | null {
-  const wraps = style.flexWrap !== 'nowrap';
   const reverse = style.flexWrap === 'wrap-reverse';
-  // along a line the items go the way the main axis does, each margin box
-  // after the last one's end, and the next line starts before it (9.3): at
-  // the line's start, where an item with a margin before it was further
-  // along than one alone on the line before
-  const back =
-    (style.flexDirection === 'row-reverse') !== (style.direction === 'rtl');
   const out: (T[] & { margins: number[] })[] = [];
-  let line: T[] = [];
-  let last = NaN;
   let several = false;
-  const close = (): void => {
-    if (!line.length) return;
+  for (const all of itemLines(style, items, true)) {
+    const line = all.filter(({ box }) => byBaseline(style, box.style));
+    if (!line.length) continue;
     if (line.length > 1) several = true;
     // how far each reaches from its baseline to its margin edge at the
     // line's start: up to its top, or down to its bottom
@@ -3480,28 +3486,46 @@ function baselineLines<T extends { box: Box; node: YogaNode }>(
         (reverse ? box.marginBottom : box.marginTop) + reach - lengths[i],
     );
     out.push(Object.assign(line, { margins }));
-  };
-  for (const item of items) {
-    const { box, node } = item;
-    const left = node.getComputedLeft() - node.getComputedMargin(Y.EDGE_LEFT);
-    const right =
-      node.getComputedLeft() +
-      node.getComputedWidth() +
-      node.getComputedMargin(Y.EDGE_RIGHT);
-    if (
-      wraps &&
-      line.length &&
-      (back ? right > last + 0.01 : left < last - 0.01)
-    ) {
-      close();
-      line = [];
-    }
-    last = back ? left : right;
-    if (byBaseline(style, box.style)) line.push(item);
   }
-  close();
   // one alone on its line is at its start already
   return several ? out : null;
+}
+
+/**
+ * The items of each line of a flex box, as Yoga laid them out: along a line
+ * they go the way the main axis does, each margin box after the last one's
+ * end, and the next line starts before it (9.3) — at the line's start,
+ * where an item with a margin before it was further along than one alone on
+ * the line before.
+ */
+function itemLines<T extends { node: YogaNode }>(
+  style: ComputedStyle,
+  items: readonly T[],
+  row: boolean,
+): T[][] {
+  if (style.flexWrap === 'nowrap') return [[...items]];
+  const back = row
+    ? (style.flexDirection === 'row-reverse') !== (style.direction === 'rtl')
+    : style.flexDirection === 'column-reverse';
+  const lines: T[][] = [];
+  let line: T[] = [];
+  let last = NaN;
+  for (const item of items) {
+    const { node } = item;
+    const at = row ? node.getComputedLeft() : node.getComputedTop();
+    const size = row ? node.getComputedWidth() : node.getComputedHeight();
+    const start = at - node.getComputedMargin(row ? Y.EDGE_LEFT : Y.EDGE_TOP);
+    const end =
+      at + size + node.getComputedMargin(row ? Y.EDGE_RIGHT : Y.EDGE_BOTTOM);
+    if (line.length && (back ? end > last + 0.01 : start < last - 0.01)) {
+      lines.push(line);
+      line = [];
+    }
+    last = back ? start : end;
+    line.push(item);
+  }
+  lines.push(line);
+  return lines;
 }
 
 /** Whether an item takes part in aligning its line by baselines (CSS
@@ -3657,6 +3681,120 @@ function autoAcross(
   if (top && bottom) return 'center';
   if (!top && !bottom) return null;
   return top !== reverse ? 'flex-end' : 'flex-start';
+}
+
+/**
+ * What the `auto` margins of a flex box's items came to, for `usedMargins`:
+ * Yoga shares the room out to them and reports none of it. Along a line
+ * each takes a like share of what its items leave free (CSS Flexbox 9.5),
+ * and across one each takes what the item leaves of its line, halved where
+ * there are two (9.6, step 13). Where there is none they are none, as
+ * Chrome reads them, though that step has one take up what the item runs
+ * past its line by.
+ */
+function noteAutoMargins(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  /** The flex box's content box. */
+  width: number,
+  height: number,
+  columnGap: number,
+  rowGap: number,
+  crossed?: ReadonlyMap<Box, Across>,
+): void {
+  if (!items.some(({ box }) => hasAutoMargin(box.style))) return;
+  const lines = itemLines(style, items, row);
+  // the one line of a box that does not wrap is as large as the box
+  const sizes =
+    row && style.flexWrap !== 'nowrap'
+      ? rowLineSizes(style, lines, height, rowGap)
+      : null;
+  const gap = row ? columnGap : rowGap;
+  lines.forEach((line, k) => {
+    let free = (row ? width : height) - gap * (line.length - 1);
+    let shares = 0;
+    for (const { box } of line) {
+      const own = box.style;
+      free -= (row ? box.width : box.height) + marginsOf(box, row);
+      if ((row ? own.marginLeft : own.marginTop) === AUTO) shares += 1;
+      if ((row ? own.marginRight : own.marginBottom) === AUTO) shares += 1;
+    }
+    const along = free > 0 && shares > 0 ? free / shares : 0;
+    const size = sizes ? sizes[k] : row ? height : width;
+    for (const { box } of line) {
+      const own = box.style;
+      if (!hasAutoMargin(own)) continue;
+      const left =
+        crossed?.get(box)?.free ??
+        size - (row ? box.height : box.width) - marginsOf(box, !row);
+      const lead = (row ? own.marginTop : own.marginLeft) === AUTO;
+      const trail = (row ? own.marginBottom : own.marginRight) === AUTO;
+      const across = Math.max(0, left) / (lead && trail ? 2 : 1);
+      FLEX_ROOM.set(
+        box,
+        row ? [across, along, across, along] : [along, across, along, across],
+      );
+    }
+  });
+}
+
+/** Whether any of an item's margins is `auto`. */
+function hasAutoMargin(style: ComputedStyle): boolean {
+  return (
+    style.marginTop === AUTO ||
+    style.marginRight === AUTO ||
+    style.marginBottom === AUTO ||
+    style.marginLeft === AUTO
+  );
+}
+
+/**
+ * How tall each line of a row that wraps came to, which Yoga does not say
+ * (CSS Flexbox 9.4, steps 8 and 9): as tall as what is on it reaches, and
+ * `align-content: stretch` shares what the box has past its lines out to
+ * each alike. An item stretched across a line is as tall as the line is,
+ * share and all, so the line it is on has had its share, and what is left
+ * after all the lines is the others' to share. One a maximum holds short of
+ * its line says no such thing, and counts for its content's height.
+ */
+function rowLineSizes(
+  style: ComputedStyle,
+  lines: readonly (readonly { box: Box; node: YogaNode; laid: Laid }[])[],
+  /** The flex box's content height. */
+  height: number,
+  gap: number,
+): number[] {
+  let free = height - gap * (lines.length - 1);
+  let open = 0;
+  const full: boolean[] = [];
+  const sizes = lines.map((line) => {
+    let size = 0;
+    let stretched = false;
+    for (const { box, node, laid } of line) {
+      const own = box.style;
+      const above =
+        own.marginTop === AUTO ? 0 : node.getComputedMargin(Y.EDGE_TOP);
+      const below =
+        own.marginBottom === AUTO ? 0 : node.getComputedMargin(Y.EDGE_BOTTOM);
+      let tall = heightOf(node, laid);
+      if (stretches(box, style)) {
+        if (Number.isNaN(pointsOf(node.getMaxHeight()))) stretched = true;
+        else if (Number.isNaN(laid.tall) && laid.height < tall) {
+          tall = laid.height;
+        }
+      }
+      size = Math.max(size, tall + above + below);
+    }
+    free -= size;
+    if (!stretched) open += 1;
+    full.push(stretched);
+    return size;
+  });
+  if (crossContent(style) !== 'stretch' || !(free > 0) || open === 0) {
+    return sizes;
+  }
+  return sizes.map((size, k) => (full[k] ? size : size + free / open));
 }
 
 /**
@@ -4043,10 +4181,12 @@ function wrapsColumn(style: ComputedStyle, width: number): boolean {
 }
 
 /** Where an item is across a column that wraps (`crossLines`): its border
- *  box's left edge from the flex box's content box's, and its width. */
+ *  box's left edge from the flex box's content box's, its width, and what
+ *  its line has past it and its margins, an `auto` one none. */
 interface Across {
   x: number;
   width: number;
+  free: number;
 }
 
 /**
@@ -4212,6 +4352,7 @@ function crossLines(
       placed.set(box, {
         x: fromRight ? width - start - itemWidth : start,
         width: itemWidth,
+        free,
       });
     }
     at += size + between;
