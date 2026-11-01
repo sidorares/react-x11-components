@@ -2314,6 +2314,151 @@ metric(
   },
 );
 
+test('DOMParser reads XML as XML, XMLSerializer writes it back, and what is not well-formed says so', async () => {
+  // draw.io holds a diagram as XML whose attributes have case
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const parser = new DOMParser();
+       const xml = parser.parseFromString(
+         '<?xml version="1.0"?><!-- c --><mxGraphModel dx="1"><root><mxCell id="0" vertexLabel="a &amp; b"/><![CDATA[<raw>]]><?pi some data?></root></mxGraphModel>',
+         'text/xml',
+       );
+       const root = xml.documentElement;
+       const cell = xml.getElementsByTagName('mxCell')[0];
+       const holder = root.firstChild;
+       const out = {
+         kind: [xml.contentType, xml instanceof Document, xml instanceof XMLDocument],
+         names: [root.tagName, root.localName, root.namespaceURI, cell.nodeName],
+         case: [cell.getAttribute('vertexLabel'), cell.getAttribute('vertexlabel')],
+         tree: [...holder.childNodes].map((n) => n.nodeType + ':' + n.nodeName),
+         cdata: holder.childNodes[1].data,
+         pi: [holder.childNodes[2].target, holder.childNodes[2].data],
+       };
+       cell.setAttribute('edgeStyle', '1');
+       out.written = new XMLSerializer().serializeToString(root);
+       out.doc = new XMLSerializer().serializeToString(xml).slice(0, 8);
+       const ns = parser.parseFromString(
+         '<a:b xmlns:a="urn:a" xmlns="urn:d"><c x="1"/></a:b>',
+         'application/xml',
+       );
+       out.ns = [
+         ns.documentElement.namespaceURI,
+         ns.documentElement.localName,
+         ns.documentElement.prefix,
+         ns.documentElement.firstChild.namespaceURI,
+         ns.getElementsByTagNameNS('urn:d', 'c').length,
+         ns.documentElement.lookupNamespaceURI('a'),
+       ];
+       const bad = (text) =>
+         parser.parseFromString(text, 'text/xml').getElementsByTagName('parsererror').length;
+       out.bad = ['<a><b></a>', '<a b=c/>', '<a>&nbsp;</a>', '<x:a/>', 'text', '<a/><b/>'].map(bad);
+       out.good = bad('<!DOCTYPE a [<!ENTITY e "f">]><a>&e;</a>');
+       out.refused = (() => {
+         try { parser.parseFromString('', 'text/plain'); } catch (e) { return e.name; }
+       })();
+       const fresh = document.implementation.createDocument(null, 'r');
+       fresh.documentElement.appendChild(fresh.createCDATASection('x'));
+       fresh.documentElement.appendChild(fresh.createProcessingInstruction('t', 'd'));
+       out.made = new XMLSerializer().serializeToString(fresh);
+       out.htmlRefused = (() => {
+         try { document.createCDATASection('x'); } catch (e) { return e.name; }
+       })();
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    kind: ['text/xml', true, false],
+    names: ['mxGraphModel', 'mxGraphModel', null, 'mxCell'],
+    case: ['a & b', null],
+    tree: ['1:mxCell', '4:#cdata-section', '7:pi'],
+    cdata: '<raw>',
+    pi: ['pi', 'some data'],
+    written:
+      '<mxGraphModel dx="1"><root><mxCell id="0" vertexLabel="a &amp; b" edgeStyle="1"/><![CDATA[<raw>]]><?pi some data?></root></mxGraphModel>',
+    doc: '<!-- c -',
+    ns: ['urn:a', 'b', 'a', 'urn:d', 1, 'urn:a'],
+    bad: [1, 1, 1, 1, 1, 1],
+    good: 0,
+    refused: 'TypeError',
+    made: '<r><![CDATA[x]]><?t d?></r>',
+    htmlRefused: 'NotSupportedError',
+  });
+});
+
+test('document.evaluate reads a path, predicates and functions, over XML and HTML', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <ul id=l><li class=a>one</li><li>two</li><li class=a>three</li></ul>
+     <script>
+       const xml = new DOMParser().parseFromString(
+         '<r xmlns:n="urn:n"><a id="1" v="3"/><a id="2" v="4"><b>t</b></a><n:a/></r>',
+         'application/xml',
+       );
+       const all = (expr, root, resolver) => {
+         const it = xml.evaluate(expr, root ?? xml, resolver ?? null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE);
+         return Array.from({ length: it.snapshotLength }, (_, i) => it.snapshotItem(i).nodeName);
+       };
+       const one = (expr, type) => xml.evaluate(expr, xml, null, type);
+       const out = {
+         paths: [
+           all('/r/a'),
+           all('//a[@v > 3]/b'),
+           all('//a[last()]/@id'),
+           all('//*[count(*) = 1]'),
+           all('//b/ancestor::*'),
+           all('/r/n:a', xml, (p) => (p === 'n' ? 'urn:n' : null)),
+           all('//a | //b'),
+         ],
+         values: [
+           one('sum(//a/@v)', 1).numberValue,
+           one('string(//b)', 2).stringValue,
+           one('count(//a) = 2', 3).booleanValue,
+           one('concat("x", substring("hello", 2, 3), translate("abc", "ab", "AB"))', 2).stringValue,
+           one('normalize-space("  a   b ")', 2).stringValue,
+           one('floor(2.7) + ceiling(1.2) + round(2.5) + 7 mod 3 + 6 div 2', 1).numberValue,
+           one('/r/a[2]/@id', 8).singleNodeValue.value,
+           one('count(//@*)', 0).numberValue,
+           one('//a', 0).resultType,
+         ],
+         html: Array.from({ length: 2 }, (_, i) =>
+           document.evaluate('//LI[@class="a"]', document, null, 7).snapshotItem(i).textContent),
+       };
+       const walk = xml.evaluate('//a', xml, null, 4);
+       const first = walk.iterateNext();
+       out.iterator = [first.getAttribute('id'), walk.invalidIteratorState];
+       first.setAttribute('x', '1');
+       out.iterator.push(walk.invalidIteratorState);
+       out.errors = [
+         () => xml.evaluate('//[', xml),
+         () => xml.evaluate('//n:a', xml, null),
+         () => one('1', 1).stringValue,
+       ].map((f) => { try { f(); return 'fine'; } catch (e) { return e.name; } });
+       const evaluator = new XPathEvaluator();
+       out.evaluator = evaluator.createExpression('count(//a)').evaluate(xml).numberValue;
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    paths: [
+      ['a', 'a'],
+      ['b'],
+      ['id'],
+      ['a'],
+      ['r', 'a'],
+      ['n:a'],
+      ['a', 'a', 'b'],
+    ],
+    values: [7, 't', true, 'xellABc', 'a b', 2 + 2 + 3 + 1 + 3, '2', 4, 4],
+    html: ['one', 'three'],
+    iterator: ['1', false, true],
+    errors: ['SyntaxError', 'NamespaceError', 'TypeError'],
+    evaluator: 2,
+  });
+});
+
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

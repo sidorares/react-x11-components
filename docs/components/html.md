@@ -1946,6 +1946,18 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**A page's XML is read as XML.** `DOMParser` takes `text/xml`, `application/xml`,
+`application/xhtml+xml` and `image/svg+xml`; what is not well-formed is a
+document holding a `parsererror`. An element's attributes keep their case
+outside HTML, `getElementsByTagName` matches as it is written, an internal
+subset's entities and `<!ATTLIST>` defaults are read, and CDATA sections and
+processing instructions are nodes. `XMLSerializer` writes a node back, declaring
+what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
+`XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
+with the page's resolver asked for each prefix as the expression is compiled, not
+as it runs. `innerHTML` still reads and writes HTML in an XML document, and
+XSLT is not here.
+
 ### Cookies and storage
 
 ```js
