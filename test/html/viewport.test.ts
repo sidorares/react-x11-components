@@ -1697,6 +1697,30 @@ test('a rem taken in place at a new width is the root font size, and not that of
   assert.ok(near(px('t'), 0.8 * initial + 2.112), `${px('t')}`);
 });
 
+test('a grid in a box that shrinks to fit stays as narrow as its longest word when what is beside it moves in place', async () => {
+  // Chrome, Firefox and Safari set these two words on two lines at both
+  // widths. The box's narrowest is a probe, in which the grid stands for what
+  // it came to in the last, and a walk of it read the tracks of the last
+  // layout it had, which was the probe at no limit before it: one line
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style><div style="position:relative">' +
+      '<div style="position:absolute">' +
+      '<div id="b" style="position:absolute;left:20px">' +
+      '<div id="g" style="display:grid">consectetur ipsum</div>' +
+      '<div style="height:1vw"></div>' +
+      '</div></div></div>',
+    300,
+    400,
+  );
+  const width = boxOf(el, 'b').width;
+  assert.strictEqual(linesOf(el, 'g').length, 2);
+  const tree = treeOf(el);
+  await resize(300, 352);
+  assert.ok(treeOf(el) === tree, 'in place');
+  assert.strictEqual(boxOf(el, 'b').width, width);
+  assert.strictEqual(linesOf(el, 'g').length, 2);
+});
+
 test('a root font size in vw moves every rem and rlh with it at a new width, under parents whose styles stay, in place', async () => {
   // Fluid type on the root, taken in place at a new width (`FONT_FIELDS`):
   // the elements that read the root's font are styled again wherever they

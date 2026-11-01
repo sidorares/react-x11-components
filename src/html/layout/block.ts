@@ -5577,11 +5577,14 @@ function laidInNoRoom(box: Box): boolean {
 }
 
 /** Whether a box's items say how wide it is: a flex box's, and not those of
- *  one its containment or its frame answers for instead. */
+ *  one its containment or its frame answers for instead, or of a grid, which
+ *  has that `display` and is as wide as its tracks: tracks are of the last
+ *  layout, and one a probe's block stood for was the probe's at no limit. */
 function flexItems(box: Box): boolean {
   const display = box.style.display;
   return (
     (display === 'flex' || display === 'inline-flex') &&
+    !box.style.grid &&
     !contained(box, CONTAIN_WIDTH) &&
     !(framed.any && FRAMES.has(box))
   );

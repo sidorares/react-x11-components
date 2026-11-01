@@ -2787,7 +2787,9 @@ anything inside a least width at that width, so a nested `flex: none` gave its
 widest, and a child `width: 100%` a percentage of a least width that was no width
 of its own. A flex box is asked of its items, with no layout of it, and a box
 laid out at no width is read as it was, so that a level of nesting does not
-lay out again all it holds. Only what has lines of its own and was laid out
+lay out again all it holds. A grid is no such box: it has a flex box's
+`display`, so ask `flexItems`, and it is as wide as its last layout's tracks.
+Only what has lines of its own and was laid out
 wider is asked of its words or laid out at no width. **What a walk lays out is forgotten around it**
 (`forgetAround`): the layout after the probe keeps what around it has not moved,
 by `Box.layoutSerial`, which would leave it at no width. **A flex box's
