@@ -2364,9 +2364,8 @@ parser adding to it. Two clocks in `dom.ts` tell them apart:
 `treeGeneration` moves at both, `mutationGeneration` at a `refresh()`
 alone. A matcher that keeps answers (`compileSelector`) and the pragma
 language go at the first, since a chunk can change what they read; a
-shape's attribute `var()`s and the inline drawings at the second, since the
-parser sets no attribute of an element it made before and a drawing sees
-for itself what a chunk added to it. `SvgView` is a cache of this kind
+shape's attribute `var()`s at the second, since the parser sets no
+attribute of an element it made before. `SvgView` is a cache of this kind
 too: it reads a root's `viewBox` and the ids its `url()`s name as it is
 handed the tree, so a drawing is made again rather than kept. **Anything
 new that keeps what it read off an element, by the element, drops it at
@@ -2374,6 +2373,31 @@ one of the two**, or an application's change and `refresh()` leave it as
 it was — which `test/html/replaced.test.ts` finds for a drawing only by
 changing what `SvgView` reads once, since what it reads at each draw
 passes either way.
+
+**A refresh told what changed drops the drawings it reached, and the rest
+stand** (`inlineDrawing`, `forgetDrawings`). A drawing sees for itself what
+a stream's chunk added to it, so `mutationGeneration` is the most it needs,
+and that moved at every `refresh()`: one class on one `<div>` made every
+drawing of a document again, and a webmail page read sixty icons again at
+three paints in four to find their rasters. So a third clock,
+`untoldGeneration`, moves at a refresh with no list, which takes them all,
+and a list takes those its records are in or at, by each target's
+ancestors, the root itself among them. That makes the list the only thing
+between a change and a stale drawing, which it was not for anything else
+here, so four things are load-bearing. **What a drawing reads outside its
+root is no record's to name**: taking a sprite's `<svg>` out is a change to
+`<body>`, so whatever reads outside goes at any refresh (`readsOutside`,
+through `askedAt`). **Anything new a drawing reads there says so in
+`readsOutside`**, `reach` as much as `_viewFor`: read by `reach` alone, off
+screen, it would be kept with what it reached. **What went out and came back
+is told as no more than that**: a script's change to a node in no document is
+told to nobody (`DomHost._tell`), so every drawing in what a `childList` put
+in goes, in its shadow trees too (`forgetUnder`). And **anything new that
+changes a document without a record says nothing through `touch()`**, as
+taking a document over does (`adopt`: nobody was told while no view drew
+it) and a script cut in the middle of an op (`interrupted`). A list that
+leaves a change to a drawing out draws it as it was: that is `refresh`'s
+contract, which says the list has every change.
 
 **What a selector reads that is in no tree moves `treeGeneration` as
 well**, or a `:has()` keeps what it answered of it. The states a page's
@@ -5385,9 +5409,10 @@ in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 drawing** (`paintSvg`, `SvgDrawing.keptAs`). `SvgView` parses every path of
 a drawing at every draw, whatever it was handed, so a webmail page's sixty
 icons, which only moved, were a seventh of each frame of a drag. A
-`refresh()` makes every drawing of a document again (`inlineDrawing`), and
-that page refreshed at most frames, so a raster kept by the drawing, as an
-image's is, would hardly ever have been asked for twice. The key is the text
+`refresh()` that says what it changed makes the drawings it reached again
+and one that does not makes them all (`inlineDrawing`), so a raster kept by
+the drawing, as an image's is, would go with it however little changed. The
+key is the text
 of its elements and of each element outside it that it names (`drawnFrom`),
 with everything `draw` is handed besides, so nothing drops a raster: a
 drawing that changes has another key, and the old one ages out of the cache.
