@@ -493,6 +493,9 @@ export interface HandleInternals {
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
+  /** Whether the page waits to hear of its viewport, given how long its
+   *  tasks have taken so far (`HtmlViewNode.viewportHeld`). */
+  viewportHeld(busy: number): boolean;
   /** What an `IntersectionObserver` measures of its targets against its
    *  root, the viewport for null (`HtmlViewNode.intersectionsOf`). */
   intersectionsOf(
@@ -1388,6 +1391,8 @@ type Pseudos = Record<
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** How long the page's tasks have taken, in ms (`ScriptEngine.busy`). */
+  readonly busy?: number;
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
    *  host repairs the tree then, as termination can leave it half-moved. */
   timedOutSince?(): boolean;
@@ -2065,6 +2070,15 @@ export class DomHost {
       .join('\n');
   }
 
+  /** Whether what the page hears of its viewport waits: its `resize`, its
+   *  media query lists' `change` and its `ResizeObserver`s, each of which
+   *  finds what it last found (`HtmlViewNode.viewportHeld`). The frame
+   *  still comes, for what its intersection observers measure against, and
+   *  what the page reads stays what is there. */
+  private _viewportHeld(): boolean {
+    return this._seams.handle.viewportHeld?.(this.entries?.busy ?? 0) ?? false;
+  }
+
   /** What a document's viewport is now, as `rendering` answers it: its
    *  width and height in CSS pixels, then what its media queries are
    *  answered from. */
@@ -2452,6 +2466,8 @@ export class DomHost {
     return added;
   }
 
+  /** What the page's last look at its observers was answered (`geometry`). */
+  private _looked = '';
   /** How many looks a handle with no `geometryKey` was asked for. */
   private _looks = 0;
 
@@ -3780,7 +3796,10 @@ export class DomHost {
       case 'rendering': {
         this.flush();
         const ids = text(a).split(' ').map(Number).filter(Boolean);
-        const keys = ids.map((id) => this._viewportKey(id));
+        const held = this._viewportHeld();
+        const keys = ids.map(
+          (id) => (held && this._viewports.get(id)) || this._viewportKey(id),
+        );
         this._viewports = new Map(ids.map((id, i) => [id, keys[i]]));
         this._viewportsWoken = false;
         return keys.join('\n');
@@ -3937,8 +3956,11 @@ export class DomHost {
       // observers that finds the same skips what it would find again, and
       // one with no such key asks for it each time
       case 'geometry': {
+        if (this._looked && this._viewportHeld()) return this._looked;
         this.flush();
-        return this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
+        this._looked =
+          this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
+        return this._looked;
       }
       case 'rect': {
         this.flush();

@@ -3285,6 +3285,28 @@ answer for no box asks the same. That is asked only of an element with a
 transform: a page reads the styles of a closed dialog's contents by the
 thousand, and each read would walk the ancestors.
 
+**An alignment is two things, what layout reads and what a page reads.**
+`alignItems` and its five kin hold one keyword of each kind, which
+`settleAlign`, `settleClamp` and a position option write over; the words a
+page reads are `alignItemsText` and its kin, read and refused in one place
+(`alignmentText`, whose every answer is Chromium's, `last baseline` on
+`align-content` refused among them). So **anything new that writes one of
+the six fields for a page to read writes its text too**, as `flipAxis`
+does, and **anything that decides whether a value is taken asks
+`alignmentText`**, and not `alignKeyword`, which only says what lays a value
+out and has none for `safe`. `flexRead` is the same for what `settleClamp`
+writes over a `-webkit-box`. `test/html/computed-reads.ts` holds all of it to
+Chromium, and is written by `scripts/conformance/computed-reads.ts`:
+regenerate it, do not write it by hand. A composed shorthand reads these
+longhands from the record and not the fields, or it reads what layout reads.
+One sent with them joins `COMPUTED_SHORTHANDS` in the facade, or a page that
+copies a style item by item sets it over them. **And what `cssomAt` answers stays a fast
+object**, its literal under 128 keys with the rest added after it, or every
+`getComputedStyle` of a page takes three times as long with nothing failing
+but the one test that asks V8. The facade reads a property of the parsed
+record, and makes its lists only where a page asks for them: built at every
+read, they were most of what a read cost a page.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed
@@ -5219,6 +5241,34 @@ new that asks for an animation frame honours `_cheap`** as it honours
 `_skipLifted`, and anything that does a frame's work from a timer or a
 core hook times itself with `_counted`, or a drag behind its edge is not
 seen to be.
+
+**What a page hears of a drag that fell behind waits, and what it reads
+does not** (`viewportHeld`, over `_cheap`). A page's `resize` and its
+`ResizeObserver`s are a second cycle at each width — a webmail page's two
+each ask for the same animation frame, whose render, build and paint came
+to more than the width's own layout — and either alone starts it, which is
+why slowing one did nothing and holding the other did nothing. So
+`_viewportHeld` (`DomHost`) answers both: `rendering` hands the rendering
+steps what they last saw, and a look at the observers (`geometry`) finds
+what the last one found. Five things are load-bearing. **Nothing a page
+reads is held**: a stale `innerWidth` works too, and tells a page reading
+it nothing true, where a late `resize` is a thing a browser's frame does as
+well. **Anything new that tells a page of its viewport asks
+`_viewportHeld`**, or it starts the cycle by itself. **A page holds only what it cannot afford**: it goes on
+hearing while its scripts are under `SCRIPT_SHARE` of the time since it
+last did (`ScriptEngine.busy`), so a small reaction stays at every width.
+**A rest wakes it itself**: `_drawAtRest` calls `onPaint`, since a drag
+that drew nothing cheaper paints nothing there, and the hold's end would
+go unheard. And **a timer that comes late is no rest of the hand**
+(`_armSettle`): the page's reaction held the thread past `DRAG_REST_MS`,
+the settle timer ran before the step waiting behind it, and that took the
+hold off, which told the page, which held the thread. An
+`IntersectionObserver` stays out of it: `renderingMoved` wakes the frame as
+it did, whose rendering steps find nothing moved and whose intersection
+steps measure what left the view, since that is what a page loads and
+unloads by. So does a target observed in a hold, which is all a look that
+finds nothing moved measures (`_fresh`). Each `<Html>` goes by its own
+element and its own scripts, and a worker has no viewport to hold.
 
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface

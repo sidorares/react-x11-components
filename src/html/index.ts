@@ -1430,6 +1430,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       showClip: (element: Element, file: string | null) =>
         nodeRef.current?.showClip(element, file),
       geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+      viewportHeld: (busy: number) =>
+        nodeRef.current?.viewportHeld(busy) ?? false,
       intersectionsOf: (
         elements: readonly (Element | null)[],
         root: Element | null,

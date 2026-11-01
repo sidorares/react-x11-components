@@ -7800,6 +7800,32 @@ const FLIPPED_SELF: Partial<
   'flex-end': 'flex-start',
 };
 
+/** A self-alignment's other end, as a page reads it. */
+const FLIPPED_TEXT: Readonly<Record<string, string>> = {
+  start: 'end',
+  end: 'start',
+  'self-start': 'self-end',
+  'self-end': 'self-start',
+  'flex-start': 'flex-end',
+  'flex-end': 'flex-start',
+  left: 'right',
+  right: 'left',
+};
+
+/** `text`, a self-alignment, its last word replaced from `words`. */
+function selfWordIn(
+  text: string,
+  words: Readonly<Record<string, string>>,
+): string {
+  const at = text.lastIndexOf(' ') + 1;
+  const word = words[text.slice(at)];
+  return word === undefined ? text : text.slice(0, at) + word;
+}
+
+function flippedSelfText(text: string): string {
+  return selfWordIn(text, FLIPPED_TEXT);
+}
+
 function flipAxis(style: ComputedStyle, down: boolean): void {
   const [a, b] = down
     ? (['top', 'bottom'] as const)
@@ -7811,8 +7837,13 @@ function flipAxis(style: ComputedStyle, down: boolean): void {
   [style[ma], style[mb]] = [style[mb], style[ma]];
   // its self-alignment the other way along the axis (4.1): a box aligned
   // to the start is aligned to the end
-  if (down) style.alignSelf = FLIPPED_SELF[style.alignSelf] ?? style.alignSelf;
-  else style.justifySelf = FLIPPED_SELF[style.justifySelf] ?? style.justifySelf;
+  if (down) {
+    style.alignSelf = FLIPPED_SELF[style.alignSelf] ?? style.alignSelf;
+    style.alignSelfText = flippedSelfText(style.alignSelfText);
+  } else {
+    style.justifySelf = FLIPPED_SELF[style.justifySelf] ?? style.justifySelf;
+    style.justifySelfText = flippedSelfText(style.justifySelfText);
+  }
   if (style.anchorSizes) {
     style.anchorSizes = movedSizes(style.anchorSizes, {
       [a]: b,
@@ -7879,6 +7910,10 @@ function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
   [style.justifySelf, style.alignSelf] = [
     alignSelfAs(style.alignSelf),
     justifySelfAs(style.justifySelf),
+  ];
+  [style.justifySelfText, style.alignSelfText] = [
+    style.alignSelfText,
+    selfWordIn(style.justifySelfText, SIDE_AS_SELF),
   ];
   [style.justifyAnchorCenter, style.alignAnchorCenter] = [
     style.alignAnchorCenter,
@@ -7983,6 +8018,13 @@ const OTHER_SIZE: Record<AnchorSizeKind, AnchorSizeKind> = {
   block: 'inline',
   'self-inline': 'self-block',
   'self-block': 'self-inline',
+};
+
+/** A `justify-self`'s side as an `align-self` reads it (`flip-start`),
+ *  which has no `left` or `right`. */
+const SIDE_AS_SELF: Readonly<Record<string, string>> = {
+  left: 'self-start',
+  right: 'self-end',
 };
 
 /** An `align-self` as a `justify-self` (`flip-start`): the two take the

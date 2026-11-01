@@ -85,12 +85,18 @@ function num(n: number): string {
   return Object.is(r, -0) ? '0' : String(r);
 }
 
-/** A `<number>` as Chrome serializes a float it keeps: six significant
- *  digits, where an opacity an animation is part way through needs more
- *  than `num`'s three places. */
+/** A `<number>` as Chrome serializes one it keeps, C's `%.6g`: six
+ *  significant digits, where an opacity an animation is part way through
+ *  needs more than `num`'s three places, and an exponent of its own where
+ *  the digits would not say where the point is: `1e+06`, `1e-05`. */
 function float6(n: number): string {
-  const r = Number(n.toPrecision(6));
-  return Object.is(r, -0) ? '0' : String(r);
+  if (Number.isInteger(n) && Math.abs(n) < 1e6) return String(n + 0);
+  const [digits, exponent] = n.toExponential(5).split('e');
+  const power = Number(exponent);
+  if (power >= -4 && power < 6) return String(Number(n.toPrecision(6)));
+  const sign = power < 0 ? '-' : '+';
+  const size = String(Math.abs(power)).padStart(2, '0');
+  return `${digits.replace(/\.?0+$/, '')}e${sign}${size}`;
 }
 
 /** CSS pixels from device ones. */
@@ -239,9 +245,10 @@ function animationRangeText(
 /** Each `animation-*` longhand as it is resolved. An `auto` duration reads
  *  `0s` where the timeline is the clock's, and `auto` where it may not be. */
 function animationProperties(
+  out: Record<string, string>,
   style: ComputedStyle,
   scale: number,
-): Record<string, string> {
+): void {
   const a: Animations = style.animations;
   const timelines = style.animationTimeline;
   const onClock = timelines.length === 1 && timelines[0].kind === 'auto';
@@ -256,22 +263,20 @@ function animationProperties(
   const names = a.names.map((n) => n ?? 'none');
   const starts = style.animationRangeStart;
   const ends = style.animationRangeEnd;
-  return {
-    'animation-name': names.join(', '),
-    'animation-duration': durations.join(', '),
-    'animation-timing-function': easings.join(', '),
-    'animation-delay': delays.join(', '),
-    'animation-iteration-count': iterations.join(', '),
-    'animation-direction': a.directions.join(', '),
-    'animation-fill-mode': a.fillModes.join(', '),
-    'animation-play-state': a.playStates.join(', '),
-    'animation-range-start': starts
-      .map((e) => rangeEdgeText(e, false, scale))
-      .join(', '),
-    'animation-range-end': ends
-      .map((e) => rangeEdgeText(e, true, scale))
-      .join(', '),
-  };
+  out['animation-name'] = names.join(', ');
+  out['animation-duration'] = durations.join(', ');
+  out['animation-timing-function'] = easings.join(', ');
+  out['animation-delay'] = delays.join(', ');
+  out['animation-iteration-count'] = iterations.join(', ');
+  out['animation-direction'] = a.directions.join(', ');
+  out['animation-fill-mode'] = a.fillModes.join(', ');
+  out['animation-play-state'] = a.playStates.join(', ');
+  out['animation-range-start'] = starts
+    .map((e) => rangeEdgeText(e, false, scale))
+    .join(', ');
+  out['animation-range-end'] = ends
+    .map((e) => rangeEdgeText(e, true, scale))
+    .join(', ');
 }
 
 /**
@@ -691,14 +696,6 @@ function pair(start: string, end: string): string {
   return start === end ? start : `${start} ${end}`;
 }
 
-/** `row-gap` and `column-gap` as they compute. */
-function gapsOf(style: ComputedStyle, scale: number): [string, string] {
-  return [
-    style.rowGapNormal ? 'normal' : len(style.rowGap, scale),
-    style.columnGapNormal ? 'normal' : len(style.columnGap, scale),
-  ];
-}
-
 /**
  * A computed `clip-path` (CSS Masking 1, 5.1): `none`, a box, a shape with
  * its box where that is not the border box, or the `url()` it names. A
@@ -811,15 +808,6 @@ export function computedText(
   // a style's lengths are zoomed, and a declaration reads them unzoomed
   scale *= style.effectiveZoom;
   const prop = name.toLowerCase();
-  const corner = CORNERS.indexOf(prop);
-  if (corner >= 0) {
-    return pair(
-      len(style.borderRadius[corner], scale),
-      len((style.borderRadiusY ?? style.borderRadius)[corner], scale),
-    );
-  }
-  if (prop === 'row-gap') return gapsOf(style, scale)[0];
-  if (prop === 'column-gap') return gapsOf(style, scale)[1];
   // a computed value, which a `min-width: auto` is whatever box it is on
   return cssomAt(style, scale, null, true)[prop];
 }
@@ -834,6 +822,80 @@ const LOGICAL_SIDES = [
 
 /** The two axes a flow-relative shorthand names. */
 const FLOWS = ['block', 'inline'];
+
+/** `scroll-snap-type`: its strictness left out where it is the initial
+ *  one. */
+function scrollSnapTypeText(type: ComputedStyle['scrollSnapType']): string {
+  if (!type) return 'none';
+  return type.mandatory ? `${type.axis} mandatory` : type.axis;
+}
+
+/** `container-type`, of what the style keeps of it apart. */
+function containerTypeText(style: ComputedStyle): string {
+  const kinds: string[] = [];
+  if (style.containerType !== 'normal') kinds.push(style.containerType);
+  if (style.scrollStateContainer) kinds.push('scroll-state');
+  if (style.anchoredContainer) kinds.push('anchored');
+  return kinds.length ? kinds.join(' ') : 'normal';
+}
+
+/** Each `transition-*` longhand as it is resolved. */
+function transitionProperties(
+  out: Record<string, string>,
+  style: ComputedStyle,
+): void {
+  out['transition-property'] =
+    style.transitions.properties.join(', ') || 'none';
+  out['transition-duration'] = style.transitions.durations
+    .map(secondsText)
+    .join(', ');
+  out['transition-timing-function'] = style.transitions.easings
+    .map(easingText)
+    .join(', ');
+  out['transition-delay'] = style.transitions.delays
+    .map(secondsText)
+    .join(', ');
+  out['transition-behavior'] = style.transitions.behaviors.join(', ');
+}
+
+/** What is read of the rules in a box's gaps and of its scrolling. */
+function ruleAndScrollProperties(
+  out: Record<string, string>,
+  style: ComputedStyle,
+  scale: number,
+): void {
+  const color = style.color;
+  out['column-rule-width'] = px(style.columnRule.width, scale);
+  out['column-rule-style'] = style.columnRule.style;
+  out['column-rule-color'] = cssomColor(
+    style.columnRule.color,
+    null,
+    color,
+    style.colorSource,
+  );
+  out['row-rule-width'] = px(style.rowRule.width, scale);
+  out['row-rule-style'] = style.rowRule.style;
+  out['row-rule-color'] = cssomColor(
+    style.rowRule.color,
+    null,
+    color,
+    style.colorSource,
+  );
+  out['rule-overlap'] = style.ruleOverlap;
+  out['scrollbar-width'] = style.scrollbarWidth;
+  out['scroll-snap-type'] = scrollSnapTypeText(style.scrollSnapType);
+  out['scroll-snap-align'] = pair(...style.scrollSnapAlign);
+  out['scroll-snap-stop'] = style.scrollSnapStop;
+  out['scroll-margin-top'] = px(style.scrollMarginTop, scale);
+  out['scroll-margin-right'] = px(style.scrollMarginRight, scale);
+  out['scroll-margin-bottom'] = px(style.scrollMarginBottom, scale);
+  out['scroll-margin-left'] = px(style.scrollMarginLeft, scale);
+  out['scroll-padding-top'] = len(style.scrollPaddingTop, scale);
+  out['scroll-padding-right'] = len(style.scrollPaddingRight, scale);
+  out['scroll-padding-bottom'] = len(style.scrollPaddingBottom, scale);
+  out['scroll-padding-left'] = len(style.scrollPaddingLeft, scale);
+  out['outline-offset'] = px(style.outlineOffset, scale);
+}
 
 /** What `cssomAt` reads from a box rather than from a style, or a shorthand
  *  composes from what it does, by name and in camel case, as a page reads
@@ -917,6 +979,13 @@ function cssomAt(
 ): Record<string, string> {
   const box = given?.edgesOnly ? null : given;
   const color = style.color;
+  const flex = style.flexRead ?? style;
+  // Under 128 keys, past which V8 makes a literal a dictionary, and as near
+  // them as it goes: an object is held to as many keys added by a name
+  // worked out, as `SIDES` and `logicalProperties` do, as its literal has.
+  // A page's `getComputedStyle` comes through here, tens of thousands of
+  // times a load on Apple's pages, and a dictionary is three times as long
+  // to make and to send. What does not fit is added after it, by name.
   const out: Record<string, string> = {
     display: display(style),
     position: style.position,
@@ -940,7 +1009,6 @@ function cssomAt(
     isolation: style.isolation,
     'mix-blend-mode': style.mixBlendMode,
     'will-change': style.willChangeNames,
-    ...animationProperties(style, scale),
     'animation-timeline': style.animationTimeline
       .map((t) => timelineText(t, scale))
       .join(', '),
@@ -961,10 +1029,66 @@ function cssomAt(
     'position-try-order': style.positionTryOrder,
     'position-visibility': positionVisibilityText(style.positionVisibility),
     'position-try-fallbacks': tryFallbacksText(style.positionTryFallbacks),
-    'justify-self': style.justifyAnchorCenter
-      ? 'anchor-center'
-      : style.justifySelf,
-    'align-self': style.alignAnchorCenter ? 'anchor-center' : style.alignSelf,
+    'justify-self': style.justifySelfText,
+    'align-self': style.alignSelfText,
+    'justify-items':
+      style.justifyItemsText === 'legacy' ? 'normal' : style.justifyItemsText,
+    'align-items': style.alignItemsText,
+    'justify-content': style.justifyContentText,
+    'align-content': style.alignContentText,
+    'flex-grow': float6(flex.flexGrow),
+    'flex-shrink': float6(flex.flexShrink),
+    'flex-direction': flex.flexDirection,
+    'flex-wrap': flex.flexWrap,
+    order: float6(style.order),
+    'row-gap': style.rowGapNormal ? 'normal' : len(style.rowGap, scale),
+    'column-gap': style.columnGapNormal
+      ? 'normal'
+      : len(style.columnGap, scale),
+    'grid-auto-flow':
+      style.gridAutoFlow === 'row dense' ? 'dense' : style.gridAutoFlow,
+    'reading-flow': style.readingFlow,
+    'reading-order': String(style.readingOrder),
+    '-webkit-box-orient': style.webkitBoxOrient,
+    '-webkit-box-direction': style.webkitBoxDirection,
+    '-webkit-box-flex': float6(style.webkitBoxFlex),
+    'backface-visibility': style.backfaceVisibility,
+    perspective:
+      style.perspective === null ? 'none' : px(style.perspective, scale),
+    'column-count':
+      style.columnCount === null ? 'auto' : String(style.columnCount),
+    'column-width':
+      style.columnWidth === null ? 'auto' : px(style.columnWidth, scale),
+    'column-fill': style.columnFill,
+    'column-span': style.columnSpan ? 'all' : 'none',
+    orphans: String(style.orphans),
+    widows: String(style.widows),
+    'content-visibility': style.contentVisibility,
+    'container-name': style.containerName || 'none',
+    'container-type': containerTypeText(style),
+    'interpolate-size': style.interpolateSize,
+    'border-collapse': style.borderCollapse,
+    'box-decoration-break': style.boxDecorationBreak,
+    'caption-side': style.captionSide,
+    'empty-cells': style.emptyCells,
+    'table-layout': style.tableLayout,
+    'list-style-position': style.listStylePosition,
+    'word-break': style.wordBreak,
+    'object-fit': style.objectFit,
+    'object-position': `${len(style.objectPositionX, scale)} ${len(style.objectPositionY, scale)}`,
+    'text-align-last': style.textAlignLast,
+    'text-indent': len(style.textIndent, scale),
+    'text-justify': style.textJustify,
+    'text-overflow': style.textOverflow,
+    'tab-size': style.tabSizeIsLength
+      ? px(style.tabSize, scale)
+      : num(style.tabSize),
+    'unicode-bidi': style.unicodeBidi,
+    'vertical-align':
+      typeof style.verticalAlign === 'string'
+        ? style.verticalAlign
+        : len(style.verticalAlign, scale),
+    'font-stretch': `${num(style.fontStretch)}%`,
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     color: cssomColor(color, style.colorSource, color, style.colorSource),
@@ -1074,8 +1198,16 @@ function cssomAt(
       style.colorSource,
     ),
   };
+  animationProperties(out, style, scale);
+  transitionProperties(out, style);
+  ruleAndScrollProperties(out, style, scale);
   out.font = fontText(style, out['font-size'], out['font-family'], scale);
   out['text-decoration'] = textDecorationText(out, style);
+  const xs = style.borderRadius;
+  const ys = style.borderRadiusY ?? xs;
+  CORNERS.forEach((corner, i) => {
+    out[corner] = pair(len(xs[i], scale), len(ys[i], scale));
+  });
   // a transform resolves to the matrix its list comes to for the box
   // (CSSOM 9, "resolved value"), with none to be had is `none`, and with
   // none handed in is the list it computes to
@@ -1550,25 +1682,13 @@ const SHORTHANDS: Record<string, Composer> = {
     const image = url === null ? 'none' : urlText(url);
     return `${style.listStylePosition} ${image} ${all['list-style-type']}`;
   },
-  gap: (_, style, scale) => pair(...gapsOf(style, scale)),
-  'grid-gap': (_, style, scale) => pair(...gapsOf(style, scale)),
-  flex: (all, style) =>
-    `${float6(style.flexGrow)} ${float6(style.flexShrink)} ${all['flex-basis']}`,
-  'flex-flow': (_, style) => `${style.flexDirection} ${style.flexWrap}`,
-  // `normal` is held as `stretch` here, but for a grid's `align-items`
-  // (`settleAlign`), so a `stretch` written out reads as `normal`
-  'place-content': (_, style) =>
-    pair(
-      style.alignContent === 'stretch' ? 'normal' : style.alignContent,
-      style.justifyContent,
-    ),
-  'place-items': (_, style) =>
-    pair(
-      style.alignItems === 'stretch' && !style.grid
-        ? 'normal'
-        : style.alignItems,
-      style.justifyItems,
-    ),
+  gap: (all) => pair(all['row-gap'], all['column-gap']),
+  'grid-gap': (all) => pair(all['row-gap'], all['column-gap']),
+  flex: (all) =>
+    `${all['flex-grow']} ${all['flex-shrink']} ${all['flex-basis']}`,
+  'flex-flow': (all) => `${all['flex-direction']} ${all['flex-wrap']}`,
+  'place-content': (all) => pair(all['align-content'], all['justify-content']),
+  'place-items': (all) => pair(all['align-items'], all['justify-items']),
   'place-self': (all) => pair(all['align-self'], all['justify-self']),
   'grid-row': (_, style) => gridAxisText(style.gridRowStart, style.gridRowEnd),
   'grid-column': (_, style) =>
@@ -1595,16 +1715,10 @@ const SHORTHANDS: Record<string, Composer> = {
       ? starts.map((e, i) => animationRangeText(e, ends[i], scale)).join(', ')
       : '';
   },
-  container: (_, style) => {
-    const type = [
-      style.containerType === 'normal' ? '' : style.containerType,
-      style.scrollStateContainer ? 'scroll-state' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    const name = style.containerName || 'none';
-    return type ? `${name} / ${type}` : name;
-  },
+  container: (all) =>
+    all['container-type'] === 'normal'
+      ? all['container-name']
+      : `${all['container-name']} / ${all['container-type']}`,
   'text-wrap': (_, style) => {
     const nowrap = style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre';
     const kind = style.textWrapStyle;

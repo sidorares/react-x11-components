@@ -1882,6 +1882,44 @@ test('a live drag that falls behind is drawn cheaper from its third frame, at ev
   assert.ok(!cheap(el), 'and as at rest once the drag is over');
 });
 
+test('a thread busy past a rest of the hand is no rest of the hand: the drag rests once a timer comes on time', async (t) => {
+  // a clock whose timers come when the test says, as late as it likes
+  let now = 0;
+  const due = new Set<() => void>();
+  t.mock.method(resizeClock, 'now', () => now);
+  t.mock.method(resizeClock, 'arm', (step: () => void) => {
+    due.add(step);
+    return step;
+  });
+  t.mock.method(resizeClock, 'disarm', (step: () => void) => {
+    due.delete(step);
+  });
+  const fire = () =>
+    act(async () => {
+      const step = [...due].at(-1);
+      assert.ok(step, 'a timer is armed');
+      due.delete(step);
+      step();
+    });
+  costing(t, { value: 20 });
+  const { el, resize } = await renderScrolled(LONG, 300, 400);
+  const wnd = windowOf(el);
+  wnd.liveResizing = true;
+  try {
+    for (const width of [396, 392, 388]) await resize(300, width);
+    assert.ok(cheap(el), 'the drag fell behind');
+    // a task of the page's, and the timer comes after it
+    now += 700;
+    await fire();
+    assert.ok(cheap(el), 'the step after it may be waiting behind the timer');
+    now += 150;
+    await fire();
+    assert.ok(!cheap(el), 'and a timer on time finds the hand has stopped');
+  } finally {
+    wnd.liveResizing = false;
+  }
+});
+
 test('a drag the document keeps up with, and one the window does not say is live, are drawn as at rest', async (t) => {
   holdClock(t, resizeClock);
   const cost = { value: 0 };
