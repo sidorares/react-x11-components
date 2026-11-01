@@ -13696,12 +13696,15 @@ export class HtmlViewNode extends Node {
   }
 
   private _barsOf(box: Box): ScrollBar[] {
-    const hidden =
-      box.el && this._cascade
-        ? this._cascade.scrollbarHidden(box.el, box.style)
-        : BARS_SHOWN;
-    return scrollBarsOf(box, this._scale, hidden);
+    return scrollBarsOf(box, this._scale, this._barsHidden);
   }
+
+  /** Which of a container's bars the page hides: a selector match, which
+   *  `scrollBarsOf` asks last, of a bar that would show. */
+  private _barsHidden = (box: Box): { x: boolean; y: boolean } =>
+    box.el && this._cascade
+      ? this._cascade.scrollbarHidden(box.el, box.style)
+      : BARS_SHOWN;
 
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
@@ -14727,10 +14730,7 @@ export class HtmlViewNode extends Node {
       selectionColor: this.selectionColor,
       highlights: this._litRanges(),
       litReplaced: this._litReplaced(),
-      scrollbarHidden: (box) =>
-        box.el && this._cascade
-          ? this._cascade.scrollbarHidden(box.el, box.style)
-          : BARS_SHOWN,
+      scrollbarHidden: this._barsHidden,
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           return box.el && tagOf(box.el) === 'canvas'
