@@ -4812,6 +4812,43 @@ holds, as the build would (`_restyleHover`); only one where an edge rule
 styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
 elements built them at every other move of the pointer.
 
+**What an element is, the parser says, and nothing else can** (`namespaceIn`,
+`isForeign`). HTML's parser makes a `<link>` or a `<base>` in a drawing an SVG
+element, and in a `<math>` a MathML one: no sheet and no base, and all three
+engines keep it so wherever a script moves or copies it. One a script makes
+with `createElement` and puts in the same `<g>` is a sheet. So no walk of the
+tree can say, and neither could the element: the parser's and a script's
+carried nothing, and a host's `createElement` is the same. The parser now writes
+`Element.namespace`, which is what `createElementNS` wrote already and what
+`cloneNode` keeps, and the scan, `changesCascade`, `cascadeHeld`, the `sheets`
+op and the two `<base target>` readers ask `isForeign`, one property a `<link>`.
+Chromium's Network panel asks for a `<link>` in a drawing all the same: that is
+its preload scanner, which goes with `doHtmlPreloadScanning=false`, and nothing
+comes of it. Four things are load-bearing.
+
+- **Only `link` and `base` are marked.** All else in a drawing is told by its
+  name, as it was. Marking everything is no small change: `_prepareScript` runs
+  no script with a namespace, `wrap` picks another class, and `sheet` is on the
+  facade's `HTMLStyleElement` alone. **Anything new that reads an HTML element by
+  a name a drawing can hold asks `isForeign`, and the parser marks the name.**
+  `<svg><title>` is still taken for the document's title, `<object>` and `<input
+type=image>` in a drawing are still asked for, and a `<style>` and a `<script>`
+  in a `<math>` still count, where no engine does any of it.
+- **`namespaceIn` goes by HTML's integration points, not by htmlparser2's
+  `foreignContext`**, which has one list for both languages and takes any
+  `annotation-xml`: `<math><title>` and `<svg><mi>` are no points, and an
+  `annotation-xml` is one only with an HTML `encoding`, in any case.
+- **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
+  would turn `<svg><p></p><link>`, a sheet in every engine, into none. It goes by
+  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, and a
+  `<font color>` does not, whose attributes come after its name. The list is the
+  engines', and `<table>` is on it.
+- **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
+  `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
+  path in the first, and a `clipPath` lost its capital. **Anything new that
+  parses markup for an element hands the element over.** What breaks out of the
+  context is HTML's until it closes, and the context is there again after it.
+
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
 `<path>` and no `ComputedStyle` is made for one — a style for each would

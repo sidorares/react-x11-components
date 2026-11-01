@@ -56,6 +56,7 @@ import {
   isCustomized,
   assignedSlot,
   isDefinedElement,
+  isForeign,
   inActiveTransition,
   isModal,
   setActiveTransition,
@@ -3724,6 +3725,7 @@ export class DomHost {
             (el) =>
               el.name === 'style' ||
               (el.name === 'link' &&
+                !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
                 !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
             (a ? (this._node(a) as ParentNode) : this.document).children,
@@ -6277,13 +6279,21 @@ export class DomHost {
       const data = held ? DomUtils.textContent(held) : '';
       return data ? [new Text(data)] : [];
     }
-    return this._parse(markup, declarative);
+    return this._parse(
+      markup,
+      declarative,
+      context instanceof Element ? context : null,
+    );
   }
 
-  /** Markup as `innerHTML` reads it, or `setHTMLUnsafe` with its
-   *  declarative shadow roots; its scripts never run. */
-  private _parse(html: string, declarative = false): ChildNode[] {
-    const kids = parseFragment(html, declarative);
+  /** Markup as `innerHTML` reads it in `context`, or `setHTMLUnsafe` with
+   *  its declarative shadow roots; its scripts never run. */
+  private _parse(
+    html: string,
+    declarative = false,
+    context: Element | null = null,
+  ): ChildNode[] {
+    const kids = parseFragment(html, declarative, context);
     for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
       this.inert.add(el);
     }

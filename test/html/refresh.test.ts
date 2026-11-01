@@ -1515,6 +1515,61 @@ function setAttr(
   return { type: 'attributes', target, attributeName: name, oldValue };
 }
 
+test('what is told of a <link> or a <base> the parser made in a drawing is nothing to the cascade, wherever it went', async () => {
+  // it is SVG's in all three engines, and stays so when a script moves it
+  // out of the drawing, where a change to it is asked about as any is
+  const { node } = await render(
+    '<!doctype html><html><head></head><body><p id="p">p</p><div id="d"></div>' +
+      '<svg width="10" height="10">' +
+      '<link id="l" rel="stylesheet" href="s.css"><base id="b" href="/b/">' +
+      '</svg><div id="host"><template shadowrootmode="open"><div id="in"></div>' +
+      '<svg><link id="inner" rel="stylesheet" href="s.css"></svg>' +
+      '</template></div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const d = byId(el, 'd');
+  const base = byId(el, 'b');
+  appendChild(d, base as unknown as ChildNode);
+  appendChild(d, byId(el, 'l') as unknown as ChildNode);
+  assert.ok(
+    scopeOf(el, [setAttr(base, 'href', '/c/')]),
+    'its href was a refresh of everything',
+  );
+  const out: HtmlChange = {
+    type: 'childList',
+    target: d,
+    addedNodes: [],
+    removedNodes: [base as unknown as ChildNode],
+  };
+  removeNode(base as unknown as ChildNode);
+  assert.ok(scopeOf(el, [out]), 'taking it out was a refresh of everything');
+  // a sheet of the document's reads as the cascade read it whatever this
+  // says of it, so what says is seen in a shadow tree, whose sheets are
+  // taken as a change: only there is it asked of the element
+  const tree = shadowRootOf(byId(el, 'host'));
+  const inner = findById(tree, 'inner')!;
+  const holder = findById(tree, 'in')!;
+  appendChild(holder, inner as unknown as ChildNode);
+  assert.ok(
+    !sheetsOf(el, [setAttr(inner, 'rel', 'stylesheet icon')]),
+    'its rel was a sheet',
+  );
+  assert.ok(
+    !sheetsOf(el, [setAttr(inner, 'href', 'other.css')]),
+    'its href was a sheet',
+  );
+  removeNode(inner as unknown as ChildNode);
+  const gone: HtmlChange = {
+    type: 'childList',
+    target: holder,
+    addedNodes: [],
+    removedNodes: [inner as unknown as ChildNode],
+  };
+  assert.ok(!sheetsOf(el, [gone]), 'it was a sheet coming or going');
+});
+
 test('a stylesheet prop made again with the sheets it held styles nothing again, and one with other sheets restyles everything', async () => {
   // what `<Html scripts>` hands down at every render where the page adopted
   // a sheet: the application's sheets and the page's, in an array made then

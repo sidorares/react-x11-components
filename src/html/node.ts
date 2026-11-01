@@ -74,6 +74,7 @@ import {
   imageUrlOf,
   indicatedElement,
   isElement,
+  isForeign,
   isInputButton,
   isText,
   loadsLazily,
@@ -17439,7 +17440,7 @@ function changesCascade(
       return name === 'media';
     case 'link':
       return (
-        name === 'rel' ||
+        (name === 'rel' && !isForeign(el)) ||
         ((name === 'href' || name === 'media') && isSheetLink(el))
       );
     case 'meta':
@@ -17450,7 +17451,7 @@ function changesCascade(
         pragmaMeta(el, name, (oldValue ?? '').trim().toLowerCase())
       );
     case 'base':
-      return name === 'href';
+      return name === 'href' && !isForeign(el);
     default:
       return false;
   }
@@ -17458,6 +17459,7 @@ function changesCascade(
 
 /** Whether a `<link>` is a sheet's, as `DocumentSource.facts` reads it. */
 function isSheetLink(el: Element): boolean {
+  if (isForeign(el)) return false;
   return (attr(el, 'rel') ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -17746,7 +17748,10 @@ function cascadeHeld(node: AnyNode): number {
   while (stack.length) {
     const el = stack.pop()!;
     const tag = tagOf(el);
-    if (tag === 'base' || (tag === 'meta' && pragmaMeta(el))) {
+    if (
+      (tag === 'base' && !isForeign(el)) ||
+      (tag === 'meta' && pragmaMeta(el))
+    ) {
       return HELD_PRAGMA;
     }
     if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
