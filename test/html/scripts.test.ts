@@ -2314,6 +2314,133 @@ metric(
   },
 );
 
+test('a drawing says where what it holds is: its boxes, its matrices and the length of its outlines', async () => {
+  // mermaid measures every label with `getBBox`, and svg-pan-zoom moves a
+  // drawing with `getCTM`, and neither is a thing any box stands for
+  const doc = await hosted(
+    `<p id=out></p>
+     <svg id=s width=200 height=100 viewBox="0 0 100 50" style="position: absolute; left: 30px; top: 40px">
+       <g id=g transform="translate(10 5)">
+         <rect id=r x=1 y=2 width=20 height=10 transform="scale(2)"/>
+         <circle id=c cx=50 cy=20 r=5 />
+       </g>
+       <path id=p d="M0 0 H10 V10 a5 5 0 0 0 10 0"/>
+       <a id=a href="#x"><text id=t x=5 y=20 font-size=10>hello</text></a>
+     </svg>
+     <script>
+       const $ = (id) => document.getElementById(id);
+       const box = (b) => [b.x, b.y, b.width, b.height].map((n) => Math.round(n * 100) / 100);
+       const m = (x) => [x.a, x.b, x.c, x.d, x.e, x.f];
+       const out = {
+         kinds: [
+           $('s') instanceof SVGSVGElement,
+           $('r') instanceof SVGRectElement,
+           $('r') instanceof SVGGeometryElement,
+           $('p') instanceof SVGPathElement,
+           $('g') instanceof SVGGElement,
+           $('a') instanceof SVGAElement,
+           $('t') instanceof SVGTextElement,
+           $('a') instanceof SVGGraphicsElement,
+         ],
+         bbox: [box($('r').getBBox()), box($('g').getBBox()), box($('p').getBBox())],
+         ctm: m($('r').getCTM()),
+         screen: m($('r').getScreenCTM()),
+         rect: box($('r').getBoundingClientRect()),
+         lengths: [$('r').getTotalLength(), Math.round($('c').getTotalLength())],
+         point: [$('r').getPointAtLength(25).x, $('r').getPointAtLength(25).y],
+         text: [$('t').getBBox().width > 0, $('t').getComputedTextLength() > 0],
+       };
+       const point = $('s').createSVGPoint();
+       point.x = 2;
+       point.y = 3;
+       const moved = point.matrixTransform($('s').createSVGMatrix().translate(10, 20).scale(2));
+       out.point2 = [moved.x, moved.y];
+       out.inverse = m($('s').getScreenCTM().inverse().multiply($('s').getScreenCTM()));
+       out.viewBox = box($('s').viewBox.baseVal);
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    kinds: [true, true, true, true, true, true, true, true],
+    bbox: [
+      [1, 2, 20, 10],
+      [2, 4, 53, 21],
+      [0, 0, 20, 15],
+    ],
+    // scale(2), then the translate, then the viewBox's 2
+    ctm: [4, 0, 0, 4, 20, 10],
+    screen: [4, 0, 0, 4, 50, 50],
+    rect: [54, 58, 80, 40],
+    lengths: [60, 31],
+    point: [21, 7],
+    text: [true, true],
+    point2: [14, 26],
+    inverse: [1, 0, 0, 1, 0, 0],
+    viewBox: [0, 0, 100, 50],
+  });
+});
+
+test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      "var log = []; var done = function () { document.getElementById('out').textContent = log.join(' '); };" +
+      'var x = new XMLHttpRequest();' +
+      "x.onreadystatechange = function () { log.push('rs' + x.readyState); };" +
+      "x.addEventListener('loadstart', function () { log.push('start'); });" +
+      "x.onload = function (e) { log.push('load:' + x.status + ':' + x.response.ok + ':' + x.getResponseHeader('Content-Type') + ':' + e.loaded); };" +
+      "x.onloadend = function () { log.push('end'); posted(); };" +
+      "x.open('GET', 'data.json'); x.responseType = 'json'; x.send();" +
+      'function posted() {' +
+      '  var p = new XMLHttpRequest();' +
+      "  p.open('POST', 'data.json'); p.setRequestHeader('X-Test', 'yes');" +
+      "  p.onload = function () { log.push('post:' + p.responseText.length); aborted(); };" +
+      "  p.send('q=1');" +
+      '}' +
+      'function aborted() {' +
+      '  var a = new XMLHttpRequest();' +
+      "  a.open('GET', 'data.json');" +
+      "  a.onabort = function () { log.push('abort:' + a.readyState + ':' + a.status); };" +
+      "  a.onload = function () { log.push('never'); };" +
+      '  a.send(); a.abort();' +
+      "  log.push('after:' + a.readyState);" +
+      "  try { a.open('GET', 'data.json', false); } catch (e) { log.push(e.name); }" +
+      '  setTimeout(done, 20);' +
+      '}' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'application/json']],
+        body: '{"ok":"yes"}',
+      }),
+    },
+  );
+  await settle(120);
+  assert.equal(
+    doc.text('out'),
+    'rs1 start rs2 rs3 rs4 load:200:yes:application/json:12 end ' +
+      'post:12 abort:4:0 after:0 InvalidAccessError',
+  );
+  assert.deepEqual(
+    doc.fetched.slice(0, 2).map((r) => [r.method, r.body, r.headers]),
+    [
+      ['GET', null, []],
+      [
+        'POST',
+        'q=1',
+        [
+          ['x-test', 'yes'],
+          ['content-type', 'text/plain;charset=UTF-8'],
+        ],
+      ],
+    ],
+  );
+});
+
 test('an EventSource reads its stream, hears each event, and connects again with the last id', async () => {
   const asked: (string | undefined)[] = [];
   const doc = await hosted(
@@ -2452,66 +2579,6 @@ test('a BroadcastChannel reaches the other channels of its name, a frame among t
     heard: ['1:https://example.test'],
     order: ['free:null', 'first:exclusive', '2:1', 'second:exclusive'],
   });
-});
-
-test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
-  const doc = await hosted(
-    '<p id="out"></p><script>' +
-      "var log = []; var done = function () { document.getElementById('out').textContent = log.join(' '); };" +
-      'var x = new XMLHttpRequest();' +
-      "x.onreadystatechange = function () { log.push('rs' + x.readyState); };" +
-      "x.addEventListener('loadstart', function () { log.push('start'); });" +
-      "x.onload = function (e) { log.push('load:' + x.status + ':' + x.response.ok + ':' + x.getResponseHeader('Content-Type') + ':' + e.loaded); };" +
-      "x.onloadend = function () { log.push('end'); posted(); };" +
-      "x.open('GET', 'data.json'); x.responseType = 'json'; x.send();" +
-      'function posted() {' +
-      '  var p = new XMLHttpRequest();' +
-      "  p.open('POST', 'data.json'); p.setRequestHeader('X-Test', 'yes');" +
-      "  p.onload = function () { log.push('post:' + p.responseText.length); aborted(); };" +
-      "  p.send('q=1');" +
-      '}' +
-      'function aborted() {' +
-      '  var a = new XMLHttpRequest();' +
-      "  a.open('GET', 'data.json');" +
-      "  a.onabort = function () { log.push('abort:' + a.readyState + ':' + a.status); };" +
-      "  a.onload = function () { log.push('never'); };" +
-      '  a.send(); a.abort();' +
-      "  log.push('after:' + a.readyState);" +
-      "  try { a.open('GET', 'data.json', false); } catch (e) { log.push(e.name); }" +
-      '  setTimeout(done, 20);' +
-      '}' +
-      '</script>',
-    {
-      answer: (request) => ({
-        url: request.url,
-        status: 200,
-        statusText: 'OK',
-        redirected: false,
-        headers: [['content-type', 'application/json']],
-        body: '{"ok":"yes"}',
-      }),
-    },
-  );
-  await settle(120);
-  assert.equal(
-    doc.text('out'),
-    'rs1 start rs2 rs3 rs4 load:200:yes:application/json:12 end ' +
-      'post:12 abort:4:0 after:0 InvalidAccessError',
-  );
-  assert.deepEqual(
-    doc.fetched.slice(0, 2).map((r) => [r.method, r.body, r.headers]),
-    [
-      ['GET', null, []],
-      [
-        'POST',
-        'q=1',
-        [
-          ['x-test', 'yes'],
-          ['content-type', 'text/plain;charset=UTF-8'],
-        ],
-      ],
-    ],
-  );
 });
 
 test('an XMLHttpRequest aborted while its body arrives fires abort, one whose body is lost fires error, and neither leaves a rejection', async () => {

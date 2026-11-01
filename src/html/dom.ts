@@ -1943,10 +1943,10 @@ function scanElements(
         (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
     ) {
       if (imageUrlOf(el)) facts.resources.push(el);
-    } else if (shadow) {
-      continue;
     } else if (tag === 'svg') {
       if (!inDrawing(el)) facts.drawings.push(el);
+    } else if (shadow) {
+      continue;
     } else if (tag === 'title' && facts.title === null) {
       facts.title = rawTextOf(el).trim();
     } else if (tag === 'base' && facts.base === null) {

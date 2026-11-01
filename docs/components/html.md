@@ -894,6 +894,14 @@ no-cache`. A document, a page's own `fetch` and a redirect are not kept;
 where a redirect led is, under its own URL. The `log` option says `cached`
 for a response the cache answered and `revalidated` for a 304.
 
+**A body the network holds whole has a limit, `resourceBytes`** (256 MB by
+default): a script, a stylesheet, an image, a font, or a page's request for
+all of a response at once. Past it the request fails with
+`ERR_FILE_TOO_BIG`, and no part of the body is handed on, so a `<script>`
+hears `error` rather than parsing what came and throwing at its last line. A
+body a page reads as it arrives is handed on as it comes and has no limit,
+since a stream of events goes on for as long as the server sends it.
+
 **`observe(listener)` tells of each request as it goes**, for a
 developer's tools to draw a network log from (`HtmlNetworkActivity`): a
 document, a resource a document asked for and a page's own fetch, each by an
@@ -984,6 +992,17 @@ page's next task runs. Nothing is begun in the last stretch before that
 ceiling, as long as `timeout`, so a forced layout is not cut half way
 through, and one cut anyway has the document styled and laid out again from
 nothing.
+
+**`EventSource` is built on the page's own requests**, so a stream is held to
+CORS and to the document's network as a `fetch` is, and it connects again after
+`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
+on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
+and `brotli`.
+
+**`BroadcastChannel` and `navigator.locks` reach as far as a tab's realms**: the
+page and its frames. A worker's thread keeps its own, and so does each tab, which
+is a process of its own, so a channel does not cross to a worker and a lock
+excludes nothing in another tab.
 
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
@@ -1938,16 +1957,14 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
-**`EventSource` is built on the page's own requests**, so a stream is held to
-CORS and to the document's network as a `fetch` is, and it connects again after
-`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
-on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
-and `brotli`.
-
-**`BroadcastChannel` and `navigator.locks` reach as far as a tab's realms**: the
-page and its frames. A worker's thread keeps its own, and so does each tab, which
-is a process of its own, so a channel does not cross to a worker and a lock
-excludes nothing in another tab.
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
 
 ### Cookies and storage
 
