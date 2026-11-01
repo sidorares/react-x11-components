@@ -2535,7 +2535,12 @@ cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
 `changesCascade` lists the attributes `DocumentSource.facts` reads of
-them: anything new read there joins it. Where the sheets do read
+them: anything new read there joins it. It is asked of a change before
+anything goes by where the change is (`_cascadeChanged`), since a `<style>`
+is a sheet wherever it stands: what a script wrote to one a drawing was
+exported with, and what a stream's chunk cut inside one, went by way of the
+drawing and waited for a refresh that said nothing. **Anything new `_scopeOf`
+answers by where a change is goes after it.** Where the sheets do read
 otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
@@ -4812,6 +4817,18 @@ holds, as the build would (`_restyleHover`); only one where an edge rule
 styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
 elements built them at every other move of the pointer.
 
+**A script asks a drawing where things are, and the attributes answer.**
+Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
+`getScreenCTM`, `getBoundingClientRect` and a shape's lengths are worked out by
+`src/html/scripts/svg-geometry.ts` over the DOM, with `SvgMeasure` the only
+thing asked of `<Html>`: a run of text, an `<svg>`'s box and whether a style
+hides an element. It reads `transform` and never a CSS transform, and each
+curve is cut a fixed number of times, so a box is a fraction of a pixel from
+the drawing's. mermaid measures every label with `getBBox`. **Anything new a
+drawing is asked goes through `svgAnswer`**, whose answer is numbers, as a
+bridge's has to be. `SvgView`'s private `_bbox` is not reached for, as nothing
+of it is here.
+
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
 `<path>` and no `ComputedStyle` is made for one — a style for each would
@@ -4836,7 +4853,7 @@ theirs, and a build took each for a seed and built the block around the
 drawing. Each drawing they are in, and a root the change reached, asks
 again, and is drawn again only for another answer (`_askShapes`): most of
 what a subject can reach comes to what it was. **What a drawing names by a
-`url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which nothing
+`url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which no selector
 says, so a reach into one asks every drawing. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
@@ -5517,6 +5534,36 @@ stream may bring; and a `url()` a rule gives a shape, of which the key has
 only the name. And **only a drawing cut to its box is kept**, since a raster
 is its box's size, and only with no `PaintOptions.matrix`, as an image.
 
+**What a drawing names is told of whatever it is in, so a drawing says what
+it read** (`Named`, `drawingsNaming`). A told `fill` on a shape in a hidden
+sprite is a change to the sprite's `<svg>`, which was drawn again, and the
+icons that `<use>` it moved no pixel until some other paint reached them; a
+drawing set in a box that turns kept its surface for as long. Each read of a
+drawing notes what every id it looked for outside its root came to, and a
+told list reaches it where a change was at what was found or in it, where
+that went and is out of the document or back under another id, or where
+something came to go by a name it looked for. A page with nothing named pays
+a lookup a drawing, and of a thousand icons only those that name what changed
+are drawn again, so this is no reason to widen the reach. Five things are
+load-bearing. **Anything new that looks an id up for a drawing notes it**
+(`noteNamed`): `copyTree`, `drawnFrom` and `drawingReach` each do, since a
+raster's key is all a paint of a copied icon asks and how far it reaches is
+all that is asked of one no paint has reached. **What is noted is the
+element's and not the `SvgDrawing`'s**, which a refresh told of anything makes
+again where it reads outside itself: what is shown of it was read before that.
+**A drawing reached gives up what it noted**: it is owed a paint, and the read
+that pays it notes what it reads now. Kept, what went would reach it at every
+change after it while nothing draws it, off screen for one. **The names are
+asked before `forgetDrawings` drops them**, or a list that changes a drawing's
+root and what it names does neither. And **a drawing that shows its overflow
+works out how far it reaches as it is drawn again** (`_drawAgain`, through
+`inkAfterMove`, its rules asked first), or what grew is cut at the damage. A
+`<use>`'s copy goes with any drawing changed or reached, and `idIndex` looks
+again once the tree has moved, for a drawing nothing could have reached: one
+that is yet to be read, or that gave up what it noted and changed again. An
+`<svg>` in a `<foreignObject>`'s HTML is in no `facts().drawings`, and is not
+reached this way.
+
 **An animated image is the document's to play, and a frame is a repaint
 of the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
 here and not in core's `<image>` because `<Html>` draws its own images, so
@@ -6055,7 +6102,12 @@ product pages read `getComputedStyle` and `offsetTop` tens of thousands of
 times a load, of their closed dialogs' contents a property at a time, and
 the walk and the styling were a third of what their script took.
 **Anything new that changes the style of what nothing draws without moving
-one of those drops `_unboxed`.**
+one of those drops `_unboxed`.** And `_styleOf` asks the tree before it works
+anything out, so a style a build would have dropped reads as though it still
+held: **anything new that takes an element out of what a build styles takes
+its style with it, and those of its shadow trees** (`forgetStyles`). A host
+moved into a `<g>` kept the style of everything in its tree, and what a slot
+took there inherited from it.
 
 **A video is core's `<video>`, mounted over the box, and never drawn
 here** (`media.ts`, `videos.ts`; core's `docs/architecture/video.md`, 8.2).

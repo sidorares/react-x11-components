@@ -17,6 +17,67 @@ import { CookieJar } from '../../src/html/cookies.js';
 import type { HtmlNetworkActivity } from '../../src/html/network.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
 
+test('a body past the limit is a failed request, where it was handed on cut short', async (t) => {
+  // vscode.dev's workbench came back as its first 16 MiB, a 200 with no
+  // sign of it, and failed with `Unexpected end of input` at its last line
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/javascript' });
+    res.end('x'.repeat(req.url === '/large.js' ? 2049 : 2048));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ resourceBytes: 2048 });
+  const activity: HtmlNetworkActivity[] = [];
+  t.after(network.observe((event) => activity.push(event)));
+
+  const fits = await network.resource(`${base}/fits.js`, 'script', `${base}/`);
+  assert.equal(fits?.bytes.length, 2048, 'a body at the limit is whole');
+  assert.equal(
+    await network.resource(`${base}/large.js`, 'script', `${base}/`),
+    null,
+    'a body past it is no body at all',
+  );
+  const failed = activity.find((event) => event.type === 'failed');
+  assert.equal(failed?.type, 'failed', 'and its observers hear that it failed');
+  await assert.rejects(
+    network.request(
+      { url: `${base}/large.js`, method: 'GET', headers: [], body: null },
+      `${base}/`,
+      new AbortController().signal,
+    ),
+    { code: 'ERR_FILE_TOO_BIG' },
+    'as a page does that asks for all of it at once',
+  );
+});
+
+test('a body a page reads as it arrives has no limit, since nothing here holds it', async (t) => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('x'.repeat(4096));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ resourceBytes: 2048 });
+  const response = await network.request(
+    {
+      url: `${base}/events`,
+      method: 'GET',
+      headers: [],
+      body: null,
+      stream: true,
+    },
+    `${base}/`,
+    new AbortController().signal,
+  );
+  let read = 0;
+  for await (const chunk of response.chunks!) read += chunk.length;
+  assert.equal(read, 4096);
+});
+
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
   // upgradeable. The Zen Garden's older designs import Google Fonts over

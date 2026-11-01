@@ -813,17 +813,16 @@ export class SvgDrawing {
     let kept = this._reached;
     if (!kept || kept.key !== key || moved(kept.end)) {
       const lengths: Lengths = { em, rem: 16, vw: w / scale, vh: h / scale };
-      let outside = false;
+      const named: Named = new Map();
       const edges = drawingReach(
         root,
         [vw, vh],
         lengths,
         shapes?.of ?? null,
-        () => {
-          outside = true;
-        },
+        named,
       );
-      kept = { key, end: endOf(root), edges, outside };
+      noteNamed(root, named);
+      kept = { key, end: endOf(root), edges, outside: named.size > 0 };
       this._reached = kept;
     }
     const e = kept.edges;
@@ -1082,25 +1081,28 @@ export class SvgDrawing {
     }
     try {
       const view = this._view ?? new View(null);
-      const reached: Reached = { missing: false, outside: new Set() };
+      const named: Named = new Map();
       const tree =
         sized || shapes || this._outside || root.name.includes(':')
           ? copyTree(
               root,
               sized ? [width, height] : null,
-              reached,
+              named,
               shapes,
               lengths,
             )
           : root;
+      noteNamed(root, named);
       view.setSvgDom(
         paint || inherited ? withPaint(tree, paint, inherited) : tree,
       );
-      this._missingAt = reached.missing
-        ? lastNode(documentOf(root))
-        : undefined;
       const ends = [endOf(root)];
-      for (const el of reached.outside) ends.push(endOf(el));
+      let missing = false;
+      for (const el of named.values()) {
+        if (el) ends.push(endOf(el));
+        else missing = true;
+      }
+      this._missingAt = missing ? lastNode(documentOf(root)) : undefined;
       this._view = view;
       this._seen = count;
       this._seenEnds = ends;
@@ -1164,6 +1166,7 @@ function drawnFrom(root: Element): DrawnFrom {
   const ends = [endOf(root)];
   const pending = [root];
   const seen = new Set(pending);
+  const named: Named = new Map();
   let ids: Map<string, Element> | null = null;
   let text = '';
   let refused = false;
@@ -1172,6 +1175,7 @@ function drawnFrom(root: Element): DrawnFrom {
     if (ids.has(id) || root.attribs.id === id) return;
     const top = documentOf(root);
     const target = elementById(top, id);
+    named.set(id, target);
     if (!target) {
       refused = true;
       ends.push(endOf(top));
@@ -1198,9 +1202,9 @@ function drawnFrom(root: Element): DrawnFrom {
     // where it ends: what is in a group is painted as the group says
     text += '>';
   };
-  for (let at = 0; at < pending.length && !refused; at += 1) {
-    read(pending[at]);
-  }
+  // on past what refuses a raster: all it names is what a change reaches it by
+  for (let at = 0; at < pending.length; at += 1) read(pending[at]);
+  noteNamed(root, named);
   if (refused) return { source: 0, units: false, ends };
   return {
     source: sourceNumber(text),
@@ -1328,6 +1332,34 @@ function imageLook(scheme: 'light' | 'dark', scale: number): RootLook {
 let INLINE = new WeakMap<Element, SvgDrawing>();
 let inlineAt = -1;
 
+/** What an inline drawing last looked for outside its root, wherever it did
+ *  (`noteNamed`). By the element and not the `SvgDrawing`, which a refresh
+ *  told of anything makes again where it reads outside itself: what is
+ *  shown of it, and kept of it on a surface around it, is what was read for
+ *  it before that, and goes on being until something draws it. */
+let NAMED = new WeakMap<Element, Named>();
+
+/**
+ * What a read of a drawing looked for outside its root: each id, and the
+ * element it found or null for none, as far as what those name in turn. A
+ * drawing is read for what it draws (`copyTree`), for what a raster of it is
+ * kept by (`drawnFrom`), where the raster is all a paint of it asks, and for
+ * how far it reaches (`drawingReach`), where what it reaches is all that is
+ * asked of one nothing paints. **Anything new that looks an id up for a
+ * drawing notes it here**, or a change to what it found repaints nothing.
+ */
+type Named = Map<string, Element | null>;
+
+/** A read's names, added to what the same drawing's other reads found:
+ *  a read of it finds what the last found, while what it reads holds still
+ *  (`drawingsNaming`, `forgetDrawings`). */
+function noteNamed(root: Element, named: Named): void {
+  if (!named.size) return;
+  const kept = NAMED.get(root);
+  if (!kept) NAMED.set(root, named);
+  else for (const [id, el] of named) kept.set(id, el);
+}
+
 /**
  * The drawing of an inline `<svg>`. Kept until an application may have
  * changed what it was read from, and made again then, at its next paint. A
@@ -1352,6 +1384,7 @@ export function inlineDrawing(el: Element): SvgDrawing {
   const whole = untoldGeneration();
   if (whole !== inlineAt) {
     INLINE = new WeakMap();
+    NAMED = new WeakMap();
     inlineAt = whole;
   }
   const at = mutationGeneration();
@@ -1377,10 +1410,108 @@ export function forgetDrawings(changes: readonly HtmlChange[]): void {
   for (const change of changes) {
     for (let at: AnyNode | null = change.target; at; at = at.parent) {
       INLINE.delete(at as Element);
+      NAMED.delete(at as Element);
     }
     if (change.type !== 'childList') continue;
     for (const node of change.addedNodes) forgetUnder(node);
   }
+}
+
+/**
+ * Which of `drawings` a refresh told of `changes` reaches by a name, put in
+ * `reached`. A drawing that names something draws it, and
+ * what changed in it is told of whatever it is in: a `fill` on a shape in a
+ * sprite is a change to the sprite's `<svg>`, and took the icons that `<use>`
+ * it none of what a drawing a change is in takes.
+ *
+ * So it asks what each drawing last looked for outside itself (`Named`). A
+ * name found reaches it where a change was at what it found or in it, and
+ * where what it found went and is out of the document or back under another
+ * id; and any name, found or not, where something has come to go by it,
+ * which may be found ahead of what was. A document with nothing named pays a
+ * lookup a drawing, a page of icons a few an icon, and only the icons that
+ * name what changed are repainted.
+ *
+ * A drawing reached has what it read taken from it: it is drawn again, and
+ * what that reads is what it reads now. Kept, what went would reach it at
+ * every change after it, while nothing draws it again.
+ */
+export function drawingsNaming(
+  changes: readonly HtmlChange[],
+  drawings: readonly Element[],
+  reached: Set<Element>,
+): void {
+  let asked: AskedNames | null = null;
+  for (const root of drawings) {
+    const named = NAMED.get(root);
+    if (!named) continue;
+    asked ??= askedNames(changes);
+    if (!reachedByName(root, named, asked)) continue;
+    NAMED.delete(root);
+    reached.add(root);
+  }
+}
+
+/** What a list of changes can do to a name (`drawingsNaming`). */
+interface AskedNames {
+  /** What each change was at, and all that holds it. */
+  within: Set<AnyNode>;
+  /** The ids something has come to go by. */
+  given: Set<string>;
+  /** Whether something went, which may be what was found or hold it. */
+  gone: boolean;
+}
+
+function askedNames(changes: readonly HtmlChange[]): AskedNames {
+  const within = new Set<AnyNode>();
+  const given = new Set<string>();
+  let gone = false;
+  for (const change of changes) {
+    for (let at: AnyNode | null = change.target; at; at = at.parent) {
+      if (within.has(at)) break;
+      within.add(at);
+    }
+    if (change.type === 'attributes') {
+      if (change.attributeName !== 'id') continue;
+      const id = change.target.attribs.id;
+      if (id !== undefined) given.add(id);
+    } else if (change.type === 'childList') {
+      gone ||= change.removedNodes.length > 0;
+      for (const node of change.addedNodes) idsAt(node, given);
+    }
+  }
+  return { within, given, gone };
+}
+
+/** The ids at and under a node, which goes no further than the tree it is in:
+ *  a name is looked for in its own (`documentOf`). */
+function idsAt(node: AnyNode, into: Set<string>): void {
+  const stack = [node];
+  for (let at = stack.pop(); at; at = stack.pop()) {
+    if (at.type !== 'tag') continue;
+    const el = at as Element;
+    if (el.attribs.id !== undefined) into.add(el.attribs.id);
+    for (const child of el.children) stack.push(child);
+  }
+}
+
+function reachedByName(
+  root: Element,
+  named: Named,
+  { within, given, gone }: AskedNames,
+): boolean {
+  for (const [id, el] of named) {
+    if (given.has(id)) return true;
+    if (!el) continue;
+    if (within.has(el)) return true;
+    // what is done to a node out of the document is told to nobody, so what
+    // went says what became of it itself, wherever it is now
+    if (gone) {
+      if (documentOf(el) !== documentOf(root)) return true;
+      if (el.attribs.id !== id) return true;
+    }
+  }
+  return false;
 }
 
 /** The drawings at and under a node, in the shadow trees it holds too. */
@@ -1832,13 +1963,6 @@ function symbolOwn(symbol: Element): Record<string, string> | null {
   return kept;
 }
 
-/** What a copy of a drawing reached outside its root: whether a `<use>`
- *  in it found nothing, and the elements one was drawn from. */
-interface Reached {
-  missing: boolean;
-  outside: Set<Element>;
-}
-
 /**
  * The tree `SvgView` reads, where the document's own will not do: with
  * local names — `SvgView` knows `rect`, not `svg:rect`, and a prefix is
@@ -1848,9 +1972,8 @@ interface Reached {
  * group of what it refers to (SVG 2, 5.5): the element, from wherever in
  * the document it is, or a symbol's children, its `viewBox` fitted to the
  * viewport the `<use>` gives it — its `width` and `height`, and all of the
- * drawing's where it has none. `reached` is told where one refers to an
- * element the document does not have, and of each element outside the root
- * that one was drawn from.
+ * drawing's where it has none. `named` is told what each id it looks for
+ * outside the root comes to.
  *
  * And with what the document's rules give each element (`shapes`), where
  * `SvgView` reads an element's own: at the end of its `style`, over its
@@ -1866,7 +1989,7 @@ interface Reached {
 function copyTree(
   root: Element,
   viewport: [number, number] | null,
-  reached?: Reached,
+  named: Named,
   shapes: ShapeStyles | null = null,
   lengths: Lengths = DEFAULT_LENGTHS,
 ): Element {
@@ -1893,11 +2016,8 @@ function copyTree(
     ids ??= idsUnder(root);
     const inside = ids.get(id);
     const target = inside ?? elementById(documentOf(root), id);
-    if (!target) {
-      if (reached) reached.missing = true;
-      return null;
-    }
-    if (!inside) reached?.outside.add(target);
+    if (!inside) named.set(id, target);
+    if (!target) return null;
     const symbol = localName(target.name) === 'symbol';
     const box = symbol ? viewBoxOf(target) : null;
     const kept = symbol ? symbolOwn(target) : null;
@@ -1979,11 +2099,8 @@ function copyTree(
     if (ids.has(id) || root.attribs.id === id) return;
     brought.set(id, null);
     const target = elementById(documentOf(root), id);
-    if (!target) {
-      if (reached) reached.missing = true;
-      return;
-    }
-    reached?.outside.add(target);
+    named.set(id, target);
+    if (!target) return;
     // a marker's lengths are of the viewport it makes, not the root's
     const own = resolve && localName(target.name) !== 'marker';
     brought.set(id, copy(target, own, depth + 1, false, styles, size));
@@ -2744,8 +2861,8 @@ function drawingReach(
   viewport: [number, number],
   lengths: Lengths,
   styles: ReadonlyMap<Element, ShapeStyle> | null,
-  /** Told where it looks for an element outside the root. */
-  outside: () => void,
+  /** What it looks for outside the root. */
+  named: Named,
 ): Edges | null {
   let ids: Map<string, Element> | null = null;
   const ctx: ReachContext = {
@@ -2755,8 +2872,9 @@ function drawingReach(
     find: (id) => {
       const inside = (ids ??= idsUnder(root)).get(id);
       if (inside) return inside;
-      outside();
-      return elementById(documentOf(root), id);
+      const found = elementById(documentOf(root), id);
+      named.set(id, found);
+      return found;
     },
     walking: new Set([root]),
   };

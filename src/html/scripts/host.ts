@@ -116,6 +116,8 @@ import {
   supportsCondition,
 } from '../css/parse.js';
 import { closeBrackets, hasVar } from '../css/vars.js';
+import { svgAnswer } from './svg-geometry.js';
+import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
@@ -393,6 +395,8 @@ export interface HandleInternals {
   scriptFonts(): WebFonts | null;
   /** A face a page's script made joined the document's, or left. */
   scriptFontsChanged(id: number, added: boolean): void;
+  /** What `svg-geometry.ts` asks of the document. */
+  svgMeasure(): SvgMeasure | null;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -789,6 +793,19 @@ function elementsIn(
  *  One count for every host, since a frame's realm can change its
  *  parent's tree. */
 let edits = 0;
+
+/** The names HTML and SVG both have, which the parser keeps no namespace
+ *  for: what is around such an element says whose it is. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const HOMONYMS = new Set(['a', 'title']);
+const inDrawing = (el: Element): boolean => {
+  for (let at = el.parent; at instanceof Element; at = at.parent) {
+    const name = at.name.toLowerCase();
+    if (name === 'svg') return true;
+    if (name === 'foreignobject') return false;
+  }
+  return false;
+};
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 function parserError(): Element {
@@ -2511,7 +2528,9 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns = node.namespace;
+          const ns =
+            node.namespace ??
+            (HOMONYMS.has(node.name) && inDrawing(node) ? SVG_NS : undefined);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
@@ -4237,6 +4256,16 @@ export class DomHost {
       case 'fontFaceAdd':
         this._fontsOf(a)?.scriptFontsChanged?.(Number(b), c === true);
         return null;
+      // where what an inline drawing holds is (`svg-geometry.ts`)
+      case 'svg': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        const answer = svgAnswer(text(b), el, measure, Number(c));
+        return answer ? answer.join(',') : '';
+      }
       // the page told once none of the document's faces is on its way
       // (`__fontsSettled`), which `document.fonts.ready` waits for
       case 'fontsSettled': {

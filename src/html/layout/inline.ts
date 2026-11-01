@@ -4902,7 +4902,7 @@ type Face = Pick<
 >;
 
 /** A block's font, as its runs name it (`runFor`). */
-function fontOf(style: ComputedStyle): Face {
+export function fontOf(style: ComputedStyle): Face {
   return {
     family: style.fontFamily,
     size: style.fontSize,
