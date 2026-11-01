@@ -431,6 +431,135 @@ test('a video in the flow of a box has what is painted after the box painted ove
   });
 });
 
+test('a player in a sticky box, and what is painted over it, stay with the box in every frame the pane scrolls, at 1x and 2x', async () => {
+  // The pane's scroll moved the player with the text while the box stayed,
+  // and the report at the paint put it back. Core moves it with the box in
+  // the pass a scroll runs, and the `<canvas>` of what the document paints
+  // over it, a play button here, with it
+  const source =
+    '<style>body{margin:0;background:#fff}#wrap{height:700px}' +
+    '#side{position:sticky;top:10px;height:60px}' +
+    '#play{position:absolute;left:4px;top:4px;width:10px;height:10px;' +
+    'background:#f00}</style>' +
+    '<div style="height:40px"></div><div id="wrap"><div id="side">' +
+    '<video src="a.mp4" style="display:block;width:80px;height:40px"></video>' +
+    '<div id="play"></div></div></div><div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const { result, el } = await renderVideo(
+      source,
+      (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+      {
+        scale,
+        height: 200,
+        wrap: (doc) =>
+          h(
+            'box',
+            {
+              ref: (node: typeof pane) => {
+                pane = node;
+              },
+              style: { width: 300, height: 200, overflow: 'scroll' },
+            },
+            doc,
+          ),
+      },
+    );
+    const player = videos()[0];
+    const over = screen.all((n) => n.kind === 'canvas')[0];
+    assert.ok(player && over, `a player and a canvas over it, ${scale}x`);
+    const onScreen = (node: DrawnNode) => (node.abs.y - pane!.abs.y) / scale;
+    const told = (el as unknown as { _media: { held?: true }[] })._media;
+    assert.strictEqual(told[0].held, true, `in the sticky box, ${scale}x`);
+    // every paint of the scroll, the frame that scrolled the first of them
+    const paint = el.paint;
+    let painted = 0;
+    let expected: number[] = [];
+    el.paint = function (this: typeof el, ctx) {
+      painted += 1;
+      assert.deepStrictEqual(
+        [onScreen(player), onScreen(over)],
+        expected,
+        `a paint sees them where the box is, ${scale}x`,
+      );
+      return paint.call(this, ctx);
+    };
+    // the box starts 40px down, stops 10px down, and leaves with the end of
+    // the box around it, 680px down the page
+    const boxAt = (y: number) => Math.min(Math.max(40 - y, 10), 680 - y);
+    for (const y of [20, 30, 45, 60, 500, 660, 670, 690, 600, 300]) {
+      expected = [boxAt(y), boxAt(y) + 4];
+      await act(async () => pane!.scrollTo(y));
+      assert.deepStrictEqual(
+        [onScreen(player), onScreen(over)],
+        expected,
+        `scrolled to ${y}, they are where the box is, ${scale}x`,
+      );
+    }
+    assert.ok(painted > 0, `the document was painted, ${scale}x`);
+    el.paint = paint;
+    assert.strictEqual(
+      (el as unknown as { _media: unknown })._media,
+      told,
+      `a scroll tells the players nothing, ${scale}x`,
+    );
+    await act();
+    await expectPixel(result.ctx, 40 * scale, 30 * scale, '#00ff00', {
+      message: `the frame, in the box, ${scale}x`,
+    });
+    await expectPixel(result.ctx, 8 * scale, 18 * scale, '#ff0000', {
+      message: `the button over it, ${scale}x`,
+    });
+    await result.unmount();
+  }
+});
+
+test('a player stays the player it was as a page makes its box sticky or not', async () => {
+  // A new player is a video from its start, so the boxes it is kept in do
+  // not come and go with the position of the box it is in
+  const asked: ResourceRequest[] = [];
+  let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+  const { el } = await renderVideo(
+    '<style>body{margin:0}</style>' +
+      '<div style="height:40px"></div><div style="height:700px">' +
+      '<div id="side" style="position:sticky;top:10px">' +
+      '<video src="a.mp4" style="display:block;width:80px;height:40px">' +
+      '</video></div></div><div style="height:2000px"></div>',
+    (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+    {
+      asked,
+      height: 200,
+      wrap: (doc) =>
+        h(
+          'box',
+          {
+            ref: (node: typeof pane) => {
+              pane = node;
+            },
+            style: { width: 300, height: 200, overflow: 'scroll' },
+          },
+          doc,
+        ),
+    },
+  );
+  const player = videos()[0];
+  const onScreen = () => player.abs.y - pane!.abs.y;
+  await act(async () => pane!.scrollTo(100));
+  assert.strictEqual(onScreen(), 10, 'sticky, and held');
+  const side = findById(el.document!, 'side')!;
+  for (const [style, top, name] of [
+    ['', -60, 'in the flow'],
+    ['position:sticky;top:10px', 10, 'sticky again'],
+  ] as const) {
+    side.attribs.style = style;
+    await act(() => el.touchDocument(null));
+    await act();
+    assert.strictEqual(videos()[0], player, `the same player, ${name}`);
+    assert.strictEqual(onScreen(), top, `where the box is, ${name}`);
+  }
+  assert.strictEqual(asked.length, 1, 'and its source was asked for once');
+});
+
 test('a box over a video that draws nothing there leaves it mounted', async () => {
   // github.com/features/ai/github-app's hero: an empty box laid over the
   // video for a script to draw a gradient where it is, and a header whose

@@ -20,6 +20,9 @@
 // (`HtmlViewNode.paintCovers`), cut to the port: a sibling after the player
 // is over it, as the box is over the video in the document.
 //
+// All of it in a box core keeps with a sticky box the viewport keeps, where
+// the video is in one (`MediaRect.held`, `keptMount` in `widgets.ts`).
+//
 // A press goes through to the document — a drag across a video selects the
 // text around it — unless the page asked for `controls`. There is no bar of
 // them: a press plays and pauses, as a browser's video does, and the rest is
@@ -39,6 +42,7 @@ import type { VideoNode } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import { hx } from './hx.js';
+import { keptMount } from './widgets.js';
 import type { Element } from './dom.js';
 import type { MediaRect } from './media.js';
 import type { HtmlViewNode } from './node.js';
@@ -87,7 +91,7 @@ export function useVideos(view: {
         const id = `${idOf(rect.element)}`;
         const over = renderCovers(rect, id, view);
         const video = renderVideo(rect, id, view, playerOf(rect.element));
-        return over ? [video, over] : [video];
+        return keptMount(rect, `video-kept:${id}`, video, over);
       }),
   };
 }

@@ -428,7 +428,9 @@ import {
   AT_VIEWPORT,
   HELD_AT_VIEWPORT,
   controlRectsOf,
+  heldAtRest,
   measureControl,
+  shiftedBack,
   shownBy,
   styledField,
 } from './controls.js';
@@ -460,6 +462,7 @@ import {
   cutByFixed,
   embeddedRectsOf,
   FIXED_OVER,
+  HELD_BY,
   HELD_OVER,
   mediaRectsOf,
   sameSounds,
@@ -5485,6 +5488,13 @@ export class HtmlViewNode extends Node {
       );
       if (cut === 'hidden') r = { ...laid, hidden: true };
       else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
+    }
+    // and in a sticky box the viewport keeps, where the flow has it, which
+    // core moves it from with the box (`HELD_AT_VIEWPORT`)
+    const by = HELD_BY.get(laid);
+    if (by) {
+      r = heldAtRest(r, by);
+      if ('over' in r && r.over) r = { ...r, over: shiftedBack(r.over, by) };
     }
     const s = this._scale;
     if (s === 1) return r;
@@ -15879,6 +15889,7 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.clipRadius !== q.clipRadius ||
       p.opacity !== q.opacity ||
       p.hidden !== q.hidden ||
+      p.held !== q.held ||
       p.autoPlay !== q.autoPlay ||
       p.loop !== q.loop ||
       p.muted !== q.muted ||
@@ -15914,6 +15925,7 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
       p.hidden !== q.hidden ||
       p.zoom !== q.zoom ||
       p.atViewport !== q.atViewport ||
+      p.held !== q.held ||
       !sameClip(p.clip, q.clip)
     ) {
       return false;

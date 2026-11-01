@@ -2457,6 +2457,14 @@ cut it, since the scroll moves neither against the other; one fixed over
 it and painted after it keeps it from being mounted. A video fixed to the
 viewport still keeps its poster.
 
+**An element in a sticky box goes with the box.** Where the box is one the
+viewport keeps, the rect is where the flow has the element, with `held` set,
+and what is mounted is moved by as far as the box is held, in the frame the
+pane scrolls, so a sticky sidebar's `<iframe>` or `<video>` stays in it and
+a scroll asks `renderEmbedded` nothing. A mount is the same node whether
+its box is sticky, fixed or neither, so a page that changes which at a
+breakpoint keeps the document in the frame and the video where it was.
+
 **What a mount stands for decides where the pointer goes.** The boxes a
 mount is cut and placed by take no pointer of their own: a press lands on
 what the host mounted, or goes through it, where that lets it, to the
@@ -5417,7 +5425,8 @@ every scroll under a contents list stuck at `top: 0` a repaint. A form
 control in a fixed box has its widget kept there too, by a position the
 component registers with core (`registerPosition`), which moves it with
 the box in the frame the pane scrolls, as core keeps a sticky header; the
-widget is not mounted again as the pane scrolls. A fragment has no
+widget is not mounted again as the pane scrolls. One in a sticky box goes
+with the box the same way. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against.
 
