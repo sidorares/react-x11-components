@@ -186,6 +186,13 @@ export class FakeServer {
       this._wake(false);
     }, 0);
   }
+  /** Refuses it at once, while the page is still asking for it, as a seam
+   *  may where `fail`'s task later is one a real connection would take. */
+  refuse(message: string): void {
+    this._over = true;
+    this._events.failed(message);
+    this._wake(false);
+  }
   /** Closes it with a code and a reason. */
   close(closeCode = 0, reason = ''): void {
     if (this._over) return;

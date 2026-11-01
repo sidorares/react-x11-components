@@ -201,8 +201,8 @@ export class ScriptRunner {
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
-      // kept frozen with too much waiting: let go, as one the cache drops
-      overflow: () => queueMicrotask(() => this.dispose()),
+      // kept frozen with too much waiting
+      overflow: () => this._letGo(),
     });
     this.host.entries = this.engine;
     this.host.scriptConnected = (request) => this.add(request);
@@ -249,6 +249,7 @@ export class ScriptRunner {
             get language() {
               return _options.language;
             },
+            letGo: () => this._letGo(),
             message: (id, data) =>
               this.engine.call('__workerMessage', [id, data]),
             rtc: (id, message) => this.host.rtcFromWorker(id, message),
@@ -745,10 +746,21 @@ export class ScriptRunner {
     return true;
   }
 
-  /** This document's engine and its frames' frozen, the frames' first. */
+  /** This document's engine and its frames' frozen, the frames' first, and
+   *  their workers with them. */
   private _freezeAll(): void {
     for (const seat of this._seats.values()) seat.runner._freezeAll();
     this.engine.freeze();
+    this._workers?.freeze();
+  }
+
+  /** Something a frozen document cannot go on with came to it: it goes, as
+   *  one the cache drops, with the page it is in, which a frame's document
+   *  is kept as a part of. It is told nothing (`dispose`). */
+  private _letGo(): void {
+    let top: ScriptRunner = this;
+    while (top._link) top = top._link.parent;
+    queueMicrotask(() => top.dispose());
   }
 
   /**
@@ -760,6 +772,7 @@ export class ScriptRunner {
   reactivate(view: string | null): void {
     if (this._disposed || !this.engine.frozen) return;
     for (const seat of this._seats.values()) seat.runner._thawAll();
+    this._workers?.thaw();
     this.engine.thaw(() => {
       let seed: unknown = null;
       try {
@@ -772,6 +785,7 @@ export class ScriptRunner {
   /** A frame's engine thawed, its own frames' first. */
   private _thawAll(): void {
     for (const seat of this._seats.values()) seat.runner._thawAll();
+    this._workers?.thaw();
     this.engine.thaw();
   }
 

@@ -35,7 +35,7 @@ const WORKER_TIMEOUT_MS = 30_000;
  *  an `importScripts`. */
 const WORKER_CEILING_MS = 60_000;
 
-const { init, userAgent, language, sync, flag } =
+const { init, userAgent, language, sync, flag, frozen, stopped } =
   workerData as WorkerThreadData;
 const port = parentPort!;
 const word = new Int32Array(flag);
@@ -223,9 +223,36 @@ engine.call('__becomeWorker', {
   service: init.service ?? null,
 });
 
+/** The worker's script, where it has yet to run. */
+let script: (() => void) | null = null;
+const runScript = (): void => {
+  const run = script;
+  script = null;
+  run?.();
+};
+
+/**
+ * The worker stops with its document, while the back-forward cache keeps it,
+ * and goes on from there as it is shown again (`PageWorkers.freeze`). A
+ * script that waited runs before what was held behind it, some of which it
+ * may be there to hear, as it would have run before any of that reached it.
+ */
+const followPage = (): void => {
+  const kept = Atomics.load(new Int32Array(frozen), 0) === 1;
+  if (kept === engine.frozen) {
+    if (!kept) runScript();
+    return;
+  }
+  if (kept) engine.freeze();
+  else engine.thaw(runScript);
+  Atomics.add(new Int32Array(stopped), 0, kept ? 1 : -1);
+};
+
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
     engine.call('__workerMessage', [0, m.data]);
+  } else if (m.kind === 'suspended') {
+    followPage();
   } else if (m.kind === 'fetched') {
     const pending = fetches.get(m.id);
     if (!pending) return;
@@ -258,21 +285,25 @@ port.on('message', (m: ToWorker) => {
 // the worker's script: handed over where it is a blob URL's, and fetched
 // where it is not
 const source = init.source ?? importScript(init.url);
-if (source === null) {
-  host.workerScope.error(
-    `The worker's script at ${init.url} could not be loaded.`,
-    init.url,
-    0,
-    0,
-  );
-  if (init.service) engine.call('__serviceInstall', [false]);
-} else if (init.type === 'module') {
-  void engine.module(source, init.url, init.source === null).then((ran) => {
+script = () => {
+  if (source === null) {
+    host.workerScope!.error(
+      `The worker's script at ${init.url} could not be loaded.`,
+      init.url,
+      0,
+      0,
+    );
+    if (init.service) engine.call('__serviceInstall', [false]);
+  } else if (init.type === 'module') {
+    void engine.module(source, init.url, init.source === null).then((ran) => {
+      if (init.service) engine.call('__serviceInstall', [ran]);
+    });
+  } else {
+    const ran = engine.exec(source, init.url, 0);
+    // a service worker is installed once its script has run (Service
+    // Workers 1, "Install")
     if (init.service) engine.call('__serviceInstall', [ran]);
-  });
-} else {
-  const ran = engine.exec(source, init.url, 0);
-  // a service worker is installed once its script has run (Service
-  // Workers 1, "Install")
-  if (init.service) engine.call('__serviceInstall', [ran]);
-}
+  }
+};
+// its page may have been left while this thread was starting
+followPage();

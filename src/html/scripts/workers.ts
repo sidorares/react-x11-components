@@ -55,6 +55,9 @@ export interface PageWorkersSeams {
   log(level: string, text: string): void;
   userAgent: string;
   language: string;
+  /** A worker asked for a connection its frozen document cannot hold
+   *  (`freeze`): the document goes, as one the cache drops. */
+  letGo(): void;
   /** A worker posted a message, for the page's `Worker`. */
   message(id: number, data: string): void;
   /** A worker asked of a data channel the page handed it. */
@@ -77,6 +80,10 @@ export interface WorkerThreadData {
   /** The port `importScripts` asks on, and the word it waits on. */
   sync: MessagePort;
   flag: SharedArrayBuffer;
+  /** The word that says whether the page's document is frozen, and the one
+   *  that counts the threads stopped for it (`PageWorkers.freeze`). */
+  frozen: SharedArrayBuffer;
+  stopped: SharedArrayBuffer;
 }
 
 /** What the thread tells this side. */
@@ -109,6 +116,8 @@ export type ToWorker =
     }
   | { kind: 'chunk'; id: number; bytes: Uint8Array }
   | { kind: 'fetchEnd'; id: number; error: string | null }
+  /** The word that says whether the page's document is frozen changed. */
+  | { kind: 'suspended' }
   | TransportTell
   | SocketTell
   | ChannelRelay;
@@ -178,6 +187,8 @@ export class PageWorkers implements PageWorkersLike {
   private _running = new Map<number, Running>();
   private _seq = 0;
   private _disposed = false;
+  private readonly _frozen = new SharedArrayBuffer(4);
+  private readonly _stopped = new SharedArrayBuffer(4);
 
   constructor(private readonly _seams: PageWorkersSeams) {}
 
@@ -199,6 +210,8 @@ export class PageWorkers implements PageWorkersLike {
       language: this._seams.language,
       sync: port2,
       flag,
+      frozen: this._frozen,
+      stopped: this._stopped,
     };
     const source = threadSource();
     const thread = new Thread(source, {
@@ -262,11 +275,59 @@ export class PageWorkers implements PageWorkersLike {
     for (const id of [...this._running.keys()]) this.end(id);
   }
 
-  /** Whether a worker has a WebSocket open, which keeps the page out of
-   *  the back-forward cache as one of its own would. */
+  /**
+   * The document is in the back-forward cache, and its workers stop with it
+   * (HTML 10.2.4: a worker none of whose owners is fully active is
+   * suspendable, and its script does not run), each at its own engine. A
+   * thread reads the word, since one still starting hears no message until
+   * its script has run, and the message is what has one that is waiting read
+   * it. A task under way runs to its end: what it asks reaches a frozen
+   * document (`_refused`).
+   */
+  freeze(): void {
+    this._suspend(1);
+  }
+
+  /** It is shown again, and they go on from where they stopped. */
+  thaw(): void {
+    this._suspend(0);
+  }
+
+  private _suspend(frozen: 0 | 1): void {
+    Atomics.store(new Int32Array(this._frozen), 0, frozen);
+    const message: ToWorker = { kind: 'suspended' };
+    for (const running of this._running.values()) {
+      running.thread.postMessage(message);
+    }
+  }
+
+  /** How many threads have stopped for the back-forward cache, which is
+   *  what a test waits on: a stopped thread does nothing else to say so. */
+  get stopped(): number {
+    return Atomics.load(new Int32Array(this._stopped), 0);
+  }
+
+  /**
+   * Whether a connection a worker asked for goes no further: one a task
+   * under way as the document was frozen asked for, which `connected` did
+   * not know of yet. A peer would see it held, so the document is let go and
+   * nothing is opened, as a browser evicts a page that comes to use what
+   * would have kept it out of the cache.
+   */
+  private _refused(m: TransportAsk | SocketAsk): boolean {
+    const frozen = Atomics.load(new Int32Array(this._frozen), 0) === 1;
+    if (!frozen || m.op !== 'connect') return false;
+    this._seams.letGo();
+    return true;
+  }
+
+  /** Whether a worker has a WebTransport session or a WebSocket open, which
+   *  keeps the page out of the back-forward cache as one of its own would.
+   *  A peer connection a worker cannot make, and a data channel it is handed
+   *  stays the page's. */
   get connected(): boolean {
     for (const running of this._running.values()) {
-      if (running.sockets?.open) return true;
+      if (running.sockets?.open || running.transports?.open) return true;
     }
     return false;
   }
@@ -339,6 +400,7 @@ export class PageWorkers implements PageWorkersLike {
         return;
       case 'wt':
         // a WebTransport session's, over the page's own seam
+        if (this._refused(m)) return;
         running.transports ??= new TransportRelay(
           () => this._seams.webTransport,
           (tell) => {
@@ -351,6 +413,7 @@ export class PageWorkers implements PageWorkersLike {
         return;
       case 'ws':
         // a WebSocket's, over the page's own seam
+        if (this._refused(m)) return;
         running.sockets ??= new SocketRelay(
           () => this._seams.webSocket,
           (tell) => {
