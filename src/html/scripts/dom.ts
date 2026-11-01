@@ -5001,11 +5001,23 @@ export function installDom(
     state.namesAt = attrEpoch;
     return names;
   };
+  /** What the proxy below is written in, as it was before any page code
+   *  ran: a page's own `Reflect.get` is no business of a list's. */
+  const REFLECT = {
+    get: Reflect.get,
+    has: Reflect.has,
+    getOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
+    defineProperty: Reflect.defineProperty,
+    set: Reflect.set,
+    deleteProperty: Reflect.deleteProperty,
+    ownKeys: Reflect.ownKeys,
+  };
+  const hasOwn = Object.prototype.hasOwnProperty;
   /** A list's named property (Web IDL 3.9.1, "named property visibility"):
    *  none that its own expandos or its prototypes have a property of. */
   const visibleName = (target: Any, key: string): Any => {
     const state = target[LIST];
-    if (!state.named || Reflect.has(target, key)) return undefined;
+    if (!state.named || REFLECT.has(target, key)) return undefined;
     return state.named(state, key) ?? undefined;
   };
   const NAMED = (state: Any, key: string): Any => namesOf(state).get(key);
@@ -5034,7 +5046,7 @@ export function installDom(
           if (named !== undefined) return named;
         }
       }
-      return Reflect.get(target, key, receiver);
+      return REFLECT.get(target, key, receiver);
     },
     has(target: Any, key: Any): boolean {
       if (typeof key === 'string') {
@@ -5043,7 +5055,7 @@ export function installDom(
           if (index < itemsOf(target[LIST]).length) return true;
         } else if (visibleName(target, key) !== undefined) return true;
       }
-      return key !== LIST && Reflect.has(target, key);
+      return key !== LIST && REFLECT.has(target, key);
     },
     getOwnPropertyDescriptor(target: Any, key: Any): Any {
       if (key === LIST) return undefined;
@@ -5070,7 +5082,7 @@ export function installDom(
           };
         }
       }
-      return Reflect.getOwnPropertyDescriptor(target, key);
+      return REFLECT.getOwnPropertyDescriptor(target, key);
     },
     defineProperty(target: Any, key: Any, desc: Any): boolean {
       if (typeof key === 'string') {
@@ -5078,13 +5090,13 @@ export function installDom(
         const state = target[LIST];
         if (
           state.named &&
-          !Object.prototype.hasOwnProperty.call(target, key) &&
+          !hasOwn.call(target, key) &&
           state.named(state, key)
         ) {
           return false;
         }
       }
-      return Reflect.defineProperty(target, key, desc);
+      return REFLECT.defineProperty(target, key, desc);
     },
     set(target: Any, key: Any, value: Any, receiver: Any): boolean {
       if (typeof key === 'string') {
@@ -5098,7 +5110,7 @@ export function installDom(
           if (index < itemsOf(state).length) return false;
         }
       }
-      return Reflect.set(target, key, value, receiver);
+      return REFLECT.set(target, key, value, receiver);
     },
     deleteProperty(target: Any, key: Any): boolean {
       if (typeof key === 'string') {
@@ -5106,7 +5118,7 @@ export function installDom(
         if (index >= 0) return index >= itemsOf(target[LIST]).length;
         if (visibleName(target, key) !== undefined) return false;
       }
-      return Reflect.deleteProperty(target, key);
+      return REFLECT.deleteProperty(target, key);
     },
     preventExtensions(): boolean {
       return false;
@@ -5123,7 +5135,7 @@ export function installDom(
           }
         }
       }
-      for (const key of Reflect.ownKeys(target)) {
+      for (const key of REFLECT.ownKeys(target)) {
         if (key !== LIST) keys[keys.length] = key;
       }
       return keys;
