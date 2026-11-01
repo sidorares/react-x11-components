@@ -9454,6 +9454,13 @@ test('a <link> or a <base> is what it was made as: the parser’s in a drawing i
     await answer('', `<svg><foreignObject>${BASE}</foreignObject></svg>`),
     based,
   );
+  // by its attribute: `href` is no property of the facade's `<base>`
+  const made = (into: string) =>
+    `var b=document.createElement("base");b.setAttribute("href","/b/");` +
+    `${into}.appendChild(b)`;
+  assert.equal(await answer(made('g')), based);
+  assert.equal(await answer(made('fo')), based);
+  assert.equal(await answer(`fo.innerHTML='${BASE}'`), based);
 });
 
 test('what a page reads of an element a drawing’s markup made, and what it writes into a drawing', async () => {
