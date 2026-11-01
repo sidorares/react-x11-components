@@ -14132,7 +14132,11 @@ export function installDom(
       // rules before the edit: a library that inserts a rule and reads
       // `cssRules.length` for the next one reads no list again
       if (this._list && this._version === Number(answer.slice(0, first))) {
-        this._list.splice(at, 0, ruleOf(answer.slice(second + 1), this));
+        this._list[LIST].items.splice(
+          at,
+          0,
+          ruleOf(answer.slice(second + 1), this),
+        );
         this._version = Number(answer.slice(first + 1, second));
       }
       return at;
@@ -14154,7 +14158,7 @@ export function installDom(
       const answer = String(call('sheetDelete', this._owner._id, at));
       const cut = answer.indexOf('\u0000');
       if (this._list && this._version === Number(answer.slice(0, cut))) {
-        this._list.splice(at, 1);
+        this._list[LIST].items.splice(at, 1);
         this._version = Number(answer.slice(cut + 1));
       }
     }
@@ -15050,7 +15054,7 @@ export function installDom(
         listMade(
           StyleSheetList,
           [],
-          () => wrapAll(call('sheets', this._id)).map(sheetOf),
+          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
           true,
           null,
         ),

@@ -7893,7 +7893,7 @@ test('indexedDB keeps a page’s records for the document: stores, keys, indexes
       '  db.createObjectStore("events", { autoIncrement: true });' +
       '};' +
       'open.onsuccess = function () {' +
-      '  var db = open.result; r.push(db.version, db.objectStoreNames.join(","));' +
+      '  var db = open.result; r.push(db.version, Array.from(db.objectStoreNames).join(","));' +
       '  var tx = db.transaction(["things", "events"], "readwrite"); var things = tx.objectStore("things");' +
       '  things.put({ id: 2, tags: ["b", "c"], when: new Date(5) }); things.put({ id: 1, tags: ["a", "b"] });' +
       '  tx.objectStore("events").add({ e: "x" }); tx.objectStore("events").add({ e: "y" }).onsuccess = function (e) { r.push("key " + e.target.result); };' +
