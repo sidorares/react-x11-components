@@ -5242,6 +5242,27 @@ drag — a hand going back over the widths it came through — was made into a
 raster that nothing copied. Zen Garden 214's photographs were 278 of them
 in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 
+**An inline `<svg>` is kept the same way, by what it says and not by the
+drawing** (`paintSvg`, `SvgDrawing.keptAs`). `SvgView` parses every path of
+a drawing at every draw, whatever it was handed, so a webmail page's sixty
+icons, which only moved, were a seventh of each frame of a drag. A
+`refresh()` makes every drawing of a document again (`inlineDrawing`), and
+that page refreshed at most frames, so a raster kept by the drawing, as an
+image's is, would hardly ever have been asked for twice. The key is the text
+of its elements and of each element outside it that it names (`drawnFrom`),
+with everything `draw` is handed besides, so nothing drops a raster: a
+drawing that changes has another key, and the old one ages out of the cache.
+It is also why the same icon on every row of a list is one raster. Four
+things are load-bearing. **Anything new `draw` reads joins `keptAs`**, or a
+raster outlives what it was set from. **`drawnFrom` finds what a drawing
+names as `copyTree` does**, or a change to a sprite's symbol draws the old
+one, and a chunk it ends in is one of its `ends`. **What the key cannot hold
+is refused, and draws as it did**: text, whose face arriving changes no
+key; a `<foreignObject>`'s HTML; a name the document does not have, which a
+stream may bring; and a `url()` a rule gives a shape, of which the key has
+only the name. And **only a drawing cut to its box is kept**, since a raster
+is its box's size, and only with no `PaintOptions.matrix`, as an image.
+
 **An animated image is the document's to play, and a frame is a repaint
 of the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
 here and not in core's `<image>` because `<Html>` draws its own images, so

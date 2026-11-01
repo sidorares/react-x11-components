@@ -6728,6 +6728,22 @@ draws its backgrounds and panels from SVG, and every frame of its
 animations repaints some of them: on X11 a paint went from 9.4 to 1.9 ms
 with them running, and its hovers from 22–31 frames a second to 44–55.
 
+**An inline `<svg>` is set from its paths once.** ntk's `SvgView` parses
+each path of a drawing whenever it draws it, so an icon that only moved was
+parsed and filled again at every paint that reached it. The element keeps a
+raster of an inline drawing the second time it draws it at a size, in the
+same store as an SVG image's and on the same terms, and copies it after.
+The raster is kept by what the drawing says, and by everything it is drawn
+with: its colour, its `fill` and `stroke`, what the rules give its shapes,
+its font size and what it inherits. So a change to any of them is a raster
+of its own, a `refresh()` that leaves a drawing as it was keeps it, and the
+same icon on every row of a list is one raster. A drawing that sets text,
+holds a `<foreignObject>`, names an element the document does not have, is
+given a `url()` by a rule, or shows what is past its box (`overflow:
+visible`) is set from its paths as before. On a webmail page of sixty icons,
+a drag of the window's edge spent 8 ms a paint on them where it spends 3, and
+a repaint of sixty icons alike on macOS went from 3.5 ms to 0.9.
+
 **A photograph drawn small is resampled once a size.** CoreGraphics reads
 all of an image for a draw that scales it, whatever part of it a paint
 reaches, so an `<img>` drawn at another size than its own cost its whole

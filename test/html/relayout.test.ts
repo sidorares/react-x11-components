@@ -2072,6 +2072,50 @@ metric(
 );
 
 metric(
+  'a dragged width keeps a raster of an inline drawing whose size holds, and makes none of one sized from it',
+  async (t) => {
+    // The icons of a page do not change as its window's edge moves, and a
+    // drawing sized from the width is another size at every step, as a
+    // background is
+    holdClock(t, resizeClock);
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}svg{display:block}#wide{width:50%}</style>' +
+            '<svg width="20" height="20"><rect width="9" height="20"/></svg>' +
+            '<svg id="wide" viewBox="0 0 10 2"><rect width="5" height="2"/>' +
+            '</svg>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      );
+    const result = await renderX11(doc(300), {
+      width: 400,
+      height: 400,
+      fonts: FONTS!,
+    });
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    for (const width of [296, 292, 288, 292, 296]) {
+      await act(() => result.rerender(doc(width)));
+      await act();
+    }
+    const kept = [
+      ...((
+        el as unknown as { _drawings: { kept: Map<string, unknown> } | null }
+      )._drawings?.kept.keys() ?? []),
+    ];
+    assert.deepStrictEqual(
+      kept.map((key) => key.split('|')[2]),
+      ['20x20'],
+    );
+  },
+);
+
+metric(
   'a dragged width makes a raster of an image drawn at another size only where the paint before drew that size too',
   async (t) => {
     // Each width of a drag draws a background sized from it at a size of
