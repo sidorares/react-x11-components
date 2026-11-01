@@ -6714,6 +6714,18 @@ export function installDom(
     }
   }
   class SVGElement extends Element {
+    /** The `<svg>` around an element, past which what it says is drawn
+     *  (SVG 2, 4.6.2): d3 reads a point through this one's matrix. */
+    get ownerSVGElement(): Any {
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at instanceof SVGSVGElement) return at;
+        if (!(at instanceof SVGElement)) return null;
+      }
+      return null;
+    }
+    get viewportElement(): Any {
+      return this.ownerSVGElement;
+    }
     get style(): Any {
       return (this._style ??= styleOf(this));
     }

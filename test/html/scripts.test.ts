@@ -2357,6 +2357,11 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
        out.point2 = [moved.x, moved.y];
        out.inverse = m($('s').getScreenCTM().inverse().multiply($('s').getScreenCTM()));
        out.viewBox = box($('s').viewBox.baseVal);
+       out.owners = [
+         $('r').ownerSVGElement === $('s'),
+         $('s').ownerSVGElement,
+         $('g').viewportElement === $('s'),
+       ];
        document.getElementById('out').textContent = JSON.stringify(out);
      </script>`,
   );
@@ -2378,6 +2383,7 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
     point2: [14, 26],
     inverse: [1, 0, 0, 1, 0, 0],
     viewBox: [0, 0, 100, 50],
+    owners: [true, null, true],
   });
 });
 
