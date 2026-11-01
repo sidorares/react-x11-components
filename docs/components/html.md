@@ -1938,6 +1938,17 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**`EventSource` is built on the page's own requests**, so a stream is held to
+CORS and to the document's network as a `fetch` is, and it connects again after
+`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
+on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
+and `brotli`.
+
+**`BroadcastChannel` and `navigator.locks` reach as far as a tab's realms**: the
+page and its frames. A worker's thread keeps its own, and so does each tab, which
+is a process of its own, so a channel does not cross to a worker and a lock
+excludes nothing in another tab.
+
 ### Cookies and storage
 
 ```js

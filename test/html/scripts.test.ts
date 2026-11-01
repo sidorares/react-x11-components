@@ -2314,6 +2314,146 @@ metric(
   },
 );
 
+test('an EventSource reads its stream, hears each event, and connects again with the last id', async () => {
+  const asked: (string | undefined)[] = [];
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const events = [];
+       const source = new EventSource('/stream');
+       events.push(source.readyState, source.url);
+       source.onopen = () => events.push('open:' + source.readyState);
+       source.onerror = () => events.push('error:' + source.readyState);
+       source.onmessage = (e) => {
+         events.push([e.data, e.lastEventId, e.origin].join('|'));
+         if (e.data === 'after') {
+           source.close();
+           document.getElementById('out').textContent = JSON.stringify(events);
+         }
+       };
+       source.addEventListener('named', (e) => events.push('named:' + e.data));
+     </script>`,
+    {
+      answer: (request) => {
+        const id = request.headers.find(
+          ([name]) => name.toLowerCase() === 'last-event-id',
+        )?.[1];
+        asked.push(id);
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: [['content-type', 'text/event-stream; charset=utf-8']],
+          url: request.url,
+          redirected: false,
+          body: id
+            ? 'data: after\n\n'
+            : ': comment\nretry: 5\nid: 7\ndata: a\ndata: b\n\nevent: named\r\ndata: c\r\n\r\n',
+        };
+      },
+    },
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  assert.deepEqual(asked, [undefined, '7']);
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    0,
+    'https://example.test/stream',
+    'open:1',
+    'a\nb|7|https://example.test',
+    'named:c',
+    'error:0',
+    'open:1',
+    'after|7|https://example.test',
+  ]);
+});
+
+test('a CompressionStream and a DecompressionStream go through zlib, and corrupt input is a TypeError', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const through = async (stream, bytes) => {
+         const writer = stream.writable.getWriter();
+         writer.write(bytes).catch(() => {});
+         writer.close().catch(() => {});
+         const out = [];
+         const reader = stream.readable.getReader();
+         for (;;) {
+           const { done, value } = await reader.read();
+           if (done) break;
+           out.push(...value);
+         }
+         return new Uint8Array(out);
+       };
+       const text = new TextEncoder().encode('hello hello hello hello');
+       (async () => {
+         const out = {};
+         for (const format of ['gzip', 'deflate', 'deflate-raw']) {
+           const small = await through(new CompressionStream(format), text);
+           const back = await through(new DecompressionStream(format), small);
+           out[format] = new TextDecoder().decode(back);
+         }
+         out.corrupt = await through(new DecompressionStream('gzip'), new Uint8Array([1, 2, 3]))
+           .catch((e) => e.name);
+         out.format = (() => {
+           try { new CompressionStream('zip'); } catch (e) { return e.name; }
+         })();
+         out.parent = Object.getPrototypeOf(CompressionStream.prototype) === Object.prototype;
+         document.getElementById('out').textContent = JSON.stringify(out);
+       })();
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  const greeting = 'hello hello hello hello';
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    gzip: greeting,
+    deflate: greeting,
+    'deflate-raw': greeting,
+    corrupt: 'TypeError',
+    format: 'TypeError',
+    parent: true,
+  });
+});
+
+test('a BroadcastChannel reaches the other channels of its name, a frame among them, and navigator.locks holds one at a time', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const heard = [];
+       const a = new BroadcastChannel('x');
+       const b = new BroadcastChannel('x');
+       const other = new BroadcastChannel('y');
+       b.onmessage = (e) => heard.push(e.data.n + ':' + e.origin);
+       a.onmessage = () => heard.push('a heard itself');
+       other.onmessage = () => heard.push('y heard x');
+       a.postMessage({ n: 1 });
+       const order = [];
+       const hold = (id, ms) =>
+         navigator.locks.request('r', async (lock) => {
+           order.push(id + ':' + lock.mode);
+           await new Promise((go) => setTimeout(go, ms));
+         });
+       Promise.all([
+         hold('first', 5),
+         hold('second', 0),
+         navigator.locks.request('r', { ifAvailable: true }, (lock) => {
+           order.push('free:' + lock);
+         }),
+         navigator.locks.request('s', { mode: 'shared' }, async () => {
+           const seen = await navigator.locks.query();
+           order.push(seen.held.length + ':' + seen.pending.length);
+         }),
+       ]).then(() => {
+         a.close();
+         document.getElementById('out').textContent = JSON.stringify({ heard, order });
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    heard: ['1:https://example.test'],
+    order: ['free:null', 'first:exclusive', '2:1', 'second:exclusive'],
+  });
+});
+
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
