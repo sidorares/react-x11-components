@@ -4649,7 +4649,7 @@ function paintContent(
       }
       return;
     }
-    if (pushEdgeClip(ctx, edge)) {
+    if (pushEdgeClip(ctx, squaredFor(edge, box, options))) {
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
     }
@@ -6611,7 +6611,7 @@ function pushFlowClip(
   options: PaintOptions,
   levels: boolean,
 ): void {
-  if (!pushEdgeClip(ctx, clip)) return;
+  if (!pushEdgeClip(ctx, squaredFor(clip, box, options))) return;
   if (levels) (options.clips ??= []).push({ box, deferred: [] });
 }
 
@@ -6685,6 +6685,52 @@ interface ClipEdge {
   /** The shape a `border-shape` cuts it to as well, inside the
    *  rectangle; null for none. */
   shape: ShapeOutline | null;
+}
+
+/** How far past the ink a box's bounds say a glyph may still fall: its
+ *  side bearings, which no layout measures. */
+const INK_SLOP = 2;
+
+/**
+ * `edge` as its rectangle, where what `box` draws of the damage stays clear
+ * of its corners, the only pixels a rounded clip and its rectangle differ
+ * on. A rounded clip is a mask on macOS, made again as the clip is pushed:
+ * a mail page's positioned boxes each pushed the 3,000,000 pixels of the
+ * pane around them, 375 of them a paint, and text drew at seventy times its
+ * cost through them.
+ */
+function squaredFor(edge: ClipEdge, box: Box, options: PaintOptions): ClipEdge {
+  const c = edge.radii;
+  if (!c || edge.shape) return edge;
+  const left = box.boundsX + options.originX - INK_SLOP;
+  const top = box.boundsY + options.originY - INK_SLOP;
+  const damage = options.damage;
+  const x1 = Math.max(left, damage?.x ?? -Infinity);
+  const y1 = Math.max(top, damage?.y ?? -Infinity);
+  const x2 = Math.min(
+    left + box.boundsWidth + 2 * INK_SLOP,
+    damage ? damage.x + damage.width : Infinity,
+  );
+  const y2 = Math.min(
+    top + box.boundsHeight + 2 * INK_SLOP,
+    damage ? damage.y + damage.height : Infinity,
+  );
+  const { x, y, w, h } = edge.rect;
+  const right = x + w;
+  const bottom = y + h;
+  const reaches = (
+    cx1: number,
+    cy1: number,
+    cx2: number,
+    cy2: number,
+  ): boolean =>
+    cx2 > cx1 && cy2 > cy1 && x1 < cx2 && cx1 < x2 && y1 < cy2 && cy1 < y2;
+  return reaches(x, y, x + c.x[0], y + c.y[0]) ||
+    reaches(right - c.x[1], y, right, y + c.y[1]) ||
+    reaches(right - c.x[2], bottom - c.y[2], right, bottom) ||
+    reaches(x, bottom - c.y[3], x + c.x[3], bottom)
+    ? edge
+    : { rect: edge.rect, radii: null, shape: null };
 }
 
 /** Push a box's clip (`clipEdge`): its rectangle, rounded where it is,
@@ -9458,7 +9504,7 @@ function paintStacked(
       const edge = clipEdge(clipper, options);
       const rect = edge.rect;
       if ((rect.w <= 0 || rect.h <= 0) && !holdsAbsolute(box)) empty = true;
-      else if (pushEdgeClip(ctx, edge)) {
+      else if (pushEdgeClip(ctx, squaredFor(edge, box, options))) {
         const level: ClipLevel = { box: clipper, deferred: [] };
         (options.clips ??= []).push(level);
         pushed.push(level);

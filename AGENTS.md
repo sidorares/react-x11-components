@@ -4952,6 +4952,17 @@ matrix set aside, and only over the box by its outline (`castOutside`).
 **Anything new that clips a large draw does the same**: rectangles of whole
 pixels for what is large, and the path only where it is small.
 
+**A rounded clip is pushed as its rectangle where nothing under it reaches a
+corner** (`squaredFor`), the only pixels the two differ on: the box's ink,
+cut by the damage. Every positioned box in a clipping box has its clip pushed
+around it (`CLIPS_BETWEEN`), and each push of a rounded one makes the mask: a
+mail page's pane made one of 3,000,000 pixels 375 times a paint, and 132 runs
+of text took 67 ms where they take 3. It cost the page's whole repaint and
+every step of a drag, and a clip pushed once with a hundred draws under it
+shows none of it. **Count how often a clip is pushed before timing what is
+under one**, and **anything new that pushes a box's clip goes through
+`squaredFor`**.
+
 **A large gradient straight down or across is a strip copied**
 (`gradientStrip`): shaded 64 pixels wide on a scratch surface, copied along
 the axis it does not change on, only where the context draws in whole

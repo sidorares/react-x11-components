@@ -331,6 +331,41 @@ metric(
   },
 );
 
+metric(
+  'a rounded box clips what it holds as its rectangle but for what reaches a corner',
+  async () => {
+    // each positioned box in a rounded pane has the pane's clip pushed around
+    // it, which on macOS is a mask of the pane: a pane of a mail page's made
+    // one 375 times a paint
+    const { node, result } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="overflow:hidden;border-radius:12px;width:200px;height:100px">' +
+        '<div style="position:relative;width:30px;height:12px;background:#0000ff"></div>' +
+        '<div style="position:relative;margin:20px;height:10px;background:#ff0000"></div>' +
+        '<div style="position:relative;margin:0;height:28px"></div>' +
+        '<div style="position:relative;height:10px;background:#00ff00;width:30px;margin-left:170px"></div>' +
+        '</div>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const radiiOf = (colour: string): unknown[] =>
+      clipsAround(ops, colour).flatMap((clips) =>
+        clips.flatMap((clip) =>
+          clip.op === 'clip' && clip.radii ? [clip.radii] : [],
+        ),
+      );
+    assert.deepStrictEqual(radiiOf('#ff0000'), [], 'clear of every corner');
+    assert.deepStrictEqual(radiiOf('#0000ff'), [[12, 12, 12, 12]], 'a corner');
+    assert.deepStrictEqual(radiiOf('#00ff00'), [[12, 12, 12, 12]], 'another');
+    // and what reaches a corner is cut there
+    const { abs } = node;
+    const [corner] = await pixelAt(result.ctx, abs.x + 1, abs.y + 1);
+    assert.ok(corner > 200, `the corner is drawn: red ${corner}`);
+    const [inside] = await pixelAt(result.ctx, abs.x + 20, abs.y + 6);
+    assert.strictEqual(inside, 0, 'what is inside it is cut');
+  },
+);
+
 test('overflow: clip cuts what overflows, and is no scroll container', async () => {
   // It was read as `hidden`: a formatting context of its own, and no
   // automatic minimum for a flex item (CSS Overflow 3, 3.1)
@@ -519,13 +554,14 @@ test('overflow-clip-margin moves the edge overflow: clip cuts at', async () => {
 test('an overflow clip edge rounds out as a spread shadow does', async () => {
   // The corners grow with the margin, by less where the radius is small
   // beside it — but an ellipse stays an ellipse (CSS Backgrounds 3, 4.2) —
-  // from the padding box's, as browsers draw them
+  // from the padding box's, as browsers draw them — what it holds reaching
+  // the corners, where a rounded clip and its rectangle differ
   const clip = async (radius: string, border = '') => {
     const { node } = await render(
       '<style>body{margin:0}</style>' +
         '<div style="width:100px;height:100px;overflow:clip;' +
         `overflow-clip-margin:20px;border-radius:${radius};${border}">` +
-        '<div style="height:200px;background:#fe0000"></div></div>',
+        '<div style="margin:-30px;height:200px;background:#fe0000"></div></div>',
     );
     const ops: PaintOp[] = [];
     await fillsOf(view(node), ops);
