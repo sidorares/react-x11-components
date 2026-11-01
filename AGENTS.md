@@ -3788,7 +3788,17 @@ closes a way out a DOM binding opens by accident:
   before the port does. A port's `_deliver` is handed all of what a
   message moved, not its ports alone, so a canvas a port's message moves
   crosses a wire with it; **anything that makes a message event of it
-  takes the ports out first**.
+  takes the ports out first**. A thread is terminated only once it has said
+  its modules are in (`up`, `PageWorkers.end`): in Node 24.14 to 24.18, 25.7
+  to 25.9 and 26.0 to 26.3 a thread terminated in the middle of the native
+  CommonJS lexer aborts the process (nodejs/node#63323, fixed in 24.19 and
+  26.4), so a page left as its worker started took every page in the process
+  with it. CI runs the latest of each line and never sees it, and `engines`
+  admits them all: go back to terminating at once when it leaves them behind.
+  One ended before then goes on loading and counts against the workers a
+  page may have (`_ending`), or a page that starts and ends them in a loop
+  has threads without end. **Anything new that ends a thread goes through
+  `end`.**
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins
@@ -3882,13 +3892,18 @@ closes a way out a DOM binding opens by accident:
   a task under way it holds the `importScripts` of one at the page's
   network. Such a wait has no deadline of its own, so it ends with its test
   (`t.signal`): one that outlived its test held the file's process open for
-  good, and a regression hung the run where it should have failed it. A
-  page that listens for `unload` is kept and never hears it, as HTML,
-  Chrome and Safari have it. A kept document shown again re-reads the
-  session
-  (`reseedSession`), keeping its own entries' `NavigationHistoryEntry`
-  objects — WPT holds `currentEntry` to the one a script kept — and
-  disposing the rest in a task after `pageshow`. A step to a kept document
+  good, and a regression hung the run where it should have failed it. And
+  the next test waits for it to end, since a test timed out in the middle of
+  an `act` leaves React's act scope open for every test after it. **A timer
+  meant to come due in a frozen document is armed in a task so held**: a
+  thread runs what is due until it hears, so armed by a message `pagehide`
+  posted, one raced the rest of the freeze, and on a slow runner its socket
+  let the document go. A page that listens for `unload` is kept and never
+  hears it, as HTML, Chrome and Safari have it. A kept document shown again
+  re-reads the session (`reseedSession`), keeping its own entries'
+  `NavigationHistoryEntry` objects — WPT holds `currentEntry` to the one a
+  script kept — and disposing the rest in a task after `pageshow`. A step to
+  a kept document
   is taken a microtask later, since a page's `history.back()` reaches
   `session.go` from inside its own entry. The DOM, the layout and what was
   typed are the `<Html>`'s, so a host keeps a kept document's `<Html>`

@@ -6,6 +6,8 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { afterEach, test as nodeTest } from 'node:test';
+import type { TestContext } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import assert from 'node:assert/strict';
 import {
   act,
@@ -52,6 +54,7 @@ import {
   namedAccessWorks,
 } from '../../src/html/scripts/engine.js';
 import { DomHost } from '../../src/html/scripts/host.js';
+import { PageWorkers } from '../../src/html/scripts/workers.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
 import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
@@ -1569,6 +1572,87 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
     doc.logs.join('\n'),
   );
 });
+
+/** A page's workers with nothing behind them, to hold what becomes of their
+ *  threads: what their scripts post and what is warned of is counted, and
+ *  each wait ends with its test. */
+function bareWorkers(t: TestContext, limit?: number) {
+  const said = { posted: 0, warned: 0 };
+  const workers = new PageWorkers(
+    {
+      fetch: async () => {
+        throw new Error('no network');
+      },
+      log: (level) => {
+        if (level === 'warn') said.warned += 1;
+      },
+      error: () => {},
+      letGo: () => {},
+      message: () => {
+        said.posted += 1;
+      },
+      userAgent: 'test',
+      language: 'en-US',
+    },
+    limit,
+  );
+  t.after(() => workers.dispose());
+  const start = (source: string) =>
+    workers.start({
+      url: new URL('w.js', PAGE).href,
+      type: 'classic',
+      name: '',
+      origin: new URL(PAGE).origin,
+      source,
+    });
+  const until = async (done: () => boolean) => {
+    while (!done()) {
+      t.signal.throwIfAborted();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+  return { workers, said, start, until };
+}
+
+test(
+  'a worker ended as its thread starts is terminated once its modules are in, and one that is up at once',
+  { timeout: 120_000 },
+  async (t) => {
+    // Node 24.14 to 26.3 can abort the process for a thread terminated in the
+    // middle of its CommonJS lexer (nodejs/node#63323), and CI runs none of
+    // them, so this holds the order instead: nothing is terminated until the
+    // thread has said it is up
+    const terminate = t.mock.method(Worker.prototype, 'terminate');
+    const { workers, said, start, until } = bareWorkers(t);
+    workers.end(start(''));
+    assert.equal(terminate.mock.callCount(), 0);
+    await until(() => terminate.mock.callCount() === 1);
+    const id = start('postMessage("up");');
+    await until(() => said.posted === 1);
+    workers.end(id);
+    assert.equal(terminate.mock.callCount(), 2);
+  },
+);
+
+test(
+  'a thread still loading after its worker ended counts against the workers a page may have, until it has gone',
+  { timeout: 120_000 },
+  async (t) => {
+    // a page that starts and ends workers in a loop would otherwise have as
+    // many threads loading as its loop goes round
+    const terminate = t.mock.method(Worker.prototype, 'terminate');
+    const { workers, said, start, until } = bareWorkers(t, 1);
+    workers.end(start(''));
+    start('postMessage("up");');
+    assert.equal(said.warned, 1);
+    await until(() => terminate.mock.callCount() === 1);
+    await terminate.mock.calls[0].result;
+    const id = start('postMessage("up");');
+    await until(() => said.posted === 1);
+    assert.equal(said.warned, 1);
+    workers.end(id);
+  },
+);
 
 test('a shared worker is one thread for a script and a name, which each SharedWorker connects to through a port of its own', async () => {
   const doc = await hosted(

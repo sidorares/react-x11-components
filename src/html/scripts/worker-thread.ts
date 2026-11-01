@@ -41,6 +41,9 @@ const port = parentPort!;
 const word = new Int32Array(flag);
 const tell = (message: FromWorker): void => port.postMessage(message);
 
+// every module this thread starts with is in by here
+tell({ kind: 'up' });
+
 /** A worker has no `<Html>`: what a script could ask of a layout answers
  *  nothing. */
 const NO_VIEW = new Proxy(

@@ -88,6 +88,8 @@ export interface WorkerThreadData {
 
 /** What the thread tells this side. */
 export type FromWorker =
+  /** Its modules are in, and it can be terminated (`PageWorkers.end`). */
+  | { kind: 'up' }
   | { kind: 'message'; data: string }
   | {
       kind: 'error';
@@ -160,6 +162,8 @@ function threadSource(): UrlLike | string {
 
 interface Running {
   thread: WorkerLike;
+  /** Whether its modules are in, as it said (`end`). */
+  up: boolean;
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;
@@ -189,16 +193,23 @@ export class PageWorkers implements PageWorkersLike {
   private _disposed = false;
   private readonly _frozen = new SharedArrayBuffer(4);
   private readonly _stopped = new SharedArrayBuffer(4);
+  /** Threads ended before they were up, which go on loading until they are
+   *  (`end`) and hold what a running thread holds, so they count against the
+   *  limit: a page that starts and ends workers in a loop has no other. */
+  private readonly _ending = new Set<Running>();
 
-  constructor(private readonly _seams: PageWorkersSeams) {}
+  constructor(
+    private readonly _seams: PageWorkersSeams,
+    private readonly _limit: number = MAX_WORKERS,
+  ) {}
 
   start(init: WorkerInit): number {
     const id = ++this._seq;
     if (this._disposed) return id;
-    if (this._running.size >= MAX_WORKERS) {
+    if (this._running.size + this._ending.size >= this._limit) {
       this._seams.log(
         'warn',
-        `A page tried to start more than ${MAX_WORKERS} workers at once; ${init.url} was not started.`,
+        `A page tried to start more than ${this._limit} workers at once; ${init.url} was not started.`,
       );
       return id;
     }
@@ -223,6 +234,7 @@ export class PageWorkers implements PageWorkersLike {
     });
     const running: Running = {
       thread,
+      up: false,
       url: init.url,
       sync: port1,
       fetches: new Map(),
@@ -236,6 +248,7 @@ export class PageWorkers implements PageWorkersLike {
     });
     thread.on('exit', () => {
       this._running.delete(id);
+      this._ending.delete(running);
       running.transports?.dispose();
       running.sockets?.dispose();
       port1.close();
@@ -260,6 +273,14 @@ export class PageWorkers implements PageWorkersLike {
     this._running.get(id)?.thread.postMessage(message);
   }
 
+  /**
+   * A worker goes. Its thread is terminated once its modules are in (`up`)
+   * and no sooner: in Node 24.14 to 24.18, 25.7 to 25.9 and 26.0 to 26.3 a
+   * thread terminated in the middle of the native CommonJS lexer fails a
+   * `ToLocalChecked`, which aborts the process (nodejs/node#63323), so a page
+   * left as its worker started took every page in the process with it. It can
+   * go back to terminating at once when `engines` leaves those behind.
+   */
   end(id: number): void {
     const running = this._running.get(id);
     if (!running) return;
@@ -267,7 +288,8 @@ export class PageWorkers implements PageWorkersLike {
     for (const controller of running.fetches.values()) controller.abort();
     running.transports?.dispose();
     running.sockets?.dispose();
-    void running.thread.terminate();
+    if (running.up) void running.thread.terminate();
+    else this._ending.add(running);
   }
 
   dispose(): void {
@@ -386,6 +408,10 @@ export class PageWorkers implements PageWorkersLike {
 
   private _heard(id: number, running: Running, m: FromWorker): void {
     switch (m.kind) {
+      case 'up':
+        running.up = true;
+        if (this._ending.has(running)) void running.thread.terminate();
+        return;
       case 'message':
         this._seams.message(id, m.data);
         return;
