@@ -45,7 +45,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
 | `onParsed`           | `() => void`                                     | The parse has ended and core has laid the element out. Once a document.                                                                                                                                                                                                                             |
-| `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout. Once a document.                                                                                                                                                                                   |
+| `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout, but for a [lazy image](#lazy-images). Once a document.                                                                                                                                             |
 | `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                                                                                                                 |
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
@@ -460,8 +460,47 @@ and WebKit read it, and how HTML says. Chrome 154 takes `auto` after a
 space or after another entry, and `100vw` for the whole list in an image
 that is not lazy. An image that is
 `display: none` is not laid out, so `auto` is the width it last had, or is
-passed over. Unlike a browser, which lazily loads only what nears the
-viewport, `<Html>` asks for every image, a lazy one included.
+passed over.
+
+### Lazy images
+
+An `<img loading="lazy">` in a document whose scripts run is asked for
+through `onResource` once it comes near the viewport, as [HTML has
+it](https://html.spec.whatwg.org/multipage/urls-and-fetching.html#lazy-loading-attributes),
+and holds no `load`. Near is within 1,250 CSS pixels of what can be seen,
+across and down, and of what each scroll container around it shows, which
+is Chrome's figure on a fast connection, and within 4,000 until the
+document's `load`, while where a box will end up is a guess. HTML leaves the
+distance to the browser. Each case below was tried in Chrome, Firefox and
+WebKit, and `<Html>` does what all three do unless the line says otherwise.
+
+- **With scripts off, `loading` is ignored.** HTML says so: a server could
+  otherwise read a reader's way down a page from what it was asked for and
+  when. `<Html>` with no `scripts` and no `scripting` asks for every image
+  as it always has.
+- **A lazy image holds no `load`,** one in view included. `onLoaded` and the
+  window's `load` can come before it. Asked for by an eager image as well, a
+  URL holds `load` as any does.
+- **A page reads what has come to nothing yet:** `complete` is false,
+  `naturalWidth` is 0 and `currentSrc` is empty, as Chrome and Firefox have it
+  (WebKit answers the URL), and `decode()` waits, as Chrome and WebKit have it
+  (Firefox rejects). No read asks for the image, whatever it forces.
+- **An image with no `width` and `height` has no size until it arrives,** so
+  what is below it moves when it does. Off screen, or a pixel from the size
+  it had, that waits for the reader to come near, for the scroll to end or
+  for a read of the page's, which answers as though it had not waited.
+- **`display: none` has no box, so it waits.** So does an image in no
+  document at all, `new Image()` with `loading` set, and one clipped out of
+  sight by a box that does not scroll, like `overflow: clip`. `visibility:
+hidden` has a box, and is asked for.
+- **`loading` set to anything but `lazy`** asks at once for what waited.
+- **A URL the document has shows in a lazy image at any distance,** and the
+  image hears its `load`. It is one request.
+- **`loading` set after `src` in one task counts,** since an image is asked
+  for at the end of the task that set its source.
+
+`<iframe loading="lazy">` is not read: what a frame shows is the host's
+(`renderEmbedded`).
 
 ### Image sets
 
