@@ -2578,6 +2578,59 @@ const USED_PAGE =
   '.e-held > div { height: 5px; margin-bottom: 30px }' +
   '.e-lr { writing-mode: vertical-lr; height: 200px }' +
   '.e-lr > div { margin-left: 5%; margin-right: 2.5% }' +
+  // the `auto` margins of flex items: 40×10 in a 200×40 row, a 200×100 column
+  '.f, .fc { display: flex; width: 200px; height: 40px }' +
+  '.fc { flex-direction: column; height: 100px }' +
+  '.f > div, .fc > div { width: 40px; height: 10px; flex: none }' +
+  '#f-after::after { content: ""; width: 40px; height: 10px; margin-left: auto }' +
+  '#f-before::before { content: ""; width: 40px; height: 10px; margin: auto }' +
+  '.m { margin: auto }' +
+  '.ml { margin-left: auto }' +
+  '.mr { margin-right: auto }' +
+  '.mt { margin-top: auto }' +
+  '.mb { margin-bottom: auto }' +
+  '.gap { gap: 20px 30px }' +
+  '#f-held { margin: auto 15px auto auto }' +
+  '#f-pct { margin: 5% auto auto 10% }' +
+  '#f-pct-b { margin: auto 10% 5% auto }' +
+  '.reverse { flex-direction: row-reverse }' +
+  '.up { flex-direction: column-reverse }' +
+  '.rtl { direction: rtl }' +
+  '.f > #f-wide { width: 300px; margin: auto }' +
+  '.f > #f-tall { height: 50px; margin: auto }' +
+  '.fc > #f-column-wide { width: 300px; margin: auto }' +
+  '#f-grown { flex: 1; max-width: 50px }' +
+  '#f-spread { justify-content: space-between }' +
+  '.wrap { flex-wrap: wrap; height: 120px }' +
+  '.wrap.fc { height: 60px }' +
+  '.wrap > div { width: 120px }' +
+  '.wrap.fc > div { width: 30px; height: 30px }' +
+  '.wrap.pair > div { width: 70px; height: 20px }' +
+  '.wrap.small > div { width: 30px; height: 20px }' +
+  '.again { flex-wrap: wrap-reverse }' +
+  '.packed { align-content: flex-start }' +
+  '.centred { align-content: center }' +
+  '.spaced { align-content: space-between }' +
+  '.wrap > div.full { height: auto }' +
+  '.wrap > .full > div { height: 100% }' +
+  '.wrap > div.capped { height: auto; max-height: 30px }' +
+  '.wrap > div.high { height: 30px }' +
+  '.wrap > .shifted { position: relative; left: 300px; top: 50px }' +
+  '.wrap > .first { order: -1 }' +
+  '#f-least { height: auto; min-height: 60px }' +
+  '#f-most { height: auto; max-height: 30px }' +
+  '#f-most > div { height: 50px }' +
+  '#f-most > .m { height: 10px }' +
+  '#f-edges { padding: 5px 10px; border: 3px solid; box-sizing: border-box }' +
+  '#f-lines, #f-lines-up { align-items: baseline; align-content: flex-start }' +
+  '#f-lines > .text, #f-lines-up > .text { height: auto; width: 60px }' +
+  '.low { padding-top: 30px }' +
+  '.deep { padding-bottom: 30px }' +
+  '#f-nested { flex: 1; height: 30px; margin-left: 20px; display: flex }' +
+  '#f-nested > div { width: 40px; height: 10px }' +
+  '#f-rl { writing-mode: vertical-rl; width: 100px; height: 200px }' +
+  '#f-rl > div { display: flex; height: 100px; width: 40px }' +
+  '#f-rl > div > div { width: 10px; height: 20px; flex: none; margin: auto }' +
   '</style>' +
   [
     'fit',
@@ -2626,7 +2679,66 @@ const USED_PAGE =
   '<div class="w e-abs"><div id="e-abs"></div></div>' +
   '<div class="w"><div class="e-held" id="e-held"><div></div></div><div></div></div>' +
   '<div class="w e-lr"><div id="e-lr"></div></div>' +
-  '<table style="width: 200px"><tr><td id="e-cell" style="margin-left: 10%"></td></tr></table>';
+  '<table style="width: 200px"><tr><td id="e-cell" style="margin-left: 10%"></td></tr></table>' +
+  '<div class="f" id="f-after"></div>' +
+  '<div class="f" id="f-before"></div>' +
+  '<div class="f"><div class="m" id="f-both"></div></div>' +
+  '<div class="f"><div class="ml" id="f-share"></div><div class="mr" id="f-share-b"></div></div>' +
+  '<div class="f"><div class="mr" id="f-three"></div><div class="m" id="f-three-b"></div></div>' +
+  '<div class="f gap"><div class="ml" id="f-gap"></div><div></div><div></div></div>' +
+  '<div class="f"><div class="ml mt" id="f-held"></div></div>' +
+  '<div class="f"><div id="f-pct"></div></div>' +
+  '<div class="f"><div id="f-pct-b"></div></div>' +
+  '<div class="f"><div class="ml" id="f-grown"></div><div></div></div>' +
+  '<div class="f" id="f-spread"><div class="mr" id="f-spread-a"></div><div></div><div></div></div>' +
+  '<div class="f reverse"><div class="ml" id="f-reverse"></div></div>' +
+  '<div class="f reverse gap"><div class="ml" id="f-reverse-a"></div><div class="ml" id="f-reverse-b"></div><div></div></div>' +
+  '<div class="f rtl"><div class="ml" id="f-rtl"></div></div>' +
+  '<div class="f rtl"><div class="m" id="f-rtl-both"></div></div>' +
+  '<div class="f"><div id="f-wide"></div></div>' +
+  '<div class="f"><div id="f-tall"></div></div>' +
+  '<div class="fc"><div class="m" id="f-column"></div></div>' +
+  '<div class="fc"><div class="mt" id="f-down"></div></div>' +
+  '<div class="fc"><div class="mb" id="f-up"></div></div>' +
+  '<div class="fc gap"><div class="mt" id="f-column-gap"></div><div></div></div>' +
+  '<div class="fc up"><div class="mb" id="f-column-up"></div><div></div></div>' +
+  '<div class="fc rtl"><div class="ml" id="f-column-rtl"></div></div>' +
+  '<div class="fc rtl"><div class="mr" id="f-column-rtl-b"></div></div>' +
+  '<div class="fc"><div id="f-column-wide"></div></div>' +
+  '<div class="f wrap"><div class="ml" id="f-wrap"></div><div></div><div class="m" id="f-wrap-b"></div></div>' +
+  '<div class="f wrap gap pair"><div class="ml" id="f-wrap-gap"></div><div></div><div></div><div class="m" id="f-wrap-gap-b"></div></div>' +
+  '<div class="f wrap reverse"><div class="ml" id="f-wrap-reverse"></div><div class="m" id="f-wrap-reverse-b"></div></div>' +
+  '<div class="f wrap rtl pair"><div class="ml" id="f-wrap-rtl"></div><div></div><div class="mr mt" id="f-wrap-rtl-b"></div></div>' +
+  '<div class="f wrap again"><div class="mt" id="f-again"></div><div class="mb" id="f-again-b"></div><div></div></div>' +
+  '<div class="f wrap pair packed"><div class="high"></div><div class="mt" id="f-packed"></div><div></div></div>' +
+  '<div class="f wrap pair centred"><div class="high"></div><div class="mt" id="f-centred"></div><div></div></div>' +
+  '<div class="f wrap pair spaced"><div class="high"></div><div class="m" id="f-spaced"></div><div></div></div>' +
+  '<div class="f wrap"><div class="full"></div><div class="mt" id="f-stretched"></div></div>' +
+  '<div class="f wrap pair"><div class="full"></div><div class="mt" id="f-stretched-beside"></div><div></div></div>' +
+  '<div class="f wrap"><div class="full"><div></div></div><div class="mt" id="f-stretched-holds"></div></div>' +
+  '<div class="f wrap"><div class="capped"></div><div class="mt" id="f-capped"></div></div>' +
+  '<div class="f wrap"><div class="ml mt shifted" id="f-shifted"></div><div class="first mr" id="f-first"></div></div>' +
+  '<div class="fc wrap"><div class="mt"></div><div></div><div class="ml" id="f-column-wrap"></div><div class="m" id="f-column-wrap-b"></div></div>' +
+  '<div class="fc wrap up small"><div class="ml" id="f-column-wrap-up"></div><div></div><div></div><div class="mt" id="f-column-wrap-up-b"></div></div>' +
+  '<div class="fc wrap rtl small"><div class="mr" id="f-column-wrap-rtl"></div><div></div><div></div><div class="mb" id="f-column-wrap-rtl-b"></div></div>' +
+  '<div class="f" id="f-least"><div class="m" id="f-least-a"></div></div>' +
+  '<div class="f" id="f-most"><div></div><div class="m" id="f-most-a"></div></div>' +
+  '<div class="f" id="f-edges"><div class="m" id="f-edges-a"></div></div>' +
+  '<div class="f wrap small" id="f-lines"><div class="text deep">x</div><div class="text low">y</div><div class="mt" id="f-lines-a"></div></div>' +
+  '<div class="f wrap small again" id="f-lines-up"><div class="text deep">x</div><div class="text low">y</div><div class="mb" id="f-lines-up-a"></div></div>' +
+  '<div class="f"><div id="f-nested"><div class="m" id="f-nested-a"></div></div><div></div></div>' +
+  '<div id="f-rl"><div><div id="f-rl-a"></div></div></div>';
+
+/** All four margins of a row, top first, as `getComputedStyle` reads them. */
+function margins(sides: string): Record<string, string> {
+  const [top, right, bottom, left] = sides.split(' ');
+  return {
+    'margin-top': top,
+    'margin-right': right,
+    'margin-bottom': bottom,
+    'margin-left': left,
+  };
+}
 
 const USED_ROWS: [string, 'before' | 'after' | null, Record<string, string>][] =
   [
@@ -2817,6 +2929,66 @@ const USED_ROWS: [string, 'before' | 'after' | null, Record<string, string>][] =
     ['e-held', null, { 'margin-bottom': '20px' }],
     ['e-lr', null, { 'margin-left': '10px', 'margin-right': '5px' }],
     ['e-cell', null, { 'margin-left': '0px' }],
+    ['f-after', 'after', margins('0px 0px 0px 160px')],
+    ['f-before', 'before', margins('15px 80px 15px 80px')],
+    ['f-both', null, margins('15px 80px 15px 80px')],
+    ['f-share', null, margins('0px 0px 0px 60px')],
+    ['f-share-b', null, margins('0px 60px 0px 0px')],
+    ['f-three', null, margins('0px 40px 0px 0px')],
+    ['f-three-b', null, margins('15px 40px 15px 40px')],
+    ['f-gap', null, margins('0px 0px 0px 20px')],
+    ['f-held', null, margins('15px 15px 15px 145px')],
+    ['f-pct', null, margins('10px 140px 20px 20px')],
+    ['f-pct-b', null, margins('20px 20px 10px 140px')],
+    ['f-grown', null, margins('0px 0px 0px 110px')],
+    ['f-spread-a', null, margins('0px 80px 0px 0px')],
+    ['f-reverse', null, margins('0px 0px 0px 160px')],
+    ['f-reverse-a', null, margins('0px 0px 0px 10px')],
+    ['f-reverse-b', null, margins('0px 0px 0px 10px')],
+    ['f-rtl', null, margins('0px 0px 0px 160px')],
+    ['f-rtl-both', null, margins('15px 80px 15px 80px')],
+    ['f-wide', null, margins('15px 0px 15px 0px')],
+    ['f-tall', null, margins('0px 80px 0px 80px')],
+    ['f-column', null, margins('45px 80px 45px 80px')],
+    ['f-down', null, margins('90px 0px 0px 0px')],
+    ['f-up', null, margins('0px 0px 90px 0px')],
+    ['f-column-gap', null, margins('60px 0px 0px 0px')],
+    ['f-column-up', null, margins('0px 0px 80px 0px')],
+    ['f-column-rtl', null, margins('0px 0px 0px 160px')],
+    ['f-column-rtl-b', null, margins('0px 160px 0px 0px')],
+    ['f-column-wide', null, margins('45px 0px 45px 0px')],
+    ['f-wrap', null, margins('0px 0px 0px 80px')],
+    ['f-wrap-b', null, margins('15px 40px 15px 40px')],
+    ['f-wrap-gap', null, margins('0px 0px 0px 30px')],
+    ['f-wrap-gap-b', null, margins('15px 15px 15px 15px')],
+    ['f-wrap-reverse', null, margins('0px 0px 0px 80px')],
+    ['f-wrap-reverse-b', null, margins('25px 40px 25px 40px')],
+    ['f-wrap-rtl', null, margins('0px 0px 0px 60px')],
+    ['f-wrap-rtl-b', null, margins('40px 130px 0px 0px')],
+    ['f-again', null, margins('30px 0px 0px 0px')],
+    ['f-again-b', null, margins('0px 0px 30px 0px')],
+    ['f-packed', null, margins('10px 0px 0px 0px')],
+    ['f-centred', null, margins('10px 0px 0px 0px')],
+    ['f-spaced', null, margins('5px 30px 5px 30px')],
+    ['f-stretched', null, margins('55px 0px 0px 0px')],
+    ['f-stretched-beside', null, margins('40px 0px 0px 0px')],
+    ['f-stretched-holds', null, margins('55px 0px 0px 0px')],
+    ['f-capped', null, margins('55px 0px 0px 0px')],
+    ['f-shifted', null, margins('50px 0px 0px 80px')],
+    ['f-first', null, margins('0px 80px 0px 0px')],
+    ['f-column-wrap', null, margins('0px 0px 0px 70px')],
+    ['f-column-wrap-b', null, margins('0px 35px 0px 35px')],
+    ['f-column-wrap-up', null, margins('0px 0px 0px 70px')],
+    ['f-column-wrap-up-b', null, margins('40px 0px 0px 0px')],
+    ['f-column-wrap-rtl', null, margins('0px 70px 0px 0px')],
+    ['f-column-wrap-rtl-b', null, margins('0px 0px 40px 0px')],
+    ['f-least-a', null, margins('25px 80px 25px 80px')],
+    ['f-most-a', null, margins('10px 60px 10px 60px')],
+    ['f-edges-a', null, margins('7px 67px 7px 67px')],
+    ['f-lines-a', null, margins('60px 0px 0px 0px')],
+    ['f-lines-up-a', null, margins('0px 0px 60px 0px')],
+    ['f-nested-a', null, margins('10px 50px 10px 50px')],
+    ['f-rl-a', null, margins('40px 15px 40px 15px')],
   ];
 
 for (const [scale, rendered] of [
