@@ -5115,13 +5115,26 @@ and an `::after` as for an element: `width: fit-content` and `margin-left:
 out in, a track of a grid or the block an absolute box is placed in, and
 an `auto` margin of a block in the flow as the room it came to. One with no
 box — `display: none` or `contents`, no `content`, under an element that has
-none — reads as its rules compute it. An inline box has no rectangle of its own, so as in
+none — reads as its rules compute it, and but for `display: contents` its
+`transform` reads `none`. An inline box has no rectangle of its own, so as in
 Chrome its percentage margins, padding and offsets stay percentages. The
-first frame `getKeyframes()` makes up takes the computed `width` and reads no
+first frame `getKeyframes()` makes up reads margins and padding as Chrome
+does, a length as written and a percentage off the box as an animation has
+moved it, and takes everything else as computed, as though it had no
 box, and a `::before` a dragged width set aside reads as its rules compute
 it, its box being a width ago. Two reads are still not Chrome's. An `auto`
 margin of a flex item reads `0px`, Chrome the room it came to. And the
 opposite insets of an absolute box placed against an inline box stay `auto`.
+
+A few reads around a box are still not Chrome's. What an `<svg>` draws, what
+`content-visibility: hidden` holds, a canvas's fallback and a `::before` of
+`display: contents` have a box in Chrome and none to read here, so their
+`transform` reads the list it computes to where Chrome reads a matrix.
+`transform-origin` and `perspective-origin` read nothing, and
+are left out of the frame `getKeyframes()` makes up. `commitStyles()` writes
+margins and padding as they compute, where Chrome writes what `getKeyframes()`
+reads. And a `::before`'s frame reads the style an animation has moved, so a
+length under it reads the animated value, where an element's reads its own.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)

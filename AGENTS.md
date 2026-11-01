@@ -3146,7 +3146,7 @@ zoomed child inherits it at its parent's size.
 margin is read from the box, which layout resolved against what it laid the
 box out in: worked out again from `box.parent`, a box in an inline box read
 none, a grid item a share of the grid and an absolute box a share of the
-wrong block. Three things are load-bearing. **What a box does not keep is
+wrong block. Four things are load-bearing. **What a box does not keep is
 noted beside it**: `placeBlock` shares room out to a block's `auto` margins
 and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
 `marginBottom` carries what hangs from the box for the next sibling to
@@ -3154,12 +3154,23 @@ collapse with (`bottomStrut`), so anything new that gives a margin room
 tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
 margin reads `0px`. **An inline box reads as it computes** (`UsedBox.inline`,
 `resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
-with no rectangle of its own. And **what takes the computed value asks no
-box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`), a
-`::before` a drag set aside (`heldBack`), which is a width ago where its rules
-are now, and one of `display: contents`, whose box only sets its content and
-is none of its own (`contentsStyle`). `_pseudoBoxOf` finds a box for all of
-them, so anything new it answers asks the same.
+with no rectangle of its own. **What takes the computed value asks a box for
+its edges at most**: the frame `getKeyframes()` makes up reads margins and
+padding as Chrome does in either read of them, a length as the style under the
+animation has it and anything else off the box as the animation has moved it
+(`_edgesOf`, `UsedBox.edgesOnly`), and takes the rest as computed. A `::before`
+a drag set aside (`heldBack`), which is a width ago where its rules are now,
+and one of `display: contents`, whose box only sets its content and is none of
+its own (`contentsStyle`), ask no box at all. `_pseudoBoxOf` finds a box for
+all of them, so anything new it answers asks the same. And **no box of ours is
+not nothing rendered** (`_unrendered`, `cssomStyle`'s `unrendered`): what an
+`<svg>` draws, what `content-visibility: hidden` holds and a canvas's fallback
+have none here and one in Chrome, and a `box` of null says only that none was
+handed in. So `transform` reads `none` where a `display` says nothing renders
+the element, or a `::before` has no box, and anything new that reads a browser's
+answer for no box asks the same. That is asked only of an element with a
+transform: a page reads the styles of a closed dialog's contents by the
+thousand, and each read would walk the ancestors.
 
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,

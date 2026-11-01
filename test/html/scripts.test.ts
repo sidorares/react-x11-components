@@ -4984,6 +4984,66 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test('a transform reads none from a page for as long as nothing renders its element', async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '#a { display: none; transform: translate(10px, 5px) }' +
+      '#b::before { transform: translate(10px, 5px) }' +
+      '#b.on::before { content: ""; display: block }' +
+      '</style></head><body><div id="a"></div><div id="b"></div><p id="out"></p><script>' +
+      'var a = document.getElementById("a");' +
+      'var b = document.getElementById("b");' +
+      'var s = getComputedStyle(a), p = getComputedStyle(b, "::before");' +
+      'var r = [s.transform, p.transform];' +
+      'a.style.display = "block"; b.className = "on";' +
+      'r.push(s.transform, p.transform);' +
+      'a.style.display = "none"; b.className = "";' +
+      'r.push(s.transform, p.transform);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'none|none|matrix(1, 0, 0, 1, 10, 5)|matrix(1, 0, 0, 1, 10, 5)|none|none',
+    doc.logs.join('\n'),
+  );
+});
+
+test('getKeyframes() makes up a first frame of margins and padding as laid out, and the rest as computed', async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '@keyframes k { to { width: 1px; margin-left: 1px; padding-left: 1px; top: 1px } }' +
+      '.w { width: 200px; position: relative }' +
+      '#a, #b::before { animation: k 100s paused; position: relative; width: 50%;' +
+      ' margin-left: 10%; padding-left: 5%; top: 10px }' +
+      '#b::before { content: ""; display: block }' +
+      '</style></head><body><div class="w"><div id="a"></div></div>' +
+      '<div class="w"><div id="b"></div></div><p id="out"></p><script>' +
+      'function frames() {' +
+      '  return document.getAnimations().map(function (animation) {' +
+      '    var first = animation.effect.getKeyframes()[0];' +
+      '    return [first.width, first.marginLeft, first.paddingLeft, first.top].join(" ");' +
+      '  });' +
+      '}' +
+      'var r = frames();' +
+      'var w = document.querySelectorAll(".w");' +
+      'w[0].style.width = w[1].style.width = "400px";' +
+      'document.body.offsetWidth;' +
+      'r = r.concat(frames());' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '50% 20px 10px 10px|50% 20px 10px 10px|50% 40px 20px 10px|50% 40px 20px 10px',
+    doc.logs.join('\n'),
+  );
+});
+
 test('getComputedStyle of a ::before reads its box once it has one, and its rules where it has none', async () => {
   const doc = await hosted(
     '<!doctype html><html><head><style>' +
