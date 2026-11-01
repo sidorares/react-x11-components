@@ -2760,7 +2760,10 @@ page's body took 44,000 boxes to find, a strip of 2,499 senders among them,
 twice a load. It answers or it turns down, and null is the probe, as a grid, a
 table and an edge that is a percentage of the room are. Three things are
 load-bearing. **A box no layout has reached has no lines**, and reads as nothing
-(`layoutSerial` 0): a flex box asks about an item before its first layout.
+(`layoutSerial` 0): a flex box asks about an item before its first layout. So
+is a box a restyle gave other lengths in place (`forgetLayout`) or a block set
+again in a face that came (`forgetSizesIn`), whose last layout says the word
+and the padding of before.
 **What a layout that stops set aside is not in `children`** (`stopping`), and a
 size measured without it is kept for the box's life. And **what it answers is
 held to Chromium and not to the probe** (`test/html/min-contents.ts`, every width

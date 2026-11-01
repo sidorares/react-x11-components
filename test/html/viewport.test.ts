@@ -1721,6 +1721,34 @@ test('a grid in a box that shrinks to fit stays as narrow as its longest word wh
   assert.strictEqual(linesOf(el, 'g').length, 2);
 });
 
+test('a flex item comes to its automatic minimum of the lengths a new width gives what it holds, taken in place', async () => {
+  // A flex item's minimum is added up from the last layout of what it holds
+  // (`exactMinContent`), whose lines and edges were of the lengths before: at
+  // 352 the item was the word and the padding of 400. Chrome, Firefox and
+  // Safari have these items at the word and the padding of 352
+  const words = 'sit amet ipsum dolor lorem consectetur '.repeat(12);
+  for (const held of [
+    '<div style="padding:0 1vw">consectetur</div>',
+    '<div style="font-size:3vw">consectetur</div>',
+    '<div><span style="font-size:3vw">consectetur</span></div>',
+  ]) {
+    const { el, resize } = await renderScrolled(
+      '<style>body{margin:0}</style><div style="display:flex">' +
+        `${words}<div id="item" style="width:105px">${held}</div>${words}</div>`,
+      300,
+      400,
+    );
+    const tree = treeOf(el);
+    await resize(300, 352);
+    assert.ok(treeOf(el) === tree, 'in place');
+    const width = boxOf(el, 'item').width;
+    (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+    el.layoutNow();
+    assert.strictEqual(width, boxOf(el, 'item').width, held);
+    await cleanup();
+  }
+});
+
 test('a root font size in vw moves every rem and rlh with it at a new width, under parents whose styles stay, in place', async () => {
   // Fluid type on the root, taken in place at a new width (`FONT_FIELDS`):
   // the elements that read the root's font are styled again wherever they

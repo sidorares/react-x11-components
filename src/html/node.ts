@@ -244,6 +244,7 @@ import {
   carryBlockers,
   containmentApplies,
   containsOutOfFlow,
+  forgetLayout,
   forgetSizes,
   heldBack,
   heldShift,
@@ -8924,7 +8925,7 @@ export class HtmlViewNode extends Node {
     let snapTyped = false;
     // what was kept of the sizes of a box at other lengths, and of every
     // box it is in, which take it in
-    for (const box of resizedBoxes) forgetSizes(box);
+    for (const box of resizedBoxes) forgetLayout(box);
     this._resizedInPlace = resizedBoxes;
     for (const [box, style] of restyled) {
       const was = box.style;

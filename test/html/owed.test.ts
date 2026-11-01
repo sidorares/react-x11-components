@@ -990,6 +990,30 @@ metric(
   },
 );
 
+metric(
+  'a flex item comes to its automatic minimum in the face that arrived',
+  async (t) => {
+    // The minimum is added up from the last layout of what the item holds
+    // (`exactMinContent`), whose lines were in the face before: the item
+    // stayed as wide as the word was, and the word stood out of it
+    holdClock(t, owedClock);
+    const faces = heldFaces();
+    const words = 'sit amet ipsum dolor lorem consectetur '.repeat(12);
+    const { el } = await renderScrolled(
+      `<!doctype html><html><head><style>${FACES}</style></head><body>
+      <div style="display:flex">${words}<div style="width:105px">
+      <div>consectetur</div></div>${words}</div></body></html>`,
+      200,
+      352,
+      { onResource: faces.onResource },
+    );
+    await act();
+    await faces.arrive('regular.ttf');
+    await runOwed(el);
+    await assertWhole(el, 'the word in its item');
+  },
+);
+
 /** The pane a document scrolls in. */
 function paneOf(node: unknown): {
   scrollY: number;
