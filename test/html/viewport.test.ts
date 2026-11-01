@@ -21,7 +21,14 @@ import {
   treeOf,
   view,
 } from './harness.js';
-import { boxLayoutsMade } from '../../src/html/layout/block.js';
+import {
+  boxLayoutsMade,
+  boxesMoved,
+  moveTo,
+} from '../../src/html/layout/block.js';
+import type { Box } from '../../src/html/layout/boxes.js';
+import { resizeClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
@@ -1595,6 +1602,75 @@ test('a block a flex box around it asks about at one width is laid out once at i
   assert.ok(laid < 45, `${laid} boxes laid out, of 20 rows`);
 });
 
+test('what a layout keeps is not moved by the flex boxes around it', async () => {
+  // a box laid out at the origin moved what it keeps there and out again,
+  // one flex box inside another: a mail page's strip of senders, in some
+  // twenty of them, was walked 27 times a step of a window's edge, to land
+  // where it was. Laid out where it stands, what stays moves nothing
+  const rows = Array.from(
+    { length: 100 },
+    (_, i) => `<div class="row" id="r${i}"><b>row</b> ${i}</div>`,
+  ).join('');
+  const nested = (held: string, depth: number): string =>
+    depth === 0
+      ? held
+      : `<div style="display:flex;flex-direction:column;padding:1px">${nested(held, depth - 1)}</div>`;
+  const page = (row: string) =>
+    `<style>body{margin:0}</style>${nested(`<div style="display:flex">${row}</div>`, 6)}`;
+  const side = `<div id="side" style="flex:none;width:120px">${rows}</div>`;
+  const pane = '<div id="pane" style="flex:1">the rest</div>';
+
+  const beside = await renderScrolled(page(side + pane), 300, 400);
+  const x = boxOf(beside.el, 'r30').x;
+  const moved = boxesMoved();
+  await beside.resize(300, 380);
+  const walked = boxesMoved() - moved;
+  assert.ok(
+    boxOf(beside.el, 'pane').width < 270,
+    'the pane took the new width',
+  );
+  assert.strictEqual(boxOf(beside.el, 'r30').x, x);
+  assert.ok(walked < 50, `${walked} boxes moved, of a column that stayed`);
+  await cleanup();
+
+  // and what does go elsewhere goes the once, at the box that moves it
+  const after = await renderScrolled(page(pane + side), 300, 400);
+  const from = boxOf(after.el, 'r30').x;
+  const count = boxesMoved();
+  await after.resize(300, 380);
+  assert.strictEqual(boxOf(after.el, 'r30').x, from - 20);
+  const once = boxesMoved() - count;
+  assert.ok(once < 350, `${once} boxes moved, of 100 rows of three boxes`);
+});
+
+test('a layout that stops says where from the box it lays out, wherever a probe left that box', async (t) => {
+  // a box stands where its last layout left it, and a probe of what is
+  // around it leaves it anywhere: at no width a column is a word to a line,
+  // and what is under it stands thousands of pixels down. A drag's layout
+  // stops a viewport past what can be seen, and read from there it would
+  // set aside all of what is seen
+  holdClock(t, resizeClock);
+  const rows = Array.from(
+    { length: 60 },
+    (_, i) => `<div class="row" id="r${i}">row ${i}</div>`,
+  ).join('');
+  const source =
+    '<style>body{margin:0}</style>' +
+    '<div style="display:flex;flex-direction:column"><p>a line</p>' +
+    `<div id="under">${rows}</div></div>`;
+  const { el, resize } = await renderScrolled(source, 200, 400);
+  await resize(200, 396);
+  assert.strictEqual(boxOf(el, 'r2').width, 396);
+  const under = boxOf(el, 'under') as Box;
+  moveTo(under, under.x, 5000);
+  await resize(200, 392);
+  assert.strictEqual(
+    boxOf(el, 'r2').width,
+    392,
+    'what can be seen is laid out',
+  );
+});
+
 test('fluid type in vw taken in place at a new width sets its text as a build does, over generated documents', async () => {
   // Bootstrap's headings are `calc(1.3rem + .6vw)`, and every step of a
   // drag built the boxes for them: a text's size, its lines' height and an
@@ -1661,13 +1737,23 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
           b.y,
           b.width,
           b.height,
-          linesOf(el, `e${i}`).map((l) => [l.x, l.y, l.width, l.height]),
+          ...linesOf(el, `e${i}`).flatMap((l) => [l.x, l.y, l.width, l.height]),
         ];
       });
     const resized = laid();
     (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
     el.layoutNow();
-    assert.deepStrictEqual(resized, laid(), `document ${doc}: ${source}`);
+    // to a millionth of a pixel, as a layout's own places are compared: a
+    // box is laid out where it stands, and sums come out in other last bits
+    const whole = laid();
+    assert.ok(
+      resized.every(
+        (box, i) =>
+          box.length === whole[i].length &&
+          box.every((v, j) => Math.abs(v - whole[i][j]) < 1e-6),
+      ),
+      `document ${doc}: ${source}`,
+    );
     await cleanup();
   }
   assert.ok(inPlace >= 8, `${inPlace} of 24 restyled in place`);

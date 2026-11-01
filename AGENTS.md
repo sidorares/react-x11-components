@@ -2847,6 +2847,25 @@ a layout can change in how a box is drawn, besides its rect, its lines
 and its marker, joins `reshaped`**, or a refresh leaves it drawn as it
 was.
 
+**A box is laid out where it stands, and what its layout keeps stays there**
+(`layoutSubtree`). A flex or grid item, a table's cell and what a probe
+measures were laid out at the origin and moved to their place, and a move
+walks all a box holds (`translate`): what a layout kept was moved to the
+origin of each box around it and out again, level by level. A webmail page's
+strip of senders, some 12,900 boxes in some twenty flex boxes, was walked 27
+times a step of a window's edge to land where it was, and that was a third of
+every step. Standing, a box that stays moves nothing, and one that goes
+elsewhere moves once. Three things are load-bearing. **Nothing a subtree's
+layout reads may be a position**: what it holds is read from its corner, as
+`contentBottom` reads it and a baseline less the box's `y`, and anything new
+that reads back what a layout decided does the same. Holding every subtree at
+a far origin through the suite is how to look for one that does not. **What
+stops a layout (`until`) is said from the box being laid out**, and not from
+where it stands, which a probe of what is around it may have left anywhere:
+read from there, a drag's layout set aside all of what could be seen. And
+sums come out in other last bits at another origin, so **places are compared
+to a millionth of a pixel**, as `SAME_PLACE` compares them, never with `===`.
+
 **The passes after a layout that keeps blocks walk what they move, and
 the walk of the ink keeps the rest's** (`Blockers.moved`, `KEPT_INK` in
 `paint.ts`). A box the passes after a flow move, or move what it holds —
