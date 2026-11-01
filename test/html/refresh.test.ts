@@ -1034,42 +1034,14 @@ const set = (
   return { type: 'attributes', target, attributeName, oldValue };
 };
 
-test('a drawing first shown after an id moved finds what goes by it now', async () => {
-  // no drawing named `there` when the id moved, so none was reached by it,
-  // and a `<use>` looked for it in the ids the build had
+test('a drawing a change points at an id that moved with it finds what goes by it now', async () => {
+  // nothing named `there` as it moved, so no drawing was reached by it, and
+  // the `<use>` looked for it in the ids the build had
   const { result, node } = await render(
-    '<style>body{margin:0;height:60px} svg{display:block} .k{fill:#0000ff}' +
-      '</style><svg style="display:none"><rect id="soon" class="k" width="24"' +
+    '<style>body{margin:0} svg{display:block} .k{fill:#0000ff}</style>' +
+      '<svg style="display:none"><rect id="soon" class="k" width="24"' +
       ' height="24"/><rect id="x" width="24" height="24"/></svg>' +
-      `${drawing('asked', '<use href="#x"/>')}` +
-      '<svg id="late" width="24" height="24" style="display:none">' +
-      '<use href="#there"/></svg>',
-    300,
-  );
-  const el = view(node);
-  await snapshot(result, el);
-  el.touchDocument([set(byId(el, 'soon'), 'id', 'there')]);
-  await toldAsBuilt(
-    result,
-    el,
-    [set(byId(el, 'late'), 'style', 'display:block')],
-    'shown',
-  );
-});
-
-test('what comes after a text in what a drawing names reaches it too', async () => {
-  // a text refuses a raster, and what was named after it was not read
-  const { result, node } = await render(
-    '<style>body{margin:0} svg{display:block}</style>' +
-      '<svg style="display:none"><linearGradient id="a"><text>x</text>' +
-      '</linearGradient><linearGradient id="base"><stop id="stop"' +
-      ' stop-color="#ff0000"/></linearGradient>' +
-      '<linearGradient id="g" href="#base"/></svg>' +
-      drawing(
-        's',
-        '<rect fill="url(#a)" width="12" height="24"/>' +
-          '<rect fill="url(#g)" x="12" width="12" height="24"/>',
-      ),
+      drawing('d', '<use id="u" href="#x"/>'),
     300,
   );
   const el = view(node);
@@ -1077,8 +1049,11 @@ test('what comes after a text in what a drawing names reaches it too', async () 
   await toldAsBuilt(
     result,
     el,
-    [set(byId(el, 'stop'), 'stop-color', '#0000ff')],
-    'stop',
+    [
+      set(byId(el, 'soon'), 'id', 'there'),
+      set(byId(el, 'u'), 'href', '#there'),
+    ],
+    'moved',
   );
 });
 

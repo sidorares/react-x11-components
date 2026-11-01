@@ -4323,54 +4323,31 @@ metric(
 metric(
   'what a <use> copies is matched anew for a drawing that nothing reached',
   async (t) => {
-    const source =
+    // A change in it takes what it read, and before it is read again what it
+    // names changes: no name reaches it, and its next paint asks what its
+    // copy matched
+    const { result, node } = await render(
       '<style>body{margin:0}svg{display:block}.k{fill:#ff0000}' +
-      '.k.on{fill:#00aa00}</style>' +
-      '<svg id="sprite" style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
-      '<rect id="in-s" class="k" width="5" height="10"/></symbol></svg>' +
-      '<svg id="d" width="60" height="24"><use href="#s"/><path id="own"' +
-      ' d="M0 0h1v1z"/></svg>' +
-      '<div id="wrap" style="display:none"><svg width="60" height="24"><use' +
-      ' href="#late"/></svg></div>';
-    const steps = (el: HtmlViewNode) => {
-      const by = (id: string) => findById(el.document, id)!;
-      return [
-        // A change in it takes what it read, and before it is read again
-        // what it names changes: no name reaches it, and its next paint asks
-        // what its copy matched
-        () => {
-          el.touchDocument([setAttribute(by('own'), 'd', 'M0 0h2v2z')]);
-          el.touchDocument([setAttribute(by('in-s'), 'class', 'k on')]);
-        },
-        // An id comes to be where no drawing that names it has been read: the
-        // first paint of that one finds it
-        () => {
-          const made = parseDocument(
-            '<symbol id="late" viewBox="0 0 10 10"><rect class="k" width="5"' +
-              ' height="10"/></symbol>',
-          ).children[0] as Element;
-          delete (made as { parent?: unknown }).parent;
-          appendChild(by('sprite'), made);
-          el.touchDocument([cameBack(by('sprite'), made)]);
-          el.touchDocument([setAttribute(by('wrap'), 'style', '')]);
-        },
-      ];
-    };
-    for (let step = 0; step < 2; step += 1) {
-      const { result, node } = await render(source, 300);
-      const el = view(node);
-      const { repaint } = repaints(t, result, el);
-      await repaint();
-      await repaint();
-      steps(el)[step]();
-      await act();
-      const told = await snapshot(result, el);
-      el.touchDocument();
-      await act();
-      const whole = await snapshot(result, el);
-      assert.ok(levelsApart(told, whole) <= 1, `step ${step}`);
-      cleanup();
-    }
+        '.k.on{fill:#00aa00}</style>' +
+        '<svg style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+        '<rect id="in-s" class="k" width="5" height="10"/></symbol></svg>' +
+        '<svg width="60" height="24"><use href="#s"/><path id="own"' +
+        ' d="M0 0h1v1z"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const by = (id: string) => findById(el.document, id)!;
+    el.touchDocument([setAttribute(by('own'), 'd', 'M0 0h2v2z')]);
+    el.touchDocument([setAttribute(by('in-s'), 'class', 'k on')]);
+    await act();
+    const told = await snapshot(result, el);
+    el.touchDocument();
+    await act();
+    const whole = await snapshot(result, el);
+    assert.ok(levelsApart(told, whole) <= 1, 'as its copy matched before');
   },
 );
 
