@@ -4229,97 +4229,6 @@ export class DomHost {
         else tell(keys.map(() => false));
         return null;
       }
-      // a page's `BroadcastChannel`s, by origin and name
-      case 'bcOpen': {
-        const key = `${this._origin()} ${text(b)}`;
-        const end = { id: Number(a), tell: this._channelTold };
-        this._channels.set(Number(a), { key, end });
-        openChannel(key, end);
-        return null;
-      }
-      case 'bcPost': {
-        const channel = this._channels.get(Number(a));
-        if (channel) {
-          postChannel(channel.key, channel.end, text(b), (fn) =>
-            setTimeout(fn, 0),
-          );
-        }
-        return null;
-      }
-      case 'bcClose': {
-        const channel = this._channels.get(Number(a));
-        if (channel) closeChannel(channel.key, channel.end);
-        this._channels.delete(Number(a));
-        return null;
-      }
-      // a page's `navigator.locks` (`page-channels.ts`)
-      case 'lockRequest':
-        return requestLock(
-          this._origin(),
-          {
-            id: Number(a),
-            name: text(b),
-            exclusive: c === true,
-            client: this._lockClient,
-            granted: this._lockGranted,
-            stolen: this._lockStolen,
-          },
-          text(d).includes('i'),
-          text(d).includes('s'),
-        );
-      case 'lockRelease':
-        releaseLock(this._origin(), Number(a), this._lockClient);
-        return null;
-      case 'lockQuery':
-        return queryLocks(this._origin());
-      case 'lockClient':
-        return this._lockClient;
-      // a page's compression streams, on node's zlib
-      case 'zlibNew': {
-        const id = Number(a);
-        const tell = (kind: string, value: unknown): void => {
-          if (!this._disposed) this.entries?.call('__zlib', [id, kind, value]);
-        };
-        this._zlibs.set(
-          id,
-          new PageZlib(text(b), {
-            output: (chunks) => {
-              for (const chunk of chunks) tell('data', base64Of(chunk));
-            },
-            end: (ok) => {
-              this._zlibs.delete(id);
-              tell('end', ok);
-            },
-          }),
-        );
-        return null;
-      }
-      case 'zlibWrite': {
-        const id = Number(a);
-        this._zlibs.get(id)?.write(Buffer.from(text(b), 'base64'), () => {
-          if (!this._disposed) {
-            this.entries?.call('__zlib', [id, 'written', true]);
-          }
-        });
-        return null;
-      }
-      case 'zlibEnd':
-        this._zlibs.get(Number(a))?.end();
-        return null;
-      case 'zlibDrop':
-        this._zlibs.get(Number(a))?.dispose();
-        this._zlibs.delete(Number(a));
-        return null;
-      // where what an inline drawing holds is (`svg-geometry.ts`)
-      case 'svg': {
-        this.flush();
-        const el = this._element(a);
-        const handle = this._drawing(el) as Partial<HandleInternals> | null;
-        const measure = handle?.svgMeasure?.();
-        if (!measure) return '';
-        const answer = svgAnswer(text(b), el, measure, Number(c));
-        return answer ? answer.join(',') : '';
-      }
       // the page told once none of the document's faces is on its way
       // (`__fontsSettled`), which `document.fonts.ready` waits for
       case 'fontsSettled': {
@@ -4843,6 +4752,97 @@ export class DomHost {
             new Uint8Array(Math.min(65536, Math.max(0, Number(a) || 0))),
           ),
         );
+      // a page's `BroadcastChannel`s, by origin and name
+      case 'bcOpen': {
+        const key = `${this._origin()} ${text(b)}`;
+        const end = { id: Number(a), tell: this._channelTold };
+        this._channels.set(Number(a), { key, end });
+        openChannel(key, end);
+        return null;
+      }
+      case 'bcPost': {
+        const channel = this._channels.get(Number(a));
+        if (channel) {
+          postChannel(channel.key, channel.end, text(b), (fn) =>
+            setTimeout(fn, 0),
+          );
+        }
+        return null;
+      }
+      case 'bcClose': {
+        const channel = this._channels.get(Number(a));
+        if (channel) closeChannel(channel.key, channel.end);
+        this._channels.delete(Number(a));
+        return null;
+      }
+      // a page's `navigator.locks` (`page-channels.ts`)
+      case 'lockRequest':
+        return requestLock(
+          this._origin(),
+          {
+            id: Number(a),
+            name: text(b),
+            exclusive: c === true,
+            client: this._lockClient,
+            granted: this._lockGranted,
+            stolen: this._lockStolen,
+          },
+          text(d).includes('i'),
+          text(d).includes('s'),
+        );
+      case 'lockRelease':
+        releaseLock(this._origin(), Number(a), this._lockClient);
+        return null;
+      case 'lockQuery':
+        return queryLocks(this._origin());
+      case 'lockClient':
+        return this._lockClient;
+      // a page's compression streams, on node's zlib
+      case 'zlibNew': {
+        const id = Number(a);
+        const tell = (kind: string, value: unknown): void => {
+          if (!this._disposed) this.entries?.call('__zlib', [id, kind, value]);
+        };
+        this._zlibs.set(
+          id,
+          new PageZlib(text(b), {
+            output: (chunks) => {
+              for (const chunk of chunks) tell('data', base64Of(chunk));
+            },
+            end: (ok) => {
+              this._zlibs.delete(id);
+              tell('end', ok);
+            },
+          }),
+        );
+        return null;
+      }
+      case 'zlibWrite': {
+        const id = Number(a);
+        this._zlibs.get(id)?.write(Buffer.from(text(b), 'base64'), () => {
+          if (!this._disposed) {
+            this.entries?.call('__zlib', [id, 'written', true]);
+          }
+        });
+        return null;
+      }
+      case 'zlibEnd':
+        this._zlibs.get(Number(a))?.end();
+        return null;
+      case 'zlibDrop':
+        this._zlibs.get(Number(a))?.dispose();
+        this._zlibs.delete(Number(a));
+        return null;
+      // where what an inline drawing holds is (`svg-geometry.ts`)
+      case 'svg': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        const answer = svgAnswer(text(b), el, measure, Number(c));
+        return answer ? answer.join(',') : '';
+      }
       case 'uuid':
         return crypto.randomUUID();
       case 'fetch':

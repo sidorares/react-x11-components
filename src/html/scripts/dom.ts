@@ -24018,6 +24018,45 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
+  const navigator = {
+    userAgent,
+    appName: 'Netscape',
+    appVersion: userAgent.replace(/^Mozilla\//, ''),
+    platform,
+    vendor: '',
+    language,
+    languages: [language],
+    onLine: true,
+    get cookieEnabled(): boolean {
+      return call('cookie', 'enabled') === true;
+    },
+    doNotTrack: '1',
+    hardwareConcurrency: 4,
+    maxTouchPoints: 0,
+    webdriver: false,
+    pdfViewerEnabled: false,
+    // none, as a browser that shows no PDF has none: what a script counts
+    plugins: new PluginArray(),
+    mimeTypes: new MimeTypeArray(),
+    // `clipboard` and `serviceWorker` are left out rather than undefined:
+    // a page asks for them with `in`, and takes one that is there for one
+    // it can use
+    sendBeacon: () => false,
+    javaEnabled: () => false,
+    userActivation: new UserActivation(ACTIVATION_KEY),
+  };
+  // a page's service workers, where the host lets it have them and it is a
+  // secure context; left out otherwise, as `clipboard` is
+  const serviceWorkersOn =
+    location.protocol === 'https:' && call('serviceWorkers') === true;
+  if (serviceWorkersOn) {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      get: () => serviceWorkerContainer,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
   // --- Server-Sent Events (HTML 9.2) -----------------------------------------
 
   const SSE_RETRY_MS = 3000;
@@ -24455,45 +24494,6 @@ export function installDom(
       makingLock = false;
     }
   };
-
-  const navigator = {
-    userAgent,
-    appName: 'Netscape',
-    appVersion: userAgent.replace(/^Mozilla\//, ''),
-    platform,
-    vendor: '',
-    language,
-    languages: [language],
-    onLine: true,
-    get cookieEnabled(): boolean {
-      return call('cookie', 'enabled') === true;
-    },
-    doNotTrack: '1',
-    hardwareConcurrency: 4,
-    maxTouchPoints: 0,
-    webdriver: false,
-    pdfViewerEnabled: false,
-    // none, as a browser that shows no PDF has none: what a script counts
-    plugins: new PluginArray(),
-    mimeTypes: new MimeTypeArray(),
-    // `clipboard` and `serviceWorker` are left out rather than undefined:
-    // a page asks for them with `in`, and takes one that is there for one
-    // it can use
-    sendBeacon: () => false,
-    javaEnabled: () => false,
-    userActivation: new UserActivation(ACTIVATION_KEY),
-  };
-  // a page's service workers, where the host lets it have them and it is a
-  // secure context; left out otherwise, as `clipboard` is
-  const serviceWorkersOn =
-    location.protocol === 'https:' && call('serviceWorkers') === true;
-  if (serviceWorkersOn) {
-    Object.defineProperty(navigator, 'serviceWorker', {
-      get: () => serviceWorkerContainer,
-      enumerable: true,
-      configurable: true,
-    });
-  }
 
   // --- session history and the Navigation API (HTML 7.4 and 7.2.6) ------------
   //
@@ -30558,6 +30558,15 @@ export function installDom(
     done(Array.isArray(loaded) ? loaded : []);
     return true;
   });
+  entry('__fontsSettled', () => {
+    const [id] = input();
+    const done = fontSettles.get(id);
+    if (!done) return false;
+    fontSettles.delete(id);
+    done();
+    return true;
+  });
+
   // what a compression stream's zlib came to
   entry('__zlib', () => {
     const [id, kind, value] = input();
@@ -30597,15 +30606,6 @@ export function installDom(
     lockRequests.get(id)?.stolen();
     return true;
   });
-  entry('__fontsSettled', () => {
-    const [id] = input();
-    const done = fontSettles.get(id);
-    if (!done) return false;
-    fontSettles.delete(id);
-    done();
-    return true;
-  });
-
   // what came of a `fetch`
   entry('__fetched', () => {
     const [id, answer] = input();
