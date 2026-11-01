@@ -2905,8 +2905,10 @@ until it is `open`, and is then HTML's framed box out of the flow, centred
 across its containing block; one a page's scripts opened with
 `showModal()` is in the top layer, centred in the viewport over all of
 the page (see [Scripts](#scripts)).
-A flex container is laid out by Yoga, the engine react-x11 lays itself out
-with, and each item by this one: an item of `width: auto` is as wide as its
+A flex container is laid out by Yoga's algorithm — the engine react-x11 lays
+itself out with where it wraps or runs the other way, and the same arithmetic
+in JavaScript where it has one line, which is nearly always — and each item by
+this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its
 padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. One that may not
