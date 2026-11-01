@@ -5486,7 +5486,13 @@ them (`offsetInline`), its first piece moves all of a box broken around
 blocks (`CUT_PIECES`), and what keeps it in is never an anonymous block
 (`stickyContainer`). **Anything new that moves a sticky box goes through
 `moveSticky`**, or that text stays on its line, and a move of the box's
-lines moves its rect, as `translate` does. One the viewport keeps
+lines moves its rect, as `translate` does. Stickiness is measured from
+where no transform has the box (`movedByTransforms`, its own and those
+around it up to what scrolls it), and its transform is added to where it
+sticks, as all three engines have it, which is what lets a change of one in
+place move the box by the difference and leave `STUCK` as it is (`retranslate`):
+**anything new that measures a sticky box against something a transform does
+not move takes them off**, or stickiness takes the transform back. One the viewport keeps
 (`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
 (`_followViewport`, `restickToViewport`), for the offsets the pane has

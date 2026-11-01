@@ -5467,7 +5467,9 @@ where a fixed box is, so its copy of a step does not drag the box with the
 text. What a sticky box holds goes with it but for a box fixed to the
 viewport, which stays where the viewport has it; a relative box's offset
 moves one only along an axis it has no inset on, where it is at its static
-position, as Chrome has both. A step of the pane's scroll that moves one
+position, as Chrome has both. A transform moves it from where it sticks, its own
+and one around it alike, and takes nothing from where it sticks, as Chrome,
+Firefox and WebKit have it: a stuck header `translateY(-100%)` hides is hidden. A step of the pane's scroll that moves one
 works out the ink of that box and what it holds, and grows the boxes around
 it only as far as it reaches past them, which its container, holding it,
 never needs: the whole document's was worked out again at every step, and

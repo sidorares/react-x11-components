@@ -8909,6 +8909,9 @@ function stickyOffset(
   const cb = stickyContainer(box);
   const size = stickySizeOf(box);
   if (!cb || !size) return [0, 0];
+  // its own transform has moved it, and none around it has yet: this pass
+  // comes up from the leaves (`movedByTransforms`)
+  const [tx, ty] = movedByTransforms(box, box.parent);
   // the scrollport, at its start: a scroll container's padding box, or
   // the viewport, which the document's top is at
   const px = port && inside ? port.x + port.borderLeft : 0;
@@ -8922,7 +8925,7 @@ function stickyOffset(
       ? port.height - port.borderTop - port.borderBottom
       : viewportHeight;
   const dx = stuck(
-    box.x,
+    box.x - tx,
     size.width,
     box.marginLeft,
     box.marginRight,
@@ -8936,7 +8939,7 @@ function stickyOffset(
     cb.style.direction !== 'rtl',
   );
   const dy = stuck(
-    box.y,
+    box.y - ty,
     size.height,
     ownMarginTop(box, cb),
     ownMarginBottom(box, cb),
@@ -8949,6 +8952,30 @@ function stickyOffset(
     true,
   );
   return [dx, dy];
+}
+
+/**
+ * How far the transforms of a box and of the boxes around it have moved it
+ * (`applyRelativeOffsets`), up to `stop` and not `stop`'s. Stickiness is
+ * layout's and a transform moves what layout placed, so a sticky box is
+ * measured from where it would be with none, as all three engines measure
+ * it, and its transform is added to where it sticks. Measured from where the
+ * transform had it, stickiness took the transform back: a header stuck to
+ * the top with `translateY(-100%)` to hide it stayed in view, and one moved
+ * in place went by the difference and stuck by what it stuck by before, so
+ * it came to rest somewhere no layout would put it.
+ */
+function movedByTransforms(box: Box, stop: Box | null): [number, number] {
+  let x = 0;
+  let y = 0;
+  for (let at: Box | null = box; at && at !== stop; at = at.parent) {
+    if (at.kind !== 'inline' && transformed(at.style)) {
+      const [dx, dy] = translationOf(at);
+      x += dx;
+      y += dy;
+    }
+  }
+  return [x, y];
 }
 
 /**
@@ -9187,6 +9214,7 @@ export function restickToViewport(
     const at = placeSticky(
       box,
       cb,
+      null,
       port.x,
       port.y,
       port.width,
@@ -9223,6 +9251,7 @@ function restick(box: Box, port: Box): boolean {
   return placeSticky(
     box,
     cb,
+    port,
     port.x + port.borderLeft,
     port.y + port.borderTop,
     port.width - port.borderLeft - port.borderRight,
@@ -9236,10 +9265,14 @@ function restick(box: Box, port: Box): boolean {
 
 /** A sticky box placed against a scrollport (`px`…`ph`) within its
  *  containing block (`cbx`…`cbh`), from where the flow has it: that far
- *  less from where it is now (`STUCK`). Whether it moved. */
+ *  less from where it is now (`STUCK`), and less what transforms moved
+ *  (`movedByTransforms`) — those that moved it alone, and those that moved
+ *  its containing block with it but not the scrollport of `scroller`, or of
+ *  the viewport for none. Whether it moved. */
 function placeSticky(
   box: Box,
   cb: Box,
+  scroller: Box | null,
   px: number,
   py: number,
   pw: number,
@@ -9253,12 +9286,14 @@ function placeSticky(
   if (!size) return false;
   const was = STUCK.get(box) ?? [0, 0];
   const style = box.style;
+  const [ownX, ownY] = movedByTransforms(box, cb);
+  const [withX, withY] = movedByTransforms(cb, scroller);
   const dx = stuck(
-    box.x - was[0],
+    box.x - was[0] - ownX - withX,
     size.width,
     box.marginLeft,
     box.marginRight,
-    cbx,
+    cbx - withX,
     cbw,
     px,
     pw,
@@ -9267,11 +9302,11 @@ function placeSticky(
     cb.style.direction !== 'rtl',
   );
   const dy = stuck(
-    box.y - was[1],
+    box.y - was[1] - ownY - withY,
     size.height,
     ownMarginTop(box, cb),
     ownMarginBottom(box, cb),
-    cby,
+    cby - withY,
     cbh,
     py,
     ph,

@@ -755,6 +755,95 @@ test("a scroll container's sticky boxes keep to it where it is scrolled to, as C
   assert.deepEqual(tops(), [0, 5, 120, 90], 'laid out again');
 });
 
+test('a transform moves a sticky box from where it sticks, as all three engines place it, and takes nothing from where it sticks', async () => {
+  // Stickiness is layout's and a transform moves what layout placed, so
+  // stickiness was handed a place a transform had moved, and took the
+  // transform back: `translateY(-100%)` on a stuck header left it in view.
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}.s{height:100px;overflow:auto}.tall{height:400px}' +
+      '.h{width:20px;height:20px}.st{position:sticky;top:10px}' +
+      '#e{position:sticky;bottom:6px;transform:translateY(3px)}</style>' +
+      '<div class="s" id="own"><div class="tall"><div class="h st" id="o" ' +
+      'style="transform:translateY(-100%)"></div></div></div>' +
+      '<div class="s" id="turn"><div class="tall"><div class="h st" id="t" ' +
+      'style="transform:translateY(-100%) rotate(45deg)"></div></div></div>' +
+      '<div class="s" id="around"><div class="tall" ' +
+      'style="transform:translateY(30px)"><div class="h st" id="a"></div>' +
+      '</div></div>' +
+      '<div class="s" id="end"><div style="height:400px">' +
+      '<div style="height:200px"></div><div style="height:20px">' +
+      '<div class="h" id="e"></div></div></div></div>' +
+      '<div class="tall"><div class="h st" id="v" ' +
+      'style="transform:translateY(-100%)"></div></div>' +
+      '<div class="s" id="limit"><div style="height:60px;' +
+      'transform:translateY(30px)"><div class="h st" id="l"></div></div>' +
+      '<div style="height:300px"></div></div>' +
+      '<div class="s" id="wide"><div style="width:600px;height:20px">' +
+      '<div style="width:60px;height:20px;transform:translateX(30px)">' +
+      '<div class="h" id="w" style="position:sticky;left:10px;' +
+      'transform:translateX(5px)"></div></div></div></div>' +
+      '<div class="s" id="moved" style="transform:translateY(30px)">' +
+      '<div class="tall"><div class="h st" id="m"></div></div></div>' +
+      '<div class="tall"></div>',
+    300,
+    300,
+  );
+  const top = (id: string, scroller: string) =>
+    Math.round(
+      (node.elementRect(el(node, id))!.y -
+        node.elementRect(el(node, scroller))!.y) *
+        10,
+    ) / 10;
+  // Chromium, Firefox and WebKit alike: its own, turned as well, and one
+  // around it that its scrollport is outside of; `#e` fills its containing
+  // block, so it has no room to stick and is where the flow has it, moved
+  const engines = [
+    ['own', 'o', 150, -10],
+    ['turn', 't', 150, -14.1],
+    ['around', 'a', 150, 40],
+    ['end', 'e', 0, 203],
+    // and one on what scrolls it moves the scrollport with what it holds
+    ['moved', 'm', 150, 10],
+  ] as const;
+  for (const [scroller, id, y, want] of engines) {
+    node.scrollElementTo(el(node, scroller), { y });
+    await act();
+    assert.strictEqual(top(id, scroller), want, id);
+  }
+  // a change of it in place moves the box by the difference, and leaves
+  // where it sticks: a layout and a build come to the same
+  const box = boxOf(node, 'e');
+  const e = el(node, 'e');
+  e.attribs.style = 'transform:translateY(2px)';
+  node.touchDocument([
+    { type: 'attributes', target: e, attributeName: 'style', oldValue: null },
+  ]);
+  await act();
+  assert.ok(boxOf(node, 'e') === box, 'restyled where it is');
+  assert.strictEqual(top('e', 'end'), 202, 'in place');
+  (node as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  await act();
+  assert.strictEqual(top('e', 'end'), 202, 'built again');
+  // a containing block a transform moved keeps it in where it would be with
+  // none, down and across
+  node.scrollElementTo(el(node, 'limit'), { y: 100 });
+  node.scrollElementTo(el(node, 'wide'), { x: 100 });
+  await act();
+  assert.strictEqual(top('l', 'limit'), -30);
+  assert.strictEqual(
+    node.elementRect(el(node, 'w'))!.x - node.elementRect(el(node, 'wide'))!.x,
+    -25,
+  );
+  // and one the viewport keeps
+  const pane = paneOf(node) as unknown as {
+    scrollY: number;
+    scrollTo(y: number): void;
+  };
+  await act(async () => pane.scrollTo(500));
+  await act();
+  assert.strictEqual(node.elementRect(el(node, 'v'))!.y - pane.scrollY, -10);
+});
+
 metric(
   'a sticky inline box keeps to its container as a block does, moved whole by what its lines come to, as Chrome and WebKit place it',
   async () => {
