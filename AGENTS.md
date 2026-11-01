@@ -3735,9 +3735,27 @@ closes a way out a DOM binding opens by accident:
   keep a document (an entry is still of it, and it is no reload), the
   runner whether it may go (`salvageable`: loaded, and nothing open a peer
   would see held — `DomHost.connected`), so **anything new that holds a
-  connection open answers `open` and joins `connected`**. A page that
-  listens for `unload` is kept and never hears it, as HTML, Chrome and
-  Safari have it. A kept document shown again re-reads the session
+  connection open answers `open` and joins `connected`**. A document's
+  workers stop with it, each at its own engine, and go on from there as it
+  is shown again (`PageWorkers.freeze`, `followPage`): HTML 10.2.4 has a
+  worker none of whose owners is fully active suspended, and WPT's
+  `weblocks-worker` holds one to it. A thread reads a shared word as well
+  as hearing a message, since one still starting hears no message until
+  its script has run. That leaves a task under way as the document is
+  frozen, which nothing reaches: a connection it asks for arrives at a
+  document that cannot hold one, which is let go as one with too much
+  waiting is (`_refused`, `_letGo`), with the page around it where it is a
+  frame's. So **anything new a worker can open that a peer would see held
+  answers `open` on its relay, joins `PageWorkers.connected` and goes
+  through `_refused`**. To know a thread has stopped, a test waits on
+  `PageWorkers.stopped`, since it does nothing else to say so, and to hold
+  a task under way it holds the `importScripts` of one at the page's
+  network. Such a wait has no deadline of its own, so it ends with its test
+  (`t.signal`): one that outlived its test held the file's process open for
+  good, and a regression hung the run where it should have failed it. A
+  page that listens for `unload` is kept and never hears it, as HTML,
+  Chrome and Safari have it. A kept document shown again re-reads the
+  session
   (`reseedSession`), keeping its own entries' `NavigationHistoryEntry`
   objects — WPT holds `currentEntry` to the one a script kept — and
   disposing the rest in a task after `pageshow`. A step to a kept document

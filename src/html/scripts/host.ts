@@ -264,6 +264,8 @@ export interface PageWorkersLike {
   rtc?(id: number, message: ChannelRelay): void;
   /** Whether a worker has a connection open (`DomHost.connected`). */
   readonly connected?: boolean;
+  /** How many threads have stopped for the back-forward cache. */
+  readonly stopped?: number;
 }
 
 /** What a realm that is a worker's reaches its page by

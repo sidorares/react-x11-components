@@ -6,8 +6,9 @@
 // does: an `<Html>` a document, the documents the session keeps mounted and
 // hidden, and the one the current entry is of shown.
 import { afterEach, test as nodeTest } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { act, cleanup, renderX11 } from 'react-x11/test';
 
 import {
@@ -16,11 +17,17 @@ import {
   useHtmlHandle,
 } from '../../src/html/index.js';
 import { preloadHtmlScripts, useScripts } from '../../src/html/scripts/hook.js';
+import { FrameHolder, embeddedMounts } from '../../src/html/scripts/frames.js';
+import type { FrameContext } from '../../src/html/scripts/frames.js';
 import type { ScriptRunner } from '../../src/html/scripts/runner.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import type { HtmlWebTransport } from '../../src/html/transport.js';
 import type { HtmlWebSocket } from '../../src/html/socket.js';
+import type {
+  FetchRequest,
+  FetchResponse,
+} from '../../src/html/scripts/host.js';
 import { FakeTransport } from '../fake-transport.js';
 import { FakeSockets } from '../fake-socket.js';
 import { FONTS, h } from './harness.js';
@@ -67,6 +74,9 @@ async function tab(
   cache: number,
   webTransport?: HtmlWebTransport,
   webSocket?: HtmlWebSocket,
+  fetch: (request: FetchRequest) => Promise<FetchResponse> = async () => {
+    throw new Error('no network');
+  },
 ): Promise<Tab> {
   const session = new HtmlSessionHistory(undefined, {
     backForwardCache: cache,
@@ -106,11 +116,10 @@ async function tab(
       },
       log: (_level, text) => void out.logs.push(text),
       title: () => {},
-      fetch: async () => {
-        throw new Error('no network');
-      },
+      fetch: (request) => fetch(request),
       load: async () => null,
       onTimeout: () => {},
+      drawsFrames: true,
       session,
       ...(webTransport && { webTransport }),
       ...(webSocket && { webSocket }),
@@ -119,14 +128,27 @@ async function tab(
     runners.set(doc.n, () => scripts.runner?.() ?? null);
     useEffect(() => () => void runners.delete(doc.n), []);
     const file = new URL(doc.url).pathname.slice(1);
-    return h(Html, {
-      source: `${pages[file] ?? '<p>missing</p>'}<!--${doc.n}-->`,
-      partial: false,
-      ref: handle.ref,
-      baseUrl: doc.url,
-      style: props.visible ? { flexGrow: 1 } : { display: 'none' },
-      ...scripts,
-    });
+    const frames = (): FrameContext | null => {
+      const parent = scripts.runner?.();
+      return parent
+        ? { parent, seams, look: { onResource: () => null } }
+        : null;
+    };
+    const holder = frames();
+    return h(
+      Fragment,
+      null,
+      h(Html, {
+        source: `${pages[file] ?? '<p>missing</p>'}<!--${doc.n}-->`,
+        partial: false,
+        ref: handle.ref,
+        baseUrl: doc.url,
+        style: props.visible ? { flexGrow: 1 } : { display: 'none' },
+        ...scripts,
+        renderEmbedded: embeddedMounts(frames),
+      }),
+      holder ? h(FrameHolder, { context: holder }) : null,
+    );
   }
 
   function Shown() {
@@ -260,6 +282,62 @@ async function until(
   );
   return doc.logs;
 }
+
+/** Wait for what a worker's thread comes to, a count or what it asked of a
+ *  seam. The thread has the whole engine to load, however long the machine
+ *  takes over that, so this waits for what it does and not for a time; the
+ *  test's `timeout` is what ends it if it never comes. It ends with the test
+ *  (`t.signal`): a loop that outlived its test held the file's process open
+ *  for good, so a regression here hung the run where it should fail it. */
+async function whenever(t: TestContext, done: () => boolean): Promise<void> {
+  while (!done()) {
+    t.signal.throwIfAborted();
+    await settle(20);
+  }
+}
+
+/**
+ * A network with `files` on it, each answered at once but the one `held`,
+ * which is answered once the test says: a worker asking for it stops there,
+ * its thread waiting on the seam, not yet running a script `held` is, or in
+ * the `importScripts` of one that is.
+ */
+function network(files: Record<string, string>, held: string) {
+  let heard = () => {};
+  let answer = () => {};
+  const asked = new Promise<void>((resolve) => {
+    heard = resolve;
+  });
+  const answered = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
+    const file = new URL(request.url).pathname.slice(1);
+    if (file === held) {
+      heard();
+      await answered;
+    }
+    return {
+      url: request.url,
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: [['content-type', 'text/html']],
+      body: files[file] ?? '',
+    };
+  };
+  return { fetch, asked, answer };
+}
+
+/** How many of the workers of the document at an address have stopped. */
+const stopped = (doc: Tab, url: string): number | undefined =>
+  doc.runnerAt(url)?.host.workers?.stopped;
+
+/** A worker that connects, and tells its page; and the page that hears it. */
+const CONNECTS = 'var ws = new WebSocket("wss://ws.test/w");';
+const SAYS_CONNECTED = 'ws.onopen = function () { postMessage("connected"); };';
+const HEARS =
+  'var w = new Worker("w.js"); w.onmessage = function (e) { say("worker " + e.data); };';
 
 /** A page that says what becomes of it: its loads, its page lifecycle, its
  *  visibility and its unload, each line starting with its name. */
@@ -424,7 +502,7 @@ test('a document with a WebTransport session open unloads, and a step back loads
 test(
   'a document with a WebSocket open, or a worker of its with one, unloads; once the socket is closed it is kept',
   { timeout: 120_000 },
-  async () => {
+  async (t) => {
     let workerAsked = () => {};
     const asked = new Promise<void>((resolve) => {
       workerAsked = resolve;
@@ -482,6 +560,270 @@ test(
     doc.run('history.back();');
     await until(doc, 'b pageshow true 1');
     assert.ok(doc.logs.includes('c pagehide false'), doc.logs.join('\n'));
+  },
+);
+
+test(
+  'a worker whose thread is still starting as its document is kept runs nothing until it is shown again, and the document stays kept',
+  { timeout: 120_000 },
+  async (t) => {
+    const sockets = new FakeSockets((c) => setTimeout(() => c.open(), 0));
+    const net = network({ 'w.js': CONNECTS + SAYS_CONNECTED }, 'w.js');
+    const doc = await tab(
+      { 'a.html': page('a', HEARS), 'b.html': page('b') },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      sockets,
+      net.fetch,
+    );
+    await until(doc, 'a pageshow false 1');
+    // its thread is up as far as its script, and the page leaves
+    await net.asked;
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    assert.equal(doc.session.kept.length, 1);
+    net.answer();
+    await whenever(
+      t,
+      () =>
+        stopped(doc, `${SITE}a.html`) === 1 || sockets.connections.length > 0,
+    );
+    // HTML 10.2.4: a worker whose owners are all in the cache is suspendable,
+    // and its script does not run
+    assert.equal(sockets.connections.length, 0);
+    assert.equal(doc.session.kept.length, 1);
+    doc.run('history.back();');
+    await until(doc, 'a pageshow true 1');
+    await whenever(t, () => doc.logs.includes('a worker connected'));
+    // the same document, its worker having gone on from where it stopped
+    assert.equal(doc.logs.filter((l) => l === 'a loaded').length, 1);
+    assert.equal(sockets.connections.length, 1);
+  },
+);
+
+test(
+  'what a page posted to a worker still starting as its document was kept reaches the script that waited, once it is shown again',
+  { timeout: 120_000 },
+  async (t) => {
+    const net = network(
+      {
+        'w.js': 'onmessage = function (e) { postMessage("heard " + e.data); };',
+      },
+      'w.js',
+    );
+    const doc = await tab(
+      {
+        'a.html': page('a', HEARS + 'w.postMessage("hello");'),
+        'b.html': page('b'),
+      },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      undefined,
+      net.fetch,
+    );
+    await until(doc, 'a pageshow false 1');
+    await net.asked;
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    net.answer();
+    await whenever(t, () => stopped(doc, `${SITE}a.html`) === 1);
+    doc.run('history.back();');
+    await until(doc, 'a pageshow true 1');
+    // run after the message, the script would have left it nobody to hear
+    await whenever(t, () => doc.logs.includes('a worker heard hello'));
+  },
+);
+
+test(
+  'a timer of a worker whose document is kept waits until it is shown again, and what it does then is the page shown',
+  { timeout: 120_000 },
+  async (t) => {
+    const sockets = new FakeSockets((c) => setTimeout(() => c.open(), 0));
+    const net = network(
+      {
+        'w.js':
+          'postMessage("up");' +
+          'onmessage = function () { setTimeout(function () {' +
+          CONNECTS +
+          SAYS_CONNECTED +
+          '}, 0); };',
+      },
+      '',
+    );
+    const doc = await tab(
+      {
+        'a.html': page(
+          'a',
+          HEARS +
+            'addEventListener("pagehide", function () { w.postMessage("soon"); });',
+        ),
+        'b.html': page('b'),
+      },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      sockets,
+      net.fetch,
+    );
+    await whenever(t, () => doc.logs.includes('a worker up'));
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    await whenever(
+      t,
+      () =>
+        stopped(doc, `${SITE}a.html`) === 1 || sockets.connections.length > 0,
+    );
+    assert.equal(sockets.connections.length, 0);
+    assert.equal(doc.session.kept.length, 1);
+    doc.run('history.back();');
+    await until(doc, 'a pageshow true 1');
+    await whenever(t, () => doc.logs.includes('a worker connected'));
+    assert.equal(doc.logs.filter((l) => l === 'a loaded').length, 1);
+    assert.equal(stopped(doc, `${SITE}a.html`), 0);
+  },
+);
+
+for (const [what, opens] of [
+  ['a WebSocket', 'new WebSocket("wss://ws.test/w");'],
+  ['a WebTransport session', 'new WebTransport("https://wt.test/");'],
+] as const) {
+  test(
+    `${what} asked for by a task under way as its worker's document is kept lets the document go, and is never opened`,
+    { timeout: 120_000 },
+    async (t) => {
+      const sockets = new FakeSockets();
+      const transport = new FakeTransport((server) => server.accept());
+      const net = network(
+        { 'w.js': `importScripts("hold.js");${opens}` },
+        'hold.js',
+      );
+      const doc = await tab(
+        {
+          'a.html': page(
+            'a',
+            HEARS +
+              'addEventListener("unload", function () { say("unload"); });',
+          ),
+          'b.html': page('b'),
+        },
+        `${SITE}a.html`,
+        3,
+        transport,
+        sockets,
+        net.fetch,
+      );
+      await until(doc, 'a pageshow false 1');
+      // the task is in its `importScripts`, where no message reaches it
+      await net.asked;
+      doc.run('location.href = "b.html";');
+      await until(doc, 'b pageshow false 1');
+      assert.equal(doc.session.kept.length, 1);
+      net.answer();
+      const asked = () => sockets.connections.length + transport.servers.length;
+      await whenever(t, () => doc.session.kept.length === 0 || asked() > 0);
+      assert.equal(asked(), 0);
+      assert.deepEqual(doc.session.kept, []);
+      await settle();
+      assert.deepEqual(doc.mounted(), [`${SITE}b.html`]);
+      // let go as it was, told nothing
+      assert.ok(!doc.logs.includes('a unload'));
+      doc.run('history.back();');
+      await until(doc, 'a loaded', 2);
+    },
+  );
+}
+
+test(
+  "a worker's connection a frame's document asks for lets go of the page the frame is in, not the frame alone",
+  { timeout: 120_000 },
+  async (t) => {
+    const sockets = new FakeSockets();
+    const net = network(
+      {
+        'f.html': '<script>new Worker("w.js");</script>',
+        'w.js': `importScripts("hold.js");${CONNECTS}`,
+      },
+      'hold.js',
+    );
+    const doc = await tab(
+      {
+        'a.html': page('a') + '<iframe src="f.html"></iframe>',
+        'b.html': page('b'),
+      },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      sockets,
+      net.fetch,
+    );
+    await net.asked;
+    await until(doc, 'a pageshow false 1');
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    assert.equal(doc.session.kept.length, 1);
+    net.answer();
+    await whenever(
+      t,
+      () => doc.session.kept.length === 0 || sockets.connections.length > 0,
+    );
+    assert.equal(sockets.connections.length, 0);
+    await settle();
+    assert.deepEqual(doc.mounted(), [`${SITE}b.html`]);
+  },
+);
+
+test(
+  'a worker with a WebTransport session open keeps its document out as one of its own does; closed, or refused as it is asked for, it does not',
+  { timeout: 120_000 },
+  async (t) => {
+    const transport = new FakeTransport((server) => {
+      if (server.request.url.endsWith('/no')) server.refuse('refused');
+      else server.accept();
+    });
+    const session = (url: string) =>
+      `var wt = new WebTransport("${url}");` +
+      'wt.ready.then(function () { postMessage("connected"); }, function () { postMessage("refused"); });' +
+      'wt.closed.then(function () { postMessage("closed"); }, function () {});' +
+      'onmessage = function () { wt.close(); };';
+    const net = network(
+      {
+        'open.js': session('https://wt.test/'),
+        'no.js': session('https://wt.test/no'),
+      },
+      '',
+    );
+    const starts = (file: string) =>
+      `var w = new Worker("${file}"); w.onmessage = function (e) { say("worker " + e.data); };`;
+    const doc = await tab(
+      {
+        'a.html': page('a', starts('open.js')),
+        'b.html': page('b', starts('open.js')),
+        'c.html': page('c', starts('no.js')),
+        'd.html': page('d'),
+      },
+      `${SITE}a.html`,
+      3,
+      transport,
+      undefined,
+      net.fetch,
+    );
+    await whenever(t, () => doc.logs.includes('a worker connected'));
+    doc.run('location.href = "b.html";');
+    await whenever(t, () => doc.logs.includes('b worker connected'));
+    assert.ok(doc.logs.includes('a pagehide false'), doc.logs.join('\n'));
+    assert.deepEqual(doc.session.kept, []);
+    // closed, it is kept
+    doc.run('w.postMessage("close");');
+    await whenever(t, () => doc.logs.includes('b worker closed'));
+    doc.run('location.href = "c.html";');
+    await whenever(t, () => doc.logs.includes('c worker refused'));
+    assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
+    // and one the seam refused as it was asked was never open
+    doc.run('location.href = "d.html";');
+    await until(doc, 'd pageshow false 1');
+    assert.ok(doc.logs.includes('c pagehide true'), doc.logs.join('\n'));
   },
 );
 
