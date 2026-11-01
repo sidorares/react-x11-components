@@ -559,6 +559,7 @@ export class ScriptEngine {
    *  before `_since`, whether what has run since is the page's or an op's,
    *  and how many ops are under way (`_bridge`). */
   private _taskFrom = 0;
+  private _busy = 0;
   private _pageUsed = 0;
   private _since = 0;
   private _inPage = false;
@@ -1263,8 +1264,15 @@ export class ScriptEngine {
     if (this._depth) this._stretch(mark.page);
     else {
       this._inPage = false;
+      this._busy += performance.now() - this._taskFrom;
       this._options.left?.();
     }
+  }
+
+  /** How long the page's tasks have taken, in ms, what they asked of the
+   *  host included (`HtmlViewNode.viewportHeld`). */
+  get busy(): number {
+    return this._busy;
   }
 
   /**

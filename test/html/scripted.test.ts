@@ -9,6 +9,7 @@
 // the engine's chunk is in, which `useScripts` keeps what it reports for.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
+import type { TestContext } from 'node:test';
 import { useState } from 'react';
 import { act, cleanup, renderX11, screen, userEvent } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
@@ -27,6 +28,9 @@ import type {
   HtmlScripts,
   ResourceRequest,
 } from '../../src/html/index.js';
+import { frameClock, resizeClock } from '../../src/html/node.js';
+import { ScriptEngine } from '../../src/html/scripts/engine.js';
+import { holdClock } from '../held-clock.js';
 import {
   FONTS,
   drawnText,
@@ -589,6 +593,347 @@ test("the page hears the pane it is shown in resized: its window's resize, then 
     await until((s) => s.includes('frame')),
     '400 true|resize 300 300|visual|change false|frame 300',
   );
+});
+
+// A drag of a window's edge the document cannot keep up with holds what its
+// page hears of the viewport (`HtmlViewNode.viewportHeld`): the page's scripts
+// are a cycle of their own at each width, and a layout says all its sheets do.
+
+/** A page that says what it hears and reads, in a pane the test drags: its
+ *  document's work and its scripts' time each as long as the test says. A
+ *  `quiet` one writes nothing but for a `resize`, so nothing paints it. */
+async function dragged(t: TestContext, extra = '', quiet = false) {
+  await preloadHtmlScripts();
+  const source =
+    '<!DOCTYPE html><html><head><style>body{margin:0}#box{height:10px}</style></head><body>' +
+    '<div id="box"></div><p id="out"></p><p id="read"></p><script>' +
+    'var heard = [], ticks = 0, box = document.getElementById("box");' +
+    'var wide = matchMedia("(min-width: 350px)");' +
+    'function note(what) { heard.push(what); document.getElementById("out").textContent = heard.join("|"); }' +
+    'addEventListener("resize", function () { note("resize " + innerWidth); });' +
+    'visualViewport.addEventListener("resize", function () { note("visual"); });' +
+    'wide.addEventListener("change", function (e) { note("change " + e.matches); });' +
+    (quiet
+      ? 'document.getElementById("read").textContent = "1 here";'
+      : 'var seen = false;' +
+        'new ResizeObserver(function (entries) {' +
+        '  if (seen) note("observer " + entries[0].contentRect.width);' +
+        '  seen = true;' +
+        '}).observe(box);' +
+        'setInterval(function () {' +
+        '  ticks += 1;' +
+        '  document.getElementById("read").textContent = ticks + " " + innerWidth + " " + wide.matches + " " + box.getBoundingClientRect().width;' +
+        '}, 20);') +
+    extra +
+    '</script></body></html>';
+  const clock = holdClock(t, resizeClock);
+  const work = { value: 0 };
+  let now = 0;
+  t.mock.method(frameClock, 'now', () => (now += work.value));
+  const scripts = { value: 0 };
+  t.mock.getter(ScriptEngine.prototype, 'busy', () => scripts.value);
+  const page = {} as Shown & { width: (w: number) => void };
+  let pane: unknown = null;
+  function Page() {
+    const handle = useHtmlHandle();
+    const [width, setWidth] = useState(400);
+    page.handle = handle;
+    page.width = setWidth;
+    return h(
+      'box',
+      {
+        ref: (node: unknown) => void (pane = node),
+        style: { width, height: 300, overflow: 'scroll' },
+      },
+      h(Html, {
+        source,
+        partial: false,
+        baseUrl: PAGE,
+        ref: handle.ref,
+        scripts: true,
+      }),
+    );
+  }
+  await renderX11(
+    h(Page),
+    FONTS ? { width: 640, height: 400, fonts: FONTS } : { backend: 'mock' },
+  );
+  page.pane = () => pane as ReturnType<Shown['pane']>;
+  page.text = (id) => {
+    const el = page.handle.document && findById(page.handle.document, id);
+    return el ? textOf(el as never) : '';
+  };
+  await until(page, 'read', (s) => s !== '');
+  const node = () =>
+    (page.handle as unknown as { ref: { current: HtmlViewNode } }).ref.current;
+  const wnd = () =>
+    (node() as unknown as { root: { window: { liveResizing?: boolean } } }).root
+      .window;
+  const step = async (...widths: number[]): Promise<void> => {
+    for (const width of widths) {
+      await act(async () => page.width(width));
+      await act();
+    }
+  };
+  const held = () => (node() as unknown as { _cheap: boolean })._cheap;
+  return {
+    page,
+    clock,
+    work,
+    scripts,
+    step,
+    held,
+    /** The drag begins, or ends. */
+    live: (live: boolean) => void (wnd().liveResizing = live),
+    /** The drag falls behind its edge: three frames past the budget, and
+     *  the page has heard the last of them. */
+    async behind(...widths: number[]): Promise<void> {
+      work.value = 20;
+      await step(...widths);
+      assert.ok(held(), 'the drag fell behind');
+      const last = widths[widths.length - 1];
+      await this.hears(`resize ${last}`);
+      if (!quiet) await this.hears(`observer ${last}`);
+    },
+    /** What the page has heard. */
+    heard: () => page.text('out'),
+    /** What it has heard since it had heard `before`, in the order of the
+     *  words: its observers look when they look, and its `resize` comes
+     *  with a frame. */
+    since: (before: string) =>
+      page.text('out').slice(before.length).split('|').filter(Boolean).sort(),
+    /** What it reads, as its clock next comes round: the width, whether
+     *  the query holds, and the box. */
+    async reads(): Promise<string> {
+      const at = Number(page.text('read').split(' ')[0]);
+      // past a look of its observers, which comes every tenth of a second
+      await until(page, 'read', (s) => Number(s.split(' ')[0]) >= at + 8);
+      return page.text('read').split(' ').slice(1).join(' ');
+    },
+    /** Until the page has heard `what`. */
+    async hears(what: string): Promise<void> {
+      const heard = await until(page, 'out', (s) => s.includes(what));
+      assert.ok(heard.includes(what), `${what} in ${heard}`);
+    },
+    /** A rest for what is coming to the page, by its own clock. */
+    async rests(): Promise<void> {
+      await this.reads();
+    },
+  };
+}
+
+test('a drag that fell behind tells a page nothing and leaves what it reads true, and it hears one resize, one change and one size as the drag ends', async (t) => {
+  const drag = await dragged(t);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  const before = drag.heard();
+  // the page's scripts have had all of the time since it last heard
+  drag.scripts.value += 1e9;
+  await drag.step(380, 370, 360, 340, 320);
+  assert.equal(await drag.reads(), '320 false 320', 'it reads what is there');
+  assert.equal(drag.heard(), before, 'and has heard none of it');
+  await drag.step(310, 300);
+  assert.equal(await drag.reads(), '300 false 300');
+  assert.equal(drag.heard(), before);
+  // the hand lets go: told once the drag rests, what it is now, once
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  assert.ok(!drag.held());
+  await drag.hears('observer 300');
+  await drag.hears('change false');
+  const told = ['change false', 'observer 300', 'resize 300', 'visual'];
+  assert.deepEqual(drag.since(before), told);
+  await drag.rests();
+  assert.deepEqual(drag.since(before), told, 'and nothing more');
+});
+
+test('a hand that holds still tells the page where the drag has come to, and the next step holds it again', async (t) => {
+  const drag = await dragged(t);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  drag.scripts.value += 1e9;
+  await drag.step(340, 320);
+  await drag.rests();
+  const before = drag.heard();
+  assert.ok(!before.includes('resize 320'), before);
+  // past a rest of the hand, with the window still saying it is dragged
+  let frames = 0;
+  while (drag.held() && frames < 40) {
+    await act(async () => void (await drag.clock.frame()));
+    frames += 1;
+  }
+  assert.ok(!drag.held(), 'the hand rested');
+  await drag.hears('resize 320');
+  await drag.hears('observer 320');
+  const rested = drag.heard();
+  drag.scripts.value += 1e9;
+  await drag.step(310, 300);
+  assert.ok(drag.held(), 'and it is behind again from the next step');
+  await drag.rests();
+  assert.equal(drag.heard(), rested, 'the next width waits');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('observer 300');
+});
+
+test('a hand that holds still tells a page that draws nothing after it, where no paint would', async (t) => {
+  const drag = await dragged(t, '', true);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  drag.scripts.value += 1e9;
+  await drag.step(340, 320);
+  assert.ok(!drag.heard().includes('resize 320'), drag.heard());
+  let frames = 0;
+  while (drag.held() && frames < 40) {
+    await act(async () => void (await drag.clock.frame()));
+    frames += 1;
+  }
+  assert.ok(!drag.held(), 'the hand rested');
+  await drag.hears('resize 320');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
+test('a page whose scripts take little of a drag that fell behind hears every width of it', async (t) => {
+  const drag = await dragged(t);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  for (const width of [380, 370, 360]) {
+    await drag.step(width);
+    await drag.hears(`observer ${width}`);
+    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
+  }
+  assert.ok(drag.held(), 'behind all the while');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
+test('a page told nothing hears again once its scripts have had their part of the time since', async (t) => {
+  const drag = await dragged(t);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  drag.scripts.value += 1000;
+  await drag.step(380, 370);
+  await drag.rests();
+  const before = drag.heard();
+  assert.ok(!before.includes('resize 370'), before);
+  // the document's work goes on the same clock, and the time goes by
+  drag.work.value = 100_000;
+  await drag.step(360);
+  await drag.hears('observer 360');
+  assert.ok(drag.heard().includes('resize 360'), drag.heard());
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
+test('a drag the document keeps up with tells a page every width, and so does a window that says nothing of a drag', async (t) => {
+  const drag = await dragged(t);
+  // the clock moves at the document's work, and none of it is past the
+  // budget; the page's scripts have spent all there is
+  drag.work.value = 1;
+  drag.scripts.value += 1e9;
+  drag.live(true);
+  for (const width of [396, 392, 388, 384]) {
+    await drag.step(width);
+    await drag.hears(`observer ${width}`);
+    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
+    drag.scripts.value += 1e9;
+  }
+  assert.ok(!drag.held());
+  drag.live(false);
+  // X11's: past the budget at every frame
+  drag.work.value = 20;
+  for (const width of [380, 376, 372, 368]) {
+    await drag.step(width);
+    await drag.hears(`observer ${width}`);
+    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
+    drag.scripts.value += 1e9;
+  }
+  assert.ok(!drag.held());
+});
+
+test('a drag that came back to where it was tells a page nothing, across a breakpoint and back', async (t) => {
+  const drag = await dragged(t);
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  drag.scripts.value += 1e9;
+  await drag.step(340, 320);
+  assert.equal(await drag.reads(), '320 false 320');
+  await drag.step(340, 388);
+  assert.equal(await drag.reads(), '388 true 388');
+  const before = drag.heard();
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.rests();
+  await drag.rests();
+  assert.equal(drag.heard(), before, 'it is where the page last heard');
+});
+
+test('what a drag holds a page from is its viewport: an observer of a new target, and what leaves the view, are told at once', async (t) => {
+  const drag = await dragged(
+    t,
+    'var edge = document.createElement("div");' +
+      'edge.style.cssText = "position:absolute;top:0;left:385px;width:10px;height:4px";' +
+      'document.body.appendChild(edge);' +
+      'var shown = null;' +
+      'new IntersectionObserver(function (entries) {' +
+      '  var now = entries[entries.length - 1].isIntersecting;' +
+      '  if (shown !== null && now !== shown) note("shown " + now);' +
+      '  shown = now;' +
+      '}).observe(edge);' +
+      'var tracked = false;' +
+      'setInterval(function () {' +
+      '  if (innerWidth >= 385 || tracked) return;' +
+      '  tracked = true;' +
+      '  var late = document.createElement("div");' +
+      '  late.style.height = "3px";' +
+      '  document.body.appendChild(late);' +
+      '  new ResizeObserver(function (entries) { note("late " + entries[0].contentRect.height); }).observe(late);' +
+      '}, 20);',
+  );
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  drag.scripts.value += 1e9;
+  await drag.step(380);
+  await drag.hears('shown false');
+  await drag.hears('late 3');
+  assert.ok(!drag.heard().includes('resize 380'), drag.heard());
+  assert.ok(!drag.heard().includes('observer 380'), drag.heard());
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('observer 380');
+  await drag.hears('resize 380');
+});
+
+test("a frame's document that runs in the page's realm is held with the page", async (t) => {
+  const drag = await dragged(
+    t,
+    'var frame = document.createElement("iframe");' +
+      'frame.style.cssText = "display:block;border:0;width:50%;height:20px";' +
+      'document.body.appendChild(frame);' +
+      'var inner = frame.contentWindow;' +
+      'inner.addEventListener("resize", function () { note("frame " + inner.innerWidth); });' +
+      'setInterval(function () { window.frameWidth = inner.innerWidth; }, 20);',
+  );
+  drag.live(true);
+  await drag.behind(396, 392, 388);
+  await drag.rests();
+  drag.scripts.value += 1e9;
+  const before = drag.heard();
+  await drag.step(340, 300);
+  await drag.rests();
+  assert.equal(drag.heard(), before);
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('frame 150');
+  assert.equal(drag.heard().split('frame 150').length, 2, 'once');
+  assert.ok(!drag.heard().includes('frame 170'), drag.heard());
 });
 
 test("an HtmlNetwork answers a document's scripts and its page's requests", async () => {
