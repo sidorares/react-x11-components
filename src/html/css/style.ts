@@ -306,6 +306,12 @@ function validPadding(len: Len | null): boolean {
   return notNegative(len);
 }
 
+/** `scroll-padding` takes what `padding` does and `auto` (CSS Scroll Snap 1,
+ *  6.1), a percentage being of the scrollport. */
+function validScrollPadding(len: Len | null): boolean {
+  return len === AUTO || validPadding(len);
+}
+
 /** `auto`, or `rect()` of four lengths or `auto`s, commas between them or
  *  not; undefined for anything else, which leaves the value as it was. */
 function parseClip(
@@ -3095,29 +3101,9 @@ export function applyDeclaration(
     case 'scroll-padding-top':
     case 'scroll-padding-right':
     case 'scroll-padding-bottom':
-    case 'scroll-padding-left':
-    case 'scroll-padding-block':
-    case 'scroll-padding-inline':
-    case 'scroll-padding-block-start':
-    case 'scroll-padding-block-end':
-    case 'scroll-padding-inline-start':
-    case 'scroll-padding-inline-end': {
-      // `auto` or a length or a percentage of the scrollport, none below
-      // nought (CSS Scroll Snap 1, 6.1)
-      const parts = splitValue(value).map((p) =>
-        p.toLowerCase() === 'auto' ? AUTO : parseLength(p, ctx),
-      );
-      if (
-        !parts.length ||
-        parts.some(
-          (p) =>
-            p === null ||
-            (typeof p === 'number' && p < 0) ||
-            (isPct(p) && p.pct < 0),
-        )
-      ) {
-        return;
-      }
+    case 'scroll-padding-left': {
+      const parts = splitValue(value).map((p) => parseLength(p, ctx));
+      if (!parts.length || !parts.every(validScrollPadding)) return;
       setScrollSides(style, 'scrollPadding', name.slice(14), parts as Len[]);
       return;
     }
@@ -3125,13 +3111,7 @@ export function applyDeclaration(
     case 'scroll-margin-top':
     case 'scroll-margin-right':
     case 'scroll-margin-bottom':
-    case 'scroll-margin-left':
-    case 'scroll-margin-block':
-    case 'scroll-margin-inline':
-    case 'scroll-margin-block-start':
-    case 'scroll-margin-block-end':
-    case 'scroll-margin-inline-start':
-    case 'scroll-margin-inline-end': {
+    case 'scroll-margin-left': {
       // lengths alone, which may be negative (6.2)
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
       if (!parts.length || parts.some((p) => typeof p !== 'number')) return;
@@ -8444,6 +8424,16 @@ const LOGICAL: Record<string, Logical> = (() => {
       (side) => `border-${side}-color`,
       (part) => parseColor(part) !== null,
     ],
+    [
+      'scroll-margin',
+      (side) => `scroll-margin-${side}`,
+      (part, ctx) => typeof parseLength(part, ctx) === 'number',
+    ],
+    [
+      'scroll-padding',
+      (side) => `scroll-padding-${side}`,
+      (part, ctx) => validScrollPadding(parseLength(part, ctx)),
+    ],
   ];
   for (const [group, physical, valid] of groups) {
     for (const axis of ['inline', 'block'] as const) {
@@ -9368,6 +9358,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-column-end': ['gridColumnEnd'],
   'justify-items': ['justifyItems'],
   'justify-self': ['justifySelf', 'justifyAnchorCenter'],
+  'place-content': ['alignContent', 'justifyContent'],
   'place-items': ['alignItems', 'justifyItems'],
   'place-self': [
     'alignSelf',
@@ -9924,10 +9915,9 @@ function parseSnapAlign(value: string): readonly [SnapAlign, SnapAlign] | null {
     : Object.freeze([block, inline] as [SnapAlign, SnapAlign]);
 }
 
-/** A `scroll-padding` or `scroll-margin` shorthand or longhand's values set
- *  on its sides: the physical ones as they are named, and a logical one as
- *  the horizontal, left-to-right writing mode every document here is laid
- *  out in has it. */
+/** A `scroll-padding` or `scroll-margin` shorthand or physical longhand's
+ *  values set on its sides. A logical one is the physical one it stands for
+ *  by here (`LOGICAL`). */
 function setScrollSides<T extends Len>(
   style: ComputedStyle,
   prefix: 'scrollPadding' | 'scrollMargin',
@@ -9946,28 +9936,16 @@ function setScrollSides<T extends Len>(
       set('Left', l as T);
       return;
     }
-    case '-block':
-      set('Top', parts[0]);
-      set('Bottom', parts[1] ?? parts[0]);
-      return;
-    case '-inline':
-      set('Left', parts[0]);
-      set('Right', parts[1] ?? parts[0]);
-      return;
     case '-top':
-    case '-block-start':
       set('Top', parts[0]);
       return;
     case '-bottom':
-    case '-block-end':
       set('Bottom', parts[0]);
       return;
     case '-left':
-    case '-inline-start':
       set('Left', parts[0]);
       return;
     case '-right':
-    case '-inline-end':
       set('Right', parts[0]);
       return;
   }
