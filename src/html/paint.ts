@@ -13515,33 +13515,69 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       : inkColor(value, style.color);
   // a user unit is a CSS pixel, zoomed as the box's lengths are
   const scale = (options.scale ?? 1) * style.effectiveZoom;
-  inlineDrawing(box.el).draw(
-    ctx,
-    x,
-    y,
-    w,
-    h,
-    scale,
-    style.color,
-    paint(style.fill),
-    paint(style.stroke),
-    options.shapeStyler?.(box) ?? null,
-    surfaceMaker(options),
-    // its text is set in the box's font where it names none, as a
-    // browser sets it: a size is a CSS pixel, which is a user unit
-    {
-      family: quotedFamilies(style.fontFamily),
-      size: style.fontSize / scale,
-      weight: style.fontWeight,
-      style: style.fontStyle,
-    },
-    svgInherited(style),
-    options.foreign && inlineDrawing(box.el).foreignObjects().length
-      ? foreignPainter(options.foreign, options)
-      : null,
-    options.drawingUnits?.() ?? null,
-    drawingCut(style),
-  );
+  const drawing = inlineDrawing(box.el);
+  const fill = paint(style.fill);
+  const stroke = paint(style.stroke);
+  const shapes = options.shapeStyler?.(box) ?? null;
+  const size = style.fontSize / scale;
+  const inherited = svgInherited(style);
+  const units = options.drawingUnits?.() ?? null;
+  const cut = drawingCut(style);
+  const set = (on: PaintContext, left: number, top: number): void =>
+    drawing.draw(
+      on,
+      left,
+      top,
+      w,
+      h,
+      scale,
+      style.color,
+      fill,
+      stroke,
+      shapes,
+      surfaceMaker(options),
+      // its text is set in the box's font where it names none, as a
+      // browser sets it: a size is a CSS pixel, which is a user unit
+      {
+        family: quotedFamilies(style.fontFamily),
+        size,
+        weight: style.fontWeight,
+        style: style.fontStyle,
+      },
+      inherited,
+      options.foreign && drawing.foreignObjects().length
+        ? foreignPainter(options.foreign, options)
+        : null,
+      units,
+      cut,
+    );
+  // from a raster where the context draws in whole pixels of its own, as an
+  // SVG image is (`drawSvg`), and it is cut to the raster: a page's icons
+  // were parsed and set from their paths at every paint that reached them,
+  // and sixty of them were a seventh of each frame of a window's edge
+  const key =
+    !options.matrix && options.drawingKept && ctx.drawImage && cut === CUT_BOTH
+      ? drawing.keptAs(
+          w,
+          h,
+          scale,
+          style.color,
+          fill,
+          stroke,
+          shapes,
+          size,
+          inherited,
+          units,
+        )
+      : null;
+  const kept =
+    key !== null
+      ? options.drawingKept!(key, w, h, (sctx) =>
+          set(sctx as PaintContext, 0, 0),
+        )
+      : null;
+  if (kept) ctx.drawImage!(kept, x, y);
+  else set(ctx, x, y);
 }
 
 /** The axes an inline drawing is cut to its content box on: those its
