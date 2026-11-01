@@ -22602,6 +22602,35 @@ export function installDom(
     'column',
     'cue',
   ]);
+  /** The name a computed style holds what `key` reads under, kept as
+   *  `camel` keeps what it works out. */
+  const computedName = (key: string): string => {
+    let out = computedNames.get(key);
+    if (out === undefined) {
+      out = key === 'cssFloat' ? 'float' : kebab(key);
+      computedNames.set(key, out);
+    }
+    return out;
+  };
+  const computedNames = new Map<string, string>();
+  /** What a computed style answers by a name and lists no item of. */
+  const COMPUTED_SHORTHANDS = new Set([
+    'font',
+    'overflow',
+    'white-space',
+    'flex',
+    'flex-flow',
+    'gap',
+    'place-content',
+    'place-items',
+    'place-self',
+    'border-radius',
+    'animation',
+    'animation-range',
+    'scroll-timeline',
+    'view-timeline',
+    'position-try',
+  ]);
   /** A CSS identifier, its escapes in it. */
   const CSS_IDENT =
     /^(?:--|-?(?:[_a-zA-Z\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f]))(?:[-_a-zA-Z0-9\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f])*$/;
@@ -22771,8 +22800,7 @@ export function installDom(
     const id = idOf(el, 'element');
     let json = '';
     let values: Record<string, string> = {};
-    let byName = new Map<string, string>();
-    let names: string[] = [];
+    let names: string[] | null = null;
     let readAt = -1;
     let readIn = -1;
     let boxesOwed = false;
@@ -22787,17 +22815,22 @@ export function installDom(
       boxesOwed = json[0] === '~';
       if (boxesOwed) json = json.slice(1);
       values = json ? JSON.parse(json) : {};
+      names = null;
+    };
+    /** Its items, made where a page asks for them: what it reads by a name
+     *  it reads of `values`, on a path a page takes tens of thousands of
+     *  times a load. */
+    const items = (): string[] => {
+      if (names) return names;
       names = [];
-      byName = new Map();
       for (const name in values) {
-        // answers by its name and is no item of the list, which is of
-        // longhands: a page that copies a style item by item, as
-        // html2canvas does, would set it over them, or take them all off
-        // with a '' it reads
-        if (name !== 'font') names.push(name);
-        byName.set(name, values[name]);
-        byName.set(camel(name), values[name]);
+        // a shorthand answers by its name and is no item of the list,
+        // which is of longhands: a page that copies a style item by item,
+        // as html2canvas does, would set it over them, or take them all
+        // off with a '' it reads
+        if (!COMPUTED_SHORTHANDS.has(name)) names.push(name);
       }
+      return names;
     };
     const read = (): void => {
       if (readAt === opEpoch && readIn === taskEpoch) return;
@@ -22823,18 +22856,22 @@ export function installDom(
       },
       () => {
         read();
-        return names;
+        return items();
       },
     );
     return readOnlyStyle(
       block,
       (key) => {
-        if (/^\d+$/.test(key)) return names[Number(key)];
+        if (/^\d+$/.test(key)) return items()[Number(key)];
         readProperty(key);
-        return byName.get(key);
+        return values[computedName(key)];
       },
       read,
-      () => [...names.map((_, i) => String(i)), ...byName.keys()],
+      () => {
+        const both = new Set<string>();
+        for (const name in values) both.add(name).add(camel(name));
+        return [...items().map((_, i) => String(i)), ...both];
+      },
     );
   };
 

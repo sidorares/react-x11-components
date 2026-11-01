@@ -1,6 +1,7 @@
 // <Html> — lengths, units, colours, calc() and its kin, custom properties.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
+import { setFlagsFromString } from 'node:v8';
 import { cleanup, pixelAt, waitFor } from 'react-x11/test';
 import {
   inkColor,
@@ -42,6 +43,12 @@ import {
   CALC_SIZE_DOCUMENT,
   CALC_SIZE_READS,
 } from './calc-sizes.js';
+import {
+  COMPUTED_PLACED,
+  COMPUTED_PLACED_DOCUMENT,
+  COMPUTED_READS,
+  COMPUTED_READS_DOCUMENT,
+} from './computed-reads.js';
 import {
   boxOf,
   drawnText,
@@ -3832,4 +3839,74 @@ test('calc-size() sizes every kind of box as Chromium does', async () => {
     }
   });
   assert.deepStrictEqual(wrong, []);
+});
+
+/** What of `expected` a computed style reads otherwise, one line a read. */
+function readsApart(
+  label: string,
+  read: Record<string, string>,
+  expected: Readonly<Record<string, string>>,
+): string[] {
+  return Object.entries(expected)
+    .filter(([name, value]) => read[name] !== value)
+    .map(([name, value]) => `${label}: ${name} ${read[name]}, not ${value}`);
+}
+
+test('the flex, alignment and other longhands read as Chromium reads them, a value a shorthand cannot read being refused whole', async () => {
+  const { node } = await render(COMPUTED_READS_DOCUMENT, 800);
+  const el = view(node);
+  const wrong = COMPUTED_READS.flatMap(([style, expected], i) =>
+    readsApart(
+      style,
+      el.computedStyle(findById(el.document, `r${i}`)!)!,
+      expected,
+    ),
+  );
+  assert.deepStrictEqual(wrong, []);
+});
+
+metric(
+  'the same lengths read at 2x, which no read of a device pixel does',
+  async () => {
+    const { node } = await render2x(COMPUTED_READS_DOCUMENT, 800);
+    const el = view(node);
+    const wrong = COMPUTED_READS.flatMap(([style, expected], i) =>
+      readsApart(
+        style,
+        el.computedStyle(findById(el.document, `r${i}`)!)!,
+        expected,
+      ),
+    );
+    assert.deepStrictEqual(wrong, []);
+  },
+);
+
+test('what settling a box writes over reads as it was written, on a -webkit-box and on a box a position option flipped, and in what inherits or has no box', async () => {
+  const { node } = await render(COMPUTED_PLACED_DOCUMENT, 800);
+  const el = view(node);
+  const wrong = COMPUTED_PLACED.flatMap(([id, pseudo, expected]) =>
+    readsApart(
+      `${id}${pseudo}`,
+      el.computedStyle(
+        findById(el.document, id)!,
+        pseudo ? pseudo.slice(2) : null,
+      )!,
+      expected,
+    ),
+  );
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('a computed style is a fast object, which a page may read tens of thousands of times a load', async () => {
+  // past what `cssomAt` says of its literal, V8 makes it a dictionary, three
+  // times as long to make and to send, and nothing else says so
+  setFlagsFromString('--allow-natives-syntax');
+  const fast = new Function('o', 'return %HasFastProperties(o)') as (
+    o: unknown,
+  ) => boolean;
+  setFlagsFromString('--no-allow-natives-syntax');
+  const { node } = await render('<p id="a">a</p>');
+  const el = view(node);
+  const read = el.computedStyle(findById(el.document, 'a')!);
+  assert.ok(fast(read), `${Object.keys(read!).length} properties`);
 });

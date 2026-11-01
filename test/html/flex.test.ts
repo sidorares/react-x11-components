@@ -4142,3 +4142,43 @@ const FLAWS: {
   { row: 'min-height:40%;align-items:flex-end', around: inRatio },
   { row: 'max-height:5%;align-items:stretch', around: inRatio },
 ];
+
+test('what the flex properties refuse and calculate lays out as in Chromium: order at either infinity, a flex-flow that sets what it leaves out, a flex refused whole', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      '.r{display:flex;width:300px;height:40px}.r>div{width:50px;height:40px}' +
+      '.first{order:calc(-infinity)}.last{order:calc(infinity)}</style>' +
+      // Tailwind 4's `order-first` and `order-last`
+      '<div class="r"><div id="a"></div><div id="b" class="last"></div>' +
+      '<div id="c"></div><div id="d" class="first"></div></div>' +
+      '<div style="display:flex;flex-flow:wrap;flex-flow:column;width:60px;height:20px">' +
+      '<div id="w1" style="flex:none;width:50px;height:10px"></div>' +
+      '<div id="w2" style="flex:none;width:50px;height:10px"></div>' +
+      '<div id="w3" style="flex:none;width:50px;height:10px"></div></div>' +
+      '<div style="display:flex;width:300px;height:20px">' +
+      '<div id="z1" style="flex:2 0 40px;flex:1 calc-size(auto, size);height:20px"></div>' +
+      '<div id="z2" style="flex:1 0 40px;height:20px"></div></div>',
+    400,
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  const y = (id: string) => boxOf(el, id).y;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd'].map(x),
+    [50, 150, 100, 0],
+    'by each order',
+  );
+  assert.deepStrictEqual(
+    ['w1', 'w2', 'w3'].map((id) => [x(id), y(id) - y('w1')]),
+    [
+      [0, 0],
+      [0, 10],
+      [0, 20],
+    ],
+    'one column, which `flex-flow: column` left no wrap in',
+  );
+  assert.ok(
+    Math.abs(boxOf(el, 'z1').width - 186.67) < 0.01,
+    `${boxOf(el, 'z1').width}: the earlier flex, whose grow is twice its neighbour's`,
+  );
+});

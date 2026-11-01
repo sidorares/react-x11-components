@@ -3167,6 +3167,27 @@ are now, and one of `display: contents`, whose box only sets its content and
 is none of its own (`contentsStyle`). `_pseudoBoxOf` finds a box for all of
 them, so anything new it answers asks the same.
 
+**An alignment is two things, what layout reads and what a page reads.**
+`alignItems` and its five kin hold one keyword of each kind, which
+`settleAlign`, `settleClamp` and a position option write over; the words a
+page reads are `alignItemsText` and its kin, read and refused in one place
+(`alignmentText`, whose every answer is Chromium's, `last baseline` on
+`align-content` refused among them). So **anything new that writes one of
+the six fields for a page to read writes its text too**, as `flipAxis`
+does, and **anything that decides whether a value is taken asks
+`alignmentText`**, and not `alignKeyword`, which only says what lays a value
+out and has none for `safe`. `flexRead` is the same for what `settleClamp`
+writes over a `-webkit-box`. `test/html/computed-reads.ts` holds all of it to
+Chromium, and is written by `scripts/conformance/computed-reads.ts`:
+regenerate it, do not write it by hand. A shorthand answers by its name and
+joins `COMPUTED_SHORTHANDS` in the facade, or a page that copies a style item
+by item sets it over the longhands. **And what `cssomAt` answers stays a fast
+object**, its literal under 128 keys with the rest added after it, or every
+`getComputedStyle` of a page takes three times as long with nothing failing
+but the one test that asks V8. The facade reads a property of the parsed
+record, and makes its lists only where a page asks for them: built at every
+read, they were most of what a read cost a page.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed

@@ -333,11 +333,21 @@ function containerAxis(ctx: UnitContext, axis: 'inline' | 'block'): number {
   return axis === 'inline' ? ctx.vw : ctx.vh;
 }
 
-/** A plain number — `flex-grow`, `opacity`, `z-index`, `line-height`. */
-export function parseNumber(value: string): number | null {
+/** Whether a value is a math function, which a property's range limits
+ *  rather than refuses (CSS Values 4, 10.12). */
+export function isMathFunction(value: string): boolean {
+  return MATH.test(value.trim());
+}
+
+/** A plain number — `flex-grow`, `opacity`, `z-index`, `line-height`.
+ *  `largest` is what a calculation's infinity comes to in a property that
+ *  keeps more than a length does. */
+export function parseNumber(value: string, largest?: number): number | null {
   // `Number()` alone reads `0x10`, `1.` and white space as numbers
   const v = value.trim();
-  if (!NUMBER_RE.test(v)) return MATH.test(v) ? parseMathNumber(v) : null;
+  if (!NUMBER_RE.test(v)) {
+    return MATH.test(v) ? parseMathNumber(v, largest) : null;
+  }
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
