@@ -21,8 +21,10 @@ import type {
   ClipPath,
   ComputedStyle,
   ContentSize,
+  SizeOf,
   TimelineRef,
 } from './css/style.js';
+import { serializeLinear } from './css/calc-tree.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
 import type { Len } from './css/values.js';
@@ -90,15 +92,40 @@ function len(value: Len | 'none', scale: number): string {
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
 }
 
-/** A size as it computes: its keyword where it is one, which the length
- *  beside it stands in for. `fit-content()` is no keyword a browser takes
- *  on a size, so what it reads is what it reads where it is refused. */
+/** A size as it computes: its `calc-size()`, or its keyword where it is
+ *  one, which the length beside it stands in for. `fit-content()` is no
+ *  keyword a browser takes on a size, so what it reads is what it reads
+ *  where it is refused. */
 function sizeText(
-  value: Len | 'none',
+  value: Len | 'none' | 'content',
   keyword: ContentSize | null,
+  sized: SizeOf | null,
   scale: number,
 ): string {
-  return typeof keyword === 'string' ? keyword : len(value, scale);
+  if (sized) return calcSizeText(sized, keyword, value, scale);
+  if (typeof keyword === 'string') return keyword;
+  return value === 'content' ? value : len(value, scale);
+}
+
+/** A `calc-size()` as it was written, or the sum an interpolation made of
+ *  two, from the keyword it runs on. */
+function calcSizeText(
+  sized: SizeOf,
+  keyword: ContentSize | null,
+  value: Len | 'none' | 'content',
+  scale: number,
+): string {
+  if (sized.text) return sized.text;
+  const of = typeof sized.plus === 'object' ? sized.plus : null;
+  const px = of ? (of.px ?? 0) : (sized.plus as number);
+  const pct = of ? of.pct : 0;
+  const basis =
+    typeof keyword === 'string'
+      ? keyword
+      : value === 'content'
+        ? value
+        : 'auto';
+  return `calc-size(${basis}, ${serializeLinear(sized.size, px / scale, pct)})`;
 }
 
 /** `min-width` or `min-height` as a page reads it: `auto` resolves to zero
@@ -107,10 +134,11 @@ function sizeText(
 function minSizeText(
   value: Len,
   keyword: ContentSize | null,
+  sized: SizeOf | null,
   scale: number,
   keepsAuto: boolean,
 ): string {
-  const text = sizeText(value, keyword, scale);
+  const text = sizeText(value, keyword, sized, scale);
   return text === 'auto' && !keepsAuto ? '0px' : text;
 }
 
@@ -1020,17 +1048,35 @@ function cssomAt(
     'min-width': minSizeText(
       style.minWidth,
       style.minWidthKeyword,
+      style.minWidthSize,
       scale,
       keepsAuto,
     ),
-    'max-width': sizeText(style.maxWidth, style.maxWidthKeyword, scale),
+    'max-width': sizeText(
+      style.maxWidth,
+      style.maxWidthKeyword,
+      style.maxWidthSize,
+      scale,
+    ),
     'min-height': minSizeText(
       style.minHeight,
       style.minHeightKeyword,
+      style.minHeightSize,
       scale,
       keepsAuto,
     ),
-    'max-height': sizeText(style.maxHeight, style.maxHeightKeyword, scale),
+    'max-height': sizeText(
+      style.maxHeight,
+      style.maxHeightKeyword,
+      style.maxHeightSize,
+      scale,
+    ),
+    'flex-basis': sizeText(
+      style.flexBasis,
+      style.flexBasisKeyword,
+      style.flexBasisSize,
+      scale,
+    ),
     top: len(style.top, scale),
     right: len(style.right, scale),
     bottom: len(style.bottom, scale),
@@ -1135,8 +1181,18 @@ function cssomAt(
     out.width = px(Math.max(0, box.width - (content ? across : 0)), scale);
     out.height = px(Math.max(0, box.height - (content ? down : 0)), scale);
   } else {
-    out.width = sizeText(style.width, style.widthKeyword, scale);
-    out.height = sizeText(style.height, style.heightKeyword, scale);
+    out.width = sizeText(
+      style.width,
+      style.widthKeyword,
+      style.widthSize,
+      scale,
+    );
+    out.height = sizeText(
+      style.height,
+      style.heightKeyword,
+      style.heightSize,
+      scale,
+    );
   }
   logicalProperties(out, style);
   return out;
