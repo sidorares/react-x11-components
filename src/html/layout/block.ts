@@ -4813,6 +4813,11 @@ function heightLimit(
  *  `usedMargins` asks. */
 const AUTO_ROOM = new WeakMap<Box, number>();
 
+/** What a flex item's `auto` margins came to, top first, each side's where
+ *  it is one (`noteAutoMargins`): Yoga shares the room out and says nothing
+ *  of it. Only `usedMargins` asks. */
+export const FLEX_ROOM = new WeakMap<Box, [number, number, number, number]>();
+
 function placeBlock(
   box: Box,
   contentLeft: number,
@@ -9532,10 +9537,11 @@ const INSET_SIDES = ['top', 'right', 'bottom', 'left'] as const;
  * The margins layout gave a box, top first, as `getComputedStyle` answers
  * them: each resolved against what the box was laid out in, which is its
  * containing block and not its parent, or a track of a grid (`resolveEdges`).
- * The two a box does not hold are worked out here: the `auto` margins of a
- * block in the flow (`AUTO_ROOM`), and a bottom margin something the box
- * holds hangs from, which `marginBottom` carries for the next sibling to
- * collapse with, and which only a block in a flow has.
+ * The ones a box does not hold are worked out here: the `auto` margins of a
+ * block in the flow (`AUTO_ROOM`) and of a flex item (`FLEX_ROOM`), and a
+ * bottom margin something the box holds hangs from, which `marginBottom`
+ * carries for the next sibling to collapse with, and which only a block in a
+ * flow has.
  */
 export function usedMargins(box: Box): [number, number, number, number] {
   const style = box.style;
@@ -9543,6 +9549,15 @@ export function usedMargins(box: Box): [number, number, number, number] {
     box.bottomStrut && box.parent
       ? resolve(style.marginBottom, box.parent.contentWidth)
       : box.marginBottom;
+  const flexed = FLEX_ROOM.get(box);
+  if (flexed) {
+    return [
+      style.marginTop === AUTO ? flexed[0] : box.marginTop,
+      style.marginRight === AUTO ? flexed[1] : box.marginRight,
+      style.marginBottom === AUTO ? flexed[2] : bottom,
+      style.marginLeft === AUTO ? flexed[3] : box.marginLeft,
+    ];
+  }
   const room = AUTO_ROOM.get(box);
   if (room === undefined) {
     return [box.marginTop, box.marginRight, bottom, box.marginLeft];

@@ -3151,10 +3151,16 @@ noted beside it**: `placeBlock` shares room out to a block's `auto` margins
 and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
 `marginBottom` carries what hangs from the box for the next sibling to
 collapse with (`bottomStrut`), so anything new that gives a margin room
-tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
-margin reads `0px`. An inline box keeps no rectangle, and an offset moves what
-is placed in it and not the lines it could be worked out from again, so
-`positionedIn` notes where a box stands in one (`PLACED_IN_INLINE`).
+tells `usedMargins`. Yoga shares room out to a flex item's `auto` margins and
+tells no one, so they are worked out from the item's line once the items are
+placed (`noteAutoMargins`, `FLEX_ROOM`), and only in a box with one: along it
+a share of what the line leaves free, and across it what the item leaves of
+the line. A line is found from where Yoga put its items (`itemLines`), and a
+row that wraps has the height of each worked out (`rowLineSizes`), so anything
+new told to Yoga that moves an item along a line or sizes one is read from the
+node there, as a baseline's margin is. An inline box keeps no rectangle, and an
+offset moves what is placed in it and not the lines it could be worked out from
+again, so `positionedIn` notes where a box stands in one (`PLACED_IN_INLINE`).
 **An inline box reads as it computes** (`UsedBox.inline`,
 `resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
 with no rectangle of its own. And **what takes the computed value asks no
@@ -5969,7 +5975,13 @@ to the pane. And **the bars are a pass of their own at the end of
 context is painted in its context's flow passes, and nothing of its own
 paints after what it scrolls. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
-links and the page (`scrollBarAt`).
+links and the page (`scrollBarAt`). `isScroller` is true of a box that
+is `overflow: hidden`, which shows no bar, and `scrollStateOf` is a walk
+of all a container holds, once a layout: a webmail page keeps a strip of
+12,700 boxes in such a box, and measured it at every paint of a drag for
+no bar. So **anything new asked of a scroll container at every paint asks
+`wheelScrolls` before it asks `scrollStateOf`**, and leaves a selector
+(`scrollbarHidden`) for last, as `scrollBarsOf` does.
 
 **A scroll snaps by how it moved** (`layout/snap.ts`'s `SnapScroll`): an
 absolute one to the place nearest where it went, a relative one only ahead
