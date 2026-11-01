@@ -1722,6 +1722,17 @@ until its animations are over, when it is finished.
 - **Not yet.** Rendering held while the update runs, and transitions across
   documents.
 
+**A list is live, as the DOM has it.** `childNodes`, `children`,
+`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
+form's `elements`, a select's `options` and `selectedOptions`, a table's
+`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
+the tree holds when they are read, and an attribute hands out the same list
+each time. `querySelectorAll` holds what it found. None of them is an array:
+`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
+a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
+`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
+properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another
@@ -1946,16 +1957,14 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
-**A list is live, as the DOM has it.** `childNodes`, `children`,
-`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
-form's `elements`, a select's `options` and `selectedOptions`, a table's
-`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
-the tree holds when they are read, and an attribute hands out the same list
-each time. `querySelectorAll` holds what it found. None of them is an array:
-`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
-a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
-`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
-properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
 
 ### Cookies and storage
 

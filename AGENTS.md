@@ -2535,7 +2535,12 @@ cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
 `changesCascade` lists the attributes `DocumentSource.facts` reads of
-them: anything new read there joins it. Where the sheets do read
+them: anything new read there joins it. It is asked of a change before
+anything goes by where the change is (`_cascadeChanged`), since a `<style>`
+is a sheet wherever it stands: what a script wrote to one a drawing was
+exported with, and what a stream's chunk cut inside one, went by way of the
+drawing and waited for a refresh that said nothing. **Anything new `_scopeOf`
+answers by where a change is goes after it.** Where the sheets do read
 otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
@@ -4834,6 +4839,18 @@ every element it reaches, the subtree and later siblings the reach already
 holds, as the build would (`_restyleHover`); only one where an edge rule
 styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
 elements built them at every other move of the pointer.
+
+**A script asks a drawing where things are, and the attributes answer.**
+Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
+`getScreenCTM`, `getBoundingClientRect` and a shape's lengths are worked out by
+`src/html/scripts/svg-geometry.ts` over the DOM, with `SvgMeasure` the only
+thing asked of `<Html>`: a run of text, an `<svg>`'s box and whether a style
+hides an element. It reads `transform` and never a CSS transform, and each
+curve is cut a fixed number of times, so a box is a fraction of a pixel from
+the drawing's. mermaid measures every label with `getBBox`. **Anything new a
+drawing is asked goes through `svgAnswer`**, whose answer is numbers, as a
+bridge's has to be. `SvgView`'s private `_bbox` is not reached for, as nothing
+of it is here.
 
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
