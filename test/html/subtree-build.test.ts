@@ -25,7 +25,7 @@ import {
   boxLayoutsMade,
   standsMade,
 } from '../../src/html/layout/block.js';
-import { inkKept } from '../../src/html/paint.js';
+import { inkKept, layersWalked } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import {
   boxOf,
@@ -3294,6 +3294,231 @@ metric(
     );
     const ink = inkKept() - inkAtStart;
     assert.ok(ink > 100, `${ink} blocks' ink kept from an earlier layout`);
+  },
+);
+
+/** Everything that puts a box in a list of layers, or takes it out, or
+ *  decides which clips it is under: for what a layout keeps of them. */
+const LAYERED_SHEET = `body { margin: 0; font-size: 14px }
+.p { position: relative }
+.a { position: absolute; top: 2px; right: 3px; width: 12px; height: 6px }
+.b { position: absolute; z-index: -1; inset: 0 }
+.u { position: relative; z-index: 2 }
+.w { position: relative; z-index: 1 }
+.o { opacity: .5 }
+.i { isolation: isolate }
+.t { transform: translate(4px, 3px) }
+.c { overflow: hidden; height: 30px }
+.s { position: sticky; top: 4px }
+.fx { display: flex; gap: 3px }
+.fx > .z { z-index: 1 }
+.fx > .y { z-index: -1 }
+.fx > .e { order: -1 }
+.m { position: relative; top: 1px }
+.ib { display: inline-block; position: relative; width: 30px }
+.lc { line-clamp: 2 }
+.cut { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+p { margin: 4px 0 }`;
+
+const LAYERED_CLASSES = [
+  'p',
+  'a',
+  'b',
+  'u',
+  'w',
+  'o',
+  'i',
+  't',
+  'c',
+  's',
+  'fx',
+  'z',
+  'y',
+  'e',
+  'lc',
+  'cut',
+];
+
+function layering(next: () => number, depth: number): Element {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const classes = LAYERED_CLASSES.filter(() => next() < 0.12);
+  const el = createElement(
+    pick(['div', 'p', 'section']),
+    classes.length ? { class: classes.join(' ') } : {},
+  );
+  const count = depth > 2 ? 1 : 1 + Math.floor(next() * 3);
+  for (let i = 0; i < count; i += 1) {
+    const roll = next();
+    if (depth < 3 && roll < 0.5) appendChild(el, layering(next, depth + 1));
+    else if (roll < 0.75) {
+      appendChild(
+        el,
+        createElement('span', { class: pick(['m', 'ib', 'p', 'o', '']) }, [
+          createText(pick(WORDS)),
+        ]),
+      );
+    } else appendChild(el, createText(pick(['one two', 'three four five'])));
+  }
+  // what a clamp point or a cut hides turns on the width: more lines than it
+  // keeps at one width, and a line past its edge at another, then a layer
+  if (classes.includes('lc') || classes.includes('cut')) {
+    appendChild(
+      el,
+      createElement('p', {}, [
+        createText('a run of words that wraps at most of the widths here'),
+      ]),
+    );
+    appendChild(el, createText('a run of words that a narrow line ends in '));
+    appendChild(
+      el,
+      createElement('span', { class: 'ib' }, [
+        createElement('i', { class: 'a' }),
+      ]),
+    );
+    appendChild(el, createElement('div', { class: 'p' }));
+  }
+  return el;
+}
+
+metric(
+  'the layers a layout keeps, and a build of subtrees carries, are those a whole build works out',
+  async () => {
+    let held = 0;
+    // LAYERED_SEEDS sweeps more of them, and LAYERED_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.LAYERED_SEEDS ?? 30);
+    for (let seed = Number(env.LAYERED_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = mulberry32(seed * 7253);
+      const pick = <T>(list: readonly T[]): T =>
+        list[Math.floor(next() * list.length)];
+      const body = createElement('body', {});
+      const blocks = 4 + Math.floor(next() * 5);
+      for (let i = 0; i < blocks; i += 1) appendChild(body, layering(next, 0));
+      const markup = DomUtils.getOuterHTML(body as never);
+      const source = `<!doctype html><html><head><style>${LAYERED_SHEET}</style></head>${markup}</html>`;
+      const doc = (width: number) =>
+        h(
+          'box',
+          { style: { width, height: 400, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        );
+      const result = await renderX11(doc(320), {
+        width: 400,
+        height: 440,
+        fonts: FONTS!,
+      });
+      await act();
+      const el = view(screen.getByTestName('doc') as DrawnNode);
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+      };
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      for (let step = 0; step < 12; step += 1) {
+        const all = elementsUnder(bodyEl);
+        const kind = Math.floor(next() * 7);
+        const walked = layersWalked();
+        let what = '';
+        if (kind === 0 || kind === 1) {
+          // what puts it in a list or takes it out: a build, mostly
+          const target = pick(all);
+          const was = target.attribs.class ?? null;
+          target.attribs.class = LAYERED_CLASSES.filter(
+            () => next() < 0.15,
+          ).join(' ');
+          el.touchDocument([
+            {
+              type: 'attributes',
+              target,
+              attributeName: 'class',
+              oldValue: was,
+            },
+          ]);
+          what = `${pathOf(target)} classed ${target.attribs.class}`;
+        } else if (kind === 2) {
+          // in place, where it can be
+          const target = pick(all);
+          const was = target.attribs.style ?? null;
+          target.attribs.style = pick([
+            'opacity: .5',
+            'z-index: 3',
+            'z-index: 1',
+            'opacity: .2',
+            'transform: translate(6px, 2px)',
+            '',
+          ]);
+          el.touchDocument([
+            {
+              type: 'attributes',
+              target,
+              attributeName: 'style',
+              oldValue: was,
+            },
+          ]);
+          what = `${pathOf(target)} styled ${target.attribs.style}`;
+        } else if (kind === 3) {
+          const into = pick([bodyEl, ...all]);
+          const added = layering(next, 2);
+          appendChild(into, added);
+          el.touchDocument([
+            {
+              type: 'childList',
+              target: into,
+              addedNodes: [added],
+              removedNodes: [],
+            },
+          ]);
+          what = `${added.attribs.class} added to ${pathOf(into)}`;
+        } else if (kind === 4 && all.length > 2) {
+          const gone = pick(all);
+          const from = gone.parent as unknown as Element;
+          what = `${pathOf(gone)} taken out`;
+          removeNode(gone as never);
+          el.touchDocument([
+            {
+              type: 'childList',
+              target: from,
+              addedNodes: [],
+              removedNodes: [gone],
+            },
+          ]);
+        } else if (kind === 5) {
+          const width = 160 + Math.floor(next() * 200);
+          await act(() => result.rerender(doc(width)));
+          what = `at ${width}`;
+        } else {
+          internals._invalidate(1);
+          what = 'laid out again';
+        }
+        await act();
+        const walks = layersWalked() - walked;
+        // the layers alone: a box a clamp hides stays where it was, as it
+        // does whatever else a layout keeps
+        const layers = () =>
+          treeLines(internals._tree).filter((line) =>
+            /^(layers of|top layer)/.test(line),
+          );
+        const kept = layers();
+        const before = layersWalked();
+        internals._invalidate(2);
+        await act();
+        const whole = layers();
+        if (walks < layersWalked() - before) held += 1;
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step} (${what}): line ${at}\n` +
+            `kept  ${kept[at]}\nwhole ${whole[at]}\n${markup}`,
+        );
+      }
+      result.unmount();
+    }
+    assert.ok(held > 50, `${held} steps walked less than a whole document`);
   },
 );
 

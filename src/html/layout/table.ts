@@ -14,7 +14,7 @@
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
-import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
+import { Box, clipCell, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
   FLEXED_HEIGHT,
@@ -643,7 +643,7 @@ function placeRows(
     cell.box.width = width;
     if (clip) {
       cell.box.height = height;
-      CLIPPED_CELLS.add(cell.box);
+      clipCell(cell.box);
     } else {
       cell.box.height = Math.max(inner, height);
     }

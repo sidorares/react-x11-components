@@ -741,8 +741,32 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  5.3.1): invisible, with all they hold, and no taller than nothing to
  *  the blocks around them. Marked by the layout of the flow they are in,
  *  which leaves them where the last layout put them, and passed over by
- *  paint and the paint bounds. */
+ *  paint and the paint bounds. Written through `clampBox` and `unclampBox`. */
 export const CLAMPED = new WeakSet<Box>();
+
+/**
+ * How many times a box went into `CLAMPED` or came out of it, or went into
+ * `CLIPPED_CELLS`: what a layout marks that the order of the layers reads
+ * (`gatherLayers`, `clipsFor`), which a layout that leaves this as it found
+ * it leaves as it was (`stackAfterLayout`).
+ */
+export const layerMarks = { moved: 0 };
+
+export function clampBox(box: Box): void {
+  if (CLAMPED.has(box)) return;
+  CLAMPED.add(box);
+  layerMarks.moved += 1;
+}
+
+export function unclampBox(box: Box): void {
+  if (CLAMPED.delete(box)) layerMarks.moved += 1;
+}
+
+export function clipCell(box: Box): void {
+  if (CLIPPED_CELLS.has(box)) return;
+  CLIPPED_CELLS.add(box);
+  layerMarks.moved += 1;
+}
 
 /** A grid's tracks as its layout left them, each column's and each row's
  *  start and end from the content box's corner, with the lines of each
@@ -1639,6 +1663,7 @@ export function buildSubtrees(
       tree: { ...tree, ...stylers, styles },
       made: [],
       replaced: [],
+      parents: [],
       added: [],
     };
   }
@@ -1875,6 +1900,7 @@ export function buildSubtrees(
       tree: { ...tree, ...stylers, styles },
       made: [],
       replaced: [],
+      parents: [],
       added: [],
     };
   }
@@ -2438,6 +2464,7 @@ export function buildSubtrees(
     tree: next,
     made: forget,
     replaced: olds.map((o) => o.boxes),
+    parents: olds.map((o) => o.parent),
     added: built.flatMap((b) => b.boxes),
   };
 }
@@ -2458,12 +2485,13 @@ export function buildsAnswered(): number {
 
 /** What `buildSubtrees` made: the tree, the boxes whose sizes and those of
  *  what holds them are to be forgotten (`forgetSizes`), each root's and
- *  tail's old boxes, and the new boxes at the top of each, in the
- *  document's order. */
+ *  tail's old boxes and the box that held them, and the new boxes at the
+ *  top of each, in the document's order. */
 export interface SubtreesBuilt {
   tree: BoxTree;
   made: Box[];
   replaced: ReadonlySet<Box>[];
+  parents: Box[];
   added: Box[];
 }
 

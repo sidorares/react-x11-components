@@ -126,7 +126,7 @@ import type { Columns } from './multicol.js';
 import {
   BOX_RAISES,
   Box,
-  CLAMPED,
+  clampBox,
   COLUMN_BOXES,
   CLEARED_FROM,
   COLUMN_PIECES,
@@ -134,6 +134,7 @@ import {
   CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
+  layerMarks,
   GENERATED_FROM,
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
@@ -145,6 +146,7 @@ import {
   columned,
   containmentApplies,
   isBlank,
+  unclampBox,
 } from './boxes.js';
 import type {
   BoxTree,
@@ -200,9 +202,9 @@ import {
   drawsNothing,
   FIXED_BOXES,
   fixedToViewport,
-  hoistNegative,
+  forgetLayers,
   OUT_OF_FLOW_REACH,
-  stackLayers,
+  stackAfterLayout,
 } from '../paint.js';
 
 export interface LayoutContext {
@@ -1678,6 +1680,7 @@ export function layoutDocument(
 ): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
+  const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
   framed.any = tree.vertical;
   const cuts =
@@ -1794,6 +1797,7 @@ export function layoutDocument(
     // from where it is drawn: this tree is laid out whole
     if (escapes(tree)) {
       LAID_WHOLE.add(tree);
+      forgetLayers(tree);
       return layoutDocument(tree, fonts, viewportWidth, viewportHeight, scale);
     }
   }
@@ -1892,8 +1896,7 @@ export function layoutDocument(
     tree.movedInline,
     moved ? { moves: moved, kept: ctx.reused! } : undefined,
   );
-  if (tree.negative) hoistNegative(root);
-  stackLayers(root);
+  stackAfterLayout(tree, layerMarks.moved !== marks, asideIn(tree));
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
@@ -2600,7 +2603,7 @@ function layoutChildren(
         hideClamped(child);
         continue;
       }
-      CLAMPED.delete(child);
+      unclampBox(child);
     }
     const handedHere = firstLine !== null;
     if (firstLine && !child.outOfFlow && !child.isFloat) {
@@ -3173,7 +3176,7 @@ function countLines(
  *  a layout before gave it: a hidden box is not laid out, and nothing —
  *  a selection, a caret — may find text in it where it stood. */
 function hideClamped(box: Box): void {
-  CLAMPED.add(box);
+  clampBox(box);
   const stack = [box];
   while (stack.length) {
     const at = stack.pop()!;

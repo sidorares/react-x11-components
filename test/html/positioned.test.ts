@@ -4,11 +4,15 @@ import assert from 'node:assert';
 import { act, cleanup, pixelAt, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import {
+  appendChild,
+  createHtmlElement as createElement,
+} from '../../src/html/index.js';
 import { setModal } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
-import type { Box } from '../../src/html/layout/boxes.js';
-import { layered } from '../../src/html/paint.js';
+import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
+import { layered, layersWalked, stackingOf } from '../../src/html/paint.js';
 import {
   areaTracks,
   parsePositionArea,
@@ -37,6 +41,7 @@ import {
   render2x,
   renderScrolled,
   snapshot,
+  treeLines,
   treeOf,
   view,
   windingAt,
@@ -266,6 +271,204 @@ metric(
       fills.findIndex((f) => f.style === parseColor(color));
     assert.ok(order('#ff0000') < order('#00ff00'), 'in document order');
     assert.ok(order('#ffff00') < order('#0000ff'), 'the z-index over it');
+  },
+);
+
+/** A document in a box of a width, and what moves the width. */
+async function atWidths(source: string, width = 400) {
+  const doc = (at: number) =>
+    h(
+      'box',
+      { style: { width: at, height: 600, flexDirection: 'column' } },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    );
+  const result = await renderX11(doc(width), {
+    width: 500,
+    height: 640,
+    fonts: FONTS!,
+  });
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  return {
+    el,
+    tree: () => (el as unknown as { _tree: BoxTree })._tree,
+    resize: async (at: number) => {
+      await act(() => result.rerender(doc(at)));
+      await act();
+    },
+    /** Tell the document a change, and let what it asks for run. */
+    touch: async (changes: Parameters<typeof el.touchDocument>[0]) => {
+      el.touchDocument(changes);
+      await act();
+    },
+  };
+}
+
+/** Whether what a kept order says is what a whole build works out. */
+async function layersAsWhole(
+  el: ReturnType<typeof view>,
+  tree: () => BoxTree,
+  what: string,
+): Promise<void> {
+  const lines = () =>
+    treeLines(tree()).filter((l) => /^(layers of|top layer)/.test(l));
+  const kept = lines();
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  await act();
+  assert.deepStrictEqual(kept, lines(), what);
+}
+
+const STACKED_ROWS =
+  '<style>body{margin:0}.r{position:relative;height:20px}' +
+  '.b{position:absolute;z-index:-1;inset:0}.t{position:absolute;right:0}' +
+  '.o{opacity:.5}.n{position:relative;top:1px}</style>' +
+  Array.from(
+    { length: 40 },
+    (_, i) =>
+      `<div class="r"><div class="b"></div><span class="t">row ${i}</span>` +
+      `<div class="o"><div class="r"></div></div>` +
+      `<p>words <span class="n">moved</span> and more</p></div>`,
+  ).join('');
+
+metric(
+  'a layout at another width walks none of the layers the first one worked out',
+  async () => {
+    // Nothing a width moves is in them: styles and the shape of the tree. A
+    // mail page's two walks took 12,000 boxes at each of a drag's layouts.
+    const { el, tree, resize } = await atWidths(STACKED_ROWS);
+    const before = layersWalked();
+    for (const width of [380, 300, 340, 400]) await resize(width);
+    assert.strictEqual(layersWalked() - before, 0, 'boxes walked');
+    await layersAsWhole(el, tree, 'after the widths');
+  },
+);
+
+metric(
+  'what an inline box that is a layer has on its lines follows the lines a layout makes',
+  async () => {
+    // The one part of the order a layout makes new: `LINES_APART` is by a
+    // block's lines, so a layer is left with none of them, and its text
+    // goes to the block.
+    const { el, tree, resize } = await atWidths(
+      '<style>body{margin:0}.n{position:relative;top:1px}</style>' +
+        '<p>some words before <span class="n" id="n">moved a little ' +
+        'and running on past the edge of a narrow box</span> and after</p>',
+    );
+    const inline = () => {
+      const stack = [tree().root];
+      while (stack.length) {
+        const box = stack.pop()!;
+        if (box.el?.attribs.id === 'n') return box;
+        stack.push(...box.children);
+      }
+      throw new Error('no box');
+    };
+    const before = layersWalked();
+    for (const width of [160, 90, 400]) {
+      await resize(width);
+      assert.ok(stackingOf(inline()).lines > 0, `at ${width}`);
+    }
+    assert.strictEqual(layersWalked() - before, 0, 'boxes walked');
+    await layersAsWhole(el, tree, 'after the widths');
+  },
+);
+
+metric(
+  'a build of subtrees that touches no layer leaves the order of them as it was',
+  async () => {
+    const { el, tree, touch } = await atWidths(
+      `${STACKED_ROWS}<div id="p"><p>a paragraph</p></div>`,
+    );
+    const p = findById(el.document, 'p')!;
+    const added = createElement('p', {});
+    appendChild(p, added);
+    const was = tree();
+    const before = layersWalked();
+    await touch([
+      { type: 'childList', target: p, addedNodes: [added], removedNodes: [] },
+    ]);
+    assert.ok(tree() !== was, 'no build');
+    assert.strictEqual(layersWalked() - before, 0, 'boxes walked');
+    await layersAsWhole(el, tree, 'after the build');
+  },
+);
+
+metric(
+  'a build of subtrees that puts a layer in a stacking context gathers that context',
+  async () => {
+    // A mail page's spinner is built again in its button at each step of a
+    // drag: the button's layers are all there is to work out.
+    const { el, tree, touch } = await atWidths(
+      `${STACKED_ROWS}<div style="opacity:.5"><div id="c"><p>a</p></div></div>`,
+    );
+    const c = findById(el.document, 'c')!;
+    const was = tree();
+    const before = layersWalked();
+    const added = createElement('div', {
+      style: 'position:absolute;z-index:-1',
+    });
+    appendChild(c, added);
+    await touch([
+      { type: 'childList', target: c, addedNodes: [added], removedNodes: [] },
+    ]);
+    assert.ok(tree() !== was, 'no build');
+    const walked = layersWalked() - before;
+    assert.ok(walked > 0 && walked < 20, `${walked} boxes walked`);
+    await layersAsWhole(el, tree, 'with the layer in');
+    // and taking it out
+    const also = tree();
+    const taken = layersWalked();
+    c.children.splice(c.children.indexOf(added), 1);
+    await touch([
+      { type: 'childList', target: c, addedNodes: [], removedNodes: [added] },
+    ]);
+    assert.ok(tree() !== also, 'no build');
+    assert.ok(layersWalked() - taken < 20, 'boxes walked');
+    await layersAsWhole(el, tree, 'with the layer out');
+  },
+);
+
+metric(
+  'a layout walks the layers where it moves what a clamp point or a cut hides of them',
+  async () => {
+    // The two things a layout decides that the order reads: a positioned
+    // box past a clamp point is in no list, and it is past one at one width
+    // and not at another. Kept, it would be painted past the point, or not
+    // at all once the box had room.
+    const { el, tree, resize } = await atWidths(
+      '<style>body{margin:0}.l{line-clamp:2;position:relative}' +
+        '.a{position:relative;height:6px}' +
+        '.cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+        '.i{display:inline-block;position:relative;width:30px}</style>' +
+        '<div class="l"><p>a line of words wraps</p>' +
+        '<div class="a" id="a"></div></div>' +
+        '<div class="cut">words <span class="i" id="i">x</span></div>',
+      400,
+    );
+    for (const width of [40, 400, 60, 400]) {
+      await resize(width);
+      await layersAsWhole(el, tree, `at ${width}`);
+    }
+  },
+);
+
+metric(
+  'a cut that hides what it hid at the last width walks none of the layers',
+  async () => {
+    // A mail page's row is cut at every width and hides the same icon, shown
+    // for a moment each time as the line is cut again: that is no change.
+    const { el, tree, resize } = await atWidths(
+      '<style>body{margin:0}.a{position:relative;height:6px}' +
+        '.cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+        '.i{display:inline-block;width:30px}</style><div class="a"></div>' +
+        '<div class="cut">a run of words far wider than any of these ' +
+        'widths, and on past the end of them <b class="i">x</b></div>',
+      300,
+    );
+    const before = layersWalked();
+    for (const width of [280, 240, 260]) await resize(width);
+    assert.strictEqual(layersWalked() - before, 0, 'boxes walked');
+    await layersAsWhole(el, tree, 'after the widths');
   },
 );
 

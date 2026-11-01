@@ -403,6 +403,7 @@ import {
   intersectionClips,
   apartFromLines,
   apartOf,
+  carryLayers,
   layered,
   layerOf,
   onLine,
@@ -11830,6 +11831,7 @@ export class HtmlViewNode extends Node {
     }
     this._firstBoxes = { tree: built.tree, of: first };
     carryBlockers(tree, built.tree, built.replaced, built.added);
+    carryLayers(tree, built);
     return built.tree;
   }
 
