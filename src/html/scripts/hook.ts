@@ -165,7 +165,6 @@ export function useScripts(
 
   // the seams the host is made with read the latest options, so a render
   // that made new callbacks reaches a document already running
-  const heldWidth = useRef<number | null>(null);
   const seams = useRef<RunnerSeams>({
     handle,
     adopt: (sheets) => setAdopted(sheets.length ? sheets : NO_SHEETS),
@@ -176,16 +175,7 @@ export function useScripts(
       return latest.current.language;
     },
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
-    viewport: () => {
-      const v = latest.current.viewport();
-      // SPIKE: the page is not told of a width a guess draws
-      if (!(handle as { heldViewport?(): boolean }).heldViewport?.()) {
-        heldWidth.current = null;
-        return v;
-      }
-      heldWidth.current ??= v.width;
-      return { ...v, width: heldWidth.current };
-    },
+    viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
     navigate: (to, how) => latest.current.navigate(to, how),
     reload: () => latest.current.reload(),

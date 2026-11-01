@@ -6,11 +6,12 @@
 > backend at 2x from a window 3,000 device pixels wide, where every step
 > reflows.
 
-**This is the last resort, not the plan.** Exact reflow comes first: what is
-wasted, never seen, or could be coalesced gets a fix of its own, and four
-have started from what this spike found (see [Order](#order)). A guess is for
-a drag that is still behind its edge once nothing else can help, and it never
-runs for one that keeps up.
+**This is the last resort, not the plan, and for now it is not worth building.**
+Exact reflow came first: what was wasted, never seen, or could be coalesced got a
+fix of its own, and those fixes took this drag from 3.3 to 4.0 widths a second to
+15 or 16. A guess adds some 15 to 20% on top of that ([numbers](#once-the-fixes-landed)).
+It is kept here, behind its switch, for a page exact reflow cannot bring along, and
+it never runs for a drag that keeps up.
 
 ## What a user sees today
 
@@ -135,16 +136,16 @@ is: two of the last three frames of a live drag past `FRAME_BUDGET_MS`. A drag
 that keeps up never sees any of this, and a window that does not say it is being
 dragged (X11's today) is laid out as ever.
 
-**The page is held.** From there the page is told nothing of the width: the
-viewport it reads and what `ResizeObserver` finds stay as they were. That is what
-takes its reaction out of the drag, and a guess needs it anyway, since a page
-reading a box must find the last exact layout. It is told once, at rest, with an
-exact layout behind it.
+**A page is held by what #1210 built, and reads what is there.** A drag that fell
+behind holds what a page hears of its viewport (`viewportHeld`), and a guess adds
+nothing to it. Reads need nothing either: a guess is on the boxes only for the paint,
+so a page reads the last exact layout. The prototype first held `innerWidth` as
+well, which the merged fix showed was not needed.
 
 | when                               | what happens                           |
 | ---------------------------------- | -------------------------------------- |
 | the drag keeps up                  | exact, as ever                         |
-| it falls behind (`_behind`)        | page held; two exact layouts noted     |
+| it falls behind (`_behind`)        | two exact layouts noted                |
 | a width, with nothing else changed | a guess, no layout                     |
 | anything else stale                | an exact layout, and slopes again      |
 | a media query's answer turns       | an exact layout, and slopes again      |
@@ -205,13 +206,30 @@ exact layout puts them. Three differences:
 The first cut also drew a horizontal bar on a scroller it had narrowed, since an
 extent is the last exact layout's. Bars across are hidden while a guess draws.
 
+## Once the fixes landed
+
+The numbers above are from the commit this spike began on. With every fix in
+[Order](#order) merged, on a quiet machine, at loads of 2 to 3, through a real tab
+process, three rounds a side and alternating:
+
+| what draws a width | widths a second | behind the hand, median | a paint | CPU a width |
+| ------------------ | --------------: | ----------------------: | ------: | ----------: |
+| when this began    |         3.3–4.0 |                  300 ms |   45 ms |  240–276 ms |
+| `master`, exact    |       14.9–15.9 |                   64 ms |   28 ms |    70–75 ms |
+| `master`, a guess  |       17.4–18.3 |                   49 ms |   27 ms |    50–62 ms |
+
+Exact reflow alone made this drag four times the rate, and a guess adds a sixth to
+that. The first guess now comes some 0.45 seconds into a drag, since the exact
+frames before it are that much quicker. What holds both at some 20 frames a second
+is that a frame is still a 27 ms paint: a drag spends more of it there than in
+layout, and a guess does nothing about it.
+
 ## Limits
 
-- **It starts late.** See above: over a second of the slowest frames before the
-  first guess, so a short drag gets none of it. This is the first thing to fix if
-  the guess is built. A document that fell behind once will again, so it can stay
-  marked between drags, and slopes taken on the last drag still hold if nothing
-  changed, which would make a drag's first frame a guess.
+- **It starts late.** A guess takes three frames behind and two exact layouts, so
+  a short drag gets little of it: 1.4 to 4 seconds in on the commit this began on,
+  and some 0.45 now. A document that fell behind once will again, so it could stay
+  marked between drags, and slopes from the last drag still hold if nothing changed.
 - **Heights are held**, and with them where lines break. See above.
 - **A box that turns partway through a drag** is wrong from there until the rest,
   by as far as the drag has gone past the turn.
@@ -223,56 +241,55 @@ extent is the last exact layout's. Bars across are hidden while a guess draws.
   either stays exact (`_lifted`, `ExactLayout.columns`), as does a turned flow.
 - **A page whose own timers keep changing it** gets an exact layout for each
   change. The slopes stay, but each of those frames costs what it did.
-- **Paint is the floor.** A guess removes layout, and each frame is still a paint:
-  44 to 64 ms here at 2x. Past some 20 frames a second the next cost is the paint.
+- **Paint is the floor.** A guess removes layout, and each frame is still a paint.
 - **It rests on `liveResizing`**, so X11, which says nothing of a drag, sees none
   of this.
 
 ## Order
 
-Exact first. Each of these is a fix of its own, with a session started from this
-spike:
+Exact first. Each of these found here was a fix of its own, and all have landed:
 
-1. **A page's reaction, coalesced** during a live drag (#1210). Layout stays exact at every
-   step, and a crude hold took a tab from 3.3 to 4.0 widths a second to 5.9 to
-   8.2.
-2. **Scroll bars measured where none can show** (#1207). `scrollBarsOf` walks a
-   scroller's content before asking whether a bar can show; an `overflow: hidden`
-   strip of 12,700 boxes is walked after every layout to draw nothing. 7 ms a paint.
-3. **Inline `<svg>` parsed at every paint** (#1211). 6.5 ms a paint for icons that only
-   moved.
-4. **Stacking worked out at every layout** (#1209), where `hoistNegative` reads only styles
-   and the tree, which a width cannot change. Some 4 ms a layout.
-
-Then, started since, with no result yet:
-
-5. **A row laid out without Yoga.** `layoutFlex` makes Yoga nodes for a box and
-   its items at every layout and calls Yoga two to four times, though on one line
-   `resolveLine` has already decided each size; what is left is placing them.
-   60% of flex, 14% of this drag, and it would be exact.
+1. **A page's reaction, coalesced** during a drag that fell behind (#1210). A crude
+   hold took a tab from 3.3 to 4.0 widths a second to 5.9 to 8.2.
+2. **Scroll bars measured where none can show** (#1207). `scrollBarsOf` walked a
+   scroller's content before asking whether a bar can show, so an `overflow: hidden`
+   strip of 12,700 boxes was walked after every layout to draw nothing. 147
+   containers measured a paint became 4.
+3. **Inline `<svg>` parsed at every paint** (#1211, and #1216 for a told refresh).
+   `paintSvg` went from some 8 ms a paint to 3 to 5.
+4. **Stacking worked out at every layout** (#1209), where `hoistNegative` reads only
+   styles and the tree, which a width cannot change. 571 ms of a drag became 3.
+5. **A row laid out without Yoga** (#1215). A flex box of one line makes no call into
+   Yoga, with results held to Yoga's: 19% off this drag's layout time.
 
 Looked at and ruled out: **overdraw**. A paint's `fillRect`s cover 1.17 windows, so
 the fills are what is drawn, and there is nothing there to cull.
 
-And only then **the guess**, for what is still behind. If it is wanted:
+And only then **the guess**, for what is still behind. If it is ever wanted:
 
-6. Take `heldViewport` from the coalescing work rather than this prototype's.
-7. Cut text again in the guess, where it is cheap here: the engine is 1.2% of this
+6. Cut text again in the guess, where it is cheap here: the engine is 1.2% of this
    drag, so the visible ellipses could be laid out for real.
-8. Report widgets from the guess, at whatever that costs.
-9. A nine-slice in the host, for the frames a pane still misses: it needs no pane
+7. Report widgets from the guess, at whatever that costs.
+8. A nine-slice in the host, for the frames a pane still misses: it needs no pane
    frame at all, and at 84% within 2 pixels is far nearer than today's stretch's 1%,
    on an app-shaped page. On a page with no one stretching band it is no better.
 
 ## Decisions wanted
 
-- **Whether to build it at all**, once the fixes above land. Exact with the page
-  held is already twice as cheap as today, and it is exact. A guess takes that from
-  some 125 ms a width to some 80, and each frame is still a paint. Measure again
-  then: it is worth its code only if a drag is still behind.
-- **Whether a drag anchors while it moves.** The prototype lays out only at
-  breakpoints and at rest. An exact layout every so many pixels would keep kinks
-  from growing, at one slow frame each.
-- **What a page reads during a drag.** Held, it reads the last width it was told
-  of. The coalescing work settles whether that is acceptable or whether only the
-  events wait.
+- **Whether to build it at all.** Not now. It would add some 270 lines and a second
+  way to draw a document for a sixth more widths a second on the page that needed it
+  most, and it is wrong where exact is right. Paint is where the time is now. Hold it
+  for a page exact reflow cannot bring along, and measure on that page.
+- **Whether a drag anchors while it moves**, if it is built. The prototype lays out
+  only at breakpoints and at rest. An exact layout every so many pixels would keep
+  kinks from growing, at one slow frame each.
+
+## Trying it
+
+On a backend that says it is being dragged, a Mac today, in the example browser:
+
+```bash
+BROWSER_GUESS=1 npm run examples:browser -- <url>
+```
+
+The page has to fall behind for a guess to run: two of three frames past 12 ms.

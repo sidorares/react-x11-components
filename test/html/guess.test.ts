@@ -186,7 +186,7 @@ metric('a guess leaves the boxes as the exact layout left them', async (t) => {
 });
 
 metric(
-  'a page is held at its width while a guess draws, and told at rest',
+  'what a page reads while a guess draws is the last exact layout, and at rest the width it rests at',
   async (t) => {
     const clock = holdClock(t, resizeClock);
     behind(t, { value: 20 });
@@ -196,17 +196,17 @@ metric(
     let width = 400;
     try {
       width = await untilGuessing(resize, el);
-      assert.strictEqual(el.heldViewport(), true);
-      const key = el.geometryKey();
-      await resize(300, width - 8);
+      const was = rectOf(el, 'end7');
       width -= 8;
-      assert.strictEqual(el.geometryKey(), key, 'no observer sees it move');
+      await resize(300, width);
+      assert.strictEqual(inner(el)._guessedAt, width);
+      assert.deepStrictEqual(rectOf(el, 'end7'), was, 'no box left moved');
     } finally {
       wnd.liveResizing = false;
     }
     await clock.finish();
-    assert.strictEqual(el.heldViewport(), false);
     assert.strictEqual(inner(el)._guessedAt, null);
+    assert.strictEqual(inner(el)._guessWanted, false);
     assert.strictEqual(
       inner(el)._laidOutWidth,
       width,

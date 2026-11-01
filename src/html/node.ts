@@ -1198,10 +1198,9 @@ export class HtmlViewNode extends Node {
   private _cheap = false;
   /**
    * SPIKE: the last resort, for a drag still behind its edge once nothing
-   * else can help (`_cheapen`): from here the page is not told of the width
-   * (`heldViewport`), the two exact layouts after it give every box a slope
-   * (`LayoutGuess`), and a frame puts what they say of its width on the
-   * boxes for its paint and takes it off again. Whether one is wanted; the
+   * else can help (`_cheapen`): the two exact layouts after it give every
+   * box a slope (`LayoutGuess`), and a frame puts what they say of its width
+   * on the boxes for its paint and takes it off again. Whether one is wanted; the
    * last exact layout noted, and the last at another width; the guess, once
    * there are two; and the width the next paint draws by it.
    */
@@ -1210,8 +1209,6 @@ export class HtmlViewNode extends Node {
   private _guessBefore: ExactLayout | null = null;
   private _guess: LayoutGuess | null = null;
   private _guessedAt: number | null = null;
-  /** What `geometryKey` answers while the page is held. */
-  private _heldKey: string | undefined;
   private _work = 0;
   private _timing = false;
   private _laidSincePaint = false;
@@ -5256,15 +5253,7 @@ export class HtmlViewNode extends Node {
     this._guessFrom = null;
     this._guessBefore = null;
     this._guessedAt = null;
-    this._heldKey = undefined;
     this._invalidate(Stale.Layout);
-  }
-
-  /** SPIKE: whether the page is held at the width it was last told of
-   *  (`_guessWanted`). The width comes from wherever the host reads it, so
-   *  the seam that answers keeps it (`useScripts`'s `viewport`). */
-  heldViewport(): boolean {
-    return this._guessWanted;
   }
 
   /** Whether the window this is in is being resized live (`_armSettle`). */
@@ -12628,12 +12617,6 @@ export class HtmlViewNode extends Node {
    * page at rest cost.
    */
   geometryKey(): string {
-    if (this._guessWanted && this._heldKey !== undefined) return this._heldKey;
-    this._heldKey = this._geometryKeyNow();
-    return this._heldKey;
-  }
-
-  private _geometryKeyNow(): string {
     if (this._stale !== Stale.Nothing) return `owed ${++this._geometry}`;
     const at = this._scrolledOrigin();
     return `${this._geometry} ${at.x},${at.y} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;

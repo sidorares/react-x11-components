@@ -127,6 +127,7 @@ import type {
   ResourceResult,
   ViewportOverflow,
 } from '../../src/html/index.js';
+import { guessing } from '../../src/html/layout/guess.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
 import { openProfile } from './profile.js';
 import { shortcuts } from './keys.js';
@@ -153,6 +154,10 @@ import {
 /** The GL a page's WebGL contexts draw through, where this machine has one:
  *  none, and they draw nothing. */
 const GPU_WEBGL = (await gpuWebGL()) ?? undefined;
+
+// SPIKE: a drag that stays behind its edge drawn by a guess, on a backend
+// that says it is being dragged (docs/prd-guessed-layout.md)
+guessing.enabled = process.env.BROWSER_GUESS === '1';
 
 const VERTICAL_SCROLL_KEYS = new Set<number>([
   XK_UP,
