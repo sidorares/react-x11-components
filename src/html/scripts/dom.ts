@@ -23347,10 +23347,11 @@ export function installDom(
       () => {
         resizeLook = false;
         const geometry = String(call('geometry'));
-        if (resizeFresh || geometry !== resizeLooked) {
+        const moved = geometry !== resizeLooked;
+        if (resizeFresh || moved) {
           resizeFresh = false;
           resizeLooked = geometry;
-          for (const observer of [...resizing]) observer._look();
+          for (const observer of [...resizing]) observer._look(moved);
         }
         lookAgain(100);
       },
@@ -23371,6 +23372,9 @@ export function installDom(
     /** The size last told for each target, content box width and height,
      *  0 by 0 to start with, which is told only where it changes. */
     _told = new Map<Any, number[]>();
+    /** The targets observed since the last look, the only ones a look
+     *  that finds nothing moved measures. */
+    _fresh = new Set<Any>();
     constructor(fn: Any) {
       if (typeof fn !== 'function') {
         throw new TypeError(
@@ -23380,7 +23384,10 @@ export function installDom(
       this._fn = fn;
     }
     observe(el: Any): void {
-      if (!this._told.has(el)) this._told.set(el, [0, 0]);
+      if (!this._told.has(el)) {
+        this._told.set(el, [0, 0]);
+        this._fresh.add(el);
+      }
       resizing.add(this);
       resizeFresh = true;
       lookAgain(0);
@@ -23393,14 +23400,16 @@ export function installDom(
       this._told.clear();
       resizing.delete(this);
     }
-    _look(): void {
+    _look(moved: boolean): void {
       const entries: Any[] = [];
       for (const [el, told] of this._told) {
+        if (!moved && !this._fresh.has(el)) continue;
         const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0];
         if (sizes[2] === told[0] && sizes[3] === told[1]) continue;
         this._told.set(el, [sizes[2], sizes[3]]);
         entries.push(new ResizeObserverEntry(el, sizes));
       }
+      this._fresh.clear();
       if (!entries.length) return;
       try {
         this._fn.call(this, entries, this);

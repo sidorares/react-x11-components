@@ -6660,6 +6660,35 @@ its header: in the browser example a size a drag asked for was on screen
 in 26 ms at the median, where it took 37, and the pane fell behind its
 window at none of 96 steps, where it did at 12.
 
+**A page hears less of a drag that fell behind.** A page's script is a
+second cycle at each width: its `resize`, or its `ResizeObserver`, asks for
+an animation frame, the frame renders, and what that changes is styled,
+built and painted over what the width's own layout has just drawn. Through
+a drag that fell behind (above), a page whose scripts have had more than a
+tenth of the time since it last heard waits to hear of its viewport: its
+window's and its `visualViewport`'s `resize`, its media query lists'
+`change` and its `ResizeObserver`s. What it reads stays what is there:
+`innerWidth`, `matches` and a rectangle answer for the width on screen, and
+nothing the page's sheets say waits. It hears where the drag has come to
+when its scripts' part of the time comes round, when the hand holds still
+for 300 ms, and when it lets go: one `resize` and one `change`, where the
+answer moved, and each observer the size it has now, and nothing where the
+window is back where the page last heard of it. A task that runs for 300 ms
+is no rest of the hand, or the page's own reaction would tell it again. A
+page whose scripts take little hears every width, a drag the document keeps
+up with tells every page every width, and so does a window that says
+nothing of a drag — X11's — where a resize cannot be told from a drag. How
+far a drag is behind is what the document costs: a small document whose
+script takes long at each width is told at every step. An
+`IntersectionObserver` is told what comes into view and what leaves it, an
+observer told of a new target is told at once, and a page's timers and
+animation frames run as they did. A frame's document that runs in the
+page's realm goes with the page, and one in a realm of its own by its own
+element, whose scripts and whose drag those are. A webmail page's `resize`
+and its `ResizeObserver` each ask for the same render: in the browser
+example its drag painted 10.4 widths a second, each 157 ms behind the hand,
+where it painted 4.1, each 349 ms behind.
+
 **A drag draws what it draws again from what it kept.** While the width
 moves, a raster is made only of an image at a size the frame before drew
 it at as well — each width of a drag is a size of its own for a photograph

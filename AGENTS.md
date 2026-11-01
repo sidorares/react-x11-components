@@ -5184,6 +5184,34 @@ new that asks for an animation frame honours `_cheap`** as it honours
 core hook times itself with `_counted`, or a drag behind its edge is not
 seen to be.
 
+**What a page hears of a drag that fell behind waits, and what it reads
+does not** (`viewportHeld`, over `_cheap`). A page's `resize` and its
+`ResizeObserver`s are a second cycle at each width — a webmail page's two
+each ask for the same animation frame, whose render, build and paint came
+to more than the width's own layout — and either alone starts it, which is
+why slowing one did nothing and holding the other did nothing. So
+`_viewportHeld` (`DomHost`) answers both: `rendering` hands the rendering
+steps what they last saw, and a look at the observers (`geometry`) finds
+what the last one found. Five things are load-bearing. **Nothing a page
+reads is held**: a stale `innerWidth` works too, and tells a page reading
+it nothing true, where a late `resize` is a thing a browser's frame does as
+well. **Anything new that tells a page of its viewport asks
+`_viewportHeld`**, or it starts the cycle by itself. **A page holds only what it cannot afford**: it goes on
+hearing while its scripts are under `SCRIPT_SHARE` of the time since it
+last did (`ScriptEngine.busy`), so a small reaction stays at every width.
+**A rest wakes it itself**: `_drawAtRest` calls `onPaint`, since a drag
+that drew nothing cheaper paints nothing there, and the hold's end would
+go unheard. And **a timer that comes late is no rest of the hand**
+(`_armSettle`): the page's reaction held the thread past `DRAG_REST_MS`,
+the settle timer ran before the step waiting behind it, and that took the
+hold off, which told the page, which held the thread. An
+`IntersectionObserver` stays out of it: `renderingMoved` wakes the frame as
+it did, whose rendering steps find nothing moved and whose intersection
+steps measure what left the view, since that is what a page loads and
+unloads by. So does a target observed in a hold, which is all a look that
+finds nothing moved measures (`_fresh`). Each `<Html>` goes by its own
+element and its own scripts, and a worker has no viewport to hold.
+
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a

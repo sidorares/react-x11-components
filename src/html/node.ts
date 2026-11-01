@@ -1193,6 +1193,10 @@ export class HtmlViewNode extends Node {
   private _laidSincePaint = false;
   private _overBudget: boolean[] = [];
   private _drawnCheaper = false;
+  /** When the page was last left to hear of its viewport, and how long its
+   *  tasks had taken by then (`viewportHeld`). */
+  private _heardAt = 0;
+  private _heardBusy = 0;
   /** When the last frame of the drag under way was painted. */
   private _dragFrameAt = -Infinity;
   /** The tile each background layer was drawn at in the drag under way, by
@@ -5056,15 +5060,21 @@ export class HtmlViewNode extends Node {
    */
   private _armSettle(): void {
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
+    const armed = resizeClock.now();
     this._settleTimer = resizeClock.arm(() => {
       this._settleTimer = null;
       if (this.destroyed) return;
       const live = this._liveResizing();
+      const now = resizeClock.now();
+      // a timer that comes this late says the thread was busy, and that
+      // the step after it may be waiting behind this: not that the hand
+      // has stopped
+      const late = now - armed >= DRAG_REST_MS;
       // a drag drawn cheaper is drawn as at rest once it is over, and once
       // the hand that drags it holds still (`DRAG_REST_MS`)
       if (
         this._cheap &&
-        (!live || resizeClock.now() - this._dragFrameAt >= DRAG_REST_MS)
+        (!live || (!late && now - this._dragFrameAt >= DRAG_REST_MS))
       ) {
         this._drawAtRest();
       }
@@ -5099,6 +5109,32 @@ export class HtmlViewNode extends Node {
     return over >= 2 && this._liveResizing();
   }
 
+  /**
+   * Whether the page waits to hear of its viewport: the drag under way fell
+   * behind its edge (`_cheap`), and its scripts have had more than
+   * `SCRIPT_SHARE` of the time since it last heard, `busy` being how long
+   * they have taken so far. A page's `resize` and its `ResizeObserver`s are
+   * a cycle of their own at each width — its script, a build, a paint —
+   * and through a drag it cannot keep up with, that cycle is the one to
+   * give up, since a layout says all a page's sheets do. A reaction that
+   * costs little is told at every frame, and only the drag's rest, which
+   * asks (`_drawAtRest`), tells one that costs a lot. Only what it is told
+   * waits: what it reads is what is there. A window that says nothing of a
+   * drag — X11's — tells a page at every step.
+   */
+  viewportHeld(busy: number): boolean {
+    const now = frameClock.now();
+    if (
+      this._cheap &&
+      busy - this._heardBusy > SCRIPT_SHARE * (now - this._heardAt)
+    ) {
+      return true;
+    }
+    this._heardAt = now;
+    this._heardBusy = busy;
+    return false;
+  }
+
   /** A drag drawn cheaper from now (`_behind`), until it rests. */
   private _cheapen(): void {
     this._cheap = true;
@@ -5122,6 +5158,8 @@ export class HtmlViewNode extends Node {
       this.invalidate(false, this, 'content');
     }
     this._scheduleFrame();
+    // what the page was held from (`viewportHeld`), which may be no paint
+    this._props().onPaint?.();
   }
 
   /** Whether the window this is in is being resized live (`_armSettle`). */
@@ -18155,6 +18193,10 @@ export const frameClock = {
  *  drag is drawn cheaper (`_noteFrame`): most of a frame at 60Hz, where
  *  core's layout and the window's own paint and present take the rest. */
 const FRAME_BUDGET_MS = 12;
+
+/** The part of a drag that fell behind a page's scripts may take before
+ *  what they hear of the viewport waits (`viewportHeld`). */
+const SCRIPT_SHARE = 0.1;
 
 /** How long the hand that drags a window's edge holds still before a drag
  *  drawn cheaper is drawn as at rest (`_behind`): longer than the gaps a

@@ -1414,6 +1414,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
       geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+      viewportHeld: (busy: number) =>
+        nodeRef.current?.viewportHeld(busy) ?? false,
       intersectionsOf: (
         elements: readonly (Element | null)[],
         root: Element | null,
