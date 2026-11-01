@@ -5720,6 +5720,8 @@ export function installDom(
   const GEOMETRY = geometry({ DOMException });
   const DOMRect: Any = GEOMETRY.classes.DOMRect;
   const DOMRectReadOnly: Any = GEOMETRY.classes.DOMRectReadOnly;
+  const DOMMatrix: Any = GEOMETRY.classes.DOMMatrix;
+  const DOMPoint: Any = GEOMETRY.classes.DOMPoint;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -6764,41 +6766,264 @@ export function installDom(
       });
     }
   };
+  /** What the host works out of a drawing (`svg-geometry.ts`), as numbers,
+   *  or null where the element is in none that is laid out. */
+  const svgNumbers = (el: Any, question: string, at = 0): number[] | null => {
+    const raw = call('svg', el._id, question, at);
+    return typeof raw === 'string' && raw ? raw.split(',').map(Number) : null;
+  };
+  const matrixFrom = (n: number[] | null): Any =>
+    n ? new DOMMatrix([n[0], n[1], n[2], n[3], n[4], n[5]]) : null;
+  /** An attribute read as a reflected string (SVG 2, 4.6.8). */
+  const animatedString = (el: Any, name: string): Any => ({
+    get baseVal(): string {
+      return el.getAttribute(name) ?? '';
+    },
+    set baseVal(v: Any) {
+      el.setAttribute(name, str(v));
+    },
+    get animVal(): string {
+      return el.getAttribute(name) ?? '';
+    },
+  });
   class SVGGraphicsElement extends SVGElement {
+    get farthestViewportElement(): Any {
+      let last: Any = null;
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at.localName === 'svg') last = at;
+      }
+      return last;
+    }
+    get nearestViewportElement(): Any {
+      return this.closest('svg') === this
+        ? (this.parentElement?.closest('svg') ?? null)
+        : this.closest('svg');
+    }
     getBBox(): Any {
-      const r = this.getBoundingClientRect();
-      return new DOMRect(0, 0, r.width, r.height);
+      const n = svgNumbers(this, 'bbox');
+      return n ? new DOMRect(n[0], n[1], n[2], n[3]) : new DOMRect();
+    }
+    getCTM(): Any {
+      return matrixFrom(svgNumbers(this, 'ctm'));
+    }
+    getScreenCTM(): Any {
+      const n = svgNumbers(this, 'screenCtm');
+      if (!n) return null;
+      const v = viewport();
+      n[4] -= v.scrollX;
+      n[5] -= v.scrollY;
+      return matrixFrom(n);
+    }
+    /** What a drawing holds has no box of its own, and is where its
+     *  matrices draw it. The outermost `<svg>` is a replaced box. */
+    override getBoundingClientRect(): Any {
+      if (docRect(this)) return super.getBoundingClientRect();
+      const n = svgNumbers(this, 'drawn');
+      if (!n) return new DOMRect();
+      const v = viewport();
+      return new DOMRect(n[0] - v.scrollX, n[1] - v.scrollY, n[2], n[3]);
+    }
+    override getClientRects(): Any {
+      return docRect(this)
+        ? super.getClientRects()
+        : list(svgNumbers(this, 'drawn') ? [this.getBoundingClientRect()] : []);
     }
   }
-  class SVGSVGElement extends SVGGraphicsElement {}
+  /** A shape, whose outline is a length a page can walk (SVG 2, 8.3). */
+  class SVGGeometryElement extends SVGGraphicsElement {
+    getTotalLength(): number {
+      return svgNumbers(this, 'length')?.[0] ?? 0;
+    }
+    getPointAtLength(distance: Any): Any {
+      const n = svgNumbers(this, 'point', Number(distance));
+      return n ? new DOMPoint(n[0], n[1]) : new DOMPoint();
+    }
+  }
+  class SVGSVGElement extends SVGGraphicsElement {
+    /** A viewBox as a rectangle, read from the attribute each time. */
+    get viewBox(): Any {
+      const rect = (): Any => {
+        const n = (this.getAttribute('viewBox') ?? '')
+          .split(/[\s,]+/)
+          .filter(Boolean)
+          .map(Number);
+        return n.length === 4 && n.every(Number.isFinite)
+          ? new DOMRect(n[0], n[1], n[2], n[3])
+          : null;
+      };
+      return {
+        get baseVal(): Any {
+          return rect();
+        },
+        get animVal(): Any {
+          return rect();
+        },
+      };
+    }
+    declare _scale: number | undefined;
+    declare _translate: Any;
+    get currentScale(): number {
+      return this._scale ?? 1;
+    }
+    set currentScale(v: Any) {
+      const scale = Number(v);
+      if (!Number.isFinite(scale)) {
+        throw new TypeError(
+          "Failed to set the 'currentScale' property on 'SVGSVGElement': The provided float value is non-finite.",
+        );
+      }
+      if (!this.parentElement?.closest('svg')) this._scale = scale;
+    }
+    get currentTranslate(): Any {
+      return (this._translate ??= new DOMPoint());
+    }
+    createSVGMatrix(): Any {
+      return new DOMMatrix();
+    }
+    createSVGPoint(): Any {
+      return new DOMPoint();
+    }
+    createSVGRect(): Any {
+      return new DOMRect();
+    }
+    createSVGNumber(): Any {
+      return { value: 0 };
+    }
+    createSVGLength(): Any {
+      return {
+        value: 0,
+        valueInSpecifiedUnits: 0,
+        valueAsString: '0',
+        unitType: 1,
+      };
+    }
+    createSVGTransform(): Any {
+      return this.createSVGTransformFromMatrix(new DOMMatrix());
+    }
+    createSVGTransformFromMatrix(matrix: Any): Any {
+      return { type: 1, matrix: DOMMatrix.fromMatrix(matrix), angle: 0 };
+    }
+    getElementById(id: Any): Any {
+      return wrap(
+        Number(call('query', this._id, `#${cssEscape(str(id))}`, false)),
+      );
+    }
+    suspendRedraw(): number {
+      return 1;
+    }
+    unsuspendRedraw(_id: Any): void {}
+    unsuspendRedrawAll(): void {}
+    forceRedraw(): void {}
+    pauseAnimations(): void {}
+    unpauseAnimations(): void {}
+    animationsPaused(): boolean {
+      return false;
+    }
+    getCurrentTime(): number {
+      return 0;
+    }
+    setCurrentTime(_t: Any): void {}
+  }
   lengths(SVGSVGElement, ['x', 'y', 'width', 'height']);
-  class SVGRectElement extends SVGGraphicsElement {}
+  class SVGRectElement extends SVGGeometryElement {}
   lengths(SVGRectElement, ['x', 'y', 'width', 'height', 'rx', 'ry']);
-  class SVGCircleElement extends SVGGraphicsElement {}
+  class SVGCircleElement extends SVGGeometryElement {}
   lengths(SVGCircleElement, ['cx', 'cy', 'r']);
-  /** Text's: what it holds counted, and nothing measured, since no layout
-   *  here sets a drawing's text. */
+  class SVGEllipseElement extends SVGGeometryElement {}
+  lengths(SVGEllipseElement, ['cx', 'cy', 'rx', 'ry']);
+  class SVGLineElement extends SVGGeometryElement {}
+  lengths(SVGLineElement, ['x1', 'y1', 'x2', 'y2']);
+  class SVGPathElement extends SVGGeometryElement {}
+  class SVGPolylineElement extends SVGGeometryElement {}
+  class SVGPolygonElement extends SVGGeometryElement {}
+  class SVGGElement extends SVGGraphicsElement {}
+  class SVGDefsElement extends SVGGraphicsElement {}
+  class SVGSwitchElement extends SVGGraphicsElement {}
+  class SVGImageElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+  }
+  lengths(SVGImageElement, ['x', 'y', 'width', 'height']);
+  class SVGUseElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+  }
+  lengths(SVGUseElement, ['x', 'y', 'width', 'height']);
+  class SVGForeignObjectElement extends SVGGraphicsElement {}
+  lengths(SVGForeignObjectElement, ['x', 'y', 'width', 'height']);
+  class SVGAElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+    get target(): Any {
+      return animatedString(this, 'target');
+    }
+  }
+  /** Text's: its length is its font's, in a run as it is written. */
   class SVGTextContentElement extends SVGGraphicsElement {
     getNumberOfChars(): number {
       return this.textContent.length;
     }
+    getComputedTextLength(): number {
+      return svgNumbers(this, 'textLength')?.[0] ?? 0;
+    }
   }
-  class SVGTextElement extends SVGTextContentElement {}
-  class SVGTSpanElement extends SVGTextContentElement {}
+  class SVGTextPositioningElement extends SVGTextContentElement {}
+  class SVGTextElement extends SVGTextPositioningElement {}
+  class SVGTSpanElement extends SVGTextPositioningElement {}
+  class SVGTextPathElement extends SVGTextContentElement {}
+  class SVGSymbolElement extends SVGGraphicsElement {}
+  class SVGClipPathElement extends SVGElement {}
+  class SVGMaskElement extends SVGElement {}
+  class SVGMarkerElement extends SVGElement {}
+  class SVGPatternElement extends SVGElement {}
+  class SVGFilterElement extends SVGElement {}
+  class SVGStopElement extends SVGElement {}
+  class SVGGradientElement extends SVGElement {}
+  class SVGLinearGradientElement extends SVGGradientElement {}
+  class SVGRadialGradientElement extends SVGGradientElement {}
+  class SVGDescElement extends SVGElement {}
+  class SVGTitleElement extends SVGElement {}
+  class SVGMetadataElement extends SVGElement {}
+  class SVGStyleElement extends SVGElement {}
+  class SVGScriptElement extends SVGElement {}
+  class SVGViewElement extends SVGElement {}
   const SVG_CLASSES: Record<string, Any> = {
     svg: SVGSVGElement,
     rect: SVGRectElement,
     circle: SVGCircleElement,
+    ellipse: SVGEllipseElement,
+    line: SVGLineElement,
+    path: SVGPathElement,
+    polyline: SVGPolylineElement,
+    polygon: SVGPolygonElement,
     text: SVGTextElement,
     tspan: SVGTSpanElement,
-    g: SVGGraphicsElement,
-    path: SVGGraphicsElement,
-    line: SVGGraphicsElement,
-    polyline: SVGGraphicsElement,
-    polygon: SVGGraphicsElement,
-    ellipse: SVGGraphicsElement,
-    use: SVGGraphicsElement,
-    image: SVGGraphicsElement,
+    textPath: SVGTextPathElement,
+    g: SVGGElement,
+    defs: SVGDefsElement,
+    switch: SVGSwitchElement,
+    use: SVGUseElement,
+    image: SVGImageElement,
+    a: SVGAElement,
+    foreignObject: SVGForeignObjectElement,
+    symbol: SVGSymbolElement,
+    clipPath: SVGClipPathElement,
+    mask: SVGMaskElement,
+    marker: SVGMarkerElement,
+    pattern: SVGPatternElement,
+    filter: SVGFilterElement,
+    stop: SVGStopElement,
+    linearGradient: SVGLinearGradientElement,
+    radialGradient: SVGRadialGradientElement,
+    desc: SVGDescElement,
+    title: SVGTitleElement,
+    metadata: SVGMetadataElement,
+    style: SVGStyleElement,
+    script: SVGScriptElement,
+    view: SVGViewElement,
   };
   const SVG_TAGS = new Set([
     'svg',
@@ -27694,6 +27919,37 @@ export function installDom(
     SVGGraphicsElement,
     SVGSVGElement,
     SVGRectElement,
+    SVGGeometryElement,
+    SVGEllipseElement,
+    SVGLineElement,
+    SVGPathElement,
+    SVGPolylineElement,
+    SVGPolygonElement,
+    SVGGElement,
+    SVGDefsElement,
+    SVGSwitchElement,
+    SVGImageElement,
+    SVGUseElement,
+    SVGForeignObjectElement,
+    SVGAElement,
+    SVGTextPositioningElement,
+    SVGTextPathElement,
+    SVGSymbolElement,
+    SVGClipPathElement,
+    SVGMaskElement,
+    SVGMarkerElement,
+    SVGPatternElement,
+    SVGFilterElement,
+    SVGStopElement,
+    SVGGradientElement,
+    SVGLinearGradientElement,
+    SVGRadialGradientElement,
+    SVGDescElement,
+    SVGTitleElement,
+    SVGMetadataElement,
+    SVGStyleElement,
+    SVGScriptElement,
+    SVGViewElement,
     SVGCircleElement,
     SVGTextContentElement,
     SVGTextElement,

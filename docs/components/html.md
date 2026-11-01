@@ -1946,6 +1946,15 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
+
 ### Cookies and storage
 
 ```js
