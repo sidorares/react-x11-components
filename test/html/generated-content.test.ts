@@ -1781,16 +1781,22 @@ metric(
 metric(
   '::first-letter and ::first-line find a ::before of display: contents',
   async () => {
-    const { rect, near } = await contentsPage(
+    const { rect, ch, near } = await contentsPage(
       '<div id="a" class="letter contents">abc</div>' +
-        '<div id="b" class="letter inline">abc</div>',
+        '<div id="b" class="letter inline">abc</div>' +
+        '<div class="line contents">a<b id="c">z</b></div>',
       '.letter::first-letter{font-size:40px}' +
+        '.line::first-line{font-size:32px}' +
         '.contents::before{content:"qrs";display:contents}' +
         '.inline::before{content:"qrs"}',
     );
-    // Chrome's 29, whichever it is
-    near(rect('a').height, 29, 'its first letter is large');
+    // the letter is the first of its content, in a line taller for it: 29 in
+    // Chrome in its face, and whatever the face comes to here, as an inline
+    // one's
+    assert.ok(rect('a').height > 20, 'its first letter is large');
     near(rect('a').height, rect('b').height, 'as an inline one');
+    // and all of its content is on the first line, at twice the size
+    near(rect('c').x, 8 * ch, 'its first line is large');
   },
 );
 
