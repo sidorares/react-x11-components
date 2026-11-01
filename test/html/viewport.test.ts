@@ -1673,6 +1673,30 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
   assert.ok(inPlace >= 8, `${inPlace} of 24 restyled in place`);
 });
 
+test('a rem taken in place at a new width is the root font size, and not that of the last element at the top of a fragment', async () => {
+  // Each top-level element of a fragment was taken for the root as it was
+  // styled, and a restyle in place starts where the last build ended: the
+  // last of them was what every rem measured from, here 3vw
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style><div id="base">text</div>' +
+      '<div><div id="t" style="font-size:calc(.8rem + .6vw)">lorem</div></div>' +
+      '<div style="font-size:3vw"></div>',
+    300,
+    400,
+  );
+  const px = (id: string) =>
+    parseFloat(
+      el.computedStyle(findById(el.document, id)!)?.['font-size'] ?? '',
+    );
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
+  const initial = px('base');
+  assert.ok(near(px('t'), 0.8 * initial + 2.4), `${px('t')}`);
+  const tree = treeOf(el);
+  await resize(300, 352);
+  assert.ok(treeOf(el) === tree, 'in place');
+  assert.ok(near(px('t'), 0.8 * initial + 2.112), `${px('t')}`);
+});
+
 test('a root font size in vw moves every rem and rlh with it at a new width, under parents whose styles stay, in place', async () => {
   // Fluid type on the root, taken in place at a new width (`FONT_FIELDS`):
   // the elements that read the root's font are styled again wherever they

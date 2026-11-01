@@ -114,6 +114,7 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  isRootElement,
   readsFace,
   highlightKey,
 } from './css/cascade.js';
@@ -14759,11 +14760,6 @@ function inForeignObject(
 function elementParent(el: Element): Element | null {
   const parent = el.parent;
   return parent && parent.type === 'tag' ? (parent as Element) : null;
-}
-
-/** Whether an element is its document's root: its parent the document. */
-function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */
