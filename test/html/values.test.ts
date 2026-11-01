@@ -2493,6 +2493,426 @@ test('the scroll-driven animation properties take their grammars, and are kept w
   );
 });
 
+/**
+ * A `::before` or an `::after` of every kind of box, and the elements whose
+ * margins are read the same way (`e-…`). Every value is what Chrome 156
+ * answers for this document in a window 400 wide. No row reads the
+ * viewport's height, which the two renders below differ in.
+ */
+const USED_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '.w { width: 200px }' +
+  '#pct::after, #sizing::before, #centred::before, #over::before, #sum::before,' +
+  ' #turned::before, #wide::before, #wide-end::before, #wide-start::before,' +
+  ' #wide-rtl::before, #rel::before, #sticky::before, #upright::before, #rl::before,' +
+  ' #lr::before, #rl-auto::before, #zoomed::before { content: ""; display: block }' +
+  // a block
+  '#fit::before { content: "xxxxxxxxxxxxxxxxxxxxxxxx"; display: block; width: fit-content; max-width: 8px; overflow: hidden; margin-left: 10% }' +
+  '#fill::before { content: "x"; display: block }' +
+  '#pct { height: 100px }' +
+  '#pct::after { width: 50%; height: 25%; padding: 2% 5px; border: 3px solid; margin: 5% 10% 0 }' +
+  '#sizing::before { box-sizing: border-box; width: 50%; height: 30px; padding: 0 10px; border: 1px solid }' +
+  '#centred::before { width: 100px; margin: 0 auto }' +
+  '#over::before { width: 100px; margin-right: 10%; margin-left: 5% }' +
+  '#sum::before { width: calc(50% + 3px); margin-left: calc(10% - 1px) }' +
+  '#turned::before { width: 100px; height: 40px; transform: translateX(50%) }' +
+  '#wide::before { width: 300px; margin: 0 auto }' +
+  '#wide-end::before { width: 300px; margin-left: 10%; margin-right: auto }' +
+  '#wide-start::before { width: 300px; margin-left: auto; margin-right: 10% }' +
+  '#wide-rtl { direction: rtl }' +
+  '#wide-rtl::before { width: 300px; margin: 0 auto }' +
+  '#float::before { content: ""; float: right; width: 25%; height: 10px; margin-right: 10%; margin-left: auto }' +
+  // inline
+  '#inline::before { content: "x"; margin-left: 10%; padding-left: 5%; margin-top: 10%; width: 50px; height: 50px }' +
+  '#shifted::before { content: "x"; position: relative; top: 10px; left: 5% }' +
+  '#ib::before, #ib-span::before { content: ""; display: inline-block; width: 25%; height: 10px; margin-left: 10%; padding-left: 5% }' +
+  // flex and grid
+  '#flex { display: flex; height: 40px }' +
+  '#flex::before { content: ""; width: 50%; margin-left: 10% }' +
+  '#flex::after { content: ""; flex: 1; padding-left: 5% }' +
+  '#blockified { display: flex }' +
+  '#blockified::before { content: "x"; display: inline; width: 50%; height: 10px }' +
+  '#column { display: flex; flex-direction: column; height: 100px }' +
+  '#column::before { content: ""; flex: 1; margin-top: 10% }' +
+  '#grid { display: grid; grid-template-columns: 50px 100px; height: 40px }' +
+  '#grid::before { content: ""; margin-left: 10%; padding-left: 10% }' +
+  '#grid::after { content: ""; margin-left: 10% }' +
+  // a table cell
+  '#cell::before { content: ""; display: table-cell; width: 40px; height: 10px; padding: 5%; margin-left: 10% }' +
+  '#cell-px::before { content: ""; display: table-cell; width: 40px; height: 10px; margin-left: 5px }' +
+  // positioned
+  '#abs { position: relative; height: 100px; padding: 10px }' +
+  '#abs::before { content: ""; position: absolute; top: 10%; left: 5px; width: 50%; height: 25%; margin-left: 10% }' +
+  '#abs-auto { position: relative; height: 100px }' +
+  '#abs-auto::before { content: ""; position: absolute; left: 0; right: 0; width: 100px; height: 10px; margin: 0 auto }' +
+  '#abs-far::before { content: ""; position: absolute; left: 0; width: 10%; margin-left: 10% }' +
+  '#rel::before { position: relative; top: 10px; left: 5% }' +
+  '#fixed::before { content: ""; position: fixed; right: 10px; top: 5px; width: 10% }' +
+  '#sticky::before { position: sticky; top: 5px; height: 10px }' +
+  // vertical
+  '#rl, #lr, #rl-auto { width: 100px; height: 200px; writing-mode: vertical-rl }' +
+  '#lr { writing-mode: vertical-lr }' +
+  '#rl::before { width: 30px; height: 50%; margin-top: 10%; margin-left: 5px; padding-top: 2px; padding-left: 4px; border-right: 1px solid }' +
+  '#lr::before { width: 30px; height: 50%; margin-top: 10%; margin-bottom: 5%; margin-left: 5%; margin-right: 2.5% }' +
+  '#rl-auto::before { width: 30px; height: 100px; margin: auto 0 }' +
+  '#upright::before { writing-mode: vertical-rl; width: 30px; height: 50px; margin-left: 10% }' +
+  // zoomed
+  '#zoomed { zoom: 2; width: 100px }' +
+  '#zoomed::before { width: 50%; height: 10px; margin-left: 10% }' +
+  // on an element with no box
+  '#contents, #contents-nest, #contents-nest > div { display: contents }' +
+  '#contents::before { content: ""; display: block; width: 50%; height: 7px; margin-left: 10% }' +
+  '#contents-deep::after { content: ""; display: block; width: 25%; height: 3px }' +
+  // the same of elements
+  '.e-centred { width: 100px; margin: 0 auto }' +
+  '.e-end { width: 100px; margin-left: 10%; margin-right: auto }' +
+  '.e-inline { margin-left: 10%; padding-left: 5%; margin-top: 10% }' +
+  '.e-shifted { position: relative; top: 10px; left: 5% }' +
+  '.e-ib { display: inline-block; width: 25%; height: 10px; margin-left: 10% }' +
+  '.e-grid { display: grid; grid-template-columns: 50px 100px }' +
+  '.e-grid > div { margin-left: 10%; padding-left: 10% }' +
+  '.e-abs { position: relative; padding: 10px; height: 50px }' +
+  '.e-abs > div { position: absolute; left: 0; width: 50%; margin-left: 10% }' +
+  '.e-held { margin-bottom: 10% }' +
+  '.e-held > div { height: 5px; margin-bottom: 30px }' +
+  '.e-lr { writing-mode: vertical-lr; height: 200px }' +
+  '.e-lr > div { margin-left: 5%; margin-right: 2.5% }' +
+  '</style>' +
+  [
+    'fit',
+    'fill',
+    'pct',
+    'sizing',
+    'centred',
+    'over',
+    'sum',
+    'turned',
+    'wide',
+    'wide-end',
+    'wide-start',
+    'wide-rtl',
+    'float',
+    'ib',
+    'flex',
+    'blockified',
+    'column',
+    'grid',
+    'cell',
+    'cell-px',
+    'abs',
+    'abs-auto',
+    'abs-far',
+    'rel',
+    'fixed',
+    'sticky',
+    'upright',
+  ]
+    .map((id) => `<div class="w" id="${id}"></div>`)
+    .join('') +
+  '<div class="w"><span id="inline"></span></div>' +
+  '<div class="w"><span id="shifted"></span></div>' +
+  '<div class="w"><span id="ib-span"></span></div>' +
+  '<div id="rl"></div><div id="lr"></div><div id="rl-auto"></div>' +
+  '<div id="zoomed"></div>' +
+  '<div class="w"><div id="contents"></div></div>' +
+  '<div class="w"><div id="contents-nest"><div id="contents-deep"></div></div></div>' +
+  '<div class="w"><div class="e-centred" id="e-centred"></div></div>' +
+  '<div class="w"><div class="e-end" id="e-end"></div></div>' +
+  '<div class="w"><span><b class="e-inline" id="e-inline">x</b></span></div>' +
+  '<div class="w"><span><b class="e-shifted" id="e-shifted">x</b></span></div>' +
+  '<div class="w"><span><b class="e-ib" id="e-ib"></b></span></div>' +
+  '<div class="w e-grid"><div id="e-grid"></div></div>' +
+  '<div class="w e-abs"><div id="e-abs"></div></div>' +
+  '<div class="w"><div class="e-held" id="e-held"><div></div></div><div></div></div>' +
+  '<div class="w e-lr"><div id="e-lr"></div></div>' +
+  '<table style="width: 200px"><tr><td id="e-cell" style="margin-left: 10%"></td></tr></table>';
+
+const USED_ROWS: [string, 'before' | 'after' | null, Record<string, string>][] =
+  [
+    ['fit', 'before', { width: '8px', height: '20px', 'margin-left': '20px' }],
+    ['fill', 'before', { width: '200px', height: '20px' }],
+    [
+      'pct',
+      'after',
+      {
+        width: '100px',
+        height: '25px',
+        'margin-top': '10px',
+        'margin-right': '20px',
+        'margin-left': '20px',
+        'padding-top': '4px',
+        'padding-bottom': '4px',
+        'padding-left': '5px',
+        'border-left-width': '3px',
+        'inline-size': '100px',
+        'block-size': '25px',
+        'margin-inline-start': '20px',
+      },
+    ],
+    ['sizing', 'before', { width: '100px', height: '30px' }],
+    [
+      'centred',
+      'before',
+      { height: '0px', 'margin-left': '50px', 'margin-right': '50px' },
+    ],
+    ['over', 'before', { 'margin-left': '10px', 'margin-right': '20px' }],
+    ['sum', 'before', { width: '103px', 'margin-left': '19px' }],
+    ['turned', 'before', { transform: 'matrix(1, 0, 0, 1, 50, 0)' }],
+    ['wide', 'before', { 'margin-left': '0px', 'margin-right': '-100px' }],
+    ['wide-end', 'before', { 'margin-left': '20px', 'margin-right': '-120px' }],
+    ['wide-start', 'before', { 'margin-left': '0px', 'margin-right': '20px' }],
+    ['wide-rtl', 'before', { 'margin-left': '-100px', 'margin-right': '0px' }],
+    [
+      'float',
+      'before',
+      { width: '50px', 'margin-left': '0px', 'margin-right': '20px' },
+    ],
+    [
+      'inline',
+      'before',
+      {
+        width: '50px',
+        height: '50px',
+        'margin-left': '10%',
+        'margin-top': '10%',
+        'padding-left': '5%',
+      },
+    ],
+    [
+      'shifted',
+      'before',
+      { top: '10px', right: 'auto', bottom: '-10px', left: '5%' },
+    ],
+    [
+      'ib',
+      'before',
+      { width: '50px', 'margin-left': '20px', 'padding-left': '10px' },
+    ],
+    [
+      'ib-span',
+      'before',
+      { width: '50px', 'margin-left': '20px', 'padding-left': '10px' },
+    ],
+    [
+      'flex',
+      'before',
+      { width: '100px', height: '40px', 'margin-left': '20px' },
+    ],
+    [
+      'flex',
+      'after',
+      { width: '70px', height: '40px', 'padding-left': '10px' },
+    ],
+    ['blockified', 'before', { display: 'block', width: '100px' }],
+    [
+      'column',
+      'before',
+      { width: '200px', height: '80px', 'margin-top': '20px' },
+    ],
+    [
+      'grid',
+      'before',
+      {
+        width: '40px',
+        height: '40px',
+        'margin-left': '5px',
+        'padding-left': '5px',
+      },
+    ],
+    ['grid', 'after', { width: '90px', 'margin-left': '10px' }],
+    [
+      'cell',
+      'before',
+      { 'margin-left': '0px', 'padding-top': '2px', 'padding-left': '2px' },
+    ],
+    ['cell-px', 'before', { 'margin-left': '5px' }],
+    [
+      'abs',
+      'before',
+      {
+        width: '110px',
+        height: '30px',
+        'margin-left': '22px',
+        top: '12px',
+        right: '83px',
+        bottom: '78px',
+        left: '5px',
+      },
+    ],
+    [
+      'abs-auto',
+      'before',
+      {
+        'margin-left': '50px',
+        'margin-right': '50px',
+        top: '0px',
+        bottom: '90px',
+      },
+    ],
+    [
+      'abs-far',
+      'before',
+      { width: '40px', 'margin-left': '40px', left: '0px', right: '320px' },
+    ],
+    [
+      'rel',
+      'before',
+      {
+        width: '200px',
+        top: '10px',
+        right: '-10px',
+        bottom: '-10px',
+        left: '10px',
+      },
+    ],
+    ['fixed', 'before', { width: '40px', right: '10px', left: '350px' }],
+    ['sticky', 'before', { width: '200px', top: '5px' }],
+    [
+      'rl',
+      'before',
+      {
+        width: '30px',
+        height: '100px',
+        'margin-top': '20px',
+        'margin-left': '5px',
+        'padding-top': '2px',
+        'padding-left': '4px',
+        'border-right-width': '1px',
+        'inline-size': '100px',
+        'block-size': '30px',
+      },
+    ],
+    [
+      'lr',
+      'before',
+      {
+        height: '100px',
+        'margin-top': '20px',
+        'margin-right': '5px',
+        'margin-bottom': '10px',
+        'margin-left': '10px',
+      },
+    ],
+    ['rl-auto', 'before', { 'margin-top': '50px', 'margin-bottom': '50px' }],
+    ['upright', 'before', { 'margin-left': '20px' }],
+    ['zoomed', 'before', { width: '50px', 'margin-left': '10px' }],
+    ['contents', 'before', { width: '100px', 'margin-left': '20px' }],
+    ['contents-deep', 'after', { width: '50px', height: '3px' }],
+    ['e-centred', null, { 'margin-left': '50px', 'margin-right': '50px' }],
+    ['e-end', null, { 'margin-left': '20px', 'margin-right': '80px' }],
+    [
+      'e-inline',
+      null,
+      { 'margin-left': '10%', 'margin-top': '10%', 'padding-left': '5%' },
+    ],
+    [
+      'e-shifted',
+      null,
+      { top: '10px', right: 'auto', bottom: '-10px', left: '5%' },
+    ],
+    ['e-ib', null, { 'margin-left': '20px' }],
+    ['e-grid', null, { 'margin-left': '5px', 'padding-left': '5px' }],
+    ['e-abs', null, { 'margin-left': '22px' }],
+    ['e-held', null, { 'margin-bottom': '20px' }],
+    ['e-lr', null, { 'margin-left': '10px', 'margin-right': '5px' }],
+    ['e-cell', null, { 'margin-left': '0px' }],
+  ];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `getComputedStyle reads the box of a ::before as Chrome does, at ${scale}`,
+    async () => {
+      const { node } = await rendered(USED_PAGE, 400);
+      const el = view(node);
+      for (const [id, pseudo, want] of USED_ROWS) {
+        const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+        const read = Object.fromEntries(
+          Object.keys(want).map((name) => [name, style[name]]),
+        );
+        assert.deepStrictEqual(read, want, `${id} ${pseudo ?? ''}`);
+      }
+    },
+  );
+}
+
+test('the margins of the root box read as laid out', async () => {
+  // Chrome 156, in a window 400 wide
+  const { node } = await render(
+    '<!doctype html><html id="r"><style>html { width: 200px; margin: 0 auto 5% }' +
+      ' body { margin: 0 0 30px }</style>' +
+      '<body><div style="height: 10px"></div></body></html>',
+  );
+  const el = view(node);
+  const style = el.computedStyle(findById(el.document, 'r')!)!;
+  assert.deepStrictEqual(
+    [style['margin-left'], style['margin-right'], style['margin-bottom']],
+    ['100px', '100px', '20px'],
+  );
+});
+
+test('a ::before with no box reads as its rules compute it', async () => {
+  const { node } = await render(
+    '<!doctype html><style>' +
+      '#none::before { content: "x"; display: none; width: 50%; height: 10%; margin-left: 10%;' +
+      ' padding-left: 5%; top: 10%; position: relative }' +
+      '#empty::before { width: 50%; height: 10%; margin-left: 10%; padding-left: 5% }' +
+      '#gone::before { content: none; width: 50%; margin-left: 10% }' +
+      '#normal::after { content: normal; width: 50%; margin-left: 10% }' +
+      '#unseen { display: none }' +
+      '#unseen::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
+      '#held::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
+      // what it holds is set in a box, and that box is none of its own
+      '#contents::before { content: "x"; display: contents; width: 50%; height: 10%;' +
+      ' margin-left: 10%; padding-left: 5%; top: 10%; position: relative }' +
+      '#through { display: contents }' +
+      '#through::before { content: "x"; display: contents; width: 50%; margin-left: 10% }' +
+      '</style><div id="none"></div><div id="empty"></div><div id="gone"></div>' +
+      '<div id="normal"></div><div id="unseen"></div>' +
+      '<div id="contents"></div><div><div id="through"></div></div>' +
+      '<div style="display: none"><div id="held"></div></div>',
+  );
+  const el = view(node);
+  // Chrome 156: width, height, margin-left, padding-left, top
+  const rows = [
+    ['none', 'before', '50% 10% 10% 5% 10%'],
+    ['empty', 'before', '50% 10% 10% 5% auto'],
+    ['gone', 'before', '50% auto 10% 0px auto'],
+    ['normal', 'after', '50% auto 10% 0px auto'],
+    ['unseen', 'before', '50% auto 10% 0px auto'],
+    ['held', 'before', '50% auto 10% 0px auto'],
+    ['contents', 'before', '50% 10% 10% 5% 10%'],
+    ['through', 'before', '50% auto 10% 0px auto'],
+  ] as const;
+  for (const [id, pseudo, want] of rows) {
+    const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+    const read = ['width', 'height', 'margin-left', 'padding-left', 'top'];
+    assert.strictEqual(
+      read.map((name) => style[name]).join(' '),
+      want,
+      `${id} ${pseudo}`,
+    );
+  }
+});
+
+test('the first frame of a ::before takes its computed width, where its style reads its box', async () => {
+  const { node } = await render(
+    '<!doctype html><style>@keyframes k { to { width: 100px } }' +
+      '#a { width: 200px }' +
+      '#a::before { content: ""; display: block; width: 50%; animation: k 100s paused }' +
+      '</style><div id="a"></div>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a')!;
+  // Chrome 156's `getKeyframes()` and `getComputedStyle()` of it
+  const frames = el.cssKeyframesOf(a, 'before', 'k')!;
+  assert.strictEqual(frames[0].values.width, '50%');
+  assert.strictEqual(el.computedStyle(a, 'before')!.width, '100px');
+});
+
 test('what a computed style reads from a box says so, by name and in camel case', async () => {
   const { node } = await render(
     '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +

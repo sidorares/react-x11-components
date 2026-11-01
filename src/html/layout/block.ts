@@ -4807,6 +4807,12 @@ function heightLimit(
 }
 
 /** Place a block-level box horizontally, honouring `margin: auto`. */
+/** What `placeBlock` left for a block's `auto` margins, less than none
+ *  where the box is too wide. No box keeps it in `marginLeft` and
+ *  `marginRight`, which the flow reads as what is written; only
+ *  `usedMargins` asks. */
+const AUTO_ROOM = new WeakMap<Box, number>();
+
 function placeBlock(
   box: Box,
   contentLeft: number,
@@ -4837,6 +4843,7 @@ function placeBlock(
     box.y = y;
     return;
   }
+  if (leftAuto || rightAuto) AUTO_ROOM.set(box, slack);
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
     else if (aligned) {
@@ -9427,8 +9434,13 @@ export function resolvedInsets(
   const sides = [style.top, style.right, style.bottom, style.left];
   if (position === 'relative' || position === 'sticky') {
     const across = box.parent ? box.parent.contentWidth : 0;
+    // a percentage on an inline box stays as it was written, as Chrome
+    // answers it, and leaves the side opposite nothing to negate
+    const written = (len: Len) => box.kind === 'inline' && isPct(len);
     const set = sides.map((len, i) =>
-      resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
+      written(len)
+        ? null
+        : resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
     );
     if (position === 'sticky') {
       return set.map((v, i) => (sides[i] === AUTO ? 'auto' : v));
@@ -9437,6 +9449,7 @@ export function resolvedInsets(
       if (v !== null) return v;
       // a percentage of an indefinite height is the computed value
       if (sides[i] !== AUTO) return null;
+      if (written(sides[(i + 2) % 4])) return 'auto';
       const opposite = set[(i + 2) % 4];
       return opposite === null ? 0 : -opposite;
     });
@@ -9470,6 +9483,40 @@ export function resolvedInsets(
 }
 
 const INSET_SIDES = ['top', 'right', 'bottom', 'left'] as const;
+
+/**
+ * The margins layout gave a box, top first, as `getComputedStyle` answers
+ * them: each resolved against what the box was laid out in, which is its
+ * containing block and not its parent, or a track of a grid (`resolveEdges`).
+ * The two a box does not hold are worked out here: the `auto` margins of a
+ * block in the flow (`AUTO_ROOM`), and a bottom margin something the box
+ * holds hangs from, which `marginBottom` carries for the next sibling to
+ * collapse with, and which only a block in a flow has.
+ */
+export function usedMargins(box: Box): [number, number, number, number] {
+  const style = box.style;
+  const bottom =
+    box.bottomStrut && box.parent
+      ? resolve(style.marginBottom, box.parent.contentWidth)
+      : box.marginBottom;
+  const room = AUTO_ROOM.get(box);
+  if (room === undefined) {
+    return [box.marginTop, box.marginRight, bottom, box.marginLeft];
+  }
+  const leftAuto = style.marginLeft === AUTO;
+  const rightAuto = style.marginRight === AUTO;
+  const rtl = box.parent?.style.direction === 'rtl';
+  // shared where there is room, and a box too wide overflows its end, which
+  // is the margin there to take up
+  const share = (end: boolean) =>
+    room >= 0 ? (leftAuto && rightAuto ? room / 2 : room) : end ? room : 0;
+  return [
+    box.marginTop,
+    rightAuto ? share(!rtl) : box.marginRight,
+    bottom,
+    leftAuto ? share(rtl) : box.marginLeft,
+  ];
+}
 
 /**
  * Where `position: sticky` puts a box at rest (CSS Positioned Layout 3,
