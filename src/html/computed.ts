@@ -17,7 +17,12 @@ import { animationItemText, easingText, secondsText } from './css/animation.js';
 import type { Animations } from './css/animation.js';
 import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
-import type { ClipPath, ComputedStyle, TimelineRef } from './css/style.js';
+import type {
+  ClipPath,
+  ComputedStyle,
+  ContentSize,
+  TimelineRef,
+} from './css/style.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
 import type { Len } from './css/values.js';
@@ -83,6 +88,30 @@ function len(value: Len | 'none', scale: number): string {
   if (!value.px) return pct;
   const sign = value.px < 0 ? '-' : '+';
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
+}
+
+/** A size as it computes: its keyword where it is one, which the length
+ *  beside it stands in for. `fit-content()` is no keyword a browser takes
+ *  on a size, so what it reads is what it reads where it is refused. */
+function sizeText(
+  value: Len | 'none',
+  keyword: ContentSize | null,
+  scale: number,
+): string {
+  return typeof keyword === 'string' ? keyword : len(value, scale);
+}
+
+/** `min-width` or `min-height` as a page reads it: `auto` resolves to zero
+ *  but where it means something (CSS Sizing 3, 3.2), so what a page works
+ *  out from the two is a number on every box it did before flexbox. */
+function minSizeText(
+  value: Len,
+  keyword: ContentSize | null,
+  scale: number,
+  keepsAuto: boolean,
+): string {
+  const text = sizeText(value, keyword, scale);
+  return text === 'auto' && !keepsAuto ? '0px' : text;
 }
 
 /** An inset pair, the end left out where it is the start; null where
@@ -797,7 +826,8 @@ export function computedText(
   if (prop === 'gap') {
     return rowGap === columnGap ? rowGap : `${rowGap} ${columnGap}`;
   }
-  const all = cssomAt(style, scale, null);
+  // a computed value, which a `min-width: auto` is whatever box it is on
+  const all = cssomAt(style, scale, null, true);
   if (Object.hasOwn(all, prop)) return all[prop];
   const sides = FOUR_SIDES[prop];
   return sides ? shortest(sides.map((side) => all[side])) : undefined;
@@ -847,19 +877,24 @@ export function comesFromBox(property: string): boolean {
  * size and its edges. `scale` is device pixels to the CSS pixel. Its
  * lengths are as an unzoomed element's (CSS Viewport 1, 5): the style's
  * and the box's are divided by its effective zoom, as Chrome answers.
+ * `keepsAuto` has a `min-width: auto` read as itself: on a flex or a grid
+ * item, which a `::before` is with no `box` handed in, and for what takes
+ * the computed value, as `getKeyframes()` and `commitStyles()` do.
  */
 export function cssomStyle(
   style: ComputedStyle,
   scale: number,
   box: UsedBox | null,
+  keepsAuto = false,
 ): Record<string, string> {
-  return cssomAt(style, scale * style.effectiveZoom, box);
+  return cssomAt(style, scale * style.effectiveZoom, box, keepsAuto);
 }
 
 function cssomAt(
   style: ComputedStyle,
   scale: number,
   box: UsedBox | null,
+  keepsAuto: boolean,
 ): Record<string, string> {
   const color = style.color;
   const out: Record<string, string> = {
@@ -982,10 +1017,20 @@ function cssomAt(
     'writing-mode': style.writingMode,
     'text-orientation': style.textOrientation,
     'list-style-type': style.listStyleType,
-    'min-width': len(style.minWidth, scale),
-    'max-width': len(style.maxWidth, scale),
-    'min-height': len(style.minHeight, scale),
-    'max-height': len(style.maxHeight, scale),
+    'min-width': minSizeText(
+      style.minWidth,
+      style.minWidthKeyword,
+      scale,
+      keepsAuto,
+    ),
+    'max-width': sizeText(style.maxWidth, style.maxWidthKeyword, scale),
+    'min-height': minSizeText(
+      style.minHeight,
+      style.minHeightKeyword,
+      scale,
+      keepsAuto,
+    ),
+    'max-height': sizeText(style.maxHeight, style.maxHeightKeyword, scale),
     top: len(style.top, scale),
     right: len(style.right, scale),
     bottom: len(style.bottom, scale),
@@ -1090,8 +1135,8 @@ function cssomAt(
     out.width = px(Math.max(0, box.width - (content ? across : 0)), scale);
     out.height = px(Math.max(0, box.height - (content ? down : 0)), scale);
   } else {
-    out.width = len(style.width, scale);
-    out.height = len(style.height, scale);
+    out.width = sizeText(style.width, style.widthKeyword, scale);
+    out.height = sizeText(style.height, style.heightKeyword, scale);
   }
   logicalProperties(out, style);
   return out;
