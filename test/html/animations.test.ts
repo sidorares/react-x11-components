@@ -44,7 +44,11 @@ import {
 } from '../../src/html/css/triggers.js';
 import type { RangeName } from '../../src/html/css/triggers.js';
 import type { DocumentSprite } from '../../src/html/sprites.js';
-import { fixedToViewport, stacksLayers } from '../../src/html/paint.js';
+import {
+  fixedToViewport,
+  inkWalked,
+  stacksLayers,
+} from '../../src/html/paint.js';
 import type { Box } from '../../src/html/layout/boxes.js';
 import type { HtmlViewNode } from '../../src/html/node.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
@@ -903,6 +907,56 @@ async function framesAgainstBuilds(
   }
   return { repainted: all, frames };
 }
+
+test('a box that turns walks its own ink and what has to grow around it, and none of the rest of the document', async (t) => {
+  const rows = '<div class="row">a row</div>'.repeat(300);
+  const doc = await running(
+    t,
+    '<style>@keyframes r { to { transform: rotate(360deg) } }' +
+      '#t, #s { animation: r 320ms linear infinite; width: 20px;' +
+      ' height: 20px } #s { display: inline-block }' +
+      '.list { height: 100px; overflow: auto }</style>' +
+      `<div class="list"><div id="t"></div><p>on a line <span id="s"></span>` +
+      ` and all</p>${rows}</div>`,
+  );
+  const tree = treeOf(doc.el);
+  await doc.at(32);
+  const before = inkWalked();
+  await doc.at(160);
+  const walked = inkWalked() - before;
+  assert.ok(treeOf(doc.el) === tree, 'the document was built again');
+  assert.ok(walked > 0, 'no frame moved them');
+  // eight frames, a box or two each: the rows walked in any one of them is
+  // the whole document's walk
+  assert.ok(walked < 100, `walked ${walked} boxes`);
+});
+
+metric(
+  'a repaint of what a turned corner reached over finds it, in the stacking context it left the bounds of',
+  async (t) => {
+    // the turn is over by the time the colour under its corner changes: all
+    // that repaints then is the strip, which meets the box's turned corner
+    // and not the box it is in, whose own ink has to have grown to take it
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes r { to { transform: rotate(45deg) } }' +
+        '@keyframes c { from { background: #ffff00 } to { background: #00ffff } }' +
+        '.context { position: relative; z-index: 1; width: 40px;' +
+        ' height: 40px; margin: 30px 0 0 30px }' +
+        '#b { animation: r 64ms linear forwards; width: 40px; height: 40px;' +
+        ' background: #00aa00 }' +
+        '.strip { animation: c 256ms linear; height: 20px }</style>' +
+        '<div class="context"><div id="b"></div></div>' +
+        '<div class="strip"></div>',
+      300,
+    );
+    const tree = treeOf(doc.el);
+    const { frames } = await framesAgainstBuilds(doc, [128]);
+    assert.ok(treeOf(doc.el) !== tree, 'the check built the document');
+    assert.ok(frames.length === 1);
+  },
+);
 
 metric(
   'a frame that lays out a box out of the flow again repaints that box, to the pixels a build draws',
@@ -3125,6 +3179,38 @@ test('a lifted element that moves is hit where its animation has it, with nothin
     again.animations[0].values === sprite.animations[0].values,
     'not sampled again',
   );
+});
+
+test('a point a lifted element cannot reach leaves it where it is, and one it can brings it up to date', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes r { to { transform: rotate(360deg) } }' +
+      'body { margin: 0 }' +
+      '#a { animation: r 320ms linear infinite; width: 40px; height: 40px;' +
+      ' margin-left: 200px; background: red }' +
+      '#b { width: 100px; height: 40px; background: blue }</style>' +
+      '<div id="a"></div><div id="b"></div>',
+  );
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  const step = animationClock.arm(() => {}, 1000);
+  t.after(() => animationClock.disarm(step));
+  await doc.at(80);
+  const followed = t.mock.method(
+    doc.el as unknown as { _restyleInPlace(): boolean },
+    '_restyleInPlace',
+  );
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  assert.strictEqual(
+    doc.el.elementAtPoint(abs.x + 10, abs.y + 60)?.attribs.id,
+    'b',
+  );
+  assert.strictEqual(followed.mock.callCount(), 0, 'far from it');
+  assert.strictEqual(
+    doc.el.elementAtPoint(abs.x + 220, abs.y + 20)?.attribs.id,
+    'a',
+  );
+  assert.strictEqual(followed.mock.callCount(), 1, 'under the point');
 });
 
 test('a lifted element a hover draws otherwise asks for the frame that paints its layer again, and repaints no hole', async (t) => {

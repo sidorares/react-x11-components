@@ -375,6 +375,7 @@ import {
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   boundsAfterMove,
+  inkAfterMove,
   clipFor,
   clipsOverflow,
   computePaintBounds,
@@ -7851,10 +7852,10 @@ export class HtmlViewNode extends Node {
     origin: { x: number; y: number } = this.abs,
   ): Element | null {
     this._followViewport();
-    this._followLifted();
+    const local = this._toDocument(x, y, origin);
+    this._followLifted(local);
     const tree = this._tree;
     if (!tree) return null;
-    const local = this._toDocument(x, y, origin);
     const hit = deepestAt(
       tree,
       local.x,
@@ -8983,8 +8984,17 @@ export class HtmlViewNode extends Node {
       if (before >= this._documentHeight) relayout = true;
     }
     // how far the boxes' ink reaches, and the order their layers paint in,
-    // as layout leaves them (`layoutDocument`)
-    if (reaches || reorders || moved.length) {
+    // as layout leaves them (`layoutDocument`) — but where boxes only moved:
+    // those and the boxes around them, as far as they have to grow, and no
+    // layer changes place. A mail page's spinner turning at the foot of its
+    // list walked all 13,000 elements of the page at every frame, and, on
+    // its layer, at every turn of the wheel
+    if (
+      reaches ||
+      reorders ||
+      moved.length > MOST_MOVED_APART ||
+      !moved.every(([box]) => inkAfterMove(box, tree.movedInline))
+    ) {
       computePaintBounds(tree.root, tree.movedInline);
       if (tree.negative) hoistNegative(tree.root);
       stackLayers(tree.root);
@@ -10619,16 +10629,29 @@ export class HtmlViewNode extends Node {
    * The lifted elements a point is about to be hit against, restyled to
    * where their animations have them now: their layers moved them, and the
    * document's own style of them stopped at the lift. Only those whose
-   * animation moves them — a fade is hit where it is — and nothing is
-   * repainted or offered again: their pixels are their layers', which
-   * already show them there.
+   * animation moves them — a fade is hit where it is — and that can reach
+   * the point at all (`at`, in the document's coordinates): a spinner at the
+   * foot of a list is under no wheel turned over the list, and a wheel asks
+   * twice a notch. Nothing is repainted or offered again: their pixels are
+   * their layers', which already show them there.
    */
-  private _followLifted(): void {
+  private _followLifted(at?: { x: number; y: number }): void {
     if (!this._lifted.size || this._followingLifted) return;
     let moving: Set<Element> | null = null;
     let generated = false;
     for (const { el, pseudo } of this._lifted.values()) {
-      if (!this._spriteOffers.get(el)?.[pseudo]?.part?.lift.moves) continue;
+      const part = this._spriteOffers.get(el)?.[pseudo]?.part;
+      if (!part?.lift.moves) continue;
+      // `extent` says where it can be but for one drawn at the viewport,
+      // which the pane's scroll places, or in another's layer
+      if (
+        at &&
+        !part.atViewport &&
+        !part.nested &&
+        !holdsPoint(part.extent, at)
+      ) {
+        continue;
+      }
       (moving ??= new Set()).add(el);
       generated ||= pseudo !== '';
     }
@@ -18188,6 +18211,11 @@ const TRANSFORM_FIELDS = new Set([
   'transformOrigin',
 ]);
 
+/** The most boxes a restyle in place works the ink of out one at a time
+ *  (`inkAfterMove`), each going up through what is around it: past this, one
+ *  walk of the tree is the cheaper. */
+const MOST_MOVED_APART = 32;
+
 /** How a restyle changed what a box draws, for the surface kept for it and
  *  the ones around it (`_restyledSprites`). */
 const enum SpriteChange {
@@ -18487,6 +18515,16 @@ function hoverChange(
     return false;
   }
   return change;
+}
+
+/** Whether a rectangle has a point in it or on its edge. */
+function holdsPoint(rect: Rect, at: { x: number; y: number }): boolean {
+  return (
+    at.x >= rect.x &&
+    at.y >= rect.y &&
+    at.x <= rect.x + rect.width &&
+    at.y <= rect.y + rect.height
+  );
 }
 
 /**

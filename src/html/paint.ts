@@ -688,6 +688,13 @@ export function inkKept(): number {
   return inkKeptCount;
 }
 
+/** How many boxes walks of the ink have worked out (`boundsOf`), for a test
+ *  to count what a change walks. */
+let inkWalkedCount = 0;
+export function inkWalked(): number {
+  return inkWalkedCount;
+}
+
 /** How many walks of each tree's ink, by its root box, kept none of the
  *  ink before (`computePaintBounds` with no `KeptInk`): a record of a
  *  block's ink (`KEPT_INK`) is kept only by the walks after it until one
@@ -760,6 +767,7 @@ function boundsOf(
   inKept: boolean,
   sticky: boolean,
 ): number {
+  inkWalkedCount += 1;
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
   const own = hasRect(box);
@@ -1138,6 +1146,20 @@ export function boundsAfterMove(box: Box, moved = false): boolean {
     at.boundsHeight = Math.max(ay2, y2) - at.boundsY;
   }
   return true;
+}
+
+/**
+ * `boundsAfterMove` of a box a transform moved, which goes with what it
+ * holds and moves nothing else (`retranslate`): one on a line from the block
+ * those lines are in, since how far it reaches past its line is the block's
+ * to say (`LINE_INK`) and a spinner in a line of text turns out of its line.
+ */
+export function inkAfterMove(box: Box, moved = false): boolean {
+  let from = box;
+  while (from.style.display.startsWith('inline') && from.parent) {
+    from = from.parent;
+  }
+  return boundsAfterMove(from, moved);
 }
 
 /**
