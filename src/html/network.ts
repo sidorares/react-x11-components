@@ -149,6 +149,14 @@ export interface HtmlNetworkOptions {
    *  oldest. Default 256 MB. */
   cacheBytes?: number;
   /**
+   * The largest body held whole: a script, a stylesheet, an image, a font,
+   * or a page's request for all of a response at once. Past it the request
+   * fails, with `ERR_FILE_TOO_BIG`, and no part of the body is handed on. A
+   * body a page reads as it arrives is not held here, and has no limit.
+   * Default 256 MB.
+   */
+  resourceBytes?: number;
+  /**
    * Where the HTTP cache keeps responses past this network's memory, for
    * the next network that opens it to find: `HtmlProfile`'s `httpCache`,
    * on disk, which every process of a browser shares. Default none: what
@@ -376,7 +384,9 @@ export class NetworkError extends Error {
 }
 
 const MAX_DOCUMENT = 32 * 1024 * 1024;
-const MAX_RESOURCE = 16 * 1024 * 1024;
+/** vscode.dev's workbench is one script past 16 MiB, and an application
+ *  compiled to WebAssembly can be ten times that. */
+const MAX_RESOURCE = 256 * 1024 * 1024;
 const TIMEOUT = 30_000;
 
 /** What the network keeps of a resource in its memory. */
@@ -447,6 +457,7 @@ export class HtmlNetwork {
   private _sizes = new Map<string, number>();
   private _bytes = 0;
   private _limit: number;
+  private readonly _resourceLimit: number;
   private _running = 0;
   private _perHost = new Map<string, number>();
   private _queue: Queued[] = [];
@@ -471,6 +482,7 @@ export class HtmlNetwork {
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
+    this._resourceLimit = options.resourceBytes ?? MAX_RESOURCE;
     this._store = options.httpCache ?? null;
     this._language = acceptLanguage();
     this._userAgent = options.userAgent ?? HTML_USER_AGENT;
@@ -1004,9 +1016,9 @@ export class HtmlNetwork {
       scheme === 'data'
         ? Promise.resolve({ fetched: readDataUrl(url) })
         : scheme === 'file'
-          ? this._paced(url, signal, () => readLocal(url, MAX_RESOURCE)).then(
-              (fetched) => ({ fetched }),
-            )
+          ? this._paced(url, signal, () =>
+              readLocal(url, this._resourceLimit),
+            ).then((fetched) => ({ fetched }))
           : this._http(
               key,
               url,
@@ -1164,7 +1176,7 @@ export class HtmlNetwork {
     const answer = await this._paced(url, signal, () =>
       this._fetch(url, {
         headers: { ...headers, ...validators, ...(reload ? RELOAD : null) },
-        limit: MAX_RESOURCE,
+        limit: this._resourceLimit,
         page,
         id,
       }),
@@ -1486,13 +1498,13 @@ export class HtmlNetwork {
       return {
         ...answer,
         bytes: new Uint8Array(0),
-        chunks: this._observed(id, bodyChunks(response, MAX_RESOURCE)),
+        chunks: this._observed(id, bodyChunks(response)),
       };
     }
     const chunks: Uint8Array[] = [];
     for await (const chunk of this._observed(
       id,
-      bodyOf(response, MAX_RESOURCE),
+      bodyOf(response, this._resourceLimit),
     )) {
       chunks.push(chunk);
     }
@@ -2255,7 +2267,12 @@ export function contentType(header: string | null): {
   return { type: type.trim().toLowerCase(), charset };
 }
 
-/** A response's body, a chunk at a time, cut off at `limit` bytes. */
+/**
+ * A response's body, a chunk at a time, for a caller that holds all of it.
+ * Past `limit` bytes it throws: part of a script is a `SyntaxError` at its
+ * end, far from the cause, and part of anything else is a body that says
+ * nothing of having been cut.
+ */
 async function* bodyOf(
   response: ResponseLike,
   limit: number,
@@ -2269,8 +2286,10 @@ async function* bodyOf(
       if (done || !value) return;
       total += value.length;
       if (total > limit) {
-        yield value.subarray(0, value.length - (total - limit));
-        return;
+        throw new NetworkError(
+          `The response is larger than ${limit} bytes.`,
+          'ERR_FILE_TOO_BIG',
+        );
       }
       yield value;
     }
@@ -2359,14 +2378,12 @@ async function* arriving(
  * A response's body as it arrives, for a caller that hands it on a chunk at
  * a time: `bodyOf`, but with its reader taken at once, so `return()` lets
  * the connection go whether or not a chunk was ever asked for — a no-cors
- * answer and one CORS refuses are dropped unread.
+ * answer and one CORS refuses are dropped unread. Nothing here holds what
+ * it hands on, so nothing bounds it: a stream of events goes on for as long
+ * as the server sends it.
  */
-function bodyChunks(
-  response: ResponseLike,
-  limit: number,
-): AsyncIterable<Uint8Array> {
+function bodyChunks(response: ResponseLike): AsyncIterable<Uint8Array> {
   const reader = response.body?.getReader() ?? null;
-  let total = 0;
   let done = !reader;
   const finish = (): void => {
     if (done) return;
@@ -2386,14 +2403,6 @@ function bodyChunks(
       if (read.done || !read.value) {
         done = true;
         return { done: true, value: undefined };
-      }
-      total += read.value.length;
-      if (total > limit) {
-        finish();
-        return {
-          done: false,
-          value: read.value.subarray(0, read.value.length - (total - limit)),
-        };
       }
       return { done: false, value: read.value };
     },

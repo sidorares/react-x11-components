@@ -894,6 +894,14 @@ no-cache`. A document, a page's own `fetch` and a redirect are not kept;
 where a redirect led is, under its own URL. The `log` option says `cached`
 for a response the cache answered and `revalidated` for a 304.
 
+**A body the network holds whole has a limit, `resourceBytes`** (256 MB by
+default): a script, a stylesheet, an image, a font, or a page's request for
+all of a response at once. Past it the request fails with
+`ERR_FILE_TOO_BIG`, and no part of the body is handed on, so a `<script>`
+hears `error` rather than parsing what came and throwing at its last line. A
+body a page reads as it arrives is handed on as it comes and has no limit,
+since a stream of events goes on for as long as the server sends it.
+
 **`observe(listener)` tells of each request as it goes**, for a
 developer's tools to draw a network log from (`HtmlNetworkActivity`): a
 document, a resource a document asked for and a page's own fetch, each by an
@@ -1938,6 +1946,7 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+<<<<<<< HEAD
 **`execCommand` makes the edits a key makes, and no others**: `insertText`,
 `delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
 `selectAll`, in an editing host or a focused text field, each told as a
@@ -1950,6 +1959,16 @@ since nothing has been asked and nothing refused, and a name it does not know
 is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and `TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
+=======
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
+>>>>>>> origin/master
 
 ### Cookies and storage
 
