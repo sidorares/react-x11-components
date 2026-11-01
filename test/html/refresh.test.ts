@@ -46,8 +46,11 @@ import {
   findById,
   h,
   metric,
+  paneOf,
+  pointIn,
   rebuilt,
   render,
+  renderScrolled,
   snapshot,
   treeOf,
   view,
@@ -1748,6 +1751,350 @@ test('a sheet that comes late builds what its rules style, and keeps every other
     'rgb(0, 170, 0)',
   );
 });
+
+/** What each drawing is asked of the rules while `run` runs, whichever
+ *  cascade asks: a sheet that adds rules makes another. */
+async function drawingsAskedOfAny(run: () => unknown) {
+  const ask = Cascade.prototype.shapeStyles;
+  const asked: (string | undefined)[] = [];
+  Cascade.prototype.shapeStyles = function (this: Cascade, ...a) {
+    asked.push(a[0].attribs.id);
+    return ask.apply(this, a);
+  };
+  try {
+    await run();
+  } finally {
+    Cascade.prototype.shapeStyles = ask;
+  }
+  return asked;
+}
+
+/** Each block in a `<div>` of its own, with its `<html>` written, so that
+ *  what a build is for stays in its block. */
+const blocked = (css: string, ...blocks: string[]) =>
+  `<html><head><style id="css">body{margin:0} svg{display:block}${css}</style>` +
+  `</head><body>${blocks.map((b) => `<div>${b}</div>`).join('')}</body></html>`;
+
+/** Rules written on to the end of a `<style>`, and told. */
+function writeRules(el: HtmlViewNode, css: string): void {
+  const sheet = byId(el, 'css');
+  const text = createText(css);
+  appendChild(sheet, text);
+  el.touchDocument([
+    { type: 'childList', target: sheet, addedNodes: [text], removedNodes: [] },
+  ]);
+}
+
+const hidden = (inside: string) => `<svg style="display:none">${inside}</svg>`;
+const symbol = `<symbol id="s" viewBox="0 0 24 24">${shape}</symbol>`;
+const redStop =
+  '<linearGradient id="g"><stop stop-color="#ff0000"/></linearGradient>';
+const uses = (id = 's') => drawing('d', `<use href="#${id}"/>`);
+const paints = (id = 'g') =>
+  drawing('d', `<rect width="24" height="24" fill="url(#${id})"/>`);
+
+/** `#d` holds `colour` and draws what a refresh of everything draws: told by
+ *  the pixel as well, since a refresh that keeps the cascade agrees with a
+ *  sheet it has not read. */
+async function drawsAsRefreshed(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  colour: string,
+  message: string,
+): Promise<void> {
+  const drawn = await snapshot(result, el);
+  const [x, y] = pointIn(el, 'd');
+  await expectPixel(result.ctx, x, y, colour, { message });
+  el.touchDocument();
+  assert.strictEqual(
+    bytesApart(drawn, await snapshot(result, el)),
+    0,
+    `${message}: not as a refresh of everything draws it`,
+  );
+}
+
+metric(
+  'a rule a sheet adds reaches the drawings that draw what it styles, wherever they stand',
+  async () => {
+    // the shape has no box and the build keeps the block the drawing is in,
+    // so what its `<use>` was given stood until something built that block
+    const rows: [string, string[], string, string?][] = [
+      [
+        'a <use> of a drawing nothing draws',
+        [hidden(symbol), 'Other', uses()],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'a url() of a drawing nothing draws',
+        [hidden(redStop), 'Other', paints()],
+        'stop{stop-color:#0000ff}',
+        '#ff0000',
+      ],
+      [
+        'a <use> of a drawing that shows',
+        [drawing('sprite', symbol), 'Other', uses()],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'what is named, which its shapes inherit from',
+        [hidden(symbol), 'Other', uses()],
+        'symbol{fill:#0000ff}',
+      ],
+      [
+        'what is in a group in what is named',
+        [
+          hidden(
+            `<symbol id="s" viewBox="0 0 24 24"><g class="k">${shape}</g></symbol>`,
+          ),
+          uses(),
+        ],
+        '.k{fill:#0000ff}',
+      ],
+      [
+        'what what is named names in turn',
+        [
+          hidden(symbol),
+          hidden(
+            '<symbol id="t" viewBox="0 0 24 24"><use href="#s"/></symbol>',
+          ),
+          uses('t'),
+        ],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'a gradient another takes its stops from',
+        [
+          hidden(redStop),
+          hidden('<linearGradient id="h" href="#g"/>'),
+          paints('h'),
+        ],
+        'stop{stop-color:#0000ff}',
+        '#ff0000',
+      ],
+      [
+        'a rule that matches only as a <use> copies it',
+        [hidden(`<symbol id="a"/>${symbol}`), uses()],
+        'symbol:first-child rect{fill:#0000ff}',
+      ],
+      [
+        'a drawing in a box that turns',
+        [
+          hidden(symbol),
+          `<div style="width:24px;transform:rotate(90deg)">${uses()}</div>`,
+        ],
+        'rect{fill:#0000ff}',
+      ],
+    ];
+    for (const [name, blocks, css, from = '#000000'] of rows) {
+      const { result, node } = await render(blocked('', ...blocks), 300);
+      const el = view(node);
+      await snapshot(result, el);
+      const [x, y] = pointIn(el, 'd');
+      await expectPixel(result.ctx, x, y, from, {
+        message: `${name}: as it starts`,
+      });
+      writeRules(el, css);
+      await drawsAsRefreshed(result, el, '#0000ff', name);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'a sheet that comes late reaches the drawings that draw what its rules style',
+  async () => {
+    let arrive: (result: ResourceResult) => void = () => {};
+    const onResource = (r: ResourceRequest) =>
+      r.kind === 'stylesheet'
+        ? new Promise<ResourceResult>((resolve) => (arrive = resolve))
+        : null;
+    const { result, node } = await render(
+      blocked('', hidden(symbol), 'Other', uses()),
+      300,
+      { onResource },
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const body = byId(el, 'd').parent!.parent as Element;
+    const link = createElement('link', { rel: 'stylesheet', href: 'late.css' });
+    appendChild(body, link);
+    el.touchDocument([
+      { type: 'childList', target: body, addedNodes: [link], removedNodes: [] },
+    ]);
+    await act();
+    arrive({ kind: 'stylesheet', text: 'rect{fill:#0000ff}' });
+    await drawsAsRefreshed(result, el, '#0000ff', 'the sheet that came');
+  },
+);
+
+metric(
+  'a rule a breakpoint turns on or off reaches the drawings that draw what it styles',
+  async () => {
+    for (const [name, css, sprite] of [
+      ['where it stands', 'rect', symbol],
+      [
+        'as a <use> copies it',
+        'symbol:first-child rect',
+        `<symbol id="a"/>${symbol}`,
+      ],
+    ]) {
+      const { el, resize, result } = await renderScrolled(
+        blocked(
+          `@media (min-width:400px){${css}{fill:#0000ff}}`,
+          hidden(sprite),
+          'Other',
+          uses(),
+        ),
+        300,
+        300,
+      );
+      await snapshot(result, el);
+      await resize(300, 500);
+      await drawsAsRefreshed(result, el, '#0000ff', `${name}: turned on`);
+      await resize(300, 300);
+      await drawsAsRefreshed(result, el, '#000000', `${name}: turned off`);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'what a rule a sheet adds gives what is named reaches as far past a drawing as it draws',
+  async () => {
+    const { result, node } = await render(
+      blocked(
+        '#d{overflow:visible;margin:30px}',
+        hidden('<rect id="r" width="24" height="24"/>'),
+        uses('r'),
+      ),
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const ink = () =>
+      (el as unknown as { _inkOf(box: unknown): unknown })._inkOf(
+        boxOf(el, 'd'),
+      );
+    writeRules(el, 'rect{stroke:#0000ff;stroke-width:40}');
+    await snapshot(result, el);
+    const told = ink();
+    el.touchDocument();
+    await snapshot(result, el);
+    assert.deepStrictEqual(told, ink());
+  },
+);
+
+metric(
+  'a rule a sheet adds asks only the drawings that name what it reaches, and draws again only those it gives something else',
+  async () => {
+    const { result, node } = await render(
+      blocked(
+        '',
+        hidden(
+          `<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"` +
+            ` height="24"/></symbol>`,
+        ),
+        hidden('<rect id="alone" width="24" height="24"/>'),
+        '<p id="p">Paragraph</p>',
+        uses(),
+        drawing('e'),
+      ),
+      300,
+    );
+    const el = view(node);
+    const was = await snapshot(result, el);
+    const told = async (css: string, name: string) => {
+      const asked = await drawingsAskedOfAny(async () => {
+        writeRules(el, css);
+        await snapshot(result, el);
+      });
+      return {
+        asked,
+        moved: bytesApart(await snapshot(result, el), was),
+        name,
+      };
+    };
+    assert.deepStrictEqual(await told('#alone{fill:#0000ff}', 'alone'), {
+      asked: [],
+      moved: 0,
+      name: 'alone',
+    });
+    assert.deepStrictEqual(await told('#p{clip-rule:evenodd}', 'a paragraph'), {
+      asked: [],
+      moved: 0,
+      name: 'a paragraph',
+    });
+    // no rule of a copy's sees what is above what is named
+    assert.deepStrictEqual(
+      await told('svg #in-s{fill:#0000ff}', 'not copied'),
+      {
+        asked: ['d'],
+        moved: 0,
+        name: 'not copied',
+      },
+    );
+  },
+);
+
+metric(
+  'a change to the root of a drawing that draws nothing leaves it reached by what it names',
+  async () => {
+    // it read nothing after it, so what it had noted was gone for good
+    const named = hidden(
+      '<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"' +
+        ' height="24"/></symbol>',
+    );
+    const changes: [string, (el: HtmlViewNode) => void][] = [
+      ['a rule', (el) => writeRules(el, '#in-s{fill:#0000ff}')],
+      [
+        'a change to what it names',
+        (el) => el.touchDocument([set(byId(el, 'in-s'), 'fill', '#0000ff')]),
+      ],
+    ];
+    for (const [name, change] of changes) {
+      const { result, node } = await render(blocked('', named, uses()), 300);
+      const el = view(node);
+      await snapshot(result, el);
+      el.touchDocument([set(byId(el, 'd'), 'class', 'nothing-reads-it')]);
+      await snapshot(result, el);
+      change(el);
+      await drawsAsRefreshed(result, el, '#0000ff', name);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'a drawing no paint reaches goes on being reached by what a rule adds to what it names',
+  async () => {
+    // an answer that comes to what it had paints nothing, so what the drawing
+    // noted is all there is to say the next rule reaches it
+    const { el, result } = await renderScrolled(
+      blocked(
+        '',
+        hidden(
+          '<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"' +
+            ' height="24"/></symbol>',
+        ),
+        uses(),
+        '<div style="height:2000px"></div>',
+      ),
+      200,
+      300,
+    );
+    await snapshot(result, el);
+    const pane = paneOf(el);
+    pane.scrollTo({ y: 1500 });
+    await act();
+    for (const css of ['svg #in-s{fill:#0000ff}', '#in-s{fill:#00aa00}']) {
+      writeRules(el, css);
+      await snapshot(result, el);
+    }
+    pane.scrollTo({ y: 0 });
+    await act();
+    await drawsAsRefreshed(result, el, '#00aa00', 'scrolled back to');
+  },
+);
 
 test('an element that comes out drawn, or hidden, builds what holds it, or the end of a body', async () => {
   const { result, node } = await render(
