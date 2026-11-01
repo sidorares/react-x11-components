@@ -13721,7 +13721,7 @@ export function installDom(
     sheet.deleteRule(at);
     sheet.insertRule(text, at);
     const list = sheet.cssRules;
-    if (list && list[at] !== rule) list[at] = rule;
+    if (list && list[at] !== rule) list[LIST].items[at] = rule;
   };
   /** A `@position-try` rule (CSS Anchor Positioning 1, 8.1): its name, and
    *  its declarations, which a page may set. */
