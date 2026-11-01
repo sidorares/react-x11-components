@@ -2699,6 +2699,62 @@ test('a widget in a sticky box the viewport keeps stays with the box in every fr
   }
 });
 
+test('a widget in a sticky box under a scale goes where the box is laid out, which no scale moves', async () => {
+  // A widget is a node of its own that no matrix reaches, mounted where
+  // layout put its box (`controlRectsOf`), so the box's offset is its own
+  // size for it, where a frame or a player, placed where the box is drawn,
+  // takes it at the scale
+  const source =
+    '<style>body{margin:0}</style><div style="height:800px;' +
+    'transform-origin:0 0;transform:scale(0.5)">' +
+    '<div style="height:40px"></div><div style="height:700px">' +
+    '<div style="position:sticky;top:10px;height:60px">' +
+    '<input placeholder="q"></div></div></div>' +
+    '<div style="height:2000px"></div>';
+  let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+  await renderX11(
+    h(
+      'box',
+      {
+        ref: (node: typeof pane) => {
+          pane = node;
+        },
+        style: { width: 400, height: 200, overflow: 'scroll' },
+      },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    ),
+    {
+      ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+      width: 440,
+      height: 240,
+    },
+  );
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const field = (await screen.findByPlaceholder('q')) as DrawnNode;
+  const onScreen = () => field.abs.y - pane!.abs.y;
+  const top = onScreen();
+  const told = (el as unknown as { _controls: unknown })._controls;
+  const paint = el.paint;
+  const held = top - 40 + 10;
+  let expected = top;
+  el.paint = function (this: HtmlViewNode, ctx) {
+    assert.strictEqual(onScreen(), expected, 'a paint sees it where it goes');
+    return paint.call(this, ctx);
+  };
+  for (const y of [100, 300]) {
+    expected = held;
+    await act(async () => pane!.scrollTo(y));
+    assert.strictEqual(onScreen(), held, `scrolled to ${y}`);
+  }
+  el.paint = paint;
+  assert.strictEqual(
+    (el as unknown as { _controls: unknown })._controls,
+    told,
+    'a scroll tells the widget nothing',
+  );
+});
+
 test('a sticky box a layout moves with no scroll takes its widget with it', async () => {
   // Where the flow has the field is where it was, so the report says
   // nothing and core has no reason to run a pass: the box the widget is

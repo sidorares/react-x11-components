@@ -9196,11 +9196,14 @@ export function heldSet(tree: object): ReadonlySet<Box> | null {
  * element moves it by, and lays nothing out. Zero for a box in one that
  * only scrolls with the text; null for a box in none, and for one that
  * goes with none of them (`offsetBox`): in the top layer, or fixed to
- * something outside them.
+ * something outside them. `scaleAround` says how large a sticky box's
+ * offset is drawn, for what is placed where the box is drawn rather than
+ * where it was laid out (`scaleAround` in `paint.ts`).
  */
 export function heldShift(
   tree: object,
   box: Box,
+  scaleAround?: (sticky: Box) => number,
 ): { x: number; y: number } | null {
   const kept = heldSet(tree);
   if (!kept) return null;
@@ -9211,8 +9214,9 @@ export function heldShift(
       const stuck = STUCK.get(at);
       shift ??= { x: 0, y: 0 };
       if (stuck) {
-        shift.x += stuck[0];
-        shift.y += stuck[1];
+        const k = scaleAround?.(at) ?? 1;
+        shift.x += k * stuck[0];
+        shift.y += k * stuck[1];
       }
     }
     if (at.style.position === 'fixed') fixed = at;

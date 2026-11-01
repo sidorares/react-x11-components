@@ -2468,7 +2468,8 @@ viewport still keeps its poster.
 viewport keeps, the rect is where the flow has the element, with `held` set,
 and what is mounted is moved by as far as the box is held, in the frame the
 pane scrolls, so a sticky sidebar's `<iframe>` or `<video>` stays in it and
-a scroll asks `renderEmbedded` nothing. A mount is the same node whether
+a scroll asks `renderEmbedded` nothing. Under a scale it moves as far as
+the document draws the box to. A mount is the same node whether
 its box is sticky, fixed or neither, so a page that changes which at a
 breakpoint keeps the document in the frame and the video where it was.
 

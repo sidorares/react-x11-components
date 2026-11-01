@@ -5541,7 +5541,17 @@ player goes with it. **Their mounts are always in the same two boxes**
 (`keptMount`), with only the position changing: a mount that came to be held
 as a page turned a box sticky would be a new node, and a new node is a new
 document in an `<iframe>`, its scripts started again, and a video from its
-start.
+start. **Under a scale the offset comes to a different size for each.** A
+sticky box moves in the coordinates it is laid out in, so what is around it
+draws the move at its scale, and the box's own transform, about a corner
+that moves with it, does not (`scaleAround`). A frame or a player is mounted
+where the box is drawn and takes the offset at that scale; a widget is
+mounted where the box was laid out and takes it as it is. The position says
+which (`drawn`), and a rect and its placement have to agree on it, or the
+rect comes out different at every step of a scroll. It still lands in the
+right place, a frame late, so a test of where it ends sees nothing: hold it
+to every paint and to a scroll telling nothing, as `test/html/forms.test.ts`
+does.
 
 **A sticky box the viewport holds cuts a mount as a fixed box does, and
 refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's
