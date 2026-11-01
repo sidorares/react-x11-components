@@ -5588,7 +5588,7 @@ function itemAt(
   const stated = specified ?? through;
   const most = Math.min(
     typeof style.maxWidth === 'number' ? style.maxWidth + extra : Infinity,
-    ofContent(style.maxWidthKeyword) ?? Infinity,
+    ofContent(style.maxWidthKeyword, false) ?? Infinity,
   );
   const basis = along ? lengthBasis(style) : null;
   const base = basis === null ? NaN : Math.max(basis + extra, edges);
@@ -5610,12 +5610,12 @@ function itemAt(
     let start = base;
     const squeezed = !style.flexShrink && compressed && base > size;
     if (held && ((!style.flexGrow && base < size) || squeezed)) {
-      // what its layout fitted in its basis is no wider at its narrowest,
-      // which at its widest leaves its words unasked
+      // what is known to be no wider than its basis at its narrowest has no
+      // say here, and at its widest that leaves it unasked
       const narrowest =
         child.kind === 'replaced'
           ? replacedLeast(child, Infinity)
-          : widest && heldWithin(child, base)
+          : widest && ctx?.fonts && narrowerThan(child, base, ctx.fonts)
             ? base
             : least();
       if (narrowest === null) return null;
@@ -5654,12 +5654,19 @@ function itemAt(
   );
 }
 
-/** Whether a box's last layout had it and all it drew in a width. */
-function heldWithin(box: Box, width: number): boolean {
-  if (box.layoutSerial === 0 || !(box.width <= width)) return false;
-  const seen = { cut: false };
-  const drew = intrinsicWidth(box, seen) + box.horizontalExtra;
-  return !seen.cut && drew <= width;
+/**
+ * Whether a laid-out box is no wider than a width at its narrowest, as what
+ * its lines hold says with no layout of it (`wordBound`, an upper bound of
+ * that): laid out at no width, an item with a basis under its content was a
+ * layout more of it and all it holds for an answer that changed nothing.
+ */
+function narrowerThan(box: Box, width: number, fonts: FontsLike): boolean {
+  if (box.layoutSerial === 0) return false;
+  const edges = extraInNoRoom(box);
+  return (
+    wordBound(box, fonts, false, true) + edges <= width ||
+    wordBound(box, fonts, true, true) + edges <= width
+  );
 }
 
 /** Whether an item has an automatic minimum along a row (CSS Flexbox 4.5). */
@@ -6010,9 +6017,17 @@ function plainInline(box: Box, whiteSpace: string): boolean {
  * it with that block's edges. A table, a flex
  * box and anything else not laid out as blocks and lines is as wide as the
  * probe made it, which is more than it has to be; a box that is itself one
- * has no bound.
+ * has no bound. `any` says it may have been laid out narrower than that, at
+ * a width of any layout, where such a box is no bound: a percentage of
+ * that width, or a flex box inside it, may be under what it holds at its
+ * narrowest, and none is what it answers for them.
  */
-function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
+function wordBound(
+  box: Box,
+  fonts: FontsLike,
+  measured: boolean,
+  any = false,
+): number {
   if (box.kind !== 'block') return Infinity;
   if (framed.any && FRAMES.has(box)) return Infinity;
   let widest = 0;
@@ -6040,6 +6055,7 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
       }
       for (const placed of line.atomics) {
         const b = placed.box;
+        if (any && typeof b.style.width === 'object') return Infinity;
         widest = Math.max(widest, b.width + b.marginLeft + b.marginRight);
       }
     }
@@ -6054,10 +6070,16 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
     )
       continue;
     const edges = child.marginLeft + child.marginRight;
-    const inner =
-      child.kind === 'block' && child.style.width === AUTO
-        ? wordBound(child, fonts, measured) + child.horizontalExtra
-        : child.width;
+    const style = child.style;
+    const flow =
+      child.kind === 'block' &&
+      (any
+        ? !hasWidths(style, (width) => width === AUTO)
+        : style.width === AUTO);
+    if (any && !flow && typeof style.width !== 'number') return Infinity;
+    const inner = flow
+      ? wordBound(child, fonts, measured, any) + child.horizontalExtra
+      : child.width;
     widest = Math.max(widest, inner + edges);
   }
   return widest;
@@ -6159,8 +6181,22 @@ export function intrinsicWidth(
     const fonts = narrowest?.fonts;
     const whole = box.style.whiteSpace === 'nowrap';
     for (const line of lines) {
-      const width =
-        (fonts ? uncutLine(line, fonts, whole) : null) ?? line.width;
+      let width = (fonts ? uncutLine(line, fonts, whole) : null) ?? line.width;
+      // what is on a line at a percentage gave up width to it with no
+      // overflow to show for it, and at its narrowest is no width at all, but
+      // its own narrowest, which the line has none of
+      for (const { box: atomic } of line.atomics) {
+        if (typeof atomic.style.width !== 'object') continue;
+        if (seen) seen.cut = true;
+        if (!narrowest) continue;
+        const least = itemAtNarrowest(atomic, false, narrowest, () =>
+          narrowestOf(atomic, narrowest),
+        )!;
+        const laid = atomic.width + atomic.marginLeft + atomic.marginRight;
+        width = whole
+          ? width + Math.max(0, least - laid)
+          : Math.max(width, least);
+      }
       widest = Math.max(widest, width + (line.floats ?? 0));
     }
     widest = Math.max(widest, box.floatRow);
@@ -6267,12 +6303,14 @@ export function intrinsicWidth(
       contribution = Math.max(inner + margins, own);
     }
     // and an item that gave up width to its flex box with no line to show
-    // for it, as what is replaced and what is a size of its content do, may
+    // for it, as what is replaced, a size of its content and a ratio do, may
     // be wider than it was drawn too
     if (
       seen &&
       (display === 'flex' || display === 'inline-flex') &&
-      (child.kind === 'replaced' || style.widthKeyword !== null)
+      (child.kind === 'replaced' ||
+        style.widthKeyword !== null ||
+        style.aspectRatio !== null)
     ) {
       seen.cut = true;
     }

@@ -2843,11 +2843,17 @@ Eight things are load-bearing.
   So `widestOf` reads what the flex box's own layout measured (`MAX_CONTENT`),
   asks a nested flex box of its items, and lays out only the rest, once in the
   item's life; an item down a column laid out with no limit is read as the
-  column measured it, or as it was laid out. No leaf is laid out twice for it,
-  and box layouts come to what they did: measure that again, on a page of rows
-  that are measured, before making the walk ask more. A first cut that sent
-  every item down a column through `widestOf` cost half as much again of every
-  layout of a nested page.
+  column measured it, or as it was laid out. An item's automatic minimum is
+  asked only where a basis took it under its content, and not where its lines
+  say it is no wider than the basis at its narrowest (`narrowerThan`, over
+  `wordBound`'s strict form, which refuses a percentage and what is not a
+  flow). So no leaf is laid out twice for it, and box layouts come to what they
+  did: measure that again before making the walk ask more, on sized boxes as
+  well as text, since a line of words answers `exactMinContent` with no layout
+  and a line of inline blocks does not. Sent through `widestOf`, every item down
+  a column cost half as much again of every layout of a nested page; laid out at
+  no width for its minimum, a row of inline blocks in a basis made half as many
+  layouts again, which pages of text never showed.
 - **A block at its `max-width` may have wrapped**, which what it drew does not
   say, and its width says nothing of its content: `max-width: 7px` around nothing
   is no width. A line that wrapped says the content is wider than the limit, with

@@ -271,6 +271,22 @@ test('a flex basis has a say along a line, and each item is as narrow as it come
     [row('', canvas('width:100%;min-width:max-content'), beside), 15],
     [row('', canvas('width:min-content;max-width:100%'), beside), 15],
     [`<div style="min-width:8px">${canvas('padding:0 5%')}</div>`, 30],
+    [
+      row('', canvas('flex:0 0 20px;width:100%;max-width:min-content'), beside),
+      45,
+    ],
+    // a ratio gives up width with nothing overflowing to say so
+    [box('overflow:hidden;aspect-ratio:2;min-height:20px', 5), 40],
+    // a percentage on a line is of nothing, and no width at all
+    [
+      `<div style="white-space:nowrap"><b style="display:inline-block;width:50%">${sized(60)}</b>` +
+        `<b style="display:inline-block">${sized(60)}</b></div>`,
+      120,
+    ],
+    [
+      `<div style="min-width:0"><b style="display:inline-block;width:50%">${sized(60)}</b></div>`,
+      60,
+    ],
     // laid out across a least width, which is no width of its own
     [
       `<div style="min-width:43px">${box('padding:0 2px;width:100%', 7)}</div>`,
@@ -397,6 +413,30 @@ test('a flex box at its widest goes by the rule its narrowest goes by, with its 
     ],
     [row('flex-direction:column', canvas('flex:1 0 20px;overflow:hidden')), 30],
     [`<div>${box('max-width:40px', 8)}</div>`, 8],
+    // what a basis takes it under is what its lines cannot answer for: a
+    // least width in it, and a percentage of a width it has no say in
+    [
+      row('', `<div style="flex:0 1 30px">${box('min-width:80px', 5)}</div>`),
+      80,
+    ],
+    [
+      row('', `<div style="flex:0 0 30px">${box('min-width:80px', 5)}</div>`),
+      80,
+    ],
+    [
+      row(
+        '',
+        `<div style="flex:0 1 30px"><b style="display:inline-block;width:50%">${sized(60)}</b></div>`,
+      ),
+      60,
+    ],
+    [
+      row(
+        '',
+        `<div style="flex:0 0 30px"><b style="display:inline-block;width:50%">${sized(60)}</b></div>`,
+      ),
+      60,
+    ],
     // a float is as wide as it shrank to, whatever a percentage in it makes of
     // that, and a width at its limit says nothing there either
     [
@@ -470,14 +510,17 @@ test('a flex box at its widest goes by the rule its narrowest goes by, with its 
 
 test('an item with a basis of a length is measured at its widest once', async () => {
   // what asks a row of a box its size shrink to fit lays each item out at its
-  // widest for its basis as it does for no basis at all, and no more often
+  // widest for its basis as it does for no basis at all, and no more often:
+  // sized boxes, since a word wider than the basis is one more question, of
+  // its narrowest, and how wide a word is is a platform's fonts'
+  const inline = '<b style="display:inline-block;width:30px;height:4px"></b>';
   const items = (flex: string) =>
     Array.from(
       { length: 40 },
-      (_, i) =>
+      () =>
         '<div style="display:inline-flex"><div style="display:flex">' +
-        `<div style="flex:${flex}">a line of words ${i}</div>` +
-        '<div style="flex:none">more</div></div></div>',
+        `<div style="flex:${flex}">${inline}${inline}</div>` +
+        '<div style="flex:none;width:20px;height:4px"></div></div></div>',
     ).join('');
   const layouts = async (flex: string): Promise<number> => {
     const before = boxLayoutsMade();
@@ -486,6 +529,9 @@ test('an item with a basis of a length is measured at its widest once', async ()
     await cleanup();
     return made;
   };
+  // an item is laid out at its basis and at its widest, where it had no basis
+  // to be laid out at, and no more: laid out at no width for its automatic
+  // minimum as well, this came to half as many again
   const free = await layouts('0 1 auto');
   const based = await layouts('0 1 40px');
   assert.ok(based <= free * 1.15, `${based} boxes laid out, and ${free}`);
