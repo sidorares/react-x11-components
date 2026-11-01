@@ -1843,7 +1843,9 @@ there too. Six things are load-bearing.
 - **What no key says goes through `controlsReached`.** A form's and a
   fieldset's answers are read from what they hold, a radio's from its group
   and a submit button's from the buttons before it, and a key reaches the
-  element it changed alone. So each change is widened, in `_changeScope`, to
+  element it changed alone. Two of those meet in a fieldset, which answers
+  for a radio in it wherever its group changed (`togetherIn`). So each
+  change is widened, in `_changeScope`, to
   a change of `-rx-form` on the elements it can reach, only where a rule reads
   one (`readsControls`). **Anything new one of these reads of another element
   joins `controlsReached`**; `in a document of form controls` in
