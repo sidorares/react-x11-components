@@ -390,6 +390,7 @@ import {
   clipFor,
   clipsOverflow,
   computePaintBounds,
+  drawingOverflows,
   contentClipFor,
   containingBlockOf,
   coverersAfter,
@@ -11501,7 +11502,43 @@ export class HtmlViewNode extends Node {
         scope.ends?.set(el, false);
       }
     }
+    this._shapesReached(scope, tree);
     return scope;
+  }
+
+  /**
+   * What a change reached inside drawings, taken out of `scope.own`: a shape
+   * has no box and no style of its own, so a restyle passes it over, and for
+   * a build it is only the block around its drawing to build. What the rules
+   * give it is its drawing's to ask for again (`ChangeScope.shapes`):
+   * `.dark .logo path` reached the path, and a class set on an `<html>` left
+   * it drawn as it was. What a drawing names of another by a `url(#…)` is
+   * drawn by whichever names it, which nothing here says, so every drawing
+   * is asked; and one with `<foreignObject>`s, whose HTML is styled from its
+   * elements down, builds the boxes, as a change in it does.
+   */
+  private _shapesReached(scope: ChangeScope, tree: BoxTree): void {
+    const foreign = tree.foreign;
+    let named = false;
+    const asks = (scope.shapes = new Set<Element>());
+    for (const el of scope.own) {
+      // only what is around a `<foreignObject>` has both a style and a
+      // drawing; a root is restyled, and gives its shapes what no style holds
+      if (!foreign && tree.styles.has(el)) {
+        if (tagOf(el) === 'svg') asks.add(el);
+        continue;
+      }
+      const drawing = drawingAround(el);
+      if (!drawing) continue;
+      if (foreign && drawsForeign(foreign, drawing)) {
+        scope.boxes = true;
+        continue;
+      }
+      scope.own.delete(el);
+      asks.add(drawing);
+      named ||= inNamedElement(el, drawing);
+    }
+    if (named) for (const el of this._source.facts().drawings) asks.add(el);
   }
 
   /** One change into `scope` (`_changeScope`); false where it cannot be
@@ -11524,7 +11561,7 @@ export class HtmlViewNode extends Node {
     // path at a time, and with one `:has()` anywhere in its sheets each
     // frame restyled all 6,000 elements of the page, which held its frames'
     // downloads back seconds.
-    const drawing = drawingAround(change.target);
+    const drawing = drawingAround(change.target) ?? rootGivingUp(change);
     // A host that took a shadow tree draws what the tree holds, and what no
     // slot takes of its own is drawn no longer. No selector outside the host
     // can tell, so that is its reach: every element it holds, however
@@ -11546,6 +11583,13 @@ export class HtmlViewNode extends Node {
       return true;
     }
     if (drawing) {
+      if (change.type === 'childList') {
+        for (const node of change.addedNodes) {
+          if (isElement(node) && tree.styles.has(node)) {
+            (scope.shaped ??= []).push(node);
+          }
+        }
+      }
       if (cascade.asksWhatElementsHold) {
         const reach =
           change.type === 'attributes'
@@ -12428,7 +12472,13 @@ export class HtmlViewNode extends Node {
    * a build keeping every other element's style otherwise.
    */
   private _restyleChanged(scope: ChangeScope): void {
+    // what moved into a drawing is a shape now, and takes the style it had
+    // with it, as a build of the block around it would
+    if (scope.shaped && this._tree) {
+      for (const el of scope.shaped) forgetStyles(el, this._tree.styles);
+    }
     if (scope.drawings.size) this._drawAgain(scope.drawings);
+    if (scope.shapes?.size) this._askShapes(scope.shapes);
     if (scope.stops && this._tree) {
       CANDIDATES.delete(this._tree);
       this._reportStops();
@@ -12530,15 +12580,62 @@ export class HtmlViewNode extends Node {
       const box = boxes.get(el);
       if (!box) continue;
       SHAPE_STYLES.delete(box);
-      this._dropSprites(box, true);
-      // a lifted box's pixels are its layer's, painted again in a frame
-      if (this._lifted.size && this._insideLifted(box)) {
-        this.spritesChanged();
-        continue;
-      }
-      const ink = this._inkOf(box);
-      if (ink) inks.push(ink);
+      this._drawnOtherwise(box, inks);
     }
+    if (this._stale === Stale.Nothing) this._repaintInk(inks);
+  }
+
+  /** A drawing that draws something else now: the surfaces kept around it
+   *  let go, and its ink into `inks`. */
+  private _drawnOtherwise(box: Box, inks: Rect[]): void {
+    this._dropSprites(box, true);
+    // a lifted box's pixels are its layer's, painted again in a frame
+    if (this._lifted.size && this._insideLifted(box)) {
+      this.spritesChanged();
+      return;
+    }
+    const ink = this._inkOf(box);
+    if (ink) inks.push(ink);
+  }
+
+  /**
+   * Inline drawings a change reached the shapes of from outside them
+   * (`_shapesReached`): what the rules give their shapes asked for again,
+   * and those with another answer drawn again, as a move's are in
+   * `_restyleInPlace`. Most of what a selector can reach comes to what it
+   * was, and a `<path>` a class's rule names for its `color` repaints
+   * nothing. One never painted has no answer yet, and asks when it is. One
+   * that shows what it draws past its box reaches as far as its shapes do,
+   * which a rule's stroke moves. Its ink is worked out whole, as anything
+   * that changes ink outside a layout has it, and under its last answer
+   * first, which a build's walk came before: what the stroke drew is
+   * repainted as it goes.
+   */
+  private _askShapes(drawings: ReadonlySet<Element>): void {
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade?.stylesShapes) return;
+    const boxes = this._firstBoxesOf(tree);
+    const moved: [Box, ShapeStyles | null][] = [];
+    for (const el of drawings) {
+      const box = boxes.get(el);
+      const was = box && SHAPE_STYLES.get(box);
+      if (!box || was === undefined) continue;
+      const shapes = cascade.shapeStyles(el, box.style, tree.shapeCopies);
+      if (shapes?.key !== was?.key) moved.push([box, shapes]);
+    }
+    const inks: Rect[] = [];
+    const reaches = moved.some(([box]) => drawingOverflows(box.style));
+    if (reaches) {
+      computePaintBounds(tree.root, tree.movedInline);
+      for (const [box] of moved) {
+        const ink = this._inkOf(box);
+        if (ink) inks.push(ink);
+      }
+    }
+    for (const [box, shapes] of moved) SHAPE_STYLES.set(box, shapes);
+    if (reaches) computePaintBounds(tree.root, tree.movedInline);
+    for (const [box] of moved) this._drawnOtherwise(box, inks);
     if (this._stale === Stale.Nothing) this._repaintInk(inks);
   }
 
@@ -17368,6 +17465,12 @@ interface ChangeScope {
   own: Set<Element>;
   boxes: boolean;
   drawings: Set<Element>;
+  /** The drawings whose shapes it reached from outside them, which ask the
+   *  rules again and are drawn again only for another answer
+   *  (`_shapesReached`), where `drawings` changed inside. */
+  shapes?: Set<Element>;
+  /** What moved into a drawing from where it had a style. */
+  shaped?: Element[];
   pseudo: 0 | 1 | 2;
   /** The elements each set of anchors has been asked about, which one
    *  answers alike for every change of a list (`spreadAnchors`), each by
@@ -17589,6 +17692,38 @@ function drawingAround(node: AnyNode): Element | null {
     if (tagOf(at) === 'svg') found = at;
   }
   return found;
+}
+
+/** The drawing a record takes children out of at its root, and puts none
+ *  in: what went has no style, which says of anything else that it drew
+ *  nothing (`draws`), and a `<path>` taken out stayed drawn. */
+function rootGivingUp(change: HtmlChange): Element | null {
+  return change.type === 'childList' &&
+    !change.addedNodes.length &&
+    tagOf(change.target) === 'svg'
+    ? (change.target as Element)
+    : null;
+}
+
+/** What a drawing names of another by a `url(#…)` (`urlIds`): a paint
+ *  server, a marker, a clip path, a mask, a filter. */
+const NAMED_TAGS = new Set([
+  'lineargradient',
+  'radialgradient',
+  'pattern',
+  'marker',
+  'clippath',
+  'mask',
+  'filter',
+]);
+
+/** Whether `el`, in `drawing`, is one of `NAMED_TAGS` or in one. */
+function inNamedElement(el: Element, drawing: Element): boolean {
+  for (let at: AnyNode | null = el; at && at !== drawing; at = at.parent) {
+    const tag = tagOf(at);
+    if (NAMED_TAGS.has(tag.slice(tag.indexOf(':') + 1))) return true;
+  }
+  return false;
 }
 
 /** The elements whose boxes a change scope can make otherwise: what it

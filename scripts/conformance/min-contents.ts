@@ -7,8 +7,9 @@
 //     [--widest] [--add <count>] [--seed <seed>]
 //
 // Nothing in a case is text, which a platform's fonts would have another
-// width for, and a case is a line of the document, so a diff of the fixture
-// is a diff of its cases. A new case that comes to no more than a narrow room
+// width for, nor a line of a height its fonts say, which a grid's rows would
+// make a width of through a ratio, and a case is a line of the document, so a
+// diff of the fixture is a diff of its cases. A new case that comes to no more than a narrow room
 // says nothing of how narrow it can be, and is left out: it was its widest.
 // And one that fills a wide room says nothing of how wide it comes, which no
 // case should: the room is wider than anything in them adds up to.
@@ -81,6 +82,28 @@ const FLEX = [
   '2 1 40px',
   '0.5 1 10px',
   '0 1 content',
+];
+
+// what a grid's columns can be asked for
+const TRACKS = [
+  '',
+  'max-content',
+  'min-content',
+  'auto auto',
+  'minmax(0,max-content)',
+  'fit-content(30px)',
+  'repeat(2,max-content)',
+  '1fr auto',
+  '20px auto',
+];
+// and how an item sits in what it is given, which is what decides whether a
+// row's height reaches it
+const SELF = [
+  'align-self:start',
+  'align-self:center',
+  'align-self:stretch',
+  'justify-self:start',
+  'justify-self:stretch',
 ];
 
 function edges(): string[] {
@@ -175,6 +198,20 @@ function box(depth: number): string {
     const items = Array.from({ length: int(2, 5) }, item).join('');
     return `<div style="${css.join(';')}">${items}</div>`;
   }
+  // a grid, whose columns its items size
+  if (next() < 0.2) {
+    const tracks = pick(TRACKS);
+    css.push('display:grid');
+    if (tracks) css.push(`grid-template-columns:${tracks}`);
+    if (next() < 0.25) css.push(`gap:${int(1, 11)}px`);
+    const items = Array.from({ length: int(1, 3) }, () => {
+      const item = box(depth + 1);
+      return next() < 0.15
+        ? item.replace('style="', `style="${pick(SELF)};`)
+        : item;
+    }).join('');
+    return `<div style="${css.join(';')}">${items}</div>`;
+  }
   css.push('display:flex');
   const shape = next();
   if (shape < 0.28) css.push('flex-direction:column');
@@ -191,22 +228,34 @@ const [, style, kept] = readFileSync(FIXTURE, 'utf8').match(
 )!;
 const cases = kept.split('\n').filter(Boolean);
 const before = cases.length;
+// the tracks of a grid around them, at either end
+const GRIDS = [
+  '<div style="display:grid">$</div>',
+  '<div style="display:inline-grid">$</div>',
+  '<div style="display:grid;grid-template-columns:max-content">$</div>',
+  '<div style="display:grid;grid-template-columns:min-content">$</div>',
+  '<div style="display:grid;grid-template-columns:auto auto">$</div>',
+  '<div style="display:grid;grid-template-columns:fit-content(40px)">$</div>',
+];
 // the other ways a box is asked how wide it comes: what shrinks to fit, what
 // a size of its content sizes, a table's cell
-const AROUND = [
-  '$',
-  '$',
-  '$',
-  '<div><div style="float:left">$</div></div>',
-  '<div style="display:inline-block">$</div>',
-  '<div style="display:inline-flex">$</div>',
-  '<div style="width:max-content">$</div>',
-  '<div style="width:fit-content">$</div>',
-  '<table style="border-spacing:0"><tr><td style="padding:0">$</td></tr></table>',
-];
+const AROUND = widest
+  ? [
+      '$',
+      '$',
+      '$',
+      '<div><div style="float:left">$</div></div>',
+      '<div style="display:inline-block">$</div>',
+      '<div style="display:inline-flex">$</div>',
+      '<div style="width:max-content">$</div>',
+      '<div style="width:fit-content">$</div>',
+      '<table style="border-spacing:0"><tr><td style="padding:0">$</td></tr></table>',
+      ...GRIDS,
+    ]
+  : ['$', '$', '$', ...GRIDS];
 for (let i = 0; i < count; i += 1) {
   const held = Array.from({ length: int(1, 3) }, () => box(0)).join('');
-  const items = widest ? pick(AROUND).replace('$', held) : held;
+  const items = pick(AROUND).replace('$', held);
   cases.push(
     `<div class="room"><div id="c${cases.length}" class="item">${items}</div></div>`,
   );
@@ -268,13 +317,13 @@ try {
     lines[lines.length - 1] += entry;
   }
   const intro = widest
-    ? `// What a flex box comes to at its widest, as Chromium ${version} has it: each
+    ? `// What flex boxes and grids come to at their widest, as Chromium ${version} has it: each
 // \`.item\` below is an item of a row with more room than it can use, as wide
 // as its content, and every width is that item's in Chromium over this
 // document, none of them written by hand: \`scripts/conformance/min-contents.ts\`
 // writes this file. Nothing in it is text, which a platform's fonts would
 // have another width for.`
-    : `// What a flex box comes to at its narrowest, as Chromium ${version} has it: each
+    : `// What flex boxes and grids come to at their narrowest, as Chromium ${version} has it: each
 // \`.item\` below is an item of a row with no room for it, held to its
 // automatic minimum, and every width is that item's in Chromium over this
 // document, none of them written by hand: \`scripts/conformance/min-contents.ts\`

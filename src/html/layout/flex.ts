@@ -56,10 +56,12 @@ import {
   ownIntrinsic,
   percentBaseInside,
   percentHeightsIn,
+  percentPadding,
   positionOutOfFlow,
   replacedRatio,
   transferredHeight,
   transferredWidth,
+  widestAtHeight,
   heightFromWidth,
   heightThroughRatio,
   widthFromHeight,
@@ -866,6 +868,15 @@ function keepRatios(
         box.verticalExtra;
     if (Math.abs(basis - laid.main) < 0.5) continue;
     node.setFlexBasis(basis);
+    // and an automatic minimum went with its natural size: what its ratio
+    // makes of the stretched one is the lesser (4.5)
+    if (!scrolls(style)) {
+      if (!row && style.minHeight === AUTO) node.setMinHeight(basis);
+      else if (row && style.minWidth === AUTO && !style.minWidthKeyword) {
+        node.setMinWidth(basis);
+        laid.narrowest = basis;
+      }
+    }
     // and is shared out from it where its line is here (`shareOut`)
     laid.basis = basis;
     laid.sized = false;
@@ -875,8 +886,11 @@ function keepRatios(
     if (!Number.isNaN(laid.held)) {
       laid.held = NaN;
       laid.auto = false;
+      laid.minimum = NaN;
       node.setFlexGrow(style.flexGrow);
       node.setFlexShrink(style.flexShrink);
+      if (row) node.setWidthAuto();
+      else node.setHeightAuto();
     }
     changed = true;
   }
@@ -1544,6 +1558,9 @@ function applyItem(
         ? ratioBasis(box)
         : null;
     if (fromRatio !== null) return Math.max(0, fromRatio - box.horizontalExtra);
+    // and a height its row gives what is in it, which is its alone
+    const atHeight = alongRow ? widestAtHeight(box, ctx) : null;
+    if (atHeight !== null) return Math.max(0, atHeight - box.horizontalExtra);
     let width = MAX_CONTENT.get(box);
     if (width === undefined) {
       width = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
@@ -2461,6 +2478,14 @@ function autoMinimums(
   for (const { box, node, laid } of items) {
     if (box.kind === 'text' || box.kind === 'break') continue;
     const style = box.style;
+    // a measure left the percentages in its padding of nothing
+    if (
+      row &&
+      (typeof style.paddingLeft !== 'number' ||
+        typeof style.paddingRight !== 'number')
+    ) {
+      resolveEdges(box, containingWidth);
+    }
     const width = meant(
       row ? laid.main : node.getComputedWidth(),
       laid.set,
@@ -2523,7 +2548,10 @@ function autoMinimums(
     ) {
       const through = ratioBasis(box);
       if (through !== null) {
-        let least = Math.max(through, minContentOf(box, ctx, laid));
+        let least = Math.max(
+          through,
+          leastAcross(box, ctx, laid, containingWidth),
+        );
         const own = resolveOrNull(style.width, containingWidth);
         const extra =
           style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
@@ -2555,7 +2583,9 @@ function autoMinimums(
     if (
       !ofAuto &&
       (row
-        ? style.minWidth !== AUTO || style.minWidthKeyword || style.widthKeyword
+        ? style.minWidth !== AUTO ||
+          style.minWidthKeyword ||
+          style.widthKeyword === 'stretch'
         : style.minHeight !== AUTO && !asked)
     ) {
       continue;
@@ -2575,7 +2605,9 @@ function autoMinimums(
         if (most !== null) least = Math.min(least, most + extra);
       }
       if (width >= least - 0.01 && !ofAuto) continue;
-      least = worked(Math.min(least, minContentOf(box, ctx, laid)));
+      least = worked(
+        Math.min(least, leastAcross(box, ctx, laid, containingWidth)),
+      );
       if (laid.main >= least - 0.01) continue;
       holdAt(node, laid, row, least, hold);
       changed = true;
@@ -2588,7 +2620,7 @@ function autoMinimums(
     if (
       !ofAuto &&
       widest !== undefined &&
-      transferredWidth(box, widest + box.horizontalExtra) <= width + 0.5
+      transferredWidth(box, widest + box.horizontalExtra) <= width + 0.01
     ) {
       continue;
     }
@@ -2621,13 +2653,15 @@ function autoMinimums(
       if (
         !ofAuto &&
         Number.isFinite(drawn) &&
-        transferredWidth(box, drawn) <= width + 0.5
+        transferredWidth(box, drawn) <= width + 0.01
       ) {
         continue;
       }
       // within what a ratio makes of its least and greatest heights (4.5's
       // content size suggestion)
-      least = worked(transferredWidth(box, minContentOf(box, ctx, laid)));
+      least = worked(
+        transferredWidth(box, leastAcross(box, ctx, laid, containingWidth)),
+      );
       const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
       if (style.maxWidth !== 'none') {
         const most = resolveOrNull(style.maxWidth, containingWidth);
@@ -3534,6 +3568,21 @@ function minContentOf(box: Box, ctx: LayoutContext, laid: Laid): number {
     if (exact === null) laid.width = NaN;
   }
   return box.intrinsicMinContent;
+}
+
+/** An item's content at its narrowest as its flex box lays it out: measured
+ *  with the percentages in its padding of nothing, which are of the flex box
+ *  now (CSS Flexbox 4.5). Left out, an item `padding: 0 5%` was held to its
+ *  content's width, and that much narrower than it comes. */
+function leastAcross(
+  box: Box,
+  ctx: LayoutContext,
+  laid: Laid,
+  containingWidth: number,
+): number {
+  const least = minContentOf(box, ctx, laid);
+  resolveEdges(box, containingWidth);
+  return least + percentPadding(box);
 }
 
 /** How far down a laid-out box's content reaches inside its content box:

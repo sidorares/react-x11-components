@@ -1272,6 +1272,7 @@ export interface LaidBox {
   y: number;
   width: number;
   height: number;
+  padLeft: number;
   children: LaidBox[];
 }
 

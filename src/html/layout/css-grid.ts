@@ -32,13 +32,11 @@ import { AUTO, gapOf, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type {
   ComputedStyle,
-  ContentSize,
-  SizeOf,
   GridTemplate,
   GridTrack,
   SubgridNames,
 } from '../css/style.js';
-import { CONTAIN_LAYOUT, CONTAIN_PAINT, scrolls } from '../css/style.js';
+import { CONTAIN_LAYOUT, CONTAIN_PAINT } from '../css/style.js';
 import { Box, GRID_TRACKS, inOrder, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
@@ -51,18 +49,27 @@ import {
   sizedWidth,
   clampWidth,
   contained,
-  exactMinContent,
+  heightGiven,
+  heightInArea,
   heightThroughRatio,
+  itemsTakeHeight,
   keepLaid,
   laidWholeAround,
+  lentEdges,
+  marginsInNoRoom,
   mayKeepLaid,
   measureIntrinsicWidth,
   moveTo,
+  ownLeastWidth,
   percentBaseInside,
   percentHeightsIn,
+  percentOwn,
+  percentPadding,
   positionOutOfFlow,
   resolveEdges,
   setAsideOf,
+  takesHeight,
+  trackContributions,
   wholeAgain,
   widthThroughRatio,
 } from './block.js';
@@ -138,8 +145,29 @@ export function layoutGrid(
   // the axes it takes from the grid it is an item of, where it is a
   // subgrid of that grid (CSS Grid 2, 9), which that grid's layout says
   const sub = SUBGRIDS.get(box) ?? null;
+  /** Whether an item comes to less at its narrowest than at its widest, with
+   *  no rows yet: the first of what a sizing of the columns asks it. */
+  const wrapsNarrower = (child: Box): boolean => {
+    child.percentHeightBase = NaN;
+    const [narrowest, widest] = trackContributions(child, ctx);
+    return narrowest < widest;
+  };
   // a height of the grid's own, which the rows' `repeat()` counts against
   const definite = percentBaseInside(box);
+  // A grid is no narrower at its widest than at its narrowest, which is not
+  // given where a height reaches its items: its columns at their narrowest
+  // make the rows taller, what wraps there being on more lines, and a ratio
+  // makes that wider than its columns at their widest do, all on one line. A
+  // ratio beside words, in a box as wide as its content. Only an item that
+  // comes to less at its narrowest can do that: asked of all of them, a ratio
+  // twelve grids deep was laid out 77,722 times
+  const atNarrowest =
+    contentWidth === Infinity &&
+    !sub &&
+    boxes.some(takesHeight) &&
+    boxes.some(wrapsNarrower)
+      ? narrowestOfGrid(box, ctx)
+      : 0;
   const plan = planGrid(box, boxes, contentWidth, definite, sub);
   const { items, keepCols, keepRows } = plan;
   const cols = plan.cols;
@@ -155,9 +183,14 @@ export function layoutGrid(
     const { max } = sizing(rowDefs[r], definite);
     fixedRows.push(typeof max === 'number' ? max : null);
   }
+  // and once they are sized, what they came to
+  let sizedRows: { heights: number[]; tops: number[] } | null = null;
   const spanBefore = (item: Item): number => {
     // an item of a subgrid, which its rows are not this grid's
     if (item.row < 0) return NaN;
+    if (sizedRows !== null) {
+      return extent(sizedRows.heights, sizedRows.tops, item.row, item.rows);
+    }
     let span = rowGap * Math.max(0, item.rows - 1);
     for (let r = item.row; r < item.row + item.rows; r += 1) {
       const fixed = fixedRows[r];
@@ -166,78 +199,43 @@ export function layoutGrid(
     }
     return span;
   };
-  const heightBefore = (item: Item): number | null =>
-    heightBeforeRows(item.box, spanBefore(item));
   // An item's percentage heights are of its area's, which the rows it
   // spans are, rather than the grid's: of that where they are known now,
   // and of nothing — `auto` — where they are not, until they are
   for (const item of items) item.box.percentHeightBase = spanBefore(item);
 
+  /** Whether an item may be wider for its rows, in a row this layout has laid
+   *  out, since a kept one's is of the width before. */
+  const takingHeight = (item: Item): boolean =>
+    item.row < cut && takesHeight(item.box);
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
-    const box = item.box;
-    const margins = box.marginLeft + box.marginRight + item.before + item.after;
-    // Measured once in the box's life, as a table cell's are: measured for
-    // every layout of the grid, a grid in a grid in a grid laid out its
-    // innermost three times a level, and twelve levels took two thirds of
-    // a second.
-    const style = box.style;
-    let widest: number;
-    let narrowest: number;
-    if (typeof style.width === 'number') {
-      // a length for a width is its width at its narrowest and its widest
-      // — measured at no limit, it was its content's
-      const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
-      widest = narrowest = Math.max(style.width + extra, box.horizontalExtra);
-    } else {
-      // A percentage is of an area the columns are still being sized for,
-      // and what it comes to depends on what the item makes them: it is
-      // `auto` for that (CSS Sizing 3, 5.2.1), and the item's content says
-      // how wide it is. Measured at the width a percentage made of the
-      // probe's, an item `width: 100%` made its `auto` column nothing.
-      const fresh = box.intrinsicMaxContent < 0;
-      widest = maxContentOf(box, ctx);
-      if (box.intrinsicMinContent < 0) {
-        // where its words say it exactly, read from the layout just made —
-        // which is the max-content one only if it was made just now
-        const exact =
-          fresh && ctx.fonts
-            ? exactMinContent(box, ctx.fonts, ctx.stopping)
-            : null;
-        box.intrinsicMinContent = exact ?? minContentOf(box, ctx);
-      }
-      narrowest = box.intrinsicMinContent;
-    }
-    // an item with a ratio and a height is as wide as that makes it, its
-    // content's sizes both (CSS Sizing 4, 5.1) — and one that is not
-    // replaced no narrower for it than its content at its narrowest, where
-    // it shows what overflows it (5.2). A scroll container's sizes are
-    // none of its content's, and take nothing from its ratio either.
-    if (
-      typeof style.width !== 'number' &&
-      (box.kind === 'replaced' || !scrolls(style))
-    ) {
-      const tall = heightBefore(item);
-      const wide = tall === null ? null : widthThroughRatio(box, tall);
-      if (wide !== null) {
-        widest = narrowest =
-          box.kind === 'replaced' || !showsOverflow(box)
-            ? wide
-            : Math.max(wide, narrowest);
-      }
-    }
-    // a width of its content's is that at its narrowest and its widest
-    if (style.widthKeyword === 'min-content') widest = narrowest;
-    else if (style.widthKeyword === 'max-content') narrowest = widest;
-    // and a `calc-size()` of that, a percentage in it of nothing
-    widest = sizedWidth(box, widest, NaN);
-    narrowest = sizedWidth(box, narrowest, NaN);
-    // within its own least and greatest widths
-    const [least, most] = ownWidths(box, narrowest, widest);
-    item.max = Math.min(most, Math.max(least, widest)) + margins;
-    item.min = Math.min(most, Math.max(least, narrowest)) + margins;
+    const extra = item.before + item.after;
+    const [narrowest, widest] = trackContributions(item.box, ctx);
+    item.min = narrowest + extra;
+    item.max = widest + extra;
   };
   const colTracks = cols.map((track) => sizing(track, contentWidth));
+  const sizeCols = (): { widths: number[]; lefts: number[] } => {
+    const colItem = (item: Item): TrackItem => ({
+      start: item.col,
+      span: item.cols,
+      minContent: () => (measure(item), item.min),
+      maxContent: () => (measure(item), item.max),
+      minimum: () => leastWidth(item, colTracks, colGap, measure, ctx),
+    });
+    const sizes = sizeTracks(colTracks, sizedBy(items, 'cols').map(colItem), {
+      available: contentWidth,
+      least: leastWidthInside(box),
+      gap: colGap,
+      stretch:
+        style.justifyContent === 'normal' || style.justifyContent === 'stretch',
+    });
+    return {
+      widths: sizes,
+      lefts: starts(sizes, colGap, style.justifyContent, contentWidth),
+    };
+  };
   let widths: number[];
   let lefts: number[];
   // a subgrid's columns are its parent's, where it has them yet
@@ -246,29 +244,18 @@ export function layoutGrid(
     widths = givenCols.sizes;
     lefts = givenCols.at;
   } else {
-    const colItem = (item: Item): TrackItem => ({
-      start: item.col,
-      span: item.cols,
-      minContent: () => (measure(item), item.min),
-      maxContent: () => (measure(item), item.max),
-      minimum: () => leastWidth(item, colTracks, colGap, measure),
-    });
-    widths = sizeTracks(colTracks, sizedBy(items, 'cols').map(colItem), {
-      available: contentWidth,
-      least: 0,
-      gap: colGap,
-      stretch:
-        style.justifyContent === 'normal' || style.justifyContent === 'stretch',
-    });
-    lefts = starts(widths, colGap, style.justifyContent, contentWidth);
+    ({ widths, lefts } = sizeCols());
   }
   // and a subgrid among the items takes its columns from these
-  for (const item of items) {
-    const cols = SUBGRIDS.get(item.box)?.cols;
-    if (!cols) continue;
-    cols.placed = spanOf(widths, lefts, item.col, item.cols);
-    cols.gap = colGap;
-  }
+  const handOnCols = (): void => {
+    for (const item of items) {
+      const cols = SUBGRIDS.get(item.box)?.cols;
+      if (!cols) continue;
+      cols.placed = spanOf(widths, lefts, item.col, item.cols);
+      cols.gap = colGap;
+    }
+  };
+  handOnCols();
 
   // a height of the grid's own, or else the least it may be, which the
   // `fr` rows and the `auto` ones fill: its `min-height`, or the height a
@@ -295,12 +282,14 @@ export function layoutGrid(
   layOut(0, cut);
   // what a subgrid's items make of its parent's rows: their heights at
   // these widths, before a row stretches them
-  if (sub?.rows) {
+  const handOnRows = (): void => {
+    if (!sub?.rows) return;
     sub.rows.items = items.map((item) => ({
       ...item,
       height: item.box.height,
     }));
-  }
+  };
+  handOnRows();
 
   // the rows sized and placed, in the grid's height or its own
   const placeRows = (): {
@@ -363,6 +352,10 @@ export function layoutGrid(
     const tops = starts(heights, rowGap, style.alignContent, room);
     return { heights, tops, height };
   };
+  const placeSizedRows = () => {
+    const placed = placeRows();
+    return { heights: placed.heights, tops: placed.tops };
+  };
   let heights: number[];
   let tops: number[];
   let height: number;
@@ -382,6 +375,45 @@ export function layoutGrid(
       ({ heights, tops, height } = placeRows());
     }
   }
+  // What an item's width came to may turn on the rows: what a ratio makes of
+  // the height it stretches down, in it or in a flex box or a grid it hands
+  // that height on to. So with the rows sized its columns are sized again,
+  // and once only, and then the rows (CSS Grid 1, 12.1, steps 3 and 4). What
+  // no height reaches is measured once: its sizes are as they were. The grid
+  // stays as tall as the first rows made it, as in Chromium, what the second
+  // ones add running past it.
+  if (!givenCols && items.some(takingHeight)) {
+    sizedRows = { heights, tops };
+    const again: { item: Item; base: number; serial: number }[] = [];
+    for (const item of items) {
+      if (!takingHeight(item)) continue;
+      const child = item.box;
+      const base = child.percentHeightBase;
+      child.percentHeightBase = spanBefore(item);
+      if (heightGiven(child) === null) child.percentHeightBase = base;
+      else {
+        again.push({ item, base, serial: child.layoutSerial });
+        item.min = -1;
+        item.max = -1;
+      }
+    }
+    const before = widths;
+    if (again.length) ({ widths, lefts } = sizeCols());
+    if (
+      again.some(({ item, serial }) => {
+        return item.box.layoutSerial !== serial || widthTakesRows(item);
+      }) ||
+      widths.some((width, i) => Math.abs(width - before[i]) > 1e-6)
+    ) {
+      handOnCols();
+      layOut(0, cut);
+      handOnRows();
+      if (!givenRows) ({ heights, tops } = placeSizedRows());
+    } else {
+      // nothing moved: as the rows found it, and kept as a layout keeps it
+      for (const { item, base } of again) item.box.percentHeightBase = base;
+    }
+  }
   // an item that takes a percentage of its area's height, which is known
   // now, is laid out again with it
   for (const item of items) {
@@ -399,6 +431,7 @@ export function layoutGrid(
     colLines: plan.colLines,
     rowLines: plan.rowLines,
     first: firstItem(items),
+    atNarrowest,
     lanes: {
       cols: widths.map((w, i) => [lefts[i], lefts[i] + w]),
       rows: heights.map((h, i) => [tops[i], tops[i] + h]),
@@ -511,6 +544,7 @@ export function layoutGrid(
         child.kind !== 'replaced' &&
         (wide !== null ||
           percentHeightsIn(child) ||
+          itemsTakeHeight(child, height, ctx) ||
           (child.kind === 'flex' && height !== child.height) ||
           (child.kind === 'table' && height > child.height + 0.01))
       ) {
@@ -1285,6 +1319,22 @@ function extent(
   return last < from ? 0 : at[last] + sizes[last] - at[from];
 }
 
+/** How wide a grid's tracks come at their narrowest, for a layout of it with
+ *  no limit that has its own going on: the box as that layout has it. */
+function narrowestOfGrid(box: Box, ctx: LayoutContext): number {
+  const { width, height, percentHeightBase } = box;
+  const edges = lentEdges(box);
+  try {
+    const narrowest = measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
+    return narrowest - box.horizontalExtra;
+  } finally {
+    edges();
+    box.width = width;
+    box.height = height;
+    box.percentHeightBase = percentHeightBase;
+  }
+}
+
 /** An item's max-content width, its border box's: measured once in the
  *  box's life, as a table cell's is (`Box.intrinsicMaxContent`). Its
  *  content's, whatever width it has of its own (`minContentOf`). */
@@ -1306,7 +1356,7 @@ function maxContentOf(box: Box, ctx: LayoutContext): number {
  * them is not known then: a box that is not replaced is as wide as its
  * content for that, whatever its own `width` says, and a replaced element
  * takes its percentage of nothing (CSS Sizing 3, 5.2.1). A width that is a
- * length is weighed apart (`measure` in `layoutGrid`).
+ * length is weighed apart (`trackContributions`).
  */
 function minContentOf(box: Box, ctx: LayoutContext): number {
   return measureIntrinsicWidth(
@@ -1357,7 +1407,10 @@ function layoutItem(
   }
   // its border box's height before the rows are sized, where it has one —
   // which a subgrid's rows do not have, being its parent's
-  const tall = subgrid?.rows ? null : heightBeforeRows(child, rows);
+  const keyword = style.widthKeyword;
+  const tall = subgrid?.rows
+    ? null
+    : heightInArea(child, rows, stretchesDownOnly(child));
   // Its content's widths, border box: measured once in its life, with the
   // percentages in its padding of nothing, as they are while the columns
   // are sized, and here with what those come to of its area. Measuring
@@ -1379,7 +1432,6 @@ function layoutItem(
       child.intrinsicMaxContent + padded,
     ];
   };
-  const keyword = style.widthKeyword;
   // `stretch` fills its area, and so does `normal` but for a replaced
   // element, which it sizes as a block's is: a box with a ratio is as wide
   // as a block would be where it has no height yet (CSS Grid 1, 6.2)
@@ -1458,6 +1510,32 @@ function layoutItem(
       style.height === AUTO ? heightThroughRatio(child, child.width) : null;
     if (down !== null) child.height = clampHeight(child, down);
   }
+}
+
+/** Whether `normal` stretches an item with a ratio down its area: only where
+ *  nothing stretches it across, which would leave its ratio nothing to say. */
+function stretchesDownOnly(child: Box): boolean {
+  const justify =
+    child.style.justifySelf === 'auto'
+      ? (child.parent?.style.justifyItems ?? 'normal')
+      : child.style.justifySelf;
+  return (
+    child.style.widthKeyword !== null ||
+    (justify !== 'normal' && justify !== 'stretch')
+  );
+}
+
+/** Whether what an item's ratio makes of its rows is its width, which a
+ *  layout from before they were sized did not know. */
+function widthTakesRows(item: Item): boolean {
+  const child = item.box;
+  if (child.style.width !== AUTO) return false;
+  const tall = heightInArea(
+    child,
+    child.percentHeightBase,
+    stretchesDownOnly(child),
+  );
+  return tall !== null && widthThroughRatio(child, tall) !== null;
 }
 
 /** Lay an item out at a width: a table stretched across its area at that
@@ -1637,21 +1715,6 @@ function sameEdges(edges: readonly number[], box: Box): boolean {
   return true;
 }
 
-/** What the percentages in a box's padding come to across it, its edges
- *  resolved: what a width of its content's, measured with them of nothing,
- *  is short of its border box by. */
-function percentPadding(box: Box): number {
-  const { paddingLeft, paddingRight } = box.style;
-  let out = 0;
-  if (isPct(paddingLeft)) {
-    out += box.padLeft - Math.max(0, resolve(paddingLeft, 0));
-  }
-  if (isPct(paddingRight)) {
-    out += box.padRight - Math.max(0, resolve(paddingRight, 0));
-  }
-  return out;
-}
-
 /** Whether a box's content is its least size through a ratio, which it is
  *  where the box shows what overflows it and its least width is `auto`
  *  (CSS Sizing 4, 5.2). */
@@ -1723,56 +1786,6 @@ function tracksOf(
   return out;
 }
 
-/** Whether a box's own height, least or greatest, is a percentage. */
-function percentOwn(box: Box): boolean {
-  const style = box.style;
-  return (
-    isPct(style.height) ||
-    isPct(style.minHeight) ||
-    (style.maxHeight !== 'none' && isPct(style.maxHeight))
-  );
-}
-
-/**
- * An item's border-box height before the rows are sized, where it has one
- * then: a height of its own — a percentage of the rows it spans where they
- * have a length for a size — or the rows' where `stretch` stretches it
- * down them, its own `align-self` or the grid's `align-items`. Null where
- * it has none, which is where its height is its content's.
- */
-function heightBeforeRows(box: Box, rows: number): number | null {
-  const style = box.style;
-  const own = resolveOrNull(style.height, rows);
-  if (own !== null && Number.isFinite(own)) {
-    return clampHeight(
-      box,
-      style.boxSizing === 'border-box'
-        ? Math.max(own, box.verticalExtra)
-        : own + box.verticalExtra,
-    );
-  }
-  const align =
-    style.alignSelf === AUTO ? box.parent?.style.alignItems : style.alignSelf;
-  if (
-    style.height === AUTO &&
-    !style.heightKeyword &&
-    align === 'stretch' &&
-    Number.isFinite(rows) &&
-    !autoMargins(box, 'y').some(Boolean)
-  ) {
-    const room = rows - box.marginTop - box.marginBottom;
-    const height = Math.max(room, box.verticalExtra);
-    const sized = style.heightSize;
-    return clampHeight(
-      box,
-      sized
-        ? sizeFrom(sized, height, box.verticalExtra, style.boxSizing, rows)
-        : height,
-    );
-  }
-  return null;
-}
-
 /** A track's sizing functions, its lengths resolved against the size of the
  *  axis: a percentage of a size the tracks are still finding is `auto`
  *  (CSS Grid 1, 7.2.1), and `fit-content()` of one its content's widest. */
@@ -1799,34 +1812,6 @@ function sizing(track: GridTrack, base: number): SizingTrack {
   return { min: least, max: most };
 }
 
-/** An item's own least and greatest border-box widths, where they are
- *  lengths or its content's: a percentage of the area the tracks are still
- *  being sized for is none (CSS Sizing 3, 5.2.1). */
-function ownWidths(
-  box: Box,
-  narrowest: number,
-  widest: number,
-): [number, number] {
-  const style = box.style;
-  const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
-  const keyword = (
-    k: ContentSize | null,
-    sized: SizeOf | null,
-  ): number | null => {
-    const width =
-      k === 'min-content' ? narrowest : k === 'max-content' ? widest : null;
-    if (width === null || !sized) return width;
-    return sizeFrom(sized, width, box.horizontalExtra, style.boxSizing, NaN);
-  };
-  const least =
-    keyword(style.minWidthKeyword, style.minWidthSize) ??
-    (typeof style.minWidth === 'number' ? style.minWidth + extra : 0);
-  const most =
-    keyword(style.maxWidthKeyword, style.maxWidthSize) ??
-    (typeof style.maxWidth === 'number' ? style.maxWidth + extra : Infinity);
-  return [least, Math.max(least, most)];
-}
-
 /**
  * The least an item makes the columns it is in (CSS Grid 1, 11.5, its
  * "minimum contribution"): its narrowest where it has a width of its own,
@@ -1837,31 +1822,36 @@ function leastWidth(
   tracks: SizingTrack[],
   gap: number,
   measure: (item: Item) => void,
+  ctx: LayoutContext,
 ): number {
   const box = item.box;
   const style = box.style;
-  const margins = box.marginLeft + box.marginRight + item.before + item.after;
+  const margins = marginsInNoRoom(box) + item.before + item.after;
   measure(item);
-  if ((style.width !== AUTO && !isPct(style.width)) || style.widthKeyword) {
+  // `fit-content` is a width of no size yet, as `auto` and a percentage are
+  if (
+    (style.width !== AUTO && !isPct(style.width)) ||
+    style.widthKeyword === 'min-content' ||
+    style.widthKeyword === 'max-content'
+  ) {
     return item.min;
   }
   if (style.minWidthKeyword || style.minWidth !== AUTO) {
-    const [least] = ownWidths(
-      box,
-      box.intrinsicMinContent,
-      box.intrinsicMaxContent,
-    );
-    return least + margins;
+    return ownLeastWidth(box, ctx) + margins;
   }
+  // and no box is narrower than its padding and borders
   return (
-    automaticMinimum(
-      item.col,
-      item.cols,
-      tracks,
-      gap,
-      style.overflowX,
-      margins,
-      item.min - margins,
+    Math.max(
+      automaticMinimum(
+        item.col,
+        item.cols,
+        tracks,
+        gap,
+        style.overflowX,
+        margins,
+        item.min - margins,
+      ),
+      ownLeastWidth(box, ctx),
     ) + margins
   );
 }
@@ -1934,6 +1924,16 @@ function rowItem(item: Item, tracks: SizingTrack[], gap: number): TrackItem {
       );
     },
   };
+}
+
+/** A grid's least content width, which with no limit on its width its `auto`
+ *  tracks stretch to as they do to a width it has, and not at its narrowest,
+ *  where they are as narrow as they come. */
+function leastWidthInside(box: Box): number {
+  const { minWidth, boxSizing } = box.style;
+  if (typeof minWidth !== 'number') return 0;
+  const edges = boxSizing === 'border-box' ? box.horizontalExtra : 0;
+  return Math.max(0, minWidth - edges);
 }
 
 /** A grid's least content height where it has no height of its own: its

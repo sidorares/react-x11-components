@@ -839,6 +839,368 @@ metric(
   },
 );
 
+const shape = '<rect width="24" height="24"/>';
+const drawing = (id: string, inside = shape) =>
+  `<svg id="${id}" width="24" height="24">${inside}</svg>`;
+
+/** What each drawing's shapes are given is asked again: how many drawings
+ *  ask while `run` runs. */
+async function drawingsAsked(el: HtmlViewNode, run: () => unknown) {
+  const cascade = (el as unknown as { _cascade: Cascade })._cascade;
+  const ask = cascade.shapeStyles;
+  const asked: (string | undefined)[] = [];
+  cascade.shapeStyles = function (this: Cascade, ...a) {
+    asked.push(a[0].attribs.id);
+    return ask.apply(this, a);
+  };
+  try {
+    await run();
+  } finally {
+    delete (cascade as { shapeStyles?: unknown }).shapeStyles;
+  }
+  return asked;
+}
+
+metric(
+  'a change outside an inline drawing that a rule reaches a shape in it by draws it again, and nothing else',
+  async () => {
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_, i) => `<p>Paragraph ${i}</p>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0} .on #s rect{fill:#0000ff}</style>' +
+        `<div id="top">${drawing('s')}</div>${paragraphs}`,
+      300,
+    );
+    const el = view(node);
+    const was = await snapshot(result, el);
+    const tree = treeOf(el);
+    const top = byId(el, 'top');
+    const styled = await stylesComputed(el, async () => {
+      const damage = await damageOf(el, () => {
+        top.attribs.class = 'on';
+        el.touchDocument([
+          {
+            type: 'attributes',
+            target: top,
+            attributeName: 'class',
+            oldValue: null,
+          },
+        ]);
+      });
+      assert.ok(treeOf(el) === tree, 'built again');
+      assert.ok(damage.length > 0 && !damage.includes(el));
+    });
+    assert.strictEqual(styled, 0);
+    const drawn = await snapshot(result, el);
+    assert.ok(bytesApart(drawn, was) > 0, 'drawn as it was');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'whatever a selector reaches a shape by, a change draws what a build draws',
+  async () => {
+    const gradient =
+      '<linearGradient id="g"><stop stop-color="#ff0000"/></linearGradient>';
+    const named = drawing('s', '<rect width="24" height="24" fill="url(#g)"/>');
+    const rows: [string, string, string, string?][] = [
+      [
+        'a class above',
+        '.on rect{fill:#0000ff}',
+        `<a id="t">${drawing('s')}</a>`,
+      ],
+      [
+        'a class on the shape',
+        '.on .p{fill:#0000ff}',
+        `<a id="t">${drawing('s', '<rect class="p" width="24" height="24"/>')}</a>`,
+      ],
+      [
+        'an attribute above',
+        '[data-on] rect{fill:#0000ff}',
+        `<a id="t">${drawing('s')}</a>`,
+        'data-on',
+      ],
+      [
+        'what names nothing',
+        '.on svg *{fill:#0000ff}',
+        `<a id="t">${drawing('s')}</a>`,
+      ],
+      [
+        'a later sibling',
+        '.on ~ svg rect{fill:#0000ff}',
+        `<a id="t"></a>${drawing('s')}`,
+      ],
+      [
+        'the next sibling',
+        '.on + svg rect{fill:#0000ff}',
+        `<a id="t"></a>${drawing('s')}`,
+      ],
+      [
+        'a :has() around it',
+        'b:has(.on) rect{fill:#0000ff}',
+        `<b><a id="t"></a>${drawing('s')}</b>`,
+      ],
+      [
+        'the root of the drawing',
+        '.on rect{fill:#0000ff}',
+        '<svg id="t" width="24" height="24"><rect width="24" height="24"/></svg>',
+      ],
+      [
+        'what its root is given and has no style for',
+        '.on{clip-rule:evenodd}',
+        '<svg id="t" width="24" height="24"><clipPath id="c">' +
+          '<path d="M0 0h24v24H0zM6 6h12v12H6z"/></clipPath><rect width="24"' +
+          ' height="24" fill="#0000ff" clip-path="url(#c)"/></svg>',
+      ],
+      [
+        'what its root gives it',
+        '.on svg{fill:#0000ff} .on rect{stroke:#00aa00;stroke-width:8}',
+        `<a id="t">${drawing('s')}</a>`,
+      ],
+      [
+        "a drawing's own gradient",
+        '.on stop{stop-color:#0000ff}',
+        `<a id="t">${drawing('s', `${gradient}<rect width="24" height="24" fill="url(#g)"/>`)}</a>`,
+      ],
+      [
+        "another drawing's gradient",
+        '.on stop{stop-color:#0000ff}',
+        `<a id="t">${drawing('d', gradient)}</a>${named}`,
+      ],
+      [
+        'a gradient in a hidden drawing',
+        '.on stop{stop-color:#0000ff}',
+        `<a id="t"><svg style="display:none">${gradient}</svg></a>${named}`,
+      ],
+    ];
+    for (const [name, css, markup, attribute = 'class'] of rows) {
+      const { result, node } = await render(
+        `<style>body{margin:0} svg,a,b{display:block}${css}</style>${markup}`,
+        300,
+      );
+      const el = view(node);
+      const was = await snapshot(result, el);
+      const tree = treeOf(el);
+      const target = byId(el, 't');
+      target.attribs[attribute] = attribute === 'class' ? 'on' : '';
+      el.touchDocument([
+        {
+          type: 'attributes',
+          target,
+          attributeName: attribute,
+          oldValue: null,
+        },
+      ]);
+      const drawn = await snapshot(result, el);
+      assert.ok(treeOf(el) === tree, `${name}: built again`);
+      assert.ok(bytesApart(drawn, was) > 0, `${name}: drawn as it was`);
+      assert.strictEqual(
+        bytesApart(drawn, await rebuilt(result, el)),
+        0,
+        `${name}: not as a build draws it`,
+      );
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'a shape a change reaches builds the boxes of a drawing with a <foreignObject>, whose HTML is styled from its elements down',
+  async (t) => {
+    withForeignObjects(t);
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{display:block} .on g{color:#0000ff}' +
+        'div{height:20px;background:currentColor}</style>' +
+        '<div id="top" style="background:none;height:auto">' +
+        '<svg width="60" height="20"><g><foreignObject width="60" height="20">' +
+        '<div id="inner"></div></foreignObject></g></svg></div>',
+      300,
+    );
+    const el = view(node);
+    const was = await snapshot(result, el);
+    const top = byId(el, 'top');
+    top.attribs.class = 'on';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: top,
+        attributeName: 'class',
+        oldValue: null,
+      },
+    ]);
+    const drawn = await snapshot(result, el);
+    assert.ok(bytesApart(drawn, was) > 0, 'drawn as it was');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+test('what is taken out at the root of a drawing goes from what it draws', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}</style>' +
+      drawing('s', '<rect id="r" width="24" height="24" fill="#ff0000"/>'),
+    300,
+  );
+  const el = view(node);
+  const was = await snapshot(result, el);
+  const tree = treeOf(el);
+  const target = byId(el, 's');
+  const shape = byId(el, 'r');
+  removeNode(shape);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target,
+      addedNodes: [],
+      removedNodes: [shape],
+    },
+  ]);
+  const drawn = await snapshot(result, el);
+  assert.ok(treeOf(el) === tree, 'built again');
+  assert.ok(bytesApart(drawn, was) > 0, 'drawn as it was');
+  assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+});
+
+metric(
+  'a shape a change reaches builds nothing around its drawing where something else builds the boxes',
+  async () => {
+    // beside a rule of what is built: a shape was a seed of the build, and
+    // its nearest block was built for a box it has not got
+    const { result, node } = await render(
+      '<style>body{margin:0} .on #o{display:flex}' +
+        '.on ~ div rect{fill:#0000ff}</style>' +
+        `<div id="top"><div id="o">o</div></div><div id="around">${drawing('s')}</div>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    const box = boxOf(el, 's');
+    const top = byId(el, 'top');
+    top.attribs.class = 'on';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: top,
+        attributeName: 'class',
+        oldValue: null,
+      },
+    ]);
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'no build');
+    assert.ok(boxOf(el, 's') === box, 'its box built again');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a shape a change reaches past where the drawing was drawn is painted there, where it shows what it draws past its box',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{overflow:visible;display:block;margin:30px}' +
+        `.on rect{stroke:#0000ff;stroke-width:40}</style><div id="top">${drawing('s')}</div>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const top = byId(el, 'top');
+    for (const [value, was] of [
+      ['on', null],
+      ['', 'on'],
+    ]) {
+      top.attribs.class = value!;
+      el.touchDocument([
+        {
+          type: 'attributes',
+          target: top,
+          attributeName: 'class',
+          oldValue: was,
+        },
+      ]);
+      const drawn = await snapshot(result, el);
+      assert.strictEqual(
+        bytesApart(drawn, await rebuilt(result, el)),
+        0,
+        `class "${value}"`,
+      );
+    }
+  },
+);
+
+metric(
+  'a class on the root asks only the drawings a rule reaches into, and repaints only those it gives something else',
+  async () => {
+    const { result, node } = await render(
+      '<!doctype html><html id="root"><head><style>body{margin:0} p{margin:0}' +
+        '.on .p{fill:#0000ff} .plain .q{background:#ff0000}' +
+        '.para p{color:#00aa00}</style></head><body>' +
+        drawing('reached', '<rect class="p" width="24" height="24"/>') +
+        drawing('named', '<rect class="q" width="24" height="24"/>') +
+        drawing('other') +
+        drawing('another') +
+        '<p>Paragraph</p></body></html>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const root = byId(el, 'root');
+    const set = async (value: string, was: string | null) => {
+      let damage: unknown[] = [];
+      const asked = await drawingsAsked(el, async () => {
+        damage = await damageOf(el, () => {
+          root.attribs.class = value;
+          el.touchDocument([
+            {
+              type: 'attributes',
+              target: root,
+              attributeName: 'class',
+              oldValue: was,
+            },
+          ]);
+        });
+      });
+      await act();
+      return { asked, damage };
+    };
+    const given = await set('on', null);
+    assert.deepStrictEqual(given.asked, ['reached']);
+    assert.ok(given.damage.length > 0 && !given.damage.includes(el));
+    // a rule whose subject names a shape, and gives it nothing it draws
+    const named = await set('on plain', 'on');
+    assert.deepStrictEqual(named.asked, ['named']);
+    assert.deepStrictEqual(named.damage, []);
+    // and one that reaches none
+    const none = await set('on plain para', 'on plain');
+    assert.deepStrictEqual(none.asked, []);
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+test('a change that reaches a shape asks nothing where no rule gives a shape anything', async () => {
+  const { result, node } = await render(
+    `<style>.on rect{background:#ff0000}</style><div id="top">${drawing('s')}</div>`,
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const top = byId(el, 'top');
+  const asked = await drawingsAsked(el, async () => {
+    top.attribs.class = 'on';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: top,
+        attributeName: 'class',
+        oldValue: null,
+      },
+    ]);
+    await act();
+  });
+  assert.deepStrictEqual(asked, []);
+});
+
 test('a change inside a drawing restyles what a :has() asking it can answer otherwise, and with none asking, nothing', async () => {
   // joshwcomeau.com animates a sparkle a path at a time, and with one
   // `:has()` anywhere in its sheets every frame restyled the whole page
@@ -3158,9 +3520,17 @@ function edgeRulesFor(next: () => number, outside: boolean): string {
   return rules.join('\n');
 }
 
-function markupFor(next: () => number, shadows = false, edges = false): string {
+function markupFor(
+  next: () => number,
+  shadows = false,
+  edges = false,
+  drawings = false,
+): string {
   let id = 0;
   const element = (depth: number): string => {
+    if (drawings && depth > 0 && next() < 0.35) {
+      return drawingFor(next, id++);
+    }
     // a host: a shadow tree of its own, with sheets that stay inside it —
     // or, `edges`, that reach across its edge too — a slot for its
     // children and one named, and its light children
@@ -3206,6 +3576,99 @@ function markupFor(next: () => number, shadows = false, edges = false): string {
   let body = '';
   for (let i = 0; i < 4; i += 1) body += element(0);
   return body;
+}
+
+/** An inline drawing, with a gradient of its own that one of its shapes
+ *  names. What another drawing names is left out: a change inside that is
+ *  no change to the drawing that names it. */
+function drawingFor(next: () => number, id: number): string {
+  const classes = () => {
+    const names = CLASSES.filter(() => next() < 0.3).join(' ');
+    return names ? ` class="${names}"` : '';
+  };
+  const shape = () =>
+    next() < 0.5
+      ? `<rect${classes()} width="9" height="9"/>`
+      : `<circle${classes()} r="4" cx="4" cy="4"/>`;
+  return (
+    `<svg${classes()} width="20" height="20">${shape()}<g${classes()}>` +
+    `${shape()}</g><linearGradient id="d${id}"><stop${classes()}` +
+    ` stop-color="#ff0000"/></linearGradient><rect fill="url(#d${id})"` +
+    ' width="9" height="9"/></svg>'
+  );
+}
+
+/** Rules that reach a drawing's elements from around them and in them,
+ *  some of which give a shape nothing it draws, for `drawingFor`. */
+function drawingRulesFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  const above: (() => string)[] = [
+    () => `.${c()}`,
+    () => '[data-x=y]',
+    () => `#e${Math.floor(next() * 6)}`,
+    () => `${pick(TAGS)}.${c()}`,
+    () => `.${c()} ~ *`,
+    () => `.${c()} + *`,
+    () => `.${c()}:has(.${c()})`,
+    () => `:has(> .${c()})`,
+    () => `:not(.${c()})`,
+    () => `.${c()} > :first-child`,
+  ];
+  const subjects: (() => string)[] = [
+    () => 'rect',
+    () => 'circle',
+    () => 'g',
+    () => 'stop',
+    () => `.${c()}`,
+    () => `rect.${c()}`,
+    () => `svg .${c()}`,
+    () => `svg > *`,
+    () => '*',
+  ];
+  const declarations: (() => string)[] = [
+    () => `fill: ${pick(INKS)}`,
+    () => `fill: ${pick(INKS)}`,
+    () => `stroke: ${pick(INKS)}`,
+    () => `stop-color: ${pick(INKS)}`,
+    () => `color: ${pick(INKS)}`,
+    () => 'visibility: hidden',
+    () => 'background: #ff0000',
+  ];
+  const rules: string[] = [];
+  for (let i = 0; i < 10; i += 1) {
+    const selector =
+      next() < 0.25 ? pick(subjects)() : `${pick(above)()} ${pick(subjects)()}`;
+    rules.push(`${selector} { ${pick(declarations)()} }`);
+  }
+  return rules.join('\n');
+}
+
+/** Whether an element is outside every drawing. */
+function outsideDrawings(el: Element): boolean {
+  let at = el.parent as Element | null;
+  while (at) {
+    if (at.name === 'svg') return false;
+    at = ((at as { host?: Element }).host ?? at.parent) as Element | null;
+  }
+  return true;
+}
+
+/** What the rules give the shapes of each drawing in `body`, which is what
+ *  its next paint reads, or asks for where it never asked. */
+function shapesOf(el: HtmlViewNode, body: Element): string[] {
+  const view = el as unknown as {
+    _tree: { shapeStyler(box: unknown): { key: string } | null };
+    _firstBoxesOf(tree: unknown): Map<Element, unknown>;
+  };
+  const boxes = view._firstBoxesOf(view._tree);
+  return elementsIn(body)
+    .filter((e) => e.name === 'svg')
+    .map((e, i) => {
+      const box = boxes.get(e);
+      return `${i} ${box ? (view._tree.shapeStyler(box)?.key ?? '') : 'no box'}`;
+    });
 }
 
 /** The body's elements, in document order, and those of each shadow
@@ -3276,7 +3739,12 @@ function changeOne(
   forgetOld: boolean,
   parts = false,
 ): HtmlChange[] {
-  const all = elementsIn(body);
+  // a change to what a drawing names reaches no other drawing that names
+  // it yet, as a rule's reach from outside it does: what names one stays
+  // with it
+  const all = elementsIn(body).filter(
+    (e) => e.name !== 'linearGradient' && e.name !== 'stop' && !e.attribs.fill,
+  );
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const inside = all.slice(1);
@@ -3424,7 +3892,11 @@ function changeOne(
     const into = pick(all.filter((e) => !elementsIn(target).includes(e)));
     const from = target.parent as unknown as Element;
     const sides = sidesOf(next, target);
-    const before = into.children.filter((n) => (n as Element).attribs);
+    // and not before itself, which leaves it its own sibling, and a sibling
+    // combinator walks that for ever
+    const before = into.children.filter(
+      (n) => (n as Element).attribs && n !== (target as unknown as ChildNode),
+    );
     if (before.length && next() < 0.5) {
       removeNode(target as unknown as ChildNode);
       DomUtils.prepend(pick(before), target as unknown as ChildNode);
@@ -3488,7 +3960,8 @@ function changeOne(
 function attachOne(next: () => number, body: Element): HtmlChange[] {
   const all = elementsIn(body);
   const free = all.filter(
-    (e) => e !== body && ['div', 'span', 'p'].includes(e.name),
+    (e) =>
+      e !== body && ['div', 'span', 'p'].includes(e.name) && outsideDrawings(e),
   );
   const hosts = all.filter((e) => shadowRootOf(e));
   const rule = () =>
@@ -3920,6 +4393,24 @@ test('a refresh whose reach below what changed is narrowed to its rules’ subje
   } finally {
     Cascade.prototype.attributeChange = change;
   }
+});
+
+test('in a document of drawings, a refresh told what changed gives their shapes what a refresh of everything does', async () => {
+  const seeds = Number(process.env.SHAPE_SEEDS ?? 24);
+  const from = Number(process.env.SHAPE_FROM ?? 1);
+  const ways = await refreshesAgree(
+    seeds,
+    false,
+    false,
+    undefined,
+    from,
+    drawingRulesFor,
+    true,
+  );
+  assert.ok(
+    ways.shapes >= seeds,
+    `${ways.shapes} changes reached a shape from outside its drawing`,
+  );
 });
 
 test('in a document of :has()s that ask only of their children and of sibling combinators, a refresh told what changed comes to the same styles', async () => {
@@ -5154,8 +5645,16 @@ async function refreshesAgree(
   firstSeed = 1,
   /** The document's rules, where not `rulesFor`'s. */
   sheet?: (next: () => number) => string,
-): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
-  const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
+  /** Whether it holds drawings, whose shapes are held to it as well. */
+  drawings = false,
+): Promise<{
+  whole: number;
+  inPlace: number;
+  frame: number;
+  build: number;
+  shapes: number;
+}> {
+  const ways = { whole: 0, inPlace: 0, frame: 0, build: 0, shapes: 0 };
   for (let seed = firstSeed; seed < firstSeed + seeds; seed += 1) {
     const next = mulberry32(seed);
     // a sheet of anchored shapes has none of those that reach everything,
@@ -5171,7 +5670,7 @@ async function refreshesAgree(
           anchoredShare === undefined || seed % 3 === 0,
         );
     if (edges) css += `\n${edgeRulesFor(next, true)}`;
-    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows, edges)}</body>`;
+    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows, edges, drawings)}</body>`;
     // real fonts where the machine has them: the mock backend lays out no
     // text, and a restyle in place remakes the text it inks
     const { result, node } = await render(source, 320);
@@ -5180,6 +5679,7 @@ async function refreshesAgree(
     const bodyEl = el.document.children.find(
       (n) => (n as Element).name === 'body',
     ) as Element;
+    if (drawings) shapesOf(el, bodyEl);
     for (let step = 0; step < 8; step += 1) {
       const changes: HtmlChange[] = [];
       const batch = 1 + Math.floor(next() * 3);
@@ -5196,8 +5696,10 @@ async function refreshesAgree(
       >;
       const scope = node._changeScope.call(el, changes) as {
         boxes: boolean;
+        shapes?: Set<Element>;
       } | null;
       if (!scope) ways.whole += 1;
+      if (scope?.shapes?.size) ways.shapes += 1;
       const inPlace = node._restyleInPlace;
       const frame = node._rebuildFrame;
       let way: keyof typeof ways = scope ? 'build' : 'whole';
@@ -5215,8 +5717,25 @@ async function refreshesAgree(
       delete node._rebuildFrame;
       if (scope) ways[way] += 1;
       const scoped = stylesOf(el, bodyEl);
+      const shapes = drawings ? shapesOf(el, bodyEl) : [];
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
+      const told = (): string =>
+        changes
+          .map((c) =>
+            c.type === 'attributes'
+              ? `${c.attributeName} of <${c.target.name} ${JSON.stringify(c.target.attribs)}> was ${JSON.stringify(c.oldValue)}`
+              : c.type,
+          )
+          .join(', ') + ` (${way})`;
+      if (drawings) {
+        assert.deepStrictEqual(
+          shapes,
+          shapesOf(el, bodyEl),
+          `seed ${seed}, step ${step}: what a shape is given\nrules\n${css}\n` +
+            `changes ${told()}\nin ${source}`,
+        );
+      }
       const at = firstApart(scoped, whole);
       // the fields two lines of `stylesOf` differ in, which a style's
       // hundred fields hide
@@ -5232,15 +5751,7 @@ async function refreshesAgree(
         `seed ${seed}, step ${step}: told what changed\n` +
           `${apart(scoped[at], whole[at]).slice(0, 600)}\n` +
           `styled whole\n${apart(whole[at], scoped[at]).slice(0, 600)}\n` +
-          `${(scoped[at] ?? '').slice(0, 80)}\nrules\n${css}\nchanges ` +
-          changes
-            .map((c) =>
-              c.type === 'attributes'
-                ? `${c.attributeName} of <${c.target.name} ${JSON.stringify(c.target.attribs)}> was ${JSON.stringify(c.oldValue)}`
-                : c.type,
-            )
-            .join(', ') +
-          ` (${way})`,
+          `${(scoped[at] ?? '').slice(0, 80)}\nrules\n${css}\nchanges ${told()}`,
       );
     }
     result.unmount();

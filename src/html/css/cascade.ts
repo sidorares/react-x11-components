@@ -8785,6 +8785,12 @@ export class Cascade {
     return this._shapes.hoverSensitive;
   }
 
+  /** Whether a rule gives a shape in a drawing anything: with none, what a
+   *  change does outside a drawing's style leaves it as it was. */
+  get stylesShapes(): boolean {
+    return this._shapes.size > 0;
+  }
+
   /** What a `rem`, a `vw` and its kin in an inline drawing's geometry are
    *  of, as the document has them now, in its user units (`DrawingUnits`):
    *  the root's font size and the viewport, in CSS pixels, unzoomed. */
@@ -9207,6 +9213,15 @@ export class Cascade {
     for (const [tag, bucket] of index.byTag) {
       if (read(bucket)) needs.tags.add(tag);
     }
+    // A rule kept by a class, an id or an attribute is asked of what has it,
+    // whoever is around, and what it names of an ancestor is looked for all
+    // the same, since a rule whose names were not found is passed over
+    // (`shapeStyles`' `live`): `.scope .st0` gave its fill to the first
+    // `.st0` it matched, which is what noted the names, and to no other.
+    for (const buckets of [index.byId, index.byClass, index.byAttr]) {
+      for (const bucket of buckets.values()) read(bucket);
+    }
+    read(index.rootRules);
     return needs;
   }
 
