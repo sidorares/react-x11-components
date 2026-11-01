@@ -1366,7 +1366,7 @@ metric(
     const env =
       (globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env ?? {};
-    const seeds = Number(env.PROBE_SEEDS ?? 40);
+    const seeds = Number(env.PROBE_SEEDS ?? 80);
     for (let seed = Number(env.PROBE_FROM ?? 1); seed <= seeds; seed += 1) {
       const next = random(seed * 7919);
       const body = createElement('body', {});
