@@ -1002,11 +1002,18 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream. **The adapter reaches into werift once**: an empty message,
-which werift sends as nothing, is put on its `RTCSctpTransport`'s own send
-queue as RFC 8831's one byte under payload protocol 56 or 57
-(`WeriftChannel._sendEmpty`), and a werift without the queue sends nothing,
-as before. Ask werift for an empty send before reaching in anywhere else.
+file upstream. **The adapter reaches into werift three times**, each for what
+werift has no public way to do, and a werift without the field goes on as
+before. An empty message, which werift sends as nothing, is put on its
+`RTCSctpTransport`'s own send queue as RFC 8831's one byte under payload
+protocol 56 or 57 (`WeriftChannel._sendEmpty`). A close waits for what it sent
+to be acknowledged (`WeriftChannel.close`, reading `sentQueue`): a reset
+overtakes a retransmission, and werift's far side drops what arrives after
+one. And a connection whose page names no STUN server asks none
+(`_gatherFromNamed`, clearing each transport's `stunServer`): werift falls back
+to Google's whatever `iceServers` says, which is a request nobody asked for and
+five seconds of `setLocalDescription` on a network that does not answer. Ask
+werift for each of these before reaching in anywhere else.
 
 `publicSuffixList()` in `src/html/cookies.ts` is the fourth: `tldts`, the
 Public Suffix List with its private domains, is an **optional peer** and a
@@ -1707,28 +1714,46 @@ to be measured again, which costs a frame per resize and only for those.
 **A container query is the third exception, and it is answered after the
 layout.** A container's size is layout's, so the cascade answers an
 `@container` query, and a `cqw` or its kin, for the content box the last
-layout gave the container (`Cascade._containerSizes`), and notes for each
-element which container each read and what it came to
-(`_containerReads`). Every layout then hands the containers' boxes back
+layout gave the container (`Cascade._sizeOf`), and notes for each element
+which container each read and what it came to (`_containerReads`). Every
+layout then hands the containers' boxes back
 (`HtmlViewNode._containersMoved`), and the subtrees of the elements whose
 answers moved are built again and laid out again, at most
-`CONTAINER_PASSES` times. Three things are load-bearing. **A read is noted
+`CONTAINER_PASSES` times. Four things are load-bearing. **A read is noted
 only where the selector matched**, so a query is a cost of the elements it
 styles and not of its bucket. **An element a container rule reaches, or
 whose style holds a container unit, shares no style** (`UNSHAREABLE`'s
 buckets, `_containerUnitRead`): a sharing key is the element's ancestors'
 and attributes, and two elements alike in all of them can be in containers
-of other sizes. And **the containers are measured from boxes taken as the
-tree was built** (`BoxTree.containers`), since a dragged width sets boxes
-aside from the root's walk. Anything new that makes a style read a
-container's size goes through `_containerReads`, or a layout that moves the
-container leaves the style as it was. A query's container units are its
-container's — the nearest size container above it, since a query's lengths
-are the container's (`_queryUnit`) — noted for the element under a key per
-container and axis (`_queryUnitKey`), and a query asked again after a
-layout reads them at the sizes that layout gave (`_moving`): asked at the
-last ones, a container no style had read yet answered with the viewport's,
-and the query kept its answer.
+of other sizes. **The containers are measured from boxes taken as the tree
+was built** (`BoxTree.containers`), or as a read first asks of a tree built
+before one did, down what a dragged width set aside from the root's walk
+(`asideOf`). And **a read asks the boxes, and keeps nothing**
+(`laidOutSize`, and `laidOutScroll` for a scroll state): a layout hears of
+a container only where a style has read it, and a restyle in place, which
+no layout follows, may be the first to, or the first since a build forgot
+who had. Read from what the last layout was told, a colour under a query
+came out as though the container had no size, or the size before the one
+it has, until something laid the document out. The boxes are the last
+layout's that asked no question (`_sizedTree`), since a build's are laid
+out by nothing yet and a question's are no container's, and nothing in
+this costs a document anything until a query or a unit is read. Anything
+new that makes a style read a container's size goes through `_sizeOf` and
+`_containerReads`, or a layout that moves the container leaves the style as
+it was. A query's container units are its container's — the nearest size
+container above it, since a query's lengths are the container's
+(`_queryUnit`) — noted for the element under a key per container and axis
+(`_queryUnitKey`), and a query asked again after a layout reads them at the
+sizes that layout gave, as every read does. **One element reads one query twice where it
+is a container**: its `::after` finds the element, and the element what is
+above it, so a pseudo-element's read is noted under a key of its own
+(`_readKey`), or the second read takes the first's place and no layout moves
+the element's answer. **And a query reads past the parent**, which `follow`
+stands on it not doing: an element that comes to be a container, or stops, or
+goes by another name or turns inline, changes what a query under it finds
+whatever its parent's style came to, so everything under it is styled again
+(`sameContainer`, `_newContainers`). Anything new a query finds a container by
+joins `sameContainer`.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
@@ -1968,6 +1993,32 @@ Over a network, the Zen Garden's designs took eleven builds a page before
 these and take one; Wikipedia's X Window System article was built eleven
 times as its images came in, at some 180 ms a time on a Mac, and is
 painted.
+**What lands while a build is owed adds to that build, and never widens
+it** (`_imageArrived`, `_arrivedKinds`). A change says what its build
+reaches (`_buildSeeds`), and `_invalidate` with `Stale.Boxes` and no seeds
+takes that away: the build is the whole document's. An image lands on any
+turn of a page still loading, and each that landed between a change and its
+frame did that, with no box of any other kind. On a cold load of the
+Guardian, in a real window, that was seven to ten builds of the whole
+document, and on BBC two to five. So a build of subtrees that is owed stays
+one: what it builds reads each size as it makes the box, every other box
+takes its size in place as it would with nothing owed, and what comes out
+another box with its image joins the seeds with its element, styles kept.
+Measure these cold, from a profile with nothing in its cache: a warm one
+lands every image in a bunch before the page's scripts have changed
+anything, and shows none of it. **Anything new that answers something late
+adds to a build owed through `_invalidate`'s `seeds`, or leaves it as it
+is**: `'resized'`, which no site here has told, is the last that does neither.
+**A list's entry goes with what built it** (`ContentImage.box`): a tail
+builds its holder's `::after` again, and an entry kept by the holder stays
+beside the new one, and with no size is news at every arrival after it. And
+**what will have no image is listed as waiting for none**: an `<object>`
+that holds a document is its frame for good. A build of subtrees cuts the
+document's text where its boxes say, so **a build's text and its boxes agree
+to the character** (`textBoxesAstray` holds them to it): `_endLine` takes a
+space back off the last chunk, and one it empties goes, or the next takes
+its space from nothing and every place after it is one out, which a
+comparison of two builds cannot see, since both are.
 `htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
 arrivals coalesce into a frame and none of it shows. **A sheet declined
 or failed after it was asked for is news too** (`'declined'`, in
@@ -1976,6 +2027,100 @@ rendering again. Zen Garden 215 imports two `http:` sheets its secure page's
 host refuses, and the bench's harness measured it a viewport tall until a
 query built it; anything new that holds the first rendering has to be told
 when what it waits on will never come.
+
+**What nobody can see waits, and a face that arrives is the first to.**
+A face changes two things: the family list of the styles it is for, and
+the text set in them. Neither needs a cascade or a box. So the lists change
+where they are, in every style the tree holds (`_takeFaces`), a walk of a
+few milliseconds where a whole build was most of a swap, and each block
+with text in such a face owes setting again (`_owe`, `_setAgain`). What can
+be seen is set at the next frame, and the rest a slice at a time on
+`owedClock`, up to `OWED_SLICE_MS` a slice, once no scroll or key has come
+for `OWED_QUIET_MS`, sooner where a scroll comes near it (`_followOwed`).
+Nothing is set aside: an owed block keeps its old lines and is moved by the
+layouts around it as any kept block is (`reuseLaid`), so a scroll onto it
+finds it there, drawn as it was. That is why this is the keep and not the
+drag's `setAside`: a drag's boxes are a width out of date and cannot be
+drawn, and these can. Faces that come before a frame are taken as one, and
+a bold face leaves the regular text alone (`WebFonts.arrivals`). Seven
+things are load-bearing.
+
+- **`familyWritten` is what a list comes from, and `fontFamily` what the
+  engine is handed.** Two lists can come to one `fontFamily` while no face
+  of a family has loaded, `Inter, sans-serif` and `sans-serif`, and only the
+  first changes when Inter does. Anything new that sets `fontFamily` sets
+  `familyWritten`, or a style keeps the face it had. The host's own family
+  is written as `''`, since no list of the sheets' is mapped from it.
+- **Every style the tree can hand out takes the list**: those of the
+  elements and the boxes, a marker's, and each style `anonymous` made, one
+  no box has now among them (`anonymousMade`). Anything new that keeps a
+  style past a build joins that walk. A style is changed where it is, so
+  what is noted of it by identity stands (`ROOT_READS`, `VIEWPORT_SIDES`).
+- **A length read from a face is computed again** (`readsFace`, `_exOf`,
+  `_chOf`, `_lineHeightOf`): anything new that reads a face as a style is
+  computed sets `_faceRead`, or `max-width: 65ch` stays the old face's. Such
+  an element waits with its box, in `_stylesOwed` until then.
+- **A box built from a face is built again** (`READS_FACE_AS_BUILT`): a
+  widget's size and a drawing's text are read as the boxes are built, so a
+  kept box would keep them. Anything new the builder reads of a face joins
+  it.
+- **A block owes setting again for its own font as well as its text**: its
+  lines are held open by its strut, whatever is on them, and an inline box's
+  by its. Anything new that lays a line out from a style's face is asked in
+  `_takeFaces`' walk, or a line stays the old face's height.
+- **What a box was laid out by is `FontsLike.engine`, not the cache**: a
+  `TextLayoutCache` is new at each arrival, which drops every per-`fonts`
+  cache keyed by a list (`FACE_EXTENTS`, `SPACERS`), and a kept box stands.
+  Anything new that notes what a box was laid out by notes `ctx.engine`.
+- **A tree a face cannot be taken into in place takes the swap whole**, at
+  the next frame, as it always did: where a layout keeps no blocks, under
+  anchors, `::first-line` or a `<foreignObject>` (`layoutDocument`'s
+  `reusing`), and a vertical flow, whose styles are turned copies of the
+  cascade's.
+
+**A read of the page's brings all of it up to date** (`_settle`): a rect,
+an offset, a client box, a range's rects, a scroll to an element, and a
+scroller's extent where something in it waits. So it answers what a whole
+build would, and pays what is left, which is the text and no build. A
+script's `getComputedStyle` is the one that looks first: a style is right
+with its text still to set, so the host answers with what waits left waiting
+and says so, and the facade asks again for a property a box decides
+(`comesFromBox`), which is the read that settles. Settled at every call, one
+read of a sidebar's style in the middle of a scroll paid 258 ms on MDN for 208
+blocks nobody could see. **Anything new `cssomAt` reads from a box joins
+`FROM_A_BOX`**, and a test in `values.test.ts` finds one that does not. What aims a press, or a hover, is no such read: it asks
+what is drawn, and a pointer move must settle nothing, which is why the
+handle's `elementAtPoint` settles and the node's does not.
+`IntersectionObserver`s and `ResizeObserver`s do not settle either: they are
+told as the boxes move (`_geometry`). **Anything new that answers a page from
+the layout calls `_settle`**, and anything that answers core or a pointer does
+not. `FontFaceSet` is told as a face settles, as before: what a page reads
+after `ready` goes through `_settle`, so it is neither early nor late.
+
+**Joining it takes three things**, for an image's size or a sheet's rules
+as for a face (`_owe`). A change may wait where the document stays whole
+without it: the box stays drawn as it was, and nothing that runs before its
+turn reads what the change would make. Its work is handed to `_owe` with the
+box it is for, the block a layout keeps, and brings that box up to date for
+the layout that follows, forgetting what is kept of it (`forgetSizesIn`);
+what it owes a style goes in `_stylesOwed`, which a read works out
+(`_owedStyle`). And what the work changes is kept off screen by a box's
+place: anything that depends on the whole document, a stylesheet's new
+`@font-face` say, is no change that can wait. A build makes it all new
+(`_owedDone`), so nothing has to be undone, and work on a box a subtree build
+replaced runs on nothing. The order is the viewport first, then the nearest
+either way while they are near, then down the page, then up it: what is set
+above what can be seen moves it, and the pane follows (`_keepAnchor`), which
+repaints what it shows. So does telling the pane how tall the document came
+to be, so that is held to `OWED_MEASURE_MS`.
+`test/html/owed.test.ts` holds a document set again around a page's scrolls,
+reads and changes to a whole build, box for box over generated documents;
+`OWED_SEEDS` sweeps more of them, and `OWED_FROM` starts at one. **None of
+it runs under a drag's layout** (`_partial`): what a flex box measures of
+an item is kept for the item's life, and measured with what is set aside
+cut out of it, so forgotten during a drag it stays short of what the item
+holds. The drag lays out what can be seen in the faces there are, and what
+waits runs once it has rested; a read during a drag has what the drag has.
 
 **An image's size is its header's until its pixels are in**
 (`image-header.ts`, `ResourceStore._decoding`). A PNG, a JPEG or a WebP of
@@ -2001,6 +2146,68 @@ from the header is told as `'sized'`**, which takes sizes in place and
 paints nothing; the pixels' arrival is the `'image'` it always was. A test
 holds the decode through `imageDecoder`, as it holds a clock.
 
+**A lazy image is asked for from the boxes, and by nothing else** (HTML
+2.5.7, `_waitsLazily`, `_askNear`). An `<img loading="lazy">` in a document
+whose scripts run is not asked for as the markup is read or as its source is
+chosen. Nothing is kept of which images wait: one waits for as long as the
+store has never heard of what it shows, so an image whose URL something else
+asked for shows it as it lands, and one with no box, under `display: none` or
+in no document, waits until it has one. A paint asks what has come near: from
+the boxes as they are laid out, within `LAZY_NEAR_PX` of what can be seen and
+of the scrollport of each box around that scrolls, clips and transforms
+counted (`_lazyAway`). With scripting off an image never waits, since a server
+could read a reader's way down a page from what it was asked for and when.
+The browsers were asked before any of this was written, and the docs page
+names where they differ. Seven things are load-bearing.
+
+- **Until `load` near is `LAZY_LOADING_PX`, since a document's first boxes are
+  a guess.** Its first layout comes before its head's scripts, and Wikipedia's
+  menus, open until one runs, stood the first image of an article 3,500
+  pixels down. At Chrome's distance what the viewport shows was done a fifth
+  to a third later than with every image asked for at once, on Wikipedia, BBC
+  and the Guardian, and at this one no later: a cold load in a real window
+  decoded 46 images where it had 130 on the Guardian, 29 for 74 on BBC and 20
+  for 77 on Wikipedia's article on the United States, and the Guardian's `load`
+  went from 2.9 s to 1.6.
+- **It is a paint's, and no layout.** `_askNear` reads boxes, and walks them
+  only once the pane has moved `LAZY_STEP_PX` or the boxes have (`_geometry`):
+  a wheel through a page of waiting images, with an `IntersectionObserver` on
+  it, lays out nothing and walks them a few times. The host is asked a
+  microtask later, never from inside the paint, as `request`'s `late` says.
+- **Asking is not `_owe`'s.** What is owed is brought up to date at a page's
+  read (`_settle`), and a read brings in no image: `complete`, `naturalWidth`
+  and `decode()` go on saying it has not come. So asking for a lazy image is no
+  work for a slice or a forced layout to run.
+- **Anything new that asks for an `<img>`'s image asks `_waitsLazily` first**,
+  and passes `'lazily'` where it says the image has waited (`_waited`): HTML
+  settles "delay load event" before an image waits, so one in view holds no
+  `load`, and it stays so if `loading` turns eager. Anything else that asks
+  for its URL holds `load` from then on (`request`), and repaints as any
+  image does. A background that gets to the URL first has to size the image
+  as it lands, which is what `expect` is for.
+- **What a page's script changes is asked for at the end of its task**
+  (`_askDue`, HTML's "await a stable state"). React sets attributes in the
+  order they are written, so a client-rendered `<img src loading>` is `src`
+  first, on an element in no document yet: asked for at once, no such image
+  would ever have waited. What the store has is still there as it is asked
+  for.
+- **A lazy image's arrival repaints what shows it** (`_lazyPainted`): it lands
+  off screen and in the middle of a scroll, where `_imagePainted` would make a
+  frame's blit a repaint of the whole pane and drop every kept surface.
+- **Its size waits where it can** (`_oweSize`): off screen, or a pixel from
+  what the box has, in view or not (`closeIntrinsic`). Wikipedia's images are
+  `height: auto`, half a pixel from their attributes by rounding, and each that
+  landed laid a long article out in the frames of a fling. Such a size does not
+  come in for being near, and waits for the scroll to end. What it cannot
+  escape is a read: a scroll-spy that reads `offsetTop` on a timer settles what
+  is owed, as any read does, which is what is left of the cost on the longest
+  articles at 4,000 pixels a second.
+
+A `<base>` changed after an image started to wait resolves it against the new
+one, where HTML has it resolved as it starts (WPT's
+`image-loading-lazy-base-url`), and `<iframe loading="lazy">` is not read:
+what a frame shows is the host's (`renderEmbedded`).
+
 **A cache kept by an element is dropped by what can make it stale.** A
 `refresh()` is an application saying it changed the tree — anything in it,
 an attribute or the middle of a drawing — and a stream's chunk is the
@@ -2018,6 +2225,20 @@ one of the two**, or an application's change and `refresh()` leave it as
 it was — which `test/html/replaced.test.ts` finds for a drawing only by
 changing what `SvgView` reads once, since what it reads at each draw
 passes either way.
+
+**What a selector reads that is in no tree moves `treeGeneration` as
+well**, or a `:has()` keeps what it answered of it. The states a page's
+script or a widget sets — `:modal`, `:popover-open`, `:fullscreen`,
+`:defined`, a `<select>`'s `:open`, the media pseudo-classes — are told as
+a change of an attribute nothing has, and that refresh moves the clock. A
+fragment refreshes nothing, so `Cascade.setTarget` moves it itself, and
+`div:has(:target)` had answered what it first did through every fragment
+after it. The pointer and the focus are the two that do not: a selector
+that tests either keeps no answers (`STATE_PSEUDO`). **Anything new a
+pseudo-class reads outside the tree is told as one of those, or keeps no
+answers.** What a new fragment restyles is everything, wherever a rule
+tests `:target` (`targetSensitive`): **a rule filed outside `RuleIndex.add`
+says so itself**, as one at a shadow tree's edge does (`_noteEdge`).
 
 **A refresh told what changed restyles what a selector testing it
 reaches** (`refresh(changes)`, `HtmlChange`, a `MutationRecord`'s shape).
@@ -2228,25 +2449,33 @@ on purpose was caught by it or by a test beside it.
 **What a `:has()` holds that compiles a selector of its own is compiled
 apart from it** (`compileHoisted`). css-select hands the `:has()`'s element
 to whatever is in an argument with a combinator, as a context, and reads the
-selector in it as relative to that element, where Selectors 4 matches it
-against the whole document: `.p:has(+ .a:not(.b))` asked for a `.b` inside
-the `.p`, which its sibling never is, so it held of every `.a`, and Apple's
-sections matched rules a browser's do not; `:has(+ :is(.a))` and
-`:has(+ input:checked)` matched nothing, and `:has(> .a:is(.x .a))` found
-no `.x` around the element. So each `:is()`, `:where()`, `:not()`,
-`:nth-child(… of S)` and alias of css-select's in an argument is compiled by
-itself, with `:-rx-hoisted(n)` left in its place, and only what is compiled
-changes: what reads a rule for what it reaches reads it as written. Four
-things are load-bearing. **Anything new that hands css-select a selector
-goes through `compileHoisted`**, as `compileSelector` and `_query` do, or
-what it answers and what the page is styled by come apart. **`_query` gives
-each piece the context it was asked with**, since `:scope` in such a function
-is the query's. **A pseudo-class css-select adds that compiles a selector
-joins `compilesSelector`, or `SELECTOR_ALIASES`** where it is one of its
-`aliases`, which it does not export. And **a selector in such a function may
-read what no walk from a change finds** (`readsApart`): what a combinator in
-it climbs to may be above the `:has()`'s element, and what a sibling
-combinator reaches may be before it where the argument starts at a sibling.
+selector in it as relative to that element (fb55/css-select#1930), where
+Selectors 4 matches it against the whole document: `.p:has(+ .a:not(.b))`
+asked for a `.b` inside the `.p`, which its sibling never is, so it held of
+every `.a`, and Apple's sections matched rules a browser's do not;
+`:has(+ :is(.a))` and `:has(+ input:checked)` matched nothing, and
+`:has(> .a:is(.x .a))` found no `.x` around the element. So each `:is()`,
+`:where()`, `:not()`, `:nth-child(… of S)`, alias of css-select's and `:scope`
+(fb55/css-select#1931) in an argument is compiled by itself, with
+`:-rx-hoisted(n)` left in its place, and only what is compiled changes: what reads a rule for what it
+reaches reads it as written. What is left of an argument is held inside the
+element (`insideHas`): css-select anchors an entry that starts at no
+combinator and has one in it with a descendant combinator that may take the
+element itself (fb55/css-select#1928), so `.a:has(.a .b)` held of an `.a` with
+a `.b` in it, and `* > X Y` hands that combinator the `*` to take instead. It
+is that form because `> X Y, > * X Y` or a `:scope` in the entry gives up what
+css-select keeps of a `:has()`'s answers, and `* X Y` walks up from each of
+`X`'s ancestors in turn. Four things are load-bearing. **Anything new that
+hands css-select a selector goes through `compileHoisted`**, as
+`compileSelector` and `_query` do, or what it answers and what the page is
+styled by come apart. **`_query` gives each piece the context it was asked
+with**, since a `:scope` in an argument is the query's, and the root's in a
+rule. **A pseudo-class css-select adds that compiles a selector joins
+`compilesSelector`, or `SELECTOR_ALIASES`** where it is one of its `aliases`,
+which it does not export. And **a selector in such a function may read what
+no walk from a change finds** (`readsApart`): what a combinator in it climbs
+to may be above the `:has()`'s element, and what a sibling combinator reaches
+may be before it where the argument starts at a sibling.
 `scanFunctionChanges` notes such a selector `CHANGES_ANYWHERE` and `testsApart`
 makes a state it tests no local one, and a change of either styles every
 element, as what `:nth-child(… of S)` counts by does, so the test stays as
@@ -2257,8 +2486,21 @@ a refresh of the whole document. A refresh told what changed and a refresh of
 everything share what the matcher answers, so the fuzz in
 `test/html/refresh.test.ts` sees none of this: `HAS_ARGUMENTS` in
 `test/html/harness.ts` holds the answers to Chrome's. When a release of
-css-select fixes it, delete `compileHoisted`, as "Vendored from core" has it
-for a copy.
+css-select fixes fb55/css-select#1928 delete `insideHas`, and when releases
+have fixed both fb55/css-select#1930 and fb55/css-select#1931 delete
+`compileHoisted`, as "Vendored from core" has it for a copy.
+
+**A matcher that outlives a change is told to keep no answers.** css-select
+keeps them by default for as long as a matcher lives, and not only for a
+`:has()`: a descendant combinator after an `:is()` or a `:not()` with a
+combinator in it does too (fb55/css-select#1929), so `:is(.x .a) .y` answered
+what it did before the `.x` came, under a whole refresh as well.
+`compileSelector` and `_query` pass `cacheResults: false` to all but what is
+compiled again after a change. A test of the text cannot say which selectors
+arm it, since a tenth of a page's selectors hold such a function and few of
+those arm anything. The option stays when a release narrows that cache: it is
+what css-select's README asks of a document that changes between queries.
+**Anything new that keeps a compiled matcher does the same.**
 
 **A `:has()` that asks only of its element's children or its siblings is
 asked only so many levels up, and a sibling combinator reaches what it
@@ -2394,8 +2636,7 @@ decide, after the document's first layout, and the next layout laid out
 again every block, flex item and grid item the first had. So **anything
 new a layout reads of the viewport's height sets `readViewportHeight`**,
 as `containingRect` does, or a box kept under a new height is laid out as
-it was under the old one; and one in a box a layout keeps says so of the
-layouts that keep it, as a frame's does. A hover's or a focus's build is seeded with
+it was under the old one. A hover's or a focus's build is seeded with
 its reach, as a frame's is.
 `test/html/subtree-build.test.ts` holds a subtree build and the layout
 after it to a whole build, box, line, list and style, over generated
@@ -2492,18 +2733,19 @@ its children after the last block-level box of its own before that child are
 built after a stand-in block, as the fix-up has them after it (`ranBefore`,
 from the first blocks `RAN_FROM` keeps by the holder), from where that box's
 line ended in the text (`textAfterBox`: the text ranges, and past them what
-the fix-up dropped from the box). A build apart counts no counter it did not
+the fix-up dropped from the box). A build apart makes no counter it did not
 make (`CounterScopes.detach`), and counts otherwise than it did only where
-nothing kept after it reads a quote, or a counter made before it or around
-it (`countsAcross`, by the nearest reset of its name) — at the document's
-end, nothing does, and an `<ol>` after it makes its own `list-item`: Apple's
-footnotes, after a section with a `<ul>` in it, made every change to a
-section a build of the whole page. And a root that does what it did to the
-counters and the quotes around it (`countedBy`) leaves what comes after it
-as it was, whatever it holds: Wikipedia's references are numbered, and a
-change to any section with a list in it built the whole article. **Anything
-new a box reads of a counter joins `countersOf`, and anything that changes
-one joins `countedBy`.** Where every root and tail ends the document, what the build
+nothing kept after it reads a name it changed (`countedNames`): a quote, or
+a counter made before it or around it (`countsAcross`, by the nearest reset
+of its name) — at the document's end, nothing does, and an `<ol>` after it
+makes its own `list-item`: Apple's footnotes, after a section with a `<ul>`
+in it, made every change to a section a build of the whole page. And a root
+that does what it did to the counters and the quotes around it (`countedBy`)
+leaves what comes after it as it was, whatever it holds: Wikipedia's
+references are numbered, and a change to any section with a list in it built
+the whole article. **Anything new a box reads of a counter joins
+`countersOf`, and anything that changes one joins `countedBy` and
+`countedNames`.** Where every root and tail ends the document, what the build
 lists, its text and its styles are spliced at their ends (`atEnd`), the
 element keeps its index of first boxes and its reuse blockers
 (`carryBlockers`), and the layout after it walks no kept block to take its
@@ -2534,6 +2776,52 @@ where it needs it, or kept by the few boxes it is about.
 chunk at a time, cut inside words, tags and attributes, and holds every step
 to the same chunks styled, built and scanned whole; `STREAM_SEEDS` sweeps
 more of them, and `STREAM_FROM` starts at one.
+
+**A subtree that counts as the run it replaces did reads what that run
+read** (`COUNTER_READS`, `CounterScopes.detach`). A build apart knows nothing
+around it, so a list item's number, a `counter()` of a name made outside, a
+`counters()`'s outer instances and a quote's depth each refused it, and the
+build widened to what was around them, which read the same, and gave up: a
+sheet arriving on Wikipedia's X Window System article built 138 roots, then
+58, 58 and 57, and then the whole document, and a change to a reference's
+text built the whole document every time. Every read is kept by the box it
+was for, and a build apart reads them back in their order where it cannot
+work one out, so that change builds its item: 79–146 ms there and 24–38 ms
+here on that article, and 182–283 ms and 53–72 ms on an article of 7,100
+elements, whose worst went from 626–2,911 ms to 133–258. Four things are
+load-bearing. **What it read so stands only where it counts as that run
+did** (`SubtreeBuild.outside`, `countedBy`): the same changes in the same
+order, nested alike, start and end with what is outside where that run's did.
+Where they differ the build is thrown away. **So `countedBy` says everything
+a run does to a counter**: its nesting, since a reset reaches what its box
+holds or what is beside it, and what it read, since a caption the fix-up moves
+was read in another order than its boxes have, and which of its boxes have style
+containment, which keeps what they hold from counting on what is around them.
+What no box says is `BoxTree.countsUnseen`, a `display: contents` element that
+counts, where no two runs are known to count alike. **Anything new that reads a counter or a
+quote's depth goes through `CounterScopes._answer`, on a path that ends in
+`_noteReads`**: a read a box does not keep is out of step with every read
+after it in its run. And **a read is answered by its kind, and never of a
+name something before it in the same build counted otherwise** (`touched`). What cannot be answered is built from what makes the counter
+(`makerAround`), the nearest box around that resets it, in one try: the end
+of what holds it and its parent read the same. Where nothing around does —
+the document's counter, a sibling's, whose reach no build apart can say, a
+quote's depth, a `counters()` (`EVERYWHERE`) — the whole document is built at
+once, and that goes for a kept box after it that reads another number too.
+The tries over a load came to 556–1,337 ms on that article and come to
+15–76. `test/html/subtree-build.test.ts` holds each case to a whole build and
+to how many tries it took (`COUNTED`), and the fuzz has numbered lists,
+reads and quotes in its documents. **What a counter's reach depends on is
+what is around it, so nothing may turn on the reach but where it is read
+from** (`_answers`): style containment asked whether a reset reached its
+element's siblings, which a build apart sees no outer counter to decide, so
+a `<ol start="7">` with `contain: style` in a list numbered from 1 built apart
+and from 7 whole. What such an element resets is outside it for what counts
+inside it, as all three engines have it, whatever its reach (`_counted`), and
+a `list-item` it resets is its own and in it, as Chromium and WebKit have it
+and Firefox does not (`reachesSiblings`). Where the engines differ on what is
+read there, a reset read before anything counts and one read beside it, this
+is Chromium's.
 
 **A script's child put in or taken out builds the end of what holds it
 too** (`ChangeScope.ends`, `changedFrom`): from the first child it put in,
@@ -3667,6 +3955,37 @@ into the list where the document's was, found by asking for a match and
 believing it only when the face that comes back carries the name
 (`localFamily`), since a font manager has no lookup to ask.
 
+**A page reads the list it wrote, and none of those names.** Three things
+are kept of a `font-family`, for three readers: `fontFamily` is what the
+engine is handed, with the private names in it and what has not loaded left
+out; `familyWritten` is what that is made from, which has lost its quotes
+and goes on to the document's family where the sheet stopped, so `'monospace'`
+is the generic and `Inter` reads `Inter, sans-serif`; and `fontFamilyText` is
+the declaration's value as it stood, which `computed.ts` serializes at a
+read, as it does `background-image`'s. It answers what Chrome does, whichever
+face has arrived. Two answers are the host's rather than a sheet's: where no
+sheet named a family it is the host's, which stands where a browser answers
+its standard font, and the host's code face is `monospace`, the generic the
+UA sheet names it for. And one is not Chrome's: on a Mac Chrome answers
+`"system-ui"` for `BlinkMacSystemFont`, and a page reads what it wrote, as on
+WebKit. **Anything new that sets `fontFamily` sets `fontFamilyText` too**, or
+a page reads the list before it.
+
+**A family's name is read in one place** (`readFamilyName`, `css/parse.ts`),
+whoever asks: a `font-family`, a `font`, a drawing's, a `@font-face`'s and
+`getComputedStyle`. What it takes and refuses is Chrome's, read back from that
+browser (`font-family takes what Chrome takes`), and its escapes are read, so a
+name is one string wherever two are compared: `Foo\ Bar` in a list finds the
+face `@font-face` calls `"Foo Bar"`, and the text engine never sees a
+backslash. Three things are load-bearing. **A list has no name with a comma in
+it**: every reader splits a list at its commas, the engines too, so
+`joinFamilies` leaves out `'Courier New, Arial'` and the list goes on to the
+next name, as Chrome's does. **Anything that splits or trims a value holds an
+escape's character**, as `splitCommas`, `splitValue` and `trimValue` do:
+`Foo\, Bar` is one name and `Foo\ ` ends in a space. And **`unescapeValue` keeps
+an escape that starts an identifier as no character could**, so `\31 996` is
+still a name when it gets here; written out it is a number.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a
@@ -3759,7 +4078,14 @@ slack and `moveTo` refuses a non-finite destination. The same pass found
 that `translate` moves an inline box's `x`/`y`, which are never laid out,
 with the rest — they add up across passes — so nothing may read an inline
 box's rect: `computePaintBounds` read it as the box's reach and measured a
-card grid three times its height.
+card grid three times its height. A sticky inline box is the one exception,
+and only because its place is set from its lines at every layout
+(`setStickyRect`): read before it was, it stood at the page's corner, and
+where the box stuck turned on how many layouts had run. **Its `width` and
+`height` stay 0**, its size kept beside it (`STICKY_SIZES`): a box of any
+size paints as a rectangle, and one was filled over its own text, which no
+comparison of two paints or of the boxes showed. A test of what is drawn
+holds it to the same text unpositioned.
 
 **A level of nesting costs every frame on the way down, and an interpreted
 frame is whole.** A table in a cell is measured and laid out from inside
@@ -4900,6 +5226,35 @@ is on the lines is faded where it is painted (`inlineFade`), and none of
 it may be text faded through the context's alpha, which ntk's glyphs do
 not take (`fadesGlyphs`).
 
+**An inline box an inset moves is a layer, and its lines are painted a box
+at a time.** A positioned box paints after the flow (CSS 2.1 Appendix E, step
+8), and an inline box has no paint of its own: what it shows is on its block's
+lines. A box with an inset has its text laid out apart from the text around
+it (`collect`), and a line paints a batch a layout, so that much can be
+lifted out: such a box is `layered`, on its context's list like any
+(`paintsApart`), `LINES_APART` says what of a block's lines is whose, the
+block's paint leaves that out through `LinePart.skip`, and the box paints it
+at its turn (`paintApart`). The hit test walks the same lines the same way
+(`walkLines`), so a word is under the pointer in the context of what paints
+it. A span held at the top of a list had the paragraphs under it drawn over
+it, and a label moved at all went under an absolute box before it. Four things
+are load-bearing. **Anything new a line draws goes through `paintLinePart` and
+honours `skip`**, and anything new on a line that is a box's goes in
+`noteLinesOf`, or it is drawn with the flow, or twice. **A layer is culled by
+its own ink**, and a box's text is on no walk of it, so `apartReach` says
+where it is drawn: anything new a layer draws on its lines joins it, or a
+repaint of that strip draws what is under it. **What a layer has on its lines
+is painted ahead of its own paint, not in it**: the fade is in the colours of
+its text (`inlineFade`), and a group would fade it twice. That is also why a
+box in a faded inline box is no layer. And **`LINES_APART` is made as the
+layers are gathered**, so anything new that turns a box into a layer or out of
+one in place goes through `stackLayers`, as an opacity's `diff.order` does.
+What the gate leaves out is deliberate: a box with every inset `auto` is in
+its paragraph's one layout, and joshwcomeau.com has hundreds of them, each
+holding an absolute box. Lifting those out takes laying them apart, a line at
+a time, for a box that moves nowhere, so one still goes under an absolute box
+before it, where all three engines draw it over.
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
@@ -5201,7 +5556,21 @@ of its container and after every layout** (`restickWithin`,
 `restickAll`), from where the flow has it: `STUCK` holds how far it was
 moved, and a container's reach is measured with every sticky box taken
 back by it, or a footer stuck at `bottom: 0` makes the container shorter
-by its height. One the viewport keeps (`VIEWPORT_STICKY`) is the
+by its height. A sticky inline box is placed as a block is, by a rect
+`setStickyRect` sets from its lines, around its own fragments' border
+boxes, as Chrome and WebKit take it; its lines stay and its text moves off
+them (`offsetInline`), its first piece moves all of a box broken around
+blocks (`CUT_PIECES`), and what keeps it in is never an anonymous block
+(`stickyContainer`). **Anything new that moves a sticky box goes through
+`moveSticky`**, or that text stays on its line, and a move of the box's
+lines moves its rect, as `translate` does. Stickiness is measured from
+where no transform has the box (`movedByTransforms`, its own and those
+around it up to what scrolls it), and its transform is added to where it
+sticks, as all three engines have it, which is what lets a change of one in
+place move the box by the difference and leave `STUCK` as it is (`retranslate`):
+**anything new that measures a sticky box against something a transform does
+not move takes them off**, or stickiness takes the transform back. One the viewport keeps
+(`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
 (`_followViewport`, `restickToViewport`), for the offsets the pane has
 now (`_scrolledOrigin`), the next pass's: **anything new that reads where
@@ -5252,7 +5621,7 @@ to its content within the room down the page — the containing block's
 height, or the viewport's, which marks the layout as reading it
 (`readsViewportHeight`) — and the root as wide as the frame came to down its
 block axis, which is the root's intrinsic width at its least and its most
-(`intrinsicWidth`). Seven things are load-bearing.
+(`intrinsicWidth`). Six things are load-bearing.
 
 - **A box in a frame has its style turned** (`framedStyle`): its physical
   sides, sizes, corners and shadow offsets handed to the frame's, so the
@@ -5265,15 +5634,18 @@ block axis, which is the root's intrinsic width at its least and its most
   (`pageSides`, as `getComputedStyle` does; a widget's rect through the
   frame's matrix, as `controlRectsOf` does).
 - **The gate is the tree's** (`BoxTree.vertical`, set by the builder):
-  `framed.any` is set from it as a layout, a paint, an anchor walk or a build
-  of subtrees of a tree begins (`layoutDocument`, `paintDocument`,
-  `paintCapture`, `paintLiftedBox`, `paintCover`, `anchorAt`,
-  `buildSubtrees`), and every per-box question —
+  `framed.any` is set from it as a layout, a paint or an anchor walk of a
+  tree begins (`layoutDocument`, `paintDocument`, `paintCapture`,
+  `paintLiftedBox`, `paintCover`, `anchorAt`), and every per-box question —
   `FRAMES.get`, `FRAME_ROOTS.has`, a box's writing mode in the inline layout
   and in `paintLinePart` — asks it first, so a document in no vertical mode
   pays a boolean. Anything new that lays out or paints a tree from another
   entry sets it there; anything new that asks a box whether it is a frame's
-  asks it first.
+  asks it first. **It says there may be a frame, and nothing of a box**: it
+  stays true after a build of subtrees takes the last frame out, and a grid
+  or a flex box in a vertical writing mode makes none at all. So a box's
+  writing mode counts only where a frame holds the box (`inFrame`), or what
+  such a box is laid out as turns on a frame somewhere else on the page.
 - **The root is a formatting context of its own with no baseline across
   its line** (`establishesBFC`, `lastBaselineIn`, `firstBaselineIn`): an
   inline-block one sits on its bottom margin edge. Its words say nothing of
@@ -5299,26 +5671,26 @@ block axis, which is the root's intrinsic width at its least and its most
   in it are turned from the other side (`REFLECTED_MARGINS`). A block no
   layout has laid out since it was put back is left as it is
   (`layoutSerial`).
+- **A frame is laid out with what holds it, or moved whole with it.** All a
+  frame holds is a blocker (`noteBlockers`), so no block in one is kept
+  alone, its heights running across the page; what holds a frame is kept as
+  any block is, and the frame goes with it. A kept block's read of the
+  viewport's height is read again (`heightHolds`), since a frame fit to the
+  viewport reads it only as it is laid out, and a move of the height would
+  lay nothing out. A build apart stops at a frame (`buildSubtrees`, `_apart`):
+  a frame is made as a build of the whole ends and what is in one takes its
+  sides from it, so a change in one builds the whole document. MDN's browser
+  compatibility tables turn each browser's name in a `vertical-rl` label,
+  twelve frames of three boxes, and they cost every layout of the article the
+  5,400 boxes of the table around them. **Anything new a layout keeps asks
+  `blockers`**, or it keeps what is in a frame alone. `framed.any` keeps a
+  probe from standing anywhere in such a tree.
 - **A writing mode and a direction are read ahead of the other
   declarations where a sheet declares a writing mode** (`Cascade._writing`):
   a logical property maps by the element's own, whatever its place in
   cascade order. In a document that declares none nothing is read twice,
   and the direction is as the cascade has it when a logical property is
   read, as before.
-- **A build apart stays out of a frame, and a layout keeps a frame whole.**
-  No root or tail is in a frame or holds one (`subtreeRoot`, `tailRoot`,
-  `oldBoxes`): what is in a frame has its style turned, which a build apart
-  would take for the page's, and a build apart makes no frame (`_apart`). So
-  a change there is a whole build, and `SubtreeRoots.wider` is no help,
-  since what is around a frame holds it. Everywhere else a frame is a box a
-  build leaves where it is, with its text's places moved as any kept
-  block's. A layout keeps the root as any block, its frame moved with it,
-  and keeps nothing in a frame (`noteBlockers`): a flow reads a block's
-  lines as it laid them out, and `reflectFrame` has put them back by then.
-  **A frame fit to the viewport reads its height in a box a layout keeps**,
-  so a layout of a tree with a frame that kept anything says it read the
-  height (`LaidUnder`), or a move of the height leaves the frame fit to the
-  old one.
 
 **An anchored box follows an anchor a scroll moves by being moved, not
 laid out** (CSS Anchor Positioning 1, 3.3; `layoutPositioned`,

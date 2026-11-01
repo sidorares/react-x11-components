@@ -31,7 +31,12 @@ import {
   splitValue,
 } from './css/values.js';
 import { colorFormText, rgbaOf } from './css/color.js';
-import { parseUrl } from './css/parse.js';
+import {
+  GENERIC_KEYWORDS,
+  NOT_A_NAME,
+  parseUrl,
+  readFamilyName,
+} from './css/parse.js';
 import { closingParen } from './css/vars.js';
 
 /** What a layout made of an element's principal box, in device pixels:
@@ -520,6 +525,60 @@ function urlText(url: string): string {
   return `url("${escaped}")`;
 }
 
+/** An identifier as Chrome tells one here: at most one hyphen, and no digit
+ *  after it. `--foo` is one to CSS, and Chrome quotes it. */
+const IDENTIFIER = /^-?[a-z_\u0080-\u{10ffff}][-\w\u0080-\u{10ffff}]*$/iu;
+
+/** A family's name: a string where an identifier would not read as it
+ *  (CSSOM 6.7.2, and csswg-drafts#5846 for those that need no quotes). */
+function familyNameText(name: string): string {
+  return IDENTIFIER.test(name) &&
+    !NOT_A_NAME.test(name) &&
+    !GENERIC_KEYWORDS.has(name)
+    ? name
+    : `"${name
+        .replace(/[\\"]/g, '\\$&')
+        .replace(
+          /[\x01-\x1f\x7f]/g,
+          (c) => `\\${c.charCodeAt(0).toString(16)} `,
+        )}"`;
+}
+
+/** One name of a `font-family` as it was written. A host's list is no
+ *  sheet's, and may hold what `readFamilyName` is not handed. */
+function writtenFamilyText(written: string): string {
+  const family = readFamilyName(written);
+  if (!family) return familyNameText(written.replace(/[ \t\n\r\f]+/g, ' '));
+  return !family.quoted && GENERIC_KEYWORDS.has(family.name)
+    ? family.name
+    : familyNameText(family.name);
+}
+
+/** The lists read so far, by what was written: a document has few, and an
+ *  element of a page read in a loop is rarely in a list of its own.
+ *  Tailwind's stack of seven was a third of a whole style's read. */
+const FAMILY_TEXTS = new Map<string, string>();
+
+/**
+ * `font-family` as it computes: the list as the sheets wrote it
+ * (`ComputedStyle.fontFamilyText`), as Chrome serializes it, and neither
+ * `fontFamily`, where a document's faces go by names of ours and a family
+ * not loaded yet is left out, nor what a list goes on to. Where no sheet
+ * named one it is the host's, which stands where a browser answers its
+ * standard font, and is no less a list.
+ */
+function fontFamilyText(style: ComputedStyle): string {
+  const written = style.fontFamilyText || style.fontFamily;
+  let text = FAMILY_TEXTS.get(written);
+  if (text === undefined) {
+    text = splitCommas(written).map(writtenFamilyText).join(', ');
+    // a page can write as many as it likes
+    if (FAMILY_TEXTS.size >= 256) FAMILY_TEXTS.clear();
+    FAMILY_TEXTS.set(written, text);
+  }
+  return text;
+}
+
 /** `display` as the author wrote it, where the box tree reads it as
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
@@ -701,6 +760,44 @@ export function computedText(
   return sides ? shortest(sides.map((side) => all[side])) : undefined;
 }
 
+/** The sides a flow-relative property names (`logicalProperties`). */
+const LOGICAL_SIDES = [
+  'block-start',
+  'block-end',
+  'inline-start',
+  'inline-end',
+];
+
+/** What `cssomAt` reads from a box rather than from a style, by name and in
+ *  camel case, as a page reads it. */
+const FROM_A_BOX: ReadonlySet<string> = new Set(
+  [
+    'width',
+    'height',
+    'inline-size',
+    'block-size',
+    'transform',
+    ...SIDES,
+    ...LOGICAL_SIDES.map((side) => `inset-${side}`),
+    ...[...SIDES, ...LOGICAL_SIDES].flatMap((side) => [
+      `margin-${side}`,
+      `padding-${side}`,
+      `border-${side}-width`,
+    ]),
+  ].flatMap((name) => [
+    name,
+    name.replace(/-(.)/g, (_, letter: string) => letter.toUpperCase()),
+  ]),
+);
+
+/** Whether a page reading `property` of a computed style reads what a
+ *  layout made of the box. Anything new `cssomAt` reads from a box joins
+ *  `FROM_A_BOX`, or a script reads it as the text still to be set again
+ *  left it (`HtmlViewNode.computedStyle`). */
+export function comesFromBox(property: string): boolean {
+  return FROM_A_BOX.has(property);
+}
+
 /**
  * An element's style as `getComputedStyle` answers it, by property name:
  * `box` where a layout gave the element one, for the used values of its
@@ -797,7 +894,7 @@ function cssomAt(
       style.colorSource,
     ),
     'background-image': backgroundImageText(style.backgroundImageText),
-    'font-family': style.fontFamily,
+    'font-family': fontFamilyText(style),
     'font-size': px(style.fontSize, scale),
     'font-weight': String(style.fontWeight),
     'font-style': style.fontStyle,

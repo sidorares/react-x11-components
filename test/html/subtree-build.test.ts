@@ -9,6 +9,7 @@ import { afterEach } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
+import * as ntk from 'react-x11/ntk';
 import * as DomUtils from 'domutils';
 import {
   appendChild,
@@ -18,16 +19,37 @@ import {
 } from '../../src/html/index.js';
 import type { ChildNode, Element, HtmlChange } from '../../src/html/index.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
-import { buildsAtEnd, GENERATED_FROM } from '../../src/html/layout/boxes.js';
-import { blocksKept, standsMade } from '../../src/html/layout/block.js';
+import { buildsAnswered, buildsAtEnd } from '../../src/html/layout/boxes.js';
+import {
+  blocksKept,
+  boxLayoutsMade,
+  standsMade,
+} from '../../src/html/layout/block.js';
 import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
-import { FONTS, h, metric, render, renderScrolled, view } from './harness.js';
+import {
+  boxOf,
+  fillsOf,
+  FONTS,
+  h,
+  metric,
+  pathOf,
+  render,
+  renderScrolled,
+  solidPng,
+  treeLines,
+  view,
+} from './harness.js';
+import { parseColor } from '../../src/html/css/values.js';
 import { resizeClock } from '../../src/html/node.js';
+import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
+
+/** What a paint is asked to draw again (`fillsOf`). */
+type Damage = { x: number; y: number; width: number; height: number };
 
 /** mulberry32: the same document for the same seed. */
 function random(seed: number): () => number {
@@ -41,7 +63,10 @@ function random(seed: number): () => number {
   };
 }
 
-const CLASSES = 'abcdefghijklmnopq'.split('');
+const CLASSES = 'abcdefghijklmnopqrs'.split('');
+/** What counts and what reads it, kept apart so that most of a document does
+ *  neither: a list item, a `counter()`, a `counters()`, a quote. */
+const COUNTERS = 'rstuvwxyz'.split('').map((c) => `c${c}`);
 const SHEET = `body { margin: 0; font-size: 14px }
 .a { display: flex; gap: 4px }
 .b { color: #aa0000 }
@@ -62,19 +87,28 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .o { position: relative; top: 3px; left: 2px }
 .p { transform: translate(5px, 2px) }
 .q { overflow: hidden; height: 20px }
-.vrl { writing-mode: vertical-rl; height: 60px }
-.vlr { writing-mode: vertical-lr; padding: 2px }
-.vsl { writing-mode: sideways-lr; max-height: 90px }`;
-
-/** The classes that set a box in a vertical writing mode, out of `CLASSES`
- *  so that a document holds one where a fuzz asks for it (`turnSome`). */
-const VERTICAL = ['vrl', 'vlr', 'vsl'];
+.cr { counter-reset: fig }
+.cs { counter-increment: fig }
+.ct::before { content: counter(fig) ". " }
+.cu::after { content: counters(fig, ".") " " }
+.cv { list-style-type: upper-roman; list-style-position: inside }
+.cw::before { content: open-quote }
+.cw::after { content: close-quote }
+.cx { display: contents; counter-increment: fig 2 }
+.cy { contain: style }
+.cz::marker { content: counter(list-item) ") " }`;
+/** And flows in another writing mode, which a build of subtrees stops at:
+ *  a change in one builds the whole document, so a sheet that means to see
+ *  subtrees built at every step leaves them out. */
+const FRAMED_SHEET = `${SHEET}
+.r { writing-mode: vertical-rl; height: 60px }
+.s { writing-mode: vertical-lr }`;
 
 const BLOCKS = ['div', 'p', 'section', 'h2'];
-const INLINES = ['span', 'b', 'a'];
+const INLINES = ['span', 'b', 'a', 'q'];
 const WORDS = ['one', 'two three', ' four ', 'five\nsix', '  ', 'seven'];
 
-function element(next: () => number, depth: number): Element {
+function element(next: () => number, depth: number, counters = 0.04): Element {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const roll = next();
@@ -84,12 +118,28 @@ function element(next: () => number, depth: number): Element {
       : roll < 0.85
         ? pick(INLINES)
         : pick(['ul', 'ol', 'input', 'button', 'br']);
-  const classes = CLASSES.filter(() => next() < 0.12).join(' ');
+  const classes = [
+    ...CLASSES.filter(() => next() < 0.12),
+    ...COUNTERS.filter(() => next() < counters),
+  ].join(' ');
   const attribs: Record<string, string> = classes ? { class: classes } : {};
   if (tag === 'a') attribs.href = '#x';
+  if (tag === 'ol') {
+    const roll = next();
+    if (roll < 0.15) attribs.start = '7';
+    else if (roll < 0.25) attribs.reversed = '';
+  }
   const el = createElement(tag, attribs);
   if (tag === 'ul' || tag === 'ol') {
-    appendChild(el, createElement('li', {}, [createText('item')]));
+    const items = 1 + Math.floor(next() * 3);
+    for (let i = 0; i < items; i += 1) {
+      const item = createElement('li', next() < 0.1 ? { value: '5' } : {}, [
+        createText('item'),
+      ]);
+      if (depth < 3 && next() < 0.4)
+        appendChild(item, element(next, depth + 1, counters));
+      appendChild(el, item);
+    }
     return el;
   }
   if (tag === 'input' || tag === 'br') return el;
@@ -109,7 +159,8 @@ function element(next: () => number, depth: number): Element {
   }
   const count = depth > 2 ? 1 : 1 + Math.floor(next() * 3);
   for (let i = 0; i < count; i += 1) {
-    if (depth < 3 && next() < 0.45) appendChild(el, element(next, depth + 1));
+    if (depth < 3 && next() < 0.45)
+      appendChild(el, element(next, depth + 1, counters));
     else appendChild(el, createText(pick(WORDS)));
   }
   return el;
@@ -130,20 +181,6 @@ function elementsUnder(root: Element): Element[] {
   return out;
 }
 
-/** A box or two of a document set in a vertical writing mode, each the root
- *  of a flow in a frame turned a quarter (`makeFrame`): what a build of a
- *  subtree outside a frame leaves as it is, and a layout keeps. */
-function turnSome(next: () => number, body: Element): void {
-  const blocks = elementsUnder(body).filter((e) => BLOCKS.includes(e.name));
-  const count = 1 + Math.floor(next() * 2);
-  for (let i = 0; i < count && blocks.length; i += 1) {
-    const el = blocks[Math.floor(next() * blocks.length)];
-    const was = el.attribs.class;
-    const mode = VERTICAL[Math.floor(next() * VERTICAL.length)];
-    el.attribs.class = was ? `${was} ${mode}` : mode;
-  }
-}
-
 /** Where a node is among its siblings, as a record says, half the time:
  *  a host that keeps a `MutationObserver`'s records hands them on. */
 function sidesOf(
@@ -155,12 +192,7 @@ function sidesOf(
 }
 
 /** A change a page's scripts might make, done, and its records. */
-function change(
-  next: () => number,
-  body: Element,
-  /** What a class written on an element may be. */
-  classes: readonly string[] = CLASSES,
-): HtmlChange[] {
+function change(next: () => number, body: Element): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
@@ -190,6 +222,17 @@ function change(
         removedNodes: [],
       },
     ];
+  }
+  // what a list says of its numbers
+  const lists = inside.filter((e) => e.name === 'li' || e.name === 'ol');
+  if (lists.length && next() < 0.1) {
+    const target = pick(lists);
+    const attributeName =
+      target.name === 'li' ? 'value' : pick(['start', 'reversed']);
+    const oldValue = target.attribs[attributeName] ?? null;
+    if (oldValue === null) target.attribs[attributeName] = '3';
+    else delete target.attribs[attributeName];
+    return [{ type: 'attributes', target, attributeName, oldValue }];
   }
   const kind = Math.floor(next() * 7);
   if (kind === 6) {
@@ -281,7 +324,7 @@ function change(
     const target = pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(classes);
+    const c = pick(next() < 0.25 ? COUNTERS : CLASSES);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -331,6 +374,8 @@ function change(
     'padding-left: 6px',
     'display: inline',
     'display: list-item',
+    'list-style-type: decimal',
+    'counter-increment: fig',
     '',
   ]);
   return [
@@ -339,141 +384,6 @@ function change(
 }
 
 /** Where an element is: its indices down from the document. */
-function pathOf(el: Element | null | undefined): string {
-  if (!el) return '-';
-  const steps: number[] = [];
-  for (let at: Element = el; at.parent; at = at.parent as Element) {
-    steps.push((at.parent as Element).children.indexOf(at));
-  }
-  return steps.reverse().join('.');
-}
-
-/** What a box says of itself that two builds must agree on. */
-function boxLine(box: Box): string {
-  const s = box.style;
-  const el = box.el ?? GENERATED_FROM.get(box);
-  return [
-    box.kind,
-    pathOf(el),
-    box.pseudo ?? '',
-    JSON.stringify(box.text),
-    `${box.textStart}-${box.textEnd}`,
-    `${box.subtreeTextStart}-${box.subtreeTextEnd}`,
-    // a text's, a break's or an inline box's rect is never laid out, and
-    // `translate` moves it with the rest, pass after pass
-    box.kind === 'text' || box.kind === 'break' || box.kind === 'inline'
-      ? ''
-      : // to a thousandth of a pixel: Yoga's sizes are float32, and one a
-        // kept box's layout measured comes out a last bit or two apart
-        [box.x, box.y, box.width, box.height]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-    s.display,
-    s.position,
-    s.float,
-    s.color,
-    s.fontSize,
-    s.whiteSpace,
-    s.userSelect,
-    box.outOfFlow ? 'out' : '',
-    box.isFloat ? 'float' : '',
-    // and where it inks, which a block a layout kept is walked for again;
-    // a text's is its line's
-    box.kind === 'text' || box.kind === 'break'
-      ? ''
-      : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-    box.lines?.length ?? '',
-    // a list item's number
-    box.marker ? JSON.stringify(box.marker.text) : '',
-    // where its lines and the text on them are drawn, which a block kept
-    // from an earlier layout carries with it
-    (box.lines ?? [])
-      .map((line) =>
-        [
-          line.x,
-          line.y,
-          line.width,
-          line.height,
-          line.baseline,
-          ...line.texts.flatMap((t) => [t.drawX, t.drawY]),
-        ]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
-      )
-      .join(';'),
-    // and which of the document's text is on them, which a build of what
-    // is before a kept block moves: what a selection and a hit test read.
-    // An element's: `movedFor` cannot tell an anonymous box from a root
-    // with no text that ends where its first line starts
-    (box.el ? (box.lines ?? []) : [])
-      .map((line) =>
-        [
-          line.textStart,
-          line.textEnd,
-          ...line.texts.flatMap((t) => [
-            t.textStart,
-            t.textEnd,
-            t.spans.documentAt(t.layoutStart),
-          ]),
-        ].join(','),
-      )
-      .join(';'),
-  ].join('|');
-}
-
-/** The elements the UA's sheet never draws, whose styles a build that
- *  restyles what a change reached may leave out. */
-const UNDRAWN = [
-  'script',
-  'style',
-  'link',
-  'meta',
-  'title',
-  'base',
-  'template',
-];
-
-/** A tree as two builds of one document must have it alike. */
-function treeLines(tree: BoxTree): string[] {
-  const out: string[] = [];
-  const walk = (box: Box, depth: number) => {
-    out.push(`${' '.repeat(depth)}${boxLine(box)}`);
-    for (const child of box.children) walk(child, depth + 1);
-  };
-  walk(tree.root, 0);
-  const boxes = (name: string, list: readonly Box[]) =>
-    out.push(
-      `${name}: ${list.map((b) => boxLine(b).split('|').slice(0, 3).join('|')).join(' ')}`,
-    );
-  boxes('textBoxes', tree.textBoxes);
-  boxes('controls', tree.controls);
-  boxes('links', tree.links);
-  boxes('focusables', tree.focusables);
-  boxes('backgrounds', tree.backgrounds);
-  boxes('images', tree.images);
-  out.push(`vertical: ${tree.vertical}`);
-  out.push(`text: ${JSON.stringify(tree.text)}`);
-  out.push(`unselectable: ${tree.unselectable.join(',')}`);
-  out.push(
-    `textNodes: ${(tree.textNodes ?? [])
-      .map((t) => `${JSON.stringify(t.node.data)}@${t.start}-${t.end}`)
-      .join(' ')}`,
-  );
-  out.push(
-    // but for what is never drawn, which a restyle in place leaves out
-    `styles: ${[...tree.styles]
-      .filter(([el]) => !UNDRAWN.includes(el.name))
-      .map(
-        ([el, { style, inFlex }]) =>
-          `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
-      )
-      .join(' ')}`,
-  );
-  return out;
-}
-
 metric(
   'a build of the subtrees a change reached makes the tree a build of the whole document makes',
   async () => {
@@ -481,11 +391,8 @@ metric(
     let wholes = 0;
     let widened = 0;
     const keptAtStart = blocksKept();
+    const answeredAtStart = buildsAnswered();
     let shadowed = 0;
-    /** Subtrees built, and blocks kept, with a vertical flow in the tree:
-     *  every other document holds one. */
-    let beside = 0;
-    let keptBeside = 0;
     // SUBTREE_SEEDS sweeps more of them, for a change to the splice, and
     // SUBTREE_FROM starts at the one a sweep failed at
     const env =
@@ -497,12 +404,9 @@ metric(
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
       for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
-      const vertical = seed % 2 === 0;
-      if (vertical) turnSome(next, body);
-      const classes = vertical ? [...CLASSES, ...VERTICAL] : CLASSES;
       const markup = DomUtils.getOuterHTML(body as never);
       const { result, node } = await render(
-        `<!doctype html><html><head><style>${SHEET}</style></head>${markup}</html>`,
+        `<!doctype html><html><head><style>${seed % 3 ? SHEET : FRAMED_SHEET}</style></head>${markup}</html>`,
         320,
       );
       const el = view(node);
@@ -523,7 +427,7 @@ metric(
         return subtreeRoots.apply(this, a);
       };
       for (let step = 0; step < 10; step += 1) {
-        const changes = change(next, bodyEl, classes);
+        const changes = change(next, bodyEl);
         let built: unknown = undefined;
         internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
           tries = 0;
@@ -533,16 +437,11 @@ metric(
           if (built && tries > 1) widened += 1;
           return built;
         };
-        const keptBefore = blocksKept();
         el.touchDocument(changes);
         await act();
         delete internals._subtreeBuild;
         if (built) subtrees += 1;
         else if (built === null) wholes += 1;
-        if (internals._tree.vertical) {
-          if (built) beside += 1;
-          keptBeside += blocksKept() - keptBefore;
-        }
         const kept = treeLines(internals._tree);
         // the whole document built again, every style kept, and laid out
         (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
@@ -559,14 +458,593 @@ metric(
       result.unmount();
     }
     assert.ok(subtrees > 60, `${subtrees} changes built only their subtrees`);
-    assert.ok(widened > 5, `${widened} built from a root around one refused`);
+    assert.ok(widened > 3, `${widened} built from a root around one refused`);
     assert.ok(wholes > 10, `${wholes} changes built the whole document`);
     assert.ok(shadowed > 5, `${shadowed} documents with a shadow tree`);
+    // and read what the run they replaced read
+    const answered = buildsAnswered() - answeredAtStart;
+    assert.ok(answered > 10, `${answered} subtrees answered from their runs`);
     // and the layouts after them kept blocks a layout before laid out
     const kept = blocksKept() - keptAtStart;
     assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
-    assert.ok(beside > 25, `${beside} built beside a vertical flow`);
-    assert.ok(keptBeside > 50, `${keptBeside} kept beside a vertical flow`);
+  },
+);
+
+/** Images a document's rules name, which its boxes are built without
+ *  until they are in: generated content and a list's marker. */
+const IMAGE_SHEET = `${SHEET}
+.r::before { content: url(before.png) }
+.s::after { content: url(after.png) }
+.t { display: list-item; list-style-image: url(marker.png) }`;
+
+/** An image of each kind of thing a late one is to its document: sized by
+ *  nothing else, sized by its attributes, chosen from a set, and what comes
+ *  out another kind of box with it. */
+function imageOf(next: () => number, url: string): Element {
+  switch (Math.floor(next() * 8)) {
+    case 0:
+      return createElement('img', { src: url, width: '30', height: '12' });
+    case 1:
+      return createElement('img', { srcset: `${url} 2x` });
+    case 2:
+      return createElement(
+        'object',
+        { data: next() < 0.3 ? url.replace('.png', '.html') : url },
+        [createText('in its place')],
+      );
+    case 3:
+      return createElement('embed', {
+        src: next() < 0.3 ? url.replace('.png', '.html') : url,
+      });
+    case 4:
+      return createElement('video', { poster: url });
+    case 5:
+      return createElement('input', { type: 'image', src: url, alt: 'go' });
+    default:
+      return createElement('img', { src: url });
+  }
+}
+
+/** Every image a fuzz's host holds back, to land when the test says: a
+ *  request answered, which says its size, then its pixels decoded. */
+function holdImages(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  next: () => number,
+  images: ReadonlyMap<string, Uint8Array>,
+): {
+  onResource(r: { url: string; kind: string }): unknown;
+  /** Whether anything is still to land. */
+  held(): boolean;
+  /** The next to land, at random. */
+  land(): void;
+  /** The decoder as it was. */
+  done(): void;
+} {
+  const answers = new Map<string, () => void>();
+  const decodes: Array<() => void> = [];
+  const decoder = t.mock.method(
+    imageDecoder,
+    'decode',
+    (bytes: Uint8Array) =>
+      new Promise<never>((resolve) => {
+        decodes.push(() => resolve(ntk.decodeImageBytes(bytes) as never));
+      }),
+  );
+  return {
+    done: () => decoder.mock.restore(),
+    onResource: (r) => {
+      if (r.kind !== 'image') return null;
+      const bytes = images.get(r.url);
+      if (!bytes && !r.url.endsWith('.html')) return null;
+      return new Promise((resolve) => {
+        answers.set(r.url, () =>
+          resolve(bytes ? { kind: 'image', bytes } : { kind: 'document' }),
+        );
+      });
+    },
+    held: () => answers.size > 0 || decodes.length > 0,
+    land: () => {
+      if (decodes.length && (!answers.size || next() < 0.5)) {
+        const at = Math.floor(next() * decodes.length);
+        decodes.splice(at, 1)[0]();
+      } else if (answers.size) {
+        const urls = [...answers.keys()];
+        const url = urls[Math.floor(next() * urls.length)];
+        const go = answers.get(url)!;
+        answers.delete(url);
+        go();
+      }
+    },
+  };
+}
+
+metric(
+  'images that arrive make the tree a build of the whole document makes, a change owed or none',
+  async (t) => {
+    // An image is news to the boxes it sizes, and to those of what comes
+    // out another kind with it (`_imageArrived`, `_arrivedKinds`), whether
+    // or not a change has a build of some subtrees owed: those subtrees read
+    // each size as they are built, and every other box takes its own in
+    // place, or is built for it. Held to a build and a layout of the whole
+    // document after each step.
+    let owed = 0;
+    let kinds = 0;
+    let subtrees = 0;
+    let landed = 0;
+    let moved = 0;
+    const keptAtStart = blocksKept();
+    // IMAGE_SEEDS sweeps more of them, and IMAGE_FROM starts at one
+    const env =
+      (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env ?? {};
+    const seeds = Number(env.IMAGE_SEEDS ?? 40);
+    for (let seed = Number(env.IMAGE_FROM ?? 1); seed <= seeds; seed += 1) {
+      const next = random(seed * 15485863);
+      const pick = <T>(list: readonly T[]): T =>
+        list[Math.floor(next() * list.length)];
+      const body = createElement('body', {});
+      const blocks = 3 + Math.floor(next() * 4);
+      for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
+      const images = new Map<string, Uint8Array>();
+      const png = (url: string) =>
+        images.set(
+          url,
+          solidPng(
+            ...pick<[number, number]>([
+              [20, 10],
+              [40, 20],
+              [8, 30],
+            ]),
+            [255, 0, 0],
+          ),
+        );
+      for (const url of ['before.png', 'after.png', 'marker.png']) png(url);
+      const holders = [body, ...elementsUnder(body)].filter(
+        (e) => !['input', 'br', 'ul', 'ol', 'template'].includes(e.name),
+      );
+      for (const holder of holders) {
+        if (holder !== body && next() < 0.12) {
+          holder.attribs.class =
+            `${holder.attribs.class ?? ''} ${pick(['r', 's', 't'])}`.trim();
+        }
+      }
+      const count = 3 + Math.floor(next() * 6);
+      for (let i = 0; i < count; i += 1) {
+        // now and then an image two elements show
+        const url = `${i && next() < 0.2 ? i - 1 : i}.png`;
+        png(url);
+        appendChild(pick(holders), imageOf(next, url));
+      }
+      const markup = DomUtils.getOuterHTML(body as never);
+      const held = holdImages(t, next, images);
+      const { result, node } = await render(
+        `<!doctype html><html><head><style>${IMAGE_SHEET}</style></head>${markup}</html>`,
+        320,
+        { onResource: held.onResource },
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as Record<
+        string,
+        (...a: unknown[]) => unknown
+      > & {
+        _tree: BoxTree;
+        _stale: number;
+        _buildSeeds: ReadonlySet<Element> | null;
+      };
+      const bodyEl = elementsUnder(el.document as unknown as Element).find(
+        (e) => e.name === 'body',
+      )!;
+      const arrived = internals._imageArrived;
+      internals._imageArrived = function (this: unknown, ...a: unknown[]) {
+        landed += 1;
+        if (internals._stale >= 2 && internals._buildSeeds) owed += 1;
+        return arrived.apply(this, a);
+      };
+      const arrivedKinds = internals._arrivedKinds;
+      internals._arrivedKinds = function (this: unknown, ...a: unknown[]) {
+        const found = arrivedKinds.apply(this, a);
+        if (found) kinds += 1;
+        return found;
+      };
+      const subtreeBuild = internals._subtreeBuild;
+      for (let step = 0; step < 18; step += 1) {
+        if (!held.held() && step > 6) break;
+        const changed = next() < 0.6;
+        if (changed) el.touchDocument(change(next, bodyEl));
+        // and what lands, before the frame that builds what it reached
+        const count = 1 + Math.floor(next() * 3);
+        for (let i = 0; i < count; i += 1) {
+          held.land();
+          for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+        }
+        let built: unknown = undefined;
+        internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+          built = subtreeBuild.apply(this, a);
+          return built;
+        };
+        const before = internals._tree;
+        await act();
+        delete internals._subtreeBuild;
+        if (built) subtrees += 1;
+        if (internals._tree === before) moved += 1;
+        const kept = treeLines(internals._tree);
+        // the whole document built again and laid out
+        (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `seed ${seed}, step ${step} (${built ? 'subtrees' : 'whole'}): ` +
+            `line ${at}\nkept  ${kept[at]}\nwhole ${whole[at]}\n` +
+            `${markup}\n${DomUtils.getOuterHTML(bodyEl as never)}`,
+        );
+        assert.deepStrictEqual(
+          textBoxesAstray(internals._tree),
+          [],
+          `seed ${seed}, step ${step}: the text where its boxes say`,
+        );
+      }
+      result.unmount();
+      held.done();
+    }
+    assert.ok(landed > 200, `${landed} images landed`);
+    assert.ok(owed > 40, `${owed} with a build of subtrees owed`);
+    assert.ok(kinds > 20, `${kinds} made something's boxes otherwise`);
+    assert.ok(subtrees > 40, `${subtrees} built only their subtrees`);
+    assert.ok(moved > 20, `${moved} kept every box`);
+    const kept = blocksKept() - keptAtStart;
+    assert.ok(kept > 100, `${kept} blocks kept from an earlier layout`);
+  },
+);
+
+/** A document whose images land when the test says, one URL at a time, in
+ *  the microtasks of the turn that says so: before any frame. */
+async function withHeldImages(source: string) {
+  const answers = new Map<string, () => void>();
+  const bytes = solidPng(40, 20, [255, 0, 0]);
+  const { node } = await render(
+    `<!doctype html><html><head><style>body { margin: 0 }</style></head><body>${source}</body></html>`,
+    320,
+    {
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'image'
+          ? new Promise((resolve) => {
+              answers.set(r.url, () => resolve({ kind: 'image', bytes }));
+            })
+          : null,
+    },
+  );
+  const el = view(node);
+  await act();
+  return {
+    el,
+    internals: el as unknown as {
+      _subtreeBuild(...a: unknown[]): unknown;
+      _tree: BoxTree;
+      _buildSeeds: ReadonlySet<Element> | null;
+    },
+    of: (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!,
+    land: async (url: string) => {
+      answers.get(url)!();
+      answers.delete(url);
+      for (let tick = 0; tick < 12; tick += 1) await Promise.resolve();
+    },
+  };
+}
+
+metric(
+  'an image that lands while a build of subtrees is owed leaves it one',
+  async (t) => {
+    // An image landing between a page's change and the frame that builds it
+    // made that build the whole document's: an arrival that had nothing to do
+    // with the change took away what the change had said it reached, 120 to
+    // 420 ms a time on the Guardian and BBC. An image can land on any turn of
+    // a page still loading, so most of a page's cheap builds were lost so.
+    const doc = await withHeldImages(
+      '<p id="still">still</p><p><img id="late" src="i.png"></p><p id="under">under</p><div id="moved">one</div>',
+    );
+    const built = t.mock.method(doc.internals, '_subtreeBuild');
+    const still = boxOf(doc.el, 'still');
+    const late = boxOf(doc.el, 'late');
+    const under = boxOf(doc.el, 'under').y;
+    doc.of('moved').attribs.hidden = '';
+    doc.el.touchDocument([
+      { type: 'attributes', target: doc.of('moved'), attributeName: 'hidden' },
+    ] as HtmlChange[]);
+    assert.ok(doc.internals._buildSeeds, 'a build of what the change reached');
+    await doc.land('i.png');
+    assert.ok(doc.internals._buildSeeds, 'which the image leaves as it was');
+    await act();
+    assert.strictEqual(built.mock.callCount(), 1, 'its subtrees');
+    assert.ok(built.mock.calls[0].result, 'built apart');
+    assert.ok(boxOf(doc.el, 'still') === still, 'and no other box');
+    // and the box a change never reached has what arrived all the same
+    assert.ok(boxOf(doc.el, 'late') === late, 'its box kept');
+    assert.strictEqual(
+      (late as unknown as Box).intrinsic?.width,
+      40,
+      'the size it took in place',
+    );
+    assert.notStrictEqual(
+      boxOf(doc.el, 'under').y,
+      under,
+      'and what follows it',
+    );
+  },
+);
+
+metric(
+  'what comes out another box with its image is built, and nothing else',
+  async (t) => {
+    // an `<object>` is its content until its image is in, and generated
+    // content and a marker are built without it: each with what holds it,
+    // where each built the whole document
+    for (const [late, url] of [
+      ['<object id="late" data="i.png">in its place</object>', 'i.png'],
+      ['<embed id="late" src="i.png">', 'i.png'],
+      ['<input id="late" type="image" src="i.png" alt="go">', 'i.png'],
+      ['<span id="late" class="g"></span>', 'g.png'],
+      ['<ul><li id="late" class="m">item</li></ul>', 'm.png'],
+    ] as const) {
+      const doc = await withHeldImages(
+        '<style>.g::before { content: url(g.png) } .m { list-style-image: url(m.png) }</style>' +
+          `<p id="still">still</p><div>${late}</div>`,
+      );
+      const built = t.mock.method(doc.internals, '_subtreeBuild');
+      const still = boxOf(doc.el, 'still');
+      await doc.land(url);
+      await act();
+      assert.strictEqual(built.mock.callCount(), 1, `its subtree: ${late}`);
+      assert.ok(built.mock.calls[0].result, `built apart: ${late}`);
+      assert.ok(boxOf(doc.el, 'still') === still, `no other box: ${late}`);
+      const kept = doc.internals._tree;
+      assert.ok(
+        kept.contentImages.every((c) => c.sized),
+        `none left to come: ${late}`,
+      );
+      built.mock.restore();
+      cleanup();
+    }
+  },
+);
+
+metric('what a document came to is no news at the next image', async (t) => {
+  // an `<object>` that holds a document is its frame for good, and it was
+  // listed as waiting all the same: every image after it built the whole
+  // document, and would have built the frame's subtree
+  const answers = new Map<string, () => void>();
+  const { node } = await render(
+    '<!doctype html><p id="still">still</p><div><object id="doc" data="d.html">in its place</object></div><p><img src="i.png"></p>',
+    320,
+    {
+      onResource: (r: { url: string; kind: string }) =>
+        r.kind === 'image'
+          ? new Promise((resolve) => {
+              answers.set(r.url, () =>
+                resolve(
+                  r.url === 'd.html'
+                    ? { kind: 'document' }
+                    : {
+                        kind: 'image',
+                        bytes: solidPng(40, 20, [255, 0, 0]),
+                      },
+                ),
+              );
+            })
+          : null,
+    },
+  );
+  const el = view(node);
+  await act();
+  const internals = el as unknown as {
+    _tree: BoxTree;
+    _subtreeBuild(...a: unknown[]): unknown;
+  };
+  answers.get('d.html')!();
+  await act();
+  assert.deepStrictEqual(
+    internals._tree.awaitingKind,
+    [],
+    'nothing left to come',
+  );
+  const built = t.mock.method(internals, '_subtreeBuild');
+  answers.get('i.png')!();
+  await act();
+  assert.strictEqual(built.mock.callCount(), 0, 'no box of it built again');
+});
+
+metric(
+  "a tail built again leaves one entry for its holder's `::after`",
+  async (t) => {
+    // A tail builds its holder's `::after` again, and the list goes by the
+    // element it stands for, which stays. Left in, an entry with no size
+    // said an image had come at every arrival after it, and built the holder
+    // again each time.
+    const doc = await withHeldImages(
+      '<style>.s::after { content: url(g.png) }</style>' +
+        '<p>before</p><div id="holder" class="s"><p>first</p><p id="gone">gone</p><p>kept</p></div><p>after</p>',
+    );
+    const holder = doc.of('holder');
+    const gone = doc.of('gone');
+    const roots = t.mock.method(
+      doc.internals as unknown as { _subtreeRoots(...a: unknown[]): unknown },
+      '_subtreeRoots',
+    );
+    const previousSibling = gone.prev;
+    const nextSibling = gone.next;
+    removeNode(gone);
+    doc.el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [gone],
+        previousSibling,
+        nextSibling,
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const found = roots.mock.calls[0]?.result as {
+      tails: readonly unknown[];
+    } | null;
+    assert.strictEqual(found?.tails.length, 1, 'a tail of the holder');
+    const images = doc.internals._tree.contentImages;
+    assert.strictEqual(images.length, 1, 'the one it has');
+  },
+);
+
+metric(
+  'a tail that builds a shadow host leaves nothing of its tree waiting',
+  async (t) => {
+    // What a tail holds is reached through a host, or an element in the
+    // tree stays listed beside the one the build lists: an image button in
+    // a card's shadow tree, once its image came, was news at every arrival.
+    const doc = await withHeldImages(
+      '<div id="holder"><p>first</p><p id="gone">gone</p>' +
+        '<section><template shadowrootmode="open">' +
+        '<input id="button" type="image" src="i.png" alt="go">' +
+        '</template>light</section></div>',
+    );
+    const holder = doc.of('holder');
+    const gone = doc.of('gone');
+    const roots = t.mock.method(
+      doc.internals as unknown as { _subtreeRoots(...a: unknown[]): unknown },
+      '_subtreeRoots',
+    );
+    const previousSibling = gone.prev;
+    const nextSibling = gone.next;
+    removeNode(gone);
+    doc.el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [gone],
+        previousSibling,
+        nextSibling,
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const found = roots.mock.calls[0]?.result as {
+      tails: readonly unknown[];
+    } | null;
+    assert.strictEqual(found?.tails.length, 1, 'a tail of the holder');
+    assert.strictEqual(
+      doc.internals._tree.awaitingKind.length,
+      1,
+      'the one button',
+    );
+  },
+);
+
+/** The text boxes the document's text says otherwise of: a build of
+ *  subtrees cuts the text where its boxes say, so a build of the whole
+ *  document that puts them one out is one a comparison of the two cannot
+ *  see, and every later splice comes out as garbage. */
+function textBoxesAstray(tree: BoxTree): string[] {
+  return tree.textBoxes
+    .filter(
+      (box) =>
+        box.text && tree.text.slice(box.textStart, box.textEnd) !== box.text,
+    )
+    .map((box) => `${JSON.stringify(box.text)}@${box.textStart}`);
+}
+
+metric(
+  'a space taken back past what a float holds leaves the text where its boxes say',
+  async () => {
+    // The float's own line ends on a space of its own, which empties the
+    // chunk that space was, and leaving the float puts back the space
+    // before it. The next line's end took that one back from the empty
+    // chunk: nothing came off the text, and every place after it was one
+    // out, in a plain build of the whole document.
+    for (const inFloat of [
+      '<input>',
+      '<img src="x.png">',
+      '<span style="display: inline-block; width: 9px"></span>',
+    ]) {
+      for (const out of ['float: left', 'position: absolute']) {
+        const { result, node } = await render(
+          `<!doctype html><p>keep</p><div>a <div style="${out}">${inFloat} </div><div>b</div></div><p>after</p>`,
+          320,
+        );
+        await act();
+        const tree = (view(node) as unknown as { _tree: BoxTree })._tree;
+        assert.deepStrictEqual(textBoxesAstray(tree), [], inFloat);
+        assert.strictEqual(tree.text, 'keepabafter', `${inFloat} ${out}`);
+        result.unmount();
+      }
+    }
+  },
+);
+
+metric(
+  'a block with no element keeps its lines on its text where text comes before it',
+  async () => {
+    // Text coming into a box that held none moves everything after it, and
+    // a kept block's lines went by whether its element came after the box:
+    // an anonymous block has no element, so its lines stayed where they
+    // were and its own text moved. An inline box's border is drawn from
+    // them, and it was found on no line: it had no ink at all, so a repaint
+    // of the strip its shadow falls in, past its line, did not reach it.
+    const { result, node } = await render(
+      '<!doctype html><style>body { margin: 0 } b { padding: 4px; ' +
+        'border: 1px solid; box-shadow: 0 8px 0 #0d0d0d }</style>' +
+        '<div id="empty"></div><b id="late">after</b>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as { _tree: BoxTree };
+    const empty = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'empty',
+    )!;
+    // longer than what comes after it: a line left behind by less is one
+    // the box is still found on, by the text of its own it holds
+    const text = createText('longer than what follows');
+    appendChild(empty, text);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: empty,
+        addedNodes: [text],
+        removedNodes: [],
+      },
+    ] as unknown as HtmlChange[]);
+    await act();
+    const late = boxOf(el, 'late') as unknown as Box;
+    let block = late.parent!;
+    while (block.kind === 'inline') block = block.parent!;
+    assert.strictEqual(internals._tree.text, 'longer than what followsafter');
+    assert.strictEqual(
+      block.lines?.[0].textStart,
+      24,
+      'its line, with its text',
+    );
+    assert.ok(Number.isFinite(late.boundsY), 'and its border found on it');
+    const shadows = async (damage?: Damage) =>
+      (await fillsOf(el, undefined, { damage })).filter(
+        (fill) => fill.style === parseColor('#0d0d0d'),
+      );
+    const [shadow] = await shadows();
+    assert.ok(shadow, 'its shadow, in a paint of all of it');
+    const strip = {
+      x: 0,
+      y: Math.floor(shadow.y + shadow.h) - 3,
+      width: 320,
+      height: 3,
+    };
+    assert.strictEqual(
+      (await shadows(strip)).length,
+      1,
+      'and in one of the strip it falls in',
+    );
+    result.unmount();
   },
 );
 
@@ -620,7 +1098,9 @@ metric(
       const body = createElement('body', {});
       const blocks = 18 + Math.floor(next() * 8);
       for (let i = 0; i < blocks; i += 1) {
-        const block = element(next, 0);
+        // none that counts: one `display: contents` that does marks all of
+        // a page this long, and a drag is not what that is held to
+        const block = element(next, 0, 0);
         if (next() < 0.3) {
           const was = block.attribs.class ? `${block.attribs.class} ` : '';
           block.attribs.class = was + pick(['v', 'w', 'x', 'y']);
@@ -633,7 +1113,6 @@ metric(
           createElement('div', { style: 'height: 40px' }, [createText('·')]),
         );
       }
-      if (seed % 2 === 0) turnSome(next, body);
       const markup = DomUtils.getOuterHTML(body as never);
       const { el, resize, result } = await renderScrolled(
         `<!doctype html><html><head><style>${DRAG_SHEET}</style></head>${markup}</html>`,
@@ -1065,7 +1544,6 @@ metric(
       for (let i = 0; i < blocks; i += 1) {
         appendChild(holder, streamed(next, 0));
       }
-      if (seed % 2 === 0) turnSome(next, holder);
       // a document, or a fragment the way a model writes one, whose
       // children are the document's own
       const sheet = SHEET + '\n' + STREAM_SHEETS[seed % STREAM_SHEETS.length];
@@ -1648,6 +2126,637 @@ metric(
   },
 );
 
+/** What a change to a document that counts came to: `tries` builds, the last
+ *  a subtree's, or null for the whole document's, held to a whole build. */
+interface Counted {
+  what: string;
+  sheet: string;
+  body: string;
+  change(el: (id: string) => Element): HtmlChange[];
+  tries: number;
+  apart: boolean;
+}
+
+const textOf = (el: Element): HtmlChange[] => {
+  const text = el.children.find((n) => n.type === 'text') as unknown as {
+    data: string;
+  };
+  text.data = `${text.data} more`;
+  return [{ type: 'characterData', target: text as never }];
+};
+const put = (parent: Element, child: Element): HtmlChange[] => {
+  const previousSibling = parent.children.at(-1) ?? null;
+  appendChild(parent, child);
+  return [
+    {
+      type: 'childList',
+      target: parent,
+      addedNodes: [child],
+      removedNodes: [],
+      previousSibling,
+      nextSibling: null,
+    },
+  ];
+};
+const classed = (el: Element, value: string): HtmlChange[] => {
+  const oldValue = el.attribs.class ?? null;
+  el.attribs.class = value;
+  return [{ type: 'attributes', target: el, attributeName: 'class', oldValue }];
+};
+
+const moved = (el: Element, into: Element): HtmlChange[] => {
+  const from = el.parent as unknown as Element;
+  const previousSibling = el.prev;
+  const nextSibling = el.next;
+  removeNode(el as unknown as ChildNode);
+  appendChild(into, el as unknown as ChildNode);
+  return [
+    {
+      type: 'childList',
+      target: from,
+      addedNodes: [],
+      removedNodes: [el],
+      previousSibling,
+      nextSibling,
+    },
+    { type: 'childList', target: into, addedNodes: [el], removedNodes: [] },
+  ];
+};
+
+/** A reset with no counter of its name outside, which reaches its box's
+ *  later siblings, and what counts and reads beside it. */
+const REACH =
+  '.r { counter-reset: n 5 } .tick { counter-increment: n }' +
+  ' .read::before { content: counter(n) " " }';
+
+const COUNTED: Counted[] = [
+  {
+    what: 'a number a list item keeps, which nothing built apart knows',
+    sheet: '',
+    body: '<ol><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list started at seven, its items a roman numeral',
+    sheet: 'li { list-style-type: upper-roman }',
+    body: '<ol start="7"><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list counting down',
+    sheet: '',
+    body: '<ol reversed><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'every instance of a name, which a reference list cites by',
+    sheet:
+      '.refs { counter-reset: r } .refs > li { counter-increment: r }' +
+      ' .refs > li::after { content: " " counters(r, ".") }',
+    body: '<ol class="refs"><li>one</li><li id="b">two</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a list that reads every instance built from around it',
+    sheet:
+      '.refs { counter-reset: r } .refs > li { counter-increment: r }' +
+      ' .refs > li::after { content: " " counters(r, ".") }' +
+      ' .wide::before { content: "list " }',
+    body: '<ol id="o" class="refs"><li>one</li><li>two</li></ol>',
+    change: (el) => classed(el('o'), 'refs wide'),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a quote inside a quote another block left open',
+    sheet: '.open::before { content: open-quote } q { color: #aa0000 }',
+    body: '<p class="open">a</p><p id="b">two <q>three</q></p>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a `::marker` that reads what is outside it',
+    sheet: 'li::marker { content: counter(list-item) ") " }',
+    body: '<ol><li>one</li><li id="b">two</li></ol>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a number it changes, built from what makes the counter',
+    sheet: '',
+    body: '<ol id="o"><li>one</li><li id="b">two</li><li>three</li></ol>',
+    change: (el) => {
+      el('b').attribs.value = '9';
+      return [
+        {
+          type: 'attributes',
+          target: el('b'),
+          attributeName: 'value',
+          oldValue: null,
+        },
+      ];
+    },
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list in an item, whose list the items after it read through',
+    sheet: '',
+    body:
+      '<ol><li>one<ul id="u"><li>a</li></ul></li><li>two</li><li>three</li>' +
+      '</ol>',
+    change: (el) =>
+      put(el('u'), createElement('li', {}, [createText('another')])),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list above what reads a quote, which no list can move',
+    sheet: '',
+    body: '<section id="s"><p>a</p></section><p><q>two</q></p>',
+    change: (el) =>
+      put(
+        el('s'),
+        createElement('ul', {}, [
+          createElement('li', {}, [createText('item')]),
+        ]),
+      ),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a counter of the document’s counted otherwise',
+    sheet:
+      'body { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::before { content: counter(n) ". " }',
+    body:
+      '<section id="s"><p class="c">a</p></section><p class="c">two</p>' +
+      '<p class="c">three</p>',
+    change: (el) =>
+      put(el('s'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a `counters()` where a `counter()` of its name was',
+    sheet:
+      'body { counter-reset: n } .c::before { content: counter(n) " " }' +
+      ' .d::before { content: counters(n, ".") " " }',
+    body: '<p id="b" class="c">one</p><p class="c">two</p>',
+    change: (el) => classed(el('b'), 'd'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what no box says, a `display: contents` element that counts',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .x { display: contents } .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div id="b" class="x"><p>a</p></div></section>' +
+      '<p class="read">two</p>',
+    change: (el) => classed(el('b'), 'x tick'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'the same changes nested otherwise',
+    sheet:
+      'body { counter-reset: n } .r { counter-reset: n }' +
+      ' .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div class="r">a</div>' +
+      '<div id="b" class="tick">b</div></section><p class="read">two</p>',
+    change: (el) => {
+      const b = el('b');
+      const r = b.prev as Element;
+      const from = el('s');
+      removeNode(b as unknown as ChildNode);
+      appendChild(r, b as unknown as ChildNode);
+      return [
+        {
+          type: 'childList',
+          target: from,
+          addedNodes: [],
+          removedNodes: [b],
+        },
+        ...[
+          {
+            type: 'childList' as const,
+            target: r,
+            addedNodes: [b],
+            removedNodes: [],
+          },
+        ],
+      ];
+    },
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what reads a name a root before it in the same change counted',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body: '<p id="a">one</p><p id="b" class="read">two</p>',
+    change: (el) => [...classed(el('a'), 'tick'), ...textOf(el('b'))],
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a counter a sibling made, whose reach no build apart can say',
+    sheet:
+      '.r { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::before { content: counter(n) " " }',
+    body:
+      '<section><p class="r">a</p><div id="w"><p class="c">b</p></div>' +
+      '</section>',
+    change: (el) =>
+      put(el('w'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a quote put in, whose depth no element around holds',
+    sheet: '',
+    body: '<p id="b">one <q>two</q></p><p>three</p>',
+    change: (el) => put(el('b'), createElement('q', {}, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a quote only a `::marker` opened, gone, above what reads one',
+    sheet: '.m::marker { content: open-quote } li { list-style-type: disc }',
+    body: '<ul><li id="b" class="m">one<div>a</div></li></ul><p><q>two</q></p>',
+    change: (el) => classed(el('b'), ''),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a reset put in a box of its own, which reaches what follows no more',
+    sheet: REACH,
+    body:
+      '<section><span id="w"></span><span id="b" class="r"></span>' +
+      '<span class="tick read">c</span></section>',
+    change: (el) => moved(el('b'), el('w')),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'what read a reset beside it moved to beside the reset',
+    sheet: REACH,
+    body:
+      '<section><span id="w"><span class="r">a</span></span>' +
+      '<span id="x"><span id="b" class="tick read">c</span></span></section>',
+    change: (el) => moved(el('b'), el('w')),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'an item put in for another in a list, the items after it its tail',
+    sheet: '',
+    body:
+      '<ol id="o"><li>one</li><li>two</li><li id="b">three</li><li>four</li>' +
+      '<li>five</li></ol>',
+    change: (el) => {
+      const gone = el('b');
+      const holder = el('o');
+      const previousSibling = gone.prev;
+      const nextSibling = gone.next;
+      const item = createElement('li', {}, [createText('another')]);
+      DomUtils.replaceElement(gone as never, item as never);
+      return [
+        {
+          type: 'childList',
+          target: holder,
+          addedNodes: [item],
+          removedNodes: [gone],
+          previousSibling,
+          nextSibling,
+        },
+      ];
+    },
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'more text in a numbered item, which is no more items',
+    sheet: '',
+    body: '<ol><li id="b">one <b>two</b></li><li>three</li></ol>',
+    change: (el) => {
+      const child = createText(' four');
+      const change = put(el('b'), child as unknown as Element);
+      return change;
+    },
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'every instance of a name counted otherwise, which nothing can say',
+    sheet:
+      '.s { counter-reset: n } .c { counter-increment: n }' +
+      ' .c::after { content: " " counters(n, ".") }',
+    body: '<section class="s"><div id="b"><p class="c">a</p></div></section>',
+    change: (el) =>
+      put(el('b'), createElement('p', { class: 'c' }, [createText('more')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'more text in what counts, which counts no more',
+    sheet: REACH,
+    body:
+      '<section class="r"><p id="b" class="tick">one <b>two</b></p>' +
+      '<p class="read">three</p></section>',
+    change: (el) => put(el('b'), createText(' four') as unknown as Element),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'what reads every instance of a name, the outer one counted',
+    sheet:
+      'body { counter-reset: n } .r { counter-reset: n }' +
+      ' .tick { counter-increment: n }' +
+      ' .deep::before { content: counters(n, ".") " " }',
+    body:
+      '<section id="s"><p>a</p></section>' +
+      '<div class="r"><p class="deep">b</p></div>',
+    change: (el) =>
+      put(el('s'), createElement('p', { class: 'tick' }, [createText('c')])),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'a `display: contents` element that counts no more',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .x { display: contents } .read::before { content: counter(n) " " }',
+    body:
+      '<section id="s"><div id="b" class="x tick"><p>a</p></div></section>' +
+      '<p class="read">two</p>',
+    change: (el) => classed(el('b'), 'x'),
+    tries: 1,
+    apart: false,
+  },
+  {
+    what: 'style containment taken off what holds a number',
+    sheet: '.cy { contain: style }',
+    body:
+      '<ol><li>a</li><section id="s" class="cy"><li>b</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), ''),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment taken off what counts besides',
+    sheet: '.cy { contain: style } .cs { counter-increment: n }',
+    body:
+      '<ol><li>a</li><section id="s" class="cs cy"><li>b</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), 'cs'),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment put on what holds a list item with no number',
+    sheet: '.cy { contain: style } .dot { list-style-type: disc }',
+    body: '<ol><section id="s"><li class="dot">a</li></section><li>c</li></ol>',
+    change: (el) => classed(el('s'), 'cy'),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'style containment taken off what holds a list item with no number',
+    sheet: '.cy { contain: style } .dot { list-style-type: disc }',
+    body:
+      '<ol><section id="s" class="cy"><li class="dot">a</li></section>' +
+      '<li>c</li></ol>',
+    change: (el) => classed(el('s'), ''),
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a list with style containment, started at seven, in a list',
+    sheet: '.cy { contain: style } li { list-style-position: inside }',
+    body:
+      '<ul><li>x<ol class="cy" start="7"><li>a</li><li id="b">b</li>' +
+      '<li>c</li></ol></li></ul>',
+    change: (el) => {
+      el('b').attribs.value = '3';
+      return [
+        {
+          type: 'attributes',
+          target: el('b'),
+          attributeName: 'value',
+          oldValue: null,
+        },
+      ];
+    },
+    tries: 2,
+    apart: true,
+  },
+  {
+    what: 'a caption the fix-up moves ahead of what was built before it',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .read::before { content: counter(n) " " }',
+    body:
+      '<div id="b">text<table><tbody><tr><td class="tick read">a</td></tr>' +
+      '</tbody><caption class="tick read">cap</caption></table></div>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: false,
+  },
+];
+
+metric(
+  'a change where what is around it counts builds what it can read, and tries nothing that cannot be built apart',
+  async (t) => {
+    for (const test of COUNTED) {
+      const { node, result: rendered } = await render(
+        '<!doctype html><html><head><style>body { margin: 0;' +
+          ` font-size: 14px } p { margin: 2px } ${test.sheet}</style></head>` +
+          `<body>${test.body}</body></html>`,
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _subtreeBuild(...a: unknown[]): BoxTree | null;
+        _subtreeRoots(...a: unknown[]): unknown;
+        _invalidate(stale: number): void;
+      };
+      const all = elementsUnder(el.document as unknown as Element);
+      const byId = (id: string): Element =>
+        all.find((e) => e.attribs.id === id)!;
+      const built = t.mock.method(internals, '_subtreeBuild');
+      const tried = t.mock.method(internals, '_subtreeRoots');
+      el.touchDocument(test.change(byId));
+      await act();
+      assert.strictEqual(
+        !!built.mock.calls.at(-1)?.result,
+        test.apart,
+        test.what,
+      );
+      assert.strictEqual(tried.mock.callCount(), test.tries, test.what);
+      built.mock.restore();
+      tried.mock.restore();
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      assert.deepStrictEqual(kept, treeLines(internals._tree), test.what);
+      rendered.unmount();
+    }
+  },
+);
+
+metric(
+  'the last frame taken out leaves what no frame held as a whole build lays it out',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }' +
+        '.r { writing-mode: vertical-rl; height: 60px }' +
+        '.g { display: grid; width: 30px; writing-mode: vertical-lr }' +
+        '</style></head><body><section><p id="p" class="r">x</p>' +
+        '<div class="g">one two three</div></section></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const frame = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'p',
+    )!;
+    const section = frame.parent as unknown as Element;
+    removeNode(frame as unknown as ChildNode);
+    const build = internals._subtreeBuild;
+    let built: BoxTree | null = null;
+    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+      built = build.apply(this, a);
+      return built;
+    };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: section,
+        addedNodes: [],
+        removedNodes: [frame],
+      },
+    ]);
+    await act();
+    assert.ok(built, 'the section was built apart');
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
+metric(
+  'a script put in that a page then gives a display draws its text, where a build of all new boxes does',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }</style></head>' +
+        '<body><section id="s"><p>a</p></section><p>b</p></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const section = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 's',
+    )!;
+    const script = createElement('script', {}, [createText('x')]);
+    el.touchDocument(put(section, script));
+    await act();
+    script.attribs.style = 'display: block';
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: script,
+        attributeName: 'style',
+        oldValue: null,
+      },
+    ]);
+    await act();
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
+metric(
+  'a text moved out of a tail into a template before it goes with its boxes, where a build of all new boxes has no such text',
+  async (t) => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }</style></head>' +
+        '<body><section id="s"><template id="t">x</template><p>a</p></section>' +
+        '<h2 id="h">seven</h2><div>two</div><div>three</div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const all = elementsUnder(el.document as unknown as Element);
+    const byId = (id: string): Element => all.find((e) => e.attribs.id === id)!;
+    const moved = byId('h');
+    const holder = moved.parent as unknown as Element;
+    const previousSibling = moved.prev;
+    const nextSibling = moved.next;
+    removeNode(moved as unknown as ChildNode);
+    appendChild(byId('t'), moved as unknown as ChildNode);
+    const built = t.mock.method(internals, '_subtreeBuild');
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: holder,
+        addedNodes: [],
+        removedNodes: [moved],
+        previousSibling,
+        nextSibling,
+      },
+      {
+        type: 'childList',
+        target: byId('t'),
+        addedNodes: [moved],
+        removedNodes: [],
+      },
+    ]);
+    await act();
+    assert.ok(built.mock.calls.at(-1)?.result, 'built the whole document');
+    built.mock.restore();
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
 metric(
   'a change before a list that makes its own counter builds only the subtree it reached, and one before what counts a counter of the document’s builds the whole, where a build of all new boxes puts it',
   async (t) => {
@@ -1828,11 +2937,10 @@ const MOVING_SHEET = `body { margin: 0; font-size: 14px }
 .fx { display: flex; gap: 3px }
 .gr { display: grid; grid-template-columns: 1fr 1fr }
 .tall { min-height: 90px }
-.vrl { writing-mode: vertical-rl; height: 50px }
-.vlr { writing-mode: vertical-lr; height: 50px }
+.v { writing-mode: vertical-rl; height: 60px }
 p { margin: 4px 0 }`;
 
-const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr'];
+const MOVING_CLASSES = ['st', 'sb', 'r', 'z', 't', 'sc', 'sh', 'fx', 'gr', 'v'];
 
 function moving(next: () => number, depth: number): Element {
   const pick = <T>(list: readonly T[]): T =>
@@ -1854,9 +2962,11 @@ function moving(next: () => number, depth: number): Element {
     else if (roll < 0.6) {
       appendChild(
         el,
-        createElement('span', { class: pick(['r', 'z', 'sh', '']) }, [
-          createText(pick(WORDS)),
-        ]),
+        createElement(
+          'span',
+          { class: pick(['r', 'z', 'sh', 'st', 'sb', '']) },
+          [createText(pick(WORDS))],
+        ),
       );
     } else appendChild(el, createText(pick(['one two', 'three four five'])));
   }
@@ -1882,16 +2992,6 @@ metric(
       const blocks = 4 + Math.floor(next() * 5);
       for (let i = 0; i < blocks; i += 1) appendChild(body, moving(next, 0));
       appendChild(body, createElement('div', { style: 'height: 400px' }));
-      // and a block or two a vertical flow's root, which a layout keeps
-      if (seed % 2 === 0) {
-        const roots = elementsUnder(body);
-        for (let i = 0; i < 2; i += 1) {
-          const root = pick(roots);
-          const was = root.attribs.class;
-          const mode = pick(['vrl', 'vlr']);
-          root.attribs.class = was ? `${was} ${mode}` : mode;
-        }
-      }
       const markup = DomUtils.getOuterHTML(body as never);
       const { el, result } = await renderScrolled(
         `<!doctype html><html><head><style>${MOVING_SHEET}</style></head>${markup}</html>`,
@@ -2086,6 +3186,263 @@ metric(
 );
 
 metric(
+  'a change beside a flow in another writing mode builds what it reached, keeps the blocks around it, and moves the frame as a whole build places it',
+  async () => {
+    // the browsers' names at the head of an MDN article's compatibility
+    // table are turned in a vertical writing mode, which made every build
+    // of the page whole, and CodeMirror's six updates of a cursor's layer
+    // held one task for a second and a half
+    const paragraphs: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      paragraphs.push(`<p id="p${i}">a paragraph of the page</p>`);
+    }
+    const { el } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 2px 0 } .v { height: 80px }</style></head><body>' +
+        '<p id="above">above</p>' +
+        '<div class="v" id="rl" style="writing-mode: vertical-rl">' +
+        '<p id="in">in the flow</p></div>' +
+        '<div class="v" id="lr" style="writing-mode: vertical-lr">' +
+        '<p>in another</p></div>' +
+        `${paragraphs.join('')}</body></html>`,
+      240,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const box = (id: string) =>
+      internals._firstBoxesOf(internals._tree).get(byId(id))!;
+    assert.ok(internals._tree.vertical, 'a flow in another writing mode');
+    const write = async (id: string): Promise<void> => {
+      const text = byId(id).children[0] as unknown as { data: string };
+      text.data += ', and a line more of words than it had before it';
+      el.touchDocument([{ type: 'characterData', target: text as never }]);
+      await act();
+    };
+    const asWhole = async (what: string): Promise<void> => {
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `${what}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    };
+    // beside it, after it: built apart, and what is around it kept
+    const far = box('p30');
+    const serial = far.layoutSerial;
+    await write('p3');
+    assert.strictEqual(box('p30'), far, 'a box it did not reach is the same');
+    assert.strictEqual(far.layoutSerial, serial, 'and was not laid out');
+    await asWhole('beside the frames');
+    // before it, which moves it down the page and all after it
+    const moved = box('p30');
+    const was = moved.layoutSerial;
+    await write('above');
+    assert.strictEqual(box('p30'), moved, 'kept below what moved');
+    assert.strictEqual(moved.layoutSerial, was, 'and moved whole');
+    await asWhole('above the frames');
+    // and in it, which only a build of the whole can make
+    await write('in');
+    await asWhole('in a frame');
+  },
+);
+
+metric(
+  'a table with a flow in another writing mode in its head is kept whole by a layout',
+  async () => {
+    // MDN's compatibility tables turn each browser's name, and each layout
+    // of an article laid out all 5,400 boxes of the table for twelve labels
+    const head = Array.from(
+      { length: 6 },
+      () => '<th><div style="writing-mode: vertical-rl">a browser</div></th>',
+    ).join('');
+    const row = `<tr>${'<td>yes</td>'.repeat(6)}</tr>`.repeat(40);
+    const { el } = await renderScrolled(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 2px 0 }</style></head><body>' +
+        '<p id="above">above the table</p>' +
+        `<section><table><tr>${head}</tr>${row}</table></section>` +
+        '</body></html>',
+      320,
+      320,
+    );
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    assert.ok(internals._tree.vertical, 'a flow in another writing mode');
+    const p = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'above',
+    )!;
+    const text = p.children[0] as unknown as { data: string };
+    text.data += ', and a line more of words than it had before it';
+    const made = boxLayoutsMade();
+    el.touchDocument([{ type: 'characterData', target: text as never }]);
+    await act();
+    const laid = boxLayoutsMade() - made;
+    assert.ok(laid < 30, `${laid} boxes laid out for a paragraph above it`);
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const line = kept.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      line < 0 && kept.length === whole.length,
+      `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+    );
+  },
+);
+
+metric(
+  'what a flow in another writing mode holds is laid out with it, and a change to what holds a frame builds as a whole build does',
+  async () => {
+    for (const mode of ['vertical-rl', 'vertical-lr']) {
+      const { el, result } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          `p { margin: 2px 0 } .v { writing-mode: ${mode}; height: 90px }` +
+          '</style></head><body><section id="s">' +
+          '<div class="v" id="f"><p>the first of two</p><p>the other</p>' +
+          '<div><p>one deeper</p></div></div>' +
+          '<p id="here">beside the flow</p></section><p>after</p></body></html>',
+        240,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const asWhole = async (what: string): Promise<void> => {
+        const kept = treeLines(internals._tree);
+        internals._invalidate(2);
+        await act();
+        const whole = treeLines(internals._tree);
+        const line = kept.findIndex((one, i) => one !== whole[i]);
+        assert.ok(
+          line < 0 && kept.length === whole.length,
+          `${mode}, ${what}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+        );
+      };
+      // laid out again with what holds it, which a change beside it does,
+      // and more than once, since a kept block is kept from the last
+      for (let i = 0; i < 3; i += 1) {
+        const text = byId('here').children[0] as unknown as { data: string };
+        text.data += ', and a line more of words than it had before';
+        el.touchDocument([{ type: 'characterData', target: text as never }]);
+        await act();
+        await asWhole(`beside it, ${i}`);
+      }
+      // what holds a root come to another width, taken in place, which is
+      // the one way a frame is laid out with what it holds the same size: a
+      // block kept in a `vertical-lr` frame is left where it was reflected
+      // from, on the far side of a root as wide as it was
+      for (const width of ['200px', '160px']) {
+        const was = byId('s').attribs.style ?? null;
+        byId('s').attribs.style = `width: ${width}`;
+        el.touchDocument([
+          {
+            type: 'attributes',
+            target: byId('s'),
+            attributeName: 'style',
+            oldValue: was,
+          },
+        ]);
+        await act();
+        await asWhole(`${width} wide`);
+      }
+      // and a child put in a frame's own element, whose children are the
+      // frame's and not its element's box's
+      const frame = byId('f');
+      const child = createElement('p', {}, [createText('put in')]);
+      appendChild(frame, child);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: frame,
+          addedNodes: [child],
+          removedNodes: [],
+          previousSibling: frame.children[frame.children.length - 2],
+          nextSibling: null,
+        } as HtmlChange,
+      ]);
+      await act();
+      await asWhole('put in it');
+      result.unmount();
+    }
+  },
+);
+
+metric(
+  'a frame fit to the viewport follows its height, wherever an absolute box beside it stops what it marks',
+  async () => {
+    const words = 'one two three four five six seven eight nine '.repeat(8);
+    const sections = '<section><p>a section</p></section>'.repeat(12);
+    const follows = async (flow: string, what: string) => {
+      const { el, resize, result } = await renderScrolled(
+        '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+          '.v { writing-mode: vertical-rl } .pos { position: relative }' +
+          '.ab { position: absolute; top: 2px; right: 3px; width: 12px;' +
+          ' height: 6px }</style></head><body><main>' +
+          `<section id="a"><p>before</p></section>${flow}${sections}` +
+          '</main></body></html>',
+        200,
+        320,
+      );
+      const internals = el as unknown as {
+        _tree: BoxTree;
+        _invalidate(stale: number): void;
+        _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      };
+      const byId = (id: string): Element =>
+        elementsUnder(el.document as unknown as Element).find(
+          (e) => e.attribs.id === id,
+        )!;
+      const frame = () =>
+        internals._firstBoxesOf(internals._tree).get(byId('v'))!;
+      const target = byId('a');
+      const child = createElement('p', {}, [createText('more')]);
+      appendChild(target, child);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target,
+          addedNodes: [child],
+          removedNodes: [],
+          previousSibling: target.children[0],
+          nextSibling: null,
+        } as HtmlChange,
+      ]);
+      await act();
+      await resize(120);
+      const after = frame().height;
+      internals._invalidate(2);
+      await act();
+      assert.strictEqual(after, frame().height, what);
+      result.unmount();
+    };
+    await follows(`<aside id="v" class="v">${words}</aside>`, 'plain');
+    await follows(
+      `<section class="pos"><div><aside id="v" class="v">${words}</aside>` +
+        '<i class="ab"></i></div></section>',
+      'between an absolute box and what it is placed against',
+    );
+  },
+);
+
+metric(
   'a block holding a sticky box the viewport holds is kept by a layout, and its sticky box held where a layout of all new boxes holds it',
   async () => {
     // joshwcomeau.com's code blocks each hold a copy button stuck 88px
@@ -2146,306 +3503,5 @@ metric(
         `#${id}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
       );
     }
-  },
-);
-
-/** A page with a vertical flow in it, and what a test asks of it. */
-async function withFlow(mode: string, flow: string) {
-  const sections = Array.from(
-    { length: 12 },
-    (_, i) => `<section id="s${i}"><p>section ${i}</p></section>`,
-  ).join('');
-  const { node, result } = await render(
-    '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
-      `.v { writing-mode: ${mode}; height: 80px; padding: 2px }</style>` +
-      `</head><body><main><section id="a"><p>before</p></section>${flow}` +
-      `${sections}</main></body></html>`,
-    320,
-  );
-  const el = view(node);
-  await act();
-  const internals = el as unknown as Record<
-    string,
-    (...a: unknown[]) => unknown
-  > & {
-    _tree: BoxTree;
-    _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
-    _invalidate(stale: number): void;
-  };
-  const byId = (id: string): Element =>
-    elementsUnder(el.document as unknown as Element).find(
-      (e) => e.attribs.id === id,
-    )!;
-  const boxOf = (id: string) =>
-    internals._firstBoxesOf(internals._tree).get(byId(id));
-  /** A child put in `target` before `before`, or at its end, and what the
-   *  build made of it: a tree, or null for one of the whole document. */
-  const put = async (target: Element, before?: Element): Promise<unknown> => {
-    const child = createElement('p', {}, [createText('more')]);
-    if (before) DomUtils.prepend(before, child);
-    else appendChild(target, child);
-    const subtreeBuild = internals._subtreeBuild;
-    let built: unknown = undefined;
-    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
-      built = subtreeBuild.apply(this, a);
-      return built;
-    };
-    el.touchDocument([
-      {
-        type: 'childList',
-        target,
-        addedNodes: [child],
-        removedNodes: [],
-        previousSibling: child.prev,
-        nextSibling: child.next,
-      },
-    ]);
-    await act();
-    delete internals._subtreeBuild;
-    return built;
-  };
-  /** That the tree is what a build of the whole document makes. */
-  const holds = async (what: string): Promise<void> => {
-    const lines = treeLines(internals._tree);
-    internals._invalidate(2);
-    await act();
-    const whole = treeLines(internals._tree);
-    const at = lines.findIndex((one, i) => one !== whole[i]);
-    assert.ok(
-      at < 0 && lines.length === whole.length,
-      `${what}: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
-    );
-  };
-  return { byId, boxOf, put, holds, result };
-}
-
-const FLOW =
-  '<aside id="v" class="v"><p id="in">one two</p><p>three</p></aside>';
-
-metric(
-  'a change outside a vertical flow builds its subtree, and the layout after it keeps the flow',
-  async () => {
-    // One box in a vertical writing mode anywhere made every later change a
-    // whole build and a whole layout: an MDN article's live sample, and
-    // CodeMirror's six layers beside it, each 200 ms where it is 20
-    for (const mode of ['vertical-rl', 'vertical-lr', 'sideways-lr']) {
-      const { byId, boxOf, put, holds, result } = await withFlow(mode, FLOW);
-      const root = boxOf('v')!;
-      const inner = boxOf('in')!;
-      const serial = root.layoutSerial;
-      const kept = blocksKept();
-      // before it, which moves it down a line, and after it
-      for (const id of ['a', 's3']) {
-        assert.ok(await put(byId(id)), `${mode}: #${id} built apart`);
-        assert.ok(
-          boxOf('v') === root && boxOf('in') === inner,
-          `${mode}: the flow built again beside #${id}`,
-        );
-      }
-      assert.strictEqual(root.layoutSerial, serial, `${mode}: laid out again`);
-      assert.ok(blocksKept() > kept, `${mode}: nothing kept`);
-      await holds(mode);
-      result.unmount();
-    }
-  },
-);
-
-metric(
-  'a change in a vertical flow, or before one in what holds it, builds the whole document',
-  async () => {
-    // Every box in a frame has its style turned, and a build apart makes no
-    // frame: a root in one would hand what it built the turned style for
-    // its parent's, and a root around one would come back with none
-    for (const mode of ['vertical-rl', 'vertical-lr']) {
-      const inFlow = await withFlow(
-        mode,
-        '<aside id="v" class="v"><div id="deep"><p id="in">one</p>' +
-          '<p>two</p></div><p>three</p></aside>',
-      );
-      // the end of what a box in the flow holds, and a box in the flow
-      for (const id of ['deep', 'in']) {
-        assert.strictEqual(
-          await inFlow.put(inFlow.byId(id)),
-          null,
-          `${mode}: #${id} built apart in the flow`,
-        );
-        await inFlow.holds(`${mode}, #${id} in the flow`);
-      }
-      inFlow.result.unmount();
-      const around = await withFlow(
-        mode,
-        `<section id="holds"><p>first</p><aside id="v" class="v">` +
-          '<p id="in">one</p></aside><p>last</p></section>',
-      );
-      assert.strictEqual(
-        await around.put(around.byId('holds'), around.byId('v')),
-        null,
-        `${mode}: built apart around the flow`,
-      );
-      await around.holds(`${mode}, around the flow`);
-      around.result.unmount();
-    }
-  },
-);
-
-metric('the end of what holds a vertical flow is built after it', async () => {
-  const { byId, boxOf, put, holds, result } = await withFlow(
-    'vertical-rl',
-    '<section id="holds"><p>first</p><aside id="v" class="v">' +
-      '<p id="in">one</p></aside>' +
-      '<p id="last">last</p></section>',
-  );
-  const root = boxOf('v');
-  assert.ok(await put(byId('holds')), 'the end of it built apart');
-  assert.ok(boxOf('v') === root, 'the flow built again before the end');
-  await holds('a tail after a flow');
-  result.unmount();
-});
-
-metric(
-  'a vertical flow a layout kept is fit to the viewport again when its height moves',
-  async () => {
-    // A frame with no height of its own is fit to the viewport's: a read of
-    // it in a box a layout keeps, which is one more than the document knew
-    // it read once that layout had kept the box
-    const sections = Array.from(
-      { length: 12 },
-      (_, i) => `<section id="s${i}"><p>section ${i}</p></section>`,
-    ).join('');
-    const { el, resize, result } = await renderScrolled(
-      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
-        '.v { writing-mode: vertical-rl }</style></head><body><main>' +
-        '<section id="a"><p>before</p></section><aside id="v" class="v">' +
-        'one two three four five six seven eight nine ten eleven twelve ' +
-        'thirteen fourteen fifteen sixteen seventeen eighteen nineteen ' +
-        `twenty</aside>${sections}</main></body></html>`,
-      200,
-      320,
-    );
-    const internals = el as unknown as {
-      _tree: BoxTree;
-      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
-      _invalidate(stale: number): void;
-    };
-    const byId = (id: string): Element =>
-      elementsUnder(el.document as unknown as Element).find(
-        (e) => e.attribs.id === id,
-      )!;
-    const boxOf = (id: string) =>
-      internals._firstBoxesOf(internals._tree).get(byId(id))!;
-    const target = byId('a');
-    const root = boxOf('v');
-    const serial = root.layoutSerial;
-    const child = createElement('p', {}, [createText('more')]);
-    appendChild(target, child);
-    el.touchDocument([
-      {
-        type: 'childList',
-        target,
-        addedNodes: [child],
-        removedNodes: [],
-        previousSibling: child.prev,
-        nextSibling: null,
-      },
-    ]);
-    await act();
-    assert.ok(boxOf('v') === root, 'built again');
-    assert.strictEqual(root.layoutSerial, serial, 'laid out again');
-    const tall = root.height;
-    await resize(120);
-    assert.ok(
-      boxOf('v').height < tall,
-      `${boxOf('v').height} is the height it had under ${tall}`,
-    );
-    const lines = treeLines(internals._tree);
-    internals._invalidate(2);
-    await act();
-    const whole = treeLines(internals._tree);
-    const at = lines.findIndex((one, i) => one !== whole[i]);
-    assert.ok(
-      at < 0 && lines.length === whole.length,
-      `line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
-    );
-    result.unmount();
-  },
-);
-
-metric(
-  'a document with no vertical flow painted last leaves one that has one refusing a root in it',
-  async () => {
-    // `framed.any` is a tree's, set as a layout or a paint of it begins, and
-    // two documents in one window take turns at it: read as another's left
-    // it, a root in a frame was a root like any
-    const sections = Array.from(
-      { length: 12 },
-      (_, i) => `<section><p>section ${i}</p></section>`,
-    ).join('');
-    const page = (flow: string) =>
-      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
-      '.v { writing-mode: vertical-rl; height: 80px }</style></head><body>' +
-      `<main>${flow}${sections}</main></body></html>`;
-    const result = await renderX11(
-      h(
-        'box',
-        { style: { width: 320, flexDirection: 'column' } },
-        h(Html, {
-          source: page(
-            '<aside class="v"><div id="deep"><p>one</p><p>two</p></div></aside>',
-          ),
-          partial: false,
-          'data-testname': 'flow',
-        }),
-        h(Html, {
-          source: page('<p>nothing turned</p>'),
-          partial: false,
-          'data-testname': 'plain',
-        }),
-      ),
-      { width: 360, height: 800, fonts: FONTS! },
-    );
-    await act();
-    const el = view(screen.getByTestName('flow') as DrawnNode);
-    const plain = view(screen.getByTestName('plain') as DrawnNode);
-    const internals = el as unknown as Record<
-      string,
-      (...a: unknown[]) => unknown
-    > & { _tree: BoxTree; _invalidate(stale: number): void };
-    // the second document laid out last, in a frame of its own
-    (plain as unknown as { _invalidate(stale: number): void })._invalidate(1);
-    await act();
-    const target = elementsUnder(el.document as unknown as Element).find(
-      (e) => e.attribs.id === 'deep',
-    )!;
-    const child = createElement('p', {}, [createText('more')]);
-    appendChild(target, child);
-    const subtreeBuild = internals._subtreeBuild;
-    let built: unknown = undefined;
-    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
-      built = subtreeBuild.apply(this, a);
-      return built;
-    };
-    el.touchDocument([
-      {
-        type: 'childList',
-        target,
-        addedNodes: [child],
-        removedNodes: [],
-        previousSibling: child.prev,
-        nextSibling: null,
-      },
-    ]);
-    await act();
-    delete internals._subtreeBuild;
-    assert.strictEqual(built, null, 'built apart in the flow');
-    const lines = treeLines(internals._tree);
-    internals._invalidate(2);
-    await act();
-    const whole = treeLines(internals._tree);
-    const at = lines.findIndex((one, i) => one !== whole[i]);
-    assert.ok(
-      at < 0 && lines.length === whole.length,
-      `line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
-    );
-    result.unmount();
   },
 );

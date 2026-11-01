@@ -464,6 +464,46 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   assert.ok(!partial(el));
 });
 
+test('a container a drag set aside is found when a read first asks for the containers, and read once it is back', async (t) => {
+  const clock = holdClock(t, resizeClock);
+  const rows = Array.from(
+    { length: 40 },
+    () => '<div style="height:50px"></div>',
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.l{container-type:inline-size}' +
+      '@container (min-width: 150px) { .b { color: #123456 } }</style><body>' +
+      `<div class="l"><p id="top">top</p></div>${rows}` +
+      '<div class="l"><p id="end">end</p></div></body>',
+    300,
+    400,
+  );
+  const color = (id: string): string =>
+    (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+  const setClass = (id: string, value: string): void => {
+    const target = findById(el.document, id)!;
+    target.attribs.class = value;
+    el.touchDocument([
+      { type: 'attributes', target, attributeName: 'class', oldValue: null },
+    ]);
+  };
+  await resize(300, 330);
+  await resize(300, 320);
+  assert.ok(partial(el), 'a step');
+  assert.ok(!reached(el, 'end'), 'set aside');
+  // the first read of any container takes the tree's: this tree's first
+  // style to read one is a restyle in place, while a drag has the last of
+  // them set aside
+  setClass('top', 'b');
+  await act();
+  assert.strictEqual(color('top'), '#123456');
+  await clock.finish();
+  assert.ok(!partial(el), 'rested');
+  setClass('end', 'b');
+  await act();
+  assert.strictEqual(color('end'), '#123456');
+});
+
 /** A long page of rows, each with a `::after` as wide as a tenth of the
  *  viewport and moved by as much again, as Apple's gallery slides are. */
 const READERS =

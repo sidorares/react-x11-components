@@ -20,7 +20,13 @@ import { specifiedValue } from './specified.js';
 import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
 import type { ContainerQuery } from './containers.js';
-import { parseLength, parseStretch, splitValue } from './values.js';
+import {
+  parseLength,
+  parseStretch,
+  splitCommas,
+  splitValue,
+  trimValue,
+} from './values.js';
 import {
   closingParen,
   hasVar,
@@ -873,13 +879,13 @@ export function parseDeclarations(text: string): Declaration[] {
       while (colon < end && isSpace(text[colon])) colon += 1;
       if (text[colon] === ':') {
         const raw = text.slice(colon + 1, end);
-        let value = raw.trim();
+        let value = trimValue(raw);
         // the end of the block closes what is open, as the end of the
         // input does every block (CSS Syntax 3, 5.4.8): a `style` that
         // leaves a function's bracket open
         if (end >= n) value = closedAtEnd(value);
         const important = IMPORTANT_RE.test(value);
-        if (important) value = value.replace(IMPORTANT_RE, '').trim();
+        if (important) value = trimValue(value.replace(IMPORTANT_RE, ''));
         const custom = name.value.startsWith('--');
         // `--` alone is no custom property's name, and a bracket closed
         // that nothing opened makes a value none
@@ -1749,7 +1755,9 @@ function isNameChar(c: string | undefined): boolean {
 /** Whether a backslash at `at` escapes what follows — not a newline, and
  *  not the end of the text. */
 function isEscape(text: string, at: number): boolean {
-  return text[at] === '\\' && at + 1 < text.length && text[at + 1] !== '\n';
+  if (text[at] !== '\\' || at + 1 >= text.length) return false;
+  const next = text[at + 1];
+  return next !== '\n' && next !== '\r' && next !== '\f';
 }
 
 /**
@@ -2043,7 +2051,10 @@ function unescapeValue(value: string): string {
       // of an identifier that a value parser should see as one, not as the
       // tab or the semicolon it names — `red \9` is not `red`.
       const escape = readEscape(value, i);
-      out += isNameChar(escape.char) ? escape.char : value.slice(i, escape.end);
+      out +=
+        isNameChar(escape.char) && !startsNoIdent(out, value, escape)
+          ? escape.char
+          : value.slice(i, escape.end);
       i = escape.end;
       continue;
     }
@@ -2053,6 +2064,26 @@ function unescapeValue(value: string): string {
   }
   return out;
 }
+
+/** Whether a character an escape stands for would be no identifier's
+ *  written out, where it starts one: `\31 996` is the name `1996`, and
+ *  `1996` a number; `\2d` is the name `-`, and `-` no name. `out` is what
+ *  comes before the escape, and `escape.end` where what comes after it
+ *  starts. */
+function startsNoIdent(
+  out: string,
+  value: string,
+  escape: { char: string; end: number },
+): boolean {
+  if (!IDENT_OPEN.test(out)) return false;
+  return escape.char === '-'
+    ? !out.endsWith('-') && !startsIdent(`-${value.slice(escape.end)}`, 0)
+    : escape.char >= '0' && escape.char <= '9';
+}
+
+/** Text that ends where an identifier may start, or one hyphen into one. A
+ *  `#` is not it: what follows one is a colour's digits or a name. */
+const IDENT_OPEN = /(?:^|[^-#\w\u0080-\uffff\\])-?$/;
 
 /**
  * A `{…}` block: its body, and where the text goes on after it. The end of
@@ -2719,25 +2750,125 @@ const FACE_METRICS: Record<
   'line-gap-override': 'lineGapOverride',
 };
 
-/** A `@font-face`'s one family name: a string, or identifiers, which one
- *  space joins. Not a list, and not a generic family's name. */
+/** A `@font-face`'s one family name, not a list, and no generic family's. */
 function faceFamily(value: string): string | null {
-  const v = value.trim();
-  let name: string;
-  if (v[0] === '"' || v[0] === "'") {
-    if (stringEnd(v, 0) !== v.length) return null;
-    name = unquote(v).trim();
-  } else {
-    const words = v.split(/\s+/);
-    for (const word of words) {
-      if (!startsIdent(word, 0) || readIdent(word, 0).end !== word.length) {
-        return null;
-      }
-    }
-    name = words.join(' ');
-  }
+  const name = readFamilyName(trimValue(value))?.name.trim();
   if (!name || name.includes(',')) return null;
   return GENERIC_FAMILIES.has(name.toLowerCase()) ? null : name;
+}
+
+/** A name in a `font-family`, and whether a string gave it. */
+export interface FamilyName {
+  name: string;
+  quoted: boolean;
+}
+
+/** The generic families Chrome has as keywords. A bare one is the keyword
+ *  in any case, and a string keeps its quotes only in this case, since
+ *  `'Serif'` read bare is a family of that name and `'serif'` is not. */
+export const GENERIC_KEYWORDS = new Set([
+  'serif',
+  'sans-serif',
+  'cursive',
+  'fantasy',
+  'monospace',
+  'system-ui',
+  'math',
+]);
+
+/** What a family name would mean with no quotes, in any case. */
+export const NOT_A_NAME =
+  /^(?:inherit|initial|unset|revert|revert-layer|revert-rule|default)$/i;
+
+/**
+ * One entry of a `font-family`, as `splitCommas` hands it over (CSS Fonts 4,
+ * 2.1), with its escapes read: a string, or identifiers one space joins, a
+ * bare generic family in lower case. Null for anything else, and so for
+ * what Chrome refuses of the two: a string with anything after it, a
+ * generic family with a word after it, where `Foo serif` is a name and
+ * `serif Foo` none, and a word that is a CSS-wide keyword or `default`, on
+ * its own or with a list around it. `-webkit-body` is a keyword to Chrome
+ * and no generic family: it comes back unquoted however it was written.
+ */
+export function readFamilyName(written: string): FamilyName | null {
+  if (written[0] === '"' || written[0] === "'") {
+    return stringEnd(written, 0) === written.length
+      ? { name: stringText(written), quoted: true }
+      : null;
+  }
+  const words: string[] = [];
+  let i = 0;
+  while (i < written.length) {
+    if (!startsIdent(written, i)) return null;
+    const word = readIdent(written, i);
+    words.push(word.value);
+    i = word.end;
+    if (i < written.length && !isSpace(written[i])) return null;
+    while (i < written.length && isSpace(written[i])) i += 1;
+  }
+  if (!words.length) return null;
+  const first = words[0].toLowerCase();
+  if (GENERIC_KEYWORDS.has(first) || first === '-webkit-body') {
+    return words.length === 1 ? { name: first, quoted: false } : null;
+  }
+  if (words.length === 1 && NOT_A_NAME.test(first)) return null;
+  return { name: words.join(' '), quoted: false };
+}
+
+/** What a string from its opening quote stands for: its escapes read, and
+ *  the lines a backslash carries over joined. */
+function stringText(text: string): string {
+  if (!text.includes('\\')) {
+    const closed = text.length > 1 && text[text.length - 1] === text[0];
+    return text.slice(1, closed ? -1 : text.length);
+  }
+  let out = '';
+  let i = 1;
+  while (i < text.length && text[i] !== text[0]) {
+    if (isEscape(text, i)) {
+      const escape = readEscape(text, i);
+      out += escape.char;
+      i = escape.end;
+    } else if (text[i] === '\\') {
+      i = escapeEnd(text, i);
+    } else {
+      out += text[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** A `font-family` value's names, or null where one is none. */
+export function readFamilies(value: string): FamilyName[] | null {
+  const names: FamilyName[] = [];
+  for (const written of splitCommas(value)) {
+    const family = readFamilyName(written);
+    if (!family) return null;
+    names.push(family);
+  }
+  return names;
+}
+
+/**
+ * Family names as the list a style holds. A list is split at its commas
+ * wherever it is read, by the text engines too, so a name with one in it,
+ * which no face has (`faceFamily`), is left out: Chrome goes on past
+ * `'Courier, Arial'` to the next, and handed over it would be two names the
+ * page did not write. An empty one is left out as no font's.
+ */
+export function joinFamilies(names: FamilyName[]): string {
+  return names
+    .map((family) => family.name)
+    .filter((name) => name && !name.includes(','))
+    .join(', ');
+}
+
+/** A `font-family` value as the list a style holds, or null where a name
+ *  in it is none. */
+export function familyList(value: string): string | null {
+  const names = readFamilies(value);
+  return names && joinFamilies(names);
 }
 
 /** A `@font-face`'s `font-weight`: one weight, or the range a variable face

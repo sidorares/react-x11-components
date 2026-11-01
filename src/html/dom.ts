@@ -298,6 +298,12 @@ export function choosesSource(el: Element): boolean {
   return !!parent && isElement(parent) && tagOf(parent) === 'picture';
 }
 
+/** Whether an `<img>`'s `loading` attribute is in its Lazy state (HTML
+ *  2.5.7): the keyword in any case, and anything else, or none, is Eager. */
+export function loadsLazily(el: Element): boolean {
+  return tagOf(el) === 'img' && attr(el, 'loading')?.toLowerCase() === 'lazy';
+}
+
 /** The text under a node, uncollapsed — what `<style>` hands the CSS parser
  *  and what a `<script>` seam is given. */
 export function rawTextOf(node: AnyNode): string {
@@ -405,7 +411,8 @@ const SHADOW_ROOTS = new WeakMap<Element, ShadowRoot>();
 let generation = 0;
 
 /** A tree changed: the parser wrote to it, an application mutated it and
- *  said so, or a shadow root was attached. */
+ *  said so, or a shadow root was attached. Or what a selector reads moved
+ *  where no tree says: the element a fragment names (`Cascade.setTarget`). */
 export function treesChanged(): void {
   generation += 1;
 }

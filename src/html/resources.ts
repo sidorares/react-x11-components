@@ -157,6 +157,9 @@ interface Entry {
    *  a list's marker, generated content — where a background, a border
    *  image or a mask only paints it (`request`'s `paintOnly`). */
   layout?: boolean;
+  /** Whether only a lazy image has asked for it, which holds no `load`
+   *  (`request`'s `lazily`). */
+  lazily?: boolean;
 }
 
 /** The ntk `Image` slice this uses. Structural, as everywhere else here. */
@@ -176,9 +179,15 @@ export class ResourceStore {
   private _ask: (
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
-  private _changed: (what: ResourceChange, layout: boolean) => void;
+  private _changed: (
+    what: ResourceChange,
+    layout: boolean,
+    lazily?: string,
+  ) => void;
   private _urls: UrlResolver | null;
   private _destroyed = false;
+  /** Where what a lazy image waits for is kept (`expect`). */
+  private _expected = new Set<string>();
   /** What each video and audio URL plays, kept apart from the other
    *  resources and from each other: a `src` that is also some image's, or
    *  played by both, is two questions for the host. */
@@ -196,13 +205,14 @@ export class ResourceStore {
    * them; a host answering over a network answers every one of them later.
    * It is told too where a stylesheet is declined or fails that late
    * (`'declined'`): that changes no style, but what waited for the sheet
-   * goes on without it.
+   * goes on without it. `lazily` is where an image is kept, where only a
+   * lazy image asked for it, which shows it nowhere else.
    */
   constructor(
     ask: (
       request: ResourceRequest,
     ) => Promise<ResourceResult | null> | ResourceResult | null,
-    changed: (what: ResourceChange, layout: boolean) => void,
+    changed: (what: ResourceChange, layout: boolean, lazily?: string) => void,
     urls: UrlResolver | null = null,
   ) {
     this._ask = ask;
@@ -216,12 +226,13 @@ export class ResourceStore {
    *  is kept (`keyOf`). */
   settled: ((key: string) => void) | null = null;
 
-  /** How many of the requests are on their way: asked for, and neither
-   *  answered nor failed, an image's decode included. */
+  /** How many of the requests the document's `load` waits for are on their
+   *  way: asked for, and neither answered nor failed, an image's decode
+   *  included. A lazy image holds no `load` (HTML's "delay load event"). */
   get pending(): number {
     let n = 0;
     for (const entry of this._entries.values()) {
-      if (entry.state === 'pending') n += 1;
+      if (entry.state === 'pending' && !entry.lazily) n += 1;
     }
     return n;
   }
@@ -239,26 +250,41 @@ export class ResourceStore {
    *  `paintOnly` — a background, a border image, a mask — and its arrival
    *  changes no box; or only preloads it, a sheet's `<link rel=preload>`,
    *  and its arrival changes nothing. Asked for again by what lays it out,
-   *  it does. */
-  request(request: ResourceRequest, paintOnly = false): void {
+   *  it does. `late` is asked for after the boxes were built, so an answer
+   *  as it is asked is told as a late one is; and `'lazily'`, by a lazy
+   *  image, which holds no `load`, until something else asks for it.
+   */
+  request(
+    request: ResourceRequest,
+    paintOnly = false,
+    late: boolean | 'lazily' = false,
+  ): void {
     if (this._destroyed || !request.url) return;
     const url = this._key(request.url);
+    const lazily = late === 'lazily';
     const known = this._entries.get(url);
     if (known) {
       if (!paintOnly) known.layout = true;
+      if (!lazily) known.lazily = false;
       return;
     }
-    const entry: Entry = { state: 'pending', layout: !paintOnly };
+    const entry: Entry = {
+      state: 'pending',
+      layout: !paintOnly || this._expected.has(url),
+      lazily,
+    };
     this._entries.set(url, entry);
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {
       answer = this._ask(url === request.url ? request : { ...request, url });
     } catch {
       entry.state = 'failed';
+      if (late) this._done(url);
       return;
     }
     if (!answer) {
       entry.state = 'failed';
+      if (late) this._done(url);
       return;
     }
     if (isPromise(answer)) {
@@ -274,7 +300,14 @@ export class ResourceStore {
       );
       return;
     }
-    this._settle(url, entry, answer, true);
+    this._settle(url, entry, answer, !late);
+    if (late && entry.state !== 'pending') this._done(url);
+  }
+
+  /** Something its size lays out waits to ask for `url`, a lazy image: a
+   *  background that gets there first asks for what lays it out as well. */
+  expect(url: string): void {
+    this._expected.add(this._key(url));
   }
 
   private _settle(
@@ -329,7 +362,7 @@ export class ResourceStore {
       entry.image = result.image;
       entry.size = rasterSize(result.width, result.height);
       entry.state = 'ready';
-      if (!synchronous) this._changed('image', entry.layout !== false);
+      if (!synchronous) this._arrived(url, entry);
       return;
     }
     const svg = svgFromBytes(result.bytes, fragmentOf(url));
@@ -337,7 +370,7 @@ export class ResourceStore {
       entry.image = svg;
       entry.size = svg.intrinsics;
       entry.state = 'ready';
-      if (!synchronous) this._changed('image', entry.layout !== false);
+      if (!synchronous) this._arrived(url, entry);
       return;
     }
     const animation = animatedImage(result.bytes);
@@ -350,7 +383,7 @@ export class ResourceStore {
       };
       if (!isPromise(animation)) {
         take(animation);
-        if (!synchronous) this._changed('image', entry.layout !== false);
+        if (!synchronous) this._arrived(url, entry);
         return;
       }
       this._decoding(url, entry, result.bytes, animation, take, synchronous);
@@ -373,7 +406,12 @@ export class ResourceStore {
     entry.image = decoded;
     entry.size = rasterSize(decoded.width, decoded.height);
     entry.state = 'ready';
-    if (!synchronous) this._changed('image', entry.layout !== false);
+    if (!synchronous) this._arrived(url, entry);
+  }
+
+  /** An image's pixels are in. */
+  private _arrived(url: string, entry: Entry, what: ResourceChange = 'image') {
+    this._changed(what, entry.layout !== false, entry.lazily ? url : undefined);
   }
 
   /**
@@ -400,15 +438,17 @@ export class ResourceStore {
     const header = headerSize(bytes, exifOrientation);
     if (header) {
       entry.size = rasterSize(header.width, header.height);
-      if (!synchronous && entry.layout !== false) this._changed('sized', true);
+      if (!synchronous && entry.layout !== false)
+        this._arrived(key, entry, 'sized');
     }
     decoding.then(
       (decoded) => {
         if (this._destroyed) return;
         take(decoded);
-        this._changed(
+        this._arrived(
+          key,
+          entry,
           header && !sameSize(header, entry.size) ? 'resized' : 'image',
-          entry.layout !== false,
         );
         this._done(key);
       },

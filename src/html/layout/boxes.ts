@@ -42,7 +42,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
-import { FRAMES, frameOf, framed, makeFrame } from './writing.js';
+import { frameOf, makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -823,6 +823,20 @@ function orderOf(box: Box): number {
  *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The pieces after the first of an inline box broken around blocks, under
+ *  the first (`breakAround`): a sticky one moves as one box, by what all of
+ *  it comes to (`applyRelativeOffsets`), and its first piece moves the rest. */
+export const CUT_PIECES = new WeakMap<Box, Box[]>();
+
+/** How large a sticky inline box's rect is (`setStickyRect`), beside it: a
+ *  box of any size paints as a rectangle, and one here was filled with its
+ *  background over its text. Its `x` and `y` are where the rect stands, and
+ *  no box but a sticky inline one with a fragment has an entry. */
+export const STICKY_SIZES = new WeakMap<
+  Box,
+  { width: number; height: number }
+>();
+
 /** Where a block that clearance moved below the floats would have stood
  *  without it, its border edge's top (CSS 2.1 9.5.2): a browser's
  *  fragment of an inline box around such a block starts there, and takes
@@ -918,6 +932,28 @@ const RAN_OUT = 2;
  * a `<body>` with a wrap in it, built the whole page for each.
  */
 const RAN_FROM = new WeakMap<Box, RanFrom>();
+
+/** One read of a counter, `counters()`'s of all its instances, or of the
+ *  depth of the quotes open (`QUOTE_DEPTH`): what is in scope, in the order
+ *  a build read it. */
+interface CounterRead {
+  name: string;
+  value: number | number[];
+}
+
+/** No counter's name: a read of the depth of the quotes open. */
+const QUOTE_DEPTH = '"';
+
+/** No counter's name: what is read of all there is around a subtree, which
+ *  no element around it makes (`CounterScopes.outside`). */
+const EVERYWHERE = '';
+
+/** What each box read of the counters and the quotes around it as it was
+ *  built, which a build of a subtree that counts as this one did reads
+ *  again where it cannot work it out (`CounterScopes.detach`). A list item
+ *  numbers from what is before it, which nothing a build of it apart knows,
+ *  and its number is what its last build found. */
+const COUNTER_READS = new WeakMap<Box, CounterRead[]>();
 
 interface RanFrom {
   inline: Box | null;
@@ -1072,7 +1108,12 @@ export function textFade(
 /** What the builder produced, plus the document-wide text it indexed. */
 /** The first box of each element that is a size container, in a tree as
  *  it was built. */
-export function containerBoxes(root: Box): Map<Element, Box> {
+export function containerBoxes(
+  root: Box,
+  /** What a drag's layout set aside, which is the tree's for as long as it
+   *  lives and in no walk down `children` (`asideOf`). */
+  aside: ReadonlyMap<Box, Box[]> | null = null,
+): Map<Element, Box> {
   const out = new Map<Element, Box>();
   const stack: Box[] = [root];
   while (stack.length) {
@@ -1087,8 +1128,9 @@ export function containerBoxes(root: Box): Map<Element, Box> {
     ) {
       out.set(box.el, box);
     }
-    for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
+    const children = aside?.get(box) ?? box.children;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push(children[i]);
     }
   }
   return out;
@@ -1128,8 +1170,10 @@ export interface BoxTree {
   styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
   /** Each size container's box (`container-type`), where some style read
    *  one's size: what a layout measures the containers by
-   *  (`HtmlViewNode._containersMoved`). Taken as the tree is built, since a
-   *  layout may set boxes aside from the root's walk. */
+   *  (`HtmlViewNode._containersMoved`), and a read between layouts
+   *  (`_laidOutSize`). Taken as the tree is built, or as a read first asks
+   *  of a tree built before one did, down what a layout set aside from the
+   *  root's walk. */
   containers?: Map<Element, Box>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
@@ -1158,7 +1202,7 @@ export interface BoxTree {
   /** Every image generated content names, the element whose
    *  pseudo-element names it, for the host to be asked for, and whether its
    *  size was known when the box was built. */
-  contentImages: { url: string; element: Element; sized: boolean }[];
+  contentImages: ContentImage[];
   /** Every `<img>` box built before its image's size was known — at the
    *  size its element's attributes say, or the image it showed before —
    *  and what an image arriving is checked against, since one that sizes
@@ -1240,6 +1284,10 @@ export interface BoxTree {
    *  (`reversed()`), which every item before the scope's end reads: where
    *  one does, no subtree is built apart that counts (`buildSubtrees`). */
   reversed?: boolean;
+  /** Whether a `display: contents` element changes a counter, which has no
+   *  box to say so (`countedBy`): where one does, no two runs are known to
+   *  count alike. */
+  countsUnseen?: boolean;
   /** The style of the `<html>` a document with neither an `<html>` nor a
    *  `<body>` implies around the body the root box stands in for
    *  (`Cascade.rootStyle`), whose background is the canvas's; null where
@@ -1342,6 +1390,15 @@ export function buildBoxes(
   return builder.run(root as Element);
 }
 
+/** An image generated content or a marker names (`BoxTree.contentImages`):
+ *  the box that shows it, where one is made for it. */
+export interface ContentImage {
+  url: string;
+  element: Element;
+  sized: boolean;
+  box?: Box;
+}
+
 /** What a build of one subtree made (`Builder.runSubtree`, `runTail`): its
  *  boxes, its text numbered from 0, and its part of each of the tree's
  *  lists. */
@@ -1364,7 +1421,7 @@ interface SubtreeBuild {
   links: Box[];
   focusables: Box[];
   backgrounds: Box[];
-  contentImages: { url: string; element: Element; sized: boolean }[];
+  contentImages: ContentImage[];
   awaiting: Box[];
   images: Box[];
   awaitingKind: Element[];
@@ -1375,6 +1432,12 @@ interface SubtreeBuild {
   counts: boolean;
   /** Whether a counter counts down in it (`BoxTree.reversed`). */
   reversed: boolean;
+  /** Whether a `display: contents` element changed a counter in it
+   *  (`BoxTree.countsUnseen`). */
+  countsUnseen: boolean;
+  /** What it read of what is around it, which stands only where it counts
+   *  as the run it replaces did (`CounterScopes.outside`). */
+  outside: ReadonlySet<string>;
   flags: Pick<
     BoxTree,
     | 'relative'
@@ -1430,6 +1493,8 @@ interface SubtreeRoot {
   /** Whether a box of it changed a counter or read one, or a quote, beyond
    *  those list items (`counts`). */
   counts: boolean;
+  /** What its boxes read, in their order (`COUNTER_READS`). */
+  reads: CounterRead[];
 }
 
 /** What a change reaches, as a subtree build takes it (`buildSubtrees`). */
@@ -1491,8 +1556,6 @@ export function buildSubtrees(
   ) {
     return null;
   }
-  // a frame is a matter for each root (`subtreeRoot`, `tailRoot`, `oldBoxes`)
-  framed.any = tree.vertical;
   const olds: SubtreeRoot[] = [];
   for (const el of roots) {
     const old = subtreeRoot(el, firstBoxes);
@@ -1515,6 +1578,13 @@ export function buildSubtrees(
     const old = tailRoot(node, from, tree, document, firstBoxes);
     if (!old) return null;
     olds.push(old);
+  }
+  // a frame is made as a build of the whole ends, and what is in one takes
+  // its sides from it (`makeFrame`): what is around one is built as any box
+  if (tree.vertical) {
+    for (const old of olds) {
+      if (frameOf(old.box)) return null;
+    }
   }
   // a root a block around looks for a first letter in, or a tail of one
   if (cascade.hasFirstLetter) {
@@ -1567,6 +1637,16 @@ export function buildSubtrees(
   /** The first root that counts, or whose list items are another number,
    *  from which nothing kept may read a counter (`boxesAfter`). */
   let counting: SubtreeRoot | null = null;
+  /** The names what counts otherwise changes, or changed: null for every
+   *  one, where a `display: contents` element may be one of them. */
+  let touched: Set<string> | null = tree.countsUnseen ? null : new Set();
+  /** Nothing short of the whole document, whatever an earlier root asked
+   *  for: no try after this could do it. */
+  const whole = (): null => {
+    found.wider = undefined;
+    found.widerEnds = undefined;
+    return null;
+  };
   const outer = cascade.stylesOf;
   cascade.stylesOf = (el) => fresh.get(el)?.style ?? tree.styles.get(el)?.style;
   /** What is built around `kid` next: its parent's end from it, where no
@@ -1604,8 +1684,10 @@ export function buildSubtrees(
     }
     for (const old of olds) {
       let made: SubtreeBuild | null;
+      const reads = touched && old.reads;
+      const builder = new Builder(options, copies);
       if (old.tail) {
-        made = new Builder(options, copies).runTail(
+        made = builder.runTail(
           old.el,
           old.tail.node,
           old.box,
@@ -1614,17 +1696,55 @@ export function buildSubtrees(
           tree.anonymous,
           old.tail.ran,
           old.tail.wrapped,
+          reads,
+          touched,
         );
       } else {
         const parentStyle = tree.styles.get(old.parent.el!)?.style;
         if (!parentStyle) return null;
-        made = new Builder(options, copies).runSubtree(
+        made = builder.runSubtree(
           old.el!,
           old.parent,
           parentStyle,
           old.depth,
           tree.anonymous,
+          reads,
+          touched,
         );
+      }
+      // As many list items as it had, numbering nothing, and nothing else
+      // done to a counter or a quote, before or after: what follows it
+      // counts as it did, and what it read of what is around it is what the
+      // run it replaces read. Or else nothing kept after it reads a counter
+      // or a quote (`readsCounter`) — a stream's tail, at the document's
+      // end, adding a list — with none counting down in the document.
+      const run = old.parent.children.slice(old.index, old.index + old.count);
+      const otherwise =
+        !!made &&
+        (!touched ||
+          made.countsUnseen ||
+          ((old.counts || made.counts || made.listItems !== old.listItems) &&
+            countedBy(run) !== countedBy(made.boxes)));
+      if (otherwise && (tree.reversed || made!.reversed)) return whole();
+      // What it read and could not answer, which only a build from where
+      // that is made can: the tail of what holds it reads the same. Nothing
+      // can where nothing makes it, and four tries over the document's
+      // lists cost more than the build they ended in.
+      let unread = made ? null : builder.unread();
+      if (otherwise && made!.outside.size) {
+        unread = made!.outside;
+        made = null;
+      }
+      if (unread) {
+        for (const name of unread) {
+          const maker =
+            name === EVERYWHERE
+              ? null
+              : makerAround(old.parent, name, firstBoxes);
+          if (!maker) return whole();
+          (found.wider ??= []).push(maker);
+        }
+        continue;
       }
       if (!made) {
         const wider = old.tail ? old.el : old.el && flatParentOf(old.el);
@@ -1636,19 +1756,14 @@ export function buildSubtrees(
         else widen(wider, old.el!);
         continue;
       }
-      // As many list items as it had, numbering nothing, and nothing else
-      // done to a counter or a quote, before or after: what follows it
-      // counts as it did. Or else nothing kept after it reads a counter or
-      // a quote (`readsCounter`) — a stream's tail, at the document's
-      // end, adding a list — with none counting down in the document.
-      if (
-        (old.counts || made.counts || made.listItems !== old.listItems) &&
-        countedBy(
-          old.parent.children.slice(old.index, old.index + old.count),
-        ) !== countedBy(made.boxes)
-      ) {
-        if (tree.reversed || made.reversed) return null;
+      if (made.outside.size) answeredBuilds += 1;
+      if (otherwise) {
         counting ??= old;
+        if (made.countsUnseen) touched = null;
+        if (touched) {
+          countedNames(run, touched);
+          countedNames(made.boxes, touched);
+        }
       }
       // A float or a box out of the flow that pushed text holds the space
       // before it from the end of the line it is on (`after`'s `held`),
@@ -1677,13 +1792,17 @@ export function buildSubtrees(
     }
     const before = (box: Box): boolean =>
       around.has(box) || olds.some((o) => o.boxes.has(box));
-    if (
-      boxesAfter(
-        counting,
-        olds,
-        (box) => readsCounter(box) && countsAcross(box, before),
-      )
-    ) {
+    const reader = boxesAfter(
+      counting,
+      olds,
+      (box) => readsCounter(box) && countsAcross(box, before, touched) !== null,
+    );
+    if (reader) {
+      // it reads another number, which a build from what makes it can write
+      const name = countsAcross(reader, before, touched);
+      const maker =
+        name === EVERYWHERE ? null : makerAround(reader, name!, firstBoxes);
+      if (maker) found.wider = [maker];
       return null;
     }
   }
@@ -1884,14 +2003,17 @@ export function buildSubtrees(
     // with it: all of them before every root and tail, or after
     const lines = at.lines;
     if (lines?.length && lines[0].textStart >= olds[0].start) {
-      const by = movedFor(lines[0].textStart, at);
+      const first = lines[0];
+      const by = movedFor(first.textStart, at, first.textEnd > first.textStart);
       if (by) shiftLines(lines, by, pass);
     }
   };
   // How far a place in the text that a kept box has moves: past each root
   // or tail before it or in it. At one's end, it is past one with text, and
-  // past one with none where the box holds the one or comes after it.
-  const movedFor = (at: number, box: Box): number => {
+  // past one with none where the box holds the one or comes after it, or
+  // what starts there is text (`starts`), which leaves one with none no
+  // room but before it: an anonymous block has no element to say so.
+  const movedFor = (at: number, box: Box, starts: boolean): number => {
     let by = 0;
     for (let i = 0; i < olds.length; i += 1) {
       const o = olds[i];
@@ -1899,6 +2021,7 @@ export function buildSubtrees(
         at > o.end ||
         (at === o.end &&
           (o.start < o.end ||
+            starts ||
             around[i].has(box) ||
             (!!box.el && precedes(o.first, box.el))))
       ) {
@@ -1961,9 +2084,11 @@ export function buildSubtrees(
     while (next < olds.length) out.push(...parts(built[next++]));
     return out;
   };
-  // under an element of `display: none`, as the styles are now
+  // under an element of `display: none`, as the styles are now, or in what
+  // no build styles: a `<template>` has no style to say so
   const undrawnKnown = new Map<Element, boolean>();
   const noneHere = (at: Element): boolean =>
+    NON_RENDERED.has(tagOf(at)) ||
     (fresh.get(at)?.style ?? tree.styles.get(at)?.style)?.display === 'none';
   const undrawn = (el: Element): boolean =>
     atOrAbove(el, noneHere, undrawnKnown);
@@ -2266,8 +2391,11 @@ export function buildSubtrees(
     backgrounds: boxList(tree.backgrounds, (b) => b.backgrounds),
     awaiting: boxList(tree.awaiting, (b) => b.awaiting),
     images: boxList(tree.images, (b) => b.images),
+    // A tail builds its holder's `::after` again, and an entry goes by the
+    // element it stands for, which stays: left in, one unsized was news at
+    // every arrival after it (`HtmlViewNode._arrivedKinds`).
     contentImages: elementList(
-      tree.contentImages,
+      tree.contentImages.filter((entry) => !entry.box || !dropped(entry.box)),
       (b) => b.contentImages,
       (entry) => entry.element,
     ),
@@ -2285,6 +2413,7 @@ export function buildSubtrees(
     movedInline: flag('movedInline'),
     clipText: flag('clipText'),
     reversed: !!tree.reversed || built.some((b) => b.reversed),
+    countsUnseen: !!tree.countsUnseen || built.some((b) => b.countsUnseen),
   };
   // what layout forgets the sizes of: each new box, and what holds a tail,
   // whose content is another
@@ -2306,6 +2435,13 @@ export function buildSubtrees(
 let endBuilds = 0;
 export function buildsAtEnd(): number {
   return endBuilds;
+}
+
+/** How many subtrees have read what the run they replaced read, for the
+ *  fuzz to hold itself to having tried it. */
+let answeredBuilds = 0;
+export function buildsAnswered(): number {
+  return answeredBuilds;
 }
 
 /** What `buildSubtrees` made: the tree, the boxes whose sizes and those of
@@ -2422,9 +2558,17 @@ function insideRoot(node: ChildNode, o: SubtreeRoot): boolean {
     const holder = isElement(node) ? node : (node.parent as Element | null);
     return !!holder && isElement(holder) && within(holder, o.el!);
   }
-  let at: ChildNode = node;
-  while (at.parent && at.parent !== tail.node) at = at.parent as ChildNode;
-  return at.parent === tail.node && tail.nodes.has(at);
+  // through a shadow tree's host, as `connected` goes: a tail that builds a
+  // host builds what its tree holds
+  let at: { parent: unknown } = node;
+  for (;;) {
+    while (at.parent && at.parent !== tail.node) {
+      at = at.parent as { parent: unknown };
+    }
+    if (at.parent === tail.node) return tail.nodes.has(at as ChildNode);
+    if (!(at instanceof ShadowRoot)) return false;
+    at = at.host;
+  }
 }
 
 /** Whether a list's entry for a box of `el` comes before what a build of a
@@ -2452,43 +2596,49 @@ function boxesAfter(
   from: SubtreeRoot,
   olds: readonly SubtreeRoot[],
   test: (box: Box) => boolean,
-): boolean {
+): Box | null {
   const replaced = (box: Box): boolean => olds.some((o) => o.boxes.has(box));
-  const reads = (root: Box): boolean => {
+  const reads = (root: Box): Box | null => {
     const stack = [root];
     while (stack.length) {
       const box = stack.pop()!;
       if (replaced(box)) continue;
-      if (test(box)) return true;
+      if (test(box)) return box;
       for (const child of box.children) stack.push(child);
     }
-    return false;
+    return null;
   };
   // after its run in its parent, then after each box around it in theirs
   let at = from.parent;
   for (let k = from.index + from.count; k < at.children.length; k += 1) {
-    if (reads(at.children[k])) return true;
+    const found = reads(at.children[k]);
+    if (found) return found;
   }
   for (; at.parent; at = at.parent) {
     const siblings = at.parent.children;
     for (let k = siblings.indexOf(at) + 1; k < siblings.length; k += 1) {
-      if (reads(siblings[k])) return true;
+      const found = reads(siblings[k]);
+      if (found) return found;
     }
   }
-  return false;
+  return null;
+}
+
+/** Whether a box is a list item's own: what an item holds as text carries
+ *  its style and its element, and is no item. */
+function isListItem(box: Box): boolean {
+  return (
+    box.style.display === 'list-item' &&
+    (box.el !== null || !!box.pseudo) &&
+    box.kind !== 'text'
+  );
 }
 
 /** Whether a box reads a counter or a quote's depth: a numbered marker, a
  *  `::marker` or a pseudo-element whose content has one. */
 function readsCounter(box: Box): boolean {
   const style = box.style;
-  if (
-    style.display === 'list-item' &&
-    (box.el || box.pseudo) &&
-    numberedMarker(style)
-  ) {
-    return true;
-  }
+  if (isListItem(box) && numberedMarker(style)) return true;
   const marker = box.marker?.style?.content;
   if (Array.isArray(marker) && contentReads(marker as ContentItem[])) {
     return true;
@@ -2501,48 +2651,50 @@ function readsCounter(box: Box): boolean {
 }
 
 /**
- * Whether what a box after roots built again reads of a counter can be
- * what they counted (`readsCounter`, `buildSubtrees`): a quote's depth, or
- * every instance of a name in `counters()`; or a counter whose instance —
- * made by the nearest reset of its name on the box, on a box before it
+ * What a box after roots built again reads of a counter that can be what
+ * they counted (`readsCounter`, `buildSubtrees`), of the names they touched
+ * (`touched`, null for every one): a quote's depth, or every instance of a
+ * name in `counters()`, which are `EVERYWHERE`; or a counter whose instance
+ * — made by the nearest reset of its name on the box, on a box before it
  * among its siblings, or on a box around it and those before it (CSS
  * Lists 3, 4.4) — is made by a box `before` says is a root's or holds one,
- * or before such a box. One made after the roots counts from there,
- * whatever they did: Apple's footnotes are an `<ol>`, which makes its own
- * `list-item`, and every section built again before them was a build of
- * the whole page.
+ * or before such a box. Null for none. One made after the roots counts from
+ * there, whatever they did: Apple's footnotes are an `<ol>`, which makes its
+ * own `list-item`, and every section built again before them was a build of
+ * the whole page. And a name they did not touch reads as it did: Wikipedia's
+ * menus gain a `<ul>` as they load, above citations that read a quote.
  */
-function countsAcross(box: Box, before: (box: Box) => boolean): boolean {
-  const names = countersOf(box);
-  if (!names) return true;
-  for (const name of names) {
+function countsAcross(
+  box: Box,
+  before: (box: Box) => boolean,
+  touched: ReadonlySet<string> | null,
+): string | null {
+  for (const { name, every } of countersOf(box)) {
+    if (touched && !touched.has(name)) continue;
+    if (every) return EVERYWHERE;
     for (let at: Box | null = box; ; at = at.parent) {
-      if (!at || before(at)) return true;
+      if (!at || before(at)) return name;
       if (resets(at, name)) break;
       const siblings = at.parent?.children ?? [];
       let made = false;
       for (let k = siblings.indexOf(at) - 1; k >= 0 && !made; k -= 1) {
-        if (before(siblings[k])) return true;
+        if (before(siblings[k])) return name;
         made = resets(siblings[k], name);
       }
       if (made) break;
     }
   }
-  return false;
+  return null;
 }
 
-/** The names of the counters a box reads (`readsCounter`), each the one
- *  instance in scope; null where it reads a quote's depth, or every
- *  instance of a name. */
-function countersOf(box: Box): string[] | null {
-  const names: string[] = [];
+/** The names of the counters a box reads (`readsCounter`), and whether it
+ *  reads every instance of the name in scope: a quote's depth is the name
+ *  `QUOTE_DEPTH`, all of whose opens and closes it counts. */
+function countersOf(box: Box): { name: string; every: boolean }[] {
+  const names: { name: string; every: boolean }[] = [];
   const style = box.style;
-  if (
-    style.display === 'list-item' &&
-    (box.el || box.pseudo) &&
-    numberedMarker(style)
-  ) {
-    names.push('list-item');
+  if (isListItem(box) && numberedMarker(style)) {
+    names.push({ name: 'list-item', every: false });
   }
   for (const content of [
     box.marker?.style?.content,
@@ -2550,17 +2702,66 @@ function countersOf(box: Box): string[] | null {
   ]) {
     if (!Array.isArray(content)) continue;
     for (const item of content as ContentItem[]) {
-      if (item.kind === 'counter') names.push(item.name);
-      else if (
+      if (item.kind === 'counter')
+        names.push({ name: item.name, every: false });
+      else if (item.kind === 'counters') {
+        names.push({ name: item.name, every: true });
+      } else if (
         item.kind !== 'string' &&
         item.kind !== 'url' &&
         item.kind !== 'attr'
       ) {
-        return null;
+        names.push({ name: QUOTE_DEPTH, every: true });
       }
     }
   }
   return names;
+}
+
+/** Every name a run of boxes changes (`countedBy`), into `names`: a quote's
+ *  depth among them, which is read wherever it changes. */
+function countedNames(run: readonly Box[], names: Set<string>): void {
+  const stack = [...run];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const style = box.style;
+    if (isListItem(box)) names.add('list-item');
+    for (const list of [
+      style.counterReset,
+      style.counterIncrement,
+      style.counterSet,
+    ]) {
+      for (const change of list ?? []) names.add(change.name);
+    }
+    if (COUNTER_READS.get(box)?.some((read) => read.name === QUOTE_DEPTH)) {
+      names.add(QUOTE_DEPTH);
+    }
+    for (const child of box.children) stack.push(child);
+  }
+}
+
+/**
+ * The element a build apart has to start from to make the counter `name`
+ * for itself: the nearest box around `box`, or `box`, that resets it — and
+ * reads it from inside the element that made it, which is all it can answer
+ * for (`CounterScopes._answers`) — or the nearest element around that a
+ * build can start from (`canRebuild`). Null where none does, the counter
+ * being the document's, a sibling's or made where it is first used: no
+ * build of less than the whole document can say what such a counter reaches.
+ */
+function makerAround(
+  box: Box,
+  name: string,
+  firstBoxes: ReadonlyMap<Element, Box>,
+): Element | null {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (!resets(at, name)) continue;
+    for (let el = at.el; el; el = flatParentOf(el)) {
+      if (canRebuild(el, firstBoxes) && inLightTree(el)) return el;
+    }
+    return null;
+  }
+  return null;
 }
 
 /** Whether a box makes a counter of `name` (`counter-reset`). */
@@ -2581,12 +2782,10 @@ function contentReads(items: readonly ContentItem[]): boolean {
 /**
  * `el`'s old box, as the root of a subtree build: its only box, a block
  * or a flex box in the flow, the child of its parent element's block or
- * flex box, in no vertical flow's frame, its subtree hosting no shadow tree
- * and with no box in the top layer or frame in it, and where in the
- * document's text its subtree's is — from what the boxes before it in its
- * ancestors hold, where it holds none. Null where any of that is not so:
- * every box in a frame has its style turned (`framedStyle`), which a build
- * apart would hand what it built, as the parent's style, and made no frame.
+ * flex box, its subtree hosting no shadow tree and with no box in the top
+ * layer, and where in the document's text its subtree's is — from what the
+ * boxes before it in its ancestors hold, where it holds none. Null where
+ * any of that is not so.
  */
 function subtreeRoot(
   el: Element,
@@ -2594,15 +2793,14 @@ function subtreeRoot(
 ): SubtreeRoot | null {
   if (!canRebuild(el, firstBoxes) || !inLightTree(el)) return null;
   const box = firstBoxes.get(el)!;
-  if (framed.any && frameOf(box)) return null;
   const parent = box.parent!;
   const index = parent.children.indexOf(box);
   if (index < 0) return null;
   let depth = 0;
   for (let at: Box | null = parent; at?.parent; at = at.parent) depth += 1;
   if (depth > MAX_DEPTH - 64) return null;
-  const { boxes, listItems, counts: counted } = oldBoxes([box]) ?? {};
-  if (!boxes) return null;
+  const found = oldBoxes([box]);
+  if (!found) return null;
   let start = Infinity;
   let end = -Infinity;
   if (box.subtreeTextEnd > box.subtreeTextStart) {
@@ -2620,9 +2818,10 @@ function subtreeRoot(
     depth,
     start,
     end,
-    boxes,
-    listItems: listItems!,
-    counts: counted!,
+    boxes: found.boxes,
+    listItems: found.listItems,
+    counts: found.counts,
+    reads: found.reads,
   };
 }
 
@@ -2656,28 +2855,34 @@ function holdDroppedText(
 }
 
 /** Every box of a run of old boxes and what they hold, with how many list
- *  items they hold that number nothing and whether any other changes a
- *  counter or reads one, or a quote (`counts`): null where one is in the
- *  top layer, or the root of a vertical flow, which no build apart takes
- *  apart: it makes no frame (`_apart`). */
-function oldBoxes(
-  run: readonly Box[],
-): { boxes: Set<Box>; listItems: number; counts: boolean } | null {
+ *  items they hold that number nothing, whether any other changes a counter
+ *  or reads one, or a quote (`counts`), and what they read, in their order
+ *  (`COUNTER_READS`): null where one is in the top layer, which no build
+ *  apart takes apart. */
+function oldBoxes(run: readonly Box[]): {
+  boxes: Set<Box>;
+  listItems: number;
+  counts: boolean;
+  reads: CounterRead[];
+} | null {
   const boxes = new Set<Box>();
+  const reads: CounterRead[] = [];
   let listItems = 0;
   let counted = false;
-  const stack = [...run];
+  const stack = [...run].reverse();
   while (stack.length) {
     const at = stack.pop()!;
     boxes.add(at);
-    if (at.topLayer || (framed.any && FRAMES.has(at))) return null;
-    if (at.style.display === 'list-item' && (at.el || at.pseudo)) {
-      listItems += 1;
+    if (at.topLayer) return null;
+    if (isListItem(at)) listItems += 1;
+    const read = COUNTER_READS.get(at);
+    if (read) reads.push(...read);
+    if (read || counts(at)) counted = true;
+    for (let i = at.children.length - 1; i >= 0; i -= 1) {
+      stack.push(at.children[i]);
     }
-    if (counts(at)) counted = true;
-    for (const child of at.children) stack.push(child);
   }
-  return { boxes, listItems, counts: counted };
+  return { boxes, listItems, counts: counted, reads };
 }
 
 /**
@@ -2688,9 +2893,8 @@ function oldBoxes(
  * starts where the builder starts a build of its own — its white space,
  * the word it is in and the holder's anonymous blocks as a block leaves
  * them. The holder's box stays as it is: a block container in the
- * document's own tree and in no vertical flow's frame, hosting no shadow
- * tree and with nothing it holds moved elsewhere (`TAILS_REFUSED`). Its old
- * boxes are the run of the
+ * document's own tree, hosting no shadow tree and with nothing it holds
+ * moved elsewhere (`TAILS_REFUSED`). Its old boxes are the run of the
  * holder box's children after the box before, its `::after` with them, and
  * its text from where that box's line ended (`textAfterBox`) to where the
  * holder's did. Null where any of that is not so.
@@ -2724,7 +2928,6 @@ function tailRoot(
     if (node !== document) return null;
     box = tree.root;
   }
-  if (framed.any && frameOf(box)) return null;
   // a block's, or a flex or grid box's, whose children are each an item of
   // their own, with nothing before one that its fix-up carries to it
   const items = box.kind === 'flex';
@@ -2777,6 +2980,7 @@ function tailRoot(
     boxes: found.boxes,
     listItems: found.listItems,
     counts: found.counts,
+    reads: found.reads,
   };
 }
 
@@ -2957,46 +3161,64 @@ function mayFollowSpace(box: Box): boolean {
 
 /**
  * What a run of boxes does to the counters and the quotes around it, in
- * their order: two runs alike leave what comes after them to count from
- * where it did, whatever else they hold. Wikipedia's articles number their
- * references, and a change to a section that holds a list built the whole
- * document for what that list could have done to them.
+ * their order, and how those of its boxes that do are nested — a counter a
+ * box resets reaches what it holds, or what is around it, and a box beside
+ * it reads otherwise: two runs alike leave what comes after them to count
+ * from where it did, whatever else they hold. Wikipedia's articles number
+ * their references, and a change to a section that holds a list built the
+ * whole document for what that list could have done to them. And what they
+ * read: alike but for that, a caption the fix-up moved was read in another
+ * order than its boxes have.
  */
 function countedBy(run: readonly Box[]): string {
   const counted: unknown[] = [];
-  const stack = [...run].reverse();
+  const stack = [...run].reverse().map((box) => ({ box, depth: 0 }));
+  /** The depth of the deepest box around this one and the last that
+   *  counted, the shape of what holds them. */
+  let around = 0;
   while (stack.length) {
-    const box = stack.pop()!;
+    const { box, depth } = stack.pop()!;
     const style = box.style;
-    const item = style.display === 'list-item' && (box.el || box.pseudo);
+    const item = isListItem(box);
+    around = Math.min(around, depth - 1);
+    const reads = COUNTER_READS.get(box);
     if (item || counts(box)) {
       counted.push([
-        !!item,
+        depth,
+        around,
+        item,
         box.topLayer,
         style.counterReset,
         style.counterIncrement,
         style.counterSet,
         box.el ? attr(box.el, 'value') : null,
         box.pseudo ? style.content : null,
+        reads ?? null,
+        (style.contain & CONTAIN_STYLE) !== 0,
       ]);
+      around = depth;
     }
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
+      stack.push({ box: box.children[i], depth: depth + 1 });
     }
   }
   return JSON.stringify(counted);
 }
 
-/** Whether a box changes or reads a counter, or a quote, or is in the top
- *  layer: what a subtree holding it cannot be built apart for. */
+/** Whether a box changes or reads a counter, or a quote, keeps what it holds
+ *  from changing one, or is in the top layer: what a subtree holding it
+ *  cannot be built apart for. */
 function counts(box: Box): boolean {
+  // a text carries its element's style, and its element counts for it
+  if (box.kind === 'text') return false;
   const style = box.style;
   if (box.topLayer) return true;
   if (
     style.counterReset ||
     style.counterIncrement ||
     style.counterSet ||
-    (style.display === 'list-item' && numberedMarker(style))
+    style.contain & CONTAIN_STYLE ||
+    (isListItem(box) && numberedMarker(style))
   ) {
     return true;
   }
@@ -3292,11 +3514,7 @@ class Builder {
   private _links: Box[] = [];
   private _focusables: Box[] = [];
   private _backgrounds: Box[] = [];
-  private _contentImages: {
-    url: string;
-    element: Element;
-    sized: boolean;
-  }[] = [];
+  private _contentImages: ContentImage[] = [];
   private _awaiting: Box[] = [];
   private _images: Box[] = [];
   private _awaitingKind: Element[] = [];
@@ -3327,6 +3545,9 @@ class Builder {
   private _quoteDepth = 0;
   /** Whether a counter counts down (`BoxTree.reversed`). */
   private _reversed = false;
+  /** Whether a `display: contents` element changes a counter
+   *  (`BoxTree.countsUnseen`). */
+  private _countsUnseen = false;
   /** Where the inline content being built stands, for collapsing white
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
@@ -3444,10 +3665,11 @@ class Builder {
    * box of its parent's kind and style, at the depth its box was at, with
    * the line before it ended and no counter or quote in scope — which is
    * how a block-level box in the flow starts, and how it leaves what comes
-   * after it. Its text is numbered from 0, for the splice to move to where
-   * its old box's was. Null where what it made is not one such box, or
-   * counts, quotes, or holds what a build of the whole document finishes
-   * across the tree: an orthogonal flow, a `<foreignObject>`.
+   * after it — but what the run it replaces read of them (`reads`). Its
+   * text is numbered from 0, for the splice to move to where its old box's
+   * was. Null where what it made is not one such box, or reads what neither
+   * says, or holds what a build of the whole document finishes across the
+   * tree: an orthogonal flow, a `<foreignObject>`.
    */
   runSubtree(
     el: Element,
@@ -3455,13 +3677,15 @@ class Builder {
     parentStyle: ComputedStyle,
     depth: number,
     anonymous: AnonymousStyle,
+    reads: readonly CounterRead[] | null,
+    touched: ReadonlySet<string> | null,
   ): SubtreeBuild | null {
     const cascade = this._options.cascade;
     const holder = new Box(parent.kind, null, parent.style);
     const inFlex =
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex';
     this._depth = depth;
-    this._scopes.detach();
+    this._scopes.detach(reads, touched);
     this._scopes.open();
     // an `@container` rule finds its container among the subtree's styles
     // as this build makes them, and among the tree's above it
@@ -3498,9 +3722,10 @@ class Builder {
    * a build of the whole document builds them there (`buildSubtrees`): into
    * a box of the holder's kind and style, at the depth its children are
    * at, from where the block before them left the builder — its line ended,
-   * no word begun (`_endLine`) — and with no counter or quote in scope,
-   * fixed up as what follows a block in the holder's box is (`fixUp`). Its
-   * text is numbered from 0, as `runSubtree`'s is. Null as there.
+   * no word begun (`_endLine`) — and with no counter or quote in scope but
+   * what the run it replaces read of them (`reads`), fixed up as what
+   * follows a block in the holder's box is (`fixUp`). Its text is numbered
+   * from 0, as `runSubtree`'s is. Null as there.
    */
   runTail(
     holder: Element | null,
@@ -3513,13 +3738,15 @@ class Builder {
      *  whether it is wrapped. */
     ran: number,
     wrapped: boolean,
+    reads: readonly CounterRead[] | null,
+    touched: ReadonlySet<string> | null,
   ): SubtreeBuild | null {
     const cascade = this._options.cascade;
     const style = box.style;
     const into = new Box(box.kind, null, style);
     const inFlex = style.display === 'flex' || style.display === 'inline-flex';
     this._depth = depth;
-    this._scopes.detach();
+    this._scopes.detach(reads, touched);
     this._scopes.open();
     const styles = this._styles;
     const outer = cascade.stylesOf;
@@ -3604,6 +3831,12 @@ class Builder {
     );
   }
 
+  /** Where what was just built read what it could not answer, what that
+   *  was (`CounterScopes.outside`). */
+  unread(): ReadonlySet<string> | null {
+    return this._scopes.escapedRead ? this._scopes.outside : null;
+  }
+
   /** What `runSubtree` or `runTail` made: `boxes` and what was found as
    *  they were built. */
   private _subtree(boxes: Box[]): SubtreeBuild {
@@ -3628,6 +3861,8 @@ class Builder {
       listItems: this._listItems,
       counts: this._counts,
       reversed: this._reversed,
+      countsUnseen: this._countsUnseen,
+      outside: this._scopes.outside,
       flags: {
         relative: this._relative,
         tilted: this._tilted,
@@ -3723,6 +3958,7 @@ class Builder {
       movedInline: this._movedInline,
       clipText: this._clipText,
       reversed: this._reversed,
+      countsUnseen: this._countsUnseen,
       impliedHtml: root.impliedHtml,
       impliedRoot: root.impliedRoot,
       paletteScheme: root.paletteScheme,
@@ -3973,7 +4209,10 @@ class Builder {
     const contains =
       (style.contain & CONTAIN_STYLE) !== 0 && style.display !== 'contents';
     const quoteDepth = this._quoteDepth;
-    if (contains) this._scopes.contain();
+    if (contains) {
+      this._scopes.contain();
+      this._counts = true;
+    }
     this._elementIn(el, tag, style, key, into, inFlex, {
       node: el,
       style,
@@ -4000,6 +4239,9 @@ class Builder {
       // takes out — and a replaced element, which has nothing to hand on,
       // is not rendered
       if (tag === 'br' || replacedKind(el, tag) !== 'none') return;
+      if (style.counterReset || style.counterIncrement || style.counterSet) {
+        this._countsUnseen = true;
+      }
       this._counterChanges(style, place);
       this._pseudo(el, 'before', style, into);
       this._children(el, into, style, inFlex, el, key);
@@ -4075,8 +4317,11 @@ class Builder {
               ? 'image'
               : 'button'
             : replacedKind(el, tag);
+    // and what a document came to has what it will have: listed, it was
+    // news at every image after it
     if (
       replaced !== 'image' &&
+      !this._options.holdsDocument?.(el) &&
       (tag === 'object' ||
         tag === 'embed' ||
         tag === 'video' ||
@@ -4204,6 +4449,7 @@ class Builder {
         box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
         if (flush) box.marker.flush = true;
       }
+      this._noteReads(box);
     }
     const childInFlex =
       style.display === 'flex' || style.display === 'inline-flex';
@@ -4600,6 +4846,7 @@ class Builder {
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
     if (marker) pieces.unshift(written?.flush ? marker : `${marker} `);
+    this._noteReads(box);
     this._scopes.close();
     const flow = flowOf(style, box);
     const around = this._ws;
@@ -4668,6 +4915,12 @@ class Builder {
     return numberedMarker(style) ? this._scopes.value('list-item') : 0;
   }
 
+  /** What was just read, for a build of `box` apart to read again. */
+  private _noteReads(box: Box): void {
+    const reads = this._scopes.takeReads();
+    if (reads) COUNTER_READS.set(box, reads);
+  }
+
   private _counterChanges(
     style: ComputedStyle,
     place: CounterPlace | null,
@@ -4689,10 +4942,7 @@ class Builder {
         if (resets.some((c, j) => j > i && c.name === change.name)) continue;
         // a counter that counts down from what its scope adds up to reads
         // all of that scope, and is read by every item before the end of it
-        if (change.counted || change.reversed) {
-          this._reversed = true;
-          this._scopes.escape();
-        }
+        if (change.counted || change.reversed) this._reversed = true;
         const value = change.counted
           ? this._countedStart(change.name, style, place)
           : change.value;
@@ -4889,14 +5139,14 @@ class Builder {
         case 'open-quote':
           this._counts = true;
           // the depth the quotes around it left, which a build apart has not
-          this._scopes.escape();
+          this._quoteDepth = this._scopes.quoteDepth(this._quoteDepth);
           text += quoteAt(style.quotes, this._quoteDepth, 0, languageOf(el));
           this._quoteDepth += 1;
           break;
         case 'close-quote':
           this._counts = true;
           // the depth the quotes around it left, which a build apart has not
-          this._scopes.escape();
+          this._quoteDepth = this._scopes.quoteDepth(this._quoteDepth);
           // a close with nothing open writes nothing and closes nothing
           if (this._quoteDepth > 0) {
             this._quoteDepth -= 1;
@@ -4906,13 +5156,13 @@ class Builder {
         case 'no-open-quote':
           this._counts = true;
           // the depth the quotes around it left, which a build apart has not
-          this._scopes.escape();
+          this._quoteDepth = this._scopes.quoteDepth(this._quoteDepth);
           this._quoteDepth += 1;
           break;
         case 'no-close-quote':
           this._counts = true;
           // the depth the quotes around it left, which a build apart has not
-          this._scopes.escape();
+          this._quoteDepth = this._scopes.quoteDepth(this._quoteDepth);
           if (this._quoteDepth > 0) this._quoteDepth -= 1;
           break;
       }
@@ -4947,7 +5197,7 @@ class Builder {
     into.append(box);
     CONTENT_IMAGES.set(box, url);
     const size = this._options.urlSize?.(url) ?? null;
-    this._contentImages.push({ url, element: owner, sized: !!size });
+    this._contentImages.push({ url, element: owner, sized: !!size, box });
     if (marker) {
       const { width, height } = marker;
       const ratio = width > 0 && height > 0 ? width / height : 0;
@@ -5157,8 +5407,14 @@ class Builder {
       ranges[n - 1] = this._length;
       if (ranges[n - 2] >= this._length) ranges.length = n - 2;
     }
+    // and a chunk it empties goes as well: a float's lone space leaves the
+    // space before the float on the line, and the next line's end takes
+    // that one back from the chunk under it, or every place after it in
+    // the text is one out
     const last = this._chunks.length - 1;
-    this._chunks[last] = this._chunks[last].slice(0, -1);
+    const chunk = this._chunks[last].slice(0, -1);
+    if (chunk) this._chunks[last] = chunk;
+    else this._chunks.pop();
     if (!box.text) {
       this._textBoxes.pop();
       const siblings = box.parent?.children;
@@ -5221,21 +5477,44 @@ class CounterScopes {
    * notes where what it does would have met one of them in a build of the
    * whole document: a read of a counter none of its own elements made, or
    * of one whose reach a counter outside could have changed
-   * (`CounterInstance.uncertain`) from past the element that made it
-   * (`escapedRead`), which it cannot be built apart for; and a change to
-   * one of those (`escapedWrite`), which it can where nothing after it
-   * reads a counter (`buildSubtrees`). Null in a build of the whole.
+   * (`CounterInstance.uncertain`) from past the element that made it,
+   * which it answers from `reads` — what the run it replaces read, at the
+   * same place in the order — where it can, and otherwise cannot be built
+   * apart for (`escapedRead`); and a change to one of those
+   * (`escapedWrite`), which it can where nothing after it reads a counter
+   * (`buildSubtrees`). Null in a build of the whole.
    */
-  private _detached: { escapedRead: boolean; escapedWrite: boolean } | null =
-    null;
+  private _detached: {
+    escapedRead: boolean;
+    escapedWrite: boolean;
+    reads: readonly CounterRead[] | null;
+    read: number;
+    touched: ReadonlySet<string> | null;
+    outside: Set<string>;
+  } | null = null;
+  /** What was read since a box last took it (`takeReads`). */
+  private _unplaced: CounterRead[] | null = null;
   /** Each open level's id, for an instance to say whether the element that
    *  made it is still open (`CounterInstance.owner`). */
   private _ids: number[] = [0];
   private _nextId = 1;
 
-  /** Count apart from the document around (`_detached`). */
-  detach(): void {
-    this._detached = { escapedRead: false, escapedWrite: false };
+  /** Count apart from the document around (`_detached`), reading from
+   *  `reads` what is outside it but for the names in `touched`, which what
+   *  was built before this counted otherwise: none where nothing says what
+   *  the run this replaces read is what this one would. */
+  detach(
+    reads: readonly CounterRead[] | null,
+    touched: ReadonlySet<string> | null,
+  ): void {
+    this._detached = {
+      escapedRead: false,
+      escapedWrite: false,
+      reads,
+      read: 0,
+      touched,
+      outside: new Set(),
+    };
   }
 
   get escapedRead(): boolean {
@@ -5246,10 +5525,51 @@ class CounterScopes {
     return this._detached?.escapedWrite ?? false;
   }
 
-  /** A read of a counter, or of a quote's depth, that a build apart cannot
-   *  answer as the whole document's would. */
-  escape(): void {
-    if (this._detached) this._detached.escapedRead = true;
+  /** What a build apart read that it could not work out, by name, or
+   *  `EVERYWHERE`. What it made stands only where it counts as the run it
+   *  replaces did: the same changes in the same order, nested alike
+   *  (`countedBy`), start and end with what is outside where that run's did,
+   *  so each read in it comes to what that run's did, and each thing after
+   *  it counts from where it did. */
+  get outside(): ReadonlySet<string> {
+    return this._detached?.outside ?? NOTHING_OUTSIDE;
+  }
+
+  /** What was read since this was last called, for the box it was for. */
+  takeReads(): CounterRead[] | null {
+    const reads = this._unplaced;
+    this._unplaced = null;
+    return reads;
+  }
+
+  /** A read of `name`, which `known` says this build can answer: in a build
+   *  apart, the one at this place in the run it replaces otherwise. `every`
+   *  says it reads all there is around, which no element makes. */
+  private _answer<T extends number | number[]>(
+    name: string,
+    value: T,
+    known: boolean,
+    every = false,
+  ): T {
+    const detached = this._detached;
+    if (detached) {
+      const was = detached.reads?.[detached.read];
+      detached.read += 1;
+      if (!known) {
+        detached.outside.add(every ? EVERYWHERE : name);
+        // of the same kind, a `counters()` being no `counter()`: another
+        // name is another run (`countedBy`)
+        if (
+          was &&
+          Array.isArray(was.value) === Array.isArray(value) &&
+          !detached.touched?.has(name)
+        ) {
+          value = was.value as T;
+        } else detached.escapedRead = true;
+      }
+    }
+    (this._unplaced ??= []).push({ name, value });
+    return value;
   }
 
   open(): void {
@@ -5294,7 +5614,16 @@ class CounterScopes {
   /** Whether a reset of `name` here reaches the element's later siblings,
    *  or its descendants alone. */
   reachesSiblings(name: string): boolean {
+    // a list with style containment holds its own numbers, whatever is
+    // around it
+    if (name === 'list-item' && this._containedHere()) return false;
     return this._made.length < 2 || !this._parentHas(name);
+  }
+
+  /** Whether the element whose level is open has style containment. */
+  private _containedHere(): boolean {
+    const contained = this._contained;
+    return contained[contained.length - 1] === this._made.length - 1;
   }
 
   reset(name: string, value: number, reversed: boolean): void {
@@ -5352,16 +5681,6 @@ class CounterScopes {
     return at < this._ids.length && this._ids[at] === instance.owner;
   }
 
-  /** The instance a read in a build apart reads, noting where it is not one
-   *  it answers for. */
-  private _read(name: string): CounterInstance {
-    const instance = this._innermost(name);
-    if (this._detached && !this._answers(instance)) {
-      this._detached.escapedRead = true;
-    }
-    return instance;
-  }
-
   increment(name: string, by: number): void {
     const instance = this._counted(name);
     instance.value = clampCounter(instance.value + by);
@@ -5381,11 +5700,14 @@ class CounterScopes {
     const detached = this._detached;
     if (detached && !this._answers(instance)) detached.escapedWrite = true;
     const bound = this._contained[this._contained.length - 1];
-    // containment in a build apart: where the instance counted on is is
-    // too much to say
-    if (detached && bound !== undefined) detached.escapedRead = true;
     const level = this._made.length - 1;
-    if (bound === undefined || level <= bound || instance.level >= bound) {
+    if (bound === undefined || level <= bound || instance.level > bound) {
+      return instance;
+    }
+    // what the contained element reset itself is no more in its subtree than
+    // what is around it, whether that reaches its siblings or not — but a
+    // list's, whose items Chrome and WebKit number from its `start`
+    if (instance.level === bound && (!instance.own || name === 'list-item')) {
       return instance;
     }
     const parent = level - 1;
@@ -5407,14 +5729,29 @@ class CounterScopes {
   }
 
   value(name: string): number {
-    return this._read(name).value;
+    const instance = this._innermost(name);
+    return this._answer(
+      name,
+      instance.value,
+      !this._detached || this._answers(instance),
+    );
   }
 
   values(name: string): number[] {
     this._innermost(name);
     // every instance, outermost first: the outer ones are the document's
-    this.escape();
-    return this._instances.get(name)!.map((instance) => instance.value);
+    return this._answer(
+      name,
+      this._instances.get(name)!.map((instance) => instance.value),
+      !this._detached,
+      true,
+    );
+  }
+
+  /** The depth of the quotes open, which is `depth` but for a build apart,
+   *  which has seen only its own. */
+  quoteDepth(depth: number): number {
+    return this._answer(QUOTE_DEPTH, depth, !this._detached);
   }
 }
 
@@ -5433,6 +5770,9 @@ interface CounterInstance {
   uncertain?: boolean;
   outer?: boolean;
 }
+
+/** What a build of the whole document reads from outside it. */
+const NOTHING_OUTSIDE: ReadonlySet<string> = new Set();
 
 /** A counter is a 32-bit integer in a browser, and saturates there. */
 function clampCounter(value: number): number {
@@ -6267,6 +6607,7 @@ function breakAround(inline: Box): Box[] | null {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
   CUT_BLOCKS.set(pieces[0], blocks);
+  CUT_PIECES.set(pieces[0], pieces.slice(1));
   const fade = inline.style.opacity;
   if (fade < 1) {
     for (const block of blocks) {
@@ -6297,6 +6638,20 @@ function namesImages(style: ComputedStyle): boolean {
  * paragraph after it the height of the div further down. One per parent
  * style, which the cascade already shares between elements.
  */
+/** Every style an `AnonymousStyle` made, which a family list changes in
+ *  (`HtmlViewNode._takeFaces`): one no box has now is still what the next
+ *  box that asks for it is handed. */
+const ANONYMOUS_MADE = new WeakMap<AnonymousStyle, Set<ComputedStyle>>();
+
+/** The styles a tree's `anonymous` made. */
+export function anonymousMade(
+  anonymous: AnonymousStyle,
+): ReadonlySet<ComputedStyle> {
+  return ANONYMOUS_MADE.get(anonymous) ?? EMPTY_STYLES;
+}
+
+const EMPTY_STYLES: ReadonlySet<ComputedStyle> = new Set();
+
 export type AnonymousStyle = (
   parent: ComputedStyle,
   display: ComputedStyle['display'],
@@ -6304,7 +6659,8 @@ export type AnonymousStyle = (
 
 function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
   const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
-  return (parent, display) => {
+  const all = new Set<ComputedStyle>();
+  const anonymous: AnonymousStyle = (parent, display) => {
     let byDisplay = made.get(parent);
     if (!byDisplay) {
       byDisplay = new Map();
@@ -6317,9 +6673,12 @@ function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
       style = inherit(parent, initial);
       style.display = display;
       byDisplay.set(display, style);
+      all.add(style);
     }
     return style;
   };
+  ANONYMOUS_MADE.set(anonymous, all);
+  return anonymous;
 }
 
 function isBlockLevel(box: Box): boolean {

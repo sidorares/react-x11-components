@@ -89,26 +89,23 @@ document's top on Next.js, Tailwind and the Guardian.
 The builder carries state across siblings, and a root is where all of it
 is at a known value and comes out the same:
 
-| builder state                                                          | why a root is safe for it                                                                                                                                                                                            |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| white space (`_ws`), a word's first letter (`_lettered`)               | a block-level box ends the line before it and starts its own (`_endLine`, `after`)                                                                                                                                   |
-| the document's text (`_chunks`, `_length`) and every box's `textStart` | the root's text is built from its old start, and every later box shifts by the difference                                                                                                                            |
-| `::first-letter` (`_firstLetter`)                                      | refused where a block at or around the root's parent looks for one: a `::first-letter` rule matches it (`lookedForLetter`). Only such a block hands the builder a search, and none is carried out past what it holds |
-| `::first-line` (`FIRST_LINE`)                                          | refused where any rule styles one                                                                                                                                                                                    |
-| CSS counters and quotes (`_scopes`, `_quoteDepth`)                     | refused where the old or new subtree changes or reads a counter or a quote — but for list items whose markers show no number, as many after as before (`_listItems`)                                                 |
-| depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                                                                       |
-| the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                                                                             |
-| the flat tree                                                          | the root is in the document's own tree and assigned to no slot (`inLightTree`): what changed in a shadow tree or a slot is built with the host around it                                                             |
-| a vertical flow's frame (`makeFrame`)                                  | refused where the root is in a frame or holds one (`subtreeRoot`, `oldBoxes`): every box in a frame has its style turned (`framedStyle`), and a build apart makes no frame (`_apart`)                                |
+| builder state                                                          | why a root is safe for it                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| white space (`_ws`), a word's first letter (`_lettered`)               | a block-level box ends the line before it and starts its own (`_endLine`, `after`)                                                                                                                                               |
+| the document's text (`_chunks`, `_length`) and every box's `textStart` | the root's text is built from its old start, and every later box shifts by the difference                                                                                                                                        |
+| `::first-letter` (`_firstLetter`)                                      | refused where a block at or around the root's parent looks for one: a `::first-letter` rule matches it (`lookedForLetter`). Only such a block hands the builder a search, and none is carried out past what it holds             |
+| `::first-line` (`FIRST_LINE`)                                          | refused where any rule styles one                                                                                                                                                                                                |
+| CSS counters and quotes (`_scopes`, `_quoteDepth`)                     | what it reads of what is around it is what the run it replaces read, where it counts as that run did (`COUNTER_READS`, `countedBy`); otherwise it is built from what makes the counter, or the whole document is (`makerAround`) |
+| depth (`_depth`, `MAX_DEPTH`)                                          | the root's depth is counted from its ancestors                                                                                                                                                                                   |
+| the fix-up (`fixUp`)                                                   | the root is block-level in a block or flex container, before and after, so its parent's anonymous boxes are as they were                                                                                                         |
+| the flat tree                                                          | the root is in the document's own tree and assigned to no slot (`inLightTree`): what changed in a shadow tree or a slot is built with the host around it                                                                         |
 
 So a rebuild root is an element whose old box is its only box, an in-flow
 block-level box (`block` or `flex`), child of a block or flex container,
 and whose new box is one too — and nothing in the document styles a first
-line, no block around it styles its first letter, and it is in no vertical
-flow's frame and holds none. A root that fails any of these hands its
-parent the role, and a root at the document's top is a whole build: but
-for a frame, whose refusal is final, since the parent is in the frame too,
-or holds it.
+line, and no block around it styles its first letter. A root that fails
+any of these hands its parent the role, and a root at the document's top
+is a whole build.
 
 ### What the tree keeps besides boxes
 
@@ -131,9 +128,7 @@ flags that say where none of a kind is:
   nothing, as before the change.
 - **What is refused**: a subtree with a `<foreignObject>`, an orthogonal
   flow, a view transition's tree or a box in the top layer builds the
-  whole document, as now. Of those, an orthogonal flow is the subtree's
-  alone: a frame anywhere else in the tree stays as it is, with its boxes'
-  places in the text and its lines moved like any kept block's.
+  whole document, as now.
 
 ### What it is held to
 
@@ -165,12 +160,8 @@ it where all of that is the same, nothing has laid it out since
 in it changed: `forgetSizes`, which every change that a box's layout
 reads calls for the box and every box it is in, forgets the record with
 the sizes. A layout that may keep a block is one of the whole document, of
-a tree with no anchor, no `::first-line` and no foreign object. In a tree
-with a vertical flow the root is kept as a block, its frame moved with it,
-and nothing in a frame is (`noteBlockers`): `reflectFrame` moves what is in
-one after the flow a record would be noted in. A frame fit to the viewport
-is the one thing a kept block can hold that reads the viewport's height, so
-a layout of such a tree that kept anything is taken to have read it.
+a tree with no anchor, no vertical flow, no `::first-line` and no foreign
+object.
 
 **What it holds is where its layout put it, from its corner.** The passes
 after a flow move boxes — their transforms' translations, their relative
@@ -323,7 +314,7 @@ state there is the one it starts a build of its own at:
 | white space, a word's first letter | the block before it ended its line (`_endLine`, `after`); and a float or a box out of the flow around it holds the space before it from its line's end only where it pushed text (`after`'s `held`), so one whose text comes to some, or to none, is refused — as a root is                                                                                |
 | the document's text                | the tail's text starts where the block before it left the text (`textAfterBox`: the end of the text the tree's ranges say is at or before it, and past it what the fix-up dropped from it, which the list of text boxes keeps) and ends where the holder's did; what follows moves by the difference, its lines and their span maps with it (`shiftLines`) |
 | `::first-letter`, `::first-line`   | a first letter: refused where the holder, or a block around it, looks for one (`lookedForLetter`); a first line: refused where any rule styles one                                                                                                                                                                                                         |
-| counters and quotes                | a build apart notes a read of any counter it did not make, or of one whose reach a counter outside could change, and refuses (`CounterScopes.detach`); it counts otherwise than the old run did only where nothing kept after it reads a counter                                                                                                           |
+| counters and quotes                | as for a root: a build apart reads what it cannot work out from the run it replaces, and stands only where it counts as that run did; it counts otherwise than the old run did only where nothing kept after it reads a name it touched                                                                                                                    |
 | the fix-up                         | the tail is fixed up after a stand-in block, with what the fix-up saw before the block among the holder's children (`ranBefore`, from the first block after each, which `RAN_FROM` keeps by the holder): inline content, which wraps every run, and floats or boxes out of the flow, wrapped only so; refused where the tail would change how they are     |
 | the holder                         | its box and style stay: a block container in the document's own tree, hosting no shadow tree, of no element that lays out its children otherwise (`TAILS_REFUSED`), and none whose style the change can reach                                                                                                                                              |
 
@@ -336,11 +327,16 @@ The counters rule is what lets a tail add a list: a `<ul>` resets
 `list-item`, and a root or a tail that changes a counter was refused. In a
 build apart every counter used has to have been made by its own elements,
 and reached from inside the element that made it or past one whose reach
-no counter outside could change; where the counts before and after differ,
-the boxes kept after it are walked for one that reads a counter
-(`boxesAfter`, `readsCounter`) — at the document's end, none — with none
-counting down in the document (`BoxTree.reversed`), since that reads every
-item before its scope's end.
+no counter outside could change, or be read from the run it replaces, at
+the same place in the order (`COUNTER_READS`): a build that counts as that
+run did, the same changes nested alike, reads what it read. Where the
+counts before and after differ, what it read that way is no use, and it is
+built from what makes the counter (`makerAround`), or the whole document is
+where nothing around it does. Otherwise the boxes kept after it are walked
+for one that reads a name it touched (`boxesAfter`, `readsCounter`,
+`countedNames`) — at the document's end, none — and built from what makes
+that, with none counting down in the document (`BoxTree.reversed`), since
+that reads every item before its scope's end.
 
 ### At the document's end
 

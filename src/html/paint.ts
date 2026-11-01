@@ -131,10 +131,12 @@ import {
   GRID_TRACKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
+  isOffset,
   MOVED_OFF_LINES,
   SHADOWED_TEXT,
   SHAPE_STYLES,
   SHIFTED_LINES,
+  STICKY_SIZES,
   TEXT_RAISES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
@@ -833,13 +835,29 @@ function boundsOf(
       box.padTop + box.padBottom + box.borderTop + box.borderBottom > 0;
     const shadows = box.style.boxShadow;
     const out = inlineInkOutsets(box.style, shadows);
-    const reach = padded || out ? inlineFragmentsReach(box, out) : null;
+    const reach = paintsApart(box)
+      ? apartReach(box, out)
+      : padded || out
+        ? inlineFragmentsReach(box, out)
+        : null;
     if (reach) {
       x1 = Math.min(x1, reach.x1 - (out?.left ?? 0));
       y1 = Math.min(y1, reach.y1 - (out?.top ?? 0));
       x2 = Math.max(x2, reach.x2 + (out?.right ?? 0));
       y2 = Math.max(y2, reach.y2 + (out?.bottom ?? 0));
       if (padded) bottom = Math.max(bottom, reach.y2);
+    }
+    // a sticky one has a rect, its lines', which stands where it is held:
+    // what a pane's scroll is told it does not copy with the text
+    // (`viewportFixedRects`), and what is asked what is over a mount
+    const held =
+      box.style.position === 'sticky' ? STICKY_SIZES.get(box) : undefined;
+    // and a box of no area reaches nowhere: a span of collapsed spaces
+    if (held && held.width > 0 && held.height > 0) {
+      x1 = Math.min(x1, box.x);
+      y1 = Math.min(y1, box.y);
+      x2 = Math.max(x2, box.x + held.width);
+      y2 = Math.max(y2, box.y + held.height);
     }
   }
   const lines = box.lines;
@@ -1172,37 +1190,36 @@ function inlineFragmentsReach(
   out: Outsets | null,
 ): { x1: number; y1: number; x2: number; y2: number } | null {
   const face = box.decoration ?? PADDED_FACES.get(box);
-  if (!face || box.subtreeTextEnd <= box.subtreeTextStart) return null;
-  let block = box.parent;
-  while (block && block.kind === 'inline') block = block.parent;
-  const lines = block?.lines;
+  if (!face) return null;
+  // a box with no text is found by its edges: one a layer paints is culled
+  // by what this says, and has nothing else to say it
+  const empty = box.subtreeTextEnd <= box.subtreeTextStart;
+  if (empty && !paintsApart(box)) return null;
+  const lines = linesAround(box);
   if (!lines?.length) return null;
   const from = box.subtreeTextStart;
   const to = box.subtreeTextEnd;
-  let lo = 0;
-  let hi = lines.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (lines[mid].textEnd > from) hi = mid;
-    else lo = mid + 1;
-  }
   const moved = offsetOf(box);
   let x1 = Infinity;
   let y1 = Infinity;
   let x2 = -Infinity;
   let y2 = -Infinity;
-  for (let i = lo; i < lines.length; i += 1) {
+  for (let i = empty ? 0 : firstLineAt(lines, from); i < lines.length; i += 1) {
     const line = lines[i];
-    if (line.textStart >= to) break;
-    if (line.textEnd <= from) continue;
+    if (empty) {
+      if (!line.edges?.some((edge) => edge.box === box)) continue;
+    } else {
+      if (line.textStart >= to) break;
+      if (line.textEnd <= from) continue;
+    }
     const raise = SHIFTED_LINES.has(line)
       ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
       : 0;
     const baseline = line.y + line.baseline - raise + (moved?.y ?? 0);
     const top = baseline - face.ascent - box.padTop - box.borderTop;
     const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
-    x1 = Math.min(x1, line.x);
-    x2 = Math.max(x2, line.x + line.width);
+    x1 = Math.min(x1, line.x + (moved?.x ?? 0));
+    x2 = Math.max(x2, line.x + line.width + (moved?.x ?? 0));
     y1 = Math.min(y1, top);
     y2 = Math.max(y2, bottom);
     // only where they fall past the line, which a link's underline does
@@ -1217,6 +1234,90 @@ function inlineFragmentsReach(
         bottom: Math.max(bottom + out.bottom, was?.bottom ?? -Infinity),
       });
       CAST_LINES.add(lines);
+    }
+  }
+  return x1 === Infinity ? null : { x1, y1, x2, y2 };
+}
+
+/** The lines of the block around an inline box. */
+function linesAround(box: Box): LineBox[] | null {
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  return block?.lines ?? null;
+}
+
+/** The first of a block's lines with text at or past a document index. */
+function firstLineAt(lines: readonly LineBox[], from: number): number {
+  let lo = 0;
+  let hi = lines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].textEnd > from) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+const NO_OUTSETS: Outsets = { left: 0, top: 0, right: 0, bottom: 0 };
+
+/**
+ * How far what an inline box painted as a layer (`paintsApart`) draws on its
+ * lines reaches: across, from its own text and edges where they are drawn, and
+ * not the lines they are on, which `inlineFragmentsReach` takes; down, from its
+ * fragments and from its glyphs' ascent to their descent, with the shadows they
+ * cast, and as far as its line where it is still on it, which is what the
+ * line's own cull reached. A layer is culled by its own ink and answers what
+ * asks what is over something by it, and its text is on the lines of the block
+ * around it, so nothing else says where it is. Its fragments are noted on their
+ * lines however little they reach (`LINE_CASTS`): they are off the lines, where
+ * a repaint of them finds them.
+ */
+function apartReach(
+  box: Box,
+  out: Outsets | null,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const reach = inlineFragmentsReach(box, out ?? NO_OUTSETS);
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  const lines = block?.lines;
+  if (!block || !lines) return null;
+  const from = box.subtreeTextStart;
+  const to = box.subtreeTextEnd;
+  const empty = to <= from;
+  const moved = offsetOf(box)?.x ?? 0;
+  const cast = textShadowReach(block);
+  let x1 = Infinity;
+  let y1 = reach?.y1 ?? Infinity;
+  let x2 = -Infinity;
+  let y2 = reach?.y2 ?? -Infinity;
+  for (let i = empty ? 0 : firstLineAt(lines, from); i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!empty && line.textStart >= to) break;
+    for (const edge of line.edges ?? []) {
+      if (edge.box !== box) continue;
+      x1 = Math.min(x1, edge.x + moved);
+      x2 = Math.max(x2, edge.x + edge.width + moved);
+    }
+    for (const text of line.texts) {
+      if (empty || text.textEnd <= from || text.textStart >= to) continue;
+      const natural = text.layout.lines[text.layoutLine];
+      if (!natural) continue;
+      const left = text.drawX + natural.x;
+      const right = left + Math.max(natural.width, natural.advance ?? 0);
+      const baseline = text.drawY + natural.baseline;
+      const home = !TEXT_SHIFTS.has(text);
+      x1 = Math.min(x1, left - (cast?.left ?? 0));
+      x2 = Math.max(x2, right + (cast?.right ?? 0));
+      y1 = Math.min(
+        y1,
+        home ? line.y : y1,
+        baseline - (natural.ascent ?? 0) - (cast?.top ?? 0),
+      );
+      y2 = Math.max(
+        y2,
+        home ? line.y + line.height : y2,
+        baseline + (natural.descent ?? 0) + (cast?.bottom ?? 0),
+      );
     }
   }
   return x1 === Infinity ? null : { x1, y1, x2, y2 };
@@ -2084,6 +2185,9 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // multiplies each thing drawn rather than the group they make.
   const opacity = opacityOf(box);
   if (opacity <= 0) return;
+  // what it has on its lines, ahead of what a group of its holds: that is
+  // faded as it is drawn, in its colours (`inlineFade`, `paintsApart`)
+  if (box.kind === 'inline') paintApart(ctx, box, options);
   if (
     box.style.filter !== null &&
     paintFiltered(ctx, box, options, null, opacity)
@@ -3915,9 +4019,10 @@ function inGroup(
  * that does.
  *
  * An inline box's text, its background and borders, and what is on its
- * lines are drawn on its block's lines, each faded there (`inlineFade`),
- * and none of it in its own paint: what that draws, and a group of its
- * would hold, is the floats and the positioned boxes in it (`paintedApart`).
+ * lines are drawn on its block's lines, each faded there (`inlineFade`), one
+ * a layer paints (`paintsApart`) just ahead of its own paint, and none of it
+ * in that paint: what that draws, and a group of its would hold, is the
+ * floats and the positioned boxes in it (`paintedApart`).
  */
 function drawsOverItself(
   ctx: PaintContext,
@@ -8569,7 +8674,9 @@ function pushClip(
  * one of them as much as a block is, the three engines agreeing again:
  * painted by its line, it went under the text a negative margin drew over
  * it, of its line and of a block after it, and under a positioned box
- * before it. An inline box is painted by its lines, a fragment at a time.
+ * before it. An inline box is painted by its lines, a fragment at a time,
+ * but for one an inset moves (`paintsApart`), which goes with the positioned
+ * boxes as a block does.
  */
 export function layered(parent: Box, child: Box): boolean {
   if (child.outOfFlow) return true;
@@ -8584,7 +8691,136 @@ export function layered(parent: Box, child: Box): boolean {
   ) {
     return false;
   }
-  return child.kind !== 'inline';
+  return child.kind !== 'inline' || paintsApart(child);
+}
+
+/**
+ * Whether an inline box is painted as one of its stacking context's layers
+ * rather than by its lines (CSS 2.1 Appendix E, step 8): one an inset moves,
+ * so that what is after it in the flow goes under it, and it over a
+ * positioned box before it. Its text is what makes it possible: a box with
+ * an inset has its text laid out apart from the text around it (`collect`),
+ * and a line paints a batch a layout, so what is the box's can be left out
+ * of the line (`LinesApart`) and drawn at its turn (`paintApart`). A box
+ * with every inset `auto` is in its paragraph's layout, moves nowhere, and
+ * stays on its line: laid out apart, joshwcomeau.com's hundreds of them
+ * would each take a paragraph off the one layout it is. Nor is one in a
+ * faded inline box a layer: its fade is in the colours of its text, and
+ * the fading box is a group it would be faded in a second time. One that
+ * names the fade in `will-change` counts, which one in transition or
+ * animated does: its opacity crosses 1 with no gathering of the layers
+ * (`hoverChange`), and an answer that turned there would leave the box to
+ * neither its lines nor its layer.
+ */
+export function paintsApart(box: Box): boolean {
+  if (box.kind !== 'inline' || !isOffset(box.style)) return false;
+  for (let at = box.parent; at?.kind === 'inline'; at = at.parent) {
+    if (at.style.opacity < 1 || at.style.willChange & WILL_STACK) return false;
+  }
+  return true;
+}
+
+/** The nearest inline box at or around `box` that is painted as a layer
+ *  (`paintsApart`): the one what is there goes with. */
+function apartAround(box: Box | null): Box | null {
+  for (let at = box; at?.kind === 'inline'; at = at.parent) {
+    if (paintsApart(at)) return at;
+  }
+  return null;
+}
+
+/** What one inline box painted as a layer has on a block's lines. */
+export interface ApartBox {
+  /** The lines with something of it on them. */
+  lines: Set<LineBox>;
+  /** What else is on those lines. */
+  skip: Set<LineText | AtomicPlacement>;
+}
+
+/**
+ * What the inline boxes on a block's lines that are layers paint of them
+ * (`paintsApart`): each box's, by the box, and all of it together, which the
+ * block's own paint and the hit test through it leave out.
+ */
+interface LinesApart {
+  skip: Set<LineText | AtomicPlacement>;
+  boxes: Map<Box, ApartBox>;
+}
+
+/** By the array a block's lines are, where any of them hold such a box:
+ *  made as the layers are gathered, so that a box that stops being a layer
+ *  in place leaves its lines to the block (`stackLayers`). */
+const LINES_APART = new WeakMap<readonly LineBox[], LinesApart>();
+
+/** Per tree, by its root box, the lines in `LINES_APART`. */
+const APART_LINES = new WeakMap<Box, Set<readonly LineBox[]>>();
+
+/** The lines the gather has noted (`LINES_APART`). */
+let gatheringLines: Set<readonly LineBox[]> | null = null;
+
+/** Note the lines of an inline box the gather finds among the layers. */
+function noteLinesOf(box: Box): void {
+  const lines = linesAround(box);
+  if (!lines || gatheringLines?.has(lines) || !paintsApart(box)) return;
+  gatheringLines?.add(lines);
+  const around = new Map<LineText | AtomicPlacement, Box>();
+  const boxes = new Map<Box, ApartBox>();
+  const on = (owner: Box, line: LineBox): void => {
+    const own = boxes.get(owner);
+    if (own) own.lines.add(line);
+    else boxes.set(owner, { lines: new Set([line]), skip: new Set() });
+  };
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const at = text.spans.boxAt?.(text.layoutStart);
+      const owner = at ? apartAround(at.parent) : null;
+      if (!owner) continue;
+      around.set(text, owner);
+      on(owner, line);
+    }
+    for (const placed of line.atomics) {
+      const owner = apartAround(placed.box.parent);
+      if (!owner) continue;
+      around.set(placed, owner);
+      on(owner, line);
+    }
+    for (const edge of line.edges ?? []) {
+      const owner = apartAround(edge.box);
+      if (owner) on(owner, line);
+    }
+  }
+  for (const [owner, own] of boxes) {
+    for (const line of own.lines) {
+      placesOn(line, (item) => {
+        if (around.get(item) !== owner) own.skip.add(item);
+      });
+    }
+  }
+  LINES_APART.set(lines, { skip: new Set(around.keys()), boxes });
+}
+
+/** What of a block's lines the hit test leaves to the inline boxes that are
+ *  layers (`LinesApart`), which it enters in their turn. */
+export function apartFromLines(
+  lines: readonly LineBox[],
+): ReadonlySet<LineText | AtomicPlacement> | undefined {
+  return LINES_APART.get(lines)?.skip;
+}
+
+/** What an inline box that is a layer has on its block's lines. */
+export function apartOf(box: Box): ApartBox | undefined {
+  if (!paintsApart(box)) return undefined;
+  const lines = linesAround(box);
+  return lines ? LINES_APART.get(lines)?.boxes.get(box) : undefined;
+}
+
+/** Paint what an inline box that is a layer has on its block's lines, at
+ *  its turn among the layers. */
+function paintApart(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  if (!apartOf(box)) return;
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  if (block) paintLines(ctx, block, options, box);
 }
 
 /**
@@ -8658,12 +8894,19 @@ let gatheringTop: Box[] | null = null;
 export function stackLayers(root: Box): void {
   const list: Box[] = [];
   const top: Box[] = [];
+  const noted = new Set<readonly LineBox[]>();
+  const was = APART_LINES.get(root);
+  if (was) for (const lines of was) LINES_APART.delete(lines);
   gatheringTop = top;
+  gatheringLines = noted;
   try {
     if (root.holdsLayers) gatherLayers(root, root, list);
   } finally {
     gatheringTop = null;
+    gatheringLines = null;
   }
+  if (noted.size) APART_LINES.set(root, noted);
+  else if (was) APART_LINES.delete(root);
   settleLayers(root, list);
   if (!top.length) {
     TOP_LAYER.delete(root);
@@ -8698,6 +8941,7 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
       if (clips.length) CLIPS_BETWEEN.set(child, clips);
       else CLIPS_BETWEEN.delete(child);
       if (!below) into.push(child);
+      if (child.kind === 'inline') noteLinesOf(child);
     }
     if (below || stacksLayers(child)) {
       const own: Box[] = [];
@@ -8726,7 +8970,8 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
  * scroll, which the caller asks about itself (`FIXED_BOXES`). Null where
  * `box`, or a context on the way up, is not painted from a list of layers
  * — a box in the flow, one below it (`NEGATIVE`), one an inline box paints
- * on its lines — and the caller has to ask of every box instead.
+ * on its lines, where it is no layer — and the caller has to ask of every
+ * box instead.
  */
 export function paintedAfter(
   box: Box,
@@ -13634,7 +13879,14 @@ function surfaceMaker(options: PaintOptions): SurfaceMaker | null {
  */
 const COORD_LIMIT = 30000;
 
-function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
+function paintLines(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  /** The inline box to paint what it has on them, at its turn among the
+   *  layers, and nothing else (`paintsApart`). */
+  only: Box | null = null,
+): void {
   const lines = box.lines;
   if (!lines) return;
   const dy = options.originY;
@@ -13701,12 +13953,59 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // under it, so the lines are painted in parts only where something is
   // (`lineParts`): text after an atomic it covers starts a part of its
   // own. It is never inside a layout: an atomic ends the text before it.
+  const apart = LINES_APART.get(lines);
+  if (apart) {
+    paintLinesApart(ctx, box, lines, visible, options, apart, only);
+    return;
+  }
   const parts = lineParts(lines, visible);
   if (!parts) paintLinePart(ctx, box, lines, visible, options, null);
   else {
     for (const part of parts) {
       paintLinePart(ctx, box, lines, part.lines, options, part);
     }
+  }
+}
+
+/**
+ * `paintLines`' end for lines an inline box on them paints part of, as a
+ * layer (`LinesApart`): what the block has of them, with the boxes' left
+ * out, or at a box's turn what it has and nothing else, each as a part of
+ * the lines is painted, by the same seam. A line's text goes through
+ * `paintLinePart` once for each that has any of it, so that its text,
+ * selection, rules, shadows, atomics and fragments all go with it.
+ */
+function paintLinesApart(
+  ctx: PaintContext,
+  box: Box,
+  lines: LineBox[],
+  visible: LineBox[],
+  options: PaintOptions,
+  apart: LinesApart,
+  only: Box | null,
+): void {
+  const own = only ? apart.boxes.get(only) : null;
+  if (only && !own) return;
+  const drawn = own ? visible.filter((line) => own.lines.has(line)) : visible;
+  if (!drawn.length) return;
+  const skip = own ? own.skip : apart.skip;
+  const parts = lineParts(lines, drawn);
+  if (!parts) {
+    paintLinePart(ctx, box, lines, drawn, options, {
+      lines: drawn,
+      skip,
+      from: 0,
+      to: Infinity,
+      apart: only,
+    });
+    return;
+  }
+  for (const part of parts) {
+    paintLinePart(ctx, box, lines, part.lines, options, {
+      ...part,
+      skip: new Set([...part.skip, ...skip]),
+      apart: only,
+    });
   }
 }
 
@@ -13731,7 +14030,7 @@ function paintLinePart(
   // rules over it.
   const bleeds: Bleed[] = [];
   for (const line of visible) {
-    if (line.background && (!part || startsIn(part, line))) {
+    if (line.background && (!part || (!part.apart && startsIn(part, line)))) {
       paintLineBackground(ctx, line, options);
     }
     paintInlineBoxes(
@@ -13918,6 +14217,10 @@ interface LinePart {
    *  all of it. */
   from: number;
   to: number;
+  /** Where inline boxes on the lines are layers (`LinesApart`), whose
+   *  fragments it paints: the box's whose turn it is, or null for none of
+   *  theirs. */
+  apart?: Box | null;
 }
 
 /** Whether a part of a block's lines paints what is at the start of one of
@@ -15152,6 +15455,10 @@ function paintInlineBoxes(
   const boxes = [...fragments.keys()].sort((a, b) => depthOf(a) - depthOf(b));
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
+    // a layer's, at its turn (`LinesApart`)
+    if (part && part.apart !== undefined) {
+      if (apartAround(box) !== part.apart) continue;
+    }
     // faded by its own opacity and the inline boxes' around it, each
     // fragment on its own (`inlineFade`)
     const fade = inlineFade(box);

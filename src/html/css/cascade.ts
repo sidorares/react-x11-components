@@ -44,6 +44,7 @@ import {
   shadowRootOf,
   tagOf,
   treeGeneration,
+  treesChanged,
 } from '../dom.js';
 import {
   BLOCK_AXIS,
@@ -65,6 +66,7 @@ import {
 import {
   asciiLower,
   escapeEnd,
+  familyList,
   mediaMatches,
   parseMediaQuery,
   readIdent,
@@ -119,7 +121,6 @@ import {
   settleClamp,
   copyStyle,
   decorate,
-  familyList,
   inherit,
   zoomedBy,
   initialOne,
@@ -331,6 +332,20 @@ export interface KeptStyles {
   root?: ComputedStyle;
 }
 
+/** Whether a container query finds in two styles of one element what it
+ *  finds (`Cascade._containerFor`): its type, the names it goes by, and
+ *  whether it is an inline box, which takes no size containment. */
+function sameContainer(a: ComputedStyle, b: ComputedStyle): boolean {
+  return (
+    a.containerType === b.containerType &&
+    a.containerName === b.containerName &&
+    a.scrollStateContainer === b.scrollStateContainer &&
+    a.anchoredContainer === b.anchoredContainer &&
+    (a.containerType === 'normal' ||
+      (a.display === 'inline') === (b.display === 'inline'))
+  );
+}
+
 /** A shadow tree's sheets, as the cascade is handed them: every tree whose
  *  sheets read the same — `key` — shares their rules (`Cascade.bindShadows`),
  *  which a component stamped out on every card of a page has parsed and
@@ -495,6 +510,20 @@ export const ROOT_FONT_SIZE = 1;
 export const ROOT_LINE_HEIGHT = 2;
 /** What each style read of the root's, by the style, as `VIEWPORT_SIDES`. */
 const ROOT_READS = new WeakMap<ComputedStyle, number>();
+
+/**
+ * The styles that hold a length read from a face: an `ex`, a `ch`, an `lh`
+ * of a `normal` line height. What a face that arrives changes in a style is
+ * its family list, which a style can take where it is
+ * (`HtmlViewNode._takeFaces`); these come out otherwise, and are computed
+ * again. Noted by the style, since a style is shared, as `ROOT_READS` is.
+ */
+const FACE_READS = new WeakSet<ComputedStyle>();
+
+/** Whether a length in a style was read from a face (`FACE_READS`). */
+export function readsFace(style: ComputedStyle): boolean {
+  return FACE_READS.has(style);
+}
 
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
@@ -678,7 +707,7 @@ class RuleIndex {
     }
     const focus = FOCUS.test(rule.selector);
     if (focus) this.focusSensitive = true;
-    if (rule.selector.includes(':target')) this.targetSensitive = true;
+    if (TARGET_PSEUDO.test(rule.selector)) this.targetSensitive = true;
     // and one under `@container`, whose answer is the container's an
     // element finds above it, which no sharing key says
     if (UNSHAREABLE.test(rule.selector) || rule.containers) {
@@ -1696,10 +1725,13 @@ const STATE_PSEUDO_AT =
 /** Any of them anywhere in a selector. */
 const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
 
+/** `:target` anywhere in a selector, and not `::target-text`. */
+const TARGET_PSEUDO = /:target(?![\w-])/i;
+
 /** A selector whose matcher keeps answers (`cacheResults`): css-select
  *  keeps what a `:has()`, a `:contains()` or an `:icontains()` answered for
- *  an element, and in a selector with one, what a descendant combinator
- *  found above it. Every other matcher keeps nothing. */
+ *  an element, and what a descendant combinator after one found above it.
+ *  Every other matcher is told to keep nothing (`compileSelector`). */
 const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 
 /** css-select's `aliases`, which it does not export: pseudo-classes it
@@ -1716,10 +1748,48 @@ function compilesSelector(name: string, arg: string): boolean {
   );
 }
 
+/** A combinator at a selector's start, past white space and comments: a
+ *  sheet's comments are gone by here, and a page's own selector keeps them. */
+const STARTS_AT_COMBINATOR = /^(?:\s|\/\*[^]*?\*\/)*[>+~]/;
+
+/**
+ * A `:has()`'s argument with `* > ` before each entry that starts at no
+ * combinator and has one in it.
+ *
+ * css-select reads `:has(X Y)` as `:scope X Y`, and the descendant combinator
+ * it puts after `:scope` there may take the element itself
+ * (`_flexibleDescendant`, fb55/css-select#1928), so `.a:has(.a .b)` held of an
+ * `.a` with a `.b` in it, where `X` has to be inside the element (Selectors 4,
+ * 4.5). Under `* > X Y` that combinator has the `*` to take for the element:
+ * `X`'s parent is the element or is inside it, which is `X` inside it. An
+ * entry of one compound is that already, being what the element is searched
+ * for.
+ *
+ * This form because of what each of the others costs. css-select keeps a
+ * `:has()`'s answers to answer what is under an element with, unless an entry
+ * starts at a combinator or names `:scope`, so `> X Y, > * X Y` and `:scope
+ * X:not(:scope) Y` took some fifteen times as long over a deep tree. And
+ * `* X Y` says the same, but walks up from each of `X`'s ancestors in turn,
+ * which took thirteen times as long forty levels of `X` down.
+ *
+ * A `:scope` in the argument is compiled apart by then (`hoistFromHas`), so no
+ * entry here names it: an entry that did would be anchored at nothing.
+ */
+function insideHas(arg: string): string {
+  return selectorsOf(arg)
+    .map((entry) =>
+      compoundsOf(entry).length < 2 || STARTS_AT_COMBINATOR.test(entry)
+        ? entry
+        : `* > ${entry}`,
+    )
+    .join(',');
+}
+
 /**
  * `text` with what `compileHoisted` compiles apart taken out of each
- * `:has()` in it, into `hoisted`, and `:-rx-hoisted(n)` left in its place.
- * `inHas` says `text` is such a `:has()`'s argument.
+ * `:has()` in it, into `hoisted`, and `:-rx-hoisted(n)` left in its place,
+ * and each such argument held inside its element (`insideHas`). `inHas` says
+ * `text` is such a `:has()`'s argument.
  */
 function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
   const hoist = (whole: string): string => {
@@ -1743,15 +1813,16 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
         const own = compilesSelector(name, arg);
         end = close + 1;
         if (name === 'has' || own) {
+          const held = hoistFromHas(arg, hoisted, name === 'has');
           const whole =
             text.slice(i, open + 1) +
-            hoistFromHas(arg, hoisted, name === 'has') +
+            (name === 'has' ? insideHas(held) : held) +
             text.slice(close, end);
           piece = own && inHas ? hoist(whole) : whole;
         }
       } else if (inHas) {
         const name = /^:([\w-]+)/.exec(text.slice(i))?.[1];
-        if (name && SELECTOR_ALIASES.test(name)) {
+        if (name && (SELECTOR_ALIASES.test(name) || /^scope$/i.test(name))) {
           end = i + 1 + name.length;
           piece = hoist(text.slice(i, end));
         }
@@ -1768,7 +1839,8 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  *
  * css-select hands the `:has()`'s element, as a context, to whatever in its
  * argument compiles a selector of its own, and reads that selector as
- * relative to the element, where one has a combinator in it: so
+ * relative to the element, where one has a combinator in it
+ * (fb55/css-select#1930): so
  * `.p:has(+ .a:not(.b))` asked for a `.b` inside the `.p`, which its sibling
  * never is, and held of every `.a`, and `.p:has(+ :is(.a))` of none. An
  * `:is()`, a `:where()` and a `:not()` take a selector of the document's
@@ -1777,10 +1849,13 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  * product pages style a section by `:has(+ .section.theme-dark:not(.alt))`.
  * Each of them is compiled by itself, with no context to read, and
  * `:nth-child(… of S)` and css-select's `aliases` with it, which are `:is()`s
- * under other names: `:has(+ input:checked)` matched nothing.
+ * under other names: `:has(+ input:checked)` matched nothing. So is a `:scope`,
+ * which is the query's and not the `:has()`'s element (fb55/css-select#1931):
+ * `el.closest(':has(:scope .a)')` found `el` for an `.a` in it, where it finds
+ * what `el` is in. What is left of an argument goes through `insideHas`.
  *
  * Only what is compiled changes: what reads a rule for what it reaches reads
- * it as written, and never sees `-rx-hoisted`.
+ * it as written, and never sees `-rx-hoisted` or the `* > `.
  */
 export function compileHoisted<Pseudos extends object>(
   selector: string,
@@ -1790,7 +1865,7 @@ export function compileHoisted<Pseudos extends object>(
   if (!/:has\(/i.test(selector)) return make(selector, pseudos);
   const hoisted: string[] = [];
   const text = hoistFromHas(selector, hoisted, false);
-  if (!hoisted.length) return make(selector, pseudos);
+  if (!hoisted.length) return make(text, pseudos);
   const matchers: ((el: Element) => boolean)[] = [];
   const own = {
     ...pseudos,
@@ -1816,6 +1891,14 @@ export function compileHoisted<Pseudos extends object>(
  * under `label:has(:checked)` was ticked, and before an application's
  * `refresh()`. Only those, and only once they are next asked: compiling
  * one is a few microseconds, and a page's rules are mostly not them.
+ *
+ * Any other selector keeps nothing, and has to be told: a descendant
+ * combinator after an `:is()` or a `:not()` with a combinator in it keeps
+ * what it found as one after a `:has()` does (fb55/css-select#1929), so
+ * `:is(.x .a) .y` answered what it did before the `.x` came. Telling them
+ * changes nothing else, and a selector with no such function has nothing
+ * to turn off. A release that narrows that cache leaves this as it is:
+ * these matchers outlive a change, which is what the option is for.
  */
 function compileSelector(
   selector: string,
@@ -1825,7 +1908,8 @@ function compileSelector(
    *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
   cache = true,
 ): (el: Element) => boolean {
-  const keep = cache && !STATE_PSEUDO.test(selector);
+  const keep =
+    cache && KEEPS_ANSWERS.test(selector) && !STATE_PSEUDO.test(selector);
   // where the siblings are the tree's own: a `<use>`'s copy has its own
   const kept =
     adapter.getSiblings === DomUtils.getSiblings ? nthKept : (s: string) => s;
@@ -1846,7 +1930,7 @@ function compileSelector(
     );
   // compiled here, so a selector css-select refuses throws to the caller
   let match = make();
-  if (!keep || !KEEPS_ANSWERS.test(selector)) return match;
+  if (!keep) return match;
   let at = treeGeneration();
   return (el) => {
     const now = treeGeneration();
@@ -4067,6 +4151,9 @@ export class Cascade {
     this._rootRead |= ROOT_LINE_HEIGHT;
     this._rootBits |= ROOT_LINE_HEIGHT;
   }
+  /** Whether a length in the style being computed was read from a face
+   *  (`FACE_READS`), as `_sidesRead` is. */
+  private _faceRead = false;
   private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
     if (unit !== 'vh') {
       this._heldWidth = true;
@@ -4689,9 +4776,14 @@ export class Cascade {
   }
 
   /** The element the fragment of the document's URL names, `:target`
-   *  (Selectors 4, 9.1), or null for none. */
+   *  (Selectors 4, 9.1), or null for none. It is in no tree, so a matcher
+   *  that kept what a `:has()` answered of the last one is told as one of a
+   *  tree that changed is (`compileSelector`): `div:has(:target)` answered
+   *  what it first did through every fragment after it. */
   setTarget(target: Element | null): void {
+    if (target === this._target) return;
     this._target = target;
+    treesChanged();
   }
 
   /** Whether a rule tests `:target`: whether a new one can restyle
@@ -5823,6 +5915,7 @@ export class Cascade {
     if (!kept) this._containerReads.clear();
     this._kept = kept;
     this._keptShared.clear();
+    this._newContainers.clear();
     // which tree each element is in, found again: an element a script
     // moved into another tree since the last build is styled by its rules
     this._trees = new WeakMap();
@@ -6119,6 +6212,7 @@ export class Cascade {
     if (FOCUS_STATE.mentions.test(rule.selector)) {
       this._index.focusSensitive = true;
     }
+    if (TARGET_PSEUDO.test(rule.selector)) this._index.targetSensitive = true;
     this._hoverRules.note(rule.selector);
     this._focusRules.note(rule.selector);
     if (UNSHAREABLE.test(rule.selector)) this._index.ownStyleEverywhere = true;
@@ -6140,6 +6234,7 @@ export class Cascade {
       this._index.focusSensitive = true;
       this._focusRules.noteEdge(selector);
     }
+    if (TARGET_PSEUDO.test(selector)) this._index.targetSensitive = true;
     if (UNSHAREABLE.test(selector)) this._index.ownStyleEverywhere = true;
   }
 
@@ -6299,24 +6394,38 @@ export class Cascade {
   // in the flat tree that can answer it — a size container of the axes its
   // size features read, of the name it gives — or for a pseudo-element its
   // element. A size is layout's, and layout comes after the styles, so a
-  // query is answered for the size the last layout left the container
-  // (`_containerSizes`) and each answer is noted (`_containerReads`); a
-  // layout then says which elements' answers it changed
-  // (`containersMoved`), and only those are styled again, as a browser
-  // styles a container's contents once it knows the container's size. A
-  // container no layout has sized yet — the first — answers no size query,
-  // so a document whose queries hold is laid out twice the first time.
+  // query is answered for the size the last layout left the container,
+  // which the renderer says as it is asked (`_sizeOf`), and each answer is
+  // noted (`_containerReads`); a layout then says which elements' answers
+  // it changed (`containersMoved`), and only those are styled again, as a
+  // browser styles a container's contents once it knows the container's
+  // size. A container no layout has sized yet — the first — answers no
+  // size query, so a document whose queries hold is laid out twice the
+  // first time.
 
   /** The styles of the elements styled so far, by element: a build's as it
    *  goes, which is the tree's once it is built (`BoxBuilder.run`), and a
    *  container's style is what a query finds it by — its type, its names,
    *  its font, its custom properties. */
   stylesOf: ((el: Element) => ComputedStyle | undefined) | null = null;
-  /** Each size container's content box as the last layout left it, in
-   *  device pixels, or null for one it gave no box. */
+  /** A size container's content box as the last layout left it, as
+   *  `containersMoved`'s `sizeOf` says it: asked of a read, since no layout
+   *  need have heard of a container before a restyle in place, which no
+   *  layout follows, is the first to read it. None on a cascade with no
+   *  boxes behind it, an SVG image's. */
+  laidOutSize: ((el: Element) => ContainerSize | null | undefined) | null =
+    null;
+  /** A scroll-state container's scroll states as they stand, as
+   *  `containersMoved`'s `scrollOf` says them, and asked as `laidOutSize` is:
+   *  undefined where the renderer cannot say. */
+  laidOutScroll: ((el: Element) => ScrollStates | undefined) | null = null;
+  /** Each size container's content box as a layout it was told of left it,
+   *  in device pixels, or null for one it gave no box: what stands for one
+   *  `laidOutSize` cannot say. */
   private _containerSizes = new Map<Element, ContainerSize | null>();
   /** Each scroll-state container's scroll states as the renderer last
-   *  told them (`containersMoved`), none where it has not. */
+   *  told them (`containersMoved`), none where it has not: what stands for
+   *  one `laidOutScroll` cannot say. */
   private _scrollStates = new Map<Element, ScrollStates>();
   private _scrollRead = false;
   /** What each element's style read of size containers: for each query,
@@ -6347,16 +6456,34 @@ export class Cascade {
     const query = axis === 'inline' ? CQ_INLINE : CQ_BLOCK;
     const found = this._containerFor(query, el, self);
     this._containerUnitRead = true;
-    const value = this._unitBasis(
-      query,
-      found ? (this._containerSizes.get(found[0]) ?? null) : null,
-    );
+    const value = this._unitBasis(query, found ? this._sizeOf(found[0]) : null);
     if (found) {
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container: found[0], answer: value });
+      reads.set(this._readKey(query, self), {
+        container: found[0],
+        answer: value,
+      });
     }
     return value;
+  }
+
+  /** What a read of `query` is noted under: the query, or for a
+   *  pseudo-element a copy of it, since a pseudo-element's query finds its
+   *  element where the element's own finds what is above it, and one
+   *  element with `.a` and `.a::after` under one `@container` has read two
+   *  containers. */
+  private _selfReads = new WeakMap<ContainerQuery, ContainerQuery>();
+  private _readKey(query: ContainerQuery, self: boolean): ContainerQuery {
+    if (!self) return query;
+    let key = this._selfReads.get(query);
+    if (!key) {
+      key = { ...query };
+      const axis = UNIT_AXIS.get(query);
+      if (axis) UNIT_AXIS.set(key, axis);
+      this._selfReads.set(query, key);
+    }
+    return key;
   }
 
   /** What a container unit of `query`'s axis is a hundredth of, for a
@@ -6461,12 +6588,12 @@ export class Cascade {
     // no container is an unknown, and holds nowhere
     if (!found) return false;
     const [container, style] = found;
-    const size = query.axes
-      ? (this._containerSizes.get(container) ?? null)
-      : null;
+    const size = query.axes ? this._sizeOf(container) : null;
     const scroll =
       query.scroll || query.anchored
-        ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
+        ? (this.laidOutScroll?.(container) ??
+          this._scrollStates.get(container) ??
+          NO_SCROLL_STATES)
         : null;
     // what it compares in a `rem` or an `rlh` is the root's, wherever the
     // element is (`rootReaders`)
@@ -6482,7 +6609,7 @@ export class Cascade {
       if (query.scroll) this._scrollRead = true;
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
-      reads.set(query, { container, answer });
+      reads.set(this._readKey(query, self), { container, answer });
     }
     return answer;
   }
@@ -6618,8 +6745,8 @@ export class Cascade {
    * Every size container's content box as a layout left it, whether or not
    * a style read it (`sizeOf` as `containersMoved` takes it): a custom
    * highlight's style is worked out as the document is painted, after the
-   * layout that `containersMoved` hears of, and its `@container` rules and
-   * container units read the containers no element's style did.
+   * layout that `containersMoved` hears of, and kept until a size it may
+   * have read moves, whether or not an element's style read that one.
    */
   sizeContainers(
     containers: Iterable<Element>,
@@ -6667,58 +6794,48 @@ export class Cascade {
     const sizes = new Map<Element, ContainerSize | null | undefined>();
     const scrolls = new Map<Element, ScrollStates | undefined>();
     const moved = new Set<Element>();
-    // a query asked again reads the containers its units are of at the
-    // sizes this layout gave them, which no style may have read yet
-    this._moving = (container) => {
-      if (!sizes.has(container)) sizes.set(container, sizeOf(container));
-      return sizes.get(container);
-    };
-    try {
-      for (const [el, reads] of this._containerReads) {
-        for (const [query, read] of reads) {
-          let size: ContainerSize | null | undefined;
-          if (query.axes) {
-            size = sizes.get(read.container);
-            if (!sizes.has(read.container)) {
-              size = sizeOf(read.container);
-              sizes.set(read.container, size);
-            }
-          } else size = this._containerSizes.get(read.container) ?? null;
-          let scroll: ScrollStates | undefined;
-          if (query.scroll || query.anchored) {
-            if (!scrolls.has(read.container)) {
-              scrolls.set(read.container, scrollOf?.(read.container));
-            }
-            scroll = scrolls.get(read.container);
+    for (const [el, reads] of this._containerReads) {
+      for (const [query, read] of reads) {
+        let size: ContainerSize | null | undefined;
+        if (query.axes) {
+          size = sizes.get(read.container);
+          if (!sizes.has(read.container)) {
+            size = sizeOf(read.container);
+            sizes.set(read.container, size);
           }
-          // nothing it reads is told otherwise
-          if (size === undefined && scroll === undefined) continue;
-          if (query.axes && size === undefined) {
-            size = this._containerSizes.get(read.container) ?? null;
+        } else size = this._containerSizes.get(read.container) ?? null;
+        let scroll: ScrollStates | undefined;
+        if (query.scroll || query.anchored) {
+          if (!scrolls.has(read.container)) {
+            scrolls.set(read.container, scrollOf?.(read.container));
           }
-          const style = this.stylesOf?.(read.container);
-          if (!style) continue;
-          const now = UNIT_AXIS.has(query)
-            ? this._unitBasis(query, size ?? null)
-            : this._ask(
-                query,
-                size ?? null,
-                style,
-                query.scroll || query.anchored
-                  ? (scroll ??
-                      this._scrollStates.get(read.container) ??
-                      NO_SCROLL_STATES)
-                  : null,
-                read.container,
-              );
-          if (now !== read.answer) {
-            moved.add(el);
-            break;
-          }
+          scroll = scrolls.get(read.container);
+        }
+        // nothing it reads is told otherwise
+        if (size === undefined && scroll === undefined) continue;
+        if (query.axes && size === undefined) {
+          size = this._sizeOf(read.container);
+        }
+        const style = this.stylesOf?.(read.container);
+        if (!style) continue;
+        const now = UNIT_AXIS.has(query)
+          ? this._unitBasis(query, size ?? null)
+          : this._ask(
+              query,
+              size ?? null,
+              style,
+              query.scroll || query.anchored
+                ? (scroll ??
+                    this._scrollStates.get(read.container) ??
+                    NO_SCROLL_STATES)
+                : null,
+              read.container,
+            );
+        if (now !== read.answer) {
+          moved.add(el);
+          break;
         }
       }
-    } finally {
-      this._moving = null;
     }
     for (const [container, size] of sizes) {
       if (size !== undefined) this._containerSizes.set(container, size);
@@ -6729,14 +6846,12 @@ export class Cascade {
     return moved.size ? moved : null;
   }
 
-  /** A layout's sizes, while `containersMoved` asks the queries again. */
-  private _moving:
-    ((container: Element) => ContainerSize | null | undefined) | null = null;
-
-  /** A size container's content box: as the layout being heard of left it
-   *  (`_moving`), or as the last one did. */
+  /** A size container's content box, as the last layout left it: the
+   *  boxes' (`laidOutSize`), or as one was last heard of where they do not
+   *  say. Every read of a size comes here, a query asked again by
+   *  `containersMoved` among them, for a query's container units. */
   private _sizeOf(container: Element): ContainerSize | null {
-    const now = this._moving?.(container);
+    const now = this.laidOutSize?.(container);
     return now !== undefined
       ? now
       : (this._containerSizes.get(container) ?? null);
@@ -6875,7 +6990,8 @@ export class Cascade {
       kept !== null &&
       !this._rootMoved &&
       !kept.restyle.has(el) &&
-      (!kept.follow || this._parentAsWas(el, parentStyle, kept))
+      (!kept.follow || this._parentAsWas(el, parentStyle, kept)) &&
+      !this._underNewContainer(el)
     ) {
       // An element the change did not reach keeps its style, under a key
       // of its own: a key stands for an element's ancestors, which the
@@ -6891,6 +7007,39 @@ export class Cascade {
         return shared;
       }
     }
+    const made = this._styleToShare(
+      el,
+      parentStyle,
+      parentKey,
+      inFlexContainer,
+    );
+    if (kept !== null) {
+      const was = kept.styles.get(el)?.style;
+      if (was && !sameContainer(was, made.style)) this._newContainers.add(el);
+    }
+    return made;
+  }
+
+  /** The elements this build found another kind of container than they
+   *  were, or stopped being one: what a query in anything under one finds
+   *  has changed, whatever its parent's style came to (`sameContainer`). */
+  private _newContainers = new Set<Element>();
+  private _underNewContainer(el: Element): boolean {
+    if (!this._newContainers.size) return false;
+    for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+      if (this._newContainers.has(at)) return true;
+    }
+    return false;
+  }
+
+  /** The style of an element no style kept answers for, shared where it
+   *  can be. */
+  private _styleToShare(
+    el: Element,
+    parentStyle: ComputedStyle,
+    parentKey: number,
+    inFlexContainer: boolean,
+  ): SharedStyle {
     // one a script animates is as far through its animations as the page
     // has it, and another element alike in every way is not: two `<li>`s
     // with one faded in shared the fade
@@ -7682,9 +7831,19 @@ export class Cascade {
     return style;
   }
 
+  /** Faces came or changed: what was read of one is read again, the list
+   *  it is kept under being the same where a family has another weight now
+   *  (`HtmlViewNode._takeFaces`). */
+  facesChanged(): void {
+    this._xHeights.clear();
+    this._zeroWidths.clear();
+    this._normalLines.clear();
+  }
+
   /** The x-height of a style's font: the font's own, asked once per face,
    *  or half an em. */
   private _exOf(style: FaceSource): number {
+    this._faceRead = true;
     const key = faceKey(style);
     let ex = this._xHeights.get(key);
     if (ex === undefined) {
@@ -7698,6 +7857,7 @@ export class Cascade {
   /** The advance of a style's font's "0": the font's own, asked once per
    *  face, or half an em. */
   private _chOf(style: FaceSource): number {
+    this._faceRead = true;
     const key = faceKey(style);
     let ch = this._zeroWidths.get(key);
     if (ch === undefined) {
@@ -7715,6 +7875,7 @@ export class Cascade {
     if (set !== 'normal') {
       return style.lineHeightIsLength ? set : set * style.fontSize;
     }
+    this._faceRead = true;
     const key = faceKey(style);
     let line = this._normalLines.get(key);
     if (line === undefined) {
@@ -7754,8 +7915,10 @@ export class Cascade {
     // what of the root's font, the same way (`rootReaders`)
     const outer = this._sidesRead;
     const outerRoot = this._rootBits;
+    const outerFace = this._faceRead;
     this._sidesRead = 0;
     this._rootBits = 0;
+    this._faceRead = false;
     const style = this._computeStyleOf(
       el,
       parentStyle,
@@ -7772,6 +7935,8 @@ export class Cascade {
         this._pseudoSides.set(el, (this._pseudoSides.get(el) ?? 0) | sides);
       }
     }
+    if (this._faceRead) FACE_READS.add(style);
+    this._faceRead ||= outerFace;
     const rootBits = this._rootBits;
     this._rootBits = outerRoot | rootBits;
     if (rootBits) {

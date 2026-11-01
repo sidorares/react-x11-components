@@ -26,6 +26,7 @@ import {
   view,
 } from './harness.js';
 import type { Region } from './harness.js';
+import { uprightCells } from '../../src/html/layout/writing.js';
 
 afterEach(cleanup);
 
@@ -624,5 +625,61 @@ metric(
       }
       cleanup();
     }
+  },
+);
+
+metric(
+  'a box in a vertical writing mode that no frame holds is laid out as though the document had no frame',
+  async () => {
+    // A grid makes no frame, so its text is level whatever else is on the
+    // page. With a frame elsewhere it was made a line at a time and set
+    // upright for a paint that only a frame's root does
+    const sheet =
+      '<style>body{margin:0}.r{writing-mode:vertical-rl;height:40px}' +
+      '.g{display:grid;width:30px;writing-mode:vertical-lr;' +
+      'text-orientation:upright}</style>';
+    const laid = async (before: string) => {
+      const { node, result } = await render(
+        `${sheet}<body>${before}<div class="g" id="g">one two three</div></body>`,
+      );
+      const el = view(node);
+      await act();
+      const box = boxOf(el, 'g') as unknown as {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        children: {
+          lines: {
+            y: number;
+            texts: { drawY: number; layout: never }[];
+          }[];
+        }[];
+      };
+      const block = box.children[0];
+      assert.ok(block.lines.length > 1, 'the text wraps');
+      for (const line of block.lines) {
+        for (const text of line.texts) {
+          assert.ok(
+            uprightCells(text.layout) === null,
+            'set upright, for a paint no frame does',
+          );
+        }
+      }
+      const data = await pixelsIn(result.ctx, {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.round(box.width),
+        height: Math.round(box.height),
+      });
+      let ink = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] < 128) ink += 1;
+      assert.ok(ink > 0, 'the text is drawn');
+      return { ink, at: block.lines.map((l) => l.texts.map((t) => t.drawY)) };
+    };
+    assert.deepStrictEqual(
+      await laid('<p class="r">x</p>'),
+      await laid('<p style="height:40px">x</p>'),
+    );
   },
 );

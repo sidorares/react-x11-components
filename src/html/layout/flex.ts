@@ -1713,7 +1713,7 @@ function layoutNaturally(
         viewportWidth: ctx.viewportWidth,
         under: ctx.under,
         scale: ctx.scale,
-        fonts: ctx.fonts,
+        fonts: ctx.engine,
         serial: box.layoutSerial,
         width,
         containing: readsContaining(box) ? containing : NaN,

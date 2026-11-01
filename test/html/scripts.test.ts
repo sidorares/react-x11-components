@@ -62,6 +62,7 @@ import type {
   FetchResponse,
 } from '../../src/html/scripts/host.js';
 import {
+  boxOf,
   bytesApart,
   findById,
   FONTS,
@@ -74,7 +75,7 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
-import { animationClock, caretClock } from '../../src/html/node.js';
+import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
 import type { HeldClock } from '../held-clock.js';
@@ -5164,6 +5165,30 @@ test('a selector compiled apart from a :has() has the scope of the query it is i
   assert.equal(doc.text('out'), 'true|true|false');
 });
 
+test('a :scope in a :has() is the query’s and not the :has()’s element, in a rule the root: Chrome’s answers', async () => {
+  const doc = await hosted(
+    `<style>.a:has(:scope .b) { color: ${HAS_MATCHED} }</style>` +
+      '<div id="m"><div class="a" id="s"><i class="a" id="i"><b class="b" id="b"></b></i></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), i = document.getElementById("i");' +
+      'var m = document.getElementById("m"), r = [];' +
+      'r.push(s.matches(":has(:scope .b)"), i.closest(":has(:scope .b)").id);' +
+      'r.push(s.closest(":has(:scope .b)").id, i.closest(":has(.a :scope)").id);' +
+      'r.push(i.closest(":has(> :scope)").id, i.closest(":has(.c, :scope .b)").id);' +
+      'r.push(m.querySelectorAll(":has(:scope .b)").length);' +
+      'r.push(document.querySelectorAll(":has(:scope)").length);' +
+      'r.push(i.querySelector(".a:has(:scope) .b").id);' +
+      'r.push(s.querySelector(".a:has(:scope) .b"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), 'false|s|m|m|s|s|0|0|b|');
+  assert.notStrictEqual(
+    doc.view.computedStyle(doc.byId('s'))?.color,
+    HAS_MATCHED,
+  );
+});
+
 test('a :has() answers again as a script changes what its function reads, in a sibling and above it', async () => {
   const doc = await hosted(
     `<style>.p:has(+ .a:not(.b)) { color: ${HAS_MATCHED} }` +
@@ -5192,6 +5217,50 @@ test('a :has() answers again as a script changes what its function reads, in a s
   await settle();
   assert.strictEqual(colour('t'), HAS_MATCHED, 'the sibling lost .b');
   assert.notStrictEqual(colour('u'), HAS_MATCHED, 'what is above lost .x');
+});
+
+test('a :has() answers again as what an entry starts at comes inside its element, and as the element takes it', async () => {
+  const doc = await hosted(
+    `<style>.p:has(.x .b) { color: ${HAS_MATCHED} }</style>` +
+      '<div class="p" id="t"><u id="u"><b class="b">b</b></u></div>',
+  );
+  const colour = () => doc.view.computedStyle(doc.byId('t'))?.color;
+  assert.notStrictEqual(colour(), HAS_MATCHED);
+  await act(() => doc.run('document.getElementById("u").classList.add("x");'));
+  await settle();
+  assert.strictEqual(colour(), HAS_MATCHED, 'inside it');
+  await act(() =>
+    doc.run(
+      'document.getElementById("u").classList.remove("x");' +
+        'document.getElementById("t").classList.add("x");',
+    ),
+  );
+  await settle();
+  assert.notStrictEqual(colour(), HAS_MATCHED, 'the element itself');
+});
+
+test('a page’s selector with a combinator in a function answers again as a script changes what it reads: Chrome’s answers', async () => {
+  // a compiled query is kept by its selector, and css-select keeps what a
+  // descendant combinator after such a function found for as long as the
+  // matcher lives
+  const doc = await hosted(
+    '<div id="o"><div class="a"><span class="y" id="t"></span></div></div>' +
+      '<p id="out"></p><script>' +
+      'var o = document.getElementById("o"), t = document.getElementById("t"), r = [];' +
+      'var ask = function (s) {' +
+      '  return [t.matches(s), document.querySelector(s) === t,' +
+      '    t.closest(s) === t, document.querySelectorAll(s).length].join();' +
+      '};' +
+      'var both = function () {' +
+      '  r.push(ask(":is(.x .a) .y"), ask(".a:not(.x .a) .y"));' +
+      '};' +
+      'both(); o.classList.add("x"); both(); o.classList.remove("x"); both();' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const no = 'false,false,false,0';
+  const yes = 'true,true,true,1';
+  assert.equal(doc.text('out'), [no, yes, yes, no, no, yes].join('|'));
 });
 
 test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {
@@ -8663,6 +8732,76 @@ metric(
 );
 
 metric(
+  'a style reads with what waits left waiting, and what a box decides with it set',
+  async (t) => {
+    holdClock(t, owedClock);
+    const face = new Uint8Array(readFileSync(FONTS!.monospace));
+    const text = 'words that wrap at another place in the other face '.repeat(
+      3,
+    );
+    const body = Array.from(
+      { length: 120 },
+      (_, i) => `<p id="p${i}">${text}</p>`,
+    ).join('');
+    const reads = [
+      's.height',
+      's.width',
+      's.blockSize',
+      's["inline-size"]',
+      's.getPropertyValue("height")',
+      's.getPropertyValue("margin-top")',
+      's.marginBlockEnd',
+      's.paddingInlineStart',
+      's.borderTopWidth',
+      's.transform',
+      's.top',
+    ];
+    for (const read of reads) {
+      const doc = await hosted(
+        `<!doctype html><style>
+        @font-face { font-family: Web; src: url(a.ttf) }
+        body { margin: 0; font: 14px Web, sans-serif } p { margin: 4px 0 }
+        </style>${body}`,
+        { fonts: { 'a.ttf': face }, pane: 300 },
+      );
+      const el = doc.view;
+      const owed = el as unknown as { _owed: Map<unknown, unknown> };
+      for (let i = 0; i < 40 && !owed._owed.size; i += 1) {
+        await new Promise((go) => setTimeout(go, 5));
+        await act();
+      }
+      assert.ok(owed._owed.size > 50, `${read}: something waits`);
+      const waiting = owed._owed.size;
+      const kept = boxOf(el, 'p110');
+      const height = kept.height;
+      doc.run(
+        'var s = getComputedStyle(document.getElementById("p110"));' +
+          'console.log("style", s.display, s.getPropertyValue("font-size"), s.fontWeight, s[0]);',
+      );
+      assert.strictEqual(owed._owed.size, waiting, 'nothing of it read a box');
+      assert.ok(
+        doc.logs.at(-1)?.includes('block 14px 400'),
+        String(doc.logs.at(-1)),
+      );
+      doc.run(`console.log("read", ${read});`);
+      assert.strictEqual(owed._owed.size, 0, `${read} found it set`);
+      if (read === 's.height') {
+        assert.notStrictEqual(
+          boxOf(el, 'p110').height,
+          height,
+          'the face moved the box',
+        );
+        assert.strictEqual(
+          doc.logs.at(-1),
+          `log: read ${el.computedStyle(doc.byId('p110') as never)?.height}`,
+        );
+      }
+      doc.result.unmount();
+    }
+  },
+);
+
+metric(
   "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
   async () => {
     // fontfaceobserver 2.x asks `load()` every 25 ms until it hands over a
@@ -8689,6 +8828,57 @@ metric(
       'in:loaded',
       doc.logs.join('\n'),
     );
+  },
+);
+
+metric(
+  'a page reads the family it wrote, before its face arrives and after, and none of the names the face goes by',
+  async () => {
+    const sans = new Uint8Array(readFileSync(FONTS!['sans-serif']));
+    const doc = await hosted(
+      `<!doctype html><style>
+      @font-face { font-family: "Web Face"; src: url(a.ttf) }
+      #p { font: 16px "Web Face", 'Not Here' }
+      #kept { font-family: inherit(font-family) }
+      #p::before { content: "a"; font-family: 'Web Face' }
+      </style><p id="p">words <b id="b">more</b>
+      <span id="kept">kept</span></p><p id="out"></p><script>
+      var families = function () {
+        return ['p', 'b', 'kept']
+          .map(function (id) {
+            return getComputedStyle(document.getElementById(id)).fontFamily;
+          })
+          .concat(
+            getComputedStyle(document.getElementById('p'), '::before').fontFamily,
+          )
+          .join(' | ');
+      };
+      var before = families();
+      document.fonts.load('16px "Web Face"').then(function () {
+        document.getElementById('out').textContent = before + ' -> ' + families();
+      });
+      </script>`,
+      { fonts: { 'a.ttf': sans } },
+    );
+    const written = '"Web Face", "Not Here"';
+    const read = `${written} | ${written} | ${written} | "Web Face"`;
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      `${read} -> ${read}`,
+      doc.logs.join('\n'),
+    );
+    const style = (id: string) =>
+      (boxOf(doc.view, id) as unknown as { style: ComputedStyle }).style;
+    const drawn = () => style('p').fontFamily;
+    for (let i = 0; i < 40 && !drawn().includes('html webfont'); i += 1) {
+      await new Promise((go) => setTimeout(go, 5));
+      await act();
+    }
+    // which is what makes this a test: the text is set in a name of ours
+    assert.match(drawn(), /^html webfont /);
+    assert.match(style('kept').fontFamily, /^html webfont /);
+    doc.run('console.log("after", families());');
+    assert.strictEqual(doc.logs.at(-1), `log: after ${read}`);
   },
 );
 

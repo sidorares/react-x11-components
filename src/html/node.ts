@@ -76,6 +76,7 @@ import {
   isElement,
   isInputButton,
   isText,
+  loadsLazily,
   madeByParser,
   isStylePreload,
   NON_RENDERED,
@@ -111,6 +112,7 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  readsFace,
   highlightKey,
 } from './css/cascade.js';
 import type {
@@ -212,6 +214,7 @@ import {
   TRANSITION_IMAGES,
   TRANSITION_KEYS,
   TRANSITION_STYLES,
+  anonymousMade,
   awaitedIntrinsics,
   columned,
   intrinsicsOf,
@@ -224,6 +227,7 @@ import type {
   ForeignObject,
   SubtreeRoots,
   SubtreesBuilt,
+  AtomicPlacement,
   LineBox,
   LineText,
   ReplacedKind,
@@ -260,6 +264,8 @@ import {
   translate,
   translationOf,
   VIEWPORT_STICKY,
+  forgetSizesIn,
+  isInlineLevel,
 } from './layout/block.js';
 import { frameModeOf, onPage, pageSides } from './layout/writing.js';
 import {
@@ -358,6 +364,8 @@ import type { TextRun } from '../richtext/index.js';
 // a layout is built once, on the first selection that needs it.
 import {
   documentOffsetOf,
+  emptyBoxPoint,
+  emptyLinePoint,
   layoutOffsetOf,
   layoutOffsets as layoutOffsetsOf,
 } from './layout/inline.js';
@@ -384,6 +392,8 @@ import {
   inClip,
   inClipPath,
   intersectionClips,
+  apartFromLines,
+  apartOf,
   layered,
   layerOf,
   onLine,
@@ -1295,7 +1305,7 @@ export class HtmlViewNode extends Node {
       this._props().onResource?.(request) ?? null;
     this._resources = new ResourceStore(
       ask,
-      (what, layout) => {
+      (what, layout, lazily) => {
         // A late stylesheet is a new cascade: its rules, what it imports,
         // the faces it declares. A late image changes intrinsic sizes, so
         // the box tree is what has to be rebuilt — not merely repainted —
@@ -1320,8 +1330,8 @@ export class HtmlViewNode extends Node {
           if (!this._tree) this._invalidate(Stale.Style);
         } else if ((what === 'image' || what === 'resized') && !layout) {
           this._imagePainted();
-        } else if (what === 'image') this._imageArrived();
-        else if (what === 'sized') this._imageArrived(false);
+        } else if (what === 'image') this._imageArrived(true, lazily);
+        else if (what === 'sized') this._imageArrived(false, lazily);
         else if (what === 'resized') this._invalidate(Stale.Boxes, EMPTY_SET);
         else if (what === 'stylesheet' && this._tree && this._cascade) {
           // a sheet as one more of the document's, whose rules style what
@@ -1343,8 +1353,14 @@ export class HtmlViewNode extends Node {
       this._lifecycle();
     };
     this._images = new ImageSources({
-      request: (url, element) =>
-        this._resources.request({ url, kind: 'image', element }),
+      request: (url, element) => {
+        if (this._waitsLazily(element, url)) return;
+        this._resources.request(
+          { url, kind: 'image', element },
+          false,
+          this._waited.has(element) && 'lazily',
+        );
+      },
       state: (url) => this._resources.state(url),
       sized: (url) => this._resources.imageSize(url) !== null,
     });
@@ -1352,12 +1368,10 @@ export class HtmlViewNode extends Node {
       app,
       ask,
       () => {
-        // A face arrived: the family lists change, so the styles do, and
-        // every text layout kept from before was set in the face it
-        // replaces — under the same list, where a family of the document's
-        // had loaded one weight and now has another.
-        this._layouts = null;
-        this._invalidate(Stale.Boxes);
+        // A face arrived, or will not, which has the next one asked for.
+        // The frame takes every face that came by then (`_takeFaces`).
+        this._facesOwed = true;
+        this._invalidate(Stale.Layout);
       },
       'sans-serif',
     );
@@ -1530,6 +1544,420 @@ export class HtmlViewNode extends Node {
     if (stale > this._stale) this._stale = stale;
     if (stale >= Stale.Layout) this.invalidateMeasure('content');
     this.invalidate(stale >= Stale.Layout, this, 'props');
+  }
+
+  // --- what can wait --------------------------------------------------------
+  //
+  // Nobody sees the want of what is off screen, so a change there waits
+  // until it is scrolled near, the thread is idle or a read needs it
+  // (`_owe`). The document stays whole while it waits: an owed box is drawn
+  // as it was, is hit where it is drawn, and is moved by the layouts around
+  // it as any block they keep (`reuseLaid`). Nothing is set aside, so a
+  // scroll onto it finds it there. What lets it wait is the layout's: a
+  // block its last layout laid out is kept for as long as nothing forgot
+  // it, so the work a box owes starts by forgetting it (`forgetSizesIn`).
+
+  /** Whether a face came or failed since the styles took them in. */
+  private _facesOwed = false;
+  /** What each box is owed, in document order (`_owe`). */
+  private _owed = new Map<Box, OwedWork>();
+  /** The elements styled again with the boxes they are in: those that read
+   *  a face (`_takeFaces`). */
+  private _owedStyles = new Map<Box, Element[]>();
+  /** The owed boxes drawn where the viewport is, wherever they are laid out:
+   *  each is seen, whatever its place in the document. */
+  private _owedFixed = new Set<Box>();
+  /** Of it, what no scroll need bring in early (`_oweSize`). */
+  private _owedSlight = new Set<Box>();
+  /** What the next `_update` is to run of it (`OWED_ALL`, or how many). */
+  private _owedAsk = 0;
+  /** Whether what it ran can be seen, and is to be painted. */
+  private _owedShown = false;
+  private _owedTimer: unknown = null;
+  /** How many boxes a slice takes, found from how long the last took, and
+   *  how many slices what is owed has left to it. */
+  private _owedChunk = 8;
+  private _owedSlices = OWED_SLICES;
+  /** When a scroll or a key was last seen. */
+  private _inputAt = -Infinity;
+  /** Where the top of what can be seen was when what is near it was last
+   *  asked after. */
+  private _owedTop = 0;
+  /** Whether the document came to another size that the pane has not been
+   *  told, and when it last was. */
+  private _measureOwed = false;
+  private _measuredAt = -Infinity;
+
+  /**
+   * Put off what a box needs, until it is near what can be seen, the thread
+   * is idle, or a read of the page's needs it (`_settle`). `work` is handed
+   * the box and the boxes the same run has been up from: it brings the box
+   * up to date for the layout that follows, as `forgetSizesIn` forgets what
+   * is kept of it. What a document looks like until then has to be what it
+   * looked like: anything that joins draws the box as it was, and asks
+   * nothing of what the work would change. See "What can wait" in AGENTS.md.
+   */
+  private _owe(box: Box, work: OwedWork): void {
+    const was = this._owed.get(box);
+    this._owed.set(
+      box,
+      was && was !== work
+        ? (at, up) => {
+            was(at, up);
+            work(at, up);
+          }
+        : work,
+    );
+    this._armOwed(OWED_REST_MS);
+  }
+
+  private _armOwed(ms: number): void {
+    if (this._owedTimer !== null) return;
+    this._owedTimer = owedClock.arm(() => {
+      this._owedTimer = null;
+      this._owedSlice();
+    }, ms);
+  }
+
+  /** Nothing is owed: a build made every box again (`_update`). */
+  private _owedDone(): void {
+    this._owed.clear();
+    this._owedStyles.clear();
+    this._owedFixed.clear();
+    this._owedSlight.clear();
+    this._owedAsk = 0;
+    this._webFonts.arrivals();
+  }
+
+  /**
+   * The faces that came, taken in. What a face changes in a style is its
+   * family list, and what it changes in a box is the text set in it: so the
+   * lists change where they are, in every style there is, which costs a
+   * walk and no cascade, and every box of text set in such a face owes
+   * setting again (`_setAgain`). A style is made new only where it read a
+   * length from a face (`readsFace`), and that waits with its box. Where
+   * nothing can keep a box laid out, or a whole build is coming, the build
+   * takes them.
+   */
+  private _takeFaces(): void {
+    this._facesOwed = false;
+    const tree = this._tree;
+    const cascade = this._cascade;
+    const fonts = this._webFonts;
+    const layouts = this._layouts;
+    this._layouts = null;
+    cascade?.facesChanged();
+    if (
+      !tree ||
+      !cascade ||
+      !layouts ||
+      this._laidOutWidth < 0 ||
+      (this._stale >= Stale.Boxes && !this._restyleOnly) ||
+      tree.anchors ||
+      tree.vertical ||
+      tree.firstLine ||
+      tree.foreign
+    ) {
+      this._owedDone();
+      // inside `_update`, and the arrival asked for the frame
+      this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+      this._restyleOnly = null;
+      this._buildSeeds = null;
+      this._buildAlways = null;
+      this._buildTails = null;
+      return;
+    }
+    // Set in other faces from here on, and what is laid out in the old ones
+    // made again from what it was made from (`reinked`)
+    this._layouts = new TextLayoutCache(layouts.engine, layouts);
+    // a face that failed has the next asked for, and one answered at once
+    // is among those taken below
+    fonts.request(textOfTree(tree));
+    const affects = fonts.arrivals();
+    const seen = new Set<ComputedStyle>();
+    const take = (style: ComputedStyle): void => {
+      if (seen.has(style)) return;
+      seen.add(style);
+      if (style.familyWritten)
+        style.fontFamily = fonts.map(style.familyWritten);
+    };
+    const readers = new Set<Element>();
+    const parents = new Map<Element, ComputedStyle | undefined>();
+    for (const [el, { style }] of tree.styles) {
+      take(style);
+      if (!affects || !readsFace(style)) continue;
+      let above = parents.get(el);
+      if (!parents.has(el)) {
+        const parent = flatParentOf(el);
+        above = parent ? tree.styles.get(parent)?.style : undefined;
+        parents.set(el, above);
+      }
+      if (affects(style) || (above && affects(above))) readers.add(el);
+    }
+    for (const style of anonymousMade(tree.anonymous)) take(style);
+    if (tree.impliedHtml) take(tree.impliedHtml);
+    take(tree.root.style);
+    const owners = new Map<Box, Box>();
+    const aside = asideOf(tree);
+    const stack: Box[] = [tree.root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      take(box.style);
+      const marker = box.marker?.style;
+      if (marker) take(marker);
+      if (affects) {
+        // and the lines a block's own font holds open, whatever is on them
+        if (
+          (box.kind === 'text' ||
+            box.kind === 'inline' ||
+            box.lines ||
+            box.marker) &&
+          (affects(box.style) || (marker && affects(marker)))
+        ) {
+          this._oweSetting(ownerOf(box, owners), tree);
+        }
+        // built from the face: a widget's size, a drawing's text
+        if (box.el && READS_FACE_AS_BUILT.has(box.replaced)) {
+          if (affects(box.style) && setsText(box)) readers.add(box.el);
+        }
+      }
+      const children = aside?.get(box) ?? box.children;
+      for (let i = children.length - 1; i >= 0; i -= 1) stack.push(children[i]);
+    }
+    if (readers.size) {
+      const first = this._firstBoxesOf(tree);
+      for (const el of readers) {
+        this._stylesOwed.add(el);
+        const box = first.get(el);
+        if (!box) continue;
+        const owner = ownerOf(box, owners);
+        this._oweSetting(owner, tree);
+        const held = this._owedStyles.get(owner);
+        if (held) held.push(el);
+        else this._owedStyles.set(owner, [el]);
+      }
+    }
+    this._warmFaces(tree);
+    this._owedTop = this._seenTop();
+    this._owedAsk ||= this._owedChunk;
+    this._owedSlices = OWED_SLICES;
+  }
+
+  /** Owe a box that its text be set again (`_setAgain`). */
+  private _oweSetting(box: Box, tree: BoxTree): void {
+    if (this._owed.get(box) === this._setAgain) return;
+    this._owe(box, this._setAgain);
+    if (FIXED_BOXES.has(tree) && drawnAtViewport(box)) this._owedFixed.add(box);
+  }
+
+  /** What a box whose text is in a face that came is owed: its layout laid
+   *  out again in the style it has, and the surfaces kept of how it looked
+   *  drawn again. */
+  private readonly _setAgain: OwedWork = (box, up) => {
+    forgetSizesIn(box, up);
+    this._dropSprites(box, true);
+  };
+
+  /**
+   * Run what is owed: everything, or what can be seen and as much of the
+   * rest as `ask` says, nearest first, below what can be seen before above
+   * it, whose height the pane has to follow (`_keepAnchor`). Answers the
+   * elements whose styles it owed with them, to be styled and built.
+   */
+  private _settleOwed(ask: number): Set<Element> {
+    const reached = new Set<Element>();
+    const owed = this._owed;
+    if (!owed.size) return reached;
+    const top = this._seenTop();
+    const bottom = this._seenBottom();
+    const picked: Box[] = [];
+    const after: Box[] = [];
+    const before: Box[] = [];
+    for (const box of owed.keys()) {
+      if (ask === OWED_ALL) {
+        picked.push(box);
+      } else if (
+        this._owedFixed.has(box) ||
+        (box.y < bottom && box.y + box.height > top)
+      ) {
+        picked.push(box);
+        this._owedShown = true;
+      } else if (box.y >= bottom) {
+        after.push(box);
+      } else before.push(box);
+    }
+    if (ask !== OWED_ALL) {
+      // the nearest either way while they are near, and then what is below
+      // before what is above
+      const near = this._viewportHeight() * OWED_NEAR;
+      let below = 0;
+      let above = before.length - 1;
+      for (let left = ask; left > 0; left -= 1) {
+        const a: Box | undefined = after[below];
+        const b: Box | undefined = before[above];
+        const to = b ? top - (b.y + b.height) : Infinity;
+        const up = to <= near && to < (a ? a.y - bottom : Infinity);
+        const box = up || !a ? b : a;
+        if (!box) break;
+        picked.push(box);
+        if (box === a) below += 1;
+        else above -= 1;
+      }
+    }
+    const up = new Set<Box>();
+    for (const box of picked) {
+      owed.get(box)!(box, up);
+      owed.delete(box);
+      this._owedFixed.delete(box);
+      this._owedSlight.delete(box);
+      const held = this._owedStyles.get(box);
+      if (!held) continue;
+      this._owedStyles.delete(box);
+      for (const el of held) {
+        this._stylesOwed.delete(el);
+        reached.add(el);
+      }
+    }
+    return reached;
+  }
+
+  /** Everything owed run, for a read of the page's: what it reads is what
+   *  a browser would answer, whatever is drawn. */
+  private _settle(): void {
+    if (this._owed.size || this._facesOwed) {
+      this._owedAsk = OWED_ALL;
+      this._measureOwed = true;
+      if (this._stale < Stale.Layout) this._stale = Stale.Layout;
+    }
+    this._prepare(this.abs.width || 1);
+  }
+
+  /** Everything owed run, for a host's read of what is laid out. */
+  settle(): void {
+    this._settle();
+  }
+
+  /** Whether a box may yet move as what is owed runs. */
+  layoutOwed(): boolean {
+    return this._owed.size > 0 || this._facesOwed;
+  }
+
+  /** Whether anything in a box is owed, or the box is. */
+  private _owes(box: Box): boolean {
+    for (const owed of this._owed.keys()) {
+      for (let at: Box | null = owed; at; at = at.parent) {
+        if (at === box) return true;
+      }
+    }
+    return false;
+  }
+
+  /** A key was pressed: what is owed waits (`OWED_QUIET_MS`). */
+  noteInput(): void {
+    this._inputAt = owedClock.now();
+  }
+
+  /**
+   * What the pane shows moved: what is owed near it is run in a frame, and
+   * the rest waits for the scroll to end.
+   */
+  private _followOwed(): void {
+    // asked at the paint's end, where what the frame asked of the pane has
+    // landed, and counted twice its shift was a reader's scroll
+    this._painting = true;
+    try {
+      const top = this._seenTop();
+      if (top === this._owedTop) return;
+      const moved = Math.abs(top - this._owedTop);
+      this._inputAt = owedClock.now();
+      if (moved * 4 < this._viewportHeight()) return;
+      this._owedTop = top;
+      this._runNear(this._viewportHeight() * OWED_NEAR);
+    } finally {
+      this._painting = false;
+    }
+  }
+
+  /** What is owed within `near` of what can be seen, run in a frame. */
+  private _runNear(near: number): void {
+    const from = this._seenTop() - near;
+    const to = this._seenBottom() + near;
+    for (const box of this._owed.keys()) {
+      if (this._owedSlight.has(box)) continue;
+      if (box.y < to && box.y + box.height > from) {
+        this._owedAsk ||= this._owedChunk;
+        this._invalidate(Stale.Layout);
+        return;
+      }
+    }
+  }
+
+  /**
+   * A slice of what is owed, with nothing waiting on the thread: laid out
+   * here, between frames, as an owed layout is (`_layoutOwed`), and as much
+   * of it as `OWED_SLICE_MS` holds, found from how long the last took. What
+   * it moved is off screen, so nothing is painted for it; the pane follows
+   * what moved above what it shows (`_keepAnchor`), and is told how tall
+   * the document came to be only so often, since that repaints all it
+   * shows.
+   */
+  private _owedSlice(): void {
+    if (this.destroyed || !this._owed.size) return;
+    const quiet = this._inputAt + OWED_QUIET_MS - owedClock.now();
+    if (quiet > 0) {
+      this._armOwed(quiet);
+      return;
+    }
+    if (
+      this._stale !== Stale.Nothing ||
+      this._partial ||
+      this._laidOutWidth < 0
+    ) {
+      this._armOwed(OWED_REST_MS);
+      return;
+    }
+    const from = frameClock.now();
+    this._owedAsk = this._owedChunk;
+    this._stale = Stale.Layout;
+    this._prepare(this.abs.width || 1);
+    const took = frameClock.now() - from;
+    // A slice costs what it sets and a layout of all that is kept, which a
+    // page of boxes no layout keeps pays whatever is in the slice: as many
+    // slices as what waits there would be that layout many times over. So
+    // they are no more than `OWED_SLICES`, and only a few where even a
+    // small one took a long task's time.
+    this._owedSlices = Math.max(
+      1,
+      took >= OWED_LONG_MS
+        ? Math.min(OWED_FEW, this._owedSlices - 1)
+        : this._owedSlices - 1,
+    );
+    this._owedChunk = Math.max(
+      1,
+      Math.min(
+        this._owedChunk * 2,
+        Math.round((this._owedChunk * OWED_SLICE_MS) / Math.max(took, 1)),
+      ),
+      Math.ceil(this._owed.size / this._owedSlices),
+    );
+    // what moved may be in view, where something is centred in what grew,
+    // so the slices end in a paint of what the pane shows whatever they did
+    this._measureOwed = true;
+    if (this._owedShown) {
+      this._owedShown = false;
+      this.invalidate(true, this, 'props');
+    }
+    const now = owedClock.now();
+    if (
+      this._measureOwed &&
+      (!this._owed.size || now - this._measuredAt >= OWED_MEASURE_MS)
+    ) {
+      this._measureOwed = false;
+      this._measuredAt = now;
+      this.invalidateMeasure('content');
+      this.invalidate(true, this, 'props');
+    }
+    if (this._owed.size) this._armOwed(Math.max(OWED_REST_MS, took));
   }
 
   /**
@@ -1898,10 +2326,13 @@ export class HtmlViewNode extends Node {
       if (!url) continue;
       // a sheet a `<link rel=preload>` fetches is nobody's yet: its
       // arrival changes nothing, until a sheet's link asks for it too
-      this._resources.request(
-        { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
-        isStylePreload(el),
-      );
+      if (tag !== 'img' || !this._waitsLazily(el, url)) {
+        this._resources.request(
+          { url, kind: tag === 'link' ? 'stylesheet' : 'image', element: el },
+          isStylePreload(el),
+          this._waited.has(el) && 'lazily',
+        );
+      }
       // the markup's own, the first time it is seen: what a page's script
       // changes after that it says (`askImage`)
       if (tag === 'img' && props.onImage && !this._imageKeys.has(el)) {
@@ -1937,6 +2368,9 @@ export class HtmlViewNode extends Node {
   /** What the next microtask tells: one outcome an element, and none for
    *  one that asked for something else since. */
   private _imageTells = new Map<Element, 'load' | 'error'>();
+  /** The images a page's script changed, which the end of its task asks
+   *  for (`_askDue`). */
+  private _imagesDue = new Set<Element>();
 
   /**
    * A page's script changed what an `<img>` shows, or made one: its image
@@ -1951,19 +2385,217 @@ export class HtmlViewNode extends Node {
       this._imagesOwed.add(el);
       return;
     }
-    if (chooses) {
-      this._images.choose(
-        [el],
-        this._sourceEnv(
-          this._laidOutWidth > 0 ? this._laidOutWidth : this.abs.width || 1,
-          this._viewportHeight(),
-        ),
-      );
-    } else {
+    // what the store has is there as it is asked for, and no src is no image
+    if (!chooses) {
       const url = attr(el, 'src');
-      if (url) this._resources.request({ url, kind: 'image', element: el });
+      const state = url ? this._resources.state(url) : 'failed';
+      if (state === 'ready' || state === 'failed') {
+        this._watchImage(el, true);
+        return;
+      }
     }
-    this._watchImage(el, true);
+    if (!this._imagesDue.size) {
+      void Promise.resolve().then(() => this._askDue());
+    }
+    this._imagesDue.add(el);
+  }
+
+  /**
+   * Ask for what the images a page's script changed show, at the end of its
+   * task: HTML's "await a stable state", which is why a `loading` set after
+   * a `src` still counts. React sets an element's attributes in the order
+   * they are written, on an element in no document yet.
+   */
+  private _askDue(): void {
+    const due = this._imagesDue;
+    this._imagesDue = new Set();
+    if (this.destroyed) return;
+    for (const el of due) {
+      if (choosesSource(el)) {
+        this._images.choose(
+          [el],
+          this._sourceEnv(
+            this._laidOutWidth > 0 ? this._laidOutWidth : this.abs.width || 1,
+            this._viewportHeight(),
+          ),
+        );
+      } else {
+        const url = attr(el, 'src');
+        if (url && !this._waitsLazily(el, url)) {
+          this._resources.request(
+            { url, kind: 'image', element: el },
+            false,
+            true,
+          );
+        }
+      }
+      this._watchImage(el, true);
+    }
+  }
+
+  // --- what a lazy image waits for ----------------------------------------
+  //
+  // HTML's lazy loading (2.5.7): an `<img loading="lazy">` in a document
+  // whose scripts run is asked for once it comes near the viewport, and
+  // holds no `load`. Nothing is kept of which images wait: one waits for as
+  // long as what it shows has not been asked for, by it or by anything else
+  // (`_waitsLazily`). An element with no box is near nothing, so one under
+  // `display: none`, or in no document at all, waits until it has one.
+
+  /** Whether an image may wait in the document as it is: some did the last
+   *  time anything asked, so a paint asks again (`_askNear`). */
+  private _lazyWaits = false;
+  /** The images that have waited, which hold no `load` once they are asked
+   *  for, by the viewport or by `loading` set eager: HTML's "delay load
+   *  event" is settled before an image waits. */
+  private _waited = new WeakSet<Element>();
+  /** What can be seen, and the boxes as they were laid out, when a paint
+   *  last asked what is near it (`_askNear`). */
+  private _lazySeen: { rect: Rect; geometry: number } | null = null;
+
+  /**
+   * Whether an `<img>`'s image waits to be near the viewport: HTML's "will
+   * lazy load element steps", which are false where scripting is disabled,
+   * since a server could read a reader's way down a document from what it
+   * was asked for and when. Not where the URL is in the store, as it is in
+   * HTML's list of available images, and asked for by another element: it
+   * is shown as it arrives.
+   */
+  private _waitsLazily(el: Element, url: string): boolean {
+    if (!(this._props().scripting ?? false) || !loadsLazily(el)) return false;
+    if (this._resources.state(url) !== null) return false;
+    this._resources.expect(url);
+    this._waited.add(el);
+    this._lazyWaits = true;
+    return true;
+  }
+
+  /**
+   * Ask for the lazy images a paint finds near what can be seen: HTML's
+   * lazy load intersection observer, whose root margin and scroll margin it
+   * leaves to the browser. From the boxes as they are laid out, so a paint pays for
+   * a walk of what waits and no layout, and no walk at all until the pane
+   * has moved `LAZY_STEP_PX` or the boxes have (`_geometry`). The asking is
+   * a microtask later: never from inside a paint, since a host answers from
+   * it. Not `_owe`'s: what is owed is the document's to bring up to date at
+   * a page's read, and a read of a document brings in no image.
+   */
+  private _askNear(): void {
+    const tree = this._tree;
+    if (!tree) return;
+    // at the paint's end, where what the frame asked of the pane has landed
+    this._painting = true;
+    const seen = this._seenRect();
+    this._painting = false;
+    const was = this._lazySeen;
+    if (
+      was?.geometry === this._geometry &&
+      Math.abs(seen.x - was.rect.x) +
+        Math.abs(seen.y - was.rect.y) +
+        Math.abs(seen.width - was.rect.width) +
+        Math.abs(seen.height - was.rect.height) <
+        LAZY_STEP_PX
+    ) {
+      return;
+    }
+    this._lazySeen = { rect: seen, geometry: this._geometry };
+    const boxes = this._imageBoxesOf(tree);
+    const facts = this._source.facts();
+    const shift = this._fixedShift(this._scrolledOrigin());
+    // what a `<foreignObject>` holds is in a tree of its own, laid out
+    // against the object, and drawn as the drawing is reached
+    const foreign = tree.foreign && foreignImages(tree.foreign);
+    const near: { el: Element; url: string; away: number }[] = [];
+    let waits = false;
+    const ask = (el: Element): void => {
+      if (!loadsLazily(el)) return;
+      const url = choosesSource(el)
+        ? this._images.chosen(el)?.url
+        : attr(el, 'src');
+      if (!url || this._resources.state(url) !== null) return;
+      const box = boxes.get(el);
+      const away = box
+        ? this._lazyAway(tree, box, seen, shift)
+        : foreign?.has(el)
+          ? 0
+          : null;
+      if (away === null) waits = true;
+      else near.push({ el, url, away });
+    };
+    for (const el of facts.resources) ask(el);
+    for (const el of facts.pictures) ask(el);
+    this._lazyWaits = waits;
+    if (!near.length) return;
+    // what can be seen first: a host goes through what it is asked in order
+    near.sort((a, b) => a.away - b.away);
+    const doc = this._source.document;
+    void Promise.resolve().then(() => {
+      if (this._source.document !== doc || this.destroyed) return;
+      for (const { el, url } of near) {
+        if (this._props().onImage) this._watchImage(el);
+        this._resources.request(
+          { url, kind: 'image', element: el },
+          false,
+          'lazily',
+        );
+      }
+    });
+  }
+
+  /**
+   * How far a box is from what can be seen, in CSS pixels and 0 where it
+   * meets it, where it is near that and the viewport of every box around
+   * it that scrolls (`LAZY_NEAR_PX`, `LAZY_LOADING_PX`); null where it is
+   * not. What cuts it short is asked only of what the viewport has near: a
+   * page of images is a few of those and a walk up the boxes for none of
+   * the rest.
+   */
+  private _lazyAway(
+    tree: BoxTree,
+    box: Box,
+    seen: Rect,
+    shift: { x: number; y: number } | null,
+  ): number | null {
+    const drawn = this._drawnRect(tree, box, false);
+    if (!drawn) return null;
+    const rect = this._moveToViewport(box, drawn, shift);
+    const across = Math.max(
+      seen.x - rect.x - rect.width,
+      rect.x - seen.x - seen.width,
+      0,
+    );
+    const down = Math.max(
+      seen.y - rect.y - rect.height,
+      rect.y - seen.y - seen.height,
+      0,
+    );
+    const loaded = this._loadedOf === this._source.document;
+    const near = loaded ? LAZY_NEAR_PX : LAZY_LOADING_PX;
+    if (across > near || down > near) return null;
+    const clips = intersectionClips(
+      box,
+      null,
+      this._scale,
+      loaded ? LAZY_MARGINS : LAZY_LOADING_MARGINS,
+    );
+    return clips && this._cutBy(rect, clips, shift)
+      ? Math.max(across, down)
+      : null;
+  }
+
+  /** What can be seen of the document, in `elementRect`'s coordinates. */
+  private _seenRect(): Rect {
+    const s = this._scale;
+    const top = this._seenTop();
+    const viewport = this._viewport();
+    const left = viewport ? viewport.x - this.contentBox().x : 0;
+    const width = viewport ? viewport.width : (this.root?.abs?.width ?? 0);
+    return {
+      x: left / s,
+      y: top / s,
+      width: width / s,
+      height: (this._seenBottom() - top) / s,
+    };
   }
 
   /** Watch what an `<img>` shows now, unless that is what it was watched
@@ -2161,26 +2793,26 @@ export class HtmlViewNode extends Node {
    * again, as an image a background names is, and laid out again where it
    * can. Only an element whose box is another kind with its image
    * (`awaitingKind`), or a marker or generated content sized by it, is
-   * built again. Wikipedia says how big each image of an article is, and
-   * its article on the X Window System was built and laid out again eleven
-   * times as they came in, at some 180 ms a time on a Mac.
+   * built again, with what it holds (`_arrivedKinds`). Wikipedia says how
+   * big each image of an article is, and its article on the X Window System
+   * was built and laid out again eleven times as they came in, at some
+   * 180 ms a time on a Mac.
+   *
+   * Nothing here changes what a build already owed is: one of every box
+   * reads each size as it makes the box, and one of some subtrees leaves
+   * the rest to take theirs here. An image that landed between a page's
+   * change and the frame that builds it had made that build the whole
+   * document's: most of what the Guardian's and BBC's images cost as they
+   * came in, 120 to 420 ms an arrival, with no box of any other kind.
    *
    * `painted` is false where only the size arrived, read from the image's
    * header while its pixels decode: nothing draws it yet, so nothing is
-   * painted but what a layout moves.
+   * painted but what a layout moves. `lazily` is where a lazy image is
+   * kept, which only the boxes showing it draw (`_lazyPainted`).
    */
-  private _imageArrived(painted = true): void {
+  private _imageArrived(painted = true, lazily?: string): void {
     const tree = this._tree;
-    if (
-      !tree ||
-      this._stale >= Stale.Boxes ||
-      this._contentImagesArrived(tree) ||
-      tree.awaitingKind.some(
-        (el) =>
-          this._imageSize(el) ||
-          this._resources.holdsDocument(imageUrlOf(el) ?? ''),
-      )
-    ) {
+    if (!tree || (this._stale >= Stale.Boxes && !this._buildSeeds)) {
       // built again for the boxes an image makes, and no style: an image
       // changes none, and every element was matched again for Wikipedia's
       // interlanguage stars, `list-style-image`s that arrive after the
@@ -2188,6 +2820,8 @@ export class HtmlViewNode extends Node {
       this._invalidate(Stale.Boxes, EMPTY_SET);
       return;
     }
+    const kinds = this._arrivedKinds(tree);
+    if (kinds) this._invalidate(Stale.Boxes, EMPTY_SET, false, kinds);
     let moves = false;
     const s = this._scale;
     // A box takes the size of what its element shows now, unless what it
@@ -2198,6 +2832,11 @@ export class HtmlViewNode extends Node {
       if (!size || this._sizePending(el)) return false;
       const next = intrinsicsOf(size, s * box.style.effectiveZoom);
       if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
+        const slight = closeIntrinsic(box.intrinsic, next, s);
+        if (lazily !== undefined && (slight || !this._inView(tree, box))) {
+          this._oweSize(box, next, slight);
+          return true;
+        }
         moves = true;
         // what the boxes around it measured of it, for their lives, is
         // measured again: a flex item shrunk to an image that had not come
@@ -2223,8 +2862,72 @@ export class HtmlViewNode extends Node {
         if (box && !tree.awaiting.includes(box)) take(box);
       }
     }
-    if (painted) this._imagePainted();
+    if (painted) {
+      if (lazily === undefined) this._imagePainted();
+      else this._lazyPainted(tree, lazily);
+    }
     if (moves) this._invalidate(Stale.Layout);
+  }
+
+  /**
+   * A lazy image's size, which waits with what else can (`_owe`): it lands
+   * ahead of the reader, and a size is news to the layout of all of a long
+   * article, in the frames of a scroll. `slight` is a size no reader can
+   * tell from the one it has, which does not come in for being near, or in
+   * view, and waits for the scroll to end: Wikipedia's images are `height:
+   * auto`, half a pixel from their attributes by rounding, and a fling
+   * laid the article out for each that landed.
+   */
+  private _oweSize(
+    box: Box,
+    next: NonNullable<Box['intrinsic']>,
+    slight: boolean,
+  ): void {
+    if (slight) this._owedSlight.add(box);
+    this._owe(box, (_, up) => {
+      box.intrinsic = next;
+      forgetSizesIn(box, up);
+      this._dropSprites(box, true);
+    });
+  }
+
+  /** Whether a box meets what can be seen. */
+  private _inView(tree: BoxTree, box: Box): boolean {
+    const drawn = this._drawnRect(tree, box, false);
+    if (!drawn) return false;
+    const r = this._moveToViewport(box, drawn);
+    const seen = this._seenRect();
+    return (
+      r.x <= seen.x + seen.width &&
+      r.x + r.width >= seen.x &&
+      r.y <= seen.y + seen.height &&
+      r.y + r.height >= seen.y
+    );
+  }
+
+  /**
+   * A lazy image's pixels are in: what shows it is painted again, what holds
+   * a drawing of that goes, and nothing else does. Such an image lands
+   * ahead of the reader, off screen and in the middle of a scroll, whose
+   * frames are blits: painted as any image is, each arrival repainted all
+   * the pane shows and every surface kept for a box.
+   */
+  private _lazyPainted(tree: BoxTree, key: string): void {
+    const shown = this._viewportInDocument();
+    const inks: Rect[] = [];
+    for (const box of tree.images) {
+      const url = box.el ? this._imageUrl(box.el) : undefined;
+      if (!url || this._resources.keyOf(url) !== key) continue;
+      this._dropSprites(box, true);
+      if (this._lifted.size && this._insideLifted(box)) {
+        this._spriteGen += 1;
+        this.spritesChanged();
+      }
+      const ink = this._inkOf(box);
+      const part = ink && shown ? rectWithin(ink, shown) : ink;
+      if (part) inks.push(part);
+    }
+    this._repaintInk(inks);
   }
 
   /**
@@ -2242,6 +2945,27 @@ export class HtmlViewNode extends Node {
       this._resources.state(url) === 'pending' &&
       !this._resources.imageSize(url)
     );
+  }
+
+  /** The elements whose boxes an image that arrived makes otherwise: what
+   *  it was built without, as generated content or a marker, and what comes
+   *  out another kind with it. Null where it is none. */
+  private _arrivedKinds(tree: BoxTree): Set<Element> | null {
+    let kinds: Set<Element> | null = null;
+    for (const { url, element, sized } of tree.contentImages) {
+      if (!sized && this._resources.imageSize(url)) {
+        (kinds ??= new Set()).add(element);
+      }
+    }
+    for (const el of tree.awaitingKind) {
+      if (
+        this._imageSize(el) ||
+        this._resources.holdsDocument(imageUrlOf(el) ?? '')
+      ) {
+        (kinds ??= new Set()).add(el);
+      }
+    }
+    return kinds;
   }
 
   /** Whether an image generated content names arrived as it was asked for,
@@ -2507,10 +3231,12 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length ? this._webFonts : null,
         null,
-        null,
+        this._target,
         shadows,
         kept?.cascade ?? null,
       );
+      this._cascade.laidOutSize = this._laidOutSize;
+      this._cascade.laidOutScroll = this._laidOutScroll;
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
       this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
@@ -3124,7 +3850,8 @@ export class HtmlViewNode extends Node {
    * Tell the host where the document has got to, each once a document:
    * `onParsed` once its parse has ended, and `onLoaded` once, after that,
    * it has been laid out whole and nothing it asked for is on its way — a
-   * sheet, an image and its decode, a face. Counted from a layout because
+   * sheet, an image and its decode, a face, but for a lazy image, which
+   * holds no `load` (`ResourceStore.pending`). Counted from a layout because
    * a background, a font and an image's chosen source are asked for only
    * as a layout finds them. Told a microtask later, never from inside a
    * paint or a commit: a host runs a page's scripts from them.
@@ -3427,6 +4154,7 @@ export class HtmlViewNode extends Node {
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
+    if (this._facesOwed) this._takeFaces();
     // A document that reads its viewport's height — a `vh`, a percentage
     // height on the root, a box placed against the initial containing block
     // — is laid out again when that height moves. One that reads none, which
@@ -3453,7 +4181,9 @@ export class HtmlViewNode extends Node {
     // What is at the top of what can be seen, where a layout at another
     // width, or the one that lays out what a drag kept, is about to move
     // it (`_keepAnchor`): taken before a build, whose boxes have no place
-    if (this._laidOutWidth !== target || this._partial) this._anchorFrame();
+    if (this._laidOutWidth !== target || this._partial || this._owedAsk) {
+      this._anchorFrame();
+    }
 
     // the styles a build may keep (`_restyleOnly`), unless something
     // found below changes them all
@@ -3499,6 +4229,18 @@ export class HtmlViewNode extends Node {
       }
       follow = true;
     };
+    // what is owed that this frame or this read asks for (`_settleOwed`)
+    if (this._owedAsk) {
+      // but none of it under a drag's layout: what a box measures of what
+      // it holds is kept for its life, and what it holds is cut short by
+      // what is set aside (`setAside`). The drag lays out what can be seen
+      // in the faces there are, and what waits runs once it has rested.
+      const reached = this._partial
+        ? EMPTY_SET
+        : this._settleOwed(this._owedAsk);
+      this._owedAsk = 0;
+      if (reached.size) seedWith(new Set(reached));
+    }
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
@@ -3801,6 +4543,7 @@ export class HtmlViewNode extends Node {
         } else {
           this._asideOwed = false;
           this._stylesOwed.clear();
+          this._owedDone();
         }
         kept = null;
         if (this._vt?.phase === 'live') this._armTransitionFrame();
@@ -3816,7 +4559,10 @@ export class HtmlViewNode extends Node {
           this._layouts = null;
           again = true;
         }
-        if (again) this._tree = build();
+        if (again) {
+          this._tree = build();
+          this._owedDone();
+        }
         // a frame's build keeps them, for `_rebuildFrame` to move to the new
         // boxes or give up (`_carrySprites`)
         if (this._carryingFrom === null) this._sprites?.clear();
@@ -3882,6 +4628,7 @@ export class HtmlViewNode extends Node {
           stop?.reach,
         );
         this._questioned = question;
+        this._sizedTree = question ? null : this._tree;
         // the sticky boxes the viewport keeps, where the pane is scrolled to
         this._followViewport();
         this._stickyMoved = false;
@@ -3969,6 +4716,13 @@ export class HtmlViewNode extends Node {
       parsed = false;
     }
     this._stale = Stale.Nothing;
+    if (!this._owed.size && this._measureOwed) {
+      this._measureOwed = false;
+      if (!this._measuring) {
+        this.invalidateMeasure('content');
+        this.invalidate(true, this, 'props');
+      }
+    }
     // Read after core's layout pass — the viewport is the box around this
     // one, whose new height only that pass decides — so it is a paint that
     // finds it moved, and the next frame that measures this element again.
@@ -4219,6 +4973,8 @@ export class HtmlViewNode extends Node {
     const shift = moved - anchor.asked;
     if (shift === 0 || !Number.isFinite(shift)) return;
     anchor.asked = moved;
+    // the pane following this is no reader's scroll (`_followOwed`)
+    this._owedTop += shift;
     (
       this as unknown as { anchorScrollBy(dx: number, dy: number): boolean }
     ).anchorScrollBy(0, shift);
@@ -5271,6 +6027,8 @@ export class HtmlViewNode extends Node {
     this._gifs.clear();
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = null;
+    if (this._owedTimer !== null) owedClock.disarm(this._owedTimer);
+    this._owedTimer = null;
     this._disarmFrame();
     this._resources.destroy();
     this._webFonts.destroy();
@@ -5460,7 +6218,7 @@ export class HtmlViewNode extends Node {
    * Null where the document has no text there to be in.
    */
   textPointAt(x: number, y: number): { node: AnyNode; offset: number } | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     this._followViewport();
     this._followLifted();
     const tree = this._tree;
@@ -5857,10 +6615,10 @@ export class HtmlViewNode extends Node {
     ) {
       return undefined;
     }
-    // a highlight's style is worked out here, after every layout, and its
-    // `@container` rules and container units read the containers as the
-    // last one left them, whether or not an element's style read them
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    // a highlight's style is worked out here, after every layout, and what
+    // it keeps of what its `@container` rules and container units read
+    // stands until one of those sizes moves
+    const boxes = this._containerBoxesOf(tree);
     if (boxes.size) {
       this._cascade?.sizeContainers(boxes.keys(), containerSizer(tree, boxes));
     }
@@ -5983,7 +6741,7 @@ export class HtmlViewNode extends Node {
     end: AnyNode,
     endOffset: number,
   ): Rect[] | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     this._followViewport();
     const tree = this._tree;
     if (!tree?.textNodes?.length) return null;
@@ -6075,13 +6833,14 @@ export class HtmlViewNode extends Node {
    * last, each across its text, the inline-blocks and inline boxes' edges
    * it holds, and its own padding and border where it starts or ends — its
    * border box across, as `getBoundingClientRect` is (CSSOM View 6.1) — and
-   * as tall as its lines; or where its text would start when it has none,
-   * as `<a name>` has none. A box fixed to the viewport, and what is in it,
+   * as tall as its lines; or of no width, where it stands among what is on
+   * its lines when it has none of that, as `<a name>` has none, and as tall
+   * as its font. A box fixed to the viewport, and what is in it,
    * where the pane's scroll draws it (`_moveToViewport`). Null for an
    * element with no box — `display: none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     this._followViewport();
     return this._rectOf(element);
   }
@@ -6136,28 +6895,37 @@ export class HtmlViewNode extends Node {
         box && drawn && intersectionClips(box, rootBox, this._scale, margin);
       if (!box || !drawn || !clips) return null;
       const rect = this._moveToViewport(box, drawn, shift);
-      let x0 = rect.x;
-      let y0 = rect.y;
-      let x1 = rect.x + rect.width;
-      let y1 = rect.y + rect.height;
-      for (const clip of clips) {
-        const c = this._moveToViewport(
-          clip.at,
-          throughTransforms(clip.rect, clip.at),
-          shift,
-        );
-        x0 = Math.max(x0, c.x);
-        y0 = Math.max(y0, c.y);
-        x1 = Math.min(x1, c.x + c.width);
-        y1 = Math.min(y1, c.y + c.height);
-      }
-      const shown =
-        x0 <= x1 && y0 <= y1
-          ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
-          : null;
-      return { rect, shown };
+      return { rect, shown: this._cutBy(rect, clips, shift) };
     });
     return { root: rootRect, targets };
+  }
+
+  /** What `clips` leave of a rectangle, each through the matrices around
+   *  the box whose coordinates it is in: an edge that only meets one kept
+   *  as a rectangle of no area, and null where they leave none of it. */
+  private _cutBy(
+    rect: Rect,
+    clips: readonly { rect: Rect; at: Box }[],
+    shift: { x: number; y: number } | null,
+  ): Rect | null {
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width;
+    let y1 = rect.y + rect.height;
+    for (const clip of clips) {
+      const c = this._moveToViewport(
+        clip.at,
+        throughTransforms(clip.rect, clip.at),
+        shift,
+      );
+      x0 = Math.max(x0, c.x);
+      y0 = Math.max(y0, c.y);
+      x1 = Math.min(x1, c.x + c.width);
+      y1 = Math.min(y1, c.y + c.height);
+    }
+    return x0 <= x1 && y0 <= y1
+      ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+      : null;
   }
 
   /**
@@ -6321,11 +7089,20 @@ export class HtmlViewNode extends Node {
     return this._cascade?.namesThatStyle(element, attribute) ?? [];
   }
 
+  /**
+   * An element's style as a page reads it. `waits` leaves what is owed
+   * waiting, for a script that may read nothing a box decides (`comesFromBox`):
+   * a style is right whether its text has been set again or not, since the
+   * lists and the lengths read from a face are, and what a box answers is
+   * asked for again if it is read (`layoutOwed`).
+   */
   computedStyle(
     element: Element,
     pseudo: string | null = null,
+    waits = false,
   ): Record<string, string> | null {
-    this._prepare(this.abs.width || 1);
+    if (waits) this._prepare(this.abs.width || 1);
+    else this._settle();
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
@@ -6789,8 +7566,8 @@ export class HtmlViewNode extends Node {
   /**
    * Where a box's fragments are, in device pixels, as layout placed them
    * and before a turn or a scale draws them elsewhere: the first, and the
-   * rectangle around all of them — a block's border box, both. Null for an
-   * inline box on no line with no text after it.
+   * rectangle around all of them — a block's border box, both. Null for a
+   * box its block's content does not hold.
    */
   private _fragmentsOf(
     tree: BoxTree,
@@ -6844,21 +7621,28 @@ export class HtmlViewNode extends Node {
     // above it
     let block = box.parent;
     while (block && block.kind === 'inline') block = block.parent;
-    let rect: Rect | null = null;
-    if (block && !block.lines?.length) {
-      const rtl = block.style.direction === 'rtl';
+    if (!block) return null;
+    let rect: Rect;
+    if (!block.lines?.length) {
+      const left = block.contentX;
       rect = {
-        x: rtl ? block.contentX + block.contentWidth : block.contentX,
+        x: emptyLinePoint(block.style, left, left + block.contentWidth),
         y: block.contentY,
         width: 0,
         height: 0,
       };
     } else {
-      // an empty subtree's range is `[0, 0)`, wherever it stands: where
-      // its text would be is where the text after it starts
-      const caret = caretAt(tree.root, textAfter(tree.root, box));
-      if (!caret) return null;
-      rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
+      // nothing of it takes any room, and it is where the content around
+      // it has it on its block's lines, a fragment of no width: an `<a
+      // name>`, or a `<span>` a script has not filled yet
+      const point = emptyBoxPoint(block, box, fonts);
+      if (!point) return null;
+      const { x, y, height, onLine } = point;
+      const empty = [{ x, y, width: 0, height }];
+      if (box.kind === 'inline') {
+        fragmentBoxes(box, empty, onLine ? fonts : null);
+      }
+      rect = empty[0];
     }
     return { first: rect, all: rect };
   }
@@ -6880,7 +7664,7 @@ export class HtmlViewNode extends Node {
    * has none. Null for an element with no box.
    */
   offsetRect(element: Element): OffsetRect | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     this._followViewport();
     const tree = this._tree;
     const box = tree ? this._ownBoxOf(tree, element) : null;
@@ -7587,7 +8371,18 @@ export class HtmlViewNode extends Node {
     };
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
-      if (!kept) return null;
+      if (!kept) {
+        // a `<script>` put in draws nothing and has no style to go by, until
+        // a page gives it a `display`
+        if (
+          reach.has(el) &&
+          UNDRAWN_TAGS.has(tagOf(el)) &&
+          draws(el, true, tree, cascade)
+        ) {
+          refused = true;
+        }
+        return null;
+      }
       if (!reach.has(el)) return kept.style;
       const done = fresh.get(el);
       if (done) return done;
@@ -8189,12 +8984,39 @@ export class HtmlViewNode extends Node {
   private _containersMoved(tree: BoxTree): Set<Element> | null {
     const cascade = this._cascade;
     if (!cascade?.readsContainers) return null;
-    // a tree built before any style read one — a restyle in place read the
-    // first — has none taken, and takes them now
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    const boxes = this._containerBoxesOf(tree);
     return cascade.containersMoved(containerSizer(tree, boxes), (el) =>
       this._scrollStatesOf(boxes.get(el)),
     );
+  }
+
+  /** The tree whose boxes hold what the last layout gave them, while the
+   *  next is built: none after a layout that asked a question, whose sizes
+   *  are no container's. */
+  private _sizedTree: BoxTree | null = null;
+
+  /** A size container's content box as the last layout left it, for the
+   *  cascade (`Cascade.laidOutSize`): a restyle in place may be the first
+   *  thing to read one, or the first since the layout that moved it, and
+   *  no layout follows it to say otherwise. */
+  private _laidOutSize = (el: Element): ContainerSize | null | undefined => {
+    const tree = this._sizedTree;
+    if (!tree) return undefined;
+    return containerSizer(tree, this._containerBoxesOf(tree))(el);
+  };
+
+  /** …and a scroll-state container's scroll states, for the same reason
+   *  (`Cascade.laidOutScroll`). */
+  private _laidOutScroll = (el: Element): ScrollStates | undefined => {
+    const tree = this._sizedTree;
+    if (!tree) return undefined;
+    return this._scrollStatesOf(this._containerBoxesOf(tree).get(el));
+  };
+
+  /** A tree's containers (`BoxTree.containers`): one built before any style
+   *  read one has none taken, and takes them as a read first asks. */
+  private _containerBoxesOf(tree: BoxTree): Map<Element, Box> {
+    return (tree.containers ??= containerBoxes(tree.root, asideOf(tree)));
   }
 
   /**
@@ -8414,7 +9236,7 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade?.readsScrollState) return;
-    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    const boxes = this._containerBoxesOf(tree);
     const moved = cascade.containersMoved(
       () => undefined,
       (el) => this._scrollStatesOf(boxes.get(el)),
@@ -11433,8 +12255,15 @@ export class HtmlViewNode extends Node {
 
   scrollStateOf(element: Element): ScrollState | null {
     this._prepare(this.abs.width || 1);
-    const box = this._scrollerOf(element);
+    let box = this._scrollerOf(element);
     if (!box) return null;
+    // how far what it holds reaches, where what it holds waits: a handler
+    // that reads `scrollTop` of what holds none of it settles nothing
+    if (this._owes(box)) {
+      this._settle();
+      box = this._scrollerOf(element);
+      if (!box) return null;
+    }
     const state = scrollStateOf(box);
     const s = this._scale;
     return {
@@ -11459,7 +12288,7 @@ export class HtmlViewNode extends Node {
   clientBoxOf(
     element: Element,
   ): { width: number; height: number; top: number; left: number } | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     const tree = this._tree;
     const box = tree ? this._ownBoxOf(tree, element) : null;
     if (!box || box.kind === 'inline') return null;
@@ -11542,7 +12371,7 @@ export class HtmlViewNode extends Node {
      *  container that does not snap too (`lineUp`). */
     target: Element | null = null,
   ): ScrollOffset | null {
-    this._prepare(this.abs.width || 1);
+    this._settle();
     const box = this._scrollerOf(element);
     if (!box) return null;
     const state = scrollStateOf(box);
@@ -12540,6 +13369,11 @@ export class HtmlViewNode extends Node {
     // what a layout that stopped set aside in a scroll container may be
     // what it is scrolled to now: the document is laid out whole
     if (this._partial) this._invalidate(Stale.Layout);
+    // and what waits may be what it shows now, or wait the longer for it
+    if (this._owed.size) {
+      this._inputAt = owedClock.now();
+      this._runNear(0);
+    }
     this._scrolledLast.set(el, scrolledTowards(to.x - was.x, to.y - was.y));
     const tree = this._tree!;
     computePaintBounds(tree.root, tree.movedInline);
@@ -12777,6 +13611,8 @@ export class HtmlViewNode extends Node {
     commitLastPositions();
     this._noteFrame();
     this._notePaneScroll();
+    if (this._owed.size) this._followOwed();
+    if (this._lazyWaits) this._askNear();
     this._props().onPaint?.();
   }
 
@@ -14341,21 +15177,27 @@ function inlineBands(
   }
   if (box.kind === 'inline') {
     fragmentReach(box, bands);
-    if (fonts) fragmentHeights(box, bands, fonts);
-    // where `position: relative` on it or an inline box around it moved
-    // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
-    // (CSSOM View 6.1): the bands are where the lines put it, and a link
-    // moved 120px down measured on its line, as wide as from where it was
-    // laid out to where it was drawn
-    const { x, y } = relativeOffsetOf(box);
-    if (x || y) {
-      for (const band of bands) {
-        band.x += x;
-        band.y += y;
-      }
-    }
+    fragmentBoxes(box, bands, fonts);
   }
   out.push(...bands);
+}
+
+/** An inline box's bands on its lines made its fragments' border boxes:
+ *  as tall as they are, and moved where it was. */
+function fragmentBoxes(box: Box, bands: Rect[], fonts: FontsLike | null): void {
+  if (fonts) fragmentHeights(box, bands, fonts);
+  // where `position: relative` on it or an inline box around it moved
+  // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
+  // (CSSOM View 6.1): the bands are where the lines put it, and a link
+  // moved 120px down measured on its line, as wide as from where it was
+  // laid out to where it was drawn
+  const { x, y } = relativeOffsetOf(box);
+  if (x || y) {
+    for (const band of bands) {
+      band.x += x;
+      band.y += y;
+    }
+  }
 }
 
 /** How far an inline box and the inline boxes around it moved it by their
@@ -14424,29 +15266,6 @@ function textBefore(box: Box): number {
     }
   }
   return 0;
-}
-
-/** Where the document's text goes on after a box with none: the start of
- *  the next text in document order, or the end of the last before it. */
-function textAfter(root: Box, target: Box): number {
-  const stack: Box[] = [root];
-  let passed = false;
-  let before = 0;
-  while (stack.length) {
-    const box = stack.pop()!;
-    if (box === target) {
-      passed = true;
-      continue;
-    }
-    if (box.kind === 'text' && box.textEnd > box.textStart) {
-      if (passed) return box.textStart;
-      before = box.textEnd;
-    }
-    for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
-    }
-  }
-  return before;
 }
 
 /** Rects that overlap or touch made one, until none of those left do. */
@@ -14875,6 +15694,20 @@ function sameIntrinsic(a: Box['intrinsic'], b: Box['intrinsic']): boolean {
       a.height === b.height &&
       a.missing === b.missing &&
       a.ratio === b.ratio)
+  );
+}
+
+/** Whether two sizes of an image are within a CSS pixel of each other, each
+ *  way: `s` device pixels. */
+function closeIntrinsic(
+  a: Box['intrinsic'],
+  b: NonNullable<Box['intrinsic']>,
+  s: number,
+): boolean {
+  return (
+    !!a &&
+    Math.abs(a.width - b.width) <= s &&
+    Math.abs(a.height - b.height) <= s
   );
 }
 
@@ -15425,15 +16258,28 @@ function fragmentHeights(box: Box, bands: Rect[], fonts: FontsLike): void {
     const band = bands[i];
     const line = byTop.get(band.y);
     if (!line) continue;
-    // on its own baseline, which `vertical-align` may raise off the line's
-    const raise = SHIFTED_LINES.has(line)
-      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
-      : 0;
-    const baseline = line.y + line.baseline - raise;
+    // on its own baseline, which `vertical-align` may raise off the line's:
+    // a line says so of the text on it, and a band of no width is a box
+    // with nothing on the line to say it of
+    const raised = !band.width || SHIFTED_LINES.has(line);
+    const baseline = line.y + line.baseline - (raised ? raiseOn(line, box) : 0);
     const top = baseline - face.ascent - box.padTop - box.borderTop;
     const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
     bands[i] = { x: band.x, y: top, width: band.width, height: bottom - top };
   }
+}
+
+/** How far `vertical-align` raises an inline box's baseline off its line's:
+ *  by what was noted of it, or of the nearest box around it, for one with
+ *  no text for anything to be noted of. Nothing is noted of a box lowered
+ *  back to the line's baseline, which goes for what is in it too. */
+function raiseOn(line: LineBox, box: Box): number {
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const raise = LINE_BOX_RAISES.get(line)?.get(at) ?? BOX_RAISES.get(at);
+    if (raise !== undefined) return raise;
+    if (at.style.verticalAlign !== 'baseline') return 0;
+  }
+  return 0;
 }
 
 /** The bands of a text range on one block's own lines. */
@@ -15926,25 +16772,51 @@ function deepestAt(
         if (!child.topLayer) enter(child, context, stack, clipped);
       }
     }
+    // what is on a block's lines but for what the inline boxes that are
+    // layers have of them, which is in each's layers rather than the
+    // block's (`paintsApart`)
     if (node.lines) {
-      for (const line of node.lines) {
-        // its texts and atomics in the document's order, which paint
-        // paints them in (`placesOn`): a word an inline-block is under is
-        // what the pointer is over
-        const texts =
-          clipped.length === 0 && y >= line.y && y < line.y + line.height
-            ? line.texts
-            : NO_TEXTS;
-        let i = 0;
-        for (const placed of line.atomics) {
-          for (; i < placed.before && i < texts.length; i += 1) {
-            textAt(texts[i], context);
-          }
-          const atomic = placed.box;
-          if (atomic.parent && layered(atomic.parent, atomic)) continue;
-          enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
+      walkLines(
+        node.lines,
+        apartFromLines(node.lines),
+        context,
+        stack,
+        clipped,
+      );
+    } else if (node.kind === 'inline') {
+      const own = apartOf(node);
+      if (own) walkLines(own.lines, own.skip, context, stack, clipped);
+    }
+  };
+  const walkLines = (
+    lines: Iterable<LineBox>,
+    skip: ReadonlySet<LineText | AtomicPlacement> | undefined,
+    context: readonly number[],
+    stack: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
+    for (const line of lines) {
+      // its texts and atomics in the document's order, which paint
+      // paints them in (`placesOn`): a word an inline-block is under is
+      // what the pointer is over
+      const shifted = tree.movedInline && SHIFTED_LINES.has(line);
+      const texts =
+        clipped.length === 0 &&
+        (shifted || (y >= line.y && y < line.y + line.height))
+          ? line.texts
+          : NO_TEXTS;
+      let i = 0;
+      for (const placed of line.atomics) {
+        for (; i < placed.before && i < texts.length; i += 1) {
+          if (!skip?.has(texts[i])) textAt(texts[i], line, shifted, context);
         }
-        for (; i < texts.length; i += 1) textAt(texts[i], context);
+        const atomic = placed.box;
+        if (skip?.has(placed)) continue;
+        if (atomic.parent && layered(atomic.parent, atomic)) continue;
+        enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
+      }
+      for (; i < texts.length; i += 1) {
+        if (!skip?.has(texts[i])) textAt(texts[i], line, shifted, context);
       }
     }
   };
@@ -15957,11 +16829,22 @@ function deepestAt(
   // it but its extent. Whether it is seen and pointed at is its text box's
   // to say, whose style is the pseudo-element's in generated content: Zen
   // Garden 220's headings are hidden, and their `::after`s, which say
-  // `visible`, are what each shows.
-  const textAt = (text: LineText, context: readonly number[]): void => {
+  // `visible`, are what each shows. A text a relative or a sticky inline box
+  // moved is on its line's row moved with it, where it is drawn: on the row
+  // it left, a span held at the top of the viewport was no target.
+  const textAt = (
+    text: LineText,
+    line: LineBox,
+    shifted: boolean,
+    context: readonly number[],
+  ): void => {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) return;
     const at = (order += 1);
+    if (shifted) {
+      const top = line.y + (TEXT_SHIFTS.get(text)?.y ?? 0);
+      if (y < top || y >= top + line.height) return;
+    }
     for (const run of natural.runs) {
       const left = text.drawX + natural.x + run.x;
       if (x >= left && x < left + run.width) {
@@ -16793,6 +17676,139 @@ export const resizeClock = {
 };
 
 /**
+ * The clock what is owed runs on (`_owe`), as `hoverClock` is a held
+ * hover's: through `globalThis`, unref'd, and exported for a test to hold.
+ */
+export const owedClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
+/** What a box is owed (`HtmlViewNode._owe`): `up` is the boxes the same run
+ *  has gone up from, for `forgetSizesIn`. */
+type OwedWork = (box: Box, up: Set<Box>) => void;
+
+/** An ask of everything owed (`_settleOwed`). */
+const OWED_ALL = -1;
+
+/** The boxes made from a face as they are built, and not as they are laid
+ *  out, which a face that came builds again: a widget's size, a drawing's
+ *  text. */
+const READS_FACE_AS_BUILT: ReadonlySet<string> = new Set([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'svg',
+]);
+
+/** Whether a box made from a face as it is built has anything set in one:
+ *  a widget, or a drawing with text in it, of the icons a page is full of. */
+function setsText(box: Box): boolean {
+  if (box.replaced !== 'svg') return true;
+  const stack: AnyNode[] = [...(box.el?.children ?? [])];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (!isElement(node)) continue;
+    if (tagOf(node) === 'text') return true;
+    for (const child of node.children) stack.push(child);
+  }
+  return false;
+}
+
+/**
+ * The box whose layout sets what `box` holds, for a run of text or a marker:
+ * the block its lines are in, or the table or the multicol container around
+ * that, which are laid out as one.
+ */
+function ownerOf(box: Box, known: Map<Box, Box>): Box {
+  let block = box;
+  while (
+    block.parent &&
+    (block.kind === 'text' ||
+      block.kind === 'break' ||
+      block.kind === 'inline' ||
+      isInlineLevel(block))
+  ) {
+    block = block.parent;
+  }
+  const kept = known.get(block);
+  if (kept) return kept;
+  let owner = block;
+  for (let at: Box | null = block; at; at = at.parent) {
+    if (at.kind === 'table' || at.style.columns) owner = at;
+  }
+  known.set(block, owner);
+  return owner;
+}
+
+/** How long after a scroll or a key what is owed waits to run. */
+const OWED_QUIET_MS = 150;
+/** How long a slice of what is owed is to take, and the least rest after
+ *  it: past a frame at 60Hz neither a scroll nor a key waits on one. */
+const OWED_SLICE_MS = 10;
+const OWED_REST_MS = 16;
+/** The most slices what is owed is cut into from any one, and how few
+ *  where a slice took `OWED_LONG_MS`. */
+const OWED_SLICES = 12;
+const OWED_LONG_MS = 40;
+const OWED_FEW = 3;
+/** How often the pane is told how tall a document that is being set again
+ *  has come to be: each telling repaints all of what it shows. */
+const OWED_MEASURE_MS = 250;
+/** How many viewports either side of what can be seen count as near. */
+const OWED_NEAR = 1;
+
+/**
+ * How near what can be seen, in CSS pixels, a lazy image has to be to be
+ * asked for, across and down, and from the viewport of each box around it
+ * that scrolls. HTML leaves it to the browser: this is Chrome's on a fast
+ * connection, Firefox's is 600 down alone and WebKit's the viewport. It
+ * buys the time an image takes to arrive: at 1,250 a fling of 3,000 pixels
+ * a second finds it there if it took 400 ms.
+ */
+const LAZY_NEAR_PX = 1250;
+
+/**
+ * The same until the document's `load`, whose boxes are a guess. Its first
+ * layout comes before its head's scripts, and Wikipedia's menus, open until
+ * one of them runs, stood 3,500 pixels of them above the first image of an
+ * article, so nothing the reader was about to see was near for a second.
+ * At `LAZY_NEAR_PX` what a viewport shows was done a fifth to a third later
+ * than with every image asked for at once, on Wikipedia, BBC and the
+ * Guardian, and at this no later.
+ */
+const LAZY_LOADING_PX = 4000;
+
+/** How far the pane moves between walks of what waits (`_askNear`): a
+ *  quarter of how near an image has to be, which is too little to come. */
+const LAZY_STEP_PX = 300;
+
+/** A distance as an observer's `scrollMargin`. */
+const marginsOf = (value: number): readonly MarginLength[] =>
+  new Array<MarginLength>(4).fill({ value, percent: false });
+const LAZY_MARGINS = marginsOf(LAZY_NEAR_PX);
+const LAZY_LOADING_MARGINS = marginsOf(LAZY_LOADING_PX);
+
+/** The `<img>`s of the documents `<foreignObject>`s hold. */
+function foreignImages(foreign: ReadonlyMap<Element, ForeignObject>) {
+  const images = new Set<Element>();
+  for (const { tree } of foreign.values()) {
+    for (const box of tree.images) if (box.el) images.add(box.el);
+  }
+  return images;
+}
+
+/**
  * The clock an editing host's caret blinks on (`_caretMoved`), as
  * `hoverClock` is a held hover's: through `globalThis`, unref'd, and
  * exported for a test to hold — on the real clock, a runner slow enough to
@@ -16886,8 +17902,10 @@ const PAINT_ONLY = new Set([
   'caretColor',
   // what `getComputedStyle` reads a colour field in, which draws nothing
   ...COLOR_SOURCE_FIELDS,
-  // and the images as written, whose drawing is the fields beside it
+  // and the images and families as written, whose drawing is the fields
+  // beside them
   'backgroundImageText',
+  'fontFamilyText',
   // the shape a corner's radii are drawn in, inside the border box
   'cornerShape',
   // and the rules in a container's gaps, drawn under what it holds
@@ -17029,6 +18047,7 @@ const UNDRAWN_FIELDS = new Set([
   'pointerEvents',
   ...COLOR_SOURCE_FIELDS,
   'backgroundImageText',
+  'fontFamilyText',
 ]);
 
 /** The last answer for each new style, which the text set in a box shares

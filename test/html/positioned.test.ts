@@ -7,6 +7,8 @@ import { Html } from '../../src/index.js';
 import { setModal } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
+import type { Box } from '../../src/html/layout/boxes.js';
+import { layered } from '../../src/html/paint.js';
 import {
   areaTracks,
   parsePositionArea,
@@ -20,6 +22,7 @@ import {
 import {
   FONTS,
   boxOf,
+  bytesApart,
   clipsAround,
   fillsOf,
   findById,
@@ -27,8 +30,14 @@ import {
   linesOf,
   metric,
   pathsOf,
+  pixelsIn,
+  pointIn,
+  rebuilt,
   render,
   render2x,
+  renderScrolled,
+  snapshot,
+  treeOf,
   view,
   windingAt,
 } from './harness.js';
@@ -1485,6 +1494,445 @@ test('a sticky box is where a browser starts it, not moved by its insets', async
   // short of the 196 + 30 its `top` asks for
   assert.strictEqual(boxOf(el, 'lim').y, 211);
 });
+
+for (const [label, mount] of [
+  ['', render],
+  [', at 2x', render2x],
+] as const) {
+  metric(
+    `a sticky inline box is where its lines have it, however many layouts ran${label}`,
+    async () => {
+      // No layout sets an inline box's rect, and a move adds up on it, so
+      // read for where the box is, it was at the page's corner: moved by the
+      // whole of its `top` at the first layout wherever it stood, which
+      // stayed on the box as the place it was at, and by nothing at the
+      // layout after
+      const { node } = await mount(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+          '.s{position:sticky;top:10px}</style>' +
+          '<p style="height:80px">word <span id="top" class="s">held</span></p>' +
+          '<p>word <span id="far" class="s">here</span> ' +
+          '<b id="beside">here</b></p><p>word <span id="rel" ' +
+          'style="position:relative;top:4px">here</span></p>' +
+          '<div style="height:300px"></div>',
+      );
+      const el = view(node);
+      const stale = el as unknown as { _invalidate(stale: number): void };
+      const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+      const places = () =>
+        ['top', 'far', 'rel'].flatMap((id) => [at(id).x, at(id).y]);
+      const first = places();
+      // as far down as its `top` asks, from the top of the viewport
+      assert.strictEqual(first[1], 10, 'held down to its top');
+      // and past it, where the text beside it is, moved by nothing
+      assert.strictEqual(first[3], at('beside').y, 'where the flow has it');
+      for (let layouts = 2; layouts <= 4; layouts += 1) {
+        await act(async () => stale._invalidate(1));
+        await act();
+        assert.deepStrictEqual(places(), first, `after ${layouts} layouts`);
+      }
+    },
+  );
+
+  metric(
+    `a sticky box nothing scrolls sticks where the flow has it, and its transform moves it from there${label}`,
+    async () => {
+      // No scroll places it again, so where a layout puts it at rest is
+      // where it stays: all three engines' `r` is 10 less its own height,
+      // and `q`, turned, 30 less that and what a turn adds to its rect
+      const { node } = await mount(
+        '<style>body{margin:0}.h{width:20px;height:20px;position:sticky}' +
+          '</style><div style="height:400px">' +
+          '<div class="h" id="r" style="top:10px;' +
+          'transform:translateY(-100%)"></div>' +
+          '<div class="h" id="q" style="top:30px;' +
+          'transform:translateY(-100%) rotate(45deg)"></div>' +
+          '<div class="h" id="x" style="left:10px;' +
+          'transform:translateX(-100%)"></div></div>',
+      );
+      const el = view(node);
+      const top = (id: string) =>
+        Math.round(el.elementRect(findById(el.document, id)!)!.y * 10) / 10;
+      assert.strictEqual(top('r'), -10);
+      assert.strictEqual(top('q'), 5.9);
+      assert.strictEqual(el.elementRect(findById(el.document, 'x')!)!.x, -10);
+    },
+  );
+}
+
+metric(
+  'a sticky inline box stuck nowhere is drawn as the same box unpositioned is, its text over its background',
+  async () => {
+    // Given a size, it was painted as a rectangle after its lines were, and
+    // its background covered its text, in a repaint of it as much as in the
+    // first paint: only the same box not sticky says what should be there
+    const drawn = async (position: string) => {
+      const { result } = await render(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+          `span{position:${position};top:-100px;background:#ffcc00;` +
+          'padding:2px 8px;border-radius:4px}</style>' +
+          '<p>word <span>here</span> word</p>',
+      );
+      const pixels = await pixelsIn(result.ctx, {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 40,
+      });
+      await result.unmount();
+      return pixels;
+    };
+    const want = await drawn('static');
+    const got = await drawn('sticky');
+    assert.ok(
+      want.some((_, i) => i % 4 === 0 && want[i] < 100),
+      'the text is drawn',
+    );
+    assert.strictEqual(bytesApart(got, want), 0, 'its pixels');
+  },
+);
+
+/** A box `.s`, whose text and background are one red, so that it is that
+ *  red edge to edge, and text `.b` that shows where it comes over the box. */
+const POSITIONED_INLINE =
+  '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+  '.s{background:#ff0000;color:#ff0000}.b{color:#0000ff}</style>';
+
+/** How many of a window region's pixels are not a colour, and how many are
+ *  another, where the region is an element's box less a pixel all round:
+ *  what is under a box painted over it has no way to show. */
+async function pixelsOver(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: ReturnType<typeof view>,
+  id: string,
+  scale = 1,
+): Promise<{ other: number; all: number }> {
+  const { abs } = el as unknown as DrawnNode;
+  const r = el.elementRect(findById(el.document, id)!)!;
+  const x = Math.ceil(abs.x + r.x * scale) + 1;
+  const y = Math.ceil(abs.y + r.y * scale) + 1;
+  const width = Math.floor(r.width * scale) - 2;
+  const height = Math.floor(r.height * scale) - 2;
+  const px = await pixelsIn(result.ctx, { x, y, width, height });
+  let other = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i] !== 255 || px[i + 1] !== 0 || px[i + 2] !== 0) other += 1;
+  }
+  return { other, all: px.length / 4 };
+}
+
+for (const [label, mount, scale] of [
+  ['', render, 1],
+  [', at 2x', render2x, 2],
+] as const) {
+  metric(
+    `an inline box an inset moves goes over what is after it in the flow, in pixels and to the pointer, as Chrome, WebKit and Firefox have it${label}`,
+    async () => {
+      // A positioned box paints after the flow (CSS 2.1 Appendix E, step
+      // 8). Its text is on its block's lines, and painted by them it went
+      // under the text of every line after it, of its own block or another
+      const { result, node } = await mount(
+        POSITIONED_INLINE +
+          '<p><span id="s" class="s" style="position:relative;top:20px">' +
+          'XXXXXXXX</span> <span id="n" class="b">XX</span></p>' +
+          '<p id="b" class="b">XXXXXXXXXXXXXXXXXXXXXXXXXXXX</p>',
+      );
+      const el = view(node);
+      await act();
+      const { other, all } = await pixelsOver(result, el, 's', scale);
+      assert.ok(all > 100, 'it has pixels to look at');
+      assert.strictEqual(other, 0, 'nothing of the text under it shows');
+      const { abs } = el as unknown as DrawnNode;
+      const hit = (id: string, x: number) => {
+        const r = el.elementRect(findById(el.document, id)!)!;
+        return el.elementAtPoint(
+          abs.x / scale + r.x + x,
+          abs.y / scale + r.y + r.height / 2,
+        )?.attribs.id;
+      };
+      assert.strictEqual(hit('s', 10), 's', 'over the text under it');
+      // and what it does not cover is what it was, the rest of that line
+      const past = el.elementRect(findById(el.document, 's')!)!;
+      assert.strictEqual(hit('b', past.width + 10), 'b', 'past its end');
+    },
+  );
+
+  metric(
+    `a sticky inline box held over what scrolls under it is drawn on it, and takes the pointer there${label}`,
+    async () => {
+      // #1160 made a span stick, which put this in plain view: a span at
+      // the top of a list had the paragraphs under it drawn over it
+      const { result, node } = await mount(
+        POSITIONED_INLINE +
+          '<div id="list" style="height:100px;width:200px;overflow:auto">' +
+          '<span id="s" class="s" style="position:sticky;top:0">XXXXXXXX' +
+          '</span>' +
+          '<p>x</p>'.repeat(5) +
+          '<p id="b" class="b">XXXXXXXXXXXX</p>' +
+          '<p>x</p>'.repeat(20) +
+          '</div>',
+      );
+      const el = view(node);
+      await act();
+      el.scrollElementTo(findById(el.document, 'list')!, { y: 120 });
+      await act();
+      const { other, all } = await pixelsOver(result, el, 's', scale);
+      assert.ok(all > 100, 'it has pixels to look at');
+      assert.strictEqual(other, 0, 'nothing of the text under it shows');
+      const s = el.elementRect(findById(el.document, 's')!)!;
+      const b = el.elementRect(findById(el.document, 'b')!)!;
+      assert.ok(Math.abs(s.y - b.y) < s.height, 'it is over the paragraph');
+      const { abs } = el as unknown as DrawnNode;
+      const at = el.elementAtPoint(
+        abs.x / scale + s.x + 10,
+        abs.y / scale + s.y + s.height / 2,
+      );
+      assert.strictEqual(at?.attribs.id, 's');
+    },
+  );
+}
+
+metric(
+  'an inline box an inset moves takes its turn among the layers, as Chrome, WebKit and Firefox have it',
+  async () => {
+    // Over an absolute box before it, under one after it, by its `z-index`
+    // over one after it, and below its context's flow with a negative one.
+    // Every other way round was what painting it by its lines made of it
+    const stage = '<div style="position:relative;width:200px;height:60px">';
+    const span = (more: string) =>
+      `<span id="s" class="s" style="position:relative;top:1px;${more}">` +
+      'XXXXXXXX</span>';
+    const abs = (more: string) =>
+      `<div id="abs" style="position:absolute;inset:0;background:#00ff00;${more}"></div>`;
+    for (const [source, want, label] of [
+      [stage + abs('') + span(''), 's', 'over a box before it'],
+      [stage + span('') + abs(''), 'abs', 'under a box after it'],
+      [stage + span('z-index:2') + abs('z-index:1'), 's', 'by its z-index'],
+      [
+        '<div style="position:relative;z-index:0;width:200px;height:60px">' +
+          span('z-index:-1') +
+          '<p id="abs" style="margin-top:-20px;background:#00ff00;height:40px">' +
+          '</p>',
+        'abs',
+        'under the flow, with a negative z-index',
+      ],
+    ] as const) {
+      const { result, node } = await render(POSITIONED_INLINE + source);
+      const el = view(node);
+      await act();
+      const { abs: at } = el as unknown as DrawnNode;
+      const r = el.elementRect(findById(el.document, 's')!)!;
+      const x = at.x + r.x + r.width / 2;
+      const y = at.y + r.y + r.height / 2;
+      assert.strictEqual(el.elementAtPoint(x, y)?.attribs.id, want, label);
+      const { other } = await pixelsOver(result, el, 's');
+      assert.strictEqual(other === 0, want === 's', `${label}: its pixels`);
+      await result.unmount();
+    }
+  },
+);
+
+metric(
+  'what an inline box an inset moves holds goes with it: another inside it, and an inline-block',
+  async () => {
+    const { result, node } = await render(
+      POSITIONED_INLINE +
+        '<p><span id="o" class="s" style="position:relative;top:20px">XX' +
+        '<span id="i" style="position:relative;left:0;background:#00ff00;' +
+        'color:#00ff00">XX</span>XX<i id="ib" style="display:inline-block;' +
+        'width:40px;height:16px;background:#ff0000"></i></span></p>' +
+        '<p id="b" class="b">XXXXXXXXXXXXXXXXXXXXXXXXXXXX</p>',
+    );
+    const el = view(node);
+    await act();
+    const { abs } = el as unknown as DrawnNode;
+    for (const id of ['i', 'ib']) {
+      const r = el.elementRect(findById(el.document, id)!)!;
+      const at = el.elementAtPoint(
+        abs.x + r.x + r.width / 2,
+        abs.y + r.y + r.height / 2,
+      );
+      assert.strictEqual(at?.attribs.id, id);
+    }
+    assert.strictEqual((await pixelsOver(result, el, 'ib')).other, 0);
+  },
+);
+
+metric(
+  'an inline box an inset moves is cut by a box around it that clips, and a repaint of it alone draws it',
+  async () => {
+    // One culled by what it draws, which is not where its block is: a
+    // repaint of a strip of it is none of its block's business
+    const { result, node } = await render(
+      POSITIONED_INLINE +
+        '<div style="overflow:hidden;height:30px;width:300px">' +
+        '<span id="s" class="s" style="position:relative;top:20px">XXXXXXXX' +
+        '</span></div><p id="b" class="b">XXXXXXXXXXXXXXXXXXXXXXXX</p>' +
+        '<p id="c" style="position:relative;top:-40px;color:#0000ff;' +
+        'height:20px"></p>' +
+        '<div style="height:40px"></div><p style="margin-top:0">' +
+        '<span id="t" class="s" style="position:relative;top:40px">XXXXXXXX' +
+        '</span></p><p class="b">XXXXXXXXXXXXXXXXXXXXXXXX</p>' +
+        '<p class="b">XXXXXXXXXXXXXXXXXXXXXXXX</p>',
+    );
+    const el = view(node);
+    await act();
+    const { abs } = el as unknown as DrawnNode;
+    const s = el.elementRect(findById(el.document, 's')!)!;
+    const past = await pixelsIn(result.ctx, {
+      x: abs.x + s.x + 2,
+      y: abs.y + 31,
+      width: 20,
+      height: 8,
+    });
+    assert.ok(
+      past.every((_, i) => i % 4 !== 0 || past[i] !== 255 || past[i + 2] > 0),
+      'the box that clips it cut it',
+    );
+    const t = el.elementRect(findById(el.document, 't')!)!;
+    const own = el as unknown as {
+      invalidate(all: boolean, by: unknown, why: string): void;
+    };
+    own.invalidate(
+      false,
+      {
+        x: abs.x + t.x + 4,
+        y: abs.y + t.y + 4,
+        width: t.width - 8,
+        height: t.height - 8,
+      },
+      'props',
+    );
+    await act();
+    assert.strictEqual((await pixelsOver(result, el, 't')).other, 0);
+  },
+);
+
+metric(
+  'an inline box painted among the layers is drawn as the same box on its lines is, once',
+  async () => {
+    // Text over its own background and under its rule, through two lines,
+    // an atomic a word after it is drawn over and a selection: the same
+    // layouts either way (`vertical-align: 0` lays a box's text apart and
+    // moves nothing, and is on its lines), and anything of it drawn twice
+    // is darker at every edge of a glyph
+    const drawn = async (place: string, select: boolean) => {
+      const { result, node } = await render(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0;width:150px}' +
+          `.m{${place};background:#ffcc00;color:#203040;padding:1px 4px;` +
+          'border:1px solid #806000;border-radius:4px;' +
+          'text-shadow:1px 1px 0 #ff000080;text-decoration:underline}' +
+          '.f{opacity:.5}' +
+          'i{display:inline-block;width:30px;height:14px;background:#00a0a0;' +
+          'margin-right:-20px}</style>' +
+          '<p>word <span class="m">some words on <b>two</b> lines <i></i>over' +
+          '</span> word</p><p>word <span class="m f">faded here</span> word' +
+          '</p><p><span class="f">word <span class="m">in one</span></span></p>',
+      );
+      const el = view(node);
+      await act();
+      if (select) el.selectAll();
+      const pixels = await snapshot(result, el);
+      await result.unmount();
+      return pixels;
+    };
+    for (const select of [false, true]) {
+      const want = await drawn('vertical-align:0', select);
+      const got = await drawn('position:relative;top:0', select);
+      assert.ok(
+        want.some((_, i) => i % 4 === 0 && want[i] < 100),
+        'the text is drawn',
+      );
+      assert.strictEqual(bytesApart(got, want), 0, `selected: ${select}`);
+    }
+  },
+);
+
+for (const [label, named] of [
+  ['', ''],
+  [', where the fade is named in will-change', '#o{will-change:opacity}'],
+] as const) {
+  metric(
+    `an inline box that stops being a layer in place keeps its text, drawn by its lines again${label}`,
+    async () => {
+      // A box in a faded inline box stays on its lines (`paintsApart`), and
+      // a hover that fades the one around it says so with no build. Named
+      // in `will-change` it says so with no gathering of the layers, which
+      // one in transition or animated does at every frame: left to a layer
+      // that was none now, its text was drawn by nothing
+      const { result, node } = await render(
+        '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}' +
+          `${named}#o:hover{opacity:.5}` +
+          '.m{position:relative;top:0;color:#000080}</style>' +
+          '<p>word <span id="o">some <span id="m" class="m">words</span>' +
+          '</span></p>',
+      );
+      const el = view(node);
+      await act();
+      const quiet = await snapshot(result, el);
+      const tree = treeOf(el);
+      el.setHover(...pointIn(el, 'm'));
+      const hovered = await snapshot(result, el);
+      assert.strictEqual(treeOf(el), tree, 'taken in place');
+      assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+      assert.strictEqual(
+        bytesApart(hovered, await rebuilt(result, el)),
+        0,
+        'not the pixels a build draws',
+      );
+      el.setHover(-1, -1);
+      assert.strictEqual(
+        bytesApart(await snapshot(result, el), quiet),
+        0,
+        'and back',
+      );
+    },
+  );
+}
+
+metric(
+  'an inline box with no inset is no layer, and leaves its paragraph its one layout',
+  async () => {
+    // joshwcomeau.com has hundreds, to hold an absolute box each: they move
+    // nowhere, and each would cost its paragraph a line at a time
+    const { node } = await render(
+      '<p id="a">word <span id="s" style="position:relative">word</span> word' +
+        '</p>',
+    );
+    const el = view(node);
+    await act();
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].texts.length, 1, 'one layout');
+    const a = boxOf(el, 'a') as unknown as Box;
+    assert.ok(
+      a.children.every((child) => !layered(a, child)),
+      'no layer',
+    );
+  },
+);
+
+metric(
+  'an inline box a relative offset moves is moved by it once, at each width it is laid out at',
+  async () => {
+    // Its text comes off new lines at another width, with nothing on them,
+    // and what the offset came to has to start from nothing with them: it
+    // adds up as a sticky box is moved, and read on, the box was moved twice
+    const { el, resize } = await renderScrolled(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0}</style>' +
+        '<p><b id="beside">word</b> <span id="rel" style="position:relative;' +
+        'top:4px">word</span></p>',
+      200,
+    );
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const apart = () => at('rel').y - at('beside').y;
+    assert.strictEqual(apart(), 4, 'at the width it started at');
+    await resize(200, 300);
+    assert.strictEqual(apart(), 4, 'narrower');
+    await resize(200, 400);
+    assert.strictEqual(apart(), 4, 'and back');
+  },
+);
 
 /** A box 300 by 200 positioned relative, with an anchor `--b` 60 by 30 at
  *  100, `top` down it, and what `css` and `more` say. */

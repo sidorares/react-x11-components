@@ -35,9 +35,11 @@ import {
   resolve,
   splitCommas,
   splitValue,
+  trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
-import { parseUrl, readIdent, startsIdent } from './parse.js';
+import { joinFamilies, parseUrl, readFamilies } from './parse.js';
+import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
 import { pick } from '../srcset.js';
 import type { ImageSource } from '../srcset.js';
@@ -724,6 +726,18 @@ export interface ComputedStyle {
    *  `<meta name=color-scheme>`, which leaves the root's `normal`. */
   colorSchemeKeywords: string;
   fontFamily: string;
+  /** The list `fontFamily` was made from, as the sheets wrote it, where
+   *  `fontFamily` is what the text engine is handed: two lists can come to
+   *  one of those while no face of a family has loaded, and only this says
+   *  which of them a face that arrives is for (`WebFonts.affects`). */
+  familyWritten: string;
+  /** The declaration's value as it was written, which a page reads back
+   *  (`fontFamilyText`, `computed.ts`) and neither list above can say: both
+   *  have lost their quotes, so `'monospace'` is the generic, and go on to
+   *  the document's own family where the sheet stopped. `''` where no sheet
+   *  named one, and `monospace` for the host's code face, which the UA
+   *  sheet names for that generic. */
+  fontFamilyText: string;
   fontSize: number;
   /** What `fontSize` is worked out from — an absolute-size keyword, a size
    *  relative to such a keyword's, or a length that is its own — which
@@ -1534,6 +1548,8 @@ export const INHERITED = [
   'colorSchemeKeywords',
   'textFillColor',
   'fontFamily',
+  'familyWritten',
+  'fontFamilyText',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -1701,6 +1717,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     colorScheme: look.normalScheme ?? look.colorScheme,
     colorSchemeKeywords: 'normal',
     fontFamily: look.fontFamily,
+    // the host's, which is no list of the sheets' and is handed on as it is
+    familyWritten: '',
+    fontFamilyText: '',
     fontSize: look.fontSize,
     // the host's font is a browser's standard font, which is no generic
     fontSizeBasis: 'medium',
@@ -2080,6 +2099,8 @@ export function inherit(
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
+  out.familyWritten = parent.familyWritten;
+  out.fontFamilyText = parent.fontFamilyText;
   out.fontSize = parent.fontSize;
   out.fontSizeBasis = parent.fontSizeBasis;
   out.genericMonospace = parent.genericMonospace;
@@ -2248,6 +2269,8 @@ export const FIRST_LINE_INHERITED = [
   'colorSource',
   'textFillColor',
   'fontFamily',
+  'familyWritten',
+  'fontFamilyText',
   'fontSize',
   'fontSizeBasis',
   'genericMonospace',
@@ -2438,7 +2461,7 @@ export function applyDeclaration(
   // column-count` in its `css_properties.json5`): a page written for it
   // alone names no other
   const name = PREFIXED_ALIASES[written] ?? written;
-  let value = rawValue.trim();
+  let value = trimValue(rawValue);
   if (!value) return;
   // a logical property is the physical one it stands for, the CSS-wide
   // keywords and a stray `!important` included, so it is read first
@@ -4065,12 +4088,12 @@ export function applyDeclaration(
       return;
     }
     case 'font-family': {
-      // ntk's font matcher takes the CSS list as written and walks it, so the
-      // value passes through whole rather than being resolved here — once
-      // every name in it is one: a string, or identifiers (CSS 2.1 15.3).
-      // `test!foo, Ahem` is no list, and set Ahem.
-      const names = splitCommas(value);
-      if (!names.every(isFamilyName)) return;
+      // ntk's font matcher takes the CSS list and walks it, so the names pass
+      // through rather than being resolved here — once every one is a name:
+      // a string, or identifiers (CSS 2.1 15.3). `test!foo, Ahem` is no list,
+      // and set Ahem.
+      const names = readFamilies(value);
+      if (!names) return;
       const list = joinFamilies(names);
       // A list that ends in no generic family ends in the document's own
       // font: where no face in the list matches, the text is set in the
@@ -4080,18 +4103,21 @@ export function applyDeclaration(
       // Verdana under fontconfig: the Zen Garden's 216 sets its summary in
       // Montserrat alone, which no machine here has, and Chrome sets it in
       // Times where ours was Verdana, a fifth wider
-      const last = names[names.length - 1].trim();
+      const last = names[names.length - 1];
       const generic =
-        !/^['"]/.test(last) && GENERIC_FAMILY.has(last.toLowerCase());
+        !last.quoted && GENERIC_FAMILY.has(last.name.toLowerCase());
       const fallback = generic ? null : (ctx.fallbackFamily?.() ?? null);
-      const full = fallback ? `${list}, ${fallback}` : list;
+      const full =
+        fallback && list ? `${list}, ${fallback}` : list || fallback || '';
       style.fontFamily = ctx.families ? ctx.families(full) : full;
+      style.familyWritten = full;
       // the generic `monospace` alone — a browser's IsMonospace, which a
       // quoted 'monospace' is not — or the host's code face where the UA
       // sheet names it, which stands for that generic
+      const code = list === ctx.codeFamily?.();
       style.genericMonospace =
-        (generic && names.length === 1 && last.toLowerCase() === 'monospace') ||
-        list === ctx.codeFamily?.();
+        (generic && names.length === 1 && last.name === 'monospace') || code;
+      style.fontFamilyText = code ? 'monospace' : value;
       return;
     }
     case 'font-size': {
@@ -6312,41 +6338,6 @@ function applyBorderShorthand(
   }
 }
 
-/** A `font-family` value as the list a style holds, or null where a name
- *  in it is none. */
-export function familyList(value: string): string | null {
-  const names = splitCommas(value);
-  return names.every(isFamilyName) ? joinFamilies(names) : null;
-}
-
-/** Family names as a list: a quoted name without its quotes, and an
- *  unquoted one its identifiers joined by one space each, however they
- *  were spaced — `Courier   New` over two lines is `Courier New`, and was a
- *  name no font has. */
-function joinFamilies(names: string[]): string {
-  return names
-    .map((f) =>
-      /^['"]/.test(f)
-        ? f.replace(/^['"]|['"]$/g, '')
-        : f.trim().replace(/[ \t\n\r\f]+/g, ' '),
-    )
-    .filter(Boolean)
-    .join(', ');
-}
-
-/** A font family name: quoted, or a sequence of identifiers. */
-function isFamilyName(name: string): boolean {
-  const n = name.trim();
-  if (n[0] === '"' || n[0] === "'") return true;
-  if (!n) return false;
-  for (const word of n.split(/\s+/)) {
-    if (!startsIdent(word, 0) || readIdent(word, 0).end !== word.length) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function applyBackgroundShorthand(
   style: ComputedStyle,
   value: string,
@@ -7192,14 +7183,15 @@ interface FontShorthand {
   size: string;
   lineHeight: string | undefined;
   family: string;
+  names: FamilyName[];
 }
 
 /**
  * Read a `font` shorthand: its slant, weight, small capitals and width in
  * any order, then a size, a line height after a slash, and the families.
- * Null for a value that is none — no size or no family, or a line height
- * below nought — which CSS drops whole, as it drops any value it cannot
- * read: `font: 4em/-2em serif` set the text at 4em.
+ * Null for a value that is none — no size or no family, a family that is no
+ * name, or a line height below nought — which CSS drops whole, as it drops
+ * any value it cannot read: `font: 4em/-2em serif` set the text at 4em.
  */
 function readFontShorthand(
   value: string,
@@ -7251,6 +7243,8 @@ function readFontShorthand(
     ) ?? parseLength(sizeText ?? '', { ...ctx, em: parentSize });
   if (!family || size === null || size === AUTO) return null;
   if (lineText && negativeLength(lineText, ctx)) return null;
+  const names = readFamilies(family);
+  if (!names) return null;
   return {
     style: fontStyle,
     weight,
@@ -7259,6 +7253,7 @@ function readFontShorthand(
     size: sizeText ?? '',
     lineHeight: lineText,
     family,
+    names,
   };
 }
 
@@ -7325,12 +7320,10 @@ export function fontQuery(value: string): FontQuery | null {
   }
   const font = readFontShorthand(value, 16, QUERY_UNITS);
   if (!font) return null;
-  const names = splitCommas(font.family);
-  if (!names.every(isFamilyName)) return null;
   return {
-    families: names
-      .filter((n) => /^['"]/.test(n) || !GENERIC_FAMILY.has(n.toLowerCase()))
-      .map((n) => joinFamilies([n]))
+    families: font.names
+      .filter((n) => n.quoted || !GENERIC_FAMILY.has(n.name.toLowerCase()))
+      .map((n) => n.name)
       .filter(Boolean),
     weight: font.weight ? parseWeight(font.weight, 400) : 400,
     italic: font.style !== 'normal',
@@ -8807,7 +8800,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-image-width': ['borderImage'],
   'border-image-outset': ['borderImage'],
   'border-image-repeat': ['borderImage'],
-  'font-family': ['fontFamily', 'genericMonospace'],
+  'font-family': [
+    'fontFamily',
+    'familyWritten',
+    'fontFamilyText',
+    'genericMonospace',
+  ],
   'font-size': ['fontSize', 'fontSizeBasis'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
@@ -8816,6 +8814,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   // would be read as a multiple of the font size
   font: [
     'fontFamily',
+    'familyWritten',
+    'fontFamilyText',
     'genericMonospace',
     'fontSize',
     'fontSizeBasis',

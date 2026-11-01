@@ -22,7 +22,9 @@ import { parseColor } from '../../src/html/css/values.js';
 import { mapPoint } from '../../src/html/css/transform.js';
 import { placedMatrix } from '../../src/html/layout/block.js';
 import { drawsForeignObjects } from '../../src/html/svg.js';
-import type { Box } from '../../src/html/layout/boxes.js';
+import { GENERATED_FROM } from '../../src/html/layout/boxes.js';
+import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
+import type { Element } from '../../src/html/index.js';
 
 export const h = React.createElement;
 
@@ -74,12 +76,14 @@ export const metric = FONTS ? test : test.skip;
 const HAS_P = '<div class="p" id="t"></div>';
 
 /**
- * `:has()`s with something in their argument that compiles a selector of
- * its own, each with markup its `#t` is matched in and markup it is not.
- * Every row is what Chrome 152 answers, by `matches()`, `querySelector()`,
- * `closest()`, `querySelectorAll()` and a computed style alike. All but
- * the one with no combinator in its argument failed one side or the other
- * before `compileHoisted`.
+ * `:has()`s css-select reads otherwise than a browser, each with markup its
+ * `#t` is matched in and markup it is not: with something in their argument
+ * that compiles a selector of its own, and with an entry that starts at no
+ * combinator and has one in it. Every row is what Chrome 152 answers, by
+ * `matches()`, `querySelector()`, `closest()`, `querySelectorAll()` and a
+ * computed style alike. All but the one with no combinator in its argument,
+ * and those that say so, failed one side or the other before
+ * `compileHoisted`.
  */
 export const HAS_ARGUMENTS: readonly (readonly [string, string, string])[] = [
   ['.p:has(+ .a:not(.b))', '<div class="a"></div>', '<div class="a b"></div>'],
@@ -175,7 +179,88 @@ export const HAS_ARGUMENTS: readonly (readonly [string, string, string])[] = [
     `<section class="x">${HAS_P}<div class="b"></div></section>`,
     `<section class="x">${HAS_P}<div class="b c"></div></section>`,
   ],
+  // what an entry with a combinator in it starts at is inside the element,
+  // and css-select took the element for it, so a `.p` with a `.b` in it held
+  insideHasRow('.p:has(.p .b)'),
+  insideHasRow('.p:has(.p > .b)'),
+  insideHasRow('.p:HAS(.p .b)'),
+  insideHasRow('.p:has(.p .b, .c)'),
+  insideHasRow('.p:has(.c, .p .b)'),
+  insideHasRow('.p:has(.p:not(.c) .b)'),
+  insideHasRow('.p:has(:is(.p, .c) .b)'),
+  insideHasRow(':is(.p:has(.p .b))'),
+  [
+    '.p:has(.p .c .b)',
+    '<div class="p" id="t"><u class="p"><s class="c"><i class="b"></i></s></u></div>',
+    '<div class="p" id="t"><s class="c"><i class="b"></i></s></div>',
+  ],
+  [
+    '.p:has(* .b)',
+    '<div class="p" id="t"><u><i class="b"></i></u></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has(div > .b)',
+    '<div class="p" id="t"><div><i class="b"></i></div></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has(:any-link .b)',
+    '<div class="p" id="t"><a href="#x"><i class="b"></i></a></div>',
+    '<a class="p" id="t" href="#x"><i class="b"></i></a>',
+  ],
+  [
+    '.p:not(:has(.x .b))',
+    '<div class="p x" id="t"><i class="b"></i></div>',
+    '<div class="p x" id="t"><u class="x"><i class="b"></i></u></div>',
+  ],
+  // where one entry starts at a sibling, css-select looks there for all of
+  // them, and the element is before what it finds
+  [
+    '.p:has(+ .c, .p + .b)',
+    '<div class="p" id="t"><u class="p"></u><i class="b"></i></div>',
+    '<div class="p" id="t"></div><i class="b"></i>',
+  ],
+  [
+    '.p:has(~ .c, .p ~ .b)',
+    '<div class="p" id="t"><u class="p"></u><s></s><i class="b"></i></div>',
+    '<div class="p" id="t"></div><s></s><i class="b"></i>',
+  ],
+  // written as a selector can be, which a split at commas and combinators
+  // does not cut
+  [
+    '.p:has(.md\\:a .b)',
+    '<div class="p md:a" id="t"><u class="md:a"><i class="b"></i></u></div>',
+    '<div class="p md:a" id="t"><i class="b"></i></div>',
+  ],
+  [
+    '.p:has([data-x="a, b > c"] .b)',
+    '<div class="p" id="t"><u data-x="a, b > c"><i class="b"></i></u></div>',
+    '<div class="p" id="t" data-x="a, b > c"><i class="b"></i></div>',
+  ],
+  // these two held before as well: an `X` above the element is not inside
+  // it, and a combinator after a comment is still where an entry starts
+  [
+    '.p:has(.x .b)',
+    '<section><div class="p" id="t"><u class="x"><i class="b"></i></u></div></section>',
+    '<section class="x"><div class="p" id="t"><i class="b"></i></div></section>',
+  ],
+  [
+    '.p:has(/* x */ > .a .b)',
+    '<div class="p" id="t"><u class="a"><i class="b"></i></u></div>',
+    '<div class="p" id="t"><s><u class="a"><i class="b"></i></u></s></div>',
+  ],
 ];
+
+/** A row of `HAS_ARGUMENTS` for a selector that asks a `.p` for a `.p` with
+ *  a `.b` in it. */
+function insideHasRow(selector: string): readonly [string, string, string] {
+  return [
+    selector,
+    '<div class="p" id="t"><u class="p"><i class="b"></i></u></div>',
+    '<div class="p" id="t"><i class="b"></i></div>',
+  ];
+}
 
 /** The colour a row of `HAS_ARGUMENTS` gives what it matches. */
 export const HAS_MATCHED = 'rgb(0, 255, 0)';
@@ -1527,4 +1612,140 @@ export function findById(node: unknown, id: string): DocElement | null {
     if (found) return found;
   }
   return null;
+}
+
+export function pathOf(el: Element | null | undefined): string {
+  if (!el) return '-';
+  const steps: number[] = [];
+  for (let at: Element = el; at.parent; at = at.parent as Element) {
+    steps.push((at.parent as Element).children.indexOf(at));
+  }
+  return steps.reverse().join('.');
+}
+
+/** A number to a thousandth, off the grid's halves: a sum in a kept box's
+ *  place comes out a last bit from the same sum in a new one's, and on a
+ *  half that is two thousandths — 390.9775 and 390.97749999999996, seed 364
+ *  of the image sweep — where half thousandths are what line heights come
+ *  to. */
+const thousandths = (n: number): number => Math.round(n * 1000 + 0.2137) / 1000;
+
+/** What a box says of itself that two builds must agree on. */
+function boxLine(box: Box): string {
+  const s = box.style;
+  const el = box.el ?? GENERATED_FROM.get(box);
+  return [
+    box.kind,
+    pathOf(el),
+    box.pseudo ?? '',
+    JSON.stringify(box.text),
+    `${box.textStart}-${box.textEnd}`,
+    `${box.subtreeTextStart}-${box.subtreeTextEnd}`,
+    // a text's, a break's or an inline box's rect is never laid out, and
+    // `translate` moves it with the rest, pass after pass
+    box.kind === 'text' || box.kind === 'break' || box.kind === 'inline'
+      ? ''
+      : // to a thousandth of a pixel: Yoga's sizes are float32, and one a
+        // kept box's layout measured comes out a last bit or two apart
+        [box.x, box.y, box.width, box.height].map(thousandths).join(','),
+    s.display,
+    s.position,
+    s.float,
+    s.color,
+    s.fontFamily,
+    s.fontSize,
+    s.whiteSpace,
+    s.userSelect,
+    box.marker?.layout ? box.marker.layout.width : '',
+    box.outOfFlow ? 'out' : '',
+    box.isFloat ? 'float' : '',
+    // the size an image's box took, in place or as it was built
+    box.intrinsic ? JSON.stringify(box.intrinsic) : '',
+    // and where it inks, which a block a layout kept is walked for again;
+    // a text's is its line's
+    box.kind === 'text' || box.kind === 'break'
+      ? ''
+      : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
+          .map(thousandths)
+          .join(','),
+    box.lines?.length ?? '',
+    // a list item's number
+    box.marker ? JSON.stringify(box.marker.text) : '',
+    // where its lines and the text on them are drawn, which a block kept
+    // from an earlier layout carries with it
+    (box.lines ?? [])
+      .map((line) =>
+        [
+          line.x,
+          line.y,
+          line.width,
+          line.height,
+          line.baseline,
+          ...line.texts.flatMap((t) => [t.drawX, t.drawY]),
+        ]
+          .map(thousandths)
+          .join(','),
+      )
+      .join(';'),
+  ].join('|');
+}
+
+/** The elements the UA's sheet never draws, whose styles a build that
+ *  restyles what a change reached may leave out. */
+const UNDRAWN = [
+  'script',
+  'style',
+  'link',
+  'meta',
+  'title',
+  'base',
+  'template',
+];
+
+/** A tree as two builds of one document must have it alike. */
+export function treeLines(tree: BoxTree): string[] {
+  const out: string[] = [];
+  const walk = (box: Box, depth: number) => {
+    out.push(`${' '.repeat(depth)}${boxLine(box)}`);
+    for (const child of box.children) walk(child, depth + 1);
+  };
+  walk(tree.root, 0);
+  const boxes = (name: string, list: readonly Box[]) =>
+    out.push(
+      `${name}: ${list.map((b) => boxLine(b).split('|').slice(0, 3).join('|')).join(' ')}`,
+    );
+  boxes('textBoxes', tree.textBoxes);
+  boxes('controls', tree.controls);
+  boxes('links', tree.links);
+  boxes('focusables', tree.focusables);
+  boxes('backgrounds', tree.backgrounds);
+  boxes('images', tree.images);
+  boxes('awaiting', tree.awaiting);
+  // a set: nothing reads it in order, and a splice lists an element's
+  // `::after` by the element, where a build lists it after what that holds
+  out.push(
+    `contentImages: ${tree.contentImages
+      .map((c) => `${c.url}@${pathOf(c.element)}:${c.sized}`)
+      .sort()
+      .join(' ')}`,
+  );
+  out.push(`awaitingKind: ${tree.awaitingKind.map(pathOf).join(' ')}`);
+  out.push(`text: ${JSON.stringify(tree.text)}`);
+  out.push(`unselectable: ${tree.unselectable.join(',')}`);
+  out.push(
+    `textNodes: ${(tree.textNodes ?? [])
+      .map((t) => `${JSON.stringify(t.node.data)}@${t.start}-${t.end}`)
+      .join(' ')}`,
+  );
+  out.push(
+    // but for what is never drawn, which a restyle in place leaves out
+    `styles: ${[...tree.styles]
+      .filter(([el]) => !UNDRAWN.includes(el.name))
+      .map(
+        ([el, { style, inFlex }]) =>
+          `${pathOf(el)}:${style.display}:${style.color}:${inFlex}`,
+      )
+      .join(' ')}`,
+  );
+  return out;
 }

@@ -10,12 +10,17 @@ import {
   parseNumber,
   resolve,
   resolveOrNull,
+  splitCommas,
   splitValue,
+  trimValue,
 } from '../../src/html/css/values.js';
 import {
+  parseDeclarations,
   parseStylesheet,
   supportsCondition,
 } from '../../src/html/css/parse.js';
+import { shapeFont, shapeValue } from '../../src/html/css/shapes.js';
+import { fontQuery } from '../../src/html/css/style.js';
 import { parseShapeFunction } from '../../src/html/css/shape-function.js';
 import { parseAngle } from '../../src/html/css/transform.js';
 import {
@@ -24,7 +29,11 @@ import {
   specifiedValue,
 } from '../../src/html/css/specified.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
-import { cssomColor, cssomStyle } from '../../src/html/computed.js';
+import {
+  comesFromBox,
+  cssomColor,
+  cssomStyle,
+} from '../../src/html/computed.js';
 import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
@@ -1513,6 +1522,495 @@ test('background-image computes to the images as written, its urls, colours and 
   assert.strictEqual(image('bad'), 'url("a.png")');
 });
 
+test('font-family reads as its list was written, serialized as Chrome serializes it', async () => {
+  // Chrome 151's answers, each read back from that browser (WebKit quotes
+  // less, and Firefox did not start where this was checked). Not its answer
+  // for `BlinkMacSystemFont`, which on a Mac alone comes back `"system-ui"`:
+  // here a page reads the name it wrote, as WebKit has it.
+  const lists: [string, string][] = [
+    // an identifier needs no quotes, whatever it was written with
+    ['Inter', 'Inter'],
+    [`'Inter'`, 'Inter'],
+    ['"Inter"', 'Inter'],
+    [`'a1'`, 'a1'],
+    [`'a-b'`, 'a-b'],
+    [`'_'`, '_'],
+    ['-foo', '-foo'],
+    [`'-apple-system'`, '-apple-system'],
+    [`'日本語'`, '日本語'],
+    ['F\\6Fo', 'Foo'],
+    // anything else is a string
+    ['Helvetica Neue', '"Helvetica Neue"'],
+    ['Helvetica \t  Neue', '"Helvetica Neue"'],
+    [`'Helvetica  Neue'`, '"Helvetica  Neue"'],
+    [`'  Foo'`, '"  Foo"'],
+    [`'Foo, Bar'`, '"Foo, Bar"'],
+    [`'1996'`, '"1996"'],
+    [`'1a'`, '"1a"'],
+    [`'-1a'`, '"-1a"'],
+    [`'-'`, '"-"'],
+    [`'--'`, '"--"'],
+    ['--foo', '"--foo"'],
+    [`'a.b'`, '"a.b"'],
+    ['Foo serif', '"Foo serif"'],
+    ['inherit Foo', '"inherit Foo"'],
+    [`''`, '""'],
+    [`'', serif`, '"", serif'],
+    // and escaped as one
+    [`'Foo"Bar'`, '"Foo\\"Bar"'],
+    [`"Foo\\"Bar"`, '"Foo\\"Bar"'],
+    [`"Foo'Bar"`, `"Foo'Bar"`],
+    [`"a\\\\b"`, '"a\\\\b"'],
+    [`'a\\1 b'`, '"a\\1 b"'],
+    [`"a\\A b"`, '"a\\a b"'],
+    [`'a\\\nb'`, 'ab'],
+    // a generic family is a keyword bare, in any case, and a name quoted
+    ['monospace', 'monospace'],
+    ['MONOSPACE', 'monospace'],
+    ['Sans-Serif', 'sans-serif'],
+    ['SYSTEM-UI', 'system-ui'],
+    ['Math', 'math'],
+    ['Cursive', 'cursive'],
+    ['FANTASY', 'fantasy'],
+    [`'monospace'`, '"monospace"'],
+    ['"sans-serif"', '"sans-serif"'],
+    [`'system-ui'`, '"system-ui"'],
+    [`'math'`, '"math"'],
+    [`serif, 'serif'`, 'serif, "serif"'],
+    ['monospace, monospace', 'monospace, monospace'],
+    // quoted in another case it is no generic family, and needs none
+    [`'Serif'`, 'Serif'],
+    [`'MONOSPACE'`, 'MONOSPACE'],
+    [`'Sans-Serif'`, 'Sans-Serif'],
+    // what is no keyword to Chrome is a name, in its own case
+    ['UI-Sans-Serif', 'UI-Sans-Serif'],
+    [`'ui-serif'`, 'ui-serif'],
+    ['Emoji', 'Emoji'],
+    [`'emoji'`, 'emoji'],
+    [`'none'`, 'none'],
+    // a CSS-wide keyword and `default` would mean that, in any case
+    [`'inherit'`, '"inherit"'],
+    [`'INHERIT'`, '"INHERIT"'],
+    [`'Initial'`, '"Initial"'],
+    ['"unset"', '"unset"'],
+    [`'Revert-Layer'`, '"Revert-Layer"'],
+    [`'default'`, '"default"'],
+    [`'Default'`, '"Default"'],
+    // and a list is its names, with nothing after them
+    ['Inter , Arial,serif', 'Inter, Arial, serif'],
+    [
+      `'Inter', 'Helvetica Neue', Arial, sans-serif`,
+      'Inter, "Helvetica Neue", Arial, sans-serif',
+    ],
+    [
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto',
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto',
+    ],
+  ];
+  const { node } = await render(
+    '<style>' +
+      lists.map(([list], i) => `#l${i} { font-family: ${list} }`).join('') +
+      '</style>' +
+      lists.map((_, i) => `<i id="l${i}"></i>`).join(''),
+  );
+  const el = view(node);
+  lists.forEach(([list, want], i) => {
+    assert.strictEqual(
+      el.computedStyle(findById(el.document, `l${i}`)!)?.['font-family'],
+      want,
+      list,
+    );
+  });
+});
+
+test('a host may name what no sheet could, and reads as it named it', async () => {
+  // its family is no declaration, so nothing dropped it for being no name
+  const { node } = await render('<p id="p">a</p>', 400, {
+    fontFamily: `Host 9, 'Segoe UI', serif`,
+  });
+  const el = view(node);
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'p')!)?.['font-family'],
+    '"Host 9", "Segoe UI", serif',
+  );
+});
+
+test('font-family takes what Chrome takes, and a name that is none drops the declaration', async () => {
+  // Chrome 151's answers, each read back from that browser, by way of a sheet
+  // and of `font`: null is a declaration it dropped, whose element kept the
+  // rule before it. Each has a sheet of its own, since some leave a bracket
+  // open
+  const lists: [string, string | null][] = [
+    // a generic family is a word alone, and only as the first word is it one
+    ['serif Foo', null],
+    ['monospace monospace', null],
+    ['cursive serif', null],
+    ['SERIF Foo', null],
+    ['Foo, serif Bar', null],
+    ['serif Foo, Bar', null],
+    ['s\\65rif Foo', null],
+    ['serif/**/Foo', null],
+    ['-webkit-body Foo', null],
+    ['Foo, -webkit-body Bar', null],
+    ['Foo serif', '"Foo serif"'],
+    ['Foo -webkit-body', '"Foo -webkit-body"'],
+    ['serif\\ Foo', '"serif Foo"'],
+    ['serif\\,Foo', '"serif,Foo"'],
+    // what is no keyword to Chrome may have words after it
+    ['emoji Foo', '"emoji Foo"'],
+    ['fangsong Foo', '"fangsong Foo"'],
+    ['ui-serif Foo', '"ui-serif Foo"'],
+    ['-webkit-standard Foo', '"-webkit-standard Foo"'],
+    ['-apple-system Foo', '"-apple-system Foo"'],
+    ['-WEBKIT-BODY', '-webkit-body'],
+    ['-Webkit-Body, Foo', '-webkit-body, Foo'],
+    [`'-webkit-body'`, '-webkit-body'],
+    // a CSS-wide keyword or `default` is no name in a list, or alone
+    ['Inter, inherit', null],
+    ['inherit, Foo', null],
+    ['Foo, Initial', null],
+    ['Foo, unset', null],
+    ['Foo, revert', null],
+    ['Foo, revert-layer', null],
+    ['Foo, revert-rule', null],
+    ['default', null],
+    ['DEFAULT', null],
+    ['Foo, default', null],
+    ['default, Foo', null],
+    ['d\\65 fault', null],
+    ['Foo, \\69nherit', null],
+    ['FirstName, Initial, LastName', null],
+    // and it is one with a word beside it, or as a string
+    ['initial Foo', '"initial Foo"'],
+    ['revert-rule Foo', '"revert-rule Foo"'],
+    ['Foo inherit', '"Foo inherit"'],
+    ['default Foo', '"default Foo"'],
+    ['Foo default', '"Foo default"'],
+    ['inherit\\ Foo', '"inherit Foo"'],
+    [`'inherit', Foo`, '"inherit", Foo'],
+    [`Foo, 'default'`, 'Foo, "default"'],
+    [`'revert-rule'`, '"revert-rule"'],
+    [`'REVERT-RULE'`, '"REVERT-RULE"'],
+    // a string is a name whole, with nothing beside it
+    [`'Foo Bar' Baz`, null],
+    [`Foo 'Bar'`, null],
+    [`'Foo' 'Bar'`, null],
+    [`'Foo''Bar'`, null],
+    [`'Foo'Bar`, null],
+    [`Foo'Bar'`, null],
+    [`'Foo'/**/'Bar'`, null],
+    ['"Lucida" Grande, sans-serif', null],
+    [`'a\nb'`, null],
+    [`"a\nb", Bar`, null],
+    // nothing else makes a name
+    ['Red/Black, sans-serif', null],
+    ['Ahem!, sans-serif', null],
+    ['test@foo, sans-serif', null],
+    ['#POUND, sans-serif', null],
+    ['Hawaii 5-0, sans-serif', null],
+    ['1Foo', null],
+    ['-1a', null],
+    ['-', null],
+    ['Foo-->', null],
+    ['Foo(Bar)', null],
+    ['generic(kai)', null],
+    ['Foo,', null],
+    [',Foo', null],
+    ['Foo, , Bar', null],
+    ['--foo', '"--foo"'],
+    ['__foo', '__foo'],
+    ['Foo/**/Bar', '"Foo Bar"'],
+    // an escape is a name's, and may hold what would have ended it
+    ['Foo\\ Bar', '"Foo Bar"'],
+    ['Foo\\, Bar', '"Foo, Bar"'],
+    ['Foo\\  Bar', '"Foo  Bar"'],
+    ['Foo\\,Bar', '"Foo,Bar"'],
+    ['Foo\\ Bar Baz', '"Foo Bar Baz"'],
+    ['Foo\\ Bar, serif', '"Foo Bar", serif'],
+    ['Foo\\ , Bar', '"Foo ", Bar'],
+    ['Foo\\,,Bar', '"Foo,", Bar'],
+    ['Foo\\ ', '"Foo "'],
+    ['\\ Foo', '" Foo"'],
+    ['\\,', '","'],
+    ['Foo\\\\', '"Foo\\\\"'],
+    ['Foo\\\\, Bar', '"Foo\\\\", Bar'],
+    ['Foo\\\\\\, Bar', '"Foo\\\\, Bar"'],
+    ['Foo\\"Bar', '"Foo\\"Bar"'],
+    ['Foo\\/Bar', '"Foo/Bar"'],
+    ['Foo\\.Bar', '"Foo.Bar"'],
+    ['Foo\\!', '"Foo!"'],
+    ['Foo\\;', '"Foo;"'],
+    ['Foo\\{Bar', '"Foo{Bar"'],
+    ['Foo\\}Bar', '"Foo}Bar"'],
+    ['Foo\\(Bar\\)', '"Foo(Bar)"'],
+    ['Foo\\\tBar', '"Foo\\9 Bar"'],
+    ['Foo\\ Bar !important', '"Foo Bar"'],
+    ['Foo\\  !important', '"Foo "'],
+    ['\\1F600 Foo', '😀Foo'],
+    // but for a line, which an escape cannot hold outside a string
+    ['Foo\\\nBar', null],
+    ['Foo\\\rBar', null],
+    ['Foo\\\fBar', null],
+    // an escaped digit starts a name, which a digit cannot, and so does a
+    // hyphen where a name goes on after it
+    ['\\31 996', '"1996"'],
+    ['\\31 996 Foo', '"1996 Foo"'],
+    ['Foo \\31 996', '"Foo 1996"'],
+    ['-\\31 a', '"-1a"'],
+    ['\\2d', '"-"'],
+    ['\\2d foo', '-foo'],
+    ['\\2d\\2d foo', '"--foo"'],
+    // a string ends where its quote does, whatever comes before that
+    [`'a\\'b'`, `"a'b"`],
+    [`'a\\\\'`, '"a\\\\"'],
+    [`'a\\\\', Bar`, '"a\\\\", Bar'],
+    [`'a\\\\\\'b', Bar`, `"a\\\\'b", Bar`],
+    [`'a\\,b'`, '"a,b"'],
+    [`'Foo\\ Bar'`, '"Foo Bar"'],
+    [`'a\\62'`, 'ab'],
+    [`'a\\\fb'`, 'ab'],
+    [`'a\\\rb'`, 'ab'],
+    [`'a\\\r\nb'`, 'ab'],
+    ['F\\000006Fo', '"F\\6 Fo"'],
+  ];
+  const { node } = await render(
+    lists
+      .map(
+        ([list], i) =>
+          `<style>#l${i} { font-family: Before; font-family: ${list};\n}</style>` +
+          `<style>#s${i} { font: 20px Before; font: italic 12px ${list};\n}</style>`,
+      )
+      .join('') +
+      lists.map((_, i) => `<i id="l${i}"></i><i id="s${i}"></i>`).join(''),
+  );
+  const el = view(node);
+  const read = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  lists.forEach(([list, want], i) => {
+    assert.strictEqual(read(`l${i}`)['font-family'], want ?? 'Before', list);
+    const short = read(`s${i}`);
+    assert.strictEqual(short['font-family'], want ?? 'Before', `font: ${list}`);
+    // and a family that is none is a `font` that is none, size and all
+    assert.strictEqual(short['font-size'], want ? '12px' : '20px', list);
+    assert.strictEqual(short['font-style'], want ? 'italic' : 'normal', list);
+  });
+});
+
+test('the end of a style attribute closes a string left open, and a backslash escapes nothing there', async () => {
+  // Chrome 151's answers, as `font-family` and through `font`. Not its answer
+  // for `Foo\` itself, `Foo�`, which here is no name
+  const lists: [string, string | null][] = [
+    [`'Foo`, 'Foo'],
+    ['"Foo', 'Foo'],
+    [`'Foo, Bar`, '"Foo, Bar"'],
+    [`Foo, 'Bar`, 'Foo, Bar'],
+    [`'a\\`, 'a'],
+    [`'\\'`, `"'"`],
+    [`'`, '""'],
+    [`'Foo' 'Bar`, null],
+  ];
+  const attribute = (text: string) => text.replace(/"/g, '&quot;');
+  const { node } = await render(
+    lists
+      .map(
+        ([list], i) =>
+          `<i id="l${i}" style="font-family: Before; font-family: ${attribute(list)}"></i>` +
+          `<i id="s${i}" style="font: 12px Before; font: 12px ${attribute(list)}"></i>`,
+      )
+      .join(''),
+  );
+  const el = view(node);
+  lists.forEach(([list, want], i) => {
+    for (const id of [`l${i}`, `s${i}`]) {
+      assert.strictEqual(
+        el.computedStyle(findById(el.document, id)!)?.['font-family'],
+        want ?? 'Before',
+        `${id}: ${list}`,
+      );
+    }
+  });
+});
+
+test('a family reaches the text engine as what it names, and one with a comma in it not at all', async () => {
+  // Chrome matches no face for `'Courier New, Arial'` and goes on to the next
+  // name, which its widths say, where a list split at its commas had handed
+  // the engine two families the page never wrote
+  const lists: [string, string][] = [
+    ['Foo\\ Bar, serif', 'Foo Bar, serif'],
+    ['Foo\\  Bar, serif', 'Foo  Bar, serif'],
+    [`'F\\6Fo', serif`, 'Foo, serif'],
+    [`'a\\'b', serif`, `a'b, serif`],
+    [`'Foo\\\nBar', serif`, 'FooBar, serif'],
+    ['\\31 996, serif', '1996, serif'],
+    ['Courier   New, serif', 'Courier New, serif'],
+    ['SERIF', 'serif'],
+    ['Foo, s\\65rif', 'Foo, serif'],
+    // past a name with a comma in it, however it was written
+    ['Foo\\, Bar, serif', 'serif'],
+    [`'Courier New, Arial', serif`, 'serif'],
+    [`Foo, 'a,b', serif`, 'Foo, serif'],
+    // and to the document's own font where nothing else is left, as a list
+    // that ends in no generic family goes
+    ['Foo\\,Bar', 'Host Sans'],
+    [`''`, 'Host Sans'],
+    ['Foo\\ Bar', 'Foo Bar, Host Sans'],
+    // a generic family in any case is the end of a list
+    ['BlinkMacSystemFont', 'BlinkMacSystemFont'],
+    ['UI-Serif', 'UI-Serif'],
+    [`'serif'`, 'serif, Host Sans'],
+  ];
+  const { node } = await render(
+    '<style>' +
+      lists.map(([list], i) => `#l${i} { font-family: ${list} }`).join('') +
+      '</style>' +
+      lists.map((_, i) => `<i id="l${i}">a</i>`).join(''),
+    400,
+    { fontFamily: 'Host Sans' },
+  );
+  const el = view(node);
+  lists.forEach(([list, want], i) => {
+    const box = boxOf(el, `l${i}`) as unknown as { style: ComputedStyle };
+    assert.strictEqual(box.style.fontFamily, want, list);
+    assert.strictEqual(box.style.familyWritten, want, list);
+  });
+});
+
+test('every reader of a family reads it the one way', () => {
+  // a drawing's text
+  const shape = {
+    units: { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 },
+    color: '#000000',
+    scheme: 'light' as const,
+  };
+  const family = (value: string) => shapeValue('font-family', value, shape);
+  assert.strictEqual(family('Foo\\ Bar, serif'), '"Foo Bar", serif');
+  // which a list trims, and an engine's name is the same
+  assert.strictEqual(family('Foo\\ '), '"Foo"');
+  assert.strictEqual(family(`'a\\'b'`), `"a'b"`);
+  for (const list of ['serif Foo', 'Foo, inherit', `'Foo' Bar`, `'a'b'`]) {
+    assert.strictEqual(family(list), null, list);
+  }
+  assert.strictEqual(shapeFont('12px Foo\\ ', shape)?.['font-family'], '"Foo"');
+  // a page's `document.fonts`
+  assert.strictEqual(fontQuery('12px serif Foo'), null);
+  assert.strictEqual(fontQuery('12px Foo, default'), null);
+  assert.strictEqual(fontQuery(`12px 'Foo' Bar`), null);
+  assert.deepStrictEqual(
+    fontQuery(`12px Foo\\ Bar, 'a\\'b', 'c, d', 'serif', SERIF`)?.families,
+    ['Foo Bar', `a'b`, 'c, d', 'serif'],
+  );
+  // and a `@font-face`, whose name the list it is matched with has to read
+  // the same
+  const face = (name: string) =>
+    parseStylesheet(`@font-face { font-family: ${name}; src: url(a.ttf) }`)
+      .fontFaces[0]?.family;
+  assert.strictEqual(face('Foo\\ Bar'), 'Foo Bar');
+  assert.strictEqual(face('Foo  Bar'), 'Foo Bar');
+  assert.strictEqual(face('Foo\\ '), 'Foo');
+  assert.strictEqual(face(`'Foo Bar'`), 'Foo Bar');
+  assert.strictEqual(face(`'a\\'b'`), `a'b`);
+  assert.strictEqual(face('\\31 996'), '1996');
+  // a generic family's name, a list, or none
+  assert.strictEqual(face('serif'), undefined);
+  assert.strictEqual(face('serif Foo'), undefined);
+  assert.strictEqual(face('Foo, Bar'), undefined);
+  assert.strictEqual(face(`'Foo, Bar'`), undefined);
+  assert.strictEqual(face('Foo\\,Bar'), undefined);
+  assert.strictEqual(face(`'Foo' Bar`), undefined);
+  assert.strictEqual(face('inherit'), undefined);
+});
+
+test('an escape holds what it escapes wherever a value is split or trimmed', () => {
+  assert.deepStrictEqual(splitCommas('Foo\\, Bar, Baz'), ['Foo\\, Bar', 'Baz']);
+  assert.deepStrictEqual(splitCommas(`'a\\\\', b`), [`'a\\\\'`, 'b']);
+  assert.deepStrictEqual(splitCommas(`'a\\', b', c`), [`'a\\', b'`, 'c']);
+  assert.deepStrictEqual(splitCommas('Foo\\\\, Bar'), ['Foo\\\\', 'Bar']);
+  assert.deepStrictEqual(splitValue('Foo\\ Bar Baz'), ['Foo\\ Bar', 'Baz']);
+  assert.deepStrictEqual(splitValue(`'a\\\\' b`), [`'a\\\\'`, 'b']);
+  assert.strictEqual(trimValue('  Foo\\  '), 'Foo\\ ');
+  assert.strictEqual(trimValue('  Foo\\\\  '), 'Foo\\\\');
+  assert.strictEqual(trimValue('  Foo\\\\\\  '), 'Foo\\\\\\ ');
+  assert.strictEqual(trimValue('  Foo\\'), 'Foo\\');
+  assert.strictEqual(trimValue('  Foo  '), 'Foo');
+  assert.strictEqual(trimValue(' \n '), '');
+});
+
+test('an escaped digit that starts an identifier stays one, in any property', async () => {
+  // Chrome 151's answers: a length is not an identifier that reads like one,
+  // and what a digit after a `#` or a resolved hyphen starts is what it was
+  const { node } = await render(
+    '<style>' +
+      '#a { width: 50px; width: \\31 00px }' +
+      '#b { color: red; color: #\\31 23 }' +
+      '#c { display: block; display: \\2d webkit-box }' +
+      '</style><div id="a"></div><div id="b"></div><div id="c"></div>',
+  );
+  const el = view(node);
+  const read = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.strictEqual(read('a').width, '50px');
+  assert.strictEqual(read('b').color, 'rgb(17, 34, 51)');
+  assert.strictEqual(read('c').display, '-webkit-box');
+  assert.strictEqual(
+    parseDeclarations('--x: \\31 a').find((d) => d.prop === '--x')?.value,
+    '\\31 a',
+  );
+});
+
+test('where no sheet named a family it reads as the host named one, and the host’s code face as what it stands for', async () => {
+  // Chrome answers the font its settings name, `Times`, and `monospace` for
+  // what its UA sheet sets in that generic, whichever face it comes to
+  const { node } = await render(
+    '<style>.shorthand { font: italic 12px/2 "Page Face" }' +
+      '@font-face { font-family: Loaded; src: url(a.ttf) }</style>' +
+      '<p id="p">a</p><a id="a" href="#">a</a><h1 id="h">a</h1>' +
+      '<pre id="pre">a</pre><code id="code">a</code><kbd id="kbd">a</kbd>' +
+      '<textarea id="field"></textarea>' +
+      '<pre id="inherits" style="font-family: inherit">a</pre>' +
+      '<pre id="initial" style="font-family: initial">a</pre>' +
+      '<div style="font-family: Outer"><pre id="own">a</pre><b id="b">a</b></div>' +
+      '<div class="shorthand" id="short">a</div>' +
+      '<font id="face" face="Foo Bar, Arial">a</font>' +
+      '<div id="declared" style="font-family: Loaded">a</div>' +
+      '<div id="vars" style="--f: Inter, \'Helvetica Neue\'; font-family: var(--f)">a</div>',
+    400,
+    {
+      fontFamily: `Host Sans, 'Segoe UI', serif`,
+      monoFamily: `"Host Mono", monospace`,
+    },
+  );
+  const el = view(node);
+  const family = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.['font-family'];
+  const host = '"Host Sans", "Segoe UI", serif';
+  for (const id of ['p', 'a', 'h', 'inherits', 'initial']) {
+    assert.strictEqual(family(id), host, id);
+  }
+  for (const id of ['pre', 'code', 'kbd', 'field', 'own']) {
+    assert.strictEqual(family(id), 'monospace', id);
+  }
+  assert.strictEqual(family('b'), 'Outer', 'inherited');
+  // a list the sheet ended goes on to the document's family, and reads as
+  // it ended
+  assert.strictEqual(
+    (boxOf(el, 'b') as unknown as { style: ComputedStyle }).style.fontFamily,
+    `Outer, Host Sans, 'Segoe UI', serif`,
+  );
+  assert.strictEqual(family('short'), '"Page Face"', 'through `font`');
+  assert.strictEqual(family('face'), '"Foo Bar", Arial', 'through `face`');
+  assert.strictEqual(family('vars'), 'Inter, "Helvetica Neue"');
+  // a face of its own that has not loaded, which the list leaves out
+  assert.strictEqual(family('declared'), 'Loaded');
+  assert.ok(
+    !(
+      boxOf(el, 'declared') as unknown as { style: ComputedStyle }
+    ).style.fontFamily.includes('Loaded'),
+    'the engine is handed none of it yet',
+  );
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'p')!, 'before')?.['font-family'],
+    host,
+  );
+});
+
 test("attr()'s name may be a var(), and a type too, which are read once they are substituted", async () => {
   // attr-argument-grammar.html: `attr(var(--x))` is the attribute and the
   // type `--x` holds; one that is no name and type once it is substituted
@@ -1665,6 +2163,37 @@ test('the scroll-driven animation properties take their grammars, and are kept w
     '',
     'lists of other lengths make none',
   );
+});
+
+test('what a computed style reads from a box says so, by name and in camel case', async () => {
+  const { node } = await render(
+    '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +
+      'border: 1px solid; transform: translateX(10%)"></div>' +
+      '<div id="b" style="position: relative; top: 1px; border: 1px solid; ' +
+      'transform: translateX(10%); writing-mode: vertical-rl; direction: rtl"></div>',
+  );
+  const el = view(node);
+  const box = (at: number): Parameters<typeof cssomStyle>[2] => ({
+    width: 100 + at,
+    height: 200 + at,
+    margin: [1 + at, 2 + at, 3 + at, 4 + at],
+    border: [5 + at, 6 + at, 7 + at, 8 + at],
+    padding: [9 + at, 10 + at, 11 + at, 12 + at],
+    insets: [13 + at, 14 + at, 15 + at, 16 + at],
+  });
+  for (const id of ['a', 'b']) {
+    const { style } = boxOf(el, id) as unknown as { style: ComputedStyle };
+    const one = cssomStyle(style, 1, box(0));
+    const other = cssomStyle(style, 1, box(30));
+    const moved = Object.keys(one).filter((name) => one[name] !== other[name]);
+    for (const name of Object.keys(one)) {
+      assert.strictEqual(comesFromBox(name), moved.includes(name), name);
+    }
+  }
+  assert.ok(comesFromBox('marginInlineEnd'));
+  assert.ok(comesFromBox('insetBlockStart'));
+  assert.ok(!comesFromBox('--width'));
+  assert.ok(!comesFromBox('display'));
 });
 
 test('the scroll-timeline and view-timeline shorthands set their longhands, and getComputedStyle reads them back', async () => {

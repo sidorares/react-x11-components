@@ -7025,9 +7025,21 @@ export function installDom(
     }
   }
   Object.defineProperty(HTMLImageElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['alt', 'srcset', 'sizes', 'loading', 'decoding']) {
+  for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
     Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
   }
+  // limited to the keywords it has, which a page tests for support with
+  Object.defineProperty(HTMLImageElement.prototype, 'loading', {
+    get(this: Any) {
+      const value = this.getAttribute('loading');
+      return value?.toLowerCase() === 'lazy' ? 'lazy' : 'eager';
+    },
+    set(this: Any, value: Any) {
+      this.setAttribute('loading', value);
+    },
+    configurable: true,
+    enumerable: true,
+  });
 
   class HTMLScriptElement extends HTMLElement {
     get text(): string {
@@ -22715,15 +22727,17 @@ export function installDom(
     let names: string[] = [];
     let readAt = -1;
     let readIn = -1;
+    let boxesOwed = false;
     // what no pseudo-element answers is an empty declaration (CSSOM 9),
     // whose every property reads as ''
     if (which === null) {
       return emptyComputedStyle(id);
     }
-    const read = (): void => {
-      if (readAt === opEpoch && readIn === taskEpoch) return;
-      const r = call('computed', id, which);
+    const take = (r: Any): void => {
       json = typeof r === 'string' ? r : '';
+      // the host's mark on a style whose boxes may move yet
+      boxesOwed = json[0] === '~';
+      if (boxesOwed) json = json.slice(1);
       values = json ? JSON.parse(json) : {};
       names = Object.keys(values);
       byName = new Map();
@@ -22731,13 +22745,25 @@ export function installDom(
         byName.set(name, values[name]);
         byName.set(camel(name), values[name]);
       }
+    };
+    const read = (): void => {
+      if (readAt === opEpoch && readIn === taskEpoch) return;
+      take(call('computed', id, which));
       readAt = opEpoch;
       readIn = taskEpoch;
+    };
+    /** Read as the host left it where boxes may move yet, which it answers
+     *  again for a property a box decides. */
+    const readProperty = (name: string): void => {
+      read();
+      if (!boxesOwed) return;
+      const r = call('computed', id, which, name);
+      if (r) take(r);
     };
     read();
     const block = computedBlock(
       (n) => {
-        read();
+        readProperty(n);
         if (!n.startsWith('--')) return values[n] ?? '';
         if (!json) return '';
         return String(call('customProperty', id, which, n) ?? '');
@@ -22749,7 +22775,11 @@ export function installDom(
     );
     return readOnlyStyle(
       block,
-      (key) => (/^\d+$/.test(key) ? names[Number(key)] : byName.get(key)),
+      (key) => {
+        if (/^\d+$/.test(key)) return names[Number(key)];
+        readProperty(key);
+        return byName.get(key);
+      },
       read,
       () => [...names.map((_, i) => String(i)), ...byName.keys()],
     );

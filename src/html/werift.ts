@@ -509,6 +509,10 @@ class WeriftTransceiver implements RTCTransceiverLike {
   }
 }
 
+/** Whether a page's `iceServers` name a STUN server. */
+const namesStun = (request: RTCConnectRequest): boolean =>
+  request.iceServers.some((s) => s.urls.some((u) => /^stuns?:/i.test(u)));
+
 /** The configuration werift is handed for a page's: its certificates
  *  those `generateCertificate` made, by their numbers. */
 function configOf(
@@ -579,6 +583,8 @@ class WeriftConnection implements RTCConnectionLike {
    *  answer itself: werift sets none for one stopping, or `inactive`. */
   private readonly _negotiated = new WeakMap<WTransceiver, RTCDirectionLike>();
   private _closed = false;
+  /** Whether the page's configuration names a STUN server. */
+  private _namesStun: boolean;
 
   constructor(
     private readonly _w: WeriftModule,
@@ -591,6 +597,23 @@ class WeriftConnection implements RTCConnectionLike {
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
     this._net = new WeriftTransports(this._pc, events, () => this._closed);
+    this._namesStun = namesStun(request);
+  }
+
+  /**
+   * Keeps a gathering to the servers the page named. werift falls back to
+   * `stun.l.google.com` where a configuration names no STUN server, and has
+   * no option against it: a page that named nobody made a request nobody
+   * asked for, and on a network that does not answer, each
+   * `setLocalDescription` waited out five seconds for it. A transport reads
+   * its server as it gathers, which is in `setLocalDescription` alone.
+   */
+  private _gatherFromNamed(): void {
+    if (this._namesStun) return;
+    for (const dtls of this._pc.dtlsTransports) {
+      const ice = dtls.iceTransport.connection;
+      if (ice) ice.stunServer = undefined;
+    }
   }
 
   private _watchTransports(): void {
@@ -772,8 +795,10 @@ class WeriftConnection implements RTCConnectionLike {
         if (side === 'remote' && type === 'offer') this._unknown = stood.lines;
       }
       const description = type === 'rollback' ? { type } : { type, sdp: text };
-      if (side === 'local') await this._pc.setLocalDescription(description);
-      else await this._pc.setRemoteDescription(description);
+      if (side === 'local') {
+        this._gatherFromNamed();
+        await this._pc.setLocalDescription(description);
+      } else await this._pc.setRemoteDescription(description);
     } catch (error) {
       throw asRtcError(error);
     }
@@ -885,6 +910,7 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   setConfiguration(request: RTCConnectRequest): void {
+    this._namesStun = namesStun(request);
     try {
       this._pc.setConfiguration({
         iceServers: request.iceServers,

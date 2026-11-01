@@ -31,8 +31,16 @@ export class TextLayoutCache {
   /** Each layout handed out, and what it was made from (`inputsOf`). */
   private _inputs = new WeakMap<TextLayoutLike, Kept>();
 
-  constructor(readonly engine: FontsLike) {
+  constructor(
+    readonly engine: FontsLike,
+    /** The cache this one follows, where faces came and the text it set
+     *  stays drawn until it is set again: a restyle in place of its ink
+     *  (`inputsOf`) makes it again from what it was made from. */
+    before: TextLayoutCache | null = null,
+  ) {
+    if (before) this._inputs = before._inputs;
     this.fonts = {
+      engine,
       layout: (content, style, options) =>
         this._layout(content, style, options),
       match: (family, style) => engine.match(family, style),

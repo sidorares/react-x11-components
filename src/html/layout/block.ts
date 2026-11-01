@@ -130,6 +130,7 @@ import {
   CLEARED_FROM,
   COLUMN_PIECES,
   CUT_BLOCKS,
+  CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
   GENERATED_FROM,
@@ -137,6 +138,8 @@ import {
   MOVED_OFF_LINES,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
+  STICKY_SIZES,
+  TEXT_RAISES,
   TEXT_SHIFTS,
   columned,
   containmentApplies,
@@ -202,6 +205,9 @@ import {
 
 export interface LayoutContext {
   fonts: FontsLike | null;
+  /** The engine `fonts` lay text out by (`FontsLike.engine`), which what a
+   *  layout keeps of a box was laid out by. */
+  engine: FontsLike | null;
   /** Device pixels to a CSS pixel, the unit every length here is in: what
    *  `text-wrap: pretty` scales its scores by (`InlineOptions.scale`). */
   scale?: number;
@@ -913,7 +919,7 @@ function standFor(child: Box, ctx: LayoutContext, width: number): Stand | null {
     stand.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(stand.under, ctx) ||
     stand.scale !== ctx.scale ||
-    stand.fonts !== ctx.fonts
+    stand.fonts !== ctx.engine
   ) {
     return null;
   }
@@ -945,7 +951,7 @@ function standAfter(
     viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
-    fonts: ctx.fonts,
+    fonts: ctx.engine,
     serial: child.layoutSerial,
     bottom: child.y + child.height - childY,
     hanging: bottomOf(child),
@@ -974,7 +980,11 @@ export interface LaidUnder {
 /** Whether what a layout made under `under` holds under this layout's
  *  viewport: the same height, or one that layout read none of. */
 function heightHolds(under: LaidUnder, ctx: LayoutContext): boolean {
-  return under.height === ctx.viewportHeight || !under.read;
+  if (under.height !== ctx.viewportHeight && under.read) return false;
+  // a frame kept in a block reads the height it read, or a move of the
+  // height would lay nothing out (`frameInlineSize`)
+  if (framed.any && under.read) ctx.readViewportHeight = true;
+  return true;
 }
 
 /** Every layout that may keep blocks counted, for `Laid.pass`. */
@@ -1008,7 +1018,7 @@ function noteLaid(
     viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
-    fonts: ctx.fonts,
+    fonts: ctx.engine,
     dx: child.x - contentLeft,
     dy: child.y - y,
     marginBottom: child.marginBottom,
@@ -1042,7 +1052,7 @@ function reuseLaid(
     laid.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(laid.under, ctx) ||
     laid.scale !== ctx.scale ||
-    laid.fonts !== ctx.fonts ||
+    laid.fonts !== ctx.engine ||
     ctx.blockers!.blockers.has(child) ||
     !Number.isFinite(child.x) ||
     !Number.isFinite(child.y)
@@ -1087,7 +1097,7 @@ export function mayKeepLaid(
     was.viewportWidth === ctx.viewportWidth &&
     heightHolds(was.under, ctx) &&
     was.scale === ctx.scale &&
-    was.fonts === ctx.fonts &&
+    was.fonts === ctx.engine &&
     !ctx.blockers!.blockers.has(box) &&
     Number.isFinite(box.x) &&
     Number.isFinite(box.y)
@@ -1125,9 +1135,7 @@ export function keepLaid(box: Box, ctx: LayoutContext): void {
  * one is a blocker. A sticky box is none: where it sticks is worked out
  * again after every flow, from where the flow put it, and a kept block
  * takes the shift off it as it takes a relative offset off
- * (`unoffsetHeld`). Nor is the root of a vertical flow, which is kept with
- * its frame as any block is with what it holds; every box in the frame is
- * one. Once a tree.
+ * (`unoffsetHeld`). Once a tree.
  */
 function reuseBlockers(tree: BoxTree): Blockers {
   let found = BLOCKERS.get(tree);
@@ -1160,15 +1168,15 @@ function noteBlockers(
         moved.add(up);
       }
     }
-    // a frame is laid out whole, as its root is laid out or kept
-    // (`layoutFramed`): what `reflectFrame` moves after its flow is none of
-    // what a flow notes of a block it holds
-    if (framed.any && FRAME_ROOTS.has(box)) {
-      const inFrame = [box];
-      while (inFrame.length) {
-        const at = inFrame.pop()!;
+    // what is in a flow in another writing mode is laid out with what holds
+    // it, or moved whole with it where that is kept: its heights run across
+    // the page, so no block in it is kept alone
+    if (framed.any && FRAMES.has(box)) {
+      const held = [box];
+      while (held.length) {
+        const at = held.pop()!;
         blockers.add(at);
-        for (const child of at.children) inFrame.push(child);
+        for (const child of at.children) held.push(child);
       }
     }
     if (
@@ -1659,6 +1667,7 @@ export function layoutDocument(
   const reusing = !cuts && !tree.anchors && !tree.firstLine && !tree.foreign;
   const ctx: LayoutContext = {
     fonts,
+    engine: fonts?.engine ?? fonts,
     scale,
     viewportWidth,
     viewportHeight,
@@ -1839,7 +1848,7 @@ export function layoutDocument(
   // passes after the flow move (`Blockers.moved`).
   const moved = ctx.blockers?.moved;
   if (tree.relative) {
-    applyRelativeOffsets(root, viewportWidth, viewportHeight, moved);
+    applyRelativeOffsets(root, viewportWidth, viewportHeight, fonts, moved);
   }
   // and a scroll container moves what it holds by where it is scrolled to,
   // the same way: everything else reads the boxes where they are drawn
@@ -1897,13 +1906,8 @@ export function layoutDocument(
   else FIXED_BOXES.delete(tree);
   if (tree.foreign) layoutForeign(tree.foreign, fonts, scale);
   // what this layout laid out holds under another height where it read
-  // none of this one's — and a frame it kept fits to the viewport as the
-  // layout that laid it out read it (`frameInlineSize`): the one thing a
-  // kept block can hold that reads it
-  ctx.under.read =
-    readsViewportHeight ||
-    ctx.readViewportHeight === true ||
-    (tree.vertical && (ctx.reused?.size ?? 0) > 0);
+  // none of this one's
+  ctx.under.read = readsViewportHeight || ctx.readViewportHeight === true;
   return {
     width: viewportWidth,
     height: bottom,
@@ -5193,17 +5197,39 @@ const PREFERRED = new WeakMap<Box, number>();
  * next asked for.
  */
 export function forgetSizes(box: Box): void {
-  for (let at: Box | null = box; at; at = at.parent) {
-    at.intrinsicMinContent = -1;
-    at.intrinsicMaxContent = -1;
-    PREFERRED.delete(at);
-    PERCENT_HEIGHTS.delete(at);
-    FLOW_PLACE.delete(at);
-    LAID.delete(at);
-    STANDS.delete(at);
-    if (stoodAny) STOOD.delete(at);
-    forgetMaxContent(at);
-    forgetGridItem(at);
+  for (let at: Box | null = box; at; at = at.parent) forgetOne(at);
+}
+
+function forgetOne(at: Box): void {
+  at.intrinsicMinContent = -1;
+  at.intrinsicMaxContent = -1;
+  PREFERRED.delete(at);
+  PERCENT_HEIGHTS.delete(at);
+  FLOW_PLACE.delete(at);
+  LAID.delete(at);
+  STANDS.delete(at);
+  if (stoodAny) STOOD.delete(at);
+  forgetMaxContent(at);
+  forgetGridItem(at);
+}
+
+/**
+ * `forgetSizes` of all a box holds as well, and of the boxes around it up
+ * to one a call before it reached, whose own way up was gone over then:
+ * for a run of blocks set again, whose text may be in an inline-block's or
+ * a table's cell (`HtmlViewNode._takeFaces`), where one call for each would
+ * go over the document's root as many times.
+ */
+export function forgetSizesIn(box: Box, up: Set<Box>): void {
+  const stack: Box[] = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    forgetOne(at);
+    for (const child of at.children) stack.push(child);
+  }
+  for (let at: Box | null = box; at && !up.has(at); at = at.parent) {
+    up.add(at);
+    forgetOne(at);
   }
 }
 
@@ -7784,16 +7810,7 @@ function inlineContainingBlock(
   for (const line of block?.lines ?? []) {
     const span = spanOn(line, inline);
     if (!span) continue;
-    let top = line.y;
-    let bottom = line.y + line.height;
-    if (face) {
-      const baseline =
-        line.y +
-        line.baseline -
-        (LINE_BOX_RAISES.get(line)?.get(inline) ?? BOX_RAISES.get(inline) ?? 0);
-      top = baseline - face.ascent - inline.padTop;
-      bottom = baseline + face.descent + inline.padBottom;
-    }
+    const [top, bottom] = fragmentRow(line, inline, face, false);
     const rect = {
       x: span[0],
       y: top,
@@ -7826,19 +7843,32 @@ function inlineContainingBlock(
 
 /** How far an inline box's padding box reaches across a line, left and
  *  right; null where nothing of it is on the line. */
-function spanOn(line: LineBox, inline: Box): [number, number] | null {
+function spanOn(
+  line: LineBox,
+  inline: Box,
+  /** To its border edges, where it starts or ends here, rather than its
+   *  padding edges. */
+  border = false,
+): [number, number] | null {
+  const shifted = SHIFTED_LINES.has(line);
   let left = Infinity;
   let right = -Infinity;
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     const boxAt = text.spans.boxAt;
     if (!natural || !boxAt) continue;
-    const x = text.drawX + natural.x;
+    // where the line has it, not where an offset of a box in it moved it
+    const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
+    const x = text.drawX - (shift?.x ?? 0) + natural.x;
     for (const run of natural.runs) {
       const owner = boxAt.call(text.spans, run.start);
       if (!owner || !holds(inline, owner)) continue;
-      left = Math.min(left, x + run.x);
-      right = Math.max(right, x + run.x + run.width);
+      // within the line: a space a line ends on hangs past it
+      const from = Math.max(x, x + run.x);
+      const to = Math.min(x + natural.width, x + run.x + run.width);
+      if (to <= from) continue;
+      left = Math.min(left, from);
+      right = Math.max(right, to);
     }
   }
   for (const placed of line.atomics) {
@@ -7860,16 +7890,46 @@ function spanOn(line: LineBox, inline: Box): [number, number] | null {
     const onLeft =
       (edge.side === 'start') !== (inline.style.direction === 'rtl');
     if (onLeft) {
-      const at = edge.x + inline.marginLeft + inline.borderLeft;
+      const at = edge.x + inline.marginLeft + (border ? 0 : inline.borderLeft);
       left = Math.min(left, at);
       right = Math.max(right, at);
     } else {
-      const at = edge.x + edge.width - inline.marginRight - inline.borderRight;
+      const at =
+        edge.x +
+        edge.width -
+        inline.marginRight -
+        (border ? 0 : inline.borderRight);
       left = Math.min(left, at);
       right = Math.max(right, at);
     }
   }
   return left <= right ? [left, right] : null;
+}
+
+/**
+ * How far up and down a line an inline box's fragment reaches: its face
+ * about its own baseline, which `vertical-align` may raise off the line's,
+ * and its padding, and its border where `border` says so. The whole line
+ * where there is no face to ask.
+ */
+function fragmentRow(
+  line: LineBox,
+  inline: Box,
+  face: InlineDecoration | null,
+  border: boolean,
+): [number, number] {
+  if (!face) return [line.y, line.y + line.height];
+  const baseline =
+    line.y +
+    line.baseline -
+    (LINE_BOX_RAISES.get(line)?.get(inline) ?? BOX_RAISES.get(inline) ?? 0);
+  return [
+    baseline - face.ascent - inline.padTop - (border ? inline.borderTop : 0),
+    baseline +
+      face.descent +
+      inline.padBottom +
+      (border ? inline.borderBottom : 0),
+  ];
 }
 
 /**
@@ -8317,7 +8377,7 @@ function establishesInlineContext(box: Box): boolean {
   return sawInline;
 }
 
-function isInlineLevel(box: Box): boolean {
+export function isInlineLevel(box: Box): boolean {
   const d = box.style.display;
   return (
     d === 'inline' ||
@@ -8440,11 +8500,12 @@ export function applyRelativeOffsets(
   box: Box,
   viewportWidth: number,
   viewportHeight: number,
+  fonts: FontsLike | null,
   moved?: ReadonlySet<Box>,
 ): void {
   for (const child of box.children) {
     if (moved && !moved.has(child)) continue;
-    applyRelativeOffsets(child, viewportWidth, viewportHeight, moved);
+    applyRelativeOffsets(child, viewportWidth, viewportHeight, fonts, moved);
   }
   // a text or a break carries its element's style, and moves with it
   if (box.kind === 'text' || box.kind === 'break') return;
@@ -8460,15 +8521,24 @@ export function applyRelativeOffsets(
     }
   }
   if (style.position !== 'relative' && style.position !== 'sticky') return;
-  const [dx, dy] =
-    style.position === 'sticky'
-      ? stickyOffset(box, viewportWidth, viewportHeight)
-      : relativeOffset(box);
   const sticky = style.position === 'sticky';
-  if (sticky) STUCK.set(box, [dx, dy]);
+  if (box.kind === 'inline') {
+    // a sticky box's first piece places them all, and has moved this one
+    if (sticky && box.cut & 1) return;
+    // the lines under it are where no offset of it has them
+    INLINE_OFFSETS.delete(box);
+    if (sticky) setStickyRect(box, fonts);
+  }
+  const [dx, dy] = sticky
+    ? stickyOffset(box, viewportWidth, viewportHeight)
+    : relativeOffset(box);
+  if (sticky) noteStuck(box, dx, dy);
   if (!(dx || dy)) return;
-  offsetBox(box, dx, dy, sticky);
-  if (sticky) followSticky(box, dx, dy);
+  if (sticky) {
+    moveSticky(box, dx, dy);
+    return;
+  }
+  offsetBox(box, dx, dy, false);
   if (box.kind !== 'inline') {
     movedOffLine(box);
     return;
@@ -8476,7 +8546,38 @@ export function applyRelativeOffsets(
   offsetInline(box, dx, dy);
   // the blocks it was broken around move with it (9.2.1.1)
   const blocks = box.cut ? CUT_BLOCKS.get(box) : undefined;
-  if (blocks) for (const block of blocks) offsetBox(block, dx, dy, sticky);
+  if (blocks) for (const block of blocks) offsetBox(block, dx, dy, false);
+}
+
+/** Note how far stickiness moved a box from where the flow has it, and an
+ *  inline box broken around blocks all its pieces. */
+function noteStuck(box: Box, dx: number, dy: number): void {
+  const at: [number, number] = [dx, dy];
+  STUCK.set(box, at);
+  if (box.cut) {
+    for (const piece of CUT_PIECES.get(box) ?? []) STUCK.set(piece, at);
+  }
+}
+
+/** Move a sticky box and all that goes with it: a box and what it holds, or
+ *  an inline box's text on its lines, and what it was broken around, its
+ *  pieces and its blocks alike, as one (9.2.1.1). */
+function moveSticky(box: Box, dx: number, dy: number): void {
+  offsetBox(box, dx, dy, true);
+  followSticky(box, dx, dy);
+  if (box.kind !== 'inline') {
+    movedOffLine(box);
+    return;
+  }
+  offsetInline(box, dx, dy);
+  if (!box.cut) return;
+  for (const piece of CUT_PIECES.get(box) ?? []) {
+    offsetBox(piece, dx, dy, true);
+    offsetInline(piece, dx, dy);
+  }
+  for (const block of CUT_BLOCKS.get(box) ?? []) {
+    offsetBox(block, dx, dy, true);
+  }
 }
 
 /** Whether a box is in the top layer, which no box around it moves. */
@@ -8805,9 +8906,12 @@ function stickyOffset(
   while (port && !scrolls(port.style)) port = port.parent;
   const tag = port?.el?.name;
   const inside = !!port && tag !== 'html' && tag !== 'body';
-  let cb = box.parent;
-  while (cb && cb.kind === 'inline') cb = cb.parent;
-  if (!cb) return [0, 0];
+  const cb = stickyContainer(box);
+  const size = stickySizeOf(box);
+  if (!cb || !size) return [0, 0];
+  // its own transform has moved it, and none around it has yet: this pass
+  // comes up from the leaves (`movedByTransforms`)
+  const [tx, ty] = movedByTransforms(box, box.parent);
   // the scrollport, at its start: a scroll container's padding box, or
   // the viewport, which the document's top is at
   const px = port && inside ? port.x + port.borderLeft : 0;
@@ -8821,8 +8925,8 @@ function stickyOffset(
       ? port.height - port.borderTop - port.borderBottom
       : viewportHeight;
   const dx = stuck(
-    box.x,
-    box.width,
+    box.x - tx,
+    size.width,
     box.marginLeft,
     box.marginRight,
     cb.contentX,
@@ -8835,9 +8939,9 @@ function stickyOffset(
     cb.style.direction !== 'rtl',
   );
   const dy = stuck(
-    box.y,
-    box.height,
-    box.marginTop,
+    box.y - ty,
+    size.height,
+    ownMarginTop(box, cb),
     ownMarginBottom(box, cb),
     cb.contentY,
     cb.contentHeight,
@@ -8851,15 +8955,127 @@ function stickyOffset(
 }
 
 /**
+ * How far the transforms of a box and of the boxes around it have moved it
+ * (`applyRelativeOffsets`), up to `stop` and not `stop`'s. Stickiness is
+ * layout's and a transform moves what layout placed, so a sticky box is
+ * measured from where it would be with none, as all three engines measure
+ * it, and its transform is added to where it sticks. Measured from where the
+ * transform had it, stickiness took the transform back: a header stuck to
+ * the top with `translateY(-100%)` to hide it stayed in view, and one moved
+ * in place went by the difference and stuck by what it stuck by before, so
+ * it came to rest somewhere no layout would put it.
+ */
+function movedByTransforms(box: Box, stop: Box | null): [number, number] {
+  let x = 0;
+  let y = 0;
+  for (let at: Box | null = box; at && at !== stop; at = at.parent) {
+    if (at.kind !== 'inline' && transformed(at.style)) {
+      const [dx, dy] = translationOf(at);
+      x += dx;
+      y += dy;
+    }
+  }
+  return [x, y];
+}
+
+/**
+ * The containing block a sticky box keeps inside: the nearest block around
+ * it, past the inline boxes between and an anonymous block the fix-up put
+ * it in, which no page wrote, as Chrome and WebKit have it. In one, a span
+ * beside a block had a line's height to move in. A frame is an anonymous
+ * block too, and is where it is laid out: past it is another's axes.
+ */
+function stickyContainer(box: Box): Box | null {
+  let cb = box.parent;
+  while (
+    cb &&
+    (cb.kind === 'inline' ||
+      (cb.parent &&
+        !cb.el &&
+        !cb.pseudo &&
+        !(framed.any && FRAME_ROOTS.has(cb))))
+  ) {
+    cb = cb.parent;
+  }
+  return cb;
+}
+
+/**
+ * Set a sticky inline box's rect from its lines, where the flow has it. No
+ * layout sets an inline box's rect, and every move adds up on it (`translate`),
+ * so it said nothing of where the box is, and how far a box stuck turned on
+ * how many layouts had run. It is as paint and `elementRect` find the box,
+ * and as Chrome and WebKit take it: around its own fragments' border boxes,
+ * so a line taller than its face or an image hanging off it reach past it,
+ * with what it was broken around in it. A relative offset of a box inside it
+ * is no part of it. Its place is the box's `x` and `y`, and from here it
+ * moves as a block's does: with the lines under it, and by what `STUCK` says,
+ * which `placeSticky` reads it back by. Its size is kept beside it
+ * (`STICKY_SIZES`), since a box with one paints as a rectangle.
+ */
+function setStickyRect(box: Box, fonts: FontsLike | null): void {
+  const pieces = box.cut ? CUT_PIECES.get(box) : undefined;
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  const take = (x: number, y: number, right: number, bottom: number): void => {
+    x1 = Math.min(x1, x);
+    y1 = Math.min(y1, y);
+    x2 = Math.max(x2, right);
+    y2 = Math.max(y2, bottom);
+  };
+  for (const piece of pieces ? [box, ...pieces] : [box]) {
+    INLINE_OFFSETS.delete(piece);
+    let block = piece.parent;
+    while (block && block.kind === 'inline') block = block.parent;
+    const face = fonts ? faceExtentOf(fonts, piece.style) : null;
+    for (const line of block?.lines ?? []) {
+      const span = spanOn(line, piece, true);
+      if (!span) continue;
+      const [top, bottom] = fragmentRow(line, piece, face, true);
+      take(span[0], top, span[1], bottom);
+    }
+  }
+  if (pieces) {
+    for (const block of CUT_BLOCKS.get(box) ?? []) {
+      take(block.x, block.y, block.x + block.width, block.y + block.height);
+    }
+  }
+  if (x2 < x1) {
+    STICKY_SIZES.delete(box);
+    return;
+  }
+  box.x = x1;
+  box.y = y1;
+  STICKY_SIZES.set(box, { width: x2 - x1, height: y2 - y1 });
+}
+
+/** How large a sticky box's rect is: none for an inline box with nothing on
+ *  its lines, which has no fragment to hold and draws nothing. */
+function stickySizeOf(box: Box): { width: number; height: number } | undefined {
+  return box.kind === 'inline' ? STICKY_SIZES.get(box) : box;
+}
+
+/** A sticky box's top margin, which keeps it inside its containing block
+ *  as its bottom one does: an inline box's takes no room on its line, and no
+ *  layout resolves it, and it counts here all the same in Chrome and WebKit. */
+function ownMarginTop(box: Box, cb: Box): number {
+  return box.kind === 'inline'
+    ? edge(box.style.marginTop, cb.contentWidth)
+    : box.marginTop;
+}
+
+/**
  * A sticky box's own bottom margin, which every engine keeps it inside its
  * containing block by: not the margin a last child takes through its foot
  * (`bottomStrut`), which the box carries for its next sibling to collapse
- * with. github.blog's contents list ends on an item with a 64px bottom
- * margin, and held by it the list stopped 64px above the end of its
- * sidebar.
+ * with, and an inline box's, which no layout resolves (`ownMarginTop`).
+ * github.blog's contents list ends on an item with a 64px bottom margin,
+ * and held by it the list stopped 64px above the end of its sidebar.
  */
 function ownMarginBottom(box: Box, cb: Box): number {
-  return box.bottomStrut
+  return box.bottomStrut || box.kind === 'inline'
     ? edge(box.style.marginBottom, cb.contentWidth)
     : box.marginBottom;
 }
@@ -8910,7 +9126,7 @@ export function restickWithin(scroller: Box): boolean {
   let moved = false;
   const visit = (box: Box): void => {
     for (const child of box.children) {
-      if (child.style.position === 'sticky' && stickyBlock(child)) {
+      if (child.style.position === 'sticky' && stickyBox(child)) {
         if (restick(child, scroller)) moved = true;
       }
       // a scroll container inside keeps its own
@@ -8932,7 +9148,7 @@ function restickAll(root: Box, moved?: ReadonlySet<Box>): Box[] | null {
   const visit = (box: Box, port: Box | null, fixed: boolean): void => {
     for (const child of box.children) {
       if (moved && !moved.has(child)) continue;
-      if (child.style.position === 'sticky' && stickyBlock(child)) {
+      if (child.style.position === 'sticky' && stickyBox(child)) {
         if (port) restick(child, port);
         else if (!fixed) (viewport ??= []).push(child);
       }
@@ -8947,13 +9163,15 @@ function restickAll(root: Box, moved?: ReadonlySet<Box>): Box[] | null {
   return viewport;
 }
 
-/** Whether a box whose style is sticky is one a scroll places again: not
- *  an inline box, whose text is its block's lines', and not a text or a
- *  break, which carries its element's style and is no box of its own —
- *  taken for one, a sticky element's text was placed at where its rect
- *  had drifted to, and the ink of every box around it grown to reach it. */
-function stickyBlock(box: Box): boolean {
-  return box.kind !== 'inline' && box.kind !== 'text' && box.kind !== 'break';
+/** Whether a box whose style is sticky is one a scroll places again: not a
+ *  text or a break, which carries its element's style and is no box of its
+ *  own — taken for one, a sticky element's text was placed at where its
+ *  rect had drifted to, and the ink of every box around it grown to reach
+ *  it — nor an inline box with no rect, or a piece of one its first piece
+ *  moves. */
+function stickyBox(box: Box): boolean {
+  if (box.kind === 'text' || box.kind === 'break') return false;
+  return !(box.cut & 1) && stickySizeOf(box) !== undefined;
 }
 
 /** The sticky boxes each tree's viewport keeps (`restickAll`): placed at
@@ -8991,12 +9209,12 @@ export function restickToViewport(
 ): Box[] | null {
   let moved: Box[] | null = null;
   for (const box of boxes) {
-    let cb = box.parent;
-    while (cb && cb.kind === 'inline') cb = cb.parent;
+    const cb = stickyContainer(box);
     if (!cb) continue;
     const at = placeSticky(
       box,
       cb,
+      null,
       port.x,
       port.y,
       port.width,
@@ -9015,8 +9233,7 @@ export function restickToViewport(
  *  container, as `stickyOffset` places it, where the container is
  *  scrolled to; whether it moved. */
 function restick(box: Box, port: Box): boolean {
-  let cb = box.parent;
-  while (cb && cb.kind === 'inline') cb = cb.parent;
+  const cb = stickyContainer(box);
   if (!cb) return false;
   // the containing block where it is the scroll container is all it
   // scrolls, from where the scroll has its start
@@ -9034,6 +9251,7 @@ function restick(box: Box, port: Box): boolean {
   return placeSticky(
     box,
     cb,
+    port,
     port.x + port.borderLeft,
     port.y + port.borderTop,
     port.width - port.borderLeft - port.borderRight,
@@ -9047,10 +9265,14 @@ function restick(box: Box, port: Box): boolean {
 
 /** A sticky box placed against a scrollport (`px`…`ph`) within its
  *  containing block (`cbx`…`cbh`), from where the flow has it: that far
- *  less from where it is now (`STUCK`). Whether it moved. */
+ *  less from where it is now (`STUCK`), and less what transforms moved
+ *  (`movedByTransforms`) — those that moved it alone, and those that moved
+ *  its containing block with it but not the scrollport of `scroller`, or of
+ *  the viewport for none. Whether it moved. */
 function placeSticky(
   box: Box,
   cb: Box,
+  scroller: Box | null,
   px: number,
   py: number,
   pw: number,
@@ -9060,14 +9282,18 @@ function placeSticky(
   cbw: number,
   cbh: number,
 ): boolean {
+  const size = stickySizeOf(box);
+  if (!size) return false;
   const was = STUCK.get(box) ?? [0, 0];
   const style = box.style;
+  const [ownX, ownY] = movedByTransforms(box, cb);
+  const [withX, withY] = movedByTransforms(cb, scroller);
   const dx = stuck(
-    box.x - was[0],
-    box.width,
+    box.x - was[0] - ownX - withX,
+    size.width,
     box.marginLeft,
     box.marginRight,
-    cbx,
+    cbx - withX,
     cbw,
     px,
     pw,
@@ -9076,11 +9302,11 @@ function placeSticky(
     cb.style.direction !== 'rtl',
   );
   const dy = stuck(
-    box.y - was[1],
-    box.height,
-    box.marginTop,
+    box.y - was[1] - ownY - withY,
+    size.height,
+    ownMarginTop(box, cb),
     ownMarginBottom(box, cb),
-    cby,
+    cby - withY,
     cbh,
     py,
     ph,
@@ -9090,11 +9316,9 @@ function placeSticky(
   );
   const mx = dx - was[0];
   const my = dy - was[1];
-  STUCK.set(box, [dx, dy]);
+  noteStuck(box, dx, dy);
   if (!mx && !my) return false;
-  offsetBox(box, mx, my, true);
-  movedOffLine(box);
-  followSticky(box, mx, my);
+  moveSticky(box, mx, my);
   return true;
 }
 
@@ -9112,18 +9336,24 @@ function followSticky(box: Box, dx: number, dy: number): void {
 }
 
 /**
- * Move an inline box's text where `position: relative` puts the box. Its
- * text is on its block's lines, laid out apart from the text around it
- * (`collect`), and those fragments are what move; the lines stay where
- * they are (CSS 2.1 9.4.3). A box inside it has moved its own already, so
- * a text in both moves by the two together.
+ * Move an inline box's text where `position: relative` or `sticky` puts the
+ * box. Its text is on its block's lines, laid out apart from the text
+ * around it (`collect`), and those fragments are what move; the lines stay
+ * where they are (CSS 2.1 9.4.3). A box inside it has moved its own
+ * already, so a text in both moves by the two together. Moves add up, as
+ * they do on the text, since a scroll moves a sticky box from where it was
+ * held: `applyRelativeOffsets` starts them from nothing.
  */
 function offsetInline(box: Box, dx: number, dy: number): void {
   let block = box.parent;
   while (block && block.kind === 'inline') block = block.parent;
   const lines = block?.lines;
   if (!lines) return;
-  INLINE_OFFSETS.set(box, { x: dx, y: dy });
+  const moved = INLINE_OFFSETS.get(box);
+  INLINE_OFFSETS.set(box, {
+    x: (moved?.x ?? 0) + dx,
+    y: (moved?.y ?? 0) + dy,
+  });
   for (const line of lines) {
     for (const text of line.texts) {
       const owner = text.spans.boxAt?.(text.layoutStart);
@@ -9131,14 +9361,31 @@ function offsetInline(box: Box, dx: number, dy: number): void {
       text.drawX += dx;
       text.drawY += dy;
       const was = TEXT_SHIFTS.get(text);
-      TEXT_SHIFTS.set(text, {
-        x: (was?.x ?? 0) + dx,
-        y: (was?.y ?? 0) + dy,
-      });
-      SHIFTED_LINES.add(line);
+      const x = (was?.x ?? 0) + dx;
+      const y = (was?.y ?? 0) + dy;
       markMovedOff(lines, line);
+      if (Math.abs(x) >= HOME_WITHIN || Math.abs(y) >= HOME_WITHIN) {
+        TEXT_SHIFTS.set(text, { x, y });
+        SHIFTED_LINES.add(line);
+        continue;
+      }
+      // where its line has it again, as a sticky box let go comes home: a
+      // line among the moved ones has all its text's ink read
+      TEXT_SHIFTS.delete(text);
+      if (!holdsMoved(line)) SHIFTED_LINES.delete(line);
     }
   }
+}
+
+/** How far a text may be from where its line has it and be there: moves
+ *  there and back add up to no more than this in floating point. */
+const HOME_WITHIN = 1e-6;
+
+/** Whether anything on a line is off it (`SHIFTED_LINES`): moved by a box
+ *  around it, or raised by `vertical-align`. */
+function holdsMoved(line: LineBox): boolean {
+  if (LINE_BOX_RAISES.has(line)) return true;
+  return line.texts.some((t) => TEXT_SHIFTS.has(t) || TEXT_RAISES.has(t));
 }
 
 /** Mark the line an inline-block or an image a box moved off was placed

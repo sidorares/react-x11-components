@@ -1465,7 +1465,7 @@ function layoutAcross(
     viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
-    fonts: ctx.fonts,
+    fonts: ctx.engine,
     serial: child.layoutSerial,
     width,
     area,
