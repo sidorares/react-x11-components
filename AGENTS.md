@@ -1626,6 +1626,13 @@ reached still there. Chrome hands the `var()` in an `all` to each longhand, so
 `all: var(--x)` with `--x: 4px` sets every margin to 4px there; Firefox and
 WebKit have it `unset`, as the value is no `all`'s, and so does this.
 
+**A name with a `case` and no table goes back nowhere.** A keyword and a
+`var()` reach a logical name through `LOGICAL` and any other through
+`INHERIT_TARGETS`, and a `case` only parses a value. `place-content` stayed
+centred under `unset`, and `scroll-margin-inline-start` was a fixed side in
+every flow that nothing took back. **Anything new with a `case` joins
+`LOGICAL`, or `INHERIT_TARGETS` with every field the `case` sets.**
+
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
 until no limit stops an item, divides by a running sum (react/yoga#2006),

@@ -4835,8 +4835,10 @@ query reads its container in the container's CSS pixels.
 
 **Logical properties:** `margin-inline`, `padding-block`, `inset-inline`,
 `border-inline-start`, `inline-size`, `border-start-end-radius` and the
-rest of CSS Logical Properties 1's, as the physical properties they are in
-the element's writing mode and direction. In a horizontal writing mode the
+rest of CSS Logical Properties 1's, with `scroll-margin-inline`,
+`scroll-padding-block` and the rest of CSS Scroll Snap 1's, as the physical
+properties they are in the element's writing mode and direction. In a
+horizontal writing mode the
 inline axis's start is the left of a left-to-right element and the right of
 a right-to-left one, and the block axis runs down; in a vertical one the
 inline axis runs down the page — up it in `sideways-lr`, and up it too for
