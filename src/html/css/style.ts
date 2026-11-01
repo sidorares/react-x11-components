@@ -652,6 +652,10 @@ export const ROUND_CORNERS: CornerShapes = Object.freeze([
   1, 1, 1, 1,
 ]) as CornerShapes;
 
+/** `background-position`'s initial value, `0% 0%` (CSS Backgrounds 3, 3.6):
+ *  it draws as `0 0` does, and reads as itself. */
+const NO_POSITION: [Len, Len] = [{ pct: 0 }, { pct: 0 }];
+
 export type BorderStyle =
   | 'none'
   | 'hidden'
@@ -2017,8 +2021,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundRepeat: REPEAT,
     backgroundSize: 'auto',
     backgroundAttachment: 'scroll',
-    backgroundPositionX: 0,
-    backgroundPositionY: 0,
+    backgroundPositionX: NO_POSITION[0],
+    backgroundPositionY: NO_POSITION[1],
     backgroundImages: null,
     backgroundImageText: null,
     backgroundRepeats: null,
@@ -6379,9 +6383,8 @@ function applyBackgroundShorthand(
   style.backgroundAttachment = top.attachment;
   style.backgroundOrigin = top.origin;
   style.backgroundClip = top.clip;
-  [style.backgroundPositionX, style.backgroundPositionY] = top.position ?? [
-    0, 0,
-  ];
+  [style.backgroundPositionX, style.backgroundPositionY] =
+    top.position ?? NO_POSITION;
   const many = layers.length > 1;
   style.backgroundImages = many
     ? layers.map((l) => l.image ?? l.gradient)
@@ -6395,7 +6398,7 @@ function applyBackgroundShorthand(
   style.backgroundOrigins = many ? layers.map((l) => l.origin) : null;
   style.backgroundClips = many ? layers.map((l) => l.clip) : null;
   style.backgroundPositions = many
-    ? layers.map((l) => l.position ?? [0, 0])
+    ? layers.map((l) => l.position ?? NO_POSITION)
     : null;
 }
 
@@ -7117,6 +7120,43 @@ const ALL_VARIANTS: VariantKind[] = [
   'position',
 ];
 
+/** The features `font-variant-ligatures: none` turns off. */
+const NO_LIGATURES = 'liga=0,clig=0,dlig=0,hlig=0,calt=0';
+
+/**
+ * `font-variant` from its longhands: each keyword in the order the shorthand
+ * is serialized, whatever order it was written in. `none` is `font-variant-
+ * ligatures`' alone, so beside anything else the shorthand cannot say it, and
+ * reads ''.
+ */
+export function fontVariantText(style: ComputedStyle): string {
+  const {
+    fontVariantLigatures: ligatures,
+    fontVariantCaps: caps,
+    fontVariantNumeric: numeric,
+    fontVariantPosition: position,
+  } = style;
+  if (!ligatures && !caps && !numeric && !position) return 'normal';
+  if (ligatures === NO_LIGATURES) {
+    return caps || numeric || position ? '' : 'none';
+  }
+  const words: string[] = [];
+  for (const kind of ['ligatures', 'caps', 'numeric', 'position'] as const) {
+    const held = style[VARIANT_FIELDS[kind]];
+    for (const word of Object.keys(VARIANTS)) {
+      const [of, features] = VARIANTS[word];
+      if (of !== kind) continue;
+      // `all-small-caps` holds what `small-caps` does and more
+      const named =
+        kind === 'caps'
+          ? held === features
+          : `,${held},`.includes(`,${features},`);
+      if (named) words.push(word);
+    }
+  }
+  return words.join(' ');
+}
+
 /**
  * A `font-variant` longhand's value, or the shorthand's (`kind` null), as
  * the fields it sets; null for a value it does not take. The shorthand
@@ -7136,7 +7176,7 @@ function parseFontVariant(
     words[0] === 'none' &&
     (kind === null || kind === 'ligatures')
   ) {
-    named.ligatures = ['liga=0,clig=0,dlig=0,hlig=0,calt=0'];
+    named.ligatures = [NO_LIGATURES];
   } else {
     for (const word of words) {
       const known = VARIANTS[word];
