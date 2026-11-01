@@ -621,7 +621,10 @@ function keepRatios(
  * `max-width`. Null where it has neither a natural width nor a ratio to
  * take one through.
  */
-function replacedMinimum(box: Box, containingWidth: number): number | null {
+export function replacedMinimum(
+  box: Box,
+  containingWidth: number,
+): number | null {
   const style = box.style;
   const own = ownIntrinsic(box);
   const ratio = replacedRatio(box);
@@ -3125,7 +3128,7 @@ const EXACT = 1024;
 function minContentOf(box: Box, ctx: LayoutContext, laid: Laid): number {
   if (box.intrinsicMinContent < 0) {
     const exact = ctx.fonts
-      ? exactMinContent(box, ctx.fonts, ctx.stopping)
+      ? exactMinContent(box, ctx.fonts, ctx.stopping, true)
       : null;
     box.intrinsicMinContent =
       exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);

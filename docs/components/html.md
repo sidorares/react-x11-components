@@ -3005,7 +3005,17 @@ and 0 in a row of 150 is 95, 45 and 10, where Yoga left all three 100 wide.
 What a line is short of is shared out by each item's shrink factor times
 its content box, where Yoga weighs its border box: two items 100 wide,
 one with 50 pixels of padding, are 100 and 50 in a row of 150, as in
-Chrome, where Yoga made them 90 and 60. A percentage height,
+Chrome, where Yoga made them 90 and 60. A flex box's own narrowest width
+is its items' side by side and its gaps, or the widest of them where its
+lines wrap or it is a column, each item its width or its content at its
+narrowest, within its limits. Along a line that does not wrap a
+`flex-basis` of a length caps an item that may not grow and floors one
+that may not shrink, and `flex: none` gives an item's narrowest and not
+its widest. All of that is Chrome's: along a line that wraps no basis has
+a say, where CSS Flexbox 9.9.1 caps and floors by it there too. A flex
+box's widest width takes each item at its content, with such a basis only
+as a floor where Chrome also caps by it: `flex: 0 1 40px` around 50
+pixels of content that can break gives 50 here and 40 there. A percentage height,
 minimum, maximum or flex basis of an item down a column of a definite
 height is of that height; down one of no definite height, a percentage
 height is `auto` and a percentage flex basis is `content`, the content's

@@ -8,7 +8,14 @@ import {
   boxLayoutsMade,
   minContentsExact,
 } from '../../src/html/layout/block.js';
-import { RED_PNG, boxOf, render, renderWithBytes, view } from './harness.js';
+import {
+  RED_PNG,
+  boxOf,
+  render,
+  renderScrolled,
+  renderWithBytes,
+  view,
+} from './harness.js';
 import { MIN_CONTENT_DOCUMENT, MIN_CONTENT_WIDTHS } from './min-contents.js';
 
 afterEach(cleanup);
@@ -17,11 +24,17 @@ afterEach(() => answerMinContentExactly(true));
 const SEEDS = Number(process.env.MIN_CONTENT_SEEDS ?? 100);
 const FROM = Number(process.env.MIN_CONTENT_FROM ?? 1);
 
+// mulberry32: a multiplication too large for a double loses its low bits, and
+// a generator made of one comes back to where it was in some ten thousand
+// numbers, which at this size is under a hundred documents
 function random(seed: number): () => number {
-  let at = seed;
+  let at = seed | 0;
   return () => {
-    at = (at * 1103515245 + 12345) % 2147483648;
-    return at / 2147483648;
+    at = (at + 0x6d2b79f5) | 0;
+    let t = at;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
@@ -141,9 +154,9 @@ const places = (el: ReturnType<typeof view>, ids: number): number[][] =>
   });
 
 test('what is left to a probe is left to it, over generated documents', async () => {
-  // what the arithmetic answers is held to Chromium below, and where a
-  // probe differs it is the probe that is out. This is what it must turn
-  // down: a percentage of a room, a grid, a wrapped row, a flex basis
+  // what each answers is held to Chromium below, and the two come to it by
+  // one rule: this is what the arithmetic must turn down, a percentage of a
+  // room, a grid, a table, and what it must leave as a probe finds it
   for (let seed = FROM; seed < FROM + SEEDS; seed += 1) {
     const { source, ids } = documentFor(random(seed * 7919));
     answerMinContentExactly(true);
@@ -185,32 +198,101 @@ test('a flex box at its narrowest comes to what Chromium has it come to, with no
   );
 });
 
-test('a row that wraps and an item with a flex basis are no sum of their items at their narrowest', async () => {
-  // each its widest item, and a basis over its content: Chromium's
+test('a flex basis has a say along a line, and each item is as narrow as it comes', async () => {
+  // every width is Chromium's
   const sized = (width: number) =>
     `<i style="display:block;width:${width}px;height:4px"></i>`;
-  const item = async (held: string): Promise<number> => {
+  const box = (css: string, width: number) =>
+    `<div style="${css}">${sized(width)}</div>`;
+  // two boxes a line may break between: 30 at its narrowest, 50 at its widest
+  const line = (css: string) =>
+    `<div style="${css}"><b style="display:inline-block;width:20px;height:4px"></b>` +
+    '<b style="display:inline-block;width:30px;height:4px"></b></div>';
+  const row = (css: string, ...held: string[]) =>
+    `<div style="display:flex;${css}">${held.join('')}</div>`;
+  const beside = box('', 15);
+  const canvas = (css: string) =>
+    `<canvas width="30" height="4" style="display:block;${css}"></canvas>`;
+  const table = (css: string) =>
+    `<table style="border-spacing:0;${css}"><tr><td style="padding:0">${sized(30)}</td>` +
+    `<td style="padding:0">${sized(20)}</td></tr></table>`;
+  const cases: [string, number][] = [
+    // its widest box and no more, whatever the basis of the rest
+    [row('flex-wrap:wrap;gap:6px', box('', 30), box('', 20), box('', 25)), 30],
+    [row('flex-wrap:wrap', box('flex:0 0 40px', 10), beside), 15],
+    [row('flex-wrap:wrap', box('flex:0 0 40px;width:90px', 10), beside), 90],
+    // a basis over what may not shrink, and under what may not grow
+    [row('', box('flex:0 0 40px', 10), beside), 55],
+    [row('', box('flex:0 1 40px', 10), beside), 25],
+    [row('', box('flex:0 0 40px;width:90px', 10), beside), 55],
+    [row('', box('flex:1 0 40px;width:90px', 10), beside), 105],
+    // a percentage of nothing, and a basis of its content, are no bases
+    [row('', box('flex:0 0 50%', 10), beside), 25],
+    [row('', line('flex:none'), beside), 45],
+    [row('flex-wrap:wrap', line('flex:none'), beside), 30],
+    // its automatic minimum, of its content where it has a width
+    [row('', line('flex:0 0 10px'), beside), 45],
+    [row('', line('flex:0 0 10px;width:90px'), beside), 45],
+    [row('', line('flex:0 0 10px;min-width:0'), beside), 25],
+    [row('', line('flex:0 0 10px;overflow:hidden'), beside), 25],
+    // a table is no narrower than its columns, whatever its width says
+    [row('', table('width:20px'), beside), 65],
+    [row('', table('flex:0 0 10px;min-width:0'), beside), 65],
+    // what is replaced may go to nothing where a limit is a percentage of it,
+    // and only then does a basis have its say
+    [row('', canvas('max-width:calc(50% + 10px)'), beside), 15],
+    [row('', canvas('width:20px;max-width:100%'), beside), 15],
+    [row('', canvas('flex:0 0 40px;max-width:100%'), beside), 55],
+    // a percentage of an edge is of no room, whatever room it was laid out in
+    [row('min-width:45px', box('padding:0 10%;width:40px', 7), beside), 55],
+    [row('min-width:45px', box('padding:0 10%;flex:0 0 40px', 7), beside), 55],
+    // a size of its content is a width like any
+    [row('', line('width:max-content'), beside), 65],
+    [row('', line('flex:0 0 10px;width:max-content'), beside), 45],
+    [row('', line('flex:0 0 10px;min-width:0;width:max-content'), beside), 25],
+    [row('', line('min-width:max-content'), beside), 65],
+    [row('', line('flex:0 0 40px;max-width:min-content'), beside), 45],
+    // a basis wider than its content, in a room wider than that
+    [box('flex:0 0 40px', 8), 40],
+    // laid out across a least width, which is no width of its own
+    [
+      `<div style="min-width:43px">${box('padding:0 2px;width:100%', 7)}</div>`,
+      43,
+    ],
+    [
+      `<div style="min-width:60px">${row('', line('flex:none'), beside)}</div>`,
+      60,
+    ],
+  ];
+  for (const [held, width] of cases) {
     const { node } = await render(
       '<style>body{margin:0}</style><div style="display:flex;width:10px">' +
         `<div id="item" style="display:flex">${held}</div></div>`,
       400,
     );
-    const width = boxOf(view(node), 'item').width;
+    assert.strictEqual(boxOf(view(node), 'item').width, width, held);
     await cleanup();
-    return width;
-  };
-  assert.strictEqual(
-    await item(
-      `<div style="display:flex;flex-wrap:wrap;gap:6px">${sized(30)}${sized(20)}${sized(25)}</div>`,
-    ),
-    30,
-  );
-  assert.strictEqual(
-    await item(
-      `<div style="display:flex"><div style="flex:0 0 40px">${sized(10)}</div><div>${sized(15)}</div></div>`,
-    ),
-    55,
-  );
+  }
+});
+
+test('what a walk lays out at no width is not left so by the layout after it', async () => {
+  // a line in an item that may not shrink, which the box around it keeps
+  // from its last layout: asked for its narrowest for the first time, in a
+  // narrower room, only the line can say, and it is laid out to
+  const held =
+    '<div id="row" style="display:flex"><div id="line" style="flex:none">' +
+    '<b style="display:inline-block;width:30px;height:4px"></b>' +
+    '<b style="display:inline-block;width:30px;height:4px"></b></div></div>';
+  const source =
+    '<style>body{margin:0}</style><div style="display:flex;width:50%">' +
+    `<div id="item" style="display:flex">${held}</div>` +
+    '<div style="flex:none;width:40px"></div></div>';
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const tall = boxOf(el, 'line').height;
+  await resize(300, 120);
+  assert.strictEqual(boxOf(el, 'item').width, 30);
+  assert.strictEqual(boxOf(el, 'line').width, 60);
+  assert.strictEqual(boxOf(el, 'line').height, tall, 'its line in one piece');
 });
 
 test('a line cut short by text-overflow gives its box what its text comes to', async () => {
