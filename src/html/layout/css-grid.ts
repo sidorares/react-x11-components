@@ -198,7 +198,9 @@ export function layoutGrid(
         // where its words say it exactly, read from the layout just made —
         // which is the max-content one only if it was made just now
         const exact =
-          fresh && ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
+          fresh && ctx.fonts
+            ? exactMinContent(box, ctx.fonts, ctx.stopping)
+            : null;
         box.intrinsicMinContent = exact ?? minContentOf(box, ctx);
       }
       narrowest = box.intrinsicMinContent;

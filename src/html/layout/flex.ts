@@ -3126,7 +3126,9 @@ const EXACT = 1024;
  *  content's, whatever width it has of its own (`keywordWidth`'s too). */
 function minContentOf(box: Box, ctx: LayoutContext, laid: Laid): number {
   if (box.intrinsicMinContent < 0) {
-    const exact = ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
+    const exact = ctx.fonts
+      ? exactMinContent(box, ctx.fonts, ctx.stopping)
+      : null;
     box.intrinsicMinContent =
       exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
     // a probe lays the box out where the kept layout was

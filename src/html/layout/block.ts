@@ -167,6 +167,7 @@ import {
   lineHeightMultiplier,
   spaceBreaksOnly,
   strutOf,
+  uncutWidth,
   widestWord,
 } from './inline.js';
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
@@ -312,6 +313,9 @@ export interface LayoutContext {
    *  document coordinates (`layoutDocument`'s `until`): the flow lays out
    *  no box that starts below it, and sets the rest aside (`setAside`). */
   until?: number;
+  /** Whether this layout stops anywhere (`until`, `LayoutContext.keep`), so
+   *  that a box may be missing what it set aside from `children`. */
+  stopping?: boolean;
   /** The boxes this pass set children aside in, each with the whole list
    *  it had, and the pass's number, which marks what was set aside
    *  (`HELD_BACK`). */
@@ -1673,6 +1677,7 @@ export function layoutDocument(
     viewportHeight,
     under: { height: viewportHeight, read: true },
     positioned: [],
+    stopping: cuts,
     layoutSubtree: (box, width, containing) =>
       layoutSubtree(box, ctx, width, containing),
     firstLine: tree.firstLine,
@@ -5245,22 +5250,201 @@ export function forgetSizesIn(box: Box, up: Set<Box>): void {
  * box on a line, a float, a table or a flex box, text that does not wrap
  * or is indented, a block with widths of its own.
  */
-export function exactMinContent(box: Box, fonts: FontsLike): number | null {
-  // a flex row's is its items' side by side, a grid's its columns', and a
-  // replaced element has no words: read as its widest word, a row of two
-  // in a flex column's item was as narrow as the wider of them
-  if (box.kind !== 'block' && box.kind !== 'table-cell') return null;
-  if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
+export function exactMinContent(
+  box: Box,
+  fonts: FontsLike,
+  /** Whether what a layout that stops set aside may be missing from it,
+   *  which a walk down `children` would take for nothing. */
+  stopped = false,
+): number | null {
+  // a grid's is its columns', and a replaced element has no words: read as
+  // its widest word, a row of two in a flex column's item was as narrow as
+  // the wider of them
+  if (
+    box.kind !== 'block' &&
+    box.kind !== 'table-cell' &&
+    box.kind !== 'flex'
+  ) {
+    return null;
+  }
+  if (!answersExactly || (box.kind === 'flex' && stopped)) return null;
+  if (
+    !lengthEdges(box.style) ||
+    hasWidths(box.style, noWidthInNoRoom) ||
+    contained(box, CONTAIN_WIDTH)
+  ) {
+    return null;
+  }
   // an orthogonal flow is as wide as its block size, which no word says
   if (framed.any && FRAMES.has(box)) return null;
-  const inner = exactWords(box, fonts);
-  return inner === null ? null : inner + box.horizontalExtra;
+  const inner = exactInner(box, fonts);
+  if (inner === null) return null;
+  minContentsAnswered += 1;
+  return inner + box.horizontalExtra;
 }
 
-/** Whether a style sets its box's width, or its least or greatest width. */
-function hasWidths(style: ComputedStyle): boolean {
+/** Whether `exactMinContent` answers: a test holds what it answers to what
+ *  a probe lays out to find. */
+let answersExactly = true;
+export function answerMinContentExactly(answer: boolean): void {
+  answersExactly = answer;
+}
+
+/** How many boxes `exactMinContent` has answered for, for a test to say
+ *  that some were. */
+let minContentsAnswered = 0;
+export function minContentsExact(): number {
+  return minContentsAnswered;
+}
+
+/** `exactMinContent` inside a box's edges, of a box some layout has laid
+ *  out, whose lines say its words: an item a flex box asks about first has
+ *  none, and read as nothing it was held to no width at all. */
+function exactInner(box: Box, fonts: FontsLike): number | null {
+  if (box.layoutSerial === 0) return null;
+  if (box.kind === 'flex') return exactItems(box, fonts);
+  return box.kind === 'block' || box.kind === 'table-cell'
+    ? exactWords(box, fonts)
+    : null;
+}
+
+/**
+ * A flex box's min-content width as its items' give it (CSS Flexbox 9.9.1),
+ * which is what `MIN_CONTENT_PROBE` lays it out to find and `intrinsicWidth`
+ * reads: along a row its items' side by side and the gaps between them,
+ * whatever they may shrink by (`widest` in the item's measure), and down a
+ * column the widest of them. Null where that is not the sum: a row that
+ * wraps, a grid.
+ */
+function exactItems(box: Box, fonts: FontsLike): number | null {
+  const style = box.style;
+  if (style.grid || style.flexWrap !== 'nowrap') return null;
+  const row = style.flexDirection.startsWith('row');
+  let widest = 0;
+  let total = 0;
+  let items = 0;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.outOfFlow) continue;
+    const contribution = exactContribution(child, fonts, row);
+    if (contribution === null) return null;
+    if (row) {
+      total += contribution;
+      items += 1;
+    } else widest = Math.max(widest, contribution);
+  }
+  if (items) {
+    widest = Math.max(
+      widest,
+      total + gapOf(style.columnGap, NaN) * (items - 1),
+    );
+  }
+  return widest;
+}
+
+/**
+ * What a flex item gives its flex box's min-content width, its margins in
+ * it, as `intrinsicWidth` reads it from a box laid out at no width: a width
+ * of its own, or its content's, each within its least and greatest width.
+ * A percentage is of nothing there, and a whole one is no width at all
+ * (CSS Sizing 3, 5.2.1); null for what a probe has to lay out to find: an
+ * edge a percentage of the room, a flex basis, or a width made of more than
+ * a length.
+ */
+function exactContribution(
+  child: Box,
+  fonts: FontsLike,
+  row: boolean,
+): number | null {
+  const style = child.style;
+  if (
+    child.kind === 'table' ||
+    child.kind === 'table-cell' ||
+    !lengthEdges(style) ||
+    style.widthKeyword !== null ||
+    style.minWidthKeyword !== null ||
+    style.maxWidthKeyword !== null ||
+    style.aspectRatio !== null ||
+    style.lineClamp !== null ||
+    style.columns !== 0 ||
+    style.visibility === 'collapse' ||
+    contained(child, CONTAIN_WIDTH) ||
+    (framed.any && FRAMES.has(child)) ||
+    (row && !noBasis(style.flexBasis))
+  ) {
+    return null;
+  }
+  const margins =
+    (style.marginLeft === AUTO ? 0 : (style.marginLeft as number)) +
+    (style.marginRight === AUTO ? 0 : (style.marginRight as number));
+  const min =
+    style.minWidth === 0 || style.minWidth === AUTO
+      ? 0
+      : resolve(style.minWidth, 0) + contentExtra(child);
+  const width = style.width;
+  if (child.kind === 'replaced') {
+    if (typeof style.maxWidth === 'object') return null;
+    // along a row as wide as it comes whatever the room, where a height it
+    // is given has no say in that: across a column it is stretched
+    if (row && width === AUTO && style.height === AUTO) {
+      return child.width + margins;
+    }
+    if (typeof width !== 'number') return null;
+  }
+  if (typeof width === 'number') {
+    let stated = width + contentExtra(child);
+    if (typeof style.maxWidth === 'number') {
+      stated = Math.min(stated, style.maxWidth + contentExtra(child));
+    }
+    return Math.max(stated, child.horizontalExtra, min) + margins;
+  }
+  if (!noWidthInNoRoom(width)) return null;
+  const inner = exactInner(child, fonts);
+  if (inner === null) return null;
+  let outer = inner + child.horizontalExtra;
+  if (typeof style.maxWidth === 'number') {
+    outer = Math.min(outer, style.maxWidth + contentExtra(child));
+  }
+  return Math.max(outer, min) + margins;
+}
+
+/** Whether a box's edges across are lengths, or an `auto` margin, which is
+ *  none where there is no room: not a percentage of the room. */
+function lengthEdges(style: ComputedStyle): boolean {
   return (
-    style.width !== AUTO ||
+    typeof style.paddingLeft === 'number' &&
+    typeof style.paddingRight === 'number' &&
+    (typeof style.marginLeft === 'number' || style.marginLeft === AUTO) &&
+    (typeof style.marginRight === 'number' || style.marginRight === AUTO)
+  );
+}
+
+/** Whether a flex basis leaves an item's width to its content: `auto` and
+ *  `content`, or none at all, which `flex: 1` is. */
+function noBasis(basis: ComputedStyle['flexBasis']): boolean {
+  return (
+    basis === AUTO ||
+    basis === 'content' ||
+    basis === 0 ||
+    (typeof basis === 'object' && !basis.px)
+  );
+}
+
+/** Whether a width comes to nothing in no room, as `width: 100%` and
+ *  `calc(100% - 57px)` do: no width at all to a min-content probe (CSS Sizing
+ *  3, 5.2.1), where one a length is added to is that length. */
+function noWidthInNoRoom(width: ComputedStyle['width']): boolean {
+  return width === AUTO || (typeof width === 'object' && !(width.px! > 0));
+}
+
+/** Whether a style sets its box's width, or its least or greatest width,
+ *  but for a width `none` says is none. */
+function hasWidths(
+  style: ComputedStyle,
+  none: (width: ComputedStyle['width']) => boolean,
+): boolean {
+  return (
+    !none(style.width) ||
     style.widthKeyword !== null ||
     (style.minWidth !== 0 && style.minWidth !== AUTO) ||
     style.minWidthKeyword !== null ||
@@ -5271,11 +5455,38 @@ function hasWidths(style: ComputedStyle): boolean {
 
 function exactWords(box: Box, fonts: FontsLike): number | null {
   const style = box.style;
-  if (style.whiteSpace !== 'normal' || style.textIndent !== 0) return null;
+  // a line that does not wrap is one word, as wide as the line
+  const whole = style.whiteSpace === 'nowrap';
+  if ((style.whiteSpace !== 'normal' && !whole) || style.textIndent !== 0) {
+    return null;
+  }
   let widest = 0;
   if (box.lines) {
     let last: object | null = null;
     for (const line of box.lines) {
+      if (whole) {
+        // what is on it stays on it, as wide as it is laid out where that
+        // is as narrow as it comes
+        for (const { box: atomic } of line.atomics) {
+          const least = exactContribution(atomic, fonts, false);
+          const laid = atomic.width + atomic.marginLeft + atomic.marginRight;
+          if (least === null || Math.abs(least - laid) > 0.01) return null;
+        }
+        // and one cut short by `text-overflow` as wide as its text, which
+        // the line no longer says (CSS Overflow 3, 5.1: it is ink alone)
+        if (
+          !CUT_LINES.has(line) &&
+          !line.texts.some((t) => t.layout.truncated)
+        ) {
+          widest = Math.max(widest, line.width);
+        } else {
+          if (line.texts.length !== 1 || line.atomics.length) return null;
+          const uncut = uncutWidth(fonts, line.texts[0].layout);
+          if (uncut === Infinity) return null;
+          widest = Math.max(widest, uncut);
+        }
+        continue;
+      }
       if (line.atomics.length || line.edges?.length) return null;
       for (const text of line.texts) {
         if (text.layout === last) continue;
@@ -5288,28 +5499,27 @@ function exactWords(box: Box, fonts: FontsLike): number | null {
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.kind === 'inline') {
-      if (!plainInline(child)) return null;
+      if (!plainInline(child, style.whiteSpace)) return null;
       continue;
     }
-    if (child.kind !== 'block' || child.isFloat) return null;
+    if (child.isFloat) return null;
     if (child.outOfFlow) continue;
-    if (hasWidths(child.style)) return null;
-    const inner = exactWords(child, fonts);
-    if (inner === null) return null;
-    widest = Math.max(
-      widest,
-      inner + child.horizontalExtra + child.marginLeft + child.marginRight,
-    );
+    const contribution = exactContribution(child, fonts, false);
+    if (contribution === null) return null;
+    widest = Math.max(widest, contribution);
   }
   return widest;
 }
 
-/** Whether an inline box and what is in it are text that wraps. */
-function plainInline(box: Box): boolean {
-  if (box.style.whiteSpace !== 'normal') return false;
+/** Whether an inline box and what is in it wrap as the text around them
+ *  does. */
+function plainInline(box: Box, whiteSpace: string): boolean {
+  if (box.style.whiteSpace !== whiteSpace) return false;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    if (child.kind !== 'inline' || !plainInline(child)) return false;
+    if (child.kind !== 'inline' || !plainInline(child, whiteSpace)) {
+      return false;
+    }
   }
   return true;
 }

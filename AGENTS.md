@@ -2703,6 +2703,23 @@ documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
 at the one that failed, and `MOVING_SEEDS` sweeps documents of sticky,
 relative, transformed and scrolled boxes in blocks a layout keeps.
 
+**A flex box's min-content width is added up where it can be**
+(`exactMinContent`, `exactItems`, `exactContribution`): along a row its
+items' side by side and the gaps between them, down a column the widest, from
+each item's words, widths and edges, with no layout of it. A probe at no width
+found the same by laying all of it out: a webmail page's body took 44,000 boxes
+to find, a strip of 2,499 senders among them, twice a load. It answers or it
+turns down, and null is the probe, as a grid, a wrapped row, a flex basis and an
+edge that is a percentage of the room are. Three things are load-bearing. **A
+box no layout has reached has no lines**, and reads as nothing (`layoutSerial`
+0): a flex box asks about an item before its first layout. **What a layout that
+stops set aside is not in `children`** (`stopping`), and a size measured
+without it is kept for the box's life. And **what it answers is held to Chromium
+and not to the probe** (`test/html/min-contents.ts`, every width Chromium's):
+a probe reads the boxes it laid out, and is the one that is wrong where the two
+differ. So **anything new it answers joins that document**, whose cases are
+sized boxes rather than text, and regenerated rather than written.
+
 **A probe takes a block it laid out before in the same room for what it
 came to then** (`Stand`, `STOOD`): how far down it reached, the margin it
 left hanging, and what a walk of it read (`intrinsicWidth`), noted as it

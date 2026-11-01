@@ -968,7 +968,7 @@ function measureCell(box: Box, ctx: LayoutContext): void {
   box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
   // where its words say it exactly, read from the layout just made
   box.intrinsicMinContent =
-    (ctx.fonts && exactMinContent(box, ctx.fonts)) ??
+    (ctx.fonts && exactMinContent(box, ctx.fonts, ctx.stopping)) ??
     measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
 }
 
