@@ -1006,6 +1006,82 @@ metric(
   },
 );
 
+/** A list of changes told, and what it drew held to a build. */
+async function toldAsBuilt(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  changes: HtmlChange[],
+  name: string,
+): Promise<void> {
+  const was = await snapshot(result, el);
+  el.touchDocument(changes);
+  const drawn = await snapshot(result, el);
+  assert.ok(bytesApart(drawn, was) > 0, `${name}: drawn as it was`);
+  assert.strictEqual(
+    bytesApart(drawn, await rebuilt(result, el)),
+    0,
+    `${name}: not as a build draws it`,
+  );
+}
+
+const set = (
+  target: Element,
+  attributeName: string,
+  value: string,
+): HtmlChange => {
+  const oldValue = target.attribs[attributeName] ?? null;
+  target.attribs[attributeName] = value;
+  return { type: 'attributes', target, attributeName, oldValue };
+};
+
+test('a drawing a change points at an id that moved with it finds what goes by it now', async () => {
+  // nothing named `there` as it moved, so no drawing was reached by it, and
+  // the `<use>` looked for it in the ids the build had
+  const { result, node } = await render(
+    '<style>body{margin:0} svg{display:block} .k{fill:#0000ff}</style>' +
+      '<svg style="display:none"><rect id="soon" class="k" width="24"' +
+      ' height="24"/><rect id="x" width="24" height="24"/></svg>' +
+      drawing('d', '<use id="u" href="#x"/>'),
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  await toldAsBuilt(
+    result,
+    el,
+    [
+      set(byId(el, 'soon'), 'id', 'there'),
+      set(byId(el, 'u'), 'href', '#there'),
+    ],
+    'moved',
+  );
+});
+
+test('a drawing a change is in is reached by what else the change does to what it names', async () => {
+  // told of what is in it, it forgot what it named before it was asked, and
+  // the copy of its `<use>` went on matching what it had
+  const { result, node } = await render(
+    '<style>body{margin:0} svg{display:block} .k{fill:#ff0000}' +
+      '.k.on{fill:#0000ff}</style>' +
+      '<svg style="display:none"><symbol id="s" viewBox="0 0 24 24">' +
+      '<rect id="in-s" class="k" width="24" height="24"/></symbol></svg>' +
+      drawing('d', '<rect id="r" width="12" height="24"/><use href="#s"/>'),
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  await snapshot(result, el);
+  await toldAsBuilt(
+    result,
+    el,
+    [
+      set(byId(el, 'r'), 'fill', '#00aa00'),
+      set(byId(el, 'in-s'), 'class', 'k on'),
+    ],
+    'both',
+  );
+});
+
 metric(
   'a shape a change reaches builds the boxes of a drawing with a <foreignObject>, whose HTML is styled from its elements down',
   async (t) => {
@@ -3573,14 +3649,39 @@ function markupFor(
     }
     return `<${tag}${attrs}>${inner}</${tag}>`;
   };
-  let body = '';
+  let body = drawings ? spriteFor(next) : '';
   for (let i = 0; i < 4; i += 1) body += element(0);
   return body;
 }
 
+/** The most any byte of two pictures differs by: a raster is a level off
+ *  the paths it was set from at an edge of theirs. */
+function levelsApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let most = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    most = Math.max(most, Math.abs(a[i] - b[i]));
+  }
+  return most;
+}
+
+/** What a document's drawings name and draw none of themselves, in a drawing
+ *  with no box: a symbol, a gradient and the gradient that takes its stops. */
+function spriteFor(next: () => number): string {
+  const classes = () => {
+    const names = CLASSES.filter(() => next() < 0.3).join(' ');
+    return names ? ` class="${names}"` : '';
+  };
+  return (
+    '<svg style="display:none"><symbol id="sym" viewBox="0 0 9 9">' +
+    `<rect${classes()} width="9" height="9" fill="#00aa00"/></symbol>` +
+    `<linearGradient id="base"><stop${classes()} stop-color="#0000ff"/>` +
+    '</linearGradient><linearGradient id="grad" href="#base"/></svg>'
+  );
+}
+
 /** An inline drawing, with a gradient of its own that one of its shapes
- *  names. What another drawing names is left out: a change inside that is
- *  no change to the drawing that names it. */
+ *  names, and what it may name of `spriteFor`'s and of an earlier drawing's:
+ *  a change to one of those is one to every drawing that names it. */
 function drawingFor(next: () => number, id: number): string {
   const classes = () => {
     const names = CLASSES.filter(() => next() < 0.3).join(' ');
@@ -3590,11 +3691,21 @@ function drawingFor(next: () => number, id: number): string {
     next() < 0.5
       ? `<rect${classes()} width="9" height="9"/>`
       : `<circle${classes()} r="4" cx="4" cy="4"/>`;
+  let named = '';
+  if (next() < 0.5) named += '<use href="#sym" x="10" width="9" height="9"/>';
+  if (next() < 0.5) {
+    named += '<rect fill="url(#grad)" y="10" width="9" height="9"/>';
+  }
+  if (id > 0 && next() < 0.5) {
+    named +=
+      `<rect fill="url(#d${Math.floor(next() * id)})" x="10" y="10"` +
+      ' width="9" height="9"/>';
+  }
   return (
     `<svg${classes()} width="20" height="20">${shape()}<g${classes()}>` +
     `${shape()}</g><linearGradient id="d${id}"><stop${classes()}` +
     ` stop-color="#ff0000"/></linearGradient><rect fill="url(#d${id})"` +
-    ' width="9" height="9"/></svg>'
+    ` width="9" height="9"/>${named}</svg>`
   );
 }
 
@@ -3656,18 +3767,25 @@ function outsideDrawings(el: Element): boolean {
 }
 
 /** What the rules give the shapes of each drawing in `body`, which is what
- *  its next paint reads, or asks for where it never asked. */
+ *  its next paint reads, or asks for where it never asked. Not of one no
+ *  paint reaches, hidden or below the window `render` makes: it has read
+ *  nothing, so nothing says what it names, and it asks when it is shown. */
 function shapesOf(el: HtmlViewNode, body: Element): string[] {
   const view = el as unknown as {
     _tree: { shapeStyler(box: unknown): { key: string } | null };
-    _firstBoxesOf(tree: unknown): Map<Element, unknown>;
+    _firstBoxesOf(
+      tree: unknown,
+    ): Map<Element, { style: { visibility: string } }>;
   };
   const boxes = view._firstBoxesOf(view._tree);
   return elementsIn(body)
     .filter((e) => e.name === 'svg')
     .map((e, i) => {
       const box = boxes.get(e);
-      return `${i} ${box ? (view._tree.shapeStyler(box)?.key ?? '') : 'no box'}`;
+      if (!box) return `${i} no box`;
+      const shown =
+        box.style.visibility === 'visible' && el.elementRect(e)!.y < 600;
+      return `${i} ${shown ? (view._tree.shapeStyler(box)?.key ?? '') : 'unseen'}`;
     });
 }
 
@@ -3739,15 +3857,19 @@ function changeOne(
   forgetOld: boolean,
   parts = false,
 ): HtmlChange[] {
-  // a change to what a drawing names reaches no other drawing that names
-  // it yet, as a rule's reach from outside it does: what names one stays
-  // with it
-  const all = elementsIn(body).filter(
-    (e) => e.name !== 'linearGradient' && e.name !== 'stop' && !e.attribs.fill,
-  );
+  const all = elementsIn(body);
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const inside = all.slice(1);
+  // an attribute a shape draws with, which no selector need read
+  const paints = inside.filter((e) => e.attribs.fill || e.name === 'stop');
+  if (paints.length && next() < 0.25) {
+    const target = pick(paints);
+    const name = target.name === 'stop' ? 'stop-color' : 'fill';
+    const was = target.attribs[name] ?? null;
+    target.attribs[name] = pick(INKS);
+    return [{ type: 'attributes', target, attributeName: name, oldValue: was }];
+  }
   const kind = Math.floor(next() * 8);
   if (kind === 0 || kind === 1) {
     // a class toggled — where rules cross trees' edges, a host's or one of
@@ -5679,7 +5801,15 @@ async function refreshesAgree(
     const bodyEl = el.document.children.find(
       (n) => (n as Element).name === 'body',
     ) as Element;
-    if (drawings) shapesOf(el, bodyEl);
+    // none where the changes left the document with no height
+    const picture = async (): Promise<Uint8ClampedArray> => {
+      await act();
+      return (el as unknown as { abs: { height: number } }).abs.height > 0
+        ? snapshot(result, el)
+        : new Uint8ClampedArray();
+    };
+    // painted, as what a drawing names is known of one that has been
+    if (drawings) await picture();
     for (let step = 0; step < 8; step += 1) {
       const changes: HtmlChange[] = [];
       const batch = 1 + Math.floor(next() * 3);
@@ -5718,14 +5848,21 @@ async function refreshesAgree(
       if (scope) ways[way] += 1;
       const scoped = stylesOf(el, bodyEl);
       const shapes = drawings ? shapesOf(el, bodyEl) : [];
+      const drawn = drawings ? await picture() : null;
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
+      const tagged = (n: unknown): string => {
+        const e = n as Element;
+        return `<${e.name} ${JSON.stringify(e.attribs)}>`;
+      };
       const told = (): string =>
         changes
           .map((c) =>
             c.type === 'attributes'
               ? `${c.attributeName} of <${c.target.name} ${JSON.stringify(c.target.attribs)}> was ${JSON.stringify(c.oldValue)}`
-              : c.type,
+              : c.type === 'childList'
+                ? `${c.addedNodes.map(tagged)} in and ${c.removedNodes.map(tagged)} out of ${tagged(c.target)}`
+                : c.type,
           )
           .join(', ') + ` (${way})`;
       if (drawings) {
@@ -5733,6 +5870,16 @@ async function refreshesAgree(
           shapes,
           shapesOf(el, bodyEl),
           `seed ${seed}, step ${step}: what a shape is given\nrules\n${css}\n` +
+            `changes ${told()}\nin ${source}`,
+        );
+        const after = await picture();
+        // as far as both reach: core takes the document's new height a pass
+        // after what is in it
+        const shared = Math.min(drawn!.length, after.length);
+        assert.ok(
+          levelsApart(drawn!.subarray(0, shared), after.subarray(0, shared)) <=
+            1,
+          `seed ${seed}, step ${step}: what is drawn\nrules\n${css}\n` +
             `changes ${told()}\nin ${source}`,
         );
       }

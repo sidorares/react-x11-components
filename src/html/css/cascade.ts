@@ -2284,15 +2284,13 @@ export class ShapeCopies {
     ComputedStyle,
     Map<Element, { into: Map<Element, ShapeStyle> | null; key: string }>
   >();
-  constructor(public byId: (id: string) => Element | null) {}
+  constructor(readonly byId: (id: string) => Element | null) {}
 
-  /** All of it forgotten, the ids looked up in `byId` from now on: what a
-   *  `<use>` names came, or grew, in a stream's chunk, which builds none
-   *  of the drawings that name it (`HtmlViewNode._parsedChanges`). */
-  forget(byId: (id: string) => Element | null): void {
+  /** All of it forgotten: what a `<use>` names came, grew or changed, which
+   *  builds none of the drawings that name it. */
+  forget(): void {
     this.matched.clear();
     this.resolved = new WeakMap();
-    this.byId = byId;
   }
 }
 
