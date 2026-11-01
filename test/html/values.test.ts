@@ -3011,6 +3011,137 @@ for (const [scale, rendered] of [
   );
 }
 
+/**
+ * Absolute boxes placed against an inline box, whose size is that of its
+ * fragments and which keeps no rectangle. No text, so that no row reads a
+ * font: its height is its padding, 10px, and its width what is in it. The
+ * rows are left, top, right, bottom, width, height, and the left and right
+ * margins, each what Chrome 156 answers for this document.
+ */
+const INLINE_CB_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 0/0 serif }' +
+  '.w { width: 200px }' +
+  '.r { position: relative; padding: 5px 0 }' +
+  '.f { display: inline-block; width: 40px; height: 10px }' +
+  '.t { position: absolute; left: 5px; top: 2px; width: 10px; height: 3px }' +
+  '#pct { left: 5px; top: 0; width: 25%; height: 50%; margin-left: 10% }' +
+  '#ends { left: auto; top: auto; right: 0; bottom: 0 }' +
+  '#both { right: 6px; bottom: 3px; width: auto; height: auto }' +
+  '#stat { left: auto; top: auto }' +
+  '#marg { margin: 3px 4px }' +
+  '#auto { left: 0; right: 0; margin: 0 auto }' +
+  '.pad { padding: 5px 7px; border: 1px solid }' +
+  '.moved { left: 7px; top: 3px }' +
+  '.thin { width: 50px }' +
+  '.rtl { direction: rtl }' +
+  '.big { zoom: 2 }' +
+  '.b::before { content: ""; position: absolute; left: 5px; top: 2px; width: 25%; height: 3px; margin-left: 10% }' +
+  '.bare { position: relative }' +
+  '.bare::before { content: ""; position: absolute; left: 5px; top: 0; width: 25%; height: 10px; margin-left: 10% }' +
+  '.bare-end::before { left: auto; top: auto; right: 0; bottom: 0; width: 30px; margin-left: 0 }' +
+  '.bare-pct::before { left: 0; top: 50%; width: 50%; height: 50%; margin-left: 0 }' +
+  '.text { font: 16px/20px serif }' +
+  '</style>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="filled"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="pct"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="ends"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="both"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="stat"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="marg"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="auto"></i></span></div>' +
+  '<div class="w"><span class="r pad"><b class="f"></b><i class="t" id="padded"></i></span></div>' +
+  '<div class="w"><span class="r moved"><b class="f"></b><i class="t" id="shifted"></i></span></div>' +
+  '<div class="w thin"><span class="r"><b class="f"></b><b class="f"></b><i class="t" id="wrapped"></i></span></div>' +
+  '<div class="w thin"><span class="r"><i class="t" id="first"></i><b class="f"></b><b class="f"></b></span></div>' +
+  '<div class="w rtl"><span class="r"><b class="f"></b><i class="t" id="rtl"></i></span></div>' +
+  '<div class="w big"><span class="r"><b class="f"></b><i class="t" id="zoomed"></i></span></div>' +
+  '<div class="w"><span class="r b" id="before"><b class="f"></b></span></div>' +
+  '<div class="w"><span class="bare" id="empty"></span></div>' +
+  '<div class="w"><span class="bare bare-end" id="empty-end"></span></div>' +
+  '<div class="w"><span class="bare bare-pct" id="empty-pct"></span></div>' +
+  '<div class="w"><span class="bare" id="empty-space"> </span></div>' +
+  '<div class="w text"><span class="bare" id="empty-text"></span></div>';
+
+const INLINE_CB_ROWS: [string, 'before' | null, string][] = [
+  ['filled', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['pct', null, '5px 0px 21px 5px 10px 5px 4px 0px'],
+  ['ends', null, '30px 7px 0px 0px 10px 3px 0px 0px'],
+  ['both', null, '5px 2px 6px 3px 29px 5px 0px 0px'],
+  ['stat', null, '40px -5px -10px 12px 10px 3px 0px 0px'],
+  ['marg', null, '5px 2px 17px -1px 10px 3px 4px 4px'],
+  ['auto', null, '0px 2px 0px 5px 10px 3px 15px 15px'],
+  ['padded', null, '5px 2px 39px 5px 10px 3px 0px 0px'],
+  ['shifted', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['wrapped', null, '5px 2px 25px 15px 10px 3px 0px 0px'],
+  ['first', null, '5px 2px 25px 15px 10px 3px 0px 0px'],
+  ['rtl', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['zoomed', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['before', 'before', '5px 2px 21px 5px 10px 3px 4px 0px'],
+  ['empty', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+  ['empty-end', 'before', '-30px -10px 0px 0px 30px 10px 0px 0px'],
+  ['empty-pct', 'before', '0px 0px 0px 0px 0px 0px 0px 0px'],
+  ['empty-space', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+  ['empty-text', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `an absolute box placed against an inline box reads the insets it was placed by, at ${scale}`,
+    async () => {
+      const { node } = await rendered(INLINE_CB_PAGE, 400);
+      const el = view(node);
+      const read = [
+        'left',
+        'top',
+        'right',
+        'bottom',
+        'width',
+        'height',
+        'margin-left',
+        'margin-right',
+      ];
+      const wrong: string[] = [];
+      for (const [id, pseudo, want] of INLINE_CB_ROWS) {
+        const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+        const got = read.map((name) => style[name]).join(' ');
+        if (got !== want) wrong.push(`${id}: ${got}, Chrome ${want}`);
+      }
+      assert.deepStrictEqual(wrong, []);
+    },
+  );
+}
+
+metric(
+  'the insets read against an inline box stand once a scroll moves it',
+  async () => {
+    // what is placed in the inline box and the inline box scroll together, so
+    // what the one is to the other stays as it was
+    const { node } = await render(
+      '<!doctype html><style>' +
+        'body { margin: 0; font: 0/0 serif }' +
+        '#list { width: 200px; height: 20px; overflow: auto }' +
+        '#tall { height: 100px }' +
+        '.r { position: relative; padding: 5px 0 }' +
+        '.f { display: inline-block; width: 40px; height: 10px }' +
+        '#t { position: absolute; left: 5px; top: 2px; width: 10px; height: 3px }' +
+        '</style><div id="list"><div id="tall"><span class="r"><b class="f"></b>' +
+        '<i id="t"></i></span></div></div>',
+    );
+    const el = view(node);
+    const insets = () => {
+      const style = el.computedStyle(findById(el.document, 't')!)!;
+      return ['left', 'top', 'right', 'bottom'].map((side) => style[side]);
+    };
+    assert.deepStrictEqual(insets(), ['5px', '2px', '25px', '5px']);
+    el.scrollElementTo(findById(el.document, 'list')!, { y: 30 });
+    assert.deepStrictEqual(insets(), ['5px', '2px', '25px', '5px']);
+  },
+);
+
 test('the margins of the root box read as laid out', async () => {
   // Chrome 156, in a window 400 wide
   const { node } = await render(

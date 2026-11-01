@@ -3228,7 +3228,10 @@ a share of what the line leaves free, and across it what the item leaves of
 the line. A line is found from where Yoga put its items (`itemLines`), and a
 row that wraps has the height of each worked out (`rowLineSizes`), so anything
 new told to Yoga that moves an item along a line or sizes one is read from the
-node there, as a baseline's margin is. **An inline box reads as it computes** (`UsedBox.inline`,
+node there, as a baseline's margin is. An inline box keeps no rectangle, and an
+offset moves what is placed in it and not the lines it could be worked out from
+again, so `positionedIn` notes where a box stands in one (`PLACED_IN_INLINE`).
+**An inline box reads as it computes** (`UsedBox.inline`,
 `resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
 with no rectangle of its own. And **what takes the computed value asks no
 box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`), a

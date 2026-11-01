@@ -5133,10 +5133,12 @@ so as in
 Chrome its percentage margins, padding and offsets stay percentages. The
 first frame `getKeyframes()` makes up takes the computed `width` and reads no
 box, and a `::before` a dragged width set aside reads as its rules compute
-it, its box being a width ago. One read is still not Chrome's: the opposite
-insets of an absolute box placed against an inline box stay `auto`. And Chrome
-reads a length in sixty-fourths of a pixel, so the third of a line it shares
-out reads `23.3281px` there and `23.333px` here.
+it, its box being a width ago. An absolute box placed against an inline box
+reads the insets it was placed by, in the padding box around that box's
+fragments; one with nothing in it is as high as a fragment and has no width
+where it is on a line, and is of no size where it is on none. One read is
+still not Chrome's: Chrome reads a length in sixty-fourths of a pixel, so the
+third of a line it shares out reads `23.3281px` there and `23.333px` here.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)
