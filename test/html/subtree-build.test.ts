@@ -2601,6 +2601,52 @@ metric(
 );
 
 metric(
+  'the last frame taken out leaves what no frame held as a whole build lays it out',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }' +
+        '.r { writing-mode: vertical-rl; height: 60px }' +
+        '.g { display: grid; width: 30px; writing-mode: vertical-lr }' +
+        '</style></head><body><section><p id="p" class="r">x</p>' +
+        '<div class="g">one two three</div></section></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const frame = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'p',
+    )!;
+    const section = frame.parent as unknown as Element;
+    removeNode(frame as unknown as ChildNode);
+    const build = internals._subtreeBuild;
+    let built: BoxTree | null = null;
+    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+      built = build.apply(this, a);
+      return built;
+    };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: section,
+        addedNodes: [],
+        removedNodes: [frame],
+      },
+    ]);
+    await act();
+    assert.ok(built, 'the section was built apart');
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
+metric(
   'a script put in that a page then gives a display draws its text, where a build of all new boxes does',
   async () => {
     const { node } = await render(

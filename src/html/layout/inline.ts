@@ -70,7 +70,13 @@ import type {
   TextLayoutLike,
 } from './boxes.js';
 import type { FloatContext } from './floats.js';
-import { FRAMES, framed, setUpright, uprightInMixed } from './writing.js';
+import {
+  FRAMES,
+  framed,
+  inFrame,
+  setUpright,
+  uprightInMixed,
+} from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
 import type { PrettySetting } from './pretty.js';
@@ -588,7 +594,8 @@ function linesOf(
   // the characters a vertical line sets upright, each in an em of its own
   // (`uprightItems`); and `vertical-lr`'s lines, made a piece at a time so
   // that each can be put back across the frame alone (`reflectFrame`)
-  const vertical = framed.any && block.style.writingMode !== 'horizontal-tb';
+  const vertical =
+    framed.any && block.style.writingMode !== 'horizontal-tb' && inFrame(block);
   if (vertical) uprightItems(items, fonts);
   const apart = vertical && block.style.writingMode === 'vertical-lr';
   if (wraps(block.style)) holdNoWrap(items, block);

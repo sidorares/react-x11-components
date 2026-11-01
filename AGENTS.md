@@ -5520,7 +5520,11 @@ block axis, which is the root's intrinsic width at its least and its most
   and in `paintLinePart` — asks it first, so a document in no vertical mode
   pays a boolean. Anything new that lays out or paints a tree from another
   entry sets it there; anything new that asks a box whether it is a frame's
-  asks it first.
+  asks it first. **It says there may be a frame, and nothing of a box**: it
+  stays true after a build of subtrees takes the last frame out, and a grid
+  or a flex box in a vertical writing mode makes none at all. So a box's
+  writing mode counts only where a frame holds the box (`inFrame`), or what
+  such a box is laid out as turns on a frame somewhere else on the page.
 - **The root is a formatting context of its own with no baseline across
   its line** (`establishesBFC`, `lastBaselineIn`, `firstBaselineIn`): an
   inline-block one sits on its bottom margin edge. Its words say nothing of
