@@ -14908,9 +14908,8 @@ export function installDom(
   // `@font-face` rules declare, which `<Html>` loads — where a style wants
   // one, or where `load()` asks — and tells the page of through
   // `__fontsLoaded` and `__fontsSettled`. A face a script makes with `new
-  // FontFace` is not among them: nothing hands its data to the document's
-  // fonts yet, so there is no `FontFace` to construct, and `add()` takes
-  // none.
+  // FontFace` is the host's too, by a number (`fontFaceNew`), and joins the
+  // document's with `document.fonts.add`.
 
   let fontSeq = 0;
   /** The `load()`s waiting on `<Html>`, by id. */
@@ -14919,6 +14918,8 @@ export function installDom(
   const fontSettles = new Map<number, () => void>();
   const NETWORK_ERROR = () =>
     new DOMException('A network error occurred.', 'NetworkError');
+  /** The faces `new FontFace` made, by the number the host has them by. */
+  const scriptFaces = new Map<number, Any>();
 
   /**
    * A face of the document's, as `document.fonts` hands it over (CSS Font
@@ -14926,26 +14927,80 @@ export function installDom(
    * `<Html>`'s. One object a face, for as long as the document declares it
    * as it does (`FontFaceSet._face`). A descriptor a page sets reads back,
    * and changes nothing of the document's face.
+   *
+   * Or a face a page's script made (2.1.1), whose status is its own, held
+   * here and told by the host (`__fontFaceDone`), and which is the
+   * document's once `document.fonts.add` has it.
    */
   class FontFace {
-    _set: Any;
-    _key: string;
-    _desc: Record<string, string>;
+    _set: Any = null;
+    _key = '';
+    _desc: Record<string, string> = {};
     /** Its `loaded`, made as it is first asked for. */
     _loaded: Any = null;
     _settle: [Any, Any] | null = null;
-    constructor(set: Any, key: string, desc: Record<string, string>) {
-      this._set = set;
-      this._key = key;
-      this._desc = {
-        display: 'auto',
-        featureSettings: 'normal',
-        variationSettings: 'normal',
-        ascentOverride: 'normal',
-        descentOverride: 'normal',
-        lineGapOverride: 'normal',
-        ...desc,
-      };
+    /** The number the host has a script's face by, 0 for a rule's. */
+    _script = 0;
+    _status = 'unloaded';
+    /** The document whose base its URLs are read against, and who loads
+     *  it. */
+    _doc: Any = null;
+    constructor(family: Any, source: Any, descriptors: Any = {}) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'FontFace': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const desc: Record<string, string> = { ...FACE_DEFAULTS };
+      const init: Record<string, string> = {};
+      for (const key of Object.keys(FACE_DEFAULTS)) {
+        const value = descriptors?.[key];
+        if (value === undefined) continue;
+        desc[key] = str(value);
+        init[key] = desc[key];
+      }
+      desc.family = str(family);
+      this._desc = desc;
+      this._script = fontSeq += 1;
+      this._doc = document;
+      scriptFaces.set(this._script, this);
+      // made here, and a rejection nobody asked for is no unhandled one
+      this._loaded = new Promise((resolve, reject) => {
+        this._settle = [resolve, reject];
+      });
+      this._loaded.catch(() => {});
+      const bytes = ArrayBuffer.isView(source)
+        ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+        : source instanceof ArrayBuffer
+          ? new Uint8Array(source)
+          : null;
+      const made = call(
+        'fontFaceNew',
+        this._doc._id,
+        this._script,
+        JSON.stringify({
+          family: desc.family,
+          src: bytes ? null : str(source),
+          init,
+        }),
+        bytes ? base64OfBytes(bytes) : null,
+      );
+      if (made !== true) {
+        this._status = 'error';
+        this._settle?.[1](
+          new DOMException(
+            "Failed to construct 'FontFace': The source or a descriptor could not be parsed.",
+            'SyntaxError',
+          ),
+        );
+        this._settle = null;
+      } else if (bytes) this._startLoad();
+    }
+    /** A script's face starts to load, once. */
+    _startLoad(): void {
+      this._status = 'loading';
+      this._set?._faceLoading(this);
+      call('fontFaceLoad', this._doc._id, this._script);
     }
     get family(): string {
       return this._desc.family;
@@ -15014,7 +15069,9 @@ export function installDom(
       this._desc.lineGapOverride = str(v);
     }
     get status(): string {
-      return this._set._statuses().get(this._key) ?? 'error';
+      return this._script
+        ? this._status
+        : (this._set._statuses().get(this._key) ?? 'error');
     }
     /** Settles once the face has loaded, or could not: pending while
      *  nothing has asked for it. */
@@ -15034,6 +15091,10 @@ export function installDom(
       return this._loaded;
     }
     load(): Any {
+      if (this._script) {
+        if (this._status === 'unloaded') this._startLoad();
+        return this._loaded;
+      }
       const loaded = this.loaded;
       if (this._settle) this._set._loadFaces([this]).catch(() => {});
       return loaded;
@@ -15043,8 +15104,46 @@ export function installDom(
       const settle = this._settle;
       if (!settle) return;
       this._settle = null;
+      if (this._script) this._status = ok ? 'loaded' : 'error';
       if (ok) settle[0](this);
       else settle[1](NETWORK_ERROR());
+      if (this._script) this._set?._faceDone(this, ok);
+    }
+  }
+  const FACE_DEFAULTS: Record<string, string> = {
+    style: 'normal',
+    weight: 'normal',
+    stretch: 'normal',
+    unicodeRange: 'U+0-10FFFF',
+    display: 'auto',
+    featureSettings: 'normal',
+    variationSettings: 'normal',
+    ascentOverride: 'normal',
+    descentOverride: 'normal',
+    lineGapOverride: 'normal',
+  };
+  /** A face of the document's own rules, for as long as it declares it. */
+  const ruleFace = (
+    set: Any,
+    key: string,
+    desc: Record<string, string>,
+  ): Any => {
+    const face = Object.create(FontFace.prototype);
+    face._set = set;
+    face._key = key;
+    face._desc = { ...FACE_DEFAULTS, ...desc };
+    face._loaded = null;
+    face._settle = null;
+    face._script = 0;
+    return face;
+  };
+
+  /** What a `document.fonts` event says loaded, or failed to (2.3). */
+  class FontFaceSetLoadEvent extends Event {
+    readonly fontfaces: readonly Any[];
+    constructor(type: Any, init: Any = {}) {
+      super(type, init);
+      this.fontfaces = Object.freeze(Array.from(init?.fontfaces ?? []));
     }
   }
 
@@ -15052,6 +15151,12 @@ export function installDom(
   class FontFaceSet extends EventTarget {
     _doc: Any;
     _faces = new Map<string, Any>();
+    /** The faces a script put here, in the order it did. */
+    _added = new Set<Any>();
+    /** What came of a script's faces since the set last started loading,
+     *  which `loadingdone` and `loadingerror` say. */
+    _came: Any[] = [];
+    _failed: Any[] = [];
     /** The `load()`s on their way to `<Html>` and back. */
     _loading = 0;
     /** What waits for the next of them to come back. */
@@ -15071,17 +15176,60 @@ export function installDom(
     _list(): Any[] {
       return JSON.parse(str(call('fontFaces', this._doc._id)) || '[]');
     }
-    /** The faces as objects, one a face. */
+    /** The faces as objects, one a face: the document's rules', then what
+     *  a script put here. */
     _all(): Any[] {
-      return this._list().map((d: Any) => this._face(d));
+      const rules = this._list()
+        .map((d: Any) => this._face(d))
+        .filter((face: Any) => !face._script);
+      return [...rules, ...this._added];
     }
     _face(desc: Any): Any {
+      if (desc.script) {
+        const made = scriptFaces.get(desc.script);
+        if (made) {
+          made._key = desc.key;
+          return made;
+        }
+      }
       let face = this._faces.get(desc.key);
       if (!face) {
         const { key, status: _status, ...rest } = desc;
-        this._faces.set(key, (face = new FontFace(this, key, rest)));
+        this._faces.set(key, (face = ruleFace(this, key, rest)));
       }
       return face;
+    }
+    /** A script's face here has started to load: the set is loading, and
+     *  says so where nothing here was (2.5, "switch the FontFaceSet to
+     *  loading"). */
+    _faceLoading(_face: Any): void {
+      if (!this._loading) {
+        dispatch(this, trusted(new FontFaceSetLoadEvent('loading')));
+      }
+      this._loading += 1;
+    }
+    /** A script's face here has loaded, or could not. */
+    _faceDone(face: Any, ok: boolean): void {
+      (ok ? this._came : this._failed).push(face);
+      this._loading -= 1;
+      for (const fn of this._afterLoad.splice(0)) fn();
+      if (this._loading) return;
+      const came = this._came;
+      const failed = this._failed;
+      this._came = [];
+      this._failed = [];
+      dispatch(
+        this,
+        trusted(new FontFaceSetLoadEvent('loadingdone', { fontfaces: came })),
+      );
+      if (failed.length) {
+        dispatch(
+          this,
+          trusted(
+            new FontFaceSetLoadEvent('loadingerror', { fontfaces: failed }),
+          ),
+        );
+      }
     }
     /** The keys of the faces a `font` matches, or null for a `font` that
      *  is none. */
@@ -15174,9 +15322,20 @@ export function installDom(
               );
               return;
             }
-            const all = new Map(this._all().map((f: Any) => [f._key, f]));
+            const all = new Map<string, Any>(
+              this._all().map((f: Any) => [f._key, f]),
+            );
             const faces = keys.map((k) => all.get(k)).filter(Boolean);
-            this._loadFaces(faces).then(resolve, reject);
+            // what a script handed over or asked for needs nothing of the
+            // host's: its own load settles it
+            const ownLoads = faces
+              .filter((f) => f._script)
+              .map((f) => f.load());
+            const rules = faces.filter((f) => !f._script);
+            Promise.all([this._loadFaces(rules), ...ownLoads]).then(
+              () => resolve(faces),
+              reject,
+            );
           } catch (error) {
             reject(error);
           }
@@ -15196,9 +15355,14 @@ export function installDom(
       return keys.every((k) => statuses.get(k) === 'loaded');
     }
     get size(): number {
-      return this._list().length;
+      return this._all().length;
     }
     has(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'has' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
       return this._all().includes(face);
     }
     forEach(fn: Any, thisArg?: Any): void {
@@ -15218,24 +15382,42 @@ export function installDom(
     [Symbol.iterator](): Any {
       return this.values();
     }
-    /** Every face here is its rule's, which a script cannot add again;
-     *  and one it makes is none of this document's yet (above). */
+    /** A face a script made joins the document's; a rule's is one already,
+     *  which a script cannot add again (2.5.1). */
     add(face: Any): Any {
-      if (face instanceof FontFace) {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!face._script) {
         throw new DOMException(
           "Failed to execute 'add' on 'FontFaceSet': Cannot add a CSS-connected FontFace.",
           'InvalidModificationError',
         );
       }
-      throw new TypeError(
-        "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
-      );
+      if (this._added.has(face)) return this;
+      this._added.add(face);
+      face._set = this;
+      call('fontFaceAdd', this._doc._id, face._script, true);
+      if (face._status === 'loading') this._faceLoading(face);
+      return this;
     }
-    /** A rule's face is not taken out by a script (2.5.1). */
-    delete(_face: Any): boolean {
-      return false;
+    /** Only what a script put here is taken out (2.5.1). */
+    delete(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'delete' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!this._added.delete(face)) return false;
+      face._set = null;
+      call('fontFaceAdd', this._doc._id, face._script, false);
+      return true;
     }
-    clear(): void {}
+    clear(): void {
+      for (const face of [...this._added]) this.delete(face);
+    }
   }
 
   // --- the document --------------------------------------------------------------
@@ -20962,6 +21144,9 @@ export function installDom(
       for (const go of later) go();
     }
   }
+  handlerProperty(FontFaceSet.prototype, 'loading');
+  handlerProperty(FontFaceSet.prototype, 'loadingdone');
+  handlerProperty(FontFaceSet.prototype, 'loadingerror');
   handlerProperty(ServiceWorker.prototype, 'statechange');
   handlerProperty(ServiceWorker.prototype, 'error');
   class ServiceWorkerRegistration extends EventTarget {
@@ -29320,6 +29505,9 @@ export function installDom(
     TreeWalker,
     NodeIterator,
     DOMParser,
+    FontFace,
+    FontFaceSet,
+    FontFaceSetLoadEvent,
     PerformanceObserver,
     MessageEvent,
     MessageChannel,
@@ -31252,6 +31440,13 @@ export function installDom(
     done(Array.isArray(loaded) ? loaded : []);
     return true;
   });
+  entry('__fontFaceDone', () => {
+    const [id, ok] = input();
+    const face = scriptFaces.get(id);
+    if (!face) return false;
+    face._done(ok === true);
+    return true;
+  });
   entry('__fontsSettled', () => {
     const [id] = input();
     const done = fontSettles.get(id);
@@ -32051,7 +32246,6 @@ export function installDom(
     // and the interfaces no global names, reached through a getter alone:
     // `document.fonts`'s, and the faces it hands over
     markFn(FontFaceSet, 8);
-    markFn(FontFace, 8);
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {

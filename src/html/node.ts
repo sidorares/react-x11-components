@@ -3281,7 +3281,7 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => xHeightOf(fonts, face) : null,
         fonts ? (face) => zeroWidthOf(fonts, face) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
-        faces.length ? this._webFonts : null,
+        faces.length || this._webFonts.scripted ? this._webFonts : null,
         null,
         this._target,
         shadows,
@@ -7142,6 +7142,19 @@ export class HtmlViewNode extends Node {
   /** Load faces by key, as `FontFace.load()` does (`WebFonts.load`). */
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
+  }
+
+  /** The document's fonts, where a page's `new FontFace` goes. */
+  scriptFonts(): WebFonts {
+    return this._webFonts;
+  }
+
+  /** A face a page's script made joined the document's, or left: as a
+   *  sheet with an `@font-face` is, it changes what every family reads. */
+  scriptFontsChanged(id: number, added: boolean): void {
+    if (!this._webFonts.addFace(id, added)) return;
+    this._sheetsRead = null;
+    this._invalidate(Stale.Everything);
   }
 
   /** What `svg-geometry.ts` asks of the document: an element's text and

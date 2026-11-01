@@ -104,13 +104,14 @@ import {
 } from '../computed.js';
 import { fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
-import type { DocumentFontFace, FontMatch } from '../fonts.js';
-import type { Stylesheet } from '../css/parse.js';
+import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
+import type { FontFaceInit, Stylesheet } from '../css/parse.js';
 import {
   mediaMatches,
   parseDeclarations,
   parseMediaQuery,
   parseStylesheet,
+  scriptFontFace,
   selectorList,
   supportsCondition,
 } from '../css/parse.js';
@@ -390,6 +391,10 @@ export interface HandleInternals {
   loadFonts(keys: readonly string[]): Promise<boolean[]>;
   /** Settles once no face is on its way (`HtmlViewNode.fontsSettled`). */
   fontsSettled(): Promise<void>;
+  /** The document's fonts, where a page's `new FontFace` goes. */
+  scriptFonts(): WebFonts | null;
+  /** A face a page's script made joined the document's, or left. */
+  scriptFontsChanged(id: number, added: boolean): void;
   /** What `svg-geometry.ts` asks of the document. */
   svgMeasure(): SvgMeasure | null;
   /** The CSS animations under way on an element, or on what it holds as
@@ -4209,6 +4214,48 @@ export class DomHost {
         else tell(keys.map(() => false));
         return null;
       }
+      // a face `new FontFace` made, from what a script handed over: whether
+      // its family, its descriptors and its source can be read
+      case 'fontFaceNew': {
+        const fonts = this._fontsOf(a)?.scriptFonts?.();
+        const doc = this._node(a) as Document;
+        const root = doc.children?.find((k) => k instanceof Element);
+        if (!fonts || !root) return true;
+        const id = Number(b);
+        const { family, src, init } = JSON.parse(text(c)) as {
+          family: string;
+          src: string | null;
+          init: FontFaceInit;
+        };
+        const rule = scriptFontFace(
+          family,
+          src,
+          typeof d === 'string' ? Buffer.from(d, 'base64') : null,
+          init,
+          this._seams.handle.base ?? this.url,
+        );
+        if (!rule) return false;
+        fonts.makeFace(id, rule, root as Element, (ok) =>
+          this._faceDone(id, ok),
+        );
+        return true;
+      }
+      case 'fontFaceLoad': {
+        const id = Number(b);
+        const fonts = this._fontsOf(a)?.scriptFonts?.();
+        if (!fonts) {
+          this._faceDone(id, false);
+          return null;
+        }
+        void fonts.loadFace(id).then(
+          (ok) => this._faceDone(id, ok),
+          () => this._faceDone(id, false),
+        );
+        return null;
+      }
+      case 'fontFaceAdd':
+        this._fontsOf(a)?.scriptFontsChanged?.(Number(b), c === true);
+        return null;
       // where what an inline drawing holds is (`svg-geometry.ts`)
       case 'svg': {
         this.flush();
@@ -5340,6 +5387,14 @@ export class DomHost {
    *  a frame's document is drawn by; null where nothing draws it. */
   /** The view that draws the document a page's `document.fonts` is of,
    *  by the document's id. */
+  /** What came of a load of a face a page's script made, told a microtask
+   *  later: a source already here settles inside the op that asked. */
+  private _faceDone(id: number, ok: boolean): void {
+    void Promise.resolve().then(() => {
+      if (!this._disposed) this.entries?.call('__fontFaceDone', [id, ok]);
+    });
+  }
+
   private _fontsOf(id: Primitive): Partial<HandleInternals> | null {
     return this._drawing(this._node(id)) as Partial<HandleInternals> | null;
   }
