@@ -2314,41 +2314,6 @@ metric(
   },
 );
 
-<<<<<<< HEAD
-test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
-  // pdf.js makes every request's signal with `any`
-  const doc = await hosted(
-    `<p id=out></p>
-     <script>
-       const a = new AbortController();
-       const b = new AbortController();
-       const any = AbortSignal.any([a.signal, b.signal]);
-       const nested = AbortSignal.any([any]);
-       const order = [];
-       a.signal.addEventListener('abort', () => order.push('a'));
-       any.onabort = () => order.push('any');
-       nested.addEventListener('abort', () => order.push('nested:' + nested.reason));
-       a.abort('why');
-       a.abort('again');
-       b.abort('later');
-       const out = {
-         order,
-         reasons: [any.aborted, any.reason, b.signal.reason],
-         done: AbortSignal.any([AbortSignal.abort('now')]).reason,
-         fields: ['aborted', 'reason', 'onabort'].filter((k) =>
-           Object.prototype.hasOwnProperty.call(any, k),
-         ),
-       };
-       for (const make of [
-         () => new AbortSignal(),
-         () => AbortSignal.any([1]),
-         () => AbortSignal.any(1),
-         () => AbortSignal.timeout(-1),
-       ]) {
-         try { make(); order.push('made'); }
-         catch (e) { order.push(e.name); }
-       }
-=======
 test('a drawing says where what it holds is: its boxes, its matrices and the length of its outlines', async () => {
   // mermaid measures every label with `getBBox`, and svg-pan-zoom moves a
   // drawing with `getCTM`, and neither is a thing any box stands for
@@ -2392,13 +2357,68 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
        out.point2 = [moved.x, moved.y];
        out.inverse = m($('s').getScreenCTM().inverse().multiply($('s').getScreenCTM()));
        out.viewBox = box($('s').viewBox.baseVal);
->>>>>>> origin/master
        document.getElementById('out').textContent = JSON.stringify(out);
      </script>`,
   );
   await settle();
   assert.deepEqual(JSON.parse(doc.text('out')), {
-<<<<<<< HEAD
+    kinds: [true, true, true, true, true, true, true, true],
+    bbox: [
+      [1, 2, 20, 10],
+      [2, 4, 53, 21],
+      [0, 0, 20, 15],
+    ],
+    // scale(2), then the translate, then the viewBox's 2
+    ctm: [4, 0, 0, 4, 20, 10],
+    screen: [4, 0, 0, 4, 50, 50],
+    rect: [54, 58, 80, 40],
+    lengths: [60, 31],
+    point: [21, 7],
+    text: [true, true],
+    point2: [14, 26],
+    inverse: [1, 0, 0, 1, 0, 0],
+    viewBox: [0, 0, 100, 50],
+  });
+});
+
+test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
+  // pdf.js makes every request's signal with `any`
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const a = new AbortController();
+       const b = new AbortController();
+       const any = AbortSignal.any([a.signal, b.signal]);
+       const nested = AbortSignal.any([any]);
+       const order = [];
+       a.signal.addEventListener('abort', () => order.push('a'));
+       any.onabort = () => order.push('any');
+       nested.addEventListener('abort', () => order.push('nested:' + nested.reason));
+       a.abort('why');
+       a.abort('again');
+       b.abort('later');
+       const out = {
+         order,
+         reasons: [any.aborted, any.reason, b.signal.reason],
+         done: AbortSignal.any([AbortSignal.abort('now')]).reason,
+         fields: ['aborted', 'reason', 'onabort'].filter((k) =>
+           Object.prototype.hasOwnProperty.call(any, k),
+         ),
+       };
+       for (const make of [
+         () => new AbortSignal(),
+         () => AbortSignal.any([1]),
+         () => AbortSignal.any(1),
+         () => AbortSignal.timeout(-1),
+       ]) {
+         try { make(); order.push('made'); }
+         catch (e) { order.push(e.name); }
+       }
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
     order: [
       'a',
       'any',
@@ -2586,27 +2606,6 @@ test('an XMLHttpRequest and its upload are XMLHttpRequestEventTargets', async ()
   ]);
 });
 
-=======
-    kinds: [true, true, true, true, true, true, true, true],
-    bbox: [
-      [1, 2, 20, 10],
-      [2, 4, 53, 21],
-      [0, 0, 20, 15],
-    ],
-    // scale(2), then the translate, then the viewBox's 2
-    ctm: [4, 0, 0, 4, 20, 10],
-    screen: [4, 0, 0, 4, 50, 50],
-    rect: [54, 58, 80, 40],
-    lengths: [60, 31],
-    point: [21, 7],
-    text: [true, true],
-    point2: [14, 26],
-    inverse: [1, 0, 0, 1, 0, 0],
-    viewBox: [0, 0, 100, 50],
-  });
-});
-
->>>>>>> origin/master
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

@@ -1946,7 +1946,6 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
-<<<<<<< HEAD
 **`execCommand` makes the edits a key makes, and no others**: `insertText`,
 `delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
 `selectAll`, in an editing host or a focused text field, each told as a
@@ -1959,7 +1958,6 @@ since nothing has been asked and nothing refused, and a name it does not know
 is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and `TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
-=======
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
 `getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
@@ -1968,7 +1966,6 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
->>>>>>> origin/master
 
 ### Cookies and storage
 
