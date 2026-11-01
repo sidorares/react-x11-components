@@ -894,6 +894,14 @@ no-cache`. A document, a page's own `fetch` and a redirect are not kept;
 where a redirect led is, under its own URL. The `log` option says `cached`
 for a response the cache answered and `revalidated` for a 304.
 
+**A body the network holds whole has a limit, `resourceBytes`** (256 MB by
+default): a script, a stylesheet, an image, a font, or a page's request for
+all of a response at once. Past it the request fails with
+`ERR_FILE_TOO_BIG`, and no part of the body is handed on, so a `<script>`
+hears `error` rather than parsing what came and throwing at its last line. A
+body a page reads as it arrives is handed on as it comes and has no limit,
+since a stream of events goes on for as long as the server sends it.
+
 **`observe(listener)` tells of each request as it goes**, for a
 developer's tools to draw a network log from (`HtmlNetworkActivity`): a
 document, a resource a document asked for and a page's own fetch, each by an

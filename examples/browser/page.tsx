@@ -1764,21 +1764,20 @@ async function loadDocument(
     });
   } catch (error) {
     if (signal.aborted) return;
-    const { message, code } =
-      error instanceof NetworkError
-        ? error
-        : {
-            message: String((error as Error)?.message ?? error),
-            code: 'ERR_FAILED',
-          };
-    return own(errorPage(target, message, code), null);
+    return own(errorPage(target, ...failure(error)), null);
   }
   if (signal.aborted) return;
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
   if (kind !== 'html') {
-    const bytes = await readAll(response.body, signal);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readAll(response.body, signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      return own(errorPage(target, ...failure(error)), null);
+    }
     if (signal.aborted) return;
     const url = viewSource ? `view-source:${response.url}` : response.url;
     if (kind === 'image') {
@@ -1802,14 +1801,19 @@ async function loadDocument(
   let head: Uint8Array = new Uint8Array(0);
   const iterator = response.body[Symbol.asyncIterator]();
   let ended = false;
-  while (head.length < 1024) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) return;
-    if (done) {
-      ended = true;
-      break;
+  try {
+    while (head.length < 1024) {
+      const { done, value } = await iterator.next();
+      if (signal.aborted) return;
+      if (done) {
+        ended = true;
+        break;
+      }
+      head = concat(head, value);
     }
-    head = concat(head, value);
+  } catch (error) {
+    if (signal.aborted) return;
+    return own(errorPage(target, ...failure(error)), null);
   }
   const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
   const at = landedAt(response.url, target);
@@ -1830,23 +1834,36 @@ async function loadDocument(
   on.commit(at, first, null, posted);
   let last = Date.now();
   let interval = STREAM_FIRST;
-  while (!ended) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) {
-      void iterator.return?.();
-      return;
+  try {
+    while (!ended) {
+      const { done, value } = await iterator.next();
+      if (signal.aborted) {
+        void iterator.return?.();
+        return;
+      }
+      if (done) break;
+      source += decoder.decode(value, { stream: true });
+      if (Date.now() - last >= interval) {
+        last = Date.now();
+        interval = Math.min(interval * 2, STREAM_MOST);
+        on.progress({ ...first, source });
+      }
     }
-    if (done) break;
-    source += decoder.decode(value, { stream: true });
-    if (Date.now() - last >= interval) {
-      last = Date.now();
-      interval = Math.min(interval * 2, STREAM_MOST);
-      on.progress({ ...first, source });
-    }
+  } catch {
+    // the page is what arrived, as a browser keeps a page whose connection
+    // dropped: it has been shown, so there is no error page to go to
+    if (signal.aborted) return;
   }
   source += decoder.decode();
   on.progress({ ...first, source, partial: false });
   on.finish();
+}
+
+/** Why a load failed, as `errorPage` takes it. */
+function failure(error: unknown): [message: string, code: string] {
+  return error instanceof NetworkError
+    ? [error.message, error.code]
+    : [String((error as Error)?.message ?? error), 'ERR_FAILED'];
 }
 
 /** Where a navigation's document is: where its response came from, at the
