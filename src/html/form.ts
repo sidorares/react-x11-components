@@ -1608,17 +1608,21 @@ function holdersOf(el: Element, into: Set<Element>, itself = true): void {
 }
 
 /** The elements an answer reads others for: every form, radio and submit
- *  button in a tree. Taken whole for a change that moves a control between
- *  forms or groups: which one it left no longer says. */
+ *  button in a tree, and each fieldset around a radio, which answers for what
+ *  its group came to wherever the group changed. Taken whole for a change
+ *  that moves a control between forms or groups: which one it left no longer
+ *  says. */
 function togetherIn(root: AnyNode, into: Set<Element>): void {
   const { owned, forms } = controlIndex(root);
   for (const form of forms) into.add(form);
   for (const controls of owned.values()) {
     for (const el of controls) {
-      if (
-        buttonType(el) === 'submit' ||
-        (tagOf(el) === 'input' && inputType(el) === 'radio')
-      ) {
+      if (tagOf(el) === 'input' && inputType(el) === 'radio') {
+        into.add(el);
+        for (let at = el.parent; at && isElement(at); at = at.parent) {
+          if (tagOf(at) === 'fieldset') into.add(at);
+        }
+      } else if (buttonType(el) === 'submit') {
         into.add(el);
       }
     }
@@ -1659,7 +1663,7 @@ export function controlsReached(change: HtmlChange, into: Set<Element>): void {
     if (
       name === 'type' ||
       name === 'form' ||
-      ((name === 'name' || name === 'checked') &&
+      ((name === 'name' || name === 'checked' || name === 'required') &&
         tag === 'input' &&
         inputType(el) === 'radio')
     ) {
