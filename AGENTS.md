@@ -2852,9 +2852,9 @@ was.
 measures were laid out at the origin and moved to their place, and a move
 walks all a box holds (`translate`): what a layout kept was moved to the
 origin of each box around it and out again, level by level. A webmail page's
-strip of senders, some 12,900 boxes in some twenty flex boxes, was walked 27
-times a step of a window's edge to land where it was, and that was a third of
-every step. Standing, a box that stays moves nothing, and one that goes
+strip of senders, some 12,900 boxes in some twenty flex boxes, was walked some
+60 times a step of a window's edge to land where it was, and that halved the
+widths a drag painted a second. Standing, a box that stays moves nothing, and one that goes
 elsewhere moves once. Three things are load-bearing. **Nothing a subtree's
 layout reads may be a position**: what it holds is read from its corner, as
 `contentBottom` reads it and a baseline less the box's `y`, and anything new

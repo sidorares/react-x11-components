@@ -3611,9 +3611,9 @@ export function measureIntrinsicWidth(
  * Where it stands, and not at the origin, since its caller moves it to its
  * place after and a move walks all it holds. At the origin, what a layout
  * keeps in a box was moved there and then out again by each box around it
- * that is laid out so: a webmail page's rows, in some twenty flex boxes one
- * inside another, were each moved 27 times a step of a window's edge, to
- * land where they were. Standing, a box its layout leaves where it was
+ * that is laid out so: a webmail page's rows and its strip of senders, in
+ * some twenty flex boxes one inside another, were walked some 60 times a
+ * step of a window's edge, to land where they were. Standing, a box its layout leaves where it was
  * moves nothing, and one that goes elsewhere moves once. So nothing a
  * subtree's layout reads may be a position: what is in it is read from its
  * corner, and what stops a layout (`until`) is said from it here, where it

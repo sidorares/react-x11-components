@@ -1605,8 +1605,8 @@ test('a block a flex box around it asks about at one width is laid out once at i
 test('what a layout keeps is not moved by the flex boxes around it', async () => {
   // a box laid out at the origin moved what it keeps there and out again,
   // one flex box inside another: a mail page's strip of senders, in some
-  // twenty of them, was walked 27 times a step of a window's edge, to land
-  // where it was. Laid out where it stands, what stays moves nothing
+  // twenty of them, was walked some 60 times a step of a window's edge, to
+  // land where it was. Laid out where it stands, what stays moves nothing
   const rows = Array.from(
     { length: 100 },
     (_, i) => `<div class="row" id="r${i}"><b>row</b> ${i}</div>`,
