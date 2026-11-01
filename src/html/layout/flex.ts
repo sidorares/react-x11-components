@@ -29,7 +29,7 @@ import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, gapOf, isPct, resolve, resolveOrNull } from '../css/values.js';
 import { scrolls } from '../css/style.js';
-import type { ComputedStyle, ContentSize } from '../css/style.js';
+import type { ComputedStyle, ContentSize, SizeOf } from '../css/style.js';
 import { Box, inOrder, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
@@ -39,6 +39,8 @@ import {
   boxRatio,
   centreButton,
   clampHeight,
+  sizedBy,
+  sizedWidth,
   clampWidth,
   contentSizedWidth,
   exactMinContent,
@@ -1246,7 +1248,16 @@ function applyItem(
       node.setMaxWidth(mostWidth);
     }
   }
-  if (style.widthKeyword || style.minWidthKeyword || style.maxWidthKeyword) {
+  // a `calc-size()` of `auto`: of its content's size along a row, and across
+  // a column of what stretches it
+  const sizedAuto =
+    style.width === AUTO && !style.widthKeyword ? style.widthSize : null;
+  if (
+    style.widthKeyword ||
+    sizedAuto ||
+    style.minWidthKeyword ||
+    style.maxWidthKeyword
+  ) {
     // an intrinsic size is the item's content's, measured here and handed
     // over as a length: `w-fit` in a column is not stretched across it,
     // and `min-w-max` in a row does not shrink below its content
@@ -1254,18 +1265,23 @@ function applyItem(
       0,
       containingWidth - box.marginLeft - box.marginRight,
     );
-    const size = (keyword: ContentSize): number =>
-      contentSizedWidth(box, ctx, keyword, room, containingWidth);
-    if (style.widthKeyword) {
-      laid.set = size(style.widthKeyword);
+    const size = (keyword: ContentSize, sized: SizeOf | null): number => {
+      const width = contentSizedWidth(box, ctx, keyword, room, containingWidth);
+      if (!sized) return width;
+      const extra = box.horizontalExtra;
+      return sizedBy(sized, width, extra, style.boxSizing, containingWidth);
+    };
+    if (style.widthKeyword || sizedAuto) {
+      const keyword = row ? 'max-content' : 'stretch';
+      laid.set = size(style.widthKeyword ?? keyword, style.widthSize);
       node.setWidth(laid.set);
     }
     if (style.minWidthKeyword) {
-      leastWidth = size(style.minWidthKeyword);
+      leastWidth = size(style.minWidthKeyword, style.minWidthSize);
       node.setMinWidth(leastWidth);
     }
     if (style.maxWidthKeyword) {
-      mostWidth = size(style.maxWidthKeyword);
+      mostWidth = size(style.maxWidthKeyword, style.maxWidthSize);
       node.setMaxWidth(mostWidth);
     }
   }
@@ -1340,7 +1356,9 @@ function applyItem(
   const ownSize = (content = false): void => {
     if (
       content ||
-      (row ? style.width === AUTO && !style.widthKeyword : !heightSet)
+      (row
+        ? style.width === AUTO && !style.widthKeyword && !sizedAuto
+        : !heightSet)
     ) {
       laid.sized = true;
     } else laid.basis = row ? laid.set : height;
@@ -1356,7 +1374,39 @@ function applyItem(
       (style.flexBasis === AUTO && style.height === AUTO))
       ? ratioHeightBasis(box, containingWidth)
       : null;
-  if (style.flexBasis === 'content' && row) {
+  const sizedBasis =
+    style.flexBasis === AUTO || style.flexBasis === 'content'
+      ? style.flexBasisSize
+      : null;
+  if (sizedBasis && row) {
+    // a `calc-size()` of its keyword's width, its content's, or for `auto`
+    // what its own width comes to: `size`, which Yoga is handed as a length
+    const room = Math.max(
+      0,
+      containingWidth - box.marginLeft - box.marginRight,
+    );
+    const auto = style.width === AUTO && !style.widthKeyword && !sizedAuto;
+    const from = style.flexBasisKeyword
+      ? contentSizedWidth(
+          box,
+          ctx,
+          style.flexBasisKeyword,
+          room,
+          containingWidth,
+        )
+      : style.flexBasis === 'content' || auto
+        ? contentBasis(box, ctx, containingWidth)
+        : laid.set;
+    const extra = box.horizontalExtra;
+    laid.basis = sizedBy(
+      sizedBasis,
+      from,
+      extra,
+      style.boxSizing,
+      containingWidth,
+    );
+    node.setFlexBasis(laid.basis);
+  } else if (style.flexBasis === 'content' && row) {
     // the content's size along a row, whatever the item's own width says
     // (CSS Flexbox 7.2.3), which Yoga reads as `auto` and takes the width
     // for; along a column, Yoga's measure is the content's
@@ -1612,6 +1662,19 @@ function applyItem(
           height: Math.max(0, content - box.verticalExtra),
         };
       }
+      // down a column a basis of the content's is what Yoga's measure is,
+      // and a `calc-size()` of it what that makes of its answer
+      if (!alongRow && sizedBasis) {
+        const extra = box.verticalExtra;
+        const down = sizedBy(
+          sizedBasis,
+          answer.height + extra,
+          extra,
+          style.boxSizing,
+          definite,
+        );
+        answer = { width: answer.width, height: Math.max(0, down - extra) };
+      }
       laid.content = answer.height + box.verticalExtra;
     }
     return answer;
@@ -1628,7 +1691,7 @@ function applyItem(
   const keyword = style.widthKeyword;
   const fits =
     keyword === null
-      ? style.width === AUTO
+      ? style.width === AUTO && !sizedAuto
       : keyword === 'fit-content' || keyword === 'stretch';
   if (
     !alongRow &&
@@ -1649,7 +1712,11 @@ function applyItem(
           innerWidth(room - extra, Y.MEASURE_MODE_AT_MOST, content, narrowest) +
           extra;
       } else {
-        width = contentSizedWidth(box, ctx, keyword, room, containingWidth);
+        width = sizedWidth(
+          box,
+          contentSizedWidth(box, ctx, keyword, room, containingWidth),
+          containingWidth,
+        );
       }
       if (width > mostWidth) width = mostWidth;
       if (width < leastWidth) width = leastWidth;
@@ -2256,7 +2323,10 @@ function readsPercentBase(box: Box): boolean {
     isPct(style.bottom) ||
     style.heightKeyword !== null ||
     style.minHeightKeyword !== null ||
-    style.maxHeightKeyword !== null
+    style.maxHeightKeyword !== null ||
+    style.heightSize !== null ||
+    style.minHeightSize !== null ||
+    style.maxHeightSize !== null
   );
 }
 
@@ -2408,10 +2478,25 @@ function autoMinimums(
         continue;
       }
     }
+    // `auto` in a `calc-size()` is this minimum, which it is worked out from
+    const sized = row
+      ? style.minWidthKeyword
+        ? null
+        : style.minWidthSize
+      : style.minHeightKeyword
+        ? null
+        : style.minHeightSize;
+    const ofAuto = sized && (sized.calc || sized.size !== 0) ? sized : null;
+    const worked = (least: number): number => {
+      if (!ofAuto) return least;
+      const extra = row ? box.horizontalExtra : box.verticalExtra;
+      return sizedBy(ofAuto, least, extra, style.boxSizing, containingWidth);
+    };
     if (
-      row
+      !ofAuto &&
+      (row
         ? style.minWidth !== AUTO || style.minWidthKeyword || style.widthKeyword
-        : style.minHeight !== AUTO && !asked
+        : style.minHeight !== AUTO && !asked)
     ) {
       continue;
     }
@@ -2429,8 +2514,8 @@ function autoMinimums(
         const most = resolveOrNull(style.maxWidth, containingWidth);
         if (most !== null) least = Math.min(least, most + extra);
       }
-      if (width >= least - 0.01) continue;
-      least = Math.min(least, minContentOf(box, ctx, laid));
+      if (width >= least - 0.01 && !ofAuto) continue;
+      least = worked(Math.min(least, minContentOf(box, ctx, laid)));
       if (laid.main >= least - 0.01) continue;
       holdAt(node, laid, row, least, hold);
       changed = true;
@@ -2441,6 +2526,7 @@ function autoMinimums(
     // no wider may still be held to
     const widest = row ? MAX_CONTENT.get(box) : undefined;
     if (
+      !ofAuto &&
       widest !== undefined &&
       transferredWidth(box, widest + box.horizontalExtra) <= width + 0.5
     ) {
@@ -2473,6 +2559,7 @@ function autoMinimums(
         remember(box, ctx, width, containingWidth, 'drawn', drawn);
       }
       if (
+        !ofAuto &&
         Number.isFinite(drawn) &&
         transferredWidth(box, drawn) <= width + 0.5
       ) {
@@ -2480,7 +2567,7 @@ function autoMinimums(
       }
       // within what a ratio makes of its least and greatest heights (4.5's
       // content size suggestion)
-      least = transferredWidth(box, minContentOf(box, ctx, laid));
+      least = worked(transferredWidth(box, minContentOf(box, ctx, laid)));
       const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
       if (style.maxWidth !== 'none') {
         const most = resolveOrNull(style.maxWidth, containingWidth);
@@ -2498,7 +2585,7 @@ function autoMinimums(
       if (box.kind !== 'replaced') {
         content = transferredHeight(box, content, containingWidth);
       }
-      least = Math.min(height, content);
+      least = worked(Math.min(height, content));
       const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
       if (style.maxHeight !== 'none') {
         const most = resolveOrNull(style.maxHeight, NaN);

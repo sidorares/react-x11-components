@@ -38,6 +38,7 @@ import {
   trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
+import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -632,6 +633,14 @@ export interface GapRule {
 export interface SizeOf {
   size: number;
   plus: Len;
+  /** How it reads, in CSS pixels: the `calc-size()` it was written as. A
+   *  size an interpolation made has none, and reads as the sum it is. */
+  text?: string;
+  /** The calculation in place of the two numbers, where a function has
+   *  `size` in it and no sum says it (`sizeAt`), with what its pixels are
+   *  to the device's. */
+  calc?: string;
+  scale?: number;
 }
 
 /** Each corner's superellipse parameter (`ComputedStyle.cornerShape`). */
@@ -1247,20 +1256,28 @@ export interface ComputedStyle {
   /** `min-height` as one: the content's height, which a flex item in a
    *  column is no shorter than whatever its `overflow` (`flex.ts`). */
   minHeightKeyword: ContentSize | null;
-  /** `max-height` as one: only `stretch` holds a height to anything, the
-   *  content ones being its content's, which it is anyway. */
+  /** `max-height` as one: the content's height, or `stretch`'s. */
   maxHeightKeyword: ContentSize | null;
   /** `height` as one, which is its content's as `auto` is — but it is not
    *  `auto`, and what stretches an item of `auto` height does not stretch
    *  it (CSS Grid 1, 10.3). */
   heightKeyword: ContentSize | null;
-  /** `width` and `height` as a `calc-size()` of a keyword (CSS Values 5,
-   *  9): the size `auto` or the keyword beside it would give the box, as
-   *  much of it as `size` says and `plus` added — which is also what a
-   *  size runs through between a length and a keyword under
-   *  `interpolate-size: allow-keywords`. Null for any other size. */
+  /** A size as a `calc-size()` (CSS Values 5, 9): the size `auto` or the
+   *  keyword beside it would give the box, as much of it as `size` says
+   *  and `plus` added — which is also what a width and a height run
+   *  through between a length and a keyword under `interpolate-size:
+   *  allow-keywords`. Where one comes to a length on every box, the
+   *  length is the size, and this says how it reads. Null for any other
+   *  size. */
   widthSize: SizeOf | null;
   heightSize: SizeOf | null;
+  minWidthSize: SizeOf | null;
+  maxWidthSize: SizeOf | null;
+  minHeightSize: SizeOf | null;
+  maxHeightSize: SizeOf | null;
+  flexBasisSize: SizeOf | null;
+  /** `flex-basis` as a `calc-size()` of a content keyword. */
+  flexBasisKeyword: ContentSize | null;
   /** Whether a size may run between a length and a keyword (CSS Values 5,
    *  12.1): `allow-keywords` lets `height: 0` grow to `auto`. Inherited. */
   interpolateSize: 'numeric-only' | 'allow-keywords';
@@ -1923,6 +1940,12 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     heightKeyword: null,
     widthSize: null,
     heightSize: null,
+    minWidthSize: null,
+    maxWidthSize: null,
+    minHeightSize: null,
+    maxHeightSize: null,
+    flexBasisSize: null,
+    flexBasisKeyword: null,
     interpolateSize: 'numeric-only',
     readingFlow: 'normal',
     readingOrder: 0,
@@ -3456,21 +3479,9 @@ export function applyDeclaration(
     case 'min-width':
     case 'min-height': {
       const across = name.endsWith('width');
-      // `calc-size()` (CSS Values 5, 9), of a width or a height alone: a
-      // keyword's size scaled and added to, or a length's, which is one
-      let calc: ReturnType<typeof calcSizeOf> = null;
-      if (CALC_SIZE.test(value)) {
-        if (name !== 'width' && name !== 'height') return;
-        calc = calcSizeOf(value, ctx, across);
-        if (!calc) return;
-        if ('size' in calc) {
-          style[camel(name) as 'width' | 'height'] = AUTO;
-          if (name === 'width') style.widthKeyword = calc.keyword;
-          else style.heightKeyword = calc.keyword;
-          style[across ? 'widthSize' : 'heightSize'] = calc.size;
-          return;
-        }
-      }
+      if (setCalcSize(style, name, value, ctx)) return;
+      const sizeField = `${camel(name)}Size` as SizeField;
+      style[sizeField] = null;
       // the anchor's size, kept beside the size, which takes the fallback
       if (
         setAnchorSize(
@@ -3481,19 +3492,13 @@ export function applyDeclaration(
           ctx,
         )
       ) {
-        if (name === 'width') {
-          style.widthKeyword = null;
-          style.widthSize = null;
-        } else if (name === 'height') {
-          style.heightKeyword = null;
-          style.heightSize = null;
-        } else if (name === 'min-width') style.minWidthKeyword = null;
+        if (name === 'width') style.widthKeyword = null;
+        else if (name === 'height') style.heightKeyword = null;
+        else if (name === 'min-width') style.minWidthKeyword = null;
         else style.minHeightKeyword = null;
         return;
       }
-      if (name === 'width') style.widthSize = null;
-      else if (name === 'height') style.heightSize = null;
-      const keyword = calc ? null : contentSizeOf(value, ctx, across);
+      const keyword = contentSizeOf(value, ctx, across);
       if (keyword) {
         // `auto` beside it, which is a height's content height already
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
@@ -3505,7 +3510,7 @@ export function applyDeclaration(
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
       // 10.2, 10.4, 10.5, 10.7)
-      const len = calc ? calc.len : parseLength(value, ctx);
+      const len = parseLength(value, ctx);
       if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
         if (name === 'width') style.widthKeyword = null;
@@ -3537,6 +3542,8 @@ export function applyDeclaration(
     case 'max-width':
     case 'max-height': {
       const across = name === 'max-width';
+      if (setCalcSize(style, name, value, ctx)) return;
+      style[across ? 'maxWidthSize' : 'maxHeightSize'] = null;
       if (
         setAnchorSize(
           style,
@@ -4777,6 +4784,18 @@ export function applyDeclaration(
       return;
     }
     case 'flex-basis': {
+      if (CALC_SIZE.test(value)) {
+        const calc = calcSizeOf(value, name, ctx);
+        if (!calc) return;
+        style.flexBasisSize = calc.sized;
+        style.flexBasisKeyword =
+          calc.keyword === 'content' ? null : calc.keyword;
+        style.flexBasis =
+          calc.len ?? (calc.keyword === 'content' ? 'content' : AUTO);
+        return;
+      }
+      style.flexBasisSize = null;
+      style.flexBasisKeyword = null;
       const v = value.toLowerCase();
       if (v === 'content') style.flexBasis = 'content';
       else {
@@ -6961,62 +6980,43 @@ const READING_FLOWS = new Set([
   'source-order',
 ]);
 
-const CALC_SIZE = /^\s*calc-size\(/i;
-
-/** `size` in a `calc-size()`'s calculation, standing for its basis. */
-const SIZE_WORD = /(?<![\w-])size(?![\w-])/gi;
+/** A size's field for what it is as a `calc-size()`. */
+type SizeField =
+  | 'widthSize'
+  | 'heightSize'
+  | 'minWidthSize'
+  | 'maxWidthSize'
+  | 'minHeightSize'
+  | 'maxHeightSize';
 
 /**
- * A `calc-size()` (CSS Values 5, 9): its basis — `auto`, a content
- * keyword, or a length or a percentage — and a calculation that may name
- * it as `size`, which is all of it where there is none. With a length for
- * a basis it is the length the calculation comes to; with a keyword, that
- * keyword's size scaled and added to, worked out from the calculation at
- * two sizes, so one that is not a sum of `size` and lengths is none. Null
- * for no `calc-size()`.
+ * `width`, `height` or one of their limits as a `calc-size()`: true where
+ * the value is one, which leaves the declaration as it was where the
+ * property does not take it. Any other value is the caller's.
  */
-function calcSizeOf(
+function setCalcSize(
+  style: ComputedStyle,
+  name: string,
   value: string,
   ctx: UnitContext,
-  inline: boolean,
-): { len: Len | null } | { keyword: ContentSize | null; size: SizeOf } | null {
-  const v = value.trim();
-  const close = closingParen(v, v.indexOf('(') + 1);
-  if (close !== v.length - 1) return null;
-  const inner = v.slice(v.indexOf('(') + 1, close);
-  const [basisText, ...rest] = splitCommas(inner);
-  if (rest.length > 1) return null;
-  const expr = rest.length ? rest[0] : 'size';
-  if (!basisText || !expr) return null;
-  const basis = basisText.trim().toLowerCase();
-  const keyword =
-    basis === 'auto' || basis === 'any'
-      ? null
-      : contentSizeOf(basisText, ctx, inline);
-  if (keyword === null && basis !== 'auto' && basis !== 'any') {
-    // a length: the calculation of it
-    const len = parseLength(
-      `calc(${expr.replace(SIZE_WORD, `(${basisText})`)})`,
-      ctx,
-    );
-    return { len: len === AUTO ? null : len };
-  }
-  if (keyword !== null && typeof keyword === 'object') return null;
-  const at = (size: number) =>
-    parseLength(`calc(${expr.replace(SIZE_WORD, `(${size}px)`)})`, ctx);
-  const none = at(0);
-  const some = at(1000);
-  if (none === null || some === null || none === AUTO || some === AUTO) {
-    return null;
-  }
-  const px = (len: number | Pct) =>
-    typeof len === 'number' ? len : (len.px ?? 0);
-  const pct = (len: number | Pct) => (typeof len === 'number' ? 0 : len.pct);
-  if (pct(none) !== pct(some) || (isPct(none) && none.of)) return null;
-  return {
-    keyword,
-    size: { size: (px(some) - px(none)) / (1000 * ctx.scale), plus: none },
-  };
+): boolean {
+  if (!CALC_SIZE.test(value)) return false;
+  const calc = calcSizeOf(value, name, ctx);
+  if (!calc) return true;
+  const field = camel(name);
+  const fields = style as unknown as Record<string, unknown>;
+  fields[field] = calc.len ?? (name.startsWith('max-') ? 'none' : AUTO);
+  fields[`${field}Keyword`] = calc.keyword;
+  fields[`${field}Size`] = calc.sized;
+  // what an `anchor-size()` before it left
+  setAnchorSize(
+    style,
+    field as AnchorSizeField,
+    value,
+    name.endsWith('width') ? 'width' : 'height',
+    ctx,
+  );
+  return true;
 }
 
 function contentSizeOf(
@@ -7498,6 +7498,8 @@ function applyFlexShorthand(
   ctx: UnitContext,
 ): void {
   const v = value.trim().toLowerCase();
+  style.flexBasisKeyword = null;
+  style.flexBasisSize = null;
   if (v === 'none') {
     style.flexGrow = 0;
     style.flexShrink = 0;
@@ -9231,10 +9233,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'interpolate-size': ['interpolateSize'],
   'reading-flow': ['readingFlow'],
   'reading-order': ['readingOrder'],
-  'min-width': ['minWidth', 'minWidthKeyword'],
-  'max-width': ['maxWidth', 'maxWidthKeyword'],
-  'min-height': ['minHeight', 'minHeightKeyword'],
-  'max-height': ['maxHeight', 'maxHeightKeyword'],
+  'min-width': ['minWidth', 'minWidthKeyword', 'minWidthSize'],
+  'max-width': ['maxWidth', 'maxWidthKeyword', 'maxWidthSize'],
+  'min-height': ['minHeight', 'minHeightKeyword', 'minHeightSize'],
+  'max-height': ['maxHeight', 'maxHeightKeyword', 'maxHeightSize'],
   'box-sizing': ['boxSizing'],
   'box-decoration-break': ['boxDecorationBreak'],
   '-webkit-box-decoration-break': ['boxDecorationBreak'],
@@ -9327,10 +9329,16 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'align-items': ['alignItems'],
   'align-self': ['alignSelf', 'alignAnchorCenter'],
   'align-content': ['alignContent'],
-  flex: ['flexGrow', 'flexShrink', 'flexBasis'],
+  flex: [
+    'flexGrow',
+    'flexShrink',
+    'flexBasis',
+    'flexBasisKeyword',
+    'flexBasisSize',
+  ],
   'flex-grow': ['flexGrow'],
   'flex-shrink': ['flexShrink'],
-  'flex-basis': ['flexBasis'],
+  'flex-basis': ['flexBasis', 'flexBasisKeyword', 'flexBasisSize'],
   order: ['order'],
   gap: ['rowGap', 'rowGapNormal', 'columnGap', 'columnGapNormal'],
   'row-gap': ['rowGap', 'rowGapNormal'],
