@@ -977,20 +977,21 @@ metric(
       '<style>p{margin:0}</style><p id="p">one <span ' +
       `style="position:relative;background:#00ff00;${offset}">two</span> ` +
       '<b style="background:#0000ff">three</b></p>';
-    const fills = async (offset: string) =>
-      (await fillsOf(view((await render(doc(offset))).node))).filter(
-        (f) => f.style === '#00ff00' || f.style === '#0000ff',
-      );
-    const still = await fills('top:0;left:0');
+    const fills = async (offset: string) => {
+      const all = await fillsOf(view((await render(doc(offset))).node));
+      // the box's over what is after it, which it is painted after
+      return ['#00ff00', '#0000ff'].map((c) => all.find((f) => f.style === c)!);
+    };
+    const [box, after] = await fills('top:0;left:0');
     cleanup();
-    const moved = await fills('top:-6px;left:4px');
-    assert.strictEqual(still.length, 2);
+    const [moved, stays] = await fills('top:-6px;left:4px');
     assert.deepStrictEqual(
-      moved.map((f) => [f.style, f.x, f.y, f.w, f.h]),
-      [
-        ['#00ff00', still[0].x + 4, still[0].y - 6, still[0].w, still[0].h],
-        ['#0000ff', still[1].x, still[1].y, still[1].w, still[1].h],
-      ],
+      [moved.x, moved.y, moved.w, moved.h],
+      [box.x + 4, box.y - 6, box.w, box.h],
+    );
+    assert.deepStrictEqual(
+      [stays.x, stays.y, stays.w, stays.h],
+      [after.x, after.y, after.w, after.h],
     );
   },
 );
