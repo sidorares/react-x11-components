@@ -608,6 +608,8 @@ export async function fillsOf(
       ratio: number;
     } | null;
     scale?: number;
+    /** Which of a scroll container's bars a page's rules hide. */
+    scrollbarHidden?: () => { x: boolean; y: boolean };
     /** A context whose radial gradients are one colour. */
     flatRadial?: boolean;
     /** A context that draws text through its matrix: react-x11's macOS and
