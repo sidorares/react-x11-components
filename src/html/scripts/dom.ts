@@ -1073,6 +1073,29 @@ export function installDom(
     return fn;
   };
 
+  /** An `on<type>` attribute of an interface (HTML 8.1.8.1). */
+  const handlerProperty = (proto: Any, type: string): void => {
+    const get = function (this: Any): Any {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      return this._handlers?.[type] ?? null;
+    };
+    const set = function (this: Any, fn: Any): void {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      setHandler(this, type, typeof fn === 'function' ? fn : null);
+    };
+    Object.defineProperty(get, 'name', { value: `get on${type}` });
+    Object.defineProperty(set, 'name', { value: `set on${type}` });
+    Object.defineProperty(proto, `on${type}`, {
+      get,
+      set,
+      configurable: true,
+      enumerable: true,
+    });
+  };
   /** Gives a target's `on<type>` handler its place among the target's
    *  listeners, where it has none, as it comes to be something other than
    *  null (HTML 8.1.8.1, "activate an event handler"): the end of the
@@ -14551,6 +14574,34 @@ export function installDom(
     getElementById(id: Any): Any {
       return wrap(Number(call('byId', str(id), this._id)));
     }
+    execCommand(id: Any, _showUI?: Any, value: Any = ''): boolean {
+      if (this._type && this._type !== 'application/xhtml+xml') {
+        throw new DOMException(
+          "Failed to execute 'execCommand' on 'Document': execCommand is only supported on HTML documents.",
+          'InvalidStateError',
+        );
+      }
+      const name = commandName(id);
+      if (!commandEnabled(name)) return false;
+      if (name === 'selectall') selectAllCommand();
+      else COMMANDS[name](commandTarget(), str(value));
+      return true;
+    }
+    queryCommandEnabled(id: Any): boolean {
+      return commandEnabled(commandName(id));
+    }
+    queryCommandIndeterminate(_id: Any): boolean {
+      return false;
+    }
+    queryCommandState(_id: Any): boolean {
+      return false;
+    }
+    queryCommandSupported(id: Any): boolean {
+      return commandSupported(commandName(id));
+    }
+    queryCommandValue(_id: Any): string {
+      return '';
+    }
     getElementsByName(name: Any): Any {
       return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
     }
@@ -17903,7 +17954,41 @@ export function installDom(
    * timeout covers a wait on a socket. What `responseType` reads is text,
    * JSON or an `ArrayBuffer`; a `document` and a `Blob` are not here.
    */
-  class XMLHttpRequest extends EventTarget {
+  class XMLHttpRequestEventTarget extends EventTarget {
+    constructor() {
+      super();
+      if (new.target === XMLHttpRequestEventTarget) {
+        throw new TypeError('Illegal constructor');
+      }
+    }
+  }
+  for (const type of [
+    'loadstart',
+    'progress',
+    'abort',
+    'error',
+    'load',
+    'timeout',
+    'loadend',
+  ]) {
+    handlerProperty(XMLHttpRequestEventTarget.prototype, type);
+  }
+  let makingUpload = false;
+  class XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
+    constructor() {
+      super();
+      if (!makingUpload) throw new TypeError('Illegal constructor');
+    }
+  }
+  const madeUpload = (): Any => {
+    makingUpload = true;
+    try {
+      return new XMLHttpRequestUpload();
+    } finally {
+      makingUpload = false;
+    }
+  };
+  class XMLHttpRequest extends XMLHttpRequestEventTarget {
     static readonly UNSENT = 0;
     static readonly OPENED = 1;
     static readonly HEADERS_RECEIVED = 2;
@@ -17921,7 +18006,7 @@ export function installDom(
     responseType = '';
     timeout = 0;
     withCredentials = false;
-    readonly upload = new EventTarget();
+    readonly upload = madeUpload();
     _method = 'GET';
     _url = '';
     _headers = new Headers();
@@ -18145,26 +18230,7 @@ export function installDom(
       dispatch(this, ev);
     }
   }
-  for (const type of [
-    'readystatechange',
-    'loadstart',
-    'progress',
-    'load',
-    'error',
-    'abort',
-    'timeout',
-    'loadend',
-  ]) {
-    Object.defineProperty(XMLHttpRequest.prototype, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers[type] ?? null;
-      },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-    });
-  }
+  handlerProperty(XMLHttpRequest.prototype, 'readystatechange');
 
   // --- traversal (DOM 6) ---------------------------------------------------
 
@@ -19987,18 +20053,6 @@ export function installDom(
   /** `ready`'s, kept until a registration has an active worker. */
   let swReady: { promise: Promise<Any>; resolve: (r: Any) => void } | null =
     null;
-  const handlerProperty = (proto: Any, type: string): void => {
-    Object.defineProperty(proto, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers?.[type] ?? null;
-      },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-      enumerable: true,
-    });
-  };
   class ServiceWorker extends EventTarget {
     _id = 0;
     _url = '';
@@ -22610,59 +22664,400 @@ export function installDom(
     },
   };
 
+  /** What only the steps below make: a page's `new` is refused (DOM 3.1). */
+  let makingSignal = false;
   class AbortSignal extends EventTarget {
-    aborted = false;
-    reason: Any = undefined;
-    onabort: Any = null;
-    static abort(reason?: Any): Any {
-      const c = new AbortController();
-      c.abort(reason);
-      return c.signal;
+    _aborted = false;
+    _reason: Any = undefined;
+    /** Whether it follows other signals (`any`), and which, and which
+     *  follow it (DOM 3.1, "source signals", "dependent signals"). Kept by
+     *  reference and let go as a signal aborts: one a page dropped may
+     *  still have a listener that has to hear. */
+    _dependent = false;
+    _sources: Any[] = [];
+    _dependents = new Set<Any>();
+    /** What is told as it aborts, ahead of the event ("abort algorithms"). */
+    _algorithms: (() => void)[] = [];
+    constructor() {
+      super();
+      if (!makingSignal) throw new TypeError('Illegal constructor');
     }
-    static timeout(ms: number): Any {
-      const c = new AbortController();
+    get aborted(): boolean {
+      return this._aborted;
+    }
+    get reason(): Any {
+      return this._reason;
+    }
+    static abort(reason?: Any): Any {
+      const signal = madeSignal(this);
+      signal._aborted = true;
+      signal._reason = abortReason(reason);
+      return signal;
+    }
+    static timeout(ms: Any): Any {
+      const delay = enforcedRange(ms, 'AbortSignal', 'timeout');
+      const signal = madeSignal(this);
       setTimer(
-        () => c.abort(new DOMException('signal timed out', 'TimeoutError')),
-        ms,
+        () =>
+          signalAbort(
+            signal,
+            new DOMException('signal timed out', 'TimeoutError'),
+          ),
+        delay,
         [],
         false,
       );
-      return c.signal;
+      return signal;
+    }
+    static any(signals: Any): Any {
+      return dependentSignal(signalsFrom(signals), this);
     }
     throwIfAborted(): void {
-      if (this.aborted) throw this.reason;
+      if (this._aborted) throw this._reason;
     }
   }
+  idlAttributes(AbortSignal);
+  /** A signal of `Kind`, with nothing asked of the page's `new`. */
+  const madeSignal = (Kind: Any): Any => {
+    makingSignal = true;
+    try {
+      return new Kind();
+    } finally {
+      makingSignal = false;
+    }
+  };
+  /** A `[EnforceRange] unsigned long long` (Web IDL 3.2.4). */
+  const enforcedRange = (v: Any, on: string, member: string): number => {
+    const n = Math.trunc(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError(
+        `Failed to execute '${member}' on '${on}': Value is outside the 'unsigned long long' value range.`,
+      );
+    }
+    return n;
+  };
+  /** Only a reason left out is the default one: `abort(null)` aborts with
+   *  null. */
+  const abortReason = (reason: Any): Any =>
+    reason === undefined
+      ? new DOMException('signal is aborted without reason', 'AbortError')
+      : reason;
+  /** "Run the abort steps" (DOM 3.1). */
+  const abortSteps = (signal: Any): void => {
+    for (const source of signal._sources) source._dependents.delete(signal);
+    signal._sources = [];
+    const algorithms = signal._algorithms;
+    signal._algorithms = [];
+    for (const algorithm of algorithms) algorithm();
+    dispatch(signal, trusted(new Event('abort')));
+  };
+  /** "Signal abort": what follows it aborts with it, each after it. */
+  const signalAbort = (signal: Any, reason: Any): void => {
+    if (signal._aborted) return;
+    signal._aborted = true;
+    signal._reason = abortReason(reason);
+    const following: Any[] = [];
+    for (const dependent of signal._dependents) {
+      if (dependent._aborted) continue;
+      dependent._aborted = true;
+      dependent._reason = signal._reason;
+      following.push(dependent);
+    }
+    signal._dependents.clear();
+    abortSteps(signal);
+    for (const dependent of following) abortSteps(dependent);
+  };
+  /** A `sequence<AbortSignal>` from what a page passed (Web IDL 3.2.19). */
+  const signalsFrom = (signals: Any): Any[] => {
+    if (typeof signals?.[Symbol.iterator] !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'any' on 'AbortSignal': The provided value cannot be converted to a sequence.",
+      );
+    }
+    const out = Array.from(signals as Any[]);
+    for (const signal of out) {
+      if (!(signal instanceof AbortSignal)) {
+        throw new TypeError(
+          "Failed to execute 'any' on 'AbortSignal': Failed to convert value to 'AbortSignal'.",
+        );
+      }
+    }
+    return out;
+  };
+  /** "Create a dependent abort signal" (DOM 3.1): one that follows signals
+   *  no signal follows, so that a chain of them holds no chain of signals. */
+  const dependentSignal = (signals: Any[], Kind: Any): Any => {
+    const result = madeSignal(Kind);
+    for (const signal of signals) {
+      if (signal._aborted) {
+        result._aborted = true;
+        result._reason = signal._reason;
+        return result;
+      }
+    }
+    result._dependent = true;
+    for (const signal of signals) {
+      for (const source of signal._dependent ? signal._sources : [signal]) {
+        if (result._sources.includes(source)) continue;
+        result._sources.push(source);
+        source._dependents.add(result);
+      }
+    }
+    return result;
+  };
   class AbortController {
-    readonly signal: Any = Object.create(AbortSignal.prototype);
-    constructor() {
-      Object.assign(this.signal, new EventTarget(), {
-        aborted: false,
-        reason: undefined,
-        onabort: null,
-      });
+    _signal: Any = madeSignal(AbortSignal);
+    get signal(): Any {
+      return this._signal;
     }
     abort(reason?: Any): void {
-      const s = this.signal;
-      if (s.aborted) return;
-      s.aborted = true;
-      // only a reason left out is the default one: `abort(null)` aborts
-      // with null
-      s.reason =
-        reason === undefined
-          ? new DOMException('signal is aborted without reason', 'AbortError')
-          : reason;
-      const ev = new Event('abort');
-      if (typeof s.onabort === 'function') {
-        try {
-          s.onabort(ev);
-        } catch (e) {
-          report(e);
-        }
-      }
-      dispatch(s, ev);
+      signalAbort(this._signal, reason);
     }
   }
+  idlAttributes(AbortController);
+
+  // --- prioritized task scheduling (WICG Scheduling APIs) --------------------
+
+  const PRIORITIES = ['user-blocking', 'user-visible', 'background'];
+  const priorityFrom = (v: Any, on: string): string => {
+    const priority = str(v);
+    if (!PRIORITIES.includes(priority)) {
+      throw new TypeError(
+        `Failed to execute '${on}': The provided value '${priority}' is not a valid enum value of type TaskPriority.`,
+      );
+    }
+    return priority;
+  };
+  class TaskPriorityChangeEvent extends Event {
+    readonly previousPriority: string;
+    constructor(type: Any, init: Any) {
+      super(type, init);
+      if (init?.previousPriority === undefined) {
+        throw new TypeError(
+          "Failed to construct 'TaskPriorityChangeEvent': required member previousPriority is undefined.",
+        );
+      }
+      this.previousPriority = priorityFrom(
+        init.previousPriority,
+        'TaskPriorityChangeEvent',
+      );
+    }
+  }
+  class TaskSignal extends AbortSignal {
+    _priority = 'user-visible';
+    _changing = false;
+    /** A priority that follows another signal's: what follows this one, and
+     *  whether it has one at all ("has fixed priority"). */
+    _priorityFollowers: Any[] = [];
+    _fixed = false;
+    get priority(): string {
+      return this._priority;
+    }
+    static override any(signals: Any, init: Any = {}): Any {
+      const result = dependentSignal(signalsFrom(signals), this);
+      const from = init?.priority ?? 'user-visible';
+      if (from instanceof TaskSignal) {
+        result._priority = from._priority;
+        if (from._fixed) result._fixed = true;
+        else from._priorityFollowers.push(result);
+      } else {
+        result._priority = priorityFrom(from, 'any');
+        result._fixed = true;
+      }
+      return result;
+    }
+  }
+  idlAttributes(TaskSignal);
+  handlerProperty(AbortSignal.prototype, 'abort');
+  handlerProperty(TaskSignal.prototype, 'prioritychange');
+  /** "Signal priority change". */
+  const signalPriority = (signal: Any, priority: string): void => {
+    if (signal._changing) {
+      throw new DOMException(
+        "Failed to execute 'setPriority' on 'TaskController': Cannot change the priority of a signal while it is changing.",
+        'NotAllowedError',
+      );
+    }
+    if (signal._priority === priority) return;
+    signal._changing = true;
+    const previousPriority = signal._priority;
+    signal._priority = priority;
+    dispatch(
+      signal,
+      trusted(
+        new TaskPriorityChangeEvent('prioritychange', { previousPriority }),
+      ),
+    );
+    for (const follower of signal._priorityFollowers) {
+      signalPriority(follower, priority);
+    }
+    signal._changing = false;
+  };
+  class TaskController extends AbortController {
+    constructor(init: Any = {}) {
+      super();
+      const priority =
+        init?.priority === undefined
+          ? 'user-visible'
+          : priorityFrom(init.priority, 'TaskController');
+      this._signal = madeSignal(TaskSignal);
+      this._signal._priority = priority;
+    }
+    setPriority(priority: Any): void {
+      signalPriority(this._signal, priorityFrom(priority, 'setPriority'));
+    }
+  }
+  /** One task of `postTask` or `yield`, in the order it was queued. */
+  interface ScheduledTask {
+    run(): void;
+    priority(): string;
+    continuation: boolean;
+    order: number;
+  }
+  const scheduledTasks: ScheduledTask[] = [];
+  let scheduledOrder = 0;
+  let taskQueued = false;
+  /** What the running task inherits to a `yield`, its priority and signal. */
+  let schedulingState: { priority: () => string; signal: Any } | null = null;
+  /** The next task: of the highest priority, a continuation ahead of a task
+   *  of the same one, the oldest of those (Scheduling APIs, "select the next
+   *  scheduler task queue"). */
+  const nextScheduled = (): ScheduledTask | undefined => {
+    let best: ScheduledTask | undefined;
+    let bestRank = Infinity;
+    for (const task of scheduledTasks) {
+      const rank =
+        PRIORITIES.indexOf(task.priority()) * 2 + (task.continuation ? 0 : 1);
+      if (rank < bestRank) {
+        best = task;
+        bestRank = rank;
+      }
+    }
+    return best;
+  };
+  /** One task to a turn, so that what a page queued from one runs after
+   *  anything of a higher priority it queued. */
+  const queueScheduled = (): void => {
+    if (taskQueued || !scheduledTasks.length) return;
+    taskQueued = true;
+    setTimer(
+      () => {
+        taskQueued = false;
+        const task = nextScheduled();
+        if (task) {
+          scheduledTasks.splice(scheduledTasks.indexOf(task), 1);
+          task.run();
+        }
+        queueScheduled();
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  const schedule = (task: Omit<ScheduledTask, 'order'>): (() => void) => {
+    const queued = { ...task, order: (scheduledOrder += 1) };
+    scheduledTasks.push(queued);
+    queueScheduled();
+    return () => {
+      const at = scheduledTasks.indexOf(queued);
+      if (at >= 0) scheduledTasks.splice(at, 1);
+    };
+  };
+  let makingScheduler = false;
+  class Scheduler {
+    constructor() {
+      if (!makingScheduler) throw new TypeError('Illegal constructor');
+    }
+    postTask(callback: Any, options: Any = {}): Any {
+      return new Promise((resolve, reject) => {
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': parameter 1 is not of type 'Function'.",
+          );
+        }
+        const signal = options?.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': member signal is not of type AbortSignal.",
+          );
+        }
+        const fixed =
+          options?.priority === undefined
+            ? null
+            : priorityFrom(options.priority, 'postTask');
+        const delay =
+          options?.delay === undefined
+            ? 0
+            : enforcedRange(options.delay, 'Scheduler', 'postTask');
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const priority = (): string =>
+          fixed ??
+          (signal instanceof TaskSignal ? signal._priority : 'user-visible');
+        const state = { priority, signal };
+        let cancel: () => void = () => {};
+        const enqueue = (): void => {
+          cancel = schedule({
+            priority,
+            continuation: false,
+            run() {
+              const was = schedulingState;
+              schedulingState = state;
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              } finally {
+                schedulingState = was;
+              }
+            },
+          });
+        };
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+        if (delay > 0) {
+          const timer = setTimer(enqueue, delay, [], false);
+          cancel = () => clearTimer(timer);
+        } else enqueue();
+      });
+    }
+    yield(): Any {
+      return new Promise((resolve, reject) => {
+        const state = schedulingState;
+        const signal = state?.signal;
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const cancel = schedule({
+          priority: state?.priority ?? (() => 'user-visible'),
+          continuation: true,
+          run: () => resolve(undefined),
+        });
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+      });
+    }
+  }
+  const madeScheduler = (): Any => {
+    makingScheduler = true;
+    try {
+      return new Scheduler();
+    } finally {
+      makingScheduler = false;
+    }
+  };
 
   /** `matchMedia`: a list answered by the host from `<Html>`'s own media
    *  queries, each time `matches` is read, and told of a change by the
@@ -23677,6 +24072,99 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
+  /** The features a permission can name: each one Chrome's `PermissionName`
+   *  takes, since a name past them is a `TypeError` a page can tell a
+   *  missing feature by. */
+  const PERMISSION_NAMES = new Set([
+    'accelerometer',
+    'accessibility-events',
+    'ambient-light-sensor',
+    'background-fetch',
+    'background-sync',
+    'camera',
+    'clipboard-read',
+    'clipboard-write',
+    'display-capture',
+    'fullscreen',
+    'geolocation',
+    'gyroscope',
+    'idle-detection',
+    'local-fonts',
+    'magnetometer',
+    'microphone',
+    'midi',
+    'nfc',
+    'notifications',
+    'payment-handler',
+    'periodic-background-sync',
+    'persistent-storage',
+    'push',
+    'screen-wake-lock',
+    'speaker-selection',
+    'storage-access',
+    'system-wake-lock',
+    'top-level-storage-access',
+    'window-management',
+  ]);
+  let makingPermissions = false;
+  class PermissionStatus extends EventTarget {
+    _name = '';
+    constructor() {
+      super();
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    get name(): string {
+      return this._name;
+    }
+    /** Nothing here has been granted, and nothing refused: the answer a
+     *  browser gives before it has asked. */
+    get state(): string {
+      return 'prompt';
+    }
+  }
+  idlAttributes(PermissionStatus);
+  handlerProperty(PermissionStatus.prototype, 'change');
+  class Permissions {
+    constructor() {
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    query(descriptor: Any): Any {
+      return new Promise((resolve) => {
+        if (typeof descriptor !== 'object' || descriptor === null) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'PermissionDescriptor'.",
+          );
+        }
+        if (descriptor.name === undefined) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': Required member is undefined.",
+          );
+        }
+        const name = str(descriptor.name);
+        if (!PERMISSION_NAMES.has(name)) {
+          throw new TypeError(
+            `Failed to execute 'query' on 'Permissions': The provided value '${name}' is not a valid enum value of type PermissionName.`,
+          );
+        }
+        makingPermissions = true;
+        try {
+          const status = new PermissionStatus();
+          status._name = name;
+          resolve(status);
+        } finally {
+          makingPermissions = false;
+        }
+      });
+    }
+  }
+  const madePermissions = (): Any => {
+    makingPermissions = true;
+    try {
+      return new Permissions();
+    } finally {
+      makingPermissions = false;
+    }
+  };
   const navigator = {
     userAgent,
     appName: 'Netscape',
@@ -23703,6 +24191,7 @@ export function installDom(
     sendBeacon: () => false,
     javaEnabled: () => false,
     userActivation: new UserActivation(ACTIVATION_KEY),
+    permissions: madePermissions(),
   };
   // a page's service workers, where the host lets it have them and it is a
   // secure context; left out otherwise, as `clipboard` is
@@ -27485,6 +27974,96 @@ export function installDom(
     );
   };
 
+  /** What a command edits: the focused text field, or the editing host the
+   *  selection is in. */
+  const commandTarget = (): Any => {
+    const active = document.activeElement;
+    if (
+      (active?.localName === 'textarea' ||
+        (active?.localName === 'input' && selects(active))) &&
+      !active.readOnly &&
+      !active.disabled
+    ) {
+      return active;
+    }
+    const node = selection.anchorNode;
+    return node ? editingHostOf(node) : null;
+  };
+  /** A field's edit, as `edit` is a host's, by what it holds and where its
+   *  selection is. */
+  const editField = (
+    field: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data,
+    };
+    if (!dispatch(field, trusted(new InputEvent('beforeinput', init)))) return;
+    let from = field.selectionStart;
+    let to = field.selectionEnd;
+    if (from === to) {
+      if (inputType === 'deleteContentBackward') from = Math.max(0, from - 1);
+      else if (inputType === 'deleteContentForward') to += 1;
+    }
+    field.setRangeText(data ?? '', from, to, 'end');
+    dispatch(
+      field,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+  };
+  /** An edit a command makes, with a line of text a paragraph or a break as
+   *  a key would make it. */
+  const commandEdit = (
+    target: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    if (target instanceof HTMLElement && 'selectionStart' in target) {
+      editField(target, inputType, data);
+    } else edit(target, inputType, data);
+  };
+  /**
+   * What `execCommand` does (W3C execCommand, not a standard yet): the
+   * commands that are edits this page already makes for a key, and no
+   * other. `queryCommandSupported` says which, so a page that can do
+   * without `bold` is not told it has it: formatting commands, `undo` and
+   * `copy` answer false until something here can do them.
+   */
+  const COMMANDS: Record<string, (target: Any, value: string) => void> = {
+    delete: (target) => commandEdit(target, 'deleteContentBackward', null),
+    forwarddelete: (target) =>
+      commandEdit(target, 'deleteContentForward', null),
+    insertlinebreak: (target) => commandEdit(target, 'insertLineBreak', null),
+    insertparagraph: (target) => commandEdit(target, 'insertParagraph', null),
+    inserttext(target, value) {
+      const field = target instanceof HTMLElement && 'selectionStart' in target;
+      const lines = field ? [value] : value.split('\n');
+      lines.forEach((line, i) => {
+        if (i) commandEdit(target, 'insertParagraph', null);
+        if (line) commandEdit(target, 'insertText', line);
+      });
+    },
+  };
+  const selectAllCommand = (): void => {
+    const target = commandTarget();
+    if (target && 'selectionStart' in target) target.select();
+    else selection.selectAllChildren(target ?? document.body);
+  };
+  /** The name a page gave a command, as it is compared (ASCII caseless). */
+  const commandName = (id: Any): string => str(id).toLowerCase();
+  const commandSupported = (name: string): boolean =>
+    name === 'selectall' ||
+    Object.prototype.hasOwnProperty.call(COMMANDS, name);
+  const commandEnabled = (name: string): boolean =>
+    name === 'selectall' ||
+    (commandSupported(name) && commandTarget() !== null);
+
   /** What a key not cancelled does in an editing host: the edit it is, if
    *  any, and whether it was one — which keeps it from the host's own
    *  defaults, as Space scrolling the pane. */
@@ -27784,6 +28363,14 @@ export function installDom(
     Response,
     AbortController,
     AbortSignal,
+    TaskController,
+    TaskSignal,
+    TaskPriorityChangeEvent,
+    Scheduler,
+    XMLHttpRequestEventTarget,
+    XMLHttpRequestUpload,
+    Permissions,
+    PermissionStatus,
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
@@ -27914,6 +28501,13 @@ export function installDom(
   define('history', history);
   define('navigation', navigation);
   define('navigator', navigator);
+  // `[Replaceable]`: a page's own `scheduler` takes its place
+  Object.defineProperty(G, 'scheduler', {
+    value: madeScheduler(),
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   // Bun's context has a `console` of its own that no definition on the
   // global replaces — a page reads it whatever this defines — but whose
   // methods are its to set: they are set where there is one, as they are
