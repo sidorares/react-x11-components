@@ -405,6 +405,12 @@ export class TransportRelay {
     private readonly _post: (m: TransportTell) => void,
   ) {}
 
+  /** Whether a session of the worker's is still open, or opening: what
+   *  keeps its page out of the back-forward cache. */
+  get open(): boolean {
+    return this._sessions.size > 0;
+  }
+
   private _tell(m: TransportTell): void {
     if (!this._disposed) this._post(m);
   }
@@ -620,6 +626,8 @@ export class TransportRelay {
   private _connect(s: number, request: WebTransportConnectRequest): void {
     const connector = this._connector() ?? NO_WEBTRANSPORT;
     let relayed: RelayedSession | null = null;
+    // a seam may fail a session while it is being asked for it
+    let ended = false;
     const session = connector.connect(request, {
       ready: (info) =>
         this._tell({
@@ -630,10 +638,12 @@ export class TransportRelay {
           max: relayed ? relayed.session.maxDatagramSize() : 0,
         }),
       failed: (message) => {
+        ended = true;
         this._sessions.delete(s);
         this._tell({ kind: 'wt', ev: 'failed', s, message });
       },
       closed: (code, reason) => {
+        ended = true;
         this._sessions.delete(s);
         this._tell({ kind: 'wt', ev: 'closed', s, code, reason });
       },
@@ -658,6 +668,6 @@ export class TransportRelay {
       },
     });
     relayed = { session, groups: new Map() };
-    this._sessions.set(s, relayed);
+    if (!ended) this._sessions.set(s, relayed);
   }
 }

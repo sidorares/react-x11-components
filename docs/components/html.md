@@ -1422,15 +1422,19 @@ longest ago going first, and one no entry is of any more going as soon as
 that is so: a push from an earlier entry drops the entries ahead, and the
 documents they were of. A document is kept where its scripts run, it has
 loaded, and it holds no WebTransport session, WebSocket or peer
-connection open — its own or a worker's socket — which its server or its
-peer would see held. As it is left it hears `pageswap`,
+connection open, its own or a worker's, which its server or its peer
+would see held. As it is left it hears `pageswap`,
 then `pagehide` with `persisted` true and `visibilitychange` to `hidden`,
 its frames' documents first, and no `unload`: a page that listens for one
 is kept all the same and never hears it, as HTML has it and Chrome and
 Safari do (Firefox keeps such a page out). Then nothing of its runs — no
 task, no timer, no message, no script — and what its timers, its network
 and its workers ask of it waits, a timer that fires again or a frame
-waiting once. A step to one of its entries, by the page's `history` or
+waiting once. Its workers stop with it, as HTML has them, and go on from
+where they stopped: a worker's timer, or a thread still starting, opens
+nothing while the document is kept. A task already under way as it was
+left runs to its end, and a connection that asks for lets the document
+go, nothing opened. A step to one of its entries, by the page's `history` or
 `navigation` or the host's `session.go`, shows it again: it reads the
 session as it is now — `navigation.entries()` with the entries the
 documents shown meanwhile made, `navigation.activation` a `traverse` from
