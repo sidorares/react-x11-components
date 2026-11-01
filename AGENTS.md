@@ -2595,10 +2595,18 @@ out or written over, and one adding what reaches past its selectors — an
 `@counter-style` or layer, a rule at a shadow tree's edge or for a highlight.
 **Anything new a sheet can declare that reaches past the elements its
 selectors name joins `onlyRules`' and `rulesAfter`'s checks**, or a sheet
-bringing it restyles too little. A shadow tree's sheet reaches only what the
-tree's host holds, so a tree that comes to read otherwise, or to other
-rules, styles its host and all it holds (`_shadowKeys`), where GitHub's first
-`<tool-tip>` styled the whole document. A `<meta>` the
+bringing it restyles too little. The styles kept are the cascade before's,
+and the one made for the rules styles the root only if a rule reaches it, so
+**what is known of the root goes over with them** (`keepsStylesOf`): its
+style, which `KeptStyles.root` is not, that being the root box's, the initial
+style under an `<html>` the markup writes; and who reads its font, which only
+computing a style notes. Anything new a cascade notes of the root joins it, or
+a `rem` in an added rule comes to the initial size, and one a `<body>` of
+another size keeps from the root stays where it was when the root moves. A
+shadow tree's sheet reaches only what the tree's host holds, so a tree that
+comes to read otherwise, or to other rules, styles its host and all it holds
+(`_shadowKeys`), where GitHub's first `<tool-tip>` styled the whole document.
+A `<meta>` the
 cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
 `<base>`, a `:has()` every element could anchor
 that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`

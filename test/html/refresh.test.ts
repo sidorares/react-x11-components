@@ -48,6 +48,7 @@ import {
   metric,
   rebuilt,
   render,
+  renderScrolled,
   snapshot,
   treeOf,
   view,
@@ -4501,6 +4502,12 @@ function sheetChange(
       ...drawingRulesFor(next).split('\n').slice(0, 2),
       `.a { outline-color: ${ink} }`,
       `.b::before { color: ${ink} }`,
+      // what reads the root, in an element and in a shape, and what moves it
+      `.${pick(CLASSES)} { padding-left: ${pick(['1rem', '.5rem', '1rlh'])} }`,
+      `rect { stroke-width: ${pick(['.25rem', '.1rlh'])} }`,
+      ...(next() < 0.25
+        ? [`html { font-size: ${pick(['23px', '29px'])} }`]
+        : []),
     ].join('\n');
   };
   // at the end of the body, before an element at its top, or in a drawing,
@@ -4617,7 +4624,11 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
     // what runs a `@keyframes` no sheet has yet, held half way through it
     const css =
       `${rulesFor(next, true)}\n.a { animation: k 1s paused -0.5s }\n` +
-      '.b::before { content: "*"; animation: k 1s paused -0.5s }';
+      '.b::before { content: "*"; animation: k 1s paused -0.5s }\n' +
+      // a root the initial style is not, under a `<body>` that hands none of
+      // it on: what a `rem` in a rule kept and in a rule added reads
+      'html { font-size: 19px; line-height: 2 }\nbody { font-size: 13px }\n' +
+      '.c { margin-left: 1rem }';
     // a document whose markup writes its `<html>`, and one the cascade
     // supplies one for, which a rule for the root reaches otherwise
     const markup = markupFor(next, false, false, true);
@@ -4710,6 +4721,305 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   assert.ok(whole > 5, `${whole} sheet changes restyled everything`);
   assert.ok(tookOver > 20, `${tookOver} cascades took over the one before`);
 });
+
+/** `css` written after what a `<style id="css">` holds, as a CSS-in-JS
+ *  library writes a component's rules, and told. */
+function writeRules(el: HtmlViewNode, css: string): void {
+  const sheet = byId(el, 'css');
+  const text = createText(css);
+  appendChild(sheet, text);
+  el.touchDocument([
+    { type: 'childList', target: sheet, addedNodes: [text], removedNodes: [] },
+  ]);
+}
+
+/** What `read` says and what is drawn, held to a refresh of everything,
+ *  which styles the root, where `rebuilt` keeps every style there is. */
+async function asRefreshed<T>(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  read: () => T,
+  what: string,
+): Promise<T> {
+  await act();
+  const told = read();
+  const drawn = await snapshot(result, el);
+  el.touchDocument();
+  await act();
+  assert.deepStrictEqual(read(), told, `${what}: a refresh of everything`);
+  assert.strictEqual(
+    bytesApart(drawn, await snapshot(result, el)),
+    0,
+    `${what}: what it draws`,
+  );
+  return told;
+}
+
+/** The style a build gave an element, to tell one kept from one made. */
+const styleKept = (el: HtmlViewNode, id: string): unknown =>
+  (treeOf(el) as { styles: Map<Element, { style: unknown }> }).styles.get(
+    byId(el, id),
+  )?.style;
+
+/** A root a `rem` and an `rlh` do not come to from the initial style. */
+const SIZED_ROOT = 'html{font-size:32px;line-height:2} body{margin:0}';
+
+metric(
+  'a rem or an rlh in a rule a sheet adds is of the root the document has, not the initial one',
+  async () => {
+    const article = '<div id="b">x</div><div id="beside">y</div>';
+    const inHtml = (css: string) =>
+      `<html><head><style id="css">${css}</style></head><body>${article}</body></html>`;
+    const cases: [string, string, string, string, string][] = [
+      [
+        'a rem',
+        inHtml(SIZED_ROOT),
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      [
+        'an rlh',
+        inHtml(SIZED_ROOT),
+        '#b{margin-left:1rlh}',
+        'margin-left',
+        '64px',
+      ],
+      [
+        'a font size',
+        inHtml(SIZED_ROOT),
+        '#b{font-size:.5rem}',
+        'font-size',
+        '16px',
+      ],
+      // a rem is at the element's zoom, which a root's lengths are not
+      [
+        'a zoomed root',
+        inHtml(`${SIZED_ROOT} html{zoom:2}`),
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      // no `<html>`: a style the cascade makes up is the root, and a build of
+      // subtrees does not make it
+      [
+        'a <body> alone',
+        `<style id="css">${SIZED_ROOT}</style><body>${article}</body>`,
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      [
+        'a fragment',
+        `<style id="css">${SIZED_ROOT}</style><section>${article}</section><p>z</p>`,
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+    ];
+    for (const [what, source, rule, prop, value] of cases) {
+      const { result, node } = await render(source, 300);
+      const el = view(node);
+      await snapshot(result, el);
+      const held = styleKept(el, 'beside');
+      const cascade = cascadeOf(el);
+      writeRules(el, rule);
+      await act();
+      assert.notStrictEqual(cascadeOf(el), cascade, `${what}: a new cascade`);
+      assert.strictEqual(styleKept(el, 'beside'), held, `${what}: style kept`);
+      const read = () => el.computedStyle(byId(el, 'b'))?.[prop];
+      assert.strictEqual(
+        await asRefreshed(result, el, read, what),
+        value,
+        what,
+      );
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a rule a sheet adds for the root moves every rem, where no parent’s style hands it on',
+  async () => {
+    // a `<body>` with a size of its own keeps the root's from every element
+    // under it: all that says they read it is what the cascade noted
+    const css = 'html{font-size:32px} body{margin:0;font-size:16px}';
+    const held = '#a{margin-left:1rem}';
+    const article = '<div id="a">x</div><div id="b">y</div>';
+    const cases: [string, string, string, string[]][] = [
+      [
+        'a document with its <html>',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{font-size:40px}',
+        ['40px', '0px'],
+      ],
+      // which no element's rules are asked for, and an added rule reaches
+      [
+        'a <body> alone',
+        `<style id="css">${css}${held}</style><body>${article}</body>`,
+        'html{font-size:40px}',
+        ['40px', '0px'],
+      ],
+      // the rule for the root in the same sheet as one that reads it
+      [
+        'an added rem beside it',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{font-size:40px} #b{margin-left:.5rem}',
+        ['40px', '20px'],
+      ],
+      // what the rule sets of the root is not its font: what is read of it is
+      // the style the rule made, and a `rem` of the size that style has
+      [
+        'its colour alone',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{color:#ff0000} #b{margin-left:.5rem}',
+        ['32px', '16px'],
+      ],
+    ];
+    for (const [what, source, rules, values] of cases) {
+      const { result, node } = await render(source, 300);
+      const el = view(node);
+      await snapshot(result, el);
+      writeRules(el, rules);
+      const read = () =>
+        ['a', 'b'].map((id) => el.computedStyle(byId(el, id))?.['margin-left']);
+      assert.deepStrictEqual(await asRefreshed(result, el, read, what), values);
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'the root stays with the styles through the changes after a sheet adds rules',
+  async () => {
+    const { result, node } = await render(
+      `<html id="root"><head><style id="css">${SIZED_ROOT} html.big{font-size:40px}` +
+        ' body{font-size:16px} #a{margin-left:1rem}</style></head>' +
+        '<body><div id="a">x</div><div id="b">y</div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    writeRules(el, '#b.on{padding-left:1rem} #b.on::before{content:"*"}');
+    await act();
+    const cascade = cascadeOf(el);
+    const read = (id: string, prop: string) => () =>
+      el.computedStyle(byId(el, id))?.[prop];
+    // a change told to the cascade the sheet made, which styles no root
+    el.touchDocument([setClass(byId(el, 'b'), 'on')]);
+    await act();
+    assert.strictEqual(cascadeOf(el), cascade, 'the same cascade');
+    assert.strictEqual(
+      await asRefreshed(result, el, read('b', 'padding-left'), 'a told change'),
+      '32px',
+    );
+    // and a second sheet's, made from that cascade and not from the first
+    writeRules(el, '#b{margin-left:2rem}');
+    await act();
+    assert.notStrictEqual(cascadeOf(el), cascade, 'a cascade after it');
+    assert.strictEqual(
+      await asRefreshed(result, el, read('b', 'margin-left'), 'a second sheet'),
+      '64px',
+    );
+    // and the root told to move, which a rem kept since the first build follows
+    el.touchDocument([setClass(byId(el, 'root'), 'big')]);
+    assert.strictEqual(
+      await asRefreshed(result, el, read('a', 'margin-left'), 'the root moved'),
+      '40px',
+    );
+  },
+);
+
+metric(
+  'a rem in a container query a sheet adds is of the root, not of the container',
+  async () => {
+    const { result, node } = await render(
+      `<html><head><style id="css">${SIZED_ROOT}` +
+        ' #c{container-type:inline-size;width:300px;font-size:10px}</style></head>' +
+        '<body><div id="c"><div id="b">x</div></div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const was = el.computedStyle(byId(el, 'b'))?.color;
+    // 480px, wider than the container; 150px at the container's own size
+    writeRules(el, '@container (min-width: 15rem) { #b{color:#ff0000} }');
+    const read = () => el.computedStyle(byId(el, 'b'))?.color;
+    assert.strictEqual(await asRefreshed(result, el, read, 'a query'), was);
+  },
+);
+
+metric(
+  'a rem kept in a pseudo-element or a container query moves with a fluid root after a sheet adds rules',
+  async () => {
+    // Neither is in an element's own style, so only what the cascade noted
+    // says who reads the root, where a build would have styled them all:
+    // a rule that keeps off the root, and a `vw` of its own to have a resize
+    // ask. In a document of each: one that reads it from a pseudo-element
+    // is built at a new width, which styles the other as well.
+    const fluid = 'html{font-size:5vw} body{margin:0;font-size:16px}';
+    const cases: [string, string, (el: HtmlViewNode) => unknown, unknown][] = [
+      [
+        'a pseudo-element',
+        `${fluid} #a::before{content:"*";margin-left:1rem}`,
+        (el) => el.computedStyle(byId(el, 'a'), 'before')?.['margin-left'],
+        '40px',
+      ],
+      [
+        'a query',
+        `${fluid} #c{container-type:inline-size;width:300px}` +
+          ' @container (min-width:10rem){#b{color:#ff0000}}',
+        (el) => el.computedStyle(byId(el, 'b'))?.color === 'rgb(255, 0, 0)',
+        false,
+      ],
+    ];
+    for (const [what, css, read, value] of cases) {
+      const { el, resize, result } = await renderScrolled(
+        `<html><head><style id="css">${css}</style></head><body>` +
+          '<div id="a">x</div><div id="c"><div id="b">y</div></div>' +
+          '<div id="z">z</div></body></html>',
+        300,
+      );
+      await snapshot(result, el);
+      writeRules(el, '#z{width:1vw}');
+      await act();
+      await resize(300, 800);
+      assert.strictEqual(
+        await asRefreshed(result, el, () => read(el), what),
+        value,
+        what,
+      );
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a rem in a rule a sheet adds for a shape, and in a drawing it draws again, is of the root',
+  async () => {
+    const drawing =
+      '<svg id="s" width="120" height="100">' +
+      '<rect x="30" y="30" width="60" height="60" fill="none" stroke="#ff0000"/>' +
+      '<rect id="g" x="0" y="0" width="2rem" height="8" fill="#0000ff"/></svg>';
+    const { result, node } = await render(
+      `<html><head><style id="css">${SIZED_ROOT}</style></head>` +
+        `<body id="body">${drawing}</body></html>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    // the shape's, and the box of the drawing that is built again for it
+    writeRules(el, 'rect{stroke-width:.5rem} svg{margin-top:0;display:block}');
+    const body = byId(el, 'body');
+    await asRefreshed(result, el, () => shapesOf(el, body), 'a shape');
+    // 8px either side of the edge at 30: three and a half at the initial size
+    await expectPixel(result.ctx, 24, 60, '#ff0000');
+    await expectPixel(result.ctx, 60, 4, '#0000ff');
+  },
+);
 
 metric(
   'a sheet that brings a @keyframes styles what runs its name, and nothing else',
