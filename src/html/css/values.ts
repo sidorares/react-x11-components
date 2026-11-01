@@ -693,6 +693,15 @@ export function parseStretch(
   return pct !== null && Number.isFinite(pct) && pct >= 0 ? pct : null;
 }
 
+/** The keyword a `font-stretch` percentage is, or null: a `font` can say no
+ *  other width (CSS Fonts 4, 2.7's `<font-width-css3>`). */
+export function stretchKeyword(pct: number): string | null {
+  for (const keyword in STRETCHES) {
+    if (STRETCHES[keyword] === pct) return keyword;
+  }
+  return null;
+}
+
 /** The generic fixed-width family's size to everyone else's: 13 to 16, the
  *  two default sizes every browser keeps. */
 export const FIXED_SIZE = 13 / 16;

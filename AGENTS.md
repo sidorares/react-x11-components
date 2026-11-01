@@ -4032,6 +4032,20 @@ escape's character**, as `splitCommas`, `splitValue` and `trimValue` do:
 an escape that starts an identifier as no character could**, so `\31 996` is
 still a name when it gets here; written out it is a number.
 
+**`font` reads what the shorthand can say, and nothing where it cannot.**
+`fontText` (`computed.ts`) writes it from what `font-family` and `font-size`
+answer, and reads `''` where a longhand holds a value it has no way to say, as
+all three engines do: a width that is no keyword, capitals other than
+`small-caps`, and anything but the initial value of what it only sets back.
+Longhands no text is set by here are held for that alone, a bit each of
+`fontUnsaid` (`UNSAID_FONT`), since `font` sets them back as it does the rest.
+**Anything new that holds a longhand of `font` is set back by
+`applyFontShorthand`, inherits by `INHERIT_TARGETS.font` or `UNSAID_BITS`, and
+is asked in `fontText`**, or a page reads a font it did not set, and hands a
+canvas none. `font` is no item of a computed style's list, which is of
+longhands, so a page that copies a style item by item, as html2canvas does,
+does not set it over them, or take them off with the `''` it reads.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a
