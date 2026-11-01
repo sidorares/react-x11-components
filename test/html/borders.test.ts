@@ -1375,6 +1375,23 @@ test('a dashed or dotted side cut to what the paint reaches keeps its pattern', 
   }
 });
 
+test('two corners rounded through a var() are both rounded', async () => {
+  // GitHub's search box, whose left side is `leftRounded`: the second
+  // longhand's var() set the radii back to nothing first, all four of them,
+  // and the top corner was square under the round one below it
+  const { node } = await render(
+    '<style>body{margin:0}:root{--radius:6px}' +
+      '.box{width:100px;height:40px;border:1px solid #ff0000}' +
+      '.left{border-top-left-radius:var(--radius);' +
+      'border-bottom-left-radius:var(--radius)}</style>' +
+      '<div class="box left"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const ring = fills.find((f) => f.style === parseColor('#ff0000'));
+  assert.deepStrictEqual(ring?.radii, [6, 0, 0, 6]);
+  assert.deepStrictEqual(ring?.inner?.radii, [5, 0, 0, 5]);
+});
+
 test("a percentage radius is of the box's width across and its height down", async () => {
   // `50%` was read as no radius, so an avatar was a square: a circle on a
   // square box, and an ellipse on any other, drawn as four curves

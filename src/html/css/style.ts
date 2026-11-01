@@ -2657,9 +2657,7 @@ export function applyDeclaration(
       }
       if (bit & 1) style.columnCount = count;
       if (bit & 2) style.columnWidth = width;
-      style.columns =
-        (style.columnCount !== null ? 1 : 0) |
-        (style.columnWidth !== null ? 2 : 0);
+      style.columns = multicolBits(style);
       return;
     }
     case 'orphans':
@@ -3733,15 +3731,7 @@ export function applyDeclaration(
       const parts = splitValue(value).map((p) => radiusOf(p, ctx));
       if (!parts.length || parts.length > 2 || parts.includes(null)) return;
       const [x, y = x] = parts as Len[];
-      const corner = CORNERS.indexOf(name);
-      const radii = style.borderRadius.slice() as ComputedStyle['borderRadius'];
-      const vertical = (
-        style.borderRadiusY ?? style.borderRadius
-      ).slice() as ComputedStyle['borderRadius'];
-      radii[corner] = x;
-      vertical[corner] = y;
-      style.borderRadius = radii;
-      style.borderRadiusY = sameRadii(radii, vertical) ? null : vertical;
+      setCorner(style, CORNERS.indexOf(name), x, y);
       return;
     }
     case 'outline': {
@@ -8349,9 +8339,15 @@ function cornerShapesOf(
     out = was.slice();
     targets.forEach((corner, i) => (out[corner] = k[i] ?? k[0]));
   }
-  return out.every((s) => s === 1)
+  return asCornerShapes(out);
+}
+
+/** Four corners' shapes as a style keeps them: `ROUND_CORNERS` where all
+ *  are round, which is what a paint compares with. */
+function asCornerShapes(shapes: number[]): CornerShapes {
+  return shapes.every((s) => s === 1)
     ? ROUND_CORNERS
-    : (out as unknown as CornerShapes);
+    : (shapes as unknown as CornerShapes);
 }
 
 /** The four corners, in `border-radius`'s order. */
@@ -8361,6 +8357,19 @@ const CORNERS = [
   'border-bottom-right-radius',
   'border-bottom-left-radius',
 ];
+
+/** One corner's radii, across and down, the others as they were: the two
+ *  fields hold all four. */
+function setCorner(style: ComputedStyle, corner: number, x: Len, y: Len): void {
+  const radii = style.borderRadius.slice() as ComputedStyle['borderRadius'];
+  const vertical = (
+    style.borderRadiusY ?? style.borderRadius
+  ).slice() as ComputedStyle['borderRadius'];
+  radii[corner] = x;
+  vertical[corner] = y;
+  style.borderRadius = radii;
+  style.borderRadiusY = sameRadii(radii, vertical) ? null : vertical;
+}
 
 export type LogicalSide =
   'inline-start' | 'inline-end' | 'block-start' | 'block-end';
@@ -8800,6 +8809,11 @@ export function initialOne(
     };
     return;
   }
+  const part = FIELD_PARTS.get(PREFIXED_ALIASES[name] ?? name);
+  if (part) {
+    part(style, initial);
+    return;
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   copyFields(style, initial, keys);
@@ -8899,6 +8913,11 @@ function inheritOne(
     };
     return;
   }
+  const part = FIELD_PARTS.get(name);
+  if (part) {
+    part(style, parent);
+    return;
+  }
   // a bit or a few of one field, so the others stay as they are
   const unsaid = UNSAID_BITS[name];
   if (unsaid) {
@@ -8956,6 +8975,162 @@ const MASK_LISTS: Record<string, keyof MaskLayers> = {
   'mask-composite': 'composites',
   '-webkit-mask-composite': 'composites',
 };
+
+/** A longhand's share of a field, from `from` into `style`, what its
+ *  siblings hold of the field left as it was. */
+type FieldPart = (style: ComputedStyle, from: ComputedStyle) => void;
+
+/** The fields that are an object with a member or two for each longhand. */
+type PartedField =
+  'borderImage' | 'columnRule' | 'rowRule' | 'timelineTriggers';
+
+/** `keys` of the object in `field`. */
+function partOf<F extends PartedField>(
+  field: F,
+  ...keys: (keyof ComputedStyle[F])[]
+): FieldPart {
+  return (style, from) => {
+    const part = { ...style[field] };
+    for (const key of keys) part[key] = from[field][key];
+    style[field] = part;
+  };
+}
+
+/** A member of a gap's rule under its three names, `rule-width` being the
+ *  rule of both axes. */
+function ruleParts(key: keyof GapRule): [string, FieldPart][] {
+  const column = partOf('columnRule', key);
+  const row = partOf('rowRule', key);
+  return [
+    [`column-rule-${key}`, column],
+    [`row-rule-${key}`, row],
+    [
+      `rule-${key}`,
+      (style, from) => {
+        column(style, from);
+        row(style, from);
+      },
+    ],
+  ];
+}
+
+/** One edge of each of a trigger's ranges, the other as it was. `from`'s
+ *  `auto` stands for the whole range, as it does declared. */
+function triggerEdge(list: 'activation' | 'active', edge: 0 | 1): FieldPart {
+  return (style, from) => {
+    const t = style.timelineTriggers;
+    const was = t[list];
+    const ranges = from.timelineTriggers[list].map((range, i) => {
+      const kept = was[i % was.length];
+      if (!range || !kept) return range;
+      const both: readonly [RangeEdge, RangeEdge] = edge
+        ? [kept[0], range[1]]
+        : [range[0], kept[1]];
+      return both;
+    });
+    style.timelineTriggers = { ...t, [list]: ranges };
+  };
+}
+
+/** Which of a count and a width a multicol container has, as `columns`
+ *  keeps them. */
+function multicolBits(style: ComputedStyle): number {
+  return (
+    (style.columnCount !== null ? 1 : 0) | (style.columnWidth !== null ? 2 : 0)
+  );
+}
+
+/** `white-space`'s half from `from`, what it keeps of the white space or
+ *  whether its lines wrap (`white-space-collapse`, `text-wrap-mode`). */
+function whiteSpacePart(
+  style: ComputedStyle,
+  from: ComputedStyle,
+  wraps: boolean,
+): void {
+  style.whiteSpace = wraps
+    ? whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrapsIn(from.whiteSpace))
+    : whiteSpaceOf(COLLAPSE_OF[from.whiteSpace], wrapsIn(style.whiteSpace));
+}
+
+/**
+ * The longhands that share a field with their siblings, as the mask's do
+ * (`MASK_LISTS`), and what `inherit`, `initial` and a `var()` take of it: a
+ * declaration with a `var()` goes back to the initial value before it is
+ * substituted (`Cascade._apply`), and taken whole, each undid the sibling
+ * before it. GitHub's search box rounds its left side with
+ * `border-top-left-radius: var(--borderRadius-medium)` and the same at the
+ * bottom left, and its top corner was square.
+ */
+const FIELD_PARTS = new Map<string, FieldPart>([
+  ...CORNERS.map((name, i): [string, FieldPart] => [
+    name,
+    (style, from) =>
+      setCorner(
+        style,
+        i,
+        from.borderRadius[i],
+        (from.borderRadiusY ?? from.borderRadius)[i],
+      ),
+  ]),
+  ...Object.entries(CORNER_SHAPE_TARGETS).map(
+    ([name, corners]): [string, FieldPart] => [
+      name,
+      (style, from) => {
+        const shapes = style.cornerShape.slice();
+        for (const corner of corners) shapes[corner] = from.cornerShape[corner];
+        style.cornerShape = asCornerShapes(shapes);
+      },
+    ],
+  ),
+  ['border-image-source', partOf('borderImage', 'source')],
+  ['border-image-slice', partOf('borderImage', 'slice', 'fill')],
+  ['border-image-width', partOf('borderImage', 'width')],
+  ['border-image-outset', partOf('borderImage', 'outset')],
+  ['border-image-repeat', partOf('borderImage', 'repeat')],
+  ...ruleParts('width'),
+  ...ruleParts('style'),
+  ...ruleParts('color'),
+  ...ruleParts('break'),
+  ...ruleParts('inset'),
+  ['timeline-trigger-name', partOf('timelineTriggers', 'names')],
+  ['timeline-trigger-source', partOf('timelineTriggers', 'sources')],
+  [
+    'timeline-trigger-range',
+    partOf('timelineTriggers', 'activation', 'active'),
+  ],
+  [
+    'timeline-trigger-activation-range',
+    partOf('timelineTriggers', 'activation'),
+  ],
+  ['timeline-trigger-active-range', partOf('timelineTriggers', 'active')],
+  ['timeline-trigger-activation-range-start', triggerEdge('activation', 0)],
+  ['timeline-trigger-activation-range-end', triggerEdge('activation', 1)],
+  ['timeline-trigger-active-range-start', triggerEdge('active', 0)],
+  ['timeline-trigger-active-range-end', triggerEdge('active', 1)],
+  [
+    'column-count',
+    (style, from) => {
+      style.columnCount = from.columnCount;
+      style.columns = multicolBits(style);
+    },
+  ],
+  [
+    'column-width',
+    (style, from) => {
+      style.columnWidth = from.columnWidth;
+      style.columns = multicolBits(style);
+    },
+  ],
+  ['white-space-collapse', (style, from) => whiteSpacePart(style, from, false)],
+  ['text-wrap-mode', (style, from) => whiteSpacePart(style, from, true)],
+  [
+    'text-wrap',
+    (style, from) => {
+      whiteSpacePart(style, from, true);
+      style.textWrapStyle = from.textWrapStyle;
+    },
+  ],
+]);
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],

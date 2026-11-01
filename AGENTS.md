@@ -1601,6 +1601,19 @@ attr(data-token)` would have asked for the attribute's value. And
 **anything new that substitutes a value for a property goes through
 `substituteIn`**, not `substitute`, whose result is not checked.
 
+**A longhand goes back alone, whatever it shares a field with.** A
+declaration with a `var()` is set back to its initial value before it is
+substituted (`Cascade._apply`), in case what it substitutes is no value, and
+`inherit`, `initial`, `unset` and `revert` copy the property from another
+style. So a longhand that keeps part of a field takes that part alone:
+`MASK_LISTS`, `ANIMATION_LONGHANDS` and `TRANSITION_LONGHANDS` for their
+lists, and `FIELD_PARTS` for the rest. Taken whole,
+`border-bottom-left-radius: var(--x)` undid the `border-top-left-radius`
+before it, so GitHub's search box had a square corner, and `column-count:
+var(--missing)` left a box with a `column-width` no multicol container.
+**Anything new that keeps two longhands in one field joins `FIELD_PARTS`**,
+and `INHERIT_TARGETS` goes on naming the whole field, for what animates it.
+
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
 until no limit stops an item, divides by a running sum (react/yoga#2006),
