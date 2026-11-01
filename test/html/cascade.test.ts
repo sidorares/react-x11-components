@@ -20,6 +20,7 @@ import {
 } from '../../src/html/css/parse.js';
 import {
   INHERITED,
+  ROUND_CORNERS,
   applyDeclaration,
   inherit,
   initialStyle,
@@ -128,6 +129,167 @@ metric(
     assert.strictEqual(p.style.marginLeft, 0);
   },
 );
+
+test('a longhand that shares a field with its siblings takes only its own part of it, through a var(), inherit and initial', async () => {
+  // A declaration with a `var()` is set back to its initial value first, in
+  // case what it substitutes is no value, and `inherit` and `initial` copy
+  // the property from another style. Taken whole, each undid the siblings
+  // before it: GitHub's search box rounds its left side with
+  // `border-top-left-radius: var(--borderRadius-medium)` and the same at the
+  // bottom left, and its top corner was square. What each case comes to is
+  // Chrome's
+  const edge = { name: 'entry', offset: { pct: 10 } };
+  const end = { name: null, offset: { pct: 100 } };
+  const multicol = (s: ComputedStyle) => [
+    s.columnCount,
+    s.columnWidth,
+    s.columns,
+  ];
+  const radii = (s: ComputedStyle) => s.borderRadius;
+  const image = (s: ComputedStyle) => s.borderImage;
+  const cases: [string, (s: ComputedStyle) => unknown, unknown][] = [
+    [
+      'border-top-left-radius:var(--r);border-bottom-left-radius:var(--r)',
+      radii,
+      [6, 0, 0, 6],
+    ],
+    ['border-radius:8px;border-top-left-radius:initial', radii, [0, 8, 8, 8]],
+    ['border-radius:8px;border-top-left-radius:inherit', radii, [0, 8, 8, 8]],
+    ['border-radius:8px;border-top-left-radius:unset', radii, [0, 8, 8, 8]],
+    [
+      'border-top-left-radius:6px;border-bottom-left-radius:var(--missing)',
+      radii,
+      [6, 0, 0, 0],
+    ],
+    // its own part goes back, as the var() that substitutes nothing says
+    [
+      'border-bottom-left-radius:6px;border-bottom-left-radius:var(--missing)',
+      radii,
+      [0, 0, 0, 0],
+    ],
+    // a corner is two radii, in two fields
+    [
+      'border-top-left-radius:6px 3px;border-bottom-left-radius:var(--r)',
+      (s) => [s.borderRadius, s.borderRadiusY],
+      [
+        [6, 0, 0, 6],
+        [3, 0, 0, 6],
+      ],
+    ],
+    [
+      'corner-top-left-shape:bevel;corner-bottom-left-shape:var(--bevel)',
+      (s) => s.cornerShape,
+      [0, 1, 1, 0],
+    ],
+    [
+      'corner-shape:bevel;corner-top-shape:initial',
+      (s) => s.cornerShape,
+      [1, 1, 0, 0],
+    ],
+    // all of them round again is the style's one round value, which a
+    // paint compares with
+    [
+      'corner-top-left-shape:bevel;corner-top-left-shape:var(--missing)',
+      (s) => s.cornerShape === ROUND_CORNERS,
+      true,
+    ],
+    [
+      'border-image-source:var(--image);border-image-slice:var(--slice)',
+      (s) => [image(s).source !== null, image(s).slice],
+      [true, [10, 10, 10, 10]],
+    ],
+    [
+      'border-image-slice:10 fill;border-image-source:var(--missing)',
+      (s) => [image(s).source, image(s).slice, image(s).fill],
+      [null, [10, 10, 10, 10], true],
+    ],
+    [
+      'border-image-repeat:round;border-image-slice:10 fill;' +
+        'border-image-slice:initial',
+      (s) => [image(s).slice[0], image(s).fill, image(s).repeat],
+      [{ pct: 100 }, false, ['round', 'round']],
+    ],
+    [
+      'column-rule-width:var(--w);column-rule-style:var(--dashed);' +
+        'column-rule-color:var(--c)',
+      (s) => [s.columnRule.width, s.columnRule.style, s.columnRule.color],
+      [5, 'dashed', '#ff0000'],
+    ],
+    // `rule-*` is both axes' rule, each keeping the rest of its own
+    [
+      'row-rule-style:dashed;column-rule-style:dotted;rule-width:var(--w)',
+      (s) => [
+        s.rowRule.width,
+        s.rowRule.style,
+        s.columnRule.width,
+        s.columnRule.style,
+      ],
+      [5, 'dashed', 5, 'dotted'],
+    ],
+    [
+      'row-rule-width:5px;row-rule-style:dashed;rule-width:var(--missing)',
+      (s) => [s.rowRule.width, s.rowRule.style],
+      [3, 'dashed'],
+    ],
+    [
+      'timeline-trigger-name:var(--name);timeline-trigger-source:var(--source)',
+      (s) => [s.timelineTriggers.names, s.timelineTriggers.sources[0].kind],
+      [['--t'], 'view'],
+    ],
+    [
+      'timeline-trigger-activation-range-start:entry 10%;' +
+        'timeline-trigger-activation-range-end:var(--missing)',
+      (s) => s.timelineTriggers.activation,
+      [[edge, end]],
+    ],
+    [
+      'white-space-collapse:var(--keep);text-wrap-mode:var(--flat)',
+      (s) => s.whiteSpace,
+      'pre',
+    ],
+    [
+      'text-wrap-mode:nowrap;white-space-collapse:var(--keep)',
+      (s) => s.whiteSpace,
+      'pre',
+    ],
+    [
+      'white-space-collapse:preserve;text-wrap-mode:inherit',
+      (s) => s.whiteSpace,
+      'pre-wrap',
+    ],
+    [
+      'white-space-collapse:preserve;text-wrap:var(--missing)',
+      (s) => s.whiteSpace,
+      'pre-wrap',
+    ],
+    // `columns` says it is a multicol container, by what either of them says
+    [
+      'column-width:100px;column-count:var(--missing)',
+      multicol,
+      [null, 100, 2],
+    ],
+    ['column-count:3;column-width:initial', multicol, [3, null, 1]],
+    // under the name WebKit had it by, a declaration of the same property
+    [
+      'column-width:100px;-webkit-column-count:3;' +
+        '-webkit-column-count:var(--missing)',
+      multicol,
+      [null, 100, 2],
+    ],
+  ];
+  const { node } = await render(
+    '<style>:root{--r:6px;--bevel:bevel;--slice:10;' +
+      '--image:linear-gradient(#ff0000,#0000ff);--w:5px;--dashed:dashed;' +
+      '--c:#ff0000;--name:--t;--source:view();--keep:preserve;--flat:nowrap}' +
+      '</style>' +
+      cases.map(([css], i) => `<p id="c${i}" style="${css}">x</p>`).join(''),
+  );
+  const el = view(node);
+  cases.forEach(([css, read, expected], i) => {
+    const { style } = boxOf(el, `c${i}`) as unknown as { style: ComputedStyle };
+    assert.deepStrictEqual(read(style), expected, css);
+  });
+});
 
 test('a property @property registers has its initial value where nothing sets it, and one that does not inherit starts again under what sets it', async () => {
   // CSS Properties and Values 1, 2.4 and 3. A page draws the stops of a
