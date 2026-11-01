@@ -47,6 +47,7 @@ import {
   CLAMPED,
   CONTROL_BASELINES,
   GRID_TRACKS,
+  layerMarks,
   LINE_BOX_RAISES,
   PADDED_FACES,
   isOffset,
@@ -5971,9 +5972,12 @@ function ellipsizeLines(
   lineHeight: number,
 ): number {
   // what a cut took off a line is back on it, until it is cut again
+  const hidden = new Set<Box>();
   if (ellipsizes.any) {
     for (const line of lines) {
-      for (const placed of line.atomics) CLAMPED.delete(placed.box);
+      for (const { box } of line.atomics) {
+        if (CLAMPED.delete(box)) hidden.add(box);
+      }
     }
   }
   const edge = options.width;
@@ -5987,6 +5991,15 @@ function ellipsizeLines(
       ellipsizeLine(line, style, edge, fonts, base, lineHeight);
     }
     widest = Math.max(widest, line.width);
+  }
+  // the order of the layers hears of a box this hides that it did not, and
+  // one it shows: a row of a mail page cut at each width hides the same icon
+  if (ellipsizes.any) {
+    for (const line of lines) {
+      for (const { box } of line.atomics) {
+        if (CLAMPED.has(box) !== hidden.has(box)) layerMarks.moved += 1;
+      }
+    }
   }
   return widest;
 }

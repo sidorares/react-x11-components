@@ -2981,22 +2981,56 @@ place calls `noteMoving`**, as a restyle in place does, or a layout that
 lays the box out again leaves it where the flow put it. **Anything new
 that moves boxes or changes their ink outside a layout walks the tree's
 ink whole** (`computePaintBounds` with no `KeptInk`), which makes every
-record stale, or a later walk keeps ink of where the boxes were: a sticky
-box the pane's scroll places is one walk of part of it
-(`boundsAfterMove`), and why no ink under one is kept, and a box a
-transform moved in place is the other (`inkAfterMove`), whose walk makes the
-records stale as a whole one does. A restyle in place that only moved boxes
-walks those and the boxes around them as far as they have to grow, and
-gathers no layers, since `movable` lets through no change of a stacking
-context: a spinner turning at the foot of a mail page's list walked all
-13,000 of its elements at every frame. What is around it stays as large as
-it grew, which a culled paint takes as more to draw, never less; a box on
-a line goes from its block, whose lines say how far it reaches past them
-(`LINE_INK`). And **a text or a
+record stale, **or walks what moved, where what moved is in `moved`**
+(`boundsAfterMove`), or a later walk keeps ink of where the boxes were. A
+sticky box the pane's scroll places is one such walk, and why no ink under one
+is kept, and a box a transform moved in place is the other (`inkAfterMove`).
+No walk reads a record of what is in `moved`, which is every box around what
+moved. A record inside it says where the block stood, so it goes by itself
+where the block stands elsewhere, and is right where it stands there again:
+ink is in a block's own coordinates. Every other record is of ink nothing
+moved, so a walk of what moved leaves them: stale at each frame of a mail
+page's spinner, all of them sent the layout after down its 12,000 boxes. A
+restyle in place that only moved boxes walks those and the boxes
+around them as far as they have to grow, and gathers no layers, since
+`movable` lets through no change of a stacking context: that spinner, turning
+at the foot of a list, walked all 13,000 of the page's elements at every
+frame. What is around it stays as large as it grew, which a culled paint takes
+as more to draw, never less; a box on a line goes from its block, whose lines
+say how far it reaches past them (`LINE_INK`). And **a text or a
 break carries its element's style and is no box of its own**: no pass
 moves it, and no scroll places it (`stickyBlock`). Taken for a sticky
 box, a sticky element's text was held where its rect had drifted to, and
 the ink around it grown to reach it.
+
+**The order of the layers is worked out once for a tree, and a build brings
+it up to date** (`LAYERS_HELD`, `stackAfterLayout`, `carryLayers`).
+`hoistNegative` and `stackLayers` read styles and the tree's shape, which no
+width moves, so neither walks a tree a layout laid out before: at each of a
+drag's layouts, `hoistNegative` walked all of a mail page's 14,800 boxes and
+`stackLayers` 4,100, some 3 ms of layouts that laid out 500. A build of subtrees carries them to its tree: nothing to do where
+nothing it took out or put in is in a list, and otherwise the stacking contexts
+around the splice, and each new one in it, gather what they hold at the next
+layout, once it has said which boxes hold layers (`Box.holdsLayers`), each
+leaving the contexts in it as they are. That page's spinner is built again in
+its button at most steps of a drag, and the button is a context of a few boxes.
+Five things are load-bearing. **What a layout decides that either reads is
+in `layerMarks`**: a box past a clamp point (`clampBox`, `unclampBox`), which
+no list holds, and a cell's clip (`clipCell`), which a layer is under; a layout
+that moves it walks the tree, and `ellipsizeLines` says only what its cut hid or
+showed that it had not. **So is a box set aside**: `stackAfterLayout` is told
+`cut`, walks what the layout left, and what it finds is held by no later layout.
+**What a restyle in place changes that either reads is `HoverChange.order`**,
+which walks the tree there (`reorders`); every other field they read falls to
+the end of `hoverChange` and builds the boxes, so anything new taken in place
+that makes a box a layer, a context or a clip sets `order`. **What no context's
+lists say is walked for** (`carryLayers`' `reached`): a box in the top layer and
+an inline box that is a layer, whose lists are the tree's, and a context under
+what a clamp hides, which no walk reaches. And **`LINES_APART` is by a block's
+lines**, which a layout makes new, so it is the one part noted after every
+layout, from the inline boxes the last walk found (`noteApartLines`).
+`treeLines` holds the lists to a whole build in every fuzz that calls it, and
+`LAYERED_SEEDS` and `LAYERED_FROM` sweep documents of nothing else.
 
 **A stream's chunk is a change the parser tells of, and builds the ends of
 what it touched** (`HtmlSource.takeAppended`, `_parsedChanges`,

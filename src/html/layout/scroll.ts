@@ -19,7 +19,7 @@
 import type { Element } from 'domhandler';
 
 import { scrolls } from '../css/style.js';
-import { CLAMPED } from './boxes.js';
+import { CLAMPED, clampBox, unclampBox } from './boxes.js';
 import type { Box, BoxTree, LineBox } from './boxes.js';
 import { clipsOverflow, containingBlockOf, hasRect, holds } from '../paint.js';
 
@@ -663,8 +663,8 @@ export function updatePositionVisibility(
             !!viewport &&
             outside(anchor, viewport))));
     if (hidden === CLAMPED.has(box)) continue;
-    if (hidden) CLAMPED.add(box);
-    else CLAMPED.delete(box);
+    if (hidden) clampBox(box);
+    else unclampBox(box);
     changed.push(box);
   }
   return changed;
