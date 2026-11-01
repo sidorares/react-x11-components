@@ -4413,6 +4413,59 @@ test('in a document of drawings, a refresh told what changed gives their shapes 
   );
 });
 
+test('what a told change moves into an inline drawing is styled there, shadow trees and all, where what was in a tree read the style it had', async () => {
+  // what is in a drawing has no box, so a read styles it down from the
+  // nearest element a build styled. Each line is what Chromium and Firefox
+  // read, a script's `getComputedStyle` of a host moved into a `<g>`: WebKit
+  // alone has a slot and what it takes inherit nothing there
+  const { node } = await render(
+    '<style>.scope svg .moved { visibility: hidden; color: #ff0000 }' +
+      '.scope svg .kid { color: #0000ff }</style>' +
+      '<div class="scope"><div id="from"><div id="moved" class="moved">' +
+      '<section><template shadowrootmode="open"><style>b { margin: 0 }</style>' +
+      '<b><i>in</i></b><slot></slot><div><template shadowrootmode="open">' +
+      '<u>deeper</u></template></div></template>' +
+      '<span class="kid">taken</span></section></div></div>' +
+      '<svg width="20" height="20"><g id="g"></g></svg></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const moved = byId(el, 'moved');
+  const from = byId(el, 'from');
+  const g = byId(el, 'g');
+  const read = (): string[] =>
+    elementsIn(moved).map((e) => {
+      const style = el.computedStyle(e)!;
+      return `${e.name} ${style.visibility} ${style.color}`;
+    });
+  const ink = read()[0].split(' ').slice(2).join(' ');
+  assert.deepStrictEqual(
+    read(),
+    ['div', 'section', 'span', 'style', 'b', 'i', 'slot', 'div', 'u'].map(
+      (tag) => `${tag} visible ${ink}`,
+    ),
+  );
+  removeNode(moved);
+  appendChild(g, moved);
+  el.touchDocument([
+    { type: 'childList', target: from, addedNodes: [], removedNodes: [moved] },
+    { type: 'childList', target: g, addedNodes: [moved], removedNodes: [] },
+  ]);
+  await act();
+  assert.deepStrictEqual(read(), [
+    'div hidden rgb(255, 0, 0)',
+    'section hidden rgb(255, 0, 0)',
+    'span hidden rgb(0, 0, 255)',
+    'style hidden rgb(255, 0, 0)',
+    'b hidden rgb(255, 0, 0)',
+    'i hidden rgb(255, 0, 0)',
+    'slot hidden rgb(255, 0, 0)',
+    'div hidden rgb(255, 0, 0)',
+    'u hidden rgb(255, 0, 0)',
+  ]);
+});
+
 test('in a document of :has()s that ask only of their children and of sibling combinators, a refresh told what changed comes to the same styles', async () => {
   const ways = await refreshesAgree(
     30,
