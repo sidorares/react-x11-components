@@ -803,8 +803,8 @@ test('a page whose scripts take little of a drag that fell behind hears every wi
   await drag.rests();
   for (const width of [380, 370, 360]) {
     await drag.step(width);
+    await drag.hears(`resize ${width}`);
     await drag.hears(`observer ${width}`);
-    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
   }
   assert.ok(drag.held(), 'behind all the while');
   drag.live(false);
@@ -824,8 +824,8 @@ test('a page told nothing hears again once its scripts have had their part of th
   // the document's work goes on the same clock, and the time goes by
   drag.work.value = 100_000;
   await drag.step(360);
+  await drag.hears('resize 360');
   await drag.hears('observer 360');
-  assert.ok(drag.heard().includes('resize 360'), drag.heard());
   drag.live(false);
   await act(async () => void (await drag.clock.finish()));
 });
@@ -839,8 +839,8 @@ test('a drag the document keeps up with tells a page every width, and so does a 
   drag.live(true);
   for (const width of [396, 392, 388, 384]) {
     await drag.step(width);
+    await drag.hears(`resize ${width}`);
     await drag.hears(`observer ${width}`);
-    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
     drag.scripts.value += 1e9;
   }
   assert.ok(!drag.held());
@@ -849,8 +849,8 @@ test('a drag the document keeps up with tells a page every width, and so does a 
   drag.work.value = 20;
   for (const width of [380, 376, 372, 368]) {
     await drag.step(width);
+    await drag.hears(`resize ${width}`);
     await drag.hears(`observer ${width}`);
-    assert.ok(drag.heard().includes(`resize ${width}`), drag.heard());
     drag.scripts.value += 1e9;
   }
   assert.ok(!drag.held());
